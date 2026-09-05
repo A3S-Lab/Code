@@ -25,7 +25,9 @@ pub mod skill;
 pub mod task;
 mod types;
 
-pub use crate::dynamic_workflow::register_dynamic_workflow;
+pub use crate::dynamic_workflow::{
+    register_dynamic_workflow, register_dynamic_workflow_with_scheduler,
+};
 pub use agent_dir_script_tool::AgentDirScriptTool;
 pub use artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 pub use builtin::{

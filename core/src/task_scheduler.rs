@@ -4,6 +4,7 @@
 //! shared capacity boundary across every session created by one [`Agent`](crate::Agent),
 //! using `a3s-lane`'s stable priority queue for exact priority/FIFO ordering.
 
+use crate::execution_identity::ExecutionIdentityV1;
 use a3s_lane::{Priority, PriorityQueue};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -189,11 +190,34 @@ impl TaskScheduler {
         label: impl Into<String>,
         cancellation: &CancellationToken,
     ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_with_identity(priority, label, None, cancellation)
+            .await
+    }
+
+    /// Wait until this task owns one global execution slot and carry its
+    /// semantic execution identity through the admission boundary.
+    ///
+    /// The identity is optional for backwards compatibility with callers that
+    /// only need capacity. When present it is validated before anything is
+    /// queued, and the resulting lease retains it for tracing and downstream
+    /// adapters.
+    pub async fn acquire_with_identity(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        identity: Option<ExecutionIdentityV1>,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TaskSchedulerError::Closed);
         }
         if cancellation.is_cancelled() {
             return Err(TaskSchedulerError::Cancelled);
+        }
+        if let Some(identity) = &identity {
+            identity.validate().map_err(|error| {
+                TaskSchedulerError::InvalidConfig(format!("execution identity is invalid: {error}"))
+            })?;
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -203,6 +227,7 @@ impl TaskScheduler {
                 id,
                 priority,
                 label: label.into(),
+                identity: identity.clone(),
                 enqueued_at: Instant::now(),
                 ready: ready_tx,
             }))
@@ -220,6 +245,7 @@ impl TaskScheduler {
                     id,
                     tx: self.tx.clone(),
                     released: false,
+                    identity,
                 })
             }
         }
@@ -251,12 +277,18 @@ pub struct TaskLease {
     id: u64,
     tx: mpsc::UnboundedSender<SchedulerMessage>,
     released: bool,
+    identity: Option<ExecutionIdentityV1>,
 }
 
 impl TaskLease {
     /// Stable admission identifier, useful for tracing.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Semantic identity carried by this admission, when one was supplied.
+    pub fn identity(&self) -> Option<&ExecutionIdentityV1> {
+        self.identity.as_ref()
     }
 }
 
@@ -273,6 +305,7 @@ struct QueuedAdmission {
     id: u64,
     priority: TaskPriority,
     label: String,
+    identity: Option<ExecutionIdentityV1>,
     enqueued_at: Instant,
     ready: oneshot::Sender<Result<(), TaskSchedulerError>>,
 }
@@ -391,12 +424,19 @@ impl SchedulerState {
             let id = item.id;
             let priority = item.priority;
             let label = item.label;
+            let identity = item.identity;
             self.active.insert(id, priority);
             if item.ready.send(Ok(())).is_err() {
                 self.active.remove(&id);
                 continue;
             }
-            tracing::trace!(admission_id = id, ?priority, %label, "task admitted");
+            tracing::trace!(
+                admission_id = id,
+                ?priority,
+                %label,
+                execution_identity = identity.as_ref().map(ExecutionIdentityV1::key).unwrap_or(""),
+                "task admitted"
+            );
         }
     }
 
@@ -721,6 +761,33 @@ mod tests {
         assert_eq!(stats.pending_by_priority.maintenance, 1);
         drop(blocker);
         drop(waiting.await.unwrap().unwrap());
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn identity_is_carried_by_global_admission_lease() {
+        let scheduler = scheduler(1, 60_000);
+        let identity = ExecutionIdentityV1::derive(
+            crate::execution_identity::FLOW_STEP_IDENTITY_DOMAIN_V1,
+            &serde_json::json!({
+                "run_id": "run-1",
+                "step_id": "step-1",
+                "step_name": "read",
+                "input": {"path": "README.md"},
+            }),
+        )
+        .unwrap();
+        let lease = scheduler
+            .acquire_with_identity(
+                TaskPriority::Foreground,
+                "flow:run-1:step-1:read",
+                Some(identity.clone()),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lease.identity(), Some(&identity));
+        drop(lease);
         scheduler.shutdown().await;
     }
 }

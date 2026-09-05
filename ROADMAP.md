@@ -54,6 +54,7 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | `CAR-04` | In progress | Canonical `SessionCheckpointExportV1` payloads bind `SessionSnapshotV1`, optional between-tool-round logical resume evidence, and exact component/aggregate identities; a host-injected `SessionCheckpointExportSink` captures both components from one acknowledged live Run boundary after preceding events and capability-owned effects settle; every new logical checkpoint binds the source Run's exact Code catalog, authority ceiling, and optional Use cursor; recovery pins that complete historical generation before target-Run admission, and the Code Harness restores both components plus an optional exact host capability batch as one visible admission without split store prewrites; common Harness adoption and real provider/Box certification remain | Cloud `A1.6` owns checkpoint identity, immutable-object authorization, external revision fencing, retention, approval, and fork lineage |
 | `CAR-05` | Planned | Pass restart, exact replay, cancellation, hostile Tool output, bounded-content, Secret-redaction, checkpoint, and cleanup conformance through one Cloud-managed Box workload | No direct Code-to-node control path |
 | `WORKFLOW-RESULT1` | Delivered | Resumable workflow checkpoints and Flow decision claims share canonical execution identities and bounded digest-only result receipts; stale or unreadable state fails closed while legacy records remain loadable | Core checkpoint, Flow ledger, restart, takeover, and identity-fencing tests pass; host policy and business retention remain outside Code |
+| `WORKFLOW-SCHED1` | Delivered | Dynamic Flow history projects into the canonical `ExecutionPlan`; step admission shares cancellation and bounded per-workflow quotas, while standalone scheduler leases carry digest-only step identities and delegated tasks use the same identity boundary | Plan identity is stable across status changes; resumed projections retain prior steps; local and global admission tests cover priority, cancellation, serialization, and the max-active=1 nested-deadlock boundary |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -271,6 +272,32 @@ the same identity-aware claim, renewal, completion, and release boundary and
 stores a digest-only receipt for an accepted decision. The result receipt is a
 mechanism for replay and fencing; source evidence, review policy, retention, and
 publication decisions remain host responsibilities.
+
+### 3.3.2 Scheduler and plan convergence
+
+Dynamic Flow is now an adapter over the same `ExecutionPlan` used by Code
+planning rather than a second progress model. A complete Flow history can be
+projected into that plan on every inspection and when a resumed observer is
+attached; duplicate lifecycle delivery preserves insertion order and cannot
+regress a terminal status. The plan's definition identity excludes mutable
+status, so retries and restarts retain one stable execution intent while the
+visible progress changes.
+
+Each Flow step crosses a cancellation-aware, bounded local admission gate. Its
+identity is domain-separated from delegated Agent steps and contains only the
+run/step/handler tuple plus the bounded input derivation; scheduler traces and
+leases never retain input or output plaintext. A standalone Flow adapter may
+layer the agent-wide priority/FIFO scheduler on direct script-backed steps.
+Normal Session calls keep the enclosing scheduler lease and let host `task`
+fan-out use its own child admission, which prevents a single-slot scheduler
+from deadlocking on a nested lease. Delegated tasks now pass their canonical
+step identity through that same global scheduler boundary.
+
+The next slice is mixed-generation restart/retry qualification: bind the
+projected plan identity and step identity to a persisted Flow continuation,
+then prove that a changed handler/input or a cancelled parent cannot duplicate
+an already committed side effect. Cloud/Use package ownership, fairness
+policy, and business-level retry decisions remain outside Code.
 
 ### 3.4 Scoped capability program
 

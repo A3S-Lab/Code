@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added scheduler/plan convergence for dynamic workflows. Flow history now
+  projects into the canonical `ExecutionPlan` (including resumed runs),
+  dynamic steps use a cancellation-aware bounded concurrency gate, and
+  standalone adapters can carry a digest-only step identity through the
+  agent-wide scheduler. Session-bound workflows keep the enclosing lease and
+  avoid nested single-slot deadlocks; admission counters are exposed without
+  retaining step input or output.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,

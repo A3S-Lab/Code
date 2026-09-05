@@ -224,8 +224,10 @@ pub use durable_memory::{
     DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 pub use dynamic_workflow::{
-    dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
-    DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
+    dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
+    register_dynamic_workflow_with_scheduler, DynamicWorkflowAdmissionStats,
+    DynamicWorkflowRuntime, DynamicWorkflowScriptLimits, DynamicWorkflowTool,
+    DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
 pub use embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
@@ -354,8 +356,8 @@ pub use subagent_task_tracker::{
     InMemorySubagentTaskTracker, SubagentProgressEntry, SubagentStatus, SubagentTaskSnapshot,
 };
 pub use task_scheduler::{
-    TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig, TaskSchedulerError,
-    TaskSchedulerStats,
+    TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
+    TaskSchedulerError, TaskSchedulerStats,
 };
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,

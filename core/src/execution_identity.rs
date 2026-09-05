@@ -14,6 +14,14 @@ pub const EXECUTION_IDENTITY_SCHEMA_V1: &str = "a3s.code.execution-identity.v1";
 pub const MODEL_CALL_IDENTITY_DOMAIN_V1: &str = "a3s.code.model-call.identity.v1";
 pub const TOOL_INVOCATION_IDENTITY_DOMAIN_V1: &str = "a3s.code.tool-invocation.identity.v1";
 pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.identity.v1";
+/// Identity domain for a dynamically admitted A3S Flow step.
+///
+/// Dynamic Flow steps are intentionally separate from delegated Agent steps:
+/// the former are identified by the Flow run/step/name and JSON input, while
+/// the latter are identified by an [`AgentStepSpec`](crate::orchestration::AgentStepSpec).
+pub const FLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-step.identity.v1";
+/// Identity domain for the immutable definition of a projected execution plan.
+pub const EXECUTION_PLAN_IDENTITY_DOMAIN_V1: &str = "a3s.code.execution-plan.identity.v1";
 pub const WORKFLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.workflow-step.identity.v1";
 pub const WORKFLOW_STEP_EVIDENCE_DOMAIN_V1: &str = "a3s.code.workflow-step.evidence.v1";
 pub const WORKFLOW_STEP_RESULT_DOMAIN_V1: &str = "a3s.code.workflow-step.result.v1";
