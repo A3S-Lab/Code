@@ -294,8 +294,8 @@ from deadlocking on a nested lease. Delegated tasks now pass their canonical
 step identity through that same global scheduler boundary.
 
 The follow-up mixed-generation continuation qualification is recorded in
-section 3.3.3. Cloud/Use package ownership, fairness policy, and business-level
-retry decisions remain outside Code.
+sections 3.3.3 and 3.3.4. Cloud/Use package ownership, fairness policy, and
+business-level retry decisions remain outside Code.
 
 ### 3.3.3 Mixed-generation continuation qualification
 
@@ -318,10 +318,31 @@ side-effecting step and a worker on a different build cannot resume an active
 run. Legacy unpinned histories remain readable only inside the explicit
 migration window.
 
-The next slice is parent-cancellation and takeover qualification for a
-non-terminal continuation: carry the persisted continuation identity through a
-worker claim, fence a stale lease before admission, and prove a cancelled or
-reclaimed step cannot commit a duplicate side effect. Cloud/Use ownership,
+### 3.3.4 Parent cancellation and worker takeover
+
+The non-terminal continuation boundary now carries a stable claim identity
+through worker admission. The identity is derived only from the run id, source
+hash, initial-input digest, and effective runtime build; evolving plan progress,
+retry counters, and outputs cannot create a second claim. Local workspaces use
+an atomic file-backed lease sidecar at `.a3s/workflow/leases`, remote hosts may
+inject any `FlowDecisionLedger`, and in-memory hosts retain one tool-scoped
+ledger. Neither path stores workflow source, input, output, or owner secrets.
+
+An admitted worker renews its lease during Flow replay and inline retry waits,
+and the runtime revalidates ownership immediately before each workflow or step
+body. A stale owner therefore cannot start new work or complete a claim after a
+takeover. Parent cancellation propagates to a child `ToolContext`; the worker
+waits a bounded settlement window, releases only after the execution future has
+stopped, and leaves an unsettled lease fenced until it expires. Completion uses
+the same identity/owner/lease checks as Flow decision dispatch. Qualification
+now covers cross-worker busy claims, expired-owner fencing, cancellation at a
+retry boundary, pre-admission lease loss, generated run ids, and digest-only
+sidecar records.
+
+The event-sourced Flow history remains the workflow authority. Exactly-once
+external effects still require the invoked Tool or host to provide its own
+idempotency/receipt contract; Code does not pretend that a lease can undo an
+effect that was committed outside the Flow journal. Cloud/Use ownership,
 retention, and business retry policy remain outside Code.
 
 ### 3.4 Scoped capability program

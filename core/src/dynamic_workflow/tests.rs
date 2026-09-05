@@ -281,6 +281,53 @@ struct RetryOnceRuntimeTool {
     calls: Arc<AtomicUsize>,
 }
 
+#[derive(Default)]
+struct LeaseLosingWorkflowLedger;
+
+#[async_trait]
+impl FlowDecisionLedger for LeaseLosingWorkflowLedger {
+    async fn claim(
+        &self,
+        _decision_id: &str,
+        _request_hash: &str,
+        _owner_id: &str,
+        _now_ms: u64,
+        _lease_ms: u64,
+    ) -> anyhow::Result<FlowDecisionClaimOutcome> {
+        Ok(FlowDecisionClaimOutcome::Claimed { attempt: 1 })
+    }
+
+    async fn renew(
+        &self,
+        _decision_id: &str,
+        _request_hash: &str,
+        _owner_id: &str,
+        _now_ms: u64,
+        _lease_ms: u64,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn complete(
+        &self,
+        _decision_id: &str,
+        _request_hash: &str,
+        _owner_id: &str,
+        _completed_at_ms: u64,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn release(
+        &self,
+        _decision_id: &str,
+        _request_hash: &str,
+        _owner_id: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Tool for RetryOnceRuntimeTool {
     fn name(&self) -> &str {
@@ -910,6 +957,188 @@ return await ctx.read(inputs.input.path);
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dynamic_workflow_worker_lease_serializes_same_run_and_replays_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    executor.register_dynamic_tool(Arc::new(BlockingTaskTool {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let ledger: Arc<dyn FlowDecisionLedger> = Arc::new(MemoryFlowDecisionLedger::new());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    if (inputs.step_outputs.work) {
+      return { type: "complete", output: { ok: true } };
+    }
+    return {
+      type: "schedule_step",
+      step_id: "work",
+      step_name: "task",
+      input: {},
+      retry: { max_attempts: 1, delay_ms: 0 },
+    };
+  }
+  return await ctx.tool("task", inputs.input);
+}
+"#;
+    let args = json!({
+        "source": source,
+        "run_id": "serialized-worker-run",
+    });
+    let first_tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000);
+    let second_tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000);
+    let first_context = executor.registry().context();
+    let first_args = args.clone();
+    let first_task =
+        tokio::spawn(async move { first_tool.execute(&first_args, &first_context).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while started.load(Ordering::SeqCst) != 1 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("first worker should enter its side-effecting step");
+
+    let second = second_tool
+        .execute(
+            &json!({
+                "source": source,
+                "run_id": "serialized-worker-run",
+            }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !second.success,
+        "a live lease must reject a competing worker"
+    );
+    assert!(
+        second.content.contains("worker lease is busy"),
+        "{}",
+        second.content
+    );
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+
+    release.notify_waiters();
+    let first = tokio::time::timeout(Duration::from_secs(2), first_task)
+        .await
+        .expect("first worker should settle")
+        .expect("first worker task should join")
+        .unwrap();
+    assert!(first.success, "{}", first.content);
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first.metadata.as_ref().expect("first metadata")["dynamic_workflow"]["worker_lease"]
+            ["state"],
+        "completed"
+    );
+
+    let replay = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(ledger, 1_000)
+        .execute(&args, &executor.registry().context())
+        .await
+        .unwrap();
+    assert!(replay.success, "{}", replay.content);
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        replay.metadata.as_ref().expect("replay metadata")["dynamic_workflow"]["worker_lease"]
+            ["state"],
+        "already_completed"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_workflow_generates_safe_run_id_and_keeps_lease_sidecar_digest_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let source =
+        "async function run(ctx, inputs) { return { type: 'complete', output: { ok: true } }; }";
+    let result = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .execute(
+            &json!({ "source": source, "input": { "secret": "do-not-persist" } }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.content);
+    let metadata = result.metadata.expect("generated-run metadata");
+    let run_id = metadata["dynamic_workflow"]["run_id"]
+        .as_str()
+        .expect("generated run id");
+    assert!(safe_workflow_run_id(run_id));
+    assert_eq!(
+        metadata["dynamic_workflow"]["worker_lease"]["state"],
+        "completed"
+    );
+    let lease_path = dynamic_workflow_store_path(dir.path())
+        .join(DYNAMIC_WORKFLOW_LEASE_RELATIVE_PATH)
+        .join("flow-decisions.json");
+    let lease_contents = tokio::fs::read_to_string(lease_path).await.unwrap();
+    assert!(!lease_contents.contains("do-not-persist"));
+    assert!(!lease_contents.contains(source));
+}
+
+#[tokio::test]
+async fn dynamic_workflow_rejects_unsafe_run_id_before_store_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let result = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .execute(
+            &json!({
+                "source": "async function run(ctx, inputs) { return { type: 'complete', output: {} }; }",
+                "run_id": "../outside",
+            }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(result.content.contains("run_id must contain only"));
+    assert!(!tokio::fs::try_exists(dir.path().join("outside.jsonl"))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn dynamic_workflow_lost_lease_is_fenced_before_runtime_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(Arc::new(LeaseLosingWorkflowLedger), 1_000);
+    let result = tool
+        .execute(
+            &json!({
+                "source": "async function run(ctx, inputs) { return { type: 'complete', output: { should_not_run: true } }; }",
+                "run_id": "lost-lease-before-admission",
+            }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(
+        result.content.contains("lease is no longer owned"),
+        "{}",
+        result.content
+    );
+
+    let store = LocalFileEventStore::new(dynamic_workflow_store_path(dir.path()));
+    let history = store.list("lost-lease-before-admission").await.unwrap();
+    assert!(history
+        .iter()
+        .all(|envelope| !is_terminal_workflow_event(&envelope.event)));
+    assert!(history
+        .iter()
+        .all(|envelope| !matches!(&envelope.event, FlowEvent::StepCreated { .. })));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn dynamic_workflow_refuses_symlinked_project_store() {
@@ -1451,6 +1680,88 @@ async function run(ctx, inputs) {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dynamic_workflow_parent_cancellation_releases_claim_for_retrying_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let calls = Arc::new(AtomicUsize::new(0));
+    executor.register_dynamic_tool(Arc::new(RetryOnceRuntimeTool {
+        calls: Arc::clone(&calls),
+    }));
+    let ledger: Arc<dyn FlowDecisionLedger> = Arc::new(MemoryFlowDecisionLedger::new());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    const result = inputs.step_outputs.retry_once;
+    if (result) return { type: "complete", output: { recovered: result.output } };
+    return {
+      type: "schedule_step",
+      step_id: "retry_once",
+      step_name: "retry_once",
+      input: {},
+      retry: { max_attempts: 2, delay_ms: 200 },
+    };
+  }
+  const result = await ctx.tool("runtime", {});
+  if (result.exitCode !== 0) throw new Error(result.output || "runtime failed");
+  return result;
+}
+"#;
+    let cancellation = CancellationToken::new();
+    let first_context = executor
+        .registry()
+        .context()
+        .with_cancellation(cancellation.clone());
+    let first_tool = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(Arc::clone(&ledger), 1_000);
+    let first_args = json!({
+        "source": source,
+        "run_id": "cancel-and-retry-run",
+    });
+    let first_task =
+        tokio::spawn(async move { first_tool.execute(&first_args, &first_context).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while calls.load(Ordering::SeqCst) != 1 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("first attempt should be recorded before cancellation");
+    cancellation.cancel();
+    let first = tokio::time::timeout(Duration::from_secs(2), first_task)
+        .await
+        .expect("cancelled worker should settle")
+        .expect("cancelled worker task should join")
+        .unwrap();
+    assert!(
+        !first.success,
+        "parent cancellation must not report success"
+    );
+
+    // The retry boundary remains in Flow history, but the old worker no longer
+    // owns the claim. A fresh worker can take it over without replaying the
+    // already-recorded first attempt as a second side effect.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let second = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_continuation_lease_ledger(ledger, 1_000)
+        .execute(
+            &json!({
+                "source": source,
+                "run_id": "cancel-and-retry-run",
+            }),
+            &executor.registry().context(),
+        )
+        .await
+        .unwrap();
+    assert!(second.success, "{}", second.content);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        second.metadata.as_ref().expect("retry metadata")["dynamic_workflow"]["worker_lease"]
+            ["state"],
+        "completed"
+    );
+}
+
 #[test]
 fn dynamic_workflow_continuation_identity_binds_persisted_facts_not_progress() {
     let run_id = "continuation-identity";
@@ -1588,6 +1899,57 @@ fn dynamic_workflow_continuation_identity_binds_persisted_facts_not_progress() {
         &malformed_sequence,
     )
     .is_err());
+}
+
+#[test]
+fn dynamic_workflow_claim_identity_is_stable_across_history_progress() {
+    let run_id = "claim-identity";
+    let source =
+        "async function run(ctx, inputs) { return { type: 'complete', output: { ok: true } }; }";
+    let input = json!({ "query": "identity-bound" });
+    let runtime_build = RuntimeBuildId::new("code-generation-a").unwrap();
+    let empty =
+        dynamic_workflow_claim_identity(run_id, source, &input, runtime_build.as_str(), &[])
+            .unwrap();
+    let spec = WorkflowSpec::rust_embedded(
+        "a3s-code.dynamic-workflow",
+        source_hash(source),
+        "ptc",
+        "run",
+    )
+    .with_runtime_build(runtime_build.clone());
+    let progressed = vec![
+        FlowEventEnvelope::new(
+            run_id,
+            1,
+            uuid::Uuid::new_v4(),
+            Utc::now(),
+            FlowEvent::RunCreated {
+                spec,
+                input: input.clone(),
+            },
+        ),
+        FlowEventEnvelope::new(
+            run_id,
+            2,
+            uuid::Uuid::new_v4(),
+            Utc::now(),
+            FlowEvent::RunStarted,
+        ),
+    ];
+    let resumed = dynamic_workflow_claim_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &progressed,
+    )
+    .unwrap();
+    assert_eq!(empty, resumed);
+    assert_eq!(empty.domain, DYNAMIC_WORKFLOW_CLAIM_IDENTITY_DOMAIN_V1);
+    assert!(!serde_json::to_string(&empty)
+        .unwrap()
+        .contains("identity-bound"));
 }
 
 #[tokio::test]

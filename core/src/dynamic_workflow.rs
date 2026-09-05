@@ -5,8 +5,9 @@
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
 use crate::execution_identity::{
-    ExecutionIdentityV1, DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1,
-    DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1, FLOW_STEP_IDENTITY_DOMAIN_V1,
+    ExecutionIdentityV1, DYNAMIC_WORKFLOW_CLAIM_IDENTITY_DOMAIN_V1,
+    DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1, DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1,
+    FLOW_STEP_IDENTITY_DOMAIN_V1,
 };
 use crate::llm::{ModelGenerationAdmission, ModelGenerationConcurrency};
 use crate::task_scheduler::{TaskLease, TaskPriority as SchedulerTaskPriority, TaskScheduler};
@@ -15,7 +16,10 @@ use crate::tools::{
 };
 use crate::{
     agent::AgentEvent,
-    flow_graph::FlowGraphObserver,
+    flow_graph::{
+        FileFlowDecisionLedger, FlowDecisionClaimOutcome, FlowDecisionLedger, FlowGraphObserver,
+        MemoryFlowDecisionLedger,
+    },
     planning::{Complexity, ExecutionPlan, Task, TaskStatus},
 };
 use a3s_flow::{
@@ -34,8 +38,9 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 const DYNAMIC_WORKFLOW_TOOL: &str = "dynamic_workflow";
 const GENERATE_OBJECT_TOOL: &str = "generate_object";
@@ -49,6 +54,9 @@ const MAX_MAX_CONCURRENT_STEPS: usize = 32;
 const MAX_FLOW_STEP_ID_BYTES: usize = 256;
 const MAX_FLOW_STEP_INPUT_BYTES: usize = 64 * 1024;
 const MAX_DYNAMIC_WORKFLOW_INPUT_BYTES: usize = 128 * 1024;
+const DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS: u64 = 30_000;
+const MAX_DYNAMIC_WORKFLOW_SETTLE: Duration = Duration::from_secs(5);
+const DYNAMIC_WORKFLOW_LEASE_RELATIVE_PATH: &str = "leases";
 
 /// Runtime build used to pin newly-created dynamic workflow runs.
 ///
@@ -283,6 +291,7 @@ pub struct DynamicWorkflowRuntime {
     /// should leave this unset to avoid nested single-slot deadlocks.
     task_scheduler: Option<Arc<TaskScheduler>>,
     admit_steps_globally: bool,
+    continuation_lease: Option<Arc<DynamicWorkflowLease>>,
 }
 
 impl DynamicWorkflowRuntime {
@@ -308,6 +317,7 @@ impl DynamicWorkflowRuntime {
             step_admission: DynamicStepAdmission::new(DEFAULT_MAX_CONCURRENT_STEPS),
             task_scheduler: None,
             admit_steps_globally: false,
+            continuation_lease: None,
         }
     }
 
@@ -348,12 +358,18 @@ impl DynamicWorkflowRuntime {
         self
     }
 
+    fn with_continuation_lease(mut self, lease: Arc<DynamicWorkflowLease>) -> Self {
+        self.continuation_lease = Some(lease);
+        self
+    }
+
     /// Return local Flow-step admission counters for diagnostics and hosts.
     pub fn admission_stats(&self) -> DynamicWorkflowAdmissionStats {
         self.step_admission.stats()
     }
 
     async fn admit_step(&self, invocation: &StepInvocation) -> a3s_flow::Result<DynamicStepLease> {
+        self.ensure_continuation_lease().await?;
         let identity = dynamic_workflow_step_identity(
             &invocation.run_id,
             &invocation.step_id,
@@ -396,6 +412,23 @@ impl DynamicWorkflowRuntime {
             lease = lease.with_task_lease(task_lease);
         }
         Ok(lease)
+    }
+
+    async fn ensure_continuation_lease(&self) -> a3s_flow::Result<()> {
+        let Some(lease) = self.continuation_lease.as_ref() else {
+            return Ok(());
+        };
+        if lease
+            .renew()
+            .await
+            .map_err(|error| a3s_flow::FlowError::Runtime(error.to_string()))?
+        {
+            Ok(())
+        } else {
+            Err(a3s_flow::FlowError::Runtime(
+                "dynamic workflow worker lease is no longer owned before admission".to_string(),
+            ))
+        }
     }
 
     async fn run_script(
@@ -514,6 +547,7 @@ impl FlowRuntime for DynamicWorkflowRuntime {
         &self,
         invocation: WorkflowInvocation,
     ) -> a3s_flow::Result<RuntimeCommand> {
+        self.ensure_continuation_lease().await?;
         let payload = invocation_payload("workflow", &invocation.run_id, &invocation.history)
             .with("input", invocation.input);
         let result = self.run_script(payload.into_value(), &self.context).await?;
@@ -610,6 +644,45 @@ fn dynamic_workflow_input_identity(
         );
     }
     ExecutionIdentityV1::derive(DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1, input)
+}
+
+/// Derive the stable, digest-only claim identity for one dynamic workflow.
+///
+/// Unlike the continuation identity, this identity intentionally excludes the
+/// evolving plan and step history. It therefore remains constant while a
+/// worker replays, retries, or takes over the same durable run. The complete
+/// continuation identity is still validated first, so malformed or
+/// mixed-generation history can never acquire a worker lease.
+pub fn dynamic_workflow_claim_identity(
+    run_id: &str,
+    source: &str,
+    input: &Value,
+    runtime_build_id: &str,
+    history: &[FlowEventEnvelope],
+) -> std::result::Result<ExecutionIdentityV1, crate::execution_identity::ExecutionIdentityError> {
+    dynamic_workflow_continuation_identity(run_id, source, input, runtime_build_id, history)?;
+    let input_identity = dynamic_workflow_input_identity(input)?;
+    let effective_runtime_build_id = history
+        .iter()
+        .find_map(|envelope| match &envelope.event {
+            FlowEvent::RunCreated { spec, .. } => Some(
+                spec.runtime_build_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| LEGACY_UNPINNED_RUNTIME_BUILD_ID.to_string()),
+            ),
+            _ => None,
+        })
+        .unwrap_or_else(|| runtime_build_id.to_string());
+    ExecutionIdentityV1::derive(
+        DYNAMIC_WORKFLOW_CLAIM_IDENTITY_DOMAIN_V1,
+        &json!({
+            "run_id": run_id,
+            "source_hash": source_hash(source),
+            "input_identity": input_identity.digest,
+            "runtime_build_id": effective_runtime_build_id,
+        }),
+    )
 }
 
 /// Reconstruct the immutable identity of a dynamic workflow continuation.
@@ -1075,6 +1148,131 @@ fn bounded_workflow_description(value: &str) -> String {
     format!("{}…", &value[..end])
 }
 
+#[derive(Clone)]
+struct DynamicWorkflowLease {
+    ledger: Arc<dyn FlowDecisionLedger>,
+    decision_id: String,
+    request_hash: String,
+    identity: ExecutionIdentityV1,
+    owner_id: String,
+    lease_ms: u64,
+    attempt: u32,
+}
+
+impl DynamicWorkflowLease {
+    async fn renew(&self) -> Result<bool> {
+        self.ledger
+            .renew_with_identity(
+                &self.decision_id,
+                &self.request_hash,
+                &self.identity,
+                &self.owner_id,
+                dynamic_workflow_now_ms(),
+                self.lease_ms,
+            )
+            .await
+    }
+
+    async fn complete(&self) -> Result<()> {
+        self.ledger
+            .complete_with_identity(
+                &self.decision_id,
+                &self.request_hash,
+                &self.identity,
+                &self.owner_id,
+                dynamic_workflow_now_ms(),
+            )
+            .await
+    }
+
+    async fn release(&self) -> Result<()> {
+        self.ledger
+            .release_with_identity(
+                &self.decision_id,
+                &self.request_hash,
+                &self.identity,
+                &self.owner_id,
+            )
+            .await
+    }
+}
+
+enum DynamicWorkflowLeaseClaim {
+    Owned(DynamicWorkflowLease),
+    AlreadyCompleted,
+}
+
+async fn claim_dynamic_workflow_lease(
+    ledger: Arc<dyn FlowDecisionLedger>,
+    identity: ExecutionIdentityV1,
+    lease_ms: u64,
+) -> Result<DynamicWorkflowLeaseClaim> {
+    identity
+        .validate()
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let decision_id = format!("dynamic-workflow:{}", identity.digest);
+    let request_hash = identity.digest.clone();
+    let owner_id = format!("dynamic-workflow-worker-{}", uuid::Uuid::new_v4());
+    let outcome = ledger
+        .claim_with_identity(
+            &decision_id,
+            &request_hash,
+            &identity,
+            &owner_id,
+            dynamic_workflow_now_ms(),
+            lease_ms,
+        )
+        .await
+        .context("admit dynamic workflow worker lease")?;
+    match outcome {
+        FlowDecisionClaimOutcome::Claimed { attempt } => {
+            Ok(DynamicWorkflowLeaseClaim::Owned(DynamicWorkflowLease {
+                ledger,
+                decision_id,
+                request_hash,
+                identity,
+                owner_id,
+                lease_ms,
+                attempt,
+            }))
+        }
+        FlowDecisionClaimOutcome::Completed => Ok(DynamicWorkflowLeaseClaim::AlreadyCompleted),
+        FlowDecisionClaimOutcome::Busy {
+            lease_expires_at_ms,
+        } => anyhow::bail!("dynamic workflow worker lease is busy until {lease_expires_at_ms}"),
+        FlowDecisionClaimOutcome::Conflict => {
+            anyhow::bail!("dynamic workflow worker lease identity conflicts with its claim")
+        }
+    }
+}
+
+fn dynamic_workflow_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn is_terminal_workflow_event(event: &FlowEvent) -> bool {
+    matches!(
+        event,
+        FlowEvent::RunCompleted { .. }
+            | FlowEvent::RunFailed { .. }
+            | FlowEvent::RunCancelled { .. }
+            | FlowEvent::RunTimedOut { .. }
+            | FlowEvent::RunRetryExhausted { .. }
+            | FlowEvent::RunHostShutdown { .. }
+            | FlowEvent::RunContinuedAsNew { .. }
+    )
+}
+
+fn history_is_terminal(history: &[FlowEventEnvelope]) -> bool {
+    history
+        .last()
+        .is_some_and(|envelope| is_terminal_workflow_event(&envelope.event))
+}
+
 /// Model-visible tool that executes a dynamic workflow through A3S Flow.
 pub struct DynamicWorkflowTool {
     registry: DynamicWorkflowRegistry,
@@ -1082,6 +1280,9 @@ pub struct DynamicWorkflowTool {
     task_scheduler: Option<Arc<TaskScheduler>>,
     admit_steps_globally: bool,
     runtime_build_compatibility: Option<RuntimeBuildCompatibility>,
+    continuation_lease_ledger: Option<Arc<dyn FlowDecisionLedger>>,
+    continuation_lease_ms: u64,
+    memory_continuation_lease_ledger: Arc<MemoryFlowDecisionLedger>,
 }
 
 enum DynamicWorkflowRegistry {
@@ -1106,6 +1307,9 @@ impl DynamicWorkflowTool {
             task_scheduler: None,
             admit_steps_globally: false,
             runtime_build_compatibility: None,
+            continuation_lease_ledger: None,
+            continuation_lease_ms: DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS,
+            memory_continuation_lease_ledger: Arc::new(MemoryFlowDecisionLedger::new()),
         }
     }
 
@@ -1116,6 +1320,9 @@ impl DynamicWorkflowTool {
             task_scheduler: None,
             admit_steps_globally: false,
             runtime_build_compatibility: None,
+            continuation_lease_ledger: None,
+            continuation_lease_ms: DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS,
+            memory_continuation_lease_ledger: Arc::new(MemoryFlowDecisionLedger::new()),
         }
     }
 
@@ -1150,6 +1357,51 @@ impl DynamicWorkflowTool {
     ) -> Self {
         self.runtime_build_compatibility = Some(compatibility);
         self
+    }
+
+    /// Use a caller-owned durable lease ledger for worker admission.
+    ///
+    /// The ledger stores only claim metadata and digests; A3S Flow's event
+    /// store remains the workflow source of truth. Hosts that run multiple
+    /// workers should provide a shared ledger (for example a
+    /// [`FileFlowDecisionLedger`]) and choose a lease long enough for one
+    /// heartbeat interval. Without an explicit ledger, local workspaces use a
+    /// sidecar file ledger and remote/in-memory contexts use a tool-scoped
+    /// memory ledger.
+    pub fn with_continuation_lease_ledger(
+        mut self,
+        ledger: Arc<dyn FlowDecisionLedger>,
+        lease_ms: u64,
+    ) -> Self {
+        self.continuation_lease_ledger = Some(ledger);
+        self.continuation_lease_ms = lease_ms.max(1);
+        self
+    }
+
+    /// Change the default worker lease while retaining automatic ledger
+    /// selection.
+    pub fn with_continuation_lease_ms(mut self, lease_ms: u64) -> Self {
+        self.continuation_lease_ms = lease_ms.max(1);
+        self
+    }
+
+    async fn continuation_lease_ledger_for_context(
+        &self,
+        ctx: &ToolContext,
+    ) -> Result<Arc<dyn FlowDecisionLedger>> {
+        if let Some(ledger) = &self.continuation_lease_ledger {
+            return Ok(Arc::clone(ledger));
+        }
+        let Some(root) = ctx.workspace_services.local_root() else {
+            let ledger: Arc<dyn FlowDecisionLedger> = self.memory_continuation_lease_ledger.clone();
+            return Ok(ledger);
+        };
+        let workflow_root = dynamic_workflow_store_path(root);
+        validate_dynamic_workflow_directory(&root.join(".a3s"), ".a3s").await?;
+        validate_dynamic_workflow_directory(&workflow_root, ".a3s/workflow").await?;
+        let lease_root = workflow_root.join(DYNAMIC_WORKFLOW_LEASE_RELATIVE_PATH);
+        validate_dynamic_workflow_directory(&lease_root, ".a3s/workflow/leases").await?;
+        Ok(Arc::new(FileFlowDecisionLedger::new(lease_root)))
     }
 }
 
@@ -1259,27 +1511,28 @@ impl Tool for DynamicWorkflowTool {
             "run",
         );
 
-        let mut runtime = DynamicWorkflowRuntime::new(registry, ctx.clone(), source)
-            .with_allowed_tools(allowed_tools)
-            .with_limits(limits);
-        if let Some(scheduler) = &self.task_scheduler {
-            runtime = runtime.with_task_scheduler(Arc::clone(scheduler), self.admit_steps_globally);
+        if ctx.is_cancelled() {
+            return Ok(ToolOutput::error(
+                "dynamic_workflow was cancelled before admission",
+            ));
         }
-        let runtime = Arc::new(runtime);
-        let runtime_for_metadata = Arc::clone(&runtime);
         let requested_run_id = args.get("run_id").and_then(Value::as_str);
-        let store = match flow_store_for_context(ctx, requested_run_id).await {
+        if requested_run_id.is_some_and(|run_id| !safe_workflow_run_id(run_id)) {
+            return Ok(ToolOutput::error(
+                "dynamic_workflow run_id must contain only ASCII letters, numbers, '-' or '_'",
+            ));
+        }
+        let run_id = requested_run_id
+            .map(ToString::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let store = match flow_store_for_context(ctx, Some(&run_id)).await {
             Ok(store) => store,
             Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };
-        let prior_history = if let Some(run_id) = requested_run_id {
-            match store.list(run_id).await {
-                Ok(history) => history,
-                Err(a3s_flow::FlowError::RunNotFound(_)) => Vec::new(),
-                Err(error) => return Ok(ToolOutput::error(error.to_string())),
-            }
-        } else {
-            Vec::new()
+        let prior_history = match store.list(&run_id).await {
+            Ok(history) => history,
+            Err(a3s_flow::FlowError::RunNotFound(_)) => Vec::new(),
+            Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };
         // Preserve the immutable build pin already persisted in a resumed
         // history. A new run is pinned to this worker's current build; a
@@ -1303,23 +1556,59 @@ impl Tool for DynamicWorkflowTool {
                 let spec = base_spec.with_runtime_build(runtime_build_id.clone());
                 (spec, Some(runtime_build_id.to_string()))
             });
-        if let Some(run_id) = requested_run_id {
-            if let Err(error) = dynamic_workflow_continuation_identity(
-                run_id,
-                source,
-                &input,
-                runtime_build_id.as_str(),
-                &prior_history,
-            ) {
+        let claim_identity = match dynamic_workflow_claim_identity(
+            &run_id,
+            source,
+            &input,
+            runtime_build_id.as_str(),
+            &prior_history,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
                 return Ok(ToolOutput::error(format!(
                     "dynamic workflow continuation identity rejected: {error}"
-                )));
+                )))
             }
-        } else if let Err(error) = dynamic_workflow_input_identity(&input) {
-            return Ok(ToolOutput::error(format!(
-                "dynamic workflow input identity rejected: {error}"
-            )));
+        };
+        let lease_ledger = match self.continuation_lease_ledger_for_context(ctx).await {
+            Ok(ledger) => ledger,
+            Err(error) => return Ok(ToolOutput::error(error.to_string())),
+        };
+        let lease_claim = match claim_dynamic_workflow_lease(
+            lease_ledger,
+            claim_identity,
+            self.continuation_lease_ms,
+        )
+        .await
+        {
+            Ok(claim) => claim,
+            Err(error) => return Ok(ToolOutput::error(error.to_string())),
+        };
+        let (lease, mut lease_state) = match lease_claim {
+            DynamicWorkflowLeaseClaim::Owned(lease) => (Some(lease), "claimed"),
+            DynamicWorkflowLeaseClaim::AlreadyCompleted => {
+                if !history_is_terminal(&prior_history) {
+                    return Ok(ToolOutput::error(
+                        "dynamic workflow worker claim is completed but its durable run is not terminal",
+                    ));
+                }
+                (None, "already_completed")
+            }
+        };
+        let parent_cancellation = ctx.cancellation_token();
+        let child_cancellation = parent_cancellation.child_token();
+        let workflow_context = ctx.clone().with_cancellation(child_cancellation.clone());
+        let mut runtime = DynamicWorkflowRuntime::new(registry, workflow_context.clone(), source)
+            .with_allowed_tools(allowed_tools)
+            .with_limits(limits);
+        if let Some(scheduler) = &self.task_scheduler {
+            runtime = runtime.with_task_scheduler(Arc::clone(scheduler), self.admit_steps_globally);
         }
+        if let Some(lease) = lease.as_ref() {
+            runtime = runtime.with_continuation_lease(Arc::new(lease.clone()));
+        }
+        let runtime = Arc::new(runtime);
+        let runtime_for_metadata = Arc::clone(&runtime);
         let initial_plan = if prior_history.is_empty() {
             ExecutionPlan::new("dynamic workflow", Complexity::Medium)
         } else {
@@ -1346,39 +1635,63 @@ impl Tool for DynamicWorkflowTool {
         let engine = engine_builder.build();
         let input_for_identity = input.clone();
 
-        let run_id = match requested_run_id {
-            Some(run_id) => match engine.start_with_id(run_id, spec, input).await {
+        let execution_result = if let Some(lease) = lease.as_ref() {
+            drive_dynamic_workflow_with_lease(
+                &engine,
+                &run_id,
+                spec,
+                input,
+                DynamicWorkflowDriveContext {
+                    source,
+                    input_for_identity: &input_for_identity,
+                    runtime_build_id: runtime_build_id.as_str(),
+                    workflow_context: &workflow_context,
+                    parent_cancellation,
+                    child_cancellation,
+                },
+                lease,
+            )
+            .await
+        } else {
+            let started_run_id = match engine.start_with_id(&run_id, spec, input).await {
                 Ok(run_id) => run_id,
-                Err(err) => return Ok(ToolOutput::error(err.to_string())),
-            },
-            None => match engine.start(spec, input).await {
-                Ok(run_id) => run_id,
-                Err(err) => return Ok(ToolOutput::error(err.to_string())),
-            },
-        };
-
-        let snapshot = match drive_inline_retries(&engine, &run_id, ctx).await {
-            Ok(snapshot) => snapshot,
-            Err(err) => return Ok(ToolOutput::error(err.to_string())),
-        };
-        let history = match engine.history(&run_id).await {
-            Ok(history) => history,
-            Err(err) => return Ok(ToolOutput::error(err.to_string())),
-        };
-        let continuation_identity = match dynamic_workflow_continuation_identity(
-            &run_id,
-            source,
-            &input_for_identity,
-            runtime_build_id.as_str(),
-            &history,
-        ) {
-            Ok(identity) => identity,
-            Err(error) => {
+                Err(error) => return Ok(ToolOutput::error(error.to_string())),
+            };
+            if started_run_id != run_id {
                 return Ok(ToolOutput::error(format!(
-                    "dynamic workflow continuation identity rejected after replay: {error}"
-                )))
+                    "dynamic workflow engine returned unexpected run id `{started_run_id}` for `{run_id}`"
+                )));
             }
+            let snapshot = match drive_inline_retries(&engine, &run_id, &workflow_context).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Ok(ToolOutput::error(error.to_string())),
+            };
+            collect_dynamic_workflow_execution(
+                &engine,
+                &run_id,
+                snapshot,
+                source,
+                &input_for_identity,
+                runtime_build_id.as_str(),
+            )
+            .await
         };
+        let execution = match execution_result {
+            Ok(execution) => execution,
+            Err(err) => return Ok(ToolOutput::error(err.to_string())),
+        };
+        let DynamicWorkflowExecution {
+            snapshot,
+            history,
+            continuation_identity,
+        } = execution;
+        if lease.is_some() {
+            lease_state = if snapshot.status.is_terminal() {
+                "completed"
+            } else {
+                "released"
+            };
+        }
 
         let output = match &snapshot.output {
             Some(output) => {
@@ -1408,6 +1721,10 @@ impl Tool for DynamicWorkflowTool {
                 "plan": plan,
                 "plan_identity": plan_identity,
                 "continuation_identity": continuation_identity,
+                "worker_lease": {
+                    "state": lease_state,
+                    "attempt": lease.as_ref().map(|lease| lease.attempt),
+                },
                 "admission": runtime_for_metadata.admission_stats(),
             }
         });
@@ -1420,6 +1737,165 @@ impl Tool for DynamicWorkflowTool {
         };
 
         Ok(output.with_metadata(metadata))
+    }
+}
+
+struct DynamicWorkflowExecution {
+    snapshot: WorkflowRunSnapshot,
+    history: Vec<FlowEventEnvelope>,
+    continuation_identity: ExecutionIdentityV1,
+}
+
+struct DynamicWorkflowDriveContext<'a> {
+    source: &'a str,
+    input_for_identity: &'a Value,
+    runtime_build_id: &'a str,
+    workflow_context: &'a ToolContext,
+    parent_cancellation: CancellationToken,
+    child_cancellation: CancellationToken,
+}
+
+async fn collect_dynamic_workflow_execution(
+    engine: &FlowEngine,
+    run_id: &str,
+    snapshot: WorkflowRunSnapshot,
+    source: &str,
+    input: &Value,
+    runtime_build_id: &str,
+) -> Result<DynamicWorkflowExecution> {
+    let history = engine.history(run_id).await?;
+    let continuation_identity =
+        dynamic_workflow_continuation_identity(run_id, source, input, runtime_build_id, &history)
+            .map_err(|error| {
+            anyhow::anyhow!("dynamic workflow continuation identity rejected after replay: {error}")
+        })?;
+    Ok(DynamicWorkflowExecution {
+        snapshot,
+        history,
+        continuation_identity,
+    })
+}
+
+async fn settle_dynamic_workflow_lease(
+    lease: &DynamicWorkflowLease,
+    result: Result<DynamicWorkflowExecution>,
+) -> Result<DynamicWorkflowExecution> {
+    match result {
+        Ok(execution) if execution.snapshot.status.is_terminal() => {
+            lease
+                .complete()
+                .await
+                .context("complete dynamic workflow worker lease")?;
+            Ok(execution)
+        }
+        Ok(execution) => {
+            lease
+                .release()
+                .await
+                .context("release suspended dynamic workflow worker lease")?;
+            Ok(execution)
+        }
+        Err(error) => {
+            if let Err(release_error) = lease.release().await {
+                tracing::warn!(
+                    error = %release_error,
+                    "failed to release dynamic workflow worker lease after execution error"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn drive_dynamic_workflow_with_lease(
+    engine: &FlowEngine,
+    run_id: &str,
+    spec: WorkflowSpec,
+    input: Value,
+    drive_context: DynamicWorkflowDriveContext<'_>,
+    lease: &DynamicWorkflowLease,
+) -> Result<DynamicWorkflowExecution> {
+    let DynamicWorkflowDriveContext {
+        source,
+        input_for_identity,
+        runtime_build_id,
+        workflow_context,
+        parent_cancellation,
+        child_cancellation,
+    } = drive_context;
+    let execution = async {
+        let started_run_id = engine.start_with_id(run_id, spec, input).await?;
+        if started_run_id != run_id {
+            anyhow::bail!(
+                "dynamic workflow engine returned unexpected run id `{started_run_id}` for `{run_id}`"
+            );
+        }
+        let snapshot = drive_inline_retries(engine, run_id, workflow_context).await?;
+        collect_dynamic_workflow_execution(
+            engine,
+            run_id,
+            snapshot,
+            source,
+            input_for_identity,
+            runtime_build_id,
+        )
+        .await
+    };
+    tokio::pin!(execution);
+
+    let heartbeat_period = Duration::from_millis((lease.lease_ms / 3).max(1));
+    let first_heartbeat = tokio::time::Instant::now() + heartbeat_period;
+    let mut heartbeat = tokio::time::interval_at(first_heartbeat, heartbeat_period);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut execution => {
+                return settle_dynamic_workflow_lease(lease, result).await;
+            }
+            _ = parent_cancellation.cancelled() => {
+                child_cancellation.cancel();
+                match tokio::time::timeout(MAX_DYNAMIC_WORKFLOW_SETTLE, &mut execution).await {
+                    Ok(result) => {
+                        match settle_dynamic_workflow_lease(lease, result).await {
+                            Ok(execution) if execution.snapshot.status.is_terminal() => {
+                                return Ok(execution)
+                            }
+                            Ok(_) => anyhow::bail!("dynamic workflow cancelled by its parent"),
+                            Err(error) => return Err(error).context("settle dynamic workflow cancellation"),
+                        }
+                    }
+                    Err(_) => anyhow::bail!(
+                        "dynamic workflow cancellation did not settle within {} seconds; worker lease remains fenced until expiry",
+                        MAX_DYNAMIC_WORKFLOW_SETTLE.as_secs()
+                    ),
+                }
+            }
+            _ = heartbeat.tick() => {
+                match lease.renew().await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        child_cancellation.cancel();
+                        if tokio::time::timeout(MAX_DYNAMIC_WORKFLOW_SETTLE, &mut execution)
+                            .await
+                            .is_ok()
+                        {
+                            let _ = lease.release().await;
+                        }
+                        anyhow::bail!("dynamic workflow worker lease was lost before execution completed");
+                    }
+                    Err(error) => {
+                        child_cancellation.cancel();
+                        if tokio::time::timeout(MAX_DYNAMIC_WORKFLOW_SETTLE, &mut execution)
+                            .await
+                            .is_ok()
+                        {
+                            let _ = lease.release().await;
+                        }
+                        return Err(error).context("renew dynamic workflow worker lease");
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -59,7 +59,11 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   from durable immutable facts. Changed source/input, conflicting step
   definitions, and unsupported runtime generations are rejected before step
   execution, while legacy unpinned histories remain readable during
-  migration.
+  migration. A stable claim identity now gates each worker with a local
+  file-backed (or host-injected) lease, heartbeats keep live owners fenced,
+  stale workers are rejected before workflow/step admission, and parent
+  cancellation settles or leaves the lease fenced rather than releasing an
+  in-flight worker.
 
 Go consumers must update the module path to
 `github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
@@ -1039,7 +1043,12 @@ query cache. A resumed run reconstructs its complete plan from durable
 history, so progress does not lose steps emitted before the current process.
 New runs also persist an exact runtime-build requirement; the continuation
 identity is recomputed from the persisted RunCreated/StepCreated facts on every
-resume, without storing source, input, or output plaintext in the identity.
+resume, without storing source, input, or output plaintext in the identity. The
+worker claim identity intentionally excludes evolving plan progress, so
+takeover and retry use one stable digest. Local claim metadata lives under
+`.a3s/workflow/leases`; A3S Flow's event history remains the sole workflow
+authority, and the sidecar contains only bounded digests, owner leases, and
+attempt state.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve

@@ -85,6 +85,25 @@ pub trait FlowDecisionLedger: Send + Sync {
         completed_at_ms: u64,
     ) -> Result<()>;
 
+    /// Complete a pending claim only when its canonical execution identity
+    /// still matches the record that was admitted.  The default keeps custom
+    /// host ledgers source-compatible; built-in ledgers persist and fence the
+    /// identity together with the owner and lease checks.
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.complete(decision_id, request_hash, owner_id, completed_at_ms)
+            .await
+    }
+
     /// Complete with a bounded digest-only result receipt. The default keeps
     /// third-party ledgers source-compatible but cannot persist the receipt.
     async fn complete_with_receipt(
@@ -238,6 +257,29 @@ impl FlowDecisionLedger for MemoryFlowDecisionLedger {
             decision_id,
             request_hash,
             None,
+            owner_id,
+            None,
+            completed_at_ms,
+        )
+    }
+
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let mut records = self.records.lock().await;
+        complete_record(
+            &mut records,
+            decision_id,
+            request_hash,
+            Some(identity),
             owner_id,
             None,
             completed_at_ms,
@@ -467,6 +509,31 @@ impl FlowDecisionLedger for FileFlowDecisionLedger {
                 decision_id,
                 request_hash,
                 None,
+                owner_id,
+                None,
+                completed_at_ms,
+            )
+        })
+        .await
+    }
+
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.mutate(|records| {
+            complete_record(
+                records,
+                decision_id,
+                request_hash,
+                Some(identity),
                 owner_id,
                 None,
                 completed_at_ms,
@@ -992,6 +1059,10 @@ mod tests {
             )
             .await
             .is_err());
+        assert!(ledger
+            .complete_with_identity("decision", "hash", &first, "other", 120)
+            .await
+            .is_err());
         assert_eq!(
             ledger
                 .claim_with_identity("decision", "hash", &second, "second-owner", 121, 20)
@@ -1011,6 +1082,10 @@ mod tests {
             .await
             .is_err());
         let second_receipt = receipt(second.clone());
+        ledger
+            .complete_with_identity("decision", "hash", &second, "second-owner", 123)
+            .await
+            .unwrap();
         ledger
             .complete_with_receipt(
                 "decision",
