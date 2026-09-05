@@ -13,6 +13,22 @@ struct UsageRecordedGuard {
     recorded: Arc<tokio::sync::Notify>,
 }
 
+#[test]
+fn typed_model_requests_bind_their_evidence_kind() {
+    let messages = [Message::user("hello")];
+    let tools = [];
+    let completion = ModelCallRequest::completion(&messages, None, &tools);
+    let completion_observation = completion.observation(ModelPresentationApplicationV1::Auxiliary);
+    assert_eq!(completion_observation.kind, ModelInputKindV1::Completion);
+    assert!(completion_observation.estimated_prompt_tokens > 0);
+
+    let directive = StructuredDirective::default();
+    let structured = ModelCallRequest::structured(&messages, None, &tools, &directive);
+    let structured_observation = structured.observation(ModelPresentationApplicationV1::Auxiliary);
+    assert_eq!(structured_observation.kind, ModelInputKindV1::Structured);
+    assert!(structured_observation.directive.is_some());
+}
+
 #[async_trait]
 impl crate::budget::BudgetGuard for UsageRecordedGuard {
     async fn record_after_llm(&self, _session_id: &str, _usage: &TokenUsage) {
