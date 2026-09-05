@@ -1,4 +1,5 @@
 use super::{digest, validate_digest_field, validate_id, ResearchContractError};
+use crate::core_identity::CoreEventIdentity;
 use serde::{Deserialize, Serialize};
 
 pub const RESEARCH_EVENT_SCHEMA_V1: &str = "a3s.code.science-event.v1";
@@ -53,6 +54,40 @@ impl ResearchEventV1 {
             return Err(ResearchContractError::DigestMismatch("eventDigest"));
         }
         Ok(())
+    }
+
+    /// Project one Core event into the research event view.
+    ///
+    /// Core evidence cursors are zero-based because they align with retained
+    /// `RunEventRecord` sequences. The research wire contract is intentionally
+    /// one-based, so this adapter performs the only explicit representation
+    /// conversion while preserving the operation id, payload digest, and
+    /// observation time. Research event names are dotted by contract, so the
+    /// runtime name is placed under the explicit `code` namespace and runtime
+    /// underscores are normalized to the research contract's hyphens.
+    pub fn from_core_event(
+        project_id: impl Into<String>,
+        project_revision: u64,
+        event: &CoreEventIdentity,
+    ) -> Result<Self, ResearchContractError> {
+        event
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("coreEvent"))?;
+        let sequence = event
+            .identity
+            .evidence_cursor
+            .sequence()
+            .checked_add(1)
+            .ok_or(ResearchContractError::InvalidField("sequence"))?;
+        Self::new(
+            project_id,
+            project_revision,
+            Some(event.identity.operation_id.as_str().to_owned()),
+            sequence,
+            format!("code.{}", event.event_type.replace('_', "-")),
+            event.payload_digest.clone(),
+            event.observed_at_ms,
+        )
     }
 
     fn validate_without_digest(&self) -> Result<(), ResearchContractError> {
@@ -125,6 +160,10 @@ fn validate_event_type(value: &str) -> Result<(), ResearchContractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core_identity::{
+        CapabilityStamp, CoreIdentity, EvidenceCursor, OperationId, SourceRevision,
+    };
+    use crate::AgentEvent;
 
     fn digest(ch: char) -> String {
         format!("sha256:{}", ch.to_string().repeat(64))
@@ -151,5 +190,30 @@ mod tests {
         let mut encoded = serde_json::to_value(&event).unwrap();
         encoded["unexpected"] = serde_json::Value::Bool(true);
         assert!(serde_json::from_value::<ResearchEventV1>(encoded).is_err());
+    }
+
+    #[test]
+    fn core_event_projection_preserves_identity_and_uses_research_sequence() {
+        let core = CoreEventIdentity::from_agent_event(
+            CoreIdentity::new(
+                OperationId::new("session-1/run-1").unwrap(),
+                SourceRevision::new(4),
+                Some(CapabilityStamp::new(2, digest('b')).unwrap()),
+                EvidenceCursor::new(6),
+            ),
+            42,
+            &AgentEvent::TextDelta {
+                text: "finding".to_owned(),
+            },
+        )
+        .unwrap();
+        let projected = ResearchEventV1::from_core_event("project-1", 3, &core).unwrap();
+
+        assert_eq!(projected.run_id.as_deref(), Some("session-1/run-1"));
+        assert_eq!(projected.sequence, 7);
+        assert_eq!(projected.event_type, "code.text-delta");
+        assert_eq!(projected.payload_digest, core.payload_digest);
+        assert_eq!(projected.observed_at_ms, 42);
+        assert!(projected.validate().is_ok());
     }
 }
