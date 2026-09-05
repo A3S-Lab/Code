@@ -114,8 +114,8 @@ impl Tool for BatchTool {
             "examples": [
                 {
                     "invocations": [
-                        { "step": 1, "id": "files", "tool": "search", "args": { "mode": "glob", "query": "**/*.rs" } },
-                        { "step": 2, "tool": "read", "args": { "file_path": { "$ref": "files.output" } } }
+                        { "step": 1, "id": "files", "tool": "search", "args": { "mode": "glob", "query": "**/Cargo.toml" } },
+                        { "step": 2, "tool": "read", "args": { "file_path": { "$ref": "files.output_lines.0" } } }
                     ]
                 }
             ]
@@ -511,9 +511,17 @@ fn resolve_batch_reference(reference: &str, bindings: &BTreeMap<String, Value>) 
 fn binding_projection(result: &ToolResult) -> Result<Value> {
     let output = serde_json::from_str::<Value>(&result.output)
         .unwrap_or_else(|_| Value::String(result.output.clone()));
+    let output_lines = Value::Array(
+        result
+            .output
+            .lines()
+            .map(|line| Value::String(line.to_string()))
+            .collect(),
+    );
     let metadata = result.metadata.clone().unwrap_or(Value::Null);
     let projection = Value::Object(Map::from_iter([
         ("output".to_string(), output),
+        ("output_lines".to_string(), output_lines),
         ("metadata".to_string(), metadata),
         ("exit_code".to_string(), Value::from(result.exit_code)),
         ("tool".to_string(), Value::String(result.name.clone())),
@@ -857,7 +865,7 @@ mod tests {
         assert_eq!(examples[0]["invocations"][0]["step"], 1);
         assert_eq!(
             examples[0]["invocations"][1]["args"]["file_path"]["$ref"],
-            "files.output"
+            "files.output_lines.0"
         );
         assert!(examples[0]["invocations"][0].get("name").is_none());
     }
