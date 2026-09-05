@@ -9,6 +9,7 @@
 use super::retrieval::{
     ChunkCatalogLimits, ChunkingConfig, LocalWorkspaceCatalogRuntime, WorkspaceChunkCatalog,
     WorkspaceChunkingStrategy, WorkspaceIndexError, WorkspaceLexicalEngine,
+    WorkspacePersistentIndex,
 };
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
@@ -459,6 +460,7 @@ pub struct ManifestWorkspaceBackend {
     catalog_local: Arc<LocalWorkspaceBackend>,
     manifest: Arc<LocalWorkspaceManifest>,
     catalog_runtime: OnceLock<Arc<LocalWorkspaceCatalogRuntime>>,
+    persistent_index: OnceLock<Arc<WorkspacePersistentIndex>>,
 }
 
 impl ManifestWorkspaceBackend {
@@ -511,6 +513,7 @@ impl ManifestWorkspaceBackend {
             catalog_local,
             manifest,
             catalog_runtime: OnceLock::new(),
+            persistent_index: OnceLock::new(),
         })
     }
 
@@ -526,6 +529,7 @@ impl ManifestWorkspaceBackend {
             local,
             manifest,
             catalog_runtime: OnceLock::new(),
+            persistent_index: OnceLock::new(),
         })
     }
 
@@ -543,9 +547,46 @@ impl ManifestWorkspaceBackend {
         self.catalog_runtime
             .get_or_init(|| {
                 let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
-                LocalWorkspaceCatalogRuntime::start(Arc::clone(&self.manifest), file_system)
+                let persistent = self.persistent_index.get().cloned();
+                if let Some(persistent) = persistent {
+                    LocalWorkspaceCatalogRuntime::start_with_catalog_and_persistent(
+                        Arc::clone(&self.manifest),
+                        file_system,
+                        WorkspaceChunkCatalog::default_catalog(),
+                        Some(persistent),
+                    )
+                } else {
+                    LocalWorkspaceCatalogRuntime::start(Arc::clone(&self.manifest), file_system)
+                }
             })
             .catalog()
+    }
+
+    /// Enable a workspace-owned persistent zvec FTS index before the catalog
+    /// is initialized. The existing manifest watcher remains the sole source
+    /// of updates; this only adds a durable projection of each catalog
+    /// snapshot.
+    pub fn configure_persistent_index(
+        &self,
+        root: impl Into<PathBuf>,
+    ) -> Result<Arc<WorkspacePersistentIndex>, WorkspaceIndexError> {
+        if self.catalog_runtime.get().is_some() {
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "persistent workspace indexing must be configured before the chunk catalog"
+                    .to_owned(),
+            ));
+        }
+        let index = WorkspacePersistentIndex::open(root, WorkspaceLexicalEngine::ZvecRust)?;
+        self.persistent_index.set(Arc::clone(&index)).map_err(|_| {
+            WorkspaceIndexError::InvalidConfig(
+                "persistent workspace index was already configured".to_owned(),
+            )
+        })?;
+        Ok(index)
+    }
+
+    pub fn persistent_index(&self) -> Option<Arc<WorkspacePersistentIndex>> {
+        self.persistent_index.get().cloned()
     }
 
     /// Configure and enable the catalog owned by this shared manifest backend.
@@ -584,10 +625,11 @@ impl ManifestWorkspaceBackend {
             lexical_engine,
         )?;
         let file_system: Arc<dyn WorkspaceFileSystem> = self.catalog_local.clone();
-        let runtime = LocalWorkspaceCatalogRuntime::start_with_catalog(
+        let runtime = LocalWorkspaceCatalogRuntime::start_with_catalog_and_persistent(
             Arc::clone(&self.manifest),
             file_system,
             Arc::clone(&catalog),
+            self.persistent_index.get().cloned(),
         );
         if let Err(runtime) = self.catalog_runtime.set(runtime) {
             runtime.shutdown();

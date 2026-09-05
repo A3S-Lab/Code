@@ -6,8 +6,8 @@ use super::{
     LocalWorkspaceBackend, ManifestWorkspaceBackend, VirtualPathResolver, WorkspaceCapabilities,
     WorkspaceChunkCatalog, WorkspaceCommandRunner, WorkspaceFileSystem, WorkspaceFileSystemExt,
     WorkspaceGit, WorkspaceGitStashProvider, WorkspaceGitWorktreeProvider, WorkspacePath,
-    WorkspacePathResolver, WorkspaceRef, WorkspaceResult, WorkspaceRetrievalRuntime,
-    WorkspaceSearch, WorkspaceTextReader, WorkspaceWriteOutcome,
+    WorkspacePathResolver, WorkspacePersistentIndex, WorkspaceRef, WorkspaceResult,
+    WorkspaceRetrievalRuntime, WorkspaceSearch, WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use crate::code_intelligence::{LocalCodeIntelligence, WorkspaceCodeIntelligence};
 use anyhow::{anyhow, Result};
@@ -26,6 +26,7 @@ pub struct WorkspaceServices {
     search: Option<Arc<dyn WorkspaceSearch>>,
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
     chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
+    persistent_index: Option<Arc<WorkspacePersistentIndex>>,
     workspace_retrieval: Option<Arc<WorkspaceRetrievalRuntime>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
@@ -48,6 +49,7 @@ impl std::fmt::Debug for WorkspaceServices {
             .field("search", &self.search.is_some())
             .field("code_intelligence", &self.code_intelligence.is_some())
             .field("chunk_catalog", &self.chunk_catalog.is_some())
+            .field("persistent_index", &self.persistent_index.is_some())
             .field("workspace_retrieval", &self.workspace_retrieval.is_some())
             .field("git", &self.git.is_some())
             .field("git_stash", &self.git_stash.is_some())
@@ -88,6 +90,7 @@ impl WorkspaceServices {
             search,
             code_intelligence: None,
             chunk_catalog: None,
+            persistent_index: None,
             workspace_retrieval: None,
             git,
             git_stash: None,
@@ -129,6 +132,7 @@ impl WorkspaceServices {
             search: Some(search),
             code_intelligence: None,
             chunk_catalog: None,
+            persistent_index: None,
             workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
@@ -206,18 +210,37 @@ impl WorkspaceServices {
     /// Build local workspace services from a shared manifest backend. Hosts
     /// can keep the same manifest for UI file pickers and agent tools.
     pub fn local_with_manifest_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
-        Self::local_with_manifest_backend_and_catalog(backend, None)
+        Self::local_with_manifest_backend_and_catalog(backend, None, None)
     }
 
     /// Enable retrieval on a shared manifest backend.
     pub fn local_with_retrieval_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
         let catalog = backend.chunk_catalog();
-        Self::local_with_manifest_backend_and_catalog(backend, Some(catalog))
+        let persistent = backend.persistent_index();
+        Self::local_with_manifest_backend_and_catalog(backend, Some(catalog), persistent)
+    }
+
+    /// Build local manifest-backed services with a workspace-owned persistent
+    /// zvec FTS index. Persistence is explicit so framework embedders do not
+    /// receive an unexpected on-disk index.
+    pub fn local_with_indexed_retrieval(root: impl Into<PathBuf>) -> Result<Arc<Self>> {
+        let backend = ManifestWorkspaceBackend::new(root);
+        let index_root = backend.local_root().join(".a3s-code").join("index");
+        let persistent = backend
+            .configure_persistent_index(index_root)
+            .map_err(|error| anyhow!("failed to configure persistent workspace index: {error}"))?;
+        let catalog = backend.chunk_catalog();
+        Ok(Self::local_with_manifest_backend_and_catalog(
+            backend,
+            Some(catalog),
+            Some(persistent),
+        ))
     }
 
     fn local_with_manifest_backend_and_catalog(
         backend: Arc<ManifestWorkspaceBackend>,
         chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
+        persistent_index: Option<Arc<WorkspacePersistentIndex>>,
     ) -> Arc<Self> {
         let workspace_ref = WorkspaceRef::new(
             backend.local_root().display().to_string(),
@@ -242,6 +265,7 @@ impl WorkspaceServices {
             search: Some(search),
             code_intelligence: None,
             chunk_catalog,
+            persistent_index,
             workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
@@ -297,6 +321,10 @@ impl WorkspaceServices {
     /// Optional session-local catalog shared by lexical and semantic retrieval.
     pub fn chunk_catalog(&self) -> Option<Arc<WorkspaceChunkCatalog>> {
         self.chunk_catalog.clone()
+    }
+
+    pub fn persistent_index(&self) -> Option<Arc<WorkspacePersistentIndex>> {
+        self.persistent_index.clone()
     }
 
     /// Optional semantic retrieval runtime bound to this workspace session.
@@ -397,6 +425,7 @@ impl WorkspaceServices {
             search: self.search.clone(),
             code_intelligence: self.code_intelligence.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
+            persistent_index: self.persistent_index.clone(),
             workspace_retrieval: Some(runtime),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
@@ -425,6 +454,7 @@ impl WorkspaceServices {
             search: self.search.clone(),
             code_intelligence: Some(provider),
             chunk_catalog: self.chunk_catalog.clone(),
+            persistent_index: self.persistent_index.clone(),
             workspace_retrieval: self.workspace_retrieval.clone(),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
@@ -480,6 +510,7 @@ impl WorkspaceServices {
             search: self.search.clone(),
             code_intelligence: self.code_intelligence.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
+            persistent_index: self.persistent_index.clone(),
             workspace_retrieval: self.workspace_retrieval.clone(),
             git: Some(git),
             git_stash,
@@ -622,6 +653,7 @@ pub struct WorkspaceServicesBuilder {
     search: Option<Arc<dyn WorkspaceSearch>>,
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
     chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
+    persistent_index: Option<Arc<WorkspacePersistentIndex>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
     git_worktree: Option<Arc<dyn WorkspaceGitWorktreeProvider>>,
@@ -641,6 +673,7 @@ impl WorkspaceServicesBuilder {
             search: None,
             code_intelligence: None,
             chunk_catalog: None,
+            persistent_index: None,
             git: None,
             git_stash: None,
             git_worktree: None,
@@ -674,6 +707,11 @@ impl WorkspaceServicesBuilder {
     /// Attach a typed, session-local workspace retrieval catalog.
     pub fn chunk_catalog(mut self, catalog: Arc<WorkspaceChunkCatalog>) -> Self {
         self.chunk_catalog = Some(catalog);
+        self
+    }
+
+    pub fn persistent_index(mut self, index: Arc<WorkspacePersistentIndex>) -> Self {
+        self.persistent_index = Some(index);
         self
     }
 
@@ -730,6 +768,7 @@ impl WorkspaceServicesBuilder {
         services.capabilities.code_intelligence = self.code_intelligence.is_some();
         services.code_intelligence = self.code_intelligence;
         services.chunk_catalog = self.chunk_catalog;
+        services.persistent_index = self.persistent_index;
         services.workspace_retrieval = None;
         services.git_stash = self.git_stash;
         services.git_worktree = self.git_worktree;

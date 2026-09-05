@@ -64,6 +64,7 @@ mod hybrid_rank;
 mod hybrid_types;
 pub(crate) mod lexical;
 mod memory_vector_adapter;
+mod persistent;
 mod reconcile;
 mod rerank;
 mod runtime;
@@ -93,6 +94,9 @@ pub use hybrid_types::{
     WorkspaceRerankOptions, WorkspaceRerankStatus, WorkspaceRetrievalChannel,
 };
 pub use lexical::{LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult};
+pub use persistent::{
+    WorkspacePersistentIndex, WorkspacePersistentIndexPhase, WorkspacePersistentIndexStatus,
+};
 pub(crate) use runtime::LocalWorkspaceCatalogRuntime;
 pub use semantic_runtime::WorkspaceRetrievalRuntime;
 pub use semantic_types::{

@@ -180,6 +180,77 @@ async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads()
     assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
 }
 
+#[cfg(feature = "zvec-rust-fts")]
+#[tokio::test]
+async fn indexed_mode_uses_the_workspace_persistent_zvec_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("src/cache.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "pub fn invalidate_session_cache() { /* persistent session cache policy */ }\n",
+    )
+    .unwrap();
+    let services = crate::workspace::WorkspaceServices::local_with_indexed_retrieval(temp.path())
+        .expect("persistent retrieval services");
+    let catalog = services.chunk_catalog().unwrap();
+    let index = services.persistent_index().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if catalog.snapshot().unwrap().source_revision() > 0 && index.is_ready() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("persistent index did not become ready");
+
+    let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+    let result = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "persistent session cache",
+                "_persistent_index": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    let metadata = result.metadata.unwrap();
+    assert_eq!(metadata["index_kind"], "persistent_zvec_fts");
+    assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
+    assert!(temp.path().join(".a3s-code/index/CURRENT").is_file());
+
+    drop(context);
+    let reopened_services =
+        crate::workspace::WorkspaceServices::local_with_indexed_retrieval(temp.path())
+            .expect("reopened persistent retrieval services");
+    let reopened_index = reopened_services.persistent_index().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while !reopened_index.is_ready() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("reopened persistent index did not become ready");
+    let reopened_context =
+        ToolContext::new(temp.path().to_path_buf()).with_workspace_services(reopened_services);
+    let reopened_result = Bm25Tool
+        .execute(
+            &serde_json::json!({
+                "query": "persistent session cache",
+                "_persistent_index": true
+            }),
+            &reopened_context,
+        )
+        .await
+        .unwrap();
+    assert!(reopened_result.success, "{}", reopened_result.content);
+}
+
 #[derive(Debug, Deserialize)]
 struct RetrievalFixture {
     schema_version: u32,
