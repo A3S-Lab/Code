@@ -787,6 +787,49 @@ mod tests {
         maximum_active: Arc<AtomicUsize>,
     }
 
+    struct ParallelBarrierTool {
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl Tool for ParallelBarrierTool {
+        fn name(&self) -> &str {
+            "parallel_barrier"
+        }
+
+        fn description(&self) -> &str {
+            "waits for its sibling invocation"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+            })
+        }
+
+        fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+            crate::tools::ToolCapabilities::parallel_safe_read(2)
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            match tokio::time::timeout(std::time::Duration::from_millis(250), self.barrier.wait())
+                .await
+            {
+                Ok(_) => Ok(ToolOutput::success("barrier")),
+                Err(_) => Ok(ToolOutput::error(
+                    "parallel barrier was not reached by a sibling invocation",
+                )),
+            }
+        }
+    }
+
     #[async_trait]
     impl Tool for ParallelProbeTool {
         fn name(&self) -> &str {
@@ -1018,6 +1061,36 @@ mod tests {
 
         assert!(result.success);
         assert!(maximum_active.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_execute_parallelism_reaches_a_sibling_barrier() {
+        let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+        registry.register(Arc::new(ParallelBarrierTool {
+            barrier: Arc::new(tokio::sync::Barrier::new(2)),
+        }));
+        let tool = BatchTool::new(registry);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tool.execute(
+                &serde_json::json!({
+                    "max_concurrency": 2,
+                    "invocations": [
+                        {"tool": "parallel_barrier", "args": {}},
+                        {"tool": "parallel_barrier", "args": {}}
+                    ]
+                }),
+                &make_ctx(),
+            ),
+        )
+        .await
+        .expect("parallel batch should reach the sibling barrier")
+        .expect("parallel batch execution should return a result");
+
+        assert!(result.success);
+        let metadata = result.metadata.expect("batch metadata");
+        assert_eq!(metadata["execution_mode"], "parallel");
+        assert_eq!(metadata["applied_concurrency"], 2);
     }
 
     #[tokio::test]
