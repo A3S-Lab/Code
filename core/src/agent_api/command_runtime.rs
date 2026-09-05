@@ -80,7 +80,7 @@ fn sanitize_text(session: &AgentSession, text: &str) -> String {
         .config
         .security_provider
         .as_deref()
-        .map(|provider| provider.sanitize_output(text))
+        .map(|provider| crate::security::sanitize_text(provider, text))
         .unwrap_or_else(|| text.to_string())
 }
 

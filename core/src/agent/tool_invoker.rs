@@ -11,8 +11,8 @@ use crate::tool_confirmation::{
     ToolConfirmationRequest, ToolConfirmationResolution, ToolConfirmationRuntime,
 };
 use crate::tools::{
-    HostDirectPolicy, InvocationOrigin, ToolCapabilities, ToolContext, ToolInvocation, ToolInvoker,
-    ToolResult,
+    HostDirectPolicy, InvocationOrigin, ToolCapabilities, ToolContext, ToolInvocation,
+    ToolInvocationLifecycle, ToolInvocationState, ToolInvocationTerminal, ToolInvoker, ToolResult,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -104,6 +104,14 @@ impl ScopedToolInvoker {
     }
 
     async fn emit_tool_request_bound(&self, invocation: &ToolInvocation) -> Result<(), String> {
+        let identity = invocation
+            .idempotency_identity((!self.session_id.is_empty()).then_some(self.session_id.as_str()))
+            .map_err(|error| format!("Failed to derive Tool request identity: {error}"))?;
+        tracing::trace!(
+            tool_id = invocation.id.as_str(),
+            idempotency_key = identity.key(),
+            "Tool request identity bound at the governed value boundary"
+        );
         let Some(tx) = &self.event_tx else {
             return Ok(());
         };
@@ -148,6 +156,7 @@ impl ScopedToolInvoker {
         &self,
         invocation: &ToolInvocation,
         ctx: &ToolContext,
+        lifecycle: &mut ToolInvocationLifecycle,
         decision: ToolGateDecision,
     ) -> NormalizedToolResult {
         match decision {
@@ -164,6 +173,7 @@ impl ScopedToolInvoker {
                     "Tool denied by invocation gateway"
                 );
                 self.emit_permission_denied(invocation, event_reason).await;
+                lifecycle.terminal(ToolInvocationTerminal::Rejected);
                 NormalizedToolResult::denied_with_error_kind(output, error_kind)
             }
             ToolGateDecision::Execute { reason } => {
@@ -173,7 +183,7 @@ impl ScopedToolInvoker {
                     origin = ?invocation.origin,
                     "Tool approved by invocation gateway"
                 );
-                self.execute_budgeted(invocation, ctx).await
+                self.execute_budgeted(invocation, ctx, lifecycle).await
             }
             ToolGateDecision::Confirm {
                 timeout_ms,
@@ -190,11 +200,12 @@ impl ScopedToolInvoker {
                     .await
                 {
                     PermissionHookDecision::Allow => {
-                        return self.execute_budgeted(invocation, ctx).await;
+                        return self.execute_budgeted(invocation, ctx, lifecycle).await;
                     }
                     PermissionHookDecision::Deny(reason) => {
                         self.emit_permission_denied(invocation, reason.clone())
                             .await;
+                        lifecycle.terminal(ToolInvocationTerminal::Rejected);
                         return NormalizedToolResult::denied(format!(
                             "Tool '{}' denied by permission hook: {reason}",
                             invocation.name
@@ -230,9 +241,14 @@ impl ScopedToolInvoker {
 
                 match confirmation {
                     ToolConfirmationResolution::Approved => {
-                        self.execute_budgeted(invocation, ctx).await
+                        self.execute_budgeted(invocation, ctx, lifecycle).await
                     }
                     ToolConfirmationResolution::Rejected { output } => {
+                        if ctx.is_cancelled() {
+                            lifecycle.terminal(ToolInvocationTerminal::Cancelled);
+                        } else {
+                            lifecycle.terminal(ToolInvocationTerminal::Rejected);
+                        }
                         NormalizedToolResult::denied(output)
                     }
                 }
@@ -244,10 +260,14 @@ impl ScopedToolInvoker {
         &self,
         invocation: &ToolInvocation,
         ctx: &ToolContext,
+        lifecycle: &mut ToolInvocationLifecycle,
     ) -> NormalizedToolResult {
         if let Some(denied) = self.check_before_tool(invocation).await {
+            lifecycle.terminal(ToolInvocationTerminal::Rejected);
             return denied;
         }
+
+        debug_assert!(lifecycle.transition(ToolInvocationState::Running).is_ok());
 
         if let Some(tx) = &self.event_tx {
             tx.send(AgentEvent::ToolExecutionStart {
@@ -291,11 +311,20 @@ impl ScopedToolInvoker {
             &invocation.id,
             &invocation.name,
         );
-        NormalizedToolResult::from_execution(
+        let result = NormalizedToolResult::from_execution(
             self.agent
                 .execute_tool_queued_or_direct(&invocation.name, &invocation.args, &stream_ctx)
                 .await,
-        )
+        );
+        let terminal = if ctx.is_cancelled() {
+            ToolInvocationTerminal::Cancelled
+        } else if result.is_error {
+            ToolInvocationTerminal::Failed
+        } else {
+            ToolInvocationTerminal::Completed
+        };
+        lifecycle.terminal(terminal);
+        result
     }
 
     async fn check_before_tool(&self, invocation: &ToolInvocation) -> Option<NormalizedToolResult> {
@@ -390,7 +419,12 @@ impl ScopedToolInvoker {
 
         let mut result = normalized.into_tool_result(invocation.name.clone());
         if let Some(provider) = &self.agent.config.security_provider {
-            result.output = provider.sanitize_output(&result.output);
+            result.output = crate::security::sanitize_tainted_text(
+                provider.as_ref(),
+                crate::security::TaintedValue::untrusted(result.output),
+            )
+            .into_parts()
+            .0;
             result.error_kind = result
                 .error_kind
                 .as_ref()
@@ -418,10 +452,12 @@ impl ScopedToolInvoker {
 impl ToolInvoker for ScopedToolInvoker {
     async fn invoke(&self, mut invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult {
         let started = Instant::now();
+        let mut lifecycle = ToolInvocationLifecycle::new();
         let cancellation = ctx.cancellation_token();
         let invocation_ctx = match ctx.enter_tool_invocation(&invocation.name) {
             Ok(ctx) => ctx,
             Err(message) => {
+                lifecycle.terminal(ToolInvocationTerminal::Failed);
                 let result = self
                     .finish(
                         &invocation,
@@ -434,6 +470,7 @@ impl ToolInvoker for ScopedToolInvoker {
                 return result;
             }
         };
+        debug_assert!(lifecycle.transition(ToolInvocationState::Admitted).is_ok());
         let cancellation = invocation_ctx.cancellation_token();
         if let Err(message) = self
             .agent
@@ -441,6 +478,7 @@ impl ToolInvoker for ScopedToolInvoker {
             .registry()
             .validate_arguments(&invocation.name, &invocation.args)
         {
+            lifecycle.terminal(ToolInvocationTerminal::Failed);
             let result = self
                 .finish(
                     &invocation,
@@ -452,6 +490,9 @@ impl ToolInvoker for ScopedToolInvoker {
             self.emit_nested_tool_end(&invocation, &result).await;
             return result;
         }
+        debug_assert!(lifecycle
+            .transition(ToolInvocationState::GatePending)
+            .is_ok());
         let decision = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -465,17 +506,25 @@ impl ToolInvoker for ScopedToolInvoker {
                 // cancellation and settlement. Do not drop that future from an
                 // outer select: blocking VMs and process-backed tools need a
                 // chance to observe their invocation token and terminate.
-                self.resolve_gate(&invocation, &invocation_ctx, decision)
+                self.resolve_gate(&invocation, &invocation_ctx, &mut lifecycle, decision)
                     .await
             }
             Some(Err(message)) => {
+                lifecycle.terminal(ToolInvocationTerminal::Failed);
                 NormalizedToolResult::invalid_arguments(&invocation.name, message)
             }
-            None => NormalizedToolResult::denied(format!(
-                "Tool '{}' cancelled by caller",
-                invocation.name
-            )),
+            None => {
+                lifecycle.terminal(ToolInvocationTerminal::Cancelled);
+                NormalizedToolResult::denied(format!(
+                    "Tool '{}' cancelled by caller",
+                    invocation.name
+                ))
+            }
         };
+        debug_assert!(matches!(
+            lifecycle.state(),
+            ToolInvocationState::Terminal(_)
+        ));
         let result = self
             .finish(&invocation, started, normalized, &cancellation)
             .await;

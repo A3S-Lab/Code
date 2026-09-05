@@ -56,6 +56,89 @@ impl InvocationOrigin {
     }
 }
 
+/// Terminal outcome of a governed tool invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolInvocationTerminal {
+    Completed,
+    Rejected,
+    Cancelled,
+    Failed,
+}
+
+/// Lifecycle states for one governed tool invocation.
+///
+/// The state machine is intentionally independent of any concrete tool
+/// backend. Built-ins, MCP, Flow, and Use Runtime Tasks all cross the same
+/// admission and terminal boundary in the scoped invoker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolInvocationState {
+    Created,
+    Admitted,
+    GatePending,
+    Running,
+    Terminal(ToolInvocationTerminal),
+}
+
+/// Internal state machine for one invocation's ownership and settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolInvocationLifecycle {
+    state: ToolInvocationState,
+}
+
+impl ToolInvocationLifecycle {
+    pub(crate) const fn new() -> Self {
+        Self {
+            state: ToolInvocationState::Created,
+        }
+    }
+
+    pub(crate) const fn state(self) -> ToolInvocationState {
+        self.state
+    }
+
+    pub(crate) fn transition(&mut self, next: ToolInvocationState) -> Result<(), &'static str> {
+        let allowed = matches!(
+            (self.state, next),
+            (ToolInvocationState::Created, ToolInvocationState::Admitted)
+                | (
+                    ToolInvocationState::Created,
+                    ToolInvocationState::Terminal(_)
+                )
+                | (
+                    ToolInvocationState::Admitted,
+                    ToolInvocationState::GatePending
+                )
+                | (
+                    ToolInvocationState::Admitted,
+                    ToolInvocationState::Terminal(_)
+                )
+                | (
+                    ToolInvocationState::GatePending,
+                    ToolInvocationState::Running
+                )
+                | (
+                    ToolInvocationState::GatePending,
+                    ToolInvocationState::Terminal(_)
+                )
+                | (
+                    ToolInvocationState::Running,
+                    ToolInvocationState::Terminal(_)
+                )
+        );
+        if !allowed {
+            return Err("invalid tool invocation lifecycle transition");
+        }
+        self.state = next;
+        Ok(())
+    }
+
+    pub(crate) fn terminal(&mut self, outcome: ToolInvocationTerminal) {
+        debug_assert!(self
+            .transition(ToolInvocationState::Terminal(outcome))
+            .is_ok());
+    }
+}
+
 /// Owned invocation data so calls can be dispatched across async tasks.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolInvocation {
@@ -141,6 +224,48 @@ impl ToolInvocation {
             origin: InvocationOrigin::HostDirectNested(policy),
             recent_tools: Vec::new(),
         }
+    }
+
+    /// Derive a replay-stable identity for this logical tool request.
+    ///
+    /// The transport `id` is intentionally excluded: providers and nested
+    /// orchestrators may assign a fresh delivery id while retrying the same
+    /// name/arguments at the same scope. The caller still owns the ledger that
+    /// decides whether this identity is currently claimable or completed.
+    pub(crate) fn idempotency_identity(
+        &self,
+        scope: Option<&str>,
+    ) -> Result<
+        crate::execution_identity::ExecutionIdentityV1,
+        crate::execution_identity::ExecutionIdentityError,
+    > {
+        let origin = match self.origin {
+            InvocationOrigin::Agent => "agent",
+            InvocationOrigin::Nested => "nested",
+            InvocationOrigin::RuntimeInternal => "runtime_internal",
+            InvocationOrigin::HostDirect(HostDirectPolicy::TrustedControlPlane) => {
+                "host_direct_trusted"
+            }
+            InvocationOrigin::HostDirect(HostDirectPolicy::GovernedControlPlane) => {
+                "host_direct_governed"
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::TrustedControlPlane) => {
+                "host_direct_nested_trusted"
+            }
+            InvocationOrigin::HostDirectNested(HostDirectPolicy::GovernedControlPlane) => {
+                "host_direct_nested_governed"
+            }
+        };
+        crate::execution_identity::ExecutionIdentityV1::derive(
+            crate::execution_identity::TOOL_INVOCATION_IDENTITY_DOMAIN_V1,
+            &serde_json::json!({
+                "scope": scope,
+                "origin": origin,
+                "name": self.name,
+                "args": self.args,
+                "recent_tools": self.recent_tools,
+            }),
+        )
     }
 }
 
@@ -248,6 +373,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_identity_is_stable_across_delivery_ids() {
+        let first = ToolInvocation::agent(
+            "delivery-a",
+            "read",
+            serde_json::json!({"path": "src/lib.rs"}),
+            vec!["batch".to_string()],
+        );
+        let second = ToolInvocation::agent(
+            "delivery-b",
+            "read",
+            serde_json::json!({"path": "src/lib.rs"}),
+            vec!["batch".to_string()],
+        );
+
+        assert_eq!(
+            first.idempotency_identity(Some("session-1")).unwrap(),
+            second.idempotency_identity(Some("session-1")).unwrap()
+        );
+        assert_ne!(
+            first.idempotency_identity(Some("session-1")).unwrap(),
+            first.idempotency_identity(Some("session-2")).unwrap()
+        );
+    }
+
+    #[test]
     fn registry_bound_invoker_does_not_retain_a_closed_registry() {
         let registry = Arc::new(ToolRegistry::new(PathBuf::from("registry-cycle-test")));
         let lifetime = Arc::downgrade(&registry);
@@ -260,5 +410,36 @@ mod tests {
         assert!(invoker
             .capabilities("read", &serde_json::json!({}))
             .is_none());
+    }
+
+    #[test]
+    fn lifecycle_accepts_one_terminal_transition_and_rejects_late_work() {
+        let mut lifecycle = ToolInvocationLifecycle::new();
+        assert_eq!(lifecycle.state(), ToolInvocationState::Created);
+        lifecycle.transition(ToolInvocationState::Admitted).unwrap();
+        lifecycle
+            .transition(ToolInvocationState::GatePending)
+            .unwrap();
+        lifecycle.transition(ToolInvocationState::Running).unwrap();
+        lifecycle.terminal(ToolInvocationTerminal::Completed);
+        assert_eq!(
+            lifecycle.state(),
+            ToolInvocationState::Terminal(ToolInvocationTerminal::Completed)
+        );
+        assert!(lifecycle.transition(ToolInvocationState::Running).is_err());
+    }
+
+    #[test]
+    fn lifecycle_allows_rejection_before_execution() {
+        let mut lifecycle = ToolInvocationLifecycle::new();
+        lifecycle.transition(ToolInvocationState::Admitted).unwrap();
+        lifecycle
+            .transition(ToolInvocationState::GatePending)
+            .unwrap();
+        lifecycle.terminal(ToolInvocationTerminal::Rejected);
+        assert_eq!(
+            lifecycle.state(),
+            ToolInvocationState::Terminal(ToolInvocationTerminal::Rejected)
+        );
     }
 }

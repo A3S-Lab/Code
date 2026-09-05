@@ -27,6 +27,16 @@ fn typed_model_requests_bind_their_evidence_kind() {
     let structured_observation = structured.observation(ModelPresentationApplicationV1::Auxiliary);
     assert_eq!(structured_observation.kind, ModelInputKindV1::Structured);
     assert!(structured_observation.directive.is_some());
+
+    let retry = ModelCallRequest::completion(&messages, None, &tools);
+    assert_eq!(
+        completion.idempotency_identity("session-1").unwrap(),
+        retry.idempotency_identity("session-1").unwrap()
+    );
+    assert_ne!(
+        completion.idempotency_identity("session-1").unwrap(),
+        completion.idempotency_identity("session-2").unwrap()
+    );
 }
 
 #[test]
@@ -48,6 +58,11 @@ fn typed_stream_requests_bind_their_evidence_kind() {
     let observation = structured.observation(ModelPresentationApplicationV1::Auxiliary);
     assert_eq!(observation.kind, ModelInputKindV1::StreamingStructured);
     assert!(observation.directive.is_some());
+
+    assert_ne!(
+        streaming.idempotency_identity("session-1").unwrap(),
+        structured.idempotency_identity("session-1").unwrap()
+    );
 }
 
 #[async_trait]

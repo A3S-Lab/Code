@@ -106,7 +106,7 @@ pub(super) fn sanitize_task_json(
 ) -> serde_json::Value {
     match value {
         serde_json::Value::String(value) => {
-            serde_json::Value::String(provider.sanitize_output(value))
+            serde_json::Value::String(crate::security::sanitize_text(provider, value))
         }
         serde_json::Value::Array(values) => serde_json::Value::Array(
             values
@@ -134,7 +134,7 @@ pub(super) fn sanitize_task_json_with_schema(
 ) -> serde_json::Value {
     match value {
         serde_json::Value::String(value) => {
-            let sanitized = provider.sanitize_output(value);
+            let sanitized = crate::security::sanitize_text(provider, value);
             if sanitized != *value && schema_authorizes_literal(schema, value) {
                 serde_json::Value::String(value.clone())
             } else {

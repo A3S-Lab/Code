@@ -103,6 +103,23 @@ impl<'a> ModelCallRequest<'a> {
             presentation_application,
         )
     }
+
+    fn idempotency_identity(
+        &self,
+        scope: &str,
+    ) -> Result<
+        crate::execution_identity::ExecutionIdentityV1,
+        crate::execution_identity::ExecutionIdentityError,
+    > {
+        model_request_identity(
+            scope,
+            self.kind,
+            self.messages,
+            self.system,
+            self.tools,
+            self.directive,
+        )
+    }
 }
 
 /// Typed output of one admitted non-streaming model call.
@@ -199,6 +216,23 @@ impl<'a> ModelStreamRequest<'a> {
             presentation_application,
         )
     }
+
+    fn idempotency_identity(
+        &self,
+        scope: &str,
+    ) -> Result<
+        crate::execution_identity::ExecutionIdentityV1,
+        crate::execution_identity::ExecutionIdentityError,
+    > {
+        model_request_identity(
+            scope,
+            self.kind,
+            self.messages,
+            self.system,
+            self.tools,
+            self.directive,
+        )
+    }
 }
 
 /// Typed output of the streaming middleware. The receiver owns the proxy
@@ -211,6 +245,48 @@ impl ModelStreamOutcome {
     fn into_receiver(self) -> mpsc::Receiver<StreamEvent> {
         self.receiver
     }
+}
+
+fn model_request_identity(
+    scope: &str,
+    kind: impl std::fmt::Debug,
+    messages: &[Message],
+    system: Option<&str>,
+    tools: &[ToolDefinition],
+    directive: Option<&StructuredDirective>,
+) -> Result<
+    crate::execution_identity::ExecutionIdentityV1,
+    crate::execution_identity::ExecutionIdentityError,
+> {
+    let directive = directive.map(|directive| {
+        let response_format = directive
+            .response_format
+            .as_ref()
+            .map(|format| match format {
+                crate::llm::structured::ResponseFormat::JsonObject => {
+                    serde_json::json!({"kind": "json_object"})
+                }
+                crate::llm::structured::ResponseFormat::JsonSchema { name, schema } => {
+                    serde_json::json!({"kind": "json_schema", "name": name, "schema": schema})
+                }
+            });
+        serde_json::json!({
+            "force_tool": directive.force_tool,
+            "response_format": response_format,
+            "validation_schema": directive.validation_schema,
+        })
+    });
+    crate::execution_identity::ExecutionIdentityV1::derive(
+        crate::execution_identity::MODEL_CALL_IDENTITY_DOMAIN_V1,
+        &serde_json::json!({
+            "scope": scope,
+            "kind": format!("{kind:?}"),
+            "messages": messages,
+            "system": system,
+            "tools": tools,
+            "directive": directive,
+        }),
+    )
 }
 
 impl LlmInvoker {
@@ -277,6 +353,10 @@ impl LlmInvoker {
         &self,
         request: ModelCallRequest<'_>,
     ) -> anyhow::Result<ModelCallOutcome> {
+        let identity = request
+            .idempotency_identity(self.invocation.session_id())
+            .map_err(|error| anyhow::anyhow!("derive model call identity: {error}"))?;
+        debug_assert!(identity.validate().is_ok());
         let observation = request.observation(self.presentation_application);
         let response = match request.kind {
             ModelCallKind::Completion => {
@@ -476,6 +556,10 @@ impl LlmInvoker {
         &self,
         request: ModelStreamRequest<'_>,
     ) -> anyhow::Result<ModelStreamOutcome> {
+        let identity = request
+            .idempotency_identity(self.invocation.session_id())
+            .map_err(|error| anyhow::anyhow!("derive streaming model call identity: {error}"))?;
+        debug_assert!(identity.validate().is_ok());
         let observation = request.observation(self.presentation_application);
         let caller_cancellation = request.caller_cancellation.clone();
         let receiver = match request.kind {
