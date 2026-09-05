@@ -191,7 +191,7 @@ telemetry remain opt-in.
 | Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
-| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, and occupancy snapshots                                        | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()`                                                                      |
+| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()` |
 | Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
 | Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, identity-bound workflow/Flow receipts, checkpoints, and optional RL trajectories                                                                                         | Configured store and host policy                                                                                                                                          |
@@ -273,6 +273,13 @@ Every session created by an `Agent` shares this scheduler. Priorities are
 `maintenance`; equal priorities remain FIFO. Older non-urgent work is promoted
 one level per `aging_interval_ms`, up to interactive priority, so sustained
 interactive traffic cannot permanently starve background work.
+
+`task_scheduler_health()` adds a bounded cumulative view without retaining
+task labels or payloads. It reports admitted/released/cancelled/rejected
+requests, aging promotions, peak occupancy, and aggregate admission wait time;
+the existing `task_scheduler_stats()` shape remains the lightweight occupancy
+view. Dynamic-workflow controls additionally expose `health()` claim
+takeovers and `diagnostics()` to compose those counters with scheduler health.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
@@ -1064,7 +1071,9 @@ hosts can supply a typed `Arc<dyn FlowEventStore>` through
 `with_flow_event_store` (or register the weak-registry helper
 `register_dynamic_workflow_with_event_store`); Code then uses that same store
 for the model-visible Tool and its control handle without creating an in-memory
-shadow journal.
+shadow journal. `control.health()` returns bounded claim counters, including
+durable-attempt takeovers observed by this process; `control.diagnostics()`
+combines that view with the optional agent-wide scheduler health snapshot.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve

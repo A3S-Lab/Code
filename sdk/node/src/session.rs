@@ -25,6 +25,17 @@ impl Session {
             .map_err(node_task_scheduler_error)
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the scheduler shared by this session and its siblings.
+    #[napi]
+    pub async fn task_scheduler_health(&self) -> napi::Result<TaskSchedulerHealthSnapshot> {
+        self.inner
+            .task_scheduler_health()
+            .await
+            .map(TaskSchedulerHealthSnapshot::from)
+            .map_err(node_task_scheduler_error)
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// `send("prompt")` is the compact prompt-first form. `send({ prompt,

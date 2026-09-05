@@ -161,6 +161,51 @@ pub struct TaskSchedulerStats {
     pub closed: bool,
 }
 
+/// Bounded cumulative admission and fairness diagnostics for one scheduler.
+///
+/// The counters are owned by the scheduler actor and never retain task labels,
+/// execution identities, or queue entries.  They therefore remain safe to
+/// expose to a host while still making starvation and lifecycle leaks
+/// measurable.  Occupancy fields are sampled at the same actor turn as the
+/// cumulative counters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSchedulerHealthSnapshot {
+    /// Configured global capacity.
+    pub max_active: usize,
+    /// Number of leases currently held.
+    pub active: usize,
+    /// Number of requests waiting for a lease.
+    pub pending: usize,
+    /// Current occupancy grouped by base priority.
+    pub active_by_priority: TaskPriorityCounts,
+    /// Current pending work grouped by base priority.
+    pub pending_by_priority: TaskPriorityCounts,
+    /// Number of requests that acquired a lease since scheduler creation.
+    pub admitted: u64,
+    /// Number of admitted leases whose ownership was released.
+    pub released: u64,
+    /// Number of admission requests cancelled before normal release,
+    /// including queued requests and active leases cancelled by their caller.
+    pub cancelled: u64,
+    /// Number of requests rejected because the scheduler was closing.
+    pub rejected: u64,
+    /// Number of queued requests promoted by the aging policy.
+    pub aging_promotions: u64,
+    /// Highest number of simultaneously active leases observed.
+    pub peak_active: usize,
+    /// Sum of admission wait time in microseconds, saturating at `u64::MAX`.
+    /// This is useful for host-side rate calculations without retaining a
+    /// latency histogram in the execution kernel.
+    pub total_wait_micros: u64,
+    /// Mean admission wait time in microseconds (`total / admitted`).
+    pub average_wait_micros: u64,
+    /// Longest observed admission wait in microseconds.
+    pub max_wait_micros: u64,
+    /// Whether the scheduler is draining or has finished shutdown.
+    pub closed: bool,
+}
+
 /// Shared actor handle. One instance belongs to each `Agent`.
 #[derive(Debug)]
 pub struct TaskScheduler {
@@ -226,6 +271,7 @@ impl TaskScheduler {
             .send(SchedulerMessage::Enqueue(QueuedAdmission {
                 id,
                 priority,
+                effective_priority: priority.lane_priority(),
                 label: label.into(),
                 identity: identity.clone(),
                 enqueued_at: Instant::now(),
@@ -253,9 +299,28 @@ impl TaskScheduler {
 
     /// Return a consistent actor-owned occupancy snapshot.
     pub async fn stats(&self) -> Result<TaskSchedulerStats, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(SchedulerMessage::Stats(tx))
+            .map_err(|_| TaskSchedulerError::Closed)?;
+        rx.await.map_err(|_| TaskSchedulerError::Closed)
+    }
+
+    /// Return occupancy plus bounded cumulative admission/fairness counters.
+    ///
+    /// This is intentionally a separate method from [`Self::stats`] so the
+    /// long-lived counters can be added without changing the established
+    /// occupancy wire shape consumed by older SDKs.
+    pub async fn health(&self) -> Result<TaskSchedulerHealthSnapshot, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::Health(tx))
             .map_err(|_| TaskSchedulerError::Closed)?;
         rx.await.map_err(|_| TaskSchedulerError::Closed)
     }
@@ -304,6 +369,7 @@ impl Drop for TaskLease {
 struct QueuedAdmission {
     id: u64,
     priority: TaskPriority,
+    effective_priority: Priority,
     label: String,
     identity: Option<ExecutionIdentityV1>,
     enqueued_at: Instant,
@@ -315,7 +381,20 @@ enum SchedulerMessage {
     Cancel(u64),
     Release(u64),
     Stats(oneshot::Sender<TaskSchedulerStats>),
+    Health(oneshot::Sender<TaskSchedulerHealthSnapshot>),
     Shutdown(oneshot::Sender<()>),
+}
+
+#[derive(Default)]
+struct SchedulerCounters {
+    admitted: u64,
+    released: u64,
+    cancelled: u64,
+    rejected: u64,
+    aging_promotions: u64,
+    peak_active: usize,
+    total_wait_micros: u64,
+    max_wait_micros: u64,
 }
 
 struct SchedulerState {
@@ -325,6 +404,7 @@ struct SchedulerState {
     active: HashMap<u64, TaskPriority>,
     closing: bool,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
+    counters: SchedulerCounters,
 }
 
 async fn run_scheduler(
@@ -339,15 +419,17 @@ async fn run_scheduler(
         active: HashMap::new(),
         closing: false,
         shutdown_waiters: Vec::new(),
+        counters: SchedulerCounters::default(),
     };
 
     while let Some(message) = rx.recv().await {
         match message {
             SchedulerMessage::Enqueue(item) => {
                 if state.closing {
+                    state.counters.rejected = state.counters.rejected.saturating_add(1);
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
                 } else {
-                    state.pending.push(item.priority.lane_priority(), item);
+                    state.pending.push(item.effective_priority, item);
                     state.dispatch();
                 }
             }
@@ -355,23 +437,36 @@ async fn run_scheduler(
                 if state.active.remove(&id).is_none() {
                     state.cancelled.insert(id);
                     state.purge_cancelled();
+                } else {
+                    state.counters.cancelled = state.counters.cancelled.saturating_add(1);
                 }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
             }
             SchedulerMessage::Release(id) => {
-                state.active.remove(&id);
+                if state.active.remove(&id).is_some() {
+                    state.counters.released = state.counters.released.saturating_add(1);
+                }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
             }
             SchedulerMessage::Stats(reply) => {
                 let _ = reply.send(state.snapshot());
             }
+            SchedulerMessage::Health(reply) => {
+                // A health read is also a scheduling observation point. Apply
+                // elapsed aging before taking the snapshot so operators see
+                // promotions that became eligible while capacity was full,
+                // even when no new admission or release arrived yet.
+                state.apply_aging();
+                let _ = reply.send(state.health_snapshot());
+            }
             SchedulerMessage::Shutdown(reply) => {
                 state.closing = true;
                 closed.store(true, Ordering::Release);
                 while let Some(item) = state.pending.pop() {
                     let item = item.into_value();
+                    state.counters.rejected = state.counters.rejected.saturating_add(1);
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
                 }
                 state.cancelled.clear();
@@ -390,13 +485,21 @@ async fn run_scheduler(
 
 impl SchedulerState {
     fn purge_cancelled(&mut self) {
-        if self.cancelled.is_empty() || self.pending.is_empty() {
+        if self.cancelled.is_empty() {
+            return;
+        }
+        if self.pending.is_empty() {
+            // Admission ids are never reused. A cancellation that arrives
+            // after a lease was released cannot match a future queue item;
+            // discard the tombstone instead of retaining it indefinitely.
+            self.cancelled.clear();
             return;
         }
         let mut retained = Vec::with_capacity(self.pending.len());
         while let Some(item) = self.pending.pop() {
             if self.cancelled.remove(&item.value().id) {
                 let item = item.into_value();
+                self.counters.cancelled = self.counters.cancelled.saturating_add(1);
                 let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
             } else {
                 retained.push(item);
@@ -404,6 +507,9 @@ impl SchedulerState {
         }
         for item in retained {
             self.pending.restore(item);
+        }
+        if self.pending.is_empty() {
+            self.cancelled.clear();
         }
     }
 
@@ -425,11 +531,21 @@ impl SchedulerState {
             let priority = item.priority;
             let label = item.label;
             let identity = item.identity;
+            let wait_micros = item
+                .enqueued_at
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
             self.active.insert(id, priority);
             if item.ready.send(Ok(())).is_err() {
                 self.active.remove(&id);
                 continue;
             }
+            self.counters.admitted = self.counters.admitted.saturating_add(1);
+            self.counters.total_wait_micros =
+                self.counters.total_wait_micros.saturating_add(wait_micros);
+            self.counters.max_wait_micros = self.counters.max_wait_micros.max(wait_micros);
+            self.counters.peak_active = self.counters.peak_active.max(self.active.len());
             tracing::trace!(
                 admission_id = id,
                 ?priority,
@@ -437,6 +553,9 @@ impl SchedulerState {
                 execution_identity = identity.as_ref().map(ExecutionIdentityV1::key).unwrap_or(""),
                 "task admitted"
             );
+        }
+        if self.pending.is_empty() {
+            self.cancelled.clear();
         }
     }
 
@@ -461,7 +580,12 @@ impl SchedulerState {
             } else {
                 (item.priority as u8).saturating_sub(levels).max(1) as Priority
             };
-            self.pending.push(effective, item);
+            if effective < item.effective_priority {
+                self.counters.aging_promotions = self.counters.aging_promotions.saturating_add(1);
+            }
+            let mut item = item;
+            item.effective_priority = effective;
+            self.pending.push(item.effective_priority, item);
         }
     }
 
@@ -493,6 +617,31 @@ impl SchedulerState {
             pending: self.pending.len(),
             active_by_priority,
             pending_by_priority,
+            closed: self.closing,
+        }
+    }
+
+    fn health_snapshot(&self) -> TaskSchedulerHealthSnapshot {
+        let stats = self.snapshot();
+        TaskSchedulerHealthSnapshot {
+            max_active: stats.max_active,
+            active: stats.active,
+            pending: stats.pending,
+            active_by_priority: stats.active_by_priority,
+            pending_by_priority: stats.pending_by_priority,
+            admitted: self.counters.admitted,
+            released: self.counters.released,
+            cancelled: self.counters.cancelled,
+            rejected: self.counters.rejected,
+            aging_promotions: self.counters.aging_promotions,
+            peak_active: self.counters.peak_active,
+            total_wait_micros: self.counters.total_wait_micros,
+            average_wait_micros: self
+                .counters
+                .total_wait_micros
+                .checked_div(self.counters.admitted)
+                .unwrap_or(0),
+            max_wait_micros: self.counters.max_wait_micros,
             closed: self.closing,
         }
     }
@@ -761,6 +910,133 @@ mod tests {
         assert_eq!(stats.pending_by_priority.maintenance, 1);
         drop(blocker);
         drop(waiting.await.unwrap().unwrap());
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn health_reports_bounded_admission_and_wait_counters() {
+        let scheduler = Arc::new(scheduler(1, 2));
+        let blocker = scheduler
+            .acquire(
+                TaskPriority::Interactive,
+                "health-blocker",
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancelled = {
+            let scheduler = Arc::clone(&scheduler);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                scheduler
+                    .acquire(TaskPriority::Background, "health-cancelled", &cancellation)
+                    .await
+            })
+        };
+        wait_for_pending(&scheduler, 1).await;
+        cancellation.cancel();
+        assert!(matches!(
+            cancelled.await.unwrap(),
+            Err(TaskSchedulerError::Cancelled)
+        ));
+
+        let waiting = {
+            let scheduler = Arc::clone(&scheduler);
+            tokio::spawn(async move {
+                scheduler
+                    .acquire(
+                        TaskPriority::Foreground,
+                        "health-waiting",
+                        &CancellationToken::new(),
+                    )
+                    .await
+            })
+        };
+        wait_for_pending(&scheduler, 1).await;
+        tokio::time::sleep(Duration::from_millis(6)).await;
+        drop(blocker);
+        let lease = waiting.await.unwrap().unwrap();
+        drop(lease);
+        let health = scheduler.health().await.unwrap();
+        assert_eq!(health.active, 0);
+        assert_eq!(health.pending, 0);
+        assert_eq!(health.admitted, 2);
+        assert_eq!(health.released, 2);
+        assert_eq!(health.cancelled, 1);
+        assert!(health.aging_promotions >= 1);
+        assert!(health.peak_active >= 1);
+        assert!(health.total_wait_micros > 0);
+        assert!(health.max_wait_micros >= health.average_wait_micros);
+        assert!(!health.closed);
+        scheduler.shutdown().await;
+        assert!(scheduler.health().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn aging_keeps_a_resumed_workflow_step_from_starving() {
+        let scheduler = Arc::new(scheduler(1, 2));
+        let blocker = scheduler
+            .acquire(
+                TaskPriority::Interactive,
+                "resumed-run-blocker",
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let (order_tx, mut order_rx) = mpsc::unbounded_channel();
+        let resumed = {
+            let scheduler = Arc::clone(&scheduler);
+            let order_tx = order_tx.clone();
+            tokio::spawn(async move {
+                let lease = scheduler
+                    .acquire(
+                        TaskPriority::Background,
+                        "flow:resumed-run:step-1",
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                order_tx.send("resumed").unwrap();
+                drop(lease);
+            })
+        };
+        wait_for_pending(&scheduler, 1).await;
+        tokio::time::sleep(Duration::from_millis(8)).await;
+
+        // Simulate a stream of newly resumed interactive work arriving while
+        // the original run waits. The aged continuation must be admitted
+        // before those newer requests once capacity is released.
+        let mut interactive = Vec::new();
+        for index in 0..8 {
+            let scheduler = Arc::clone(&scheduler);
+            let wait_scheduler = Arc::clone(&scheduler);
+            let order_tx = order_tx.clone();
+            interactive.push(tokio::spawn(async move {
+                let lease = scheduler
+                    .acquire(
+                        TaskPriority::Interactive,
+                        format!("flow:new-run-{index}:step-1"),
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                order_tx.send("interactive").unwrap();
+                drop(lease);
+            }));
+            wait_for_pending(&wait_scheduler, index + 2).await;
+        }
+        let aged = scheduler.health().await.unwrap();
+        assert!(aged.aging_promotions >= 1);
+        drop(blocker);
+        assert_eq!(order_rx.recv().await.unwrap(), "resumed");
+        for task in interactive {
+            task.await.unwrap();
+        }
+        resumed.await.unwrap();
+        let health = scheduler.health().await.unwrap();
+        assert!(health.aging_promotions >= 1);
+        assert_eq!(health.pending, 0);
         scheduler.shutdown().await;
     }
 

@@ -236,7 +236,9 @@ task_scheduler {
 
 The returned `TaskSchedulerStats` reports `maxActive`, active and pending
 totals, per-priority counts, and shutdown state. It is a point-in-time
-diagnostic snapshot, not a capacity reservation.
+diagnostic snapshot, not a capacity reservation. `taskSchedulerHealth()` adds
+bounded cumulative admissions, releases, cancellations, aging promotions,
+peak occupancy, and wait-time aggregates without retaining task payloads.
 
 ## Memory maintenance health
 

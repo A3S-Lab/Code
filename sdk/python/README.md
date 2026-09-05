@@ -325,7 +325,9 @@ task_scheduler {
 
 The returned dictionaries report `maxActive`, active and pending totals,
 per-priority counts, and shutdown state. They are point-in-time diagnostic
-snapshots, not capacity reservations.
+snapshots, not capacity reservations. `task_scheduler_health()` returns
+bounded cumulative admissions, releases, cancellations, aging promotions,
+peak occupancy, and wait-time aggregates without retaining task payloads.
 
 ## Memory maintenance health
 

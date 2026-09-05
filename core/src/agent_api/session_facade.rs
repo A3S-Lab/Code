@@ -26,6 +26,17 @@ impl AgentSession {
         self.task_scheduler.stats().await
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the scheduler shared with sibling sessions.
+    pub async fn task_scheduler_health(
+        &self,
+    ) -> std::result::Result<
+        crate::task_scheduler::TaskSchedulerHealthSnapshot,
+        crate::task_scheduler::TaskSchedulerError,
+    > {
+        self.task_scheduler.health().await
+    }
+
     /// Get a snapshot of command entries (name, description, optional usage).
     ///
     /// Acquires the command registry lock briefly and returns owned data.

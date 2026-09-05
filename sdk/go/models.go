@@ -93,6 +93,27 @@ type TaskSchedulerStats struct {
 	Closed            bool               `json:"closed"`
 }
 
+// TaskSchedulerHealthSnapshot contains the current scheduler occupancy plus
+// bounded cumulative admission and fairness counters. It never includes task
+// labels, execution identities, or queued payloads.
+type TaskSchedulerHealthSnapshot struct {
+	MaxActive         uint64             `json:"maxActive"`
+	Active            uint64             `json:"active"`
+	Pending           uint64             `json:"pending"`
+	ActiveByPriority  TaskPriorityCounts `json:"activeByPriority"`
+	PendingByPriority TaskPriorityCounts `json:"pendingByPriority"`
+	Admitted          uint64             `json:"admitted"`
+	Released          uint64             `json:"released"`
+	Cancelled         uint64             `json:"cancelled"`
+	Rejected          uint64             `json:"rejected"`
+	AgingPromotions   uint64             `json:"agingPromotions"`
+	PeakActive        uint64             `json:"peakActive"`
+	TotalWaitMicros   uint64             `json:"totalWaitMicros"`
+	AverageWaitMicros uint64             `json:"averageWaitMicros"`
+	MaxWaitMicros     uint64             `json:"maxWaitMicros"`
+	Closed            bool               `json:"closed"`
+}
+
 // DefaultSecurityProvider enables Core's built-in taint tracking and output
 // sanitization. Its concrete type is the provider selection; callers do not
 // pass a raw backend name.

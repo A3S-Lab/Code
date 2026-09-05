@@ -38,7 +38,7 @@ use std::fs::OpenOptions;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, Semaphore};
@@ -275,6 +275,97 @@ pub struct DynamicWorkflowAdmissionStats {
     pub peak_active_steps: usize,
 }
 
+/// Bounded cumulative worker-claim diagnostics for one dynamic-workflow tool
+/// instance.  The counters retain no run ids, labels, source, input, output,
+/// or owner tokens; the durable Flow ledger remains the authority for the
+/// per-run attempt number and lease state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicWorkflowHealthSnapshot {
+    /// Number of worker-claim attempts observed by this process.
+    pub claim_attempts: u64,
+    /// Number of claims that acquired a worker lease, including takeovers.
+    pub claims: u64,
+    /// Number of claims whose durable attempt number was greater than one.
+    pub takeovers: u64,
+    /// Number of attempts that found an already-completed claim.
+    pub already_completed: u64,
+    /// Number of attempts rejected because another worker is live.
+    pub busy: u64,
+    /// Number of identity/hash conflicts.
+    pub conflicts: u64,
+    /// Successful lease heartbeats.
+    pub renewals: u64,
+    /// Lease renewals or terminal operations fenced by a lost lease.
+    pub lease_lost: u64,
+    /// Successful terminal claim completions.
+    pub completions: u64,
+    /// Successful releases of non-terminal claims.
+    pub releases: u64,
+    /// Parent/control cancellation observations.
+    pub cancellations: u64,
+    /// Ledger or execution-boundary failures.
+    pub failures: u64,
+    /// Claims currently waiting on a ledger operation.
+    pub in_flight: u64,
+}
+
+#[derive(Default)]
+struct DynamicWorkflowMetrics {
+    claim_attempts: AtomicU64,
+    claims: AtomicU64,
+    takeovers: AtomicU64,
+    already_completed: AtomicU64,
+    busy: AtomicU64,
+    conflicts: AtomicU64,
+    renewals: AtomicU64,
+    lease_lost: AtomicU64,
+    completions: AtomicU64,
+    releases: AtomicU64,
+    cancellations: AtomicU64,
+    failures: AtomicU64,
+    in_flight: AtomicU64,
+}
+
+impl DynamicWorkflowMetrics {
+    fn snapshot(&self) -> DynamicWorkflowHealthSnapshot {
+        DynamicWorkflowHealthSnapshot {
+            claim_attempts: self.claim_attempts.load(Ordering::Relaxed),
+            claims: self.claims.load(Ordering::Relaxed),
+            takeovers: self.takeovers.load(Ordering::Relaxed),
+            already_completed: self.already_completed.load(Ordering::Relaxed),
+            busy: self.busy.load(Ordering::Relaxed),
+            conflicts: self.conflicts.load(Ordering::Relaxed),
+            renewals: self.renewals.load(Ordering::Relaxed),
+            lease_lost: self.lease_lost.load(Ordering::Relaxed),
+            completions: self.completions.load(Ordering::Relaxed),
+            releases: self.releases.load(Ordering::Relaxed),
+            cancellations: self.cancellations.load(Ordering::Relaxed),
+            failures: self.failures.load(Ordering::Relaxed),
+            in_flight: self.in_flight.load(Ordering::Relaxed),
+        }
+    }
+
+    fn increment(counter: &AtomicU64) {
+        counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(1))
+            })
+            .ok();
+    }
+}
+
+/// Host-facing aggregate view over dynamic-workflow claim counters and the
+/// optional agent-wide scheduler.  It is a read-only composition of local
+/// metrics; it does not introduce a second workflow or event authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicWorkflowControlDiagnostics {
+    pub workflow: DynamicWorkflowHealthSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<crate::task_scheduler::TaskSchedulerHealthSnapshot>,
+}
+
 /// Bounded, host-facing projection of one dynamic workflow continuation.
 ///
 /// The projection deliberately omits source, input, step arguments, outputs,
@@ -334,6 +425,7 @@ pub struct DynamicWorkflowControl {
     continuation_lease_ledger: Option<Arc<dyn FlowDecisionLedger>>,
     continuation_lease_ms: u64,
     memory_continuation_lease_ledger: Arc<MemoryFlowDecisionLedger>,
+    metrics: Arc<DynamicWorkflowMetrics>,
 }
 
 #[derive(Clone)]
@@ -1325,11 +1417,13 @@ struct DynamicWorkflowLease {
     owner_id: String,
     lease_ms: u64,
     attempt: u32,
+    metrics: Arc<DynamicWorkflowMetrics>,
 }
 
 impl DynamicWorkflowLease {
     async fn renew(&self) -> Result<bool> {
-        self.ledger
+        let result = self
+            .ledger
             .renew_with_identity(
                 &self.decision_id,
                 &self.request_hash,
@@ -1338,11 +1432,21 @@ impl DynamicWorkflowLease {
                 dynamic_workflow_now_ms(),
                 self.lease_ms,
             )
-            .await
+            .await;
+        match &result {
+            Ok(true) => DynamicWorkflowMetrics::increment(&self.metrics.renewals),
+            Ok(false) => DynamicWorkflowMetrics::increment(&self.metrics.lease_lost),
+            Err(_) => {
+                DynamicWorkflowMetrics::increment(&self.metrics.lease_lost);
+                DynamicWorkflowMetrics::increment(&self.metrics.failures);
+            }
+        }
+        result
     }
 
     async fn complete(&self) -> Result<()> {
-        self.ledger
+        let result = self
+            .ledger
             .complete_with_identity(
                 &self.decision_id,
                 &self.request_hash,
@@ -1350,18 +1454,29 @@ impl DynamicWorkflowLease {
                 &self.owner_id,
                 dynamic_workflow_now_ms(),
             )
-            .await
+            .await;
+        match &result {
+            Ok(()) => DynamicWorkflowMetrics::increment(&self.metrics.completions),
+            Err(_) => DynamicWorkflowMetrics::increment(&self.metrics.failures),
+        }
+        result
     }
 
     async fn release(&self) -> Result<()> {
-        self.ledger
+        let result = self
+            .ledger
             .release_with_identity(
                 &self.decision_id,
                 &self.request_hash,
                 &self.identity,
                 &self.owner_id,
             )
-            .await
+            .await;
+        match &result {
+            Ok(()) => DynamicWorkflowMetrics::increment(&self.metrics.releases),
+            Err(_) => DynamicWorkflowMetrics::increment(&self.metrics.failures),
+        }
+        result
     }
 }
 
@@ -1381,7 +1496,10 @@ async fn claim_dynamic_workflow_lease(
     ledger: Arc<dyn FlowDecisionLedger>,
     identity: ExecutionIdentityV1,
     lease_ms: u64,
+    metrics: Arc<DynamicWorkflowMetrics>,
 ) -> Result<DynamicWorkflowLeaseClaim> {
+    DynamicWorkflowMetrics::increment(&metrics.claim_attempts);
+    let mut in_flight = DynamicWorkflowClaimInFlight::new(Arc::clone(&metrics));
     identity
         .validate()
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -1398,8 +1516,12 @@ async fn claim_dynamic_workflow_lease(
         )
         .await
         .context("admit dynamic workflow worker lease")?;
-    match outcome {
+    let result = match outcome {
         FlowDecisionClaimOutcome::Claimed { attempt } => {
+            DynamicWorkflowMetrics::increment(&metrics.claims);
+            if attempt > 1 {
+                DynamicWorkflowMetrics::increment(&metrics.takeovers);
+            }
             Ok(DynamicWorkflowLeaseClaim::Owned(DynamicWorkflowLease {
                 ledger,
                 decision_id,
@@ -1408,14 +1530,55 @@ async fn claim_dynamic_workflow_lease(
                 owner_id,
                 lease_ms,
                 attempt,
+                metrics,
             }))
         }
-        FlowDecisionClaimOutcome::Completed => Ok(DynamicWorkflowLeaseClaim::AlreadyCompleted),
+        FlowDecisionClaimOutcome::Completed => {
+            DynamicWorkflowMetrics::increment(&metrics.already_completed);
+            Ok(DynamicWorkflowLeaseClaim::AlreadyCompleted)
+        }
         FlowDecisionClaimOutcome::Busy {
             lease_expires_at_ms,
-        } => anyhow::bail!("dynamic workflow worker lease is busy until {lease_expires_at_ms}"),
+        } => {
+            DynamicWorkflowMetrics::increment(&metrics.busy);
+            anyhow::bail!("dynamic workflow worker lease is busy until {lease_expires_at_ms}")
+        }
         FlowDecisionClaimOutcome::Conflict => {
+            DynamicWorkflowMetrics::increment(&metrics.conflicts);
             anyhow::bail!("dynamic workflow worker lease identity conflicts with its claim")
+        }
+    };
+    in_flight.finish();
+    result
+}
+
+struct DynamicWorkflowClaimInFlight {
+    metrics: Arc<DynamicWorkflowMetrics>,
+    finished: bool,
+}
+
+impl DynamicWorkflowClaimInFlight {
+    fn new(metrics: Arc<DynamicWorkflowMetrics>) -> Self {
+        DynamicWorkflowMetrics::increment(&metrics.in_flight);
+        Self {
+            metrics,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        if !self.finished {
+            self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+            self.finished = true;
+        }
+    }
+}
+
+impl Drop for DynamicWorkflowClaimInFlight {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish();
+            DynamicWorkflowMetrics::increment(&self.metrics.failures);
         }
     }
 }
@@ -1458,6 +1621,7 @@ pub struct DynamicWorkflowTool {
     continuation_lease_ledger: Option<Arc<dyn FlowDecisionLedger>>,
     continuation_lease_ms: u64,
     memory_continuation_lease_ledger: Arc<MemoryFlowDecisionLedger>,
+    metrics: Arc<DynamicWorkflowMetrics>,
 }
 
 enum DynamicWorkflowRegistry {
@@ -1486,6 +1650,7 @@ impl DynamicWorkflowTool {
             continuation_lease_ledger: None,
             continuation_lease_ms: DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS,
             memory_continuation_lease_ledger: Arc::new(MemoryFlowDecisionLedger::new()),
+            metrics: Arc::new(DynamicWorkflowMetrics::default()),
         }
     }
 
@@ -1500,7 +1665,14 @@ impl DynamicWorkflowTool {
             continuation_lease_ledger: None,
             continuation_lease_ms: DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS,
             memory_continuation_lease_ledger: Arc::new(MemoryFlowDecisionLedger::new()),
+            metrics: Arc::new(DynamicWorkflowMetrics::default()),
         }
+    }
+
+    /// Return bounded cumulative worker-claim diagnostics for this tool
+    /// instance. Durable per-run attempt state remains in the Flow ledger.
+    pub fn health(&self) -> DynamicWorkflowHealthSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Project committed Flow events into an optional reactive state graph.
@@ -1620,6 +1792,7 @@ impl DynamicWorkflowTool {
             continuation_lease_ledger: self.continuation_lease_ledger.clone(),
             continuation_lease_ms: self.continuation_lease_ms,
             memory_continuation_lease_ledger: Arc::clone(&self.memory_continuation_lease_ledger),
+            metrics: Arc::clone(&self.metrics),
         })
     }
 
@@ -1640,6 +1813,28 @@ impl DynamicWorkflowControl {
     /// Return the immutable run id bound to this control handle.
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// Return bounded cumulative worker-claim diagnostics shared by this
+    /// tool and all controls derived from it.
+    pub fn health(&self) -> DynamicWorkflowHealthSnapshot {
+        self.metrics.snapshot()
+    }
+
+    /// Compose workflow claim counters with the optional agent-wide scheduler
+    /// health snapshot. This is a read-only diagnostic view; Flow history and
+    /// the worker lease remain the only authorities for workflow state.
+    pub async fn diagnostics(&self) -> Result<DynamicWorkflowControlDiagnostics> {
+        let scheduler = match self.task_scheduler.as_ref() {
+            Some(scheduler) => Some(scheduler.health().await.map_err(|error| {
+                anyhow::anyhow!("read dynamic workflow scheduler health: {error}")
+            })?),
+            None => None,
+        };
+        Ok(DynamicWorkflowControlDiagnostics {
+            workflow: self.metrics.snapshot(),
+            scheduler,
+        })
     }
 
     /// Replace the set of tools available to replayed script steps.
@@ -1890,6 +2085,7 @@ impl Tool for DynamicWorkflowTool {
             lease_ledger,
             claim_identity,
             self.continuation_lease_ms,
+            Arc::clone(&self.metrics),
         )
         .await
         {
@@ -2289,6 +2485,7 @@ impl DynamicWorkflowControl {
             Arc::clone(&preparation.lease_ledger),
             preparation.claim_identity.clone(),
             self.continuation_lease_ms,
+            Arc::clone(&self.metrics),
         )
         .await
     }
@@ -2589,6 +2786,7 @@ where
                 return settle_dynamic_workflow_lease(lease, result).await;
             }
             _ = parent_cancellation.cancelled() => {
+                DynamicWorkflowMetrics::increment(&lease.metrics.cancellations);
                 child_cancellation.cancel();
                 match tokio::time::timeout(MAX_DYNAMIC_WORKFLOW_SETTLE, &mut future).await {
                     Ok(result) => {
@@ -2720,6 +2918,7 @@ async fn drive_dynamic_workflow_with_lease(
                 return settle_dynamic_workflow_lease(lease, result).await;
             }
             _ = parent_cancellation.cancelled() => {
+                DynamicWorkflowMetrics::increment(&lease.metrics.cancellations);
                 child_cancellation.cancel();
                 match tokio::time::timeout(MAX_DYNAMIC_WORKFLOW_SETTLE, &mut execution).await {
                     Ok(result) => {

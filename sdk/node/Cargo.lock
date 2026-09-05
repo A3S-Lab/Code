@@ -56,6 +56,7 @@ dependencies = [
  "notify",
  "percent-encoding",
  "pin-project-lite",
+ "rayon",
  "regex",
  "reqwest",
  "roxmltree",

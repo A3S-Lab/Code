@@ -76,6 +76,17 @@ impl Agent {
             .map_err(node_task_scheduler_error)
     }
 
+    /// Return occupancy and bounded cumulative admission/fairness diagnostics
+    /// for the priority scheduler shared by this Agent's sessions.
+    #[napi]
+    pub async fn task_scheduler_health(&self) -> napi::Result<TaskSchedulerHealthSnapshot> {
+        self.inner
+            .task_scheduler_health()
+            .await
+            .map(TaskSchedulerHealthSnapshot::from)
+            .map_err(node_task_scheduler_error)
+    }
+
     /// Bind to a workspace directory, returning a Session.
     ///
     /// @param workspace - Path to the workspace directory

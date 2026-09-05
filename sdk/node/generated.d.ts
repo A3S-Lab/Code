@@ -28,6 +28,24 @@ export interface TaskSchedulerStats {
   pendingByPriority: TaskPriorityCounts
   closed: boolean
 }
+/** Bounded cumulative admission and fairness diagnostics for an Agent's shared priority scheduler. */
+export interface TaskSchedulerHealthSnapshot {
+  maxActive: number
+  active: number
+  pending: number
+  activeByPriority: TaskPriorityCounts
+  pendingByPriority: TaskPriorityCounts
+  admitted: number
+  released: number
+  cancelled: number
+  rejected: number
+  agingPromotions: number
+  peakActive: number
+  totalWaitMicros: number
+  averageWaitMicros: number
+  maxWaitMicros: number
+  closed: boolean
+}
 /** Result of admitting a host-selected run ID for detached execution. */
 export interface AgentRunSpawnObject {
   snapshot: any
@@ -1415,6 +1433,11 @@ export declare class Session {
    */
   taskSchedulerStats(): Promise<TaskSchedulerStats>
   /**
+   * Return occupancy and bounded cumulative admission/fairness diagnostics
+   * for the scheduler shared by this session and its siblings.
+   */
+  taskSchedulerHealth(): Promise<TaskSchedulerHealthSnapshot>
+  /**
    * Send a prompt or request and wait for the complete response.
    *
    * `send("prompt")` is the compact prompt-first form. `send({ prompt,
@@ -2148,6 +2171,11 @@ export declare class Agent {
    * session created from this Agent.
    */
   taskSchedulerStats(): Promise<TaskSchedulerStats>
+  /**
+   * Return occupancy and bounded cumulative admission/fairness diagnostics
+   * for the priority scheduler shared by this Agent's sessions.
+   */
+  taskSchedulerHealth(): Promise<TaskSchedulerHealthSnapshot>
   /**
    * Bind to a workspace directory, returning a Session.
    *
