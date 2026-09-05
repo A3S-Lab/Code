@@ -96,7 +96,6 @@ class A3SCodeAgent(BaseAgent):
         result = await environment.exec(
             command,
             cwd=workdir,
-            timeout_sec=900,
             env={
                 "A3S_CODE_TRAJECTORY_PATH": str(
                     self.environment_logs_dir / "a3s-code.trajectory.jsonl"

@@ -195,7 +195,6 @@ async fn main() -> Result<()> {
         // user message instead of a planner-rewritten wrapper.
         .with_planning_mode(PlanningMode::Disabled)
         .with_resilience_defaults()
-        .with_llm_api_timeout(120_000)
         .with_auto_compact(true)
         .with_max_tool_rounds(64)
         .with_max_continuation_turns(2)
