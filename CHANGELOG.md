@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner can finish the complete default and feature-gated suites instead of
   being cancelled while tests are still progressing.
 
+### Changed
+
+- Reduced peak memory in the Tool-result transform path. Structured JSON
+  sampling now consumes arrays incrementally and repeated-line folding no
+  longer collects a full line index; the v1 output and evidence contract stays
+  byte-for-byte compatible for the same input and policy.
+
 ## [8.2.0] - 2026-09-04
 
 ### Added

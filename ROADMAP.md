@@ -57,6 +57,12 @@ retention, repeated-line folding, structured sampling, and immutable original
 content. Model-generated summarization requires a separate future policy and
 replay contract.
 
+The transform implementation keeps ownership lazy and traverses structured
+arrays and repeated-line runs incrementally, avoiding an avoidable full-input
+copy or container-sized indexing allocation for hostile Tool output. Regression
+coverage includes UTF-8 head/tail retention, prefix-preserving folds, and
+250,000-item JSON arrays; the v1 algorithm and evidence binding remain stable.
+
 ### 3.1 Harness architecture improvements
 
 A review of DeepSeek Harness reinforces four useful boundaries without making

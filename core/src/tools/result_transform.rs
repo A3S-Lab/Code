@@ -1,9 +1,12 @@
 use super::ToolResultLossModeV1;
 use crate::text::truncate_utf8;
 use anyhow::Result;
+use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
+use std::collections::VecDeque;
 
 pub const TOOL_RESULT_TRANSFORM_SCHEMA_V1: &str = "a3s.code.tool-result-transform-policy.v1";
 pub const TOOL_RESULT_TRANSFORM_ALGORITHM_V1: &str = "a3s.code.tool-result-transform.v1";
@@ -13,6 +16,7 @@ pub const TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY: &str = "a3s_tool_result_tr
 pub const TOOL_RESULT_TRANSFORM_POLICY_DIGEST_DOMAIN_V1: &str =
     "a3s.code.tool-result-transform-policy-digest.v1";
 const MARKER_RESERVE_BYTES: usize = 512;
+const MAX_STRUCTURED_SAMPLE_ITEMS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,8 +88,8 @@ impl ToolResultTransformPolicyV1 {
             "Tool result repeated_line_threshold must be between 2 and 10000"
         );
         anyhow::ensure!(
-            self.structured_sample_items <= 1024,
-            "Tool result structured_sample_items must not exceed 1024"
+            self.structured_sample_items <= MAX_STRUCTURED_SAMPLE_ITEMS,
+            "Tool result structured_sample_items must not exceed {MAX_STRUCTURED_SAMPLE_ITEMS}"
         );
         Ok(())
     }
@@ -203,24 +207,29 @@ pub(crate) struct ToolResultTransform {
 }
 
 pub(crate) fn transform(output: &str, policy: &ToolResultTransformPolicyV1) -> ToolResultTransform {
-    let mut content = output.to_string();
+    // Avoid copying an unmodified result before we know that a transform is
+    // needed. Tool output is untrusted and can be substantially larger than
+    // the model-facing budget.
+    let mut content: Cow<'_, str> = Cow::Borrowed(output);
     let mut transformed = false;
 
     if policy.structured_sample_items > 0 && output.len() > policy.max_output_bytes {
         if let Some(sampled) = sample_structured(output, policy.structured_sample_items) {
-            content = sampled;
+            content = Cow::Owned(sampled);
             transformed = true;
         }
     }
     if policy.fold_repeated_lines {
-        let folded = fold_repeated_lines(&content, policy.repeated_line_threshold);
-        transformed |= folded != content;
-        content = folded;
+        if let Some(folded) = fold_repeated_lines(content.as_ref(), policy.repeated_line_threshold)
+        {
+            content = Cow::Owned(folded);
+            transformed = true;
+        }
     }
     if content.len() <= policy.max_output_bytes {
         return ToolResultTransform {
             retained_original_bytes: if transformed { 0 } else { output.len() },
-            content,
+            content: content.into_owned(),
             loss_mode: if transformed {
                 ToolResultLossModeV1::DeterministicTransform
             } else {
@@ -229,8 +238,8 @@ pub(crate) fn transform(output: &str, policy: &ToolResultTransformPolicyV1) -> T
         };
     }
 
-    let head = truncate_utf8(&content, policy.head_bytes);
-    let tail = utf8_tail(&content, policy.tail_bytes);
+    let head = truncate_utf8(content.as_ref(), policy.head_bytes);
+    let tail = utf8_tail(content.as_ref(), policy.tail_bytes);
     let omitted = content.len().saturating_sub(head.len() + tail.len());
     let marker = if policy.tail_bytes == 0 && !transformed {
         format!(
@@ -277,61 +286,121 @@ fn utf8_tail(value: &str, max_bytes: usize) -> &str {
     &value[start..]
 }
 
-fn fold_repeated_lines(value: &str, threshold: usize) -> String {
-    let lines = value.split_inclusive('\n').collect::<Vec<_>>();
-    if lines.len() < threshold {
-        return value.to_string();
-    }
-    let mut output = String::with_capacity(value.len());
-    let mut index = 0;
-    while index < lines.len() {
-        let mut end = index + 1;
-        while end < lines.len() && lines[end] == lines[index] {
-            end += 1;
+fn fold_repeated_lines(value: &str, threshold: usize) -> Option<String> {
+    let mut lines = value.split_inclusive('\n').peekable();
+    let mut output = String::new();
+    let mut folded_run = false;
+    let mut cursor = 0;
+
+    while let Some(line) = lines.next() {
+        let line_start = cursor;
+        cursor += line.len();
+        let mut count = 1;
+        while let Some(next) = lines.peek().copied() {
+            if next != line {
+                break;
+            }
+            let Some(next) = lines.next() else {
+                break;
+            };
+            cursor += next.len();
+            count += 1;
         }
-        let count = end - index;
         if count >= threshold {
-            output.push_str(lines[index]);
+            if !folded_run {
+                // Delay allocation until a fold is actually found. The
+                // original prefix is copied exactly once at that point.
+                output.push_str(&value[..line_start]);
+            }
+            output.push_str(line);
             output.push_str(&format!(
                 "[a3s repeated-line fold: {} additional exact copies omitted]\n",
                 count - 1
             ));
-        } else {
-            for line in &lines[index..end] {
-                output.push_str(line);
-            }
+            folded_run = true;
+        } else if folded_run {
+            output.push_str(line);
         }
-        index = end;
     }
-    if output.len() < value.len() {
-        output
+
+    if folded_run && output.len() < value.len() {
+        Some(output)
     } else {
-        value.to_string()
+        None
     }
 }
 
 fn sample_structured(value: &str, max_items: usize) -> Option<String> {
-    let Value::Array(items) = serde_json::from_str::<Value>(value).ok()? else {
-        return None;
-    };
-    if items.len() <= max_items {
-        return None;
-    }
-    let head_count = max_items.div_ceil(2);
-    let tail_count = max_items / 2;
-    let mut sampled = items[..head_count].to_vec();
-    sampled.extend_from_slice(&items[items.len() - tail_count..]);
+    // Consume one array element at a time. Keeping only the head sample and a
+    // bounded tail avoids materializing an attacker-controlled `Vec<Value>`.
+    let mut deserializer = serde_json::Deserializer::from_str(value);
+    let sample = deserializer
+        .deserialize_any(JsonArraySampler::new(max_items))
+        .ok()??;
+    deserializer.end().ok()?;
+    let (original_items, sampled) = sample;
     serde_json::to_string(&serde_json::json!({
         "$a3s_sample": {
             "schema": TOOL_RESULT_TRANSFORM_ALGORITHM_V1,
             "kind": "json_array",
-            "original_items": items.len(),
+            "original_items": original_items,
             "retained_items": sampled.len(),
-            "omitted_items": items.len() - sampled.len(),
+            "omitted_items": original_items - sampled.len(),
         },
         "items": sampled,
     }))
     .ok()
+}
+
+struct JsonArraySampler {
+    max_items: usize,
+}
+
+impl JsonArraySampler {
+    fn new(max_items: usize) -> Self {
+        Self { max_items }
+    }
+}
+
+impl<'de> Visitor<'de> for JsonArraySampler {
+    type Value = Option<(usize, Vec<Value>)>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        // `validate` normally enforces this bound before a policy reaches the
+        // transform. Clamp again at the parser boundary so an invalid or
+        // host-constructed policy cannot request an enormous preallocation.
+        let max_items = self.max_items.min(MAX_STRUCTURED_SAMPLE_ITEMS);
+        let head_count = max_items.div_ceil(2);
+        let tail_count = max_items / 2;
+        let mut head = Vec::with_capacity(head_count);
+        let mut tail = VecDeque::with_capacity(tail_count);
+        let mut original_items = 0;
+
+        while let Some(item) = sequence.next_element::<Value>()? {
+            original_items += 1;
+            if head.len() < head_count {
+                head.push(item);
+            } else if tail_count > 0 {
+                if tail.len() == tail_count {
+                    tail.pop_front();
+                }
+                tail.push_back(item);
+            }
+        }
+
+        if original_items <= max_items {
+            return Ok(None);
+        }
+        head.extend(tail);
+        Ok(Some((original_items, head)))
+    }
 }
 
 #[cfg(test)]
@@ -415,5 +484,38 @@ mod tests {
             ToolResultLossModeV1::DeterministicTransform | ToolResultLossModeV1::Composite
         ));
         assert!(sampled.content.contains("\"original_items\":20000"));
+    }
+
+    #[test]
+    fn folding_preserves_lines_before_the_first_repeated_run() {
+        let policy = ToolResultTransformPolicyV1::context_efficient();
+        let repeated = "same".repeat(32);
+        let output = format!("prefix\n{repeated}\n{repeated}\n{repeated}\nsuffix\n");
+        let transformed = transform(&output, &policy);
+
+        assert_eq!(
+            transformed.loss_mode,
+            ToolResultLossModeV1::DeterministicTransform
+        );
+        assert!(transformed
+            .content
+            .starts_with(&format!("prefix\n{repeated}\n")));
+        assert!(transformed.content.contains("2 additional exact copies"));
+        assert!(transformed.content.ends_with("suffix\n"));
+    }
+
+    #[test]
+    fn structured_sampling_keeps_a_bounded_working_set_for_large_arrays() {
+        let policy = ToolResultTransformPolicyV1::context_efficient();
+        let items = (0..250_000).map(Value::from).collect::<Vec<_>>();
+        let output = serde_json::to_string(&items).unwrap();
+        let transformed = transform(&output, &policy);
+
+        assert!(transformed.content.contains("\"original_items\":250000"));
+        assert!(transformed.content.contains("\"retained_items\":32"));
+        assert_eq!(
+            transformed.loss_mode,
+            ToolResultLossModeV1::DeterministicTransform
+        );
     }
 }
