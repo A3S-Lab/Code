@@ -31,6 +31,105 @@ struct LlmInvoker {
     presentation_application: ModelPresentationApplicationV1,
 }
 
+/// The non-streaming model-call shapes handled by the middleware boundary.
+///
+/// Keeping this discriminator next to the request prevents each caller from
+/// independently choosing evidence and budget semantics for a provider call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelCallKind {
+    Completion,
+    Structured,
+}
+
+/// Typed input to the run-bound model middleware.
+///
+/// This is intentionally borrowed: the middleware never owns prompt content
+/// and therefore cannot outlive the request that is being admitted. Streaming
+/// has a separate transport contract because its provider lifetime is managed
+/// by the returned proxy receiver.
+struct ModelCallRequest<'a> {
+    kind: ModelCallKind,
+    messages: &'a [Message],
+    system: Option<&'a str>,
+    tools: &'a [ToolDefinition],
+    directive: Option<&'a StructuredDirective>,
+}
+
+impl<'a> ModelCallRequest<'a> {
+    fn completion(
+        messages: &'a [Message],
+        system: Option<&'a str>,
+        tools: &'a [ToolDefinition],
+    ) -> Self {
+        Self {
+            kind: ModelCallKind::Completion,
+            messages,
+            system,
+            tools,
+            directive: None,
+        }
+    }
+
+    fn structured(
+        messages: &'a [Message],
+        system: Option<&'a str>,
+        tools: &'a [ToolDefinition],
+        directive: &'a StructuredDirective,
+    ) -> Self {
+        Self {
+            kind: ModelCallKind::Structured,
+            messages,
+            system,
+            tools,
+            directive: Some(directive),
+        }
+    }
+
+    fn observation(
+        &self,
+        presentation_application: ModelPresentationApplicationV1,
+    ) -> ModelCallObservation<'a> {
+        let kind = match self.kind {
+            ModelCallKind::Completion => ModelInputKindV1::Completion,
+            ModelCallKind::Structured => ModelInputKindV1::Structured,
+        };
+        ModelCallObservation::with_presentation_application(
+            kind,
+            self.messages,
+            self.system,
+            self.tools,
+            self.directive,
+            estimate_prompt_tokens(self.messages, self.system, self.tools),
+            presentation_application,
+        )
+    }
+}
+
+/// Typed output of one admitted non-streaming model call.
+///
+/// Usage is copied at the middleware boundary so future cost/retry metadata
+/// can be added without changing provider response types or evidence wiring.
+#[derive(Debug, Clone)]
+struct ModelCallOutcome {
+    response: LlmResponse,
+    usage: TokenUsage,
+}
+
+impl ModelCallOutcome {
+    fn from_response(response: LlmResponse) -> Self {
+        Self {
+            usage: response.usage.clone(),
+            response,
+        }
+    }
+
+    fn into_response(self) -> LlmResponse {
+        let Self { response, usage } = self;
+        debug_assert_eq!(usage.total_tokens, response.usage.total_tokens);
+        response
+    }
+}
+
 impl LlmInvoker {
     fn new(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
         Self {
@@ -87,6 +186,41 @@ impl LlmInvoker {
         )
         .await?;
         Ok(response)
+    }
+
+    /// Execute one typed non-streaming model request through the common
+    /// admission, cancellation, evidence, usage, and error phases.
+    async fn invoke_model(
+        &self,
+        request: ModelCallRequest<'_>,
+    ) -> anyhow::Result<ModelCallOutcome> {
+        let observation = request.observation(self.presentation_application);
+        let response = match request.kind {
+            ModelCallKind::Completion => {
+                self.invoke_response(
+                    observation,
+                    self.inner
+                        .complete(request.messages, request.system, request.tools),
+                )
+                .await?
+            }
+            ModelCallKind::Structured => {
+                let directive = request.directive.ok_or_else(|| {
+                    anyhow::anyhow!("structured model request is missing its directive")
+                })?;
+                self.invoke_response(
+                    observation,
+                    self.inner.complete_structured(
+                        request.messages,
+                        request.system,
+                        request.tools,
+                        directive,
+                    ),
+                )
+                .await?
+            }
+        };
+        Ok(ModelCallOutcome::from_response(response))
     }
 
     async fn invoke_stream<F, Fut>(
@@ -288,17 +422,9 @@ impl LlmClient for LlmInvoker {
         system: Option<&str>,
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        let observation = ModelCallObservation::with_presentation_application(
-            ModelInputKindV1::Completion,
-            messages,
-            system,
-            tools,
-            None,
-            estimate_prompt_tokens(messages, system, tools),
-            self.presentation_application,
-        );
-        self.invoke_response(observation, self.inner.complete(messages, system, tools))
+        self.invoke_model(ModelCallRequest::completion(messages, system, tools))
             .await
+            .map(ModelCallOutcome::into_response)
     }
 
     async fn complete_streaming(
@@ -335,21 +461,11 @@ impl LlmClient for LlmInvoker {
         tools: &[ToolDefinition],
         directive: &StructuredDirective,
     ) -> anyhow::Result<LlmResponse> {
-        let observation = ModelCallObservation::with_presentation_application(
-            ModelInputKindV1::Structured,
-            messages,
-            system,
-            tools,
-            Some(directive),
-            estimate_prompt_tokens(messages, system, tools),
-            self.presentation_application,
-        );
-        self.invoke_response(
-            observation,
-            self.inner
-                .complete_structured(messages, system, tools, directive),
-        )
+        self.invoke_model(ModelCallRequest::structured(
+            messages, system, tools, directive,
+        ))
         .await
+        .map(ModelCallOutcome::into_response)
     }
 
     async fn complete_streaming_structured(
