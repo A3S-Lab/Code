@@ -203,7 +203,7 @@ struct SupervisorState {
     /// Claims that have been admitted in the durable ledger and still need a
     /// terminal completion receipt. Values are request digests so a stale
     /// watcher can never remove a newer takeover claim.
-    ledger_claims: HashMap<String, String>,
+    ledger_claims: HashMap<String, crate::execution_identity::ExecutionClaimV1>,
 }
 
 struct DispatchReservation {
@@ -357,7 +357,11 @@ impl EvaluationSupervisor {
         self.cancel();
         let claims = {
             let mut state = lock_state(&self.state);
-            let claims = state.ledger_claims.drain().collect::<Vec<_>>();
+            let claims = state
+                .ledger_claims
+                .drain()
+                .map(|(_, claim)| claim)
+                .collect::<Vec<_>>();
             state.in_flight.clear();
             state.last_dispatch_ms.clear();
             state.admitting.clear();
@@ -365,13 +369,13 @@ impl EvaluationSupervisor {
             claims
         };
         if let Some(ledger) = &self.dispatch_ledger {
-            for (dispatch_id, request_digest) in claims {
+            for claim in claims {
                 if let Err(error) = ledger
-                    .release(&dispatch_id, &request_digest, &self.owner_id)
+                    .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
                     .await
                 {
                     tracing::warn!(
-                        dispatch_id = %dispatch_id,
+                        dispatch_id = %claim.record_id(),
                         error = %error,
                         "failed to release evaluation dispatch claim during shutdown"
                     );
@@ -420,6 +424,20 @@ impl EvaluationSupervisor {
         );
         let dispatch_id = deterministic_auxiliary_id(&fact, &plan.purpose)?;
         let request_digest = dispatch_request_digest(&fact, &plan)?;
+        let execution_identity =
+            dispatch_execution_identity(&fact, &plan, &dispatch_id, &request_digest)?;
+        let claim = crate::execution_identity::ExecutionClaimV1::new(
+            execution_identity,
+            &dispatch_id,
+            &request_digest,
+            &self.owner_id,
+        )
+        .map_err(|error| SupervisorError::DispatchLedger(error.to_string()))?;
+        tracing::trace!(
+            dispatch_id = dispatch_id.as_str(),
+            identity = claim.identity().key(),
+            "Evaluation dispatch execution identity bound to claim ledger"
+        );
         let now = now_ms();
         {
             let mut state = lock_state(&self.state);
@@ -466,15 +484,21 @@ impl EvaluationSupervisor {
         let mut ledger_claimed = false;
         if let Some(ledger) = &self.dispatch_ledger {
             let lease_ms = dispatch_lease_ms(plan.timeout_ms);
-            let claim = ledger
-                .claim(&dispatch_id, &request_digest, &self.owner_id, now, lease_ms)
+            let claim_outcome = ledger
+                .claim(
+                    claim.record_id(),
+                    claim.ledger_key(),
+                    claim.owner_id(),
+                    now,
+                    lease_ms,
+                )
                 .await
                 .map_err(|error| SupervisorError::DispatchLedger(error.to_string()))?;
-            match claim {
+            match claim_outcome {
                 EvaluationDispatchClaimOutcome::Claimed { .. } => {
                     lock_state(&self.state)
                         .ledger_claims
-                        .insert(dispatch_id.clone(), request_digest.clone());
+                        .insert(dispatch_id.clone(), claim.clone());
                     ledger_claimed = true;
                 }
                 EvaluationDispatchClaimOutcome::Completed => {
@@ -515,8 +539,7 @@ impl EvaluationSupervisor {
             Ok(evidence) => evidence,
             Err(error) => {
                 if ledger_claimed {
-                    self.release_dispatch_claim(&dispatch_id, &request_digest)
-                        .await;
+                    self.release_dispatch_claim(&claim).await;
                 }
                 reservation.release();
                 return Err(SupervisorError::Evidence(error.to_string()));
@@ -524,8 +547,7 @@ impl EvaluationSupervisor {
         };
         if self.cancellation.is_cancelled() {
             if ledger_claimed {
-                self.release_dispatch_claim(&dispatch_id, &request_digest)
-                    .await;
+                self.release_dispatch_claim(&claim).await;
             }
             reservation.release();
             return Ok(EvaluationDispatch {
@@ -557,8 +579,7 @@ impl EvaluationSupervisor {
             Ok(handle) => handle,
             Err(error) => {
                 if ledger_claimed {
-                    self.release_dispatch_claim(&dispatch_id, &request_digest)
-                        .await;
+                    self.release_dispatch_claim(&claim).await;
                 }
                 reservation.release();
                 return Err(error.into());
@@ -568,9 +589,7 @@ impl EvaluationSupervisor {
         let state = Arc::clone(&self.state);
         let watcher = handle.clone();
         let ledger = self.dispatch_ledger.clone();
-        let owner_id = self.owner_id.clone();
-        let watcher_dispatch_id = dispatch_id.clone();
-        let watcher_request_digest = request_digest.clone();
+        let watcher_claim = claim.clone();
         let lease_ms = dispatch_lease_ms(plan.timeout_ms);
         tokio::spawn(async move {
             let mut claim_owned = ledger.is_some();
@@ -586,9 +605,9 @@ impl EvaluationSupervisor {
                         _ = heartbeat.tick() => {
                             match ledger
                                 .renew(
-                                    &watcher_dispatch_id,
-                                    &watcher_request_digest,
-                                    &owner_id,
+                                    watcher_claim.record_id(),
+                                    watcher_claim.ledger_key(),
+                                    watcher_claim.owner_id(),
                                     now_ms(),
                                     lease_ms,
                                 )
@@ -604,7 +623,7 @@ impl EvaluationSupervisor {
                                 }
                                 Err(error) => {
                                     tracing::warn!(
-                                        dispatch_id = %watcher_dispatch_id,
+                                        dispatch_id = %watcher_claim.record_id(),
                                         error = %error,
                                         "evaluation dispatch lease renewal failed"
                                     );
@@ -620,9 +639,9 @@ impl EvaluationSupervisor {
                 if claim_owned {
                     let _ = ledger
                         .complete(
-                            &watcher_dispatch_id,
-                            &watcher_request_digest,
-                            &owner_id,
+                            watcher_claim.record_id(),
+                            watcher_claim.ledger_key(),
+                            watcher_claim.owner_id(),
                             now_ms(),
                         )
                         .await;
@@ -639,10 +658,10 @@ impl EvaluationSupervisor {
             }
             if state
                 .ledger_claims
-                .get(&watcher_dispatch_id)
-                .is_some_and(|digest| digest == &watcher_request_digest)
+                .get(watcher_claim.record_id())
+                .is_some_and(|claim| claim.ledger_key() == watcher_claim.ledger_key())
             {
-                state.ledger_claims.remove(&watcher_dispatch_id);
+                state.ledger_claims.remove(watcher_claim.record_id());
             }
         });
         Ok(EvaluationDispatch {
@@ -652,14 +671,14 @@ impl EvaluationSupervisor {
         })
     }
 
-    async fn release_dispatch_claim(&self, dispatch_id: &str, request_digest: &str) {
+    async fn release_dispatch_claim(&self, claim: &crate::execution_identity::ExecutionClaimV1) {
         if let Some(ledger) = &self.dispatch_ledger {
             if let Err(error) = ledger
-                .release(dispatch_id, request_digest, &self.owner_id)
+                .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
                 .await
             {
                 tracing::warn!(
-                    dispatch_id = %dispatch_id,
+                    dispatch_id = %claim.record_id(),
                     error = %error,
                     "failed to release evaluation dispatch claim"
                 );
@@ -668,10 +687,10 @@ impl EvaluationSupervisor {
         let mut state = lock_state(&self.state);
         if state
             .ledger_claims
-            .get(dispatch_id)
-            .is_some_and(|digest| digest == request_digest)
+            .get(claim.record_id())
+            .is_some_and(|current| current.ledger_key() == claim.ledger_key())
         {
-            state.ledger_claims.remove(dispatch_id);
+            state.ledger_claims.remove(claim.record_id());
         }
     }
 }
@@ -703,6 +722,26 @@ fn dispatch_request_digest(
             "fact_digest": &fact.fact_digest,
             "purpose": &plan.purpose,
             "plan_digest": plan_digest,
+        }),
+    )
+    .map_err(|error| SupervisorError::Evidence(error.to_string()))
+}
+
+fn dispatch_execution_identity(
+    fact: &ExecutionFactV1,
+    plan: &EvaluationPlanV1,
+    dispatch_id: &str,
+    request_digest: &str,
+) -> Result<crate::execution_identity::ExecutionIdentityV1, SupervisorError> {
+    crate::execution_identity::ExecutionIdentityV1::derive(
+        crate::execution_identity::EVALUATION_DISPATCH_IDENTITY_DOMAIN_V1,
+        &serde_json::json!({
+            "target": &fact.frame.target,
+            "sequence": fact.sequence,
+            "purpose": &plan.purpose,
+            "fact_digest": &fact.fact_digest,
+            "dispatch_id": dispatch_id,
+            "request_digest": request_digest,
         }),
     )
     .map_err(|error| SupervisorError::Evidence(error.to_string()))

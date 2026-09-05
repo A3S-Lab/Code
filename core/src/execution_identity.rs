@@ -13,6 +13,9 @@ use thiserror::Error;
 pub const EXECUTION_IDENTITY_SCHEMA_V1: &str = "a3s.code.execution-identity.v1";
 pub const MODEL_CALL_IDENTITY_DOMAIN_V1: &str = "a3s.code.model-call.identity.v1";
 pub const TOOL_INVOCATION_IDENTITY_DOMAIN_V1: &str = "a3s.code.tool-invocation.identity.v1";
+pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.identity.v1";
+pub const EVALUATION_DISPATCH_IDENTITY_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.identity.v1";
+pub const EVALUATION_DISPATCH_REQUEST_DOMAIN_V1: &str = "a3s.code.evaluation-dispatch.request.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ExecutionIdentityError {
@@ -24,6 +27,8 @@ pub enum ExecutionIdentityError {
     InvalidDigest,
     #[error("execution identity digest does not match the value")]
     DigestMismatch,
+    #[error("execution claim field `{0}` is empty")]
+    InvalidClaimField(&'static str),
 }
 
 /// A portable, domain-separated content identity.
@@ -88,6 +93,63 @@ impl ExecutionIdentityV1 {
             return Err(ExecutionIdentityError::DigestMismatch);
         }
         Ok(())
+    }
+}
+
+/// Binds a semantic execution identity to the key used by an existing claim
+/// ledger. The ledger key is kept separate so old persisted receipts remain
+/// replay-compatible while new code can carry one typed identity through all
+/// claim, renewal, completion, and release operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutionClaimV1 {
+    identity: ExecutionIdentityV1,
+    record_id: String,
+    ledger_key: String,
+    owner_id: String,
+}
+
+impl ExecutionClaimV1 {
+    pub(crate) fn new(
+        identity: ExecutionIdentityV1,
+        record_id: impl Into<String>,
+        ledger_key: impl Into<String>,
+        owner_id: impl Into<String>,
+    ) -> Result<Self, ExecutionIdentityError> {
+        identity.validate()?;
+        let record_id = record_id.into();
+        let ledger_key = ledger_key.into();
+        let owner_id = owner_id.into();
+        if record_id.is_empty() {
+            return Err(ExecutionIdentityError::InvalidClaimField("record_id"));
+        }
+        if ledger_key.is_empty() {
+            return Err(ExecutionIdentityError::InvalidClaimField("ledger_key"));
+        }
+        if owner_id.is_empty() {
+            return Err(ExecutionIdentityError::InvalidClaimField("owner_id"));
+        }
+        Ok(Self {
+            identity,
+            record_id,
+            ledger_key,
+            owner_id,
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &ExecutionIdentityV1 {
+        &self.identity
+    }
+
+    pub(crate) fn record_id(&self) -> &str {
+        &self.record_id
+    }
+
+    pub(crate) fn ledger_key(&self) -> &str {
+        &self.ledger_key
+    }
+
+    pub(crate) fn owner_id(&self) -> &str {
+        &self.owner_id
     }
 }
 
@@ -170,5 +232,20 @@ mod tests {
             identity.validate_for(&changed),
             Err(ExecutionIdentityError::DigestMismatch)
         ));
+    }
+
+    #[test]
+    fn claim_binds_canonical_identity_to_a_legacy_ledger_key() {
+        let payload = serde_json::json!({"secret": "do-not-persist"});
+        let identity = ExecutionIdentityV1::derive("a3s.test", &payload).unwrap();
+        let claim = ExecutionClaimV1::new(identity.clone(), "dispatch-1", "legacy-hash", "owner-1")
+            .unwrap();
+
+        assert_eq!(claim.identity(), &identity);
+        assert_eq!(claim.record_id(), "dispatch-1");
+        assert_eq!(claim.ledger_key(), "legacy-hash");
+        assert_eq!(claim.owner_id(), "owner-1");
+        let debug = format!("{claim:?}");
+        assert!(!debug.contains("do-not-persist"));
     }
 }

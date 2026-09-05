@@ -206,12 +206,25 @@ impl FlowDecisionDispatcher {
         }
         let _dispatch_guard = self.dispatch_lock.lock().await;
         let request_hash = request_hash(request)?;
+        let execution_identity = request_identity(request)?;
+        let claim = crate::execution_identity::ExecutionClaimV1::new(
+            execution_identity,
+            &request.decision_id,
+            &request_hash,
+            &self.owner_id,
+        )
+        .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
+        tracing::trace!(
+            decision_id = request.decision_id.as_str(),
+            identity = claim.identity().key(),
+            "Flow decision execution identity bound to claim ledger"
+        );
         match self
             .ledger
             .claim(
-                &request.decision_id,
-                &request_hash,
-                &self.owner_id,
+                claim.record_id(),
+                claim.ledger_key(),
+                claim.owner_id(),
                 now_ms(),
                 self.lease_ms,
             )
@@ -249,9 +262,9 @@ impl FlowDecisionDispatcher {
                 _ = heartbeat.tick() => {
                     let renewed = self.ledger
                         .renew(
-                            &request.decision_id,
-                            &request_hash,
-                            &self.owner_id,
+                            claim.record_id(),
+                            claim.ledger_key(),
+                            claim.owner_id(),
                             now_ms(),
                             self.lease_ms,
                         )
@@ -269,7 +282,7 @@ impl FlowDecisionDispatcher {
         if let Err(error) = submission_result {
             if let Err(release_error) = self
                 .ledger
-                .release(&request.decision_id, &request_hash, &self.owner_id)
+                .release(claim.record_id(), claim.ledger_key(), claim.owner_id())
                 .await
             {
                 tracing::warn!(decision_id = request.decision_id, error = %release_error, "failed to release Flow decision claim");
@@ -278,9 +291,9 @@ impl FlowDecisionDispatcher {
         }
         self.ledger
             .complete(
-                &request.decision_id,
-                &request_hash,
-                &self.owner_id,
+                claim.record_id(),
+                claim.ledger_key(),
+                claim.owner_id(),
                 now_ms(),
             )
             .await
@@ -414,6 +427,16 @@ fn request_hash(request: &FlowDecisionRequest) -> Result<String, FlowDecisionDis
         .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))
 }
 
+fn request_identity(
+    request: &FlowDecisionRequest,
+) -> Result<crate::execution_identity::ExecutionIdentityV1, FlowDecisionDispatchError> {
+    crate::execution_identity::ExecutionIdentityV1::derive(
+        crate::execution_identity::FLOW_DECISION_IDENTITY_DOMAIN_V1,
+        request,
+    )
+    .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))
+}
+
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -457,6 +480,26 @@ mod tests {
                 output: Value::Null,
             },
         }
+    }
+
+    #[test]
+    fn flow_claim_keeps_legacy_ledger_key_while_binding_typed_identity() {
+        let request = request("production");
+        let legacy = request_hash(&request).unwrap();
+        let identity = request_identity(&request).unwrap();
+        let claim = crate::execution_identity::ExecutionClaimV1::new(
+            identity.clone(),
+            &request.decision_id,
+            &legacy,
+            "owner-1",
+        )
+        .unwrap();
+
+        assert_eq!(legacy.len(), 64);
+        assert!(!legacy.starts_with("sha256:"));
+        assert_eq!(claim.ledger_key(), legacy);
+        assert_ne!(claim.identity().key(), legacy);
+        claim.identity().validate_for(&request).unwrap();
     }
 
     #[tokio::test]
