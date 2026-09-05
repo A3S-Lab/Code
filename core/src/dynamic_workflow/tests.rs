@@ -883,6 +883,14 @@ return await ctx.read(inputs.input.path);
         crate::execution_identity::EXECUTION_PLAN_IDENTITY_DOMAIN_V1
     );
     assert_eq!(
+        metadata["dynamic_workflow"]["runtime_build_id"],
+        DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID
+    );
+    assert_eq!(
+        metadata["dynamic_workflow"]["continuation_identity"]["domain"],
+        DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1
+    );
+    assert_eq!(
         metadata["dynamic_workflow"]["admission"]["peakActiveSteps"],
         1
     );
@@ -1404,6 +1412,274 @@ async function run(ctx, inputs) {
     assert_eq!(
         metadata["dynamic_workflow"]["snapshot"]["steps"]["retry_once"]["attempt"],
         2
+    );
+
+    // Replaying a terminal run must use the durable completion and never
+    // execute the side-effecting step a third time.
+    let replay = executor
+        .execute(
+            DYNAMIC_WORKFLOW_TOOL,
+            &json!({
+                "source": source,
+                "run_id": "test-dynamic-workflow-inline-retry",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.exit_code, 0, "{}", replay.output);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        replay.metadata.as_ref().expect("replay metadata")["dynamic_workflow"]
+            ["continuation_identity"]["domain"],
+        DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1
+    );
+
+    // A changed source is a new immutable generation, not a permission to
+    // rerun the old step under the same durable run id.
+    let changed_source = format!("{source}\n// changed generation");
+    let changed = executor
+        .execute(
+            DYNAMIC_WORKFLOW_TOOL,
+            &json!({
+                "source": changed_source,
+                "run_id": "test-dynamic-workflow-inline-retry",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_ne!(changed.exit_code, 0, "changed source must be rejected");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn dynamic_workflow_continuation_identity_binds_persisted_facts_not_progress() {
+    let run_id = "continuation-identity";
+    let source =
+        "async function run(ctx, inputs) { return { type: 'complete', output: { ok: true } }; }";
+    let input = json!({"secret_path": "scientific-notes.txt"});
+    let runtime_build = RuntimeBuildId::new("code-generation-a").unwrap();
+    let envelope = |sequence, event| {
+        FlowEventEnvelope::new(run_id, sequence, uuid::Uuid::new_v4(), Utc::now(), event)
+    };
+    let spec = WorkflowSpec::rust_embedded(
+        "a3s-code.dynamic-workflow",
+        source_hash(source),
+        "ptc",
+        "run",
+    )
+    .with_runtime_build(runtime_build.clone());
+    let created = envelope(
+        1,
+        FlowEvent::RunCreated {
+            spec,
+            input: input.clone(),
+        },
+    );
+    let step = envelope(
+        2,
+        FlowEvent::StepCreated {
+            step_id: "read".to_string(),
+            step_name: "read".to_string(),
+            input: json!({"path": "scientific-notes.txt"}),
+            retry: Default::default(),
+        },
+    );
+    let before = vec![
+        created.clone(),
+        step.clone(),
+        envelope(
+            3,
+            FlowEvent::StepStarted {
+                step_id: "read".to_string(),
+                attempt: 1,
+            },
+        ),
+    ];
+    let after = vec![
+        created,
+        step.clone(),
+        envelope(
+            3,
+            FlowEvent::StepStarted {
+                step_id: "read".to_string(),
+                attempt: 1,
+            },
+        ),
+        envelope(
+            4,
+            FlowEvent::StepCompleted {
+                step_id: "read".to_string(),
+                output: json!({"content": "secret"}),
+            },
+        ),
+        envelope(
+            5,
+            FlowEvent::RunCompleted {
+                output: json!({"ok": true}),
+            },
+        ),
+    ];
+    let first = dynamic_workflow_continuation_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &before,
+    )
+    .unwrap();
+    let replay = dynamic_workflow_continuation_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &after,
+    )
+    .unwrap();
+    assert_eq!(first, replay);
+    assert!(!serde_json::to_string(&replay)
+        .unwrap()
+        .contains("scientific-notes.txt"));
+
+    let mut conflicting = after.clone();
+    conflicting.push(envelope(
+        6,
+        FlowEvent::StepCreated {
+            step_id: "read".to_string(),
+            step_name: "write".to_string(),
+            input: json!({"path": "scientific-notes.txt"}),
+            retry: Default::default(),
+        },
+    ));
+    assert!(dynamic_workflow_continuation_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &conflicting,
+    )
+    .is_err());
+
+    let mut conflicting_retry = before.clone();
+    conflicting_retry.push(envelope(
+        4,
+        FlowEvent::StepCreated {
+            step_id: "read".to_string(),
+            step_name: "read".to_string(),
+            input: json!({"path": "scientific-notes.txt"}),
+            retry: a3s_flow::RetryPolicy::fixed(2, Duration::from_millis(1)),
+        },
+    ));
+    assert!(dynamic_workflow_continuation_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &conflicting_retry,
+    )
+    .is_err());
+
+    let mut malformed_sequence = before.clone();
+    malformed_sequence[2].sequence = 4;
+    assert!(dynamic_workflow_continuation_identity(
+        run_id,
+        source,
+        &input,
+        runtime_build.as_str(),
+        &malformed_sequence,
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn dynamic_workflow_rejects_a_stale_runtime_generation_before_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    return { type: "wait_until", wait_id: "operator", resume_at: "2099-01-01T00:00:00Z" };
+  }
+  return { error: "unexpected invocation" };
+}
+"#;
+    let v1 = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_runtime_build_compatibility(RuntimeBuildCompatibility::new(
+            RuntimeBuildId::new("code-generation-a").unwrap(),
+        ));
+    let args = json!({
+        "source": source,
+        "run_id": "stale-generation-run",
+    });
+    let first = v1
+        .execute(&args, &executor.registry().context())
+        .await
+        .unwrap();
+    assert!(!first.success);
+
+    let v2 = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .with_runtime_build_compatibility(RuntimeBuildCompatibility::new(
+            RuntimeBuildId::new("code-generation-b").unwrap(),
+        ));
+    let replay = v2
+        .execute(&args, &executor.registry().context())
+        .await
+        .unwrap();
+    assert!(!replay.success);
+    assert!(
+        replay.content.contains("conflicts with existing run")
+            || replay.content.contains("runtime build")
+    );
+}
+
+#[tokio::test]
+async fn dynamic_workflow_keeps_legacy_unpinned_terminal_runs_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let source = r#"
+async function run(ctx, inputs) {
+  if (inputs.kind === "workflow") {
+    return { type: "complete", output: { legacy: true } };
+  }
+  return { error: "unexpected invocation" };
+}
+"#;
+    let context = executor.registry().context();
+    let runtime = Arc::new(DynamicWorkflowRuntime::new(
+        Arc::clone(executor.registry()),
+        context.clone(),
+        source,
+    ));
+    let store = Arc::new(LocalFileEventStore::new(dynamic_workflow_store_path(
+        dir.path(),
+    )));
+    let legacy_engine = FlowEngine::new(store, runtime);
+    let spec = WorkflowSpec::rust_embedded(
+        "a3s-code.dynamic-workflow",
+        source_hash(source),
+        "ptc",
+        "run",
+    );
+    legacy_engine
+        .start_with_id("legacy-unpinned-run", spec, json!({}))
+        .await
+        .unwrap();
+
+    let replay = DynamicWorkflowTool::new(Arc::clone(executor.registry()))
+        .execute(
+            &json!({
+                "source": source,
+                "run_id": "legacy-unpinned-run",
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(replay.success, "{}", replay.content);
+    let metadata = replay.metadata.expect("legacy replay metadata");
+    assert!(metadata["dynamic_workflow"]["runtime_build_id"].is_null());
+    assert_eq!(
+        metadata["dynamic_workflow"]["continuation_identity"]["domain"],
+        DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1
     );
 }
 

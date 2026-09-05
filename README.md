@@ -54,6 +54,12 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   Standalone Flow adapters can additionally use the agent-wide priority
   scheduler with a digest-only step identity; session-bound calls retain one
   outer scheduler lease to avoid nested single-slot deadlocks.
+- **Generation-fenced workflow replay.** New dynamic workflow runs pin the
+  Code runtime build and expose a digest-only continuation identity derived
+  from durable immutable facts. Changed source/input, conflicting step
+  definitions, and unsupported runtime generations are rejected before step
+  execution, while legacy unpinned histories remain readable during
+  migration.
 
 Go consumers must update the module path to
 `github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
@@ -1031,6 +1037,9 @@ step, handler, and bounded input. Durable completed-step recovery is bound to
 the exact run id, original query, and step id rather than acting as a cross-run
 query cache. A resumed run reconstructs its complete plan from durable
 history, so progress does not lose steps emitted before the current process.
+New runs also persist an exact runtime-build requirement; the continuation
+identity is recomputed from the persisted RunCreated/StepCreated facts on every
+resume, without storing source, input, or output plaintext in the identity.
 
 Delegated tasks, workflows, and Skill child runs retain the parent sandbox and
 intersect local permission policy with the parent checker. A child auto-approve
