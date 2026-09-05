@@ -116,11 +116,11 @@ impl DirectToolRuntime {
         let event_tx = Some(runtime_tx);
         let security_provider = self.security_provider;
         let handle = tokio::spawn(async move {
-            let _task_lease = acquire_task_admission(
+            let _task_lease = ExecutionCoordinator::acquire_optional_task(
                 task_scheduler.as_deref(),
                 task_priority,
+                format!("{session_id}:tool:{tool_name}"),
                 &session_id,
-                &tool_name,
                 &cancel,
                 &closed,
             )
