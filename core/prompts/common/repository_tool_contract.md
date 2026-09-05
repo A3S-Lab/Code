@@ -40,12 +40,11 @@ continuations.
   sandbox. `"require_escalated"` is an explicit host request and also requires
   a concise `justification`; use it only when the sandbox-safe path is
   insufficient and the permission layer authorizes the exact request.
-- `batch`: include only independent invocations with each exact `tool` name and
-  `args`; prefer independent read-only work and never batch dependent or
-  conflicting mutations. For `program` and `task`,
-  follow the complete schema shown in the current turn and keep delegated tasks
-  focused, bounded, and inside the same permission, budget, cancellation, and
-  sandbox scope.
+- `batch`: use exact `tool` and `args`; same `step` calls may run concurrently,
+  and later steps may reference a prior `id` with `{"$ref":"id.output"}`. Never
+  use same-step refs or conflicting mutations. Nested calls remain governed.
+  Use `program` for richer bounded orchestration and `task` for focused
+  delegation.
 - `git`: inspect `status` and the relevant `diff` before changing repository
   state. Treat checkout with `force`, stash operations, branch creation, and
   worktree create/remove as high-impact mutations; do not use them to discard

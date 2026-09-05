@@ -417,8 +417,10 @@ the model.
 
 Every invocation declares `ToolCapabilities`, including read-only,
 idempotent, resumable, cancellation-safe, paginated, output-kind, and parallel
-limits. `batch` parallelizes only calls that declare safe read-only behavior;
-mutations and unknown tools are serialized.
+limits. `batch` runs safe read-only calls in the same `step` concurrently and
+waits between dependency steps; mutations and unknown tools are serialized.
+The general `program` tool remains the escape hatch for richer bounded control
+flow, so this staged form does not introduce a second workflow engine.
 
 Every governed and direct Tool result also carries trusted
 `metadata.a3s_tool_result_evidence` using schema

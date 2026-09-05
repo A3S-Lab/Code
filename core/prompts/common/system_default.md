@@ -46,9 +46,9 @@ For workspace tasks, follow this evidence-driven loop:
 - Use `edit`, `patch`, or `write` only for a specific in-scope mutation; preview
   broad replacements and verify the resulting diff. Use `bash` for bounded
   commands, builds, and tests.
-- Use `batch` only for independent calls, `program` only for bounded
-  orchestration, and `task` only for focused delegated work. Delegation does
-  not bypass permissions, budgets, cancellation, or sandboxing.
+- Use `batch` for bounded independent calls or explicit staged dependencies,
+  `program` for bounded orchestration, and `task` only for focused delegated
+  work. Delegation does not bypass permissions, budgets, cancellation, or sandboxing.
 - Use `read`, `ls`, `search`, `edit`, `write`, `patch`, `bash`, `batch`,
   `program`, `task`, `git`, `web_search`, and `web_fetch` according to their
   exposed schemas; do not silently substitute an unavailable capability.
