@@ -49,6 +49,7 @@ pub(crate) use conversation_runtime::{
 };
 mod direct_tool_facade;
 mod direct_tools;
+mod execution_coordinator;
 mod governance_facade;
 mod hook_control;
 mod project_instructions;
