@@ -5,9 +5,10 @@
 //! Lower-level runtime modules own run lifecycle and event forwarding.
 
 use super::{
-    agent_loop_runtime::build_pinned_agent_loop, command_runtime, run_admission,
-    run_lifecycle::RunControlState, runtime::BlockingRunContext, runtime::ConversationInput,
-    runtime::StreamRunContext, AgentRunSpawn, AgentSession,
+    agent_loop_runtime::build_pinned_agent_loop, command_runtime,
+    execution_coordinator::ExecutionCoordinator, run_admission, run_lifecycle::RunControlState,
+    runtime::BlockingRunContext, runtime::ConversationInput, runtime::StreamRunContext,
+    AgentRunSpawn, AgentSession,
 };
 use crate::agent::{AgentEvent, AgentLoop, AgentResult};
 use crate::error::{CodeError, Result};
@@ -38,53 +39,13 @@ pub(crate) struct PreparedExactRecovery {
     lease: run_admission::RunAdmissionLease,
 }
 
-fn bail_if_closed(session: &AgentSession) -> Result<()> {
-    if session.is_closed() {
-        return Err(CodeError::SessionClosed {
-            session_id: session.session_id.clone(),
-        });
-    }
-    Ok(())
-}
-
-async fn admit(
-    session: &AgentSession,
-    operation: &'static str,
-) -> Result<run_admission::RunAdmissionLease> {
-    bail_if_closed(session)?;
-    let lease = session.run_admission.try_acquire(&session.session_id)?;
-    let label = format!("{}:{operation}", session.session_id);
-    let task_lease = session
-        .task_scheduler
-        .acquire(session.task_priority, label, &session.session_cancel)
-        .await
-        .map_err(|error| match error {
-            crate::task_scheduler::TaskSchedulerError::Cancelled if session.is_closed() => {
-                CodeError::SessionClosed {
-                    session_id: session.session_id.clone(),
-                }
-            }
-            crate::task_scheduler::TaskSchedulerError::Cancelled => {
-                CodeError::TaskAdmissionCancelled {
-                    session_id: session.session_id.clone(),
-                }
-            }
-            crate::task_scheduler::TaskSchedulerError::Closed => CodeError::TaskSchedulerClosed,
-            crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
-                CodeError::Config(message)
-            }
-        })?;
-    bail_if_closed(session)?;
-    Ok(lease.attach_task_lease(task_lease))
-}
-
 pub(super) async fn send(
     session: &AgentSession,
     prompt: &str,
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
     // Admission must precede command dispatch and internal-history reads.
-    let _lease = admit(session, "send").await?;
+    let _lease = ExecutionCoordinator::admit(session, "send").await?;
 
     if let Some(result) = command_runtime::dispatch_blocking(session, prompt, history).await? {
         return Ok(result);
@@ -105,7 +66,7 @@ pub(super) async fn send_with_attachments(
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
     // Admission must precede the attachment message's internal-history clone.
-    let _lease = admit(session, "send-with-attachments").await?;
+    let _lease = ExecutionCoordinator::admit(session, "send-with-attachments").await?;
 
     // Build one user message containing text and images, then execute from the
     // resulting message list so the loop does not append a duplicate prompt.
@@ -122,14 +83,14 @@ pub(super) async fn stream_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
-    let lease = admit(session, "stream-with-attachments").await?;
+    let lease = ExecutionCoordinator::admit(session, "stream-with-attachments").await?;
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
     let stream_run = StreamRunContext::start(session, prompt, input.persistence).await?;
     let (rx, handle, worker_aborts) = stream_run.spawn_from_messages(input.messages);
     Ok((
         rx,
-        run_admission::guard_stream_handle(handle, worker_aborts, lease),
+        ExecutionCoordinator::supervise_stream(handle, worker_aborts, lease),
     ))
 }
 
@@ -140,13 +101,13 @@ pub(super) async fn stream(
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
     // Slash commands share admission because they read and may mutate the same
     // session state as model-backed operations.
-    let lease = admit(session, "stream").await?;
+    let lease = ExecutionCoordinator::admit(session, "stream").await?;
 
     if let Some((rx, handle)) = command_runtime::dispatch_streaming(session, prompt).await? {
         let worker_abort = handle.abort_handle();
         return Ok((
             rx,
-            run_admission::guard_stream_handle(handle, vec![worker_abort], lease),
+            ExecutionCoordinator::supervise_stream(handle, vec![worker_abort], lease),
         ));
     }
 
@@ -156,7 +117,7 @@ pub(super) async fn stream(
         stream_run.spawn_with_prompt(input.messages, prompt.to_string());
     Ok((
         rx,
-        run_admission::guard_stream_handle(handle, worker_aborts, lease),
+        ExecutionCoordinator::supervise_stream(handle, worker_aborts, lease),
     ))
 }
 
@@ -169,7 +130,7 @@ pub(super) async fn spawn_run_with_id(
     if let Some(replay) = exact_run_replay(session, run_id, prompt).await? {
         return Ok(replay);
     }
-    let lease = admit(session, "spawn-run").await?;
+    let lease = ExecutionCoordinator::admit(session, "spawn-run").await?;
     let input = ConversationInput::from_history(session, None);
     let run_control = RunControlState::from_session(session);
     let reservation = run_control.reserve_run_with_id(run_id, prompt).await?;
@@ -193,7 +154,7 @@ pub(super) async fn spawn_run_with_id(
     })?;
     let (events, worker, worker_aborts) =
         stream_run.spawn_with_prompt(input.messages, prompt.to_string());
-    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    let worker = ExecutionCoordinator::supervise_stream(worker, worker_aborts, lease);
     Ok(AgentRunSpawn::Started {
         snapshot,
         worker: drain_detached_events(events, worker),
@@ -211,7 +172,7 @@ pub(super) async fn spawn_recovery_with_run_id(
         return Ok(replay);
     }
 
-    let lease = admit(session, "spawn-recovery").await?;
+    let lease = ExecutionCoordinator::admit(session, "spawn-recovery").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
     let cancel_token = session.session_cancel.child_token();
     let (agent_loop, capability_run) =
@@ -264,7 +225,7 @@ pub(super) async fn spawn_recovery_with_run_id(
     })?;
     let (events, worker, worker_aborts) =
         stream_run.spawn_from_messages_seeded(checkpoint.messages, Some(seed));
-    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    let worker = ExecutionCoordinator::supervise_stream(worker, worker_aborts, lease);
     Ok(AgentRunSpawn::Started {
         snapshot,
         worker: drain_detached_events(events, worker),
@@ -322,7 +283,7 @@ async fn prepare_exact_recovery(
         return Ok(ExactRecoveryPreparation::Replayed(replay));
     }
 
-    let lease = admit(session, "prepare-exact-recovery").await?;
+    let lease = ExecutionCoordinator::admit(session, "prepare-exact-recovery").await?;
     let checkpoint = match supplied_checkpoint {
         Some(checkpoint) => checkpoint,
         None => load_resume_checkpoint(session, &evidence.source_run_id).await?,
@@ -425,7 +386,7 @@ pub(super) async fn spawn_prepared_recovery(
     })?;
     let (events, worker, worker_aborts) =
         stream_run.spawn_from_messages_seeded(checkpoint.messages, Some(seed));
-    let worker = run_admission::guard_stream_handle(worker, worker_aborts, lease);
+    let worker = ExecutionCoordinator::supervise_stream(worker, worker_aborts, lease);
     Ok(AgentRunSpawn::Started {
         snapshot,
         worker: drain_detached_events(events, worker),
@@ -446,7 +407,7 @@ pub(super) async fn resume_run(
     session: &AgentSession,
     checkpoint_run_id: &str,
 ) -> Result<crate::agent::AgentResult> {
-    let _lease = admit(session, "resume-run").await?;
+    let _lease = ExecutionCoordinator::admit(session, "resume-run").await?;
     let checkpoint = load_resume_checkpoint(session, checkpoint_run_id).await?;
 
     let persistence =
