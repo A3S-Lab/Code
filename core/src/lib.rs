@@ -297,7 +297,7 @@ pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
     Message, ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
-    ModelGenerationPermit, OpenAiClient, TokenUsage,
+    ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError, OpenAiClient, TokenUsage,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{
@@ -362,7 +362,8 @@ pub use subagent_task_tracker::{
 pub use task_scheduler::{
     TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
     TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerQuota,
-    TaskSchedulerQuotaSnapshot, TaskSchedulerStats, TASK_SCHEDULER_MAX_SCOPE_BYTES,
+    TaskSchedulerQuotaSnapshot, TaskSchedulerStats, TASK_SCHEDULER_MAX_QUOTAS,
+    TASK_SCHEDULER_MAX_SCOPE_BYTES,
 };
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,

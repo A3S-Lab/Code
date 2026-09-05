@@ -107,6 +107,7 @@ impl DirectToolRuntime {
         let cancel = self.session_cancel.child_token();
         let task_scheduler = self.task_scheduler;
         let task_priority = self.task_priority;
+        let provider_quota = self.provider_quota;
         let closed = self.closed;
         let mut ctx = self.tool_context;
         ctx.agent_event_tx = Some(broadcast_tx);
@@ -116,10 +117,12 @@ impl DirectToolRuntime {
         let event_tx = Some(runtime_tx);
         let security_provider = self.security_provider;
         let handle = tokio::spawn(async move {
-            let _task_lease = ExecutionCoordinator::acquire_optional_task(
+            let quotas = provider_quota.as_slice();
+            let _task_lease = ExecutionCoordinator::acquire_optional_task_with_quotas(
                 task_scheduler.as_deref(),
                 task_priority,
                 format!("{session_id}:tool:{tool_name}"),
+                quotas,
                 &session_id,
                 &cancel,
                 &closed,

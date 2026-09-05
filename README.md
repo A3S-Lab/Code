@@ -55,6 +55,12 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   scheduler with a digest-only step identity and an owner quota; session-bound
   calls retain one outer scheduler lease to avoid nested single-slot
   deadlocks. Detached children inherit a run/session admission scope.
+- **Provider-aware generation admission.** Regular, streaming, and structured
+  model calls share one typed provider/model capacity identity across sessions,
+  delegated children, direct tools, and dynamic workflows. Leaf generations
+  reserve that capacity through the existing scheduler actor without creating a
+  second queue; cancellation and dropped streams release both local and shared
+  reservations automatically.
 - **Generation-fenced workflow replay.** New dynamic workflow runs pin the
   Code runtime build and expose a digest-only continuation identity derived
   from durable immutable facts. Changed source/input, conflicting step
@@ -192,7 +198,7 @@ telemetry remain opt-in.
 | Structured output       | Native provider formats or schema-validated prompt, partial parse, and repair fallback                                                                                                                                                  | Baseline                                                                                                                                                                  |
 | MCP and Skills          | Isolated MCP transports plus filesystem, registry, inline, and live session Skills                                                                                                                                                      | Configuration or live registration                                                                                                                                        |
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
-| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner quotas, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; Rust hosts can use `TaskSchedulerQuota` for a scoped limit |
+| Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner/provider quotas, quota-only leaf reservations, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; Rust hosts can use `TaskSchedulerQuota` for a scoped limit |
 | Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
 | Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
 | Persistence             | Atomic snapshots, run events, traces, artifacts, verification, identity-bound workflow/Flow receipts, checkpoints, and optional RL trajectories                                                                                         | Configured store and host policy                                                                                                                                          |
@@ -316,6 +322,17 @@ digest-only `run:<run_id>` (or `session:<session_id>` for low-level hosts)
 scope, so nested fan-out never reacquires the parent's single global lease.
 Quota snapshots are live projections; idle owner entries are pruned and global
 health counters remain the cumulative diagnostic surface.
+
+Provider adapters can additionally expose a `ModelGenerationPool`. Its identity
+is derived from non-secret provider/model routing facts (and an optional
+non-secret account scope), while endpoint credentials, paths, queries, prompts,
+and outputs are never retained. Session construction projects that identity into
+the same scheduler as a quota-only leaf reservation. Consequently, a normal
+session or child run still owns its one global orchestration lease, while each
+actual blocking or streaming generation waits in the shared priority queue for
+the provider pool. Structured-output repairs release the first permit before
+the next call, so a single-flight provider cannot deadlock itself; a dropped
+stream releases its permit through the supervised proxy task.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
@@ -1080,7 +1097,9 @@ credentials, refresh, and live session-scoped add/remove operations.
 
 Dynamic workflows can bound independently session-forked structured generation
 with `maxConcurrentGenerations` (1-4); providers without session forking remain
-single-flight. Flow step bodies also accept `maxConcurrentSteps` (1-32,
+single-flight. When the session exposes a `ModelGenerationPool`, that local
+bound is intersected with the provider pool in the shared scheduler, so a
+workflow cannot bypass capacity by forking clients. Flow step bodies also accept `maxConcurrentSteps` (1-32,
 default 4); waiting is cancellation-aware and starts the sandbox timeout only
 after admission. Every step has a digest-only identity derived from its run,
 step, handler, and bounded input. Durable completed-step recovery is bound to
@@ -1315,6 +1334,14 @@ Core owns lifecycle, ordering, and execution contracts. Public extension
 boundaries include `LlmClient`, `ContextProvider`, `MemoryStore`,
 `SessionStore`, workspace service traits, tools, permissions, confirmations,
 hooks, security, MCP transports, and graph stores.
+
+Model capacity is a resource boundary within that same execution contract. A
+session's orchestration admission consumes one global scheduler slot; each
+provider call acquires a quota-only reservation for its typed
+`ModelGenerationPool`. Both decisions use the one actor and priority queue,
+which preserves global fairness while allowing nested model calls to make
+progress under a single-slot run. The local semaphore and scheduler lease are
+owned by one RAII permit, including streaming and cancellation paths.
 
 Installable cognitive packages remain owned by A3S Use. Code consumes their
 exact immutable capability generations and projects local Tool, Skill, Agent,

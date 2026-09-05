@@ -24,6 +24,12 @@ const DEFAULT_AGING_INTERVAL_MS: u64 = 30_000;
 /// snapshot; the bound only prevents an untrusted host from forcing an
 /// unbounded identity-derivation allocation.
 pub const TASK_SCHEDULER_MAX_SCOPE_BYTES: usize = 512;
+/// Maximum number of independent quota dimensions accepted by one admission.
+///
+/// Keeping this bound small makes the scheduler actor's validation and live
+/// accounting predictable even when a host composes owner, provider, tenant,
+/// or other typed capacity descriptors.
+pub const TASK_SCHEDULER_MAX_QUOTAS: usize = 8;
 
 /// Relative importance of work admitted through an agent's shared scheduler.
 ///
@@ -113,23 +119,24 @@ impl TaskSchedulerConfig {
     }
 }
 
-/// Immutable owner quota carried by one scheduler admission request.
+/// Immutable capacity quota carried by one scheduler admission request.
 ///
 /// The quota is deliberately a descriptor rather than a second queue or
 /// semaphore. The scheduler actor remains the only authority that decides
-/// whether work owns a global slot; it additionally refuses to admit more than
-/// `max_active` requests for this digest-only owner identity at once.
+/// whether work owns a global slot or a quota-only reservation; it additionally
+/// refuses to admit more than `max_active` requests for this digest-only
+/// capacity identity at once.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSchedulerQuota {
-    /// Digest-only identity of the run/host scope consuming capacity.
+    /// Digest-only identity of the run/host/provider scope consuming capacity.
     pub identity: ExecutionIdentityV1,
-    /// Maximum global scheduler slots this owner may hold concurrently.
+    /// Maximum reservations this capacity identity may hold concurrently.
     pub max_active: usize,
 }
 
 impl TaskSchedulerQuota {
-    /// Build and validate an owner quota descriptor.
+    /// Build and validate a capacity quota descriptor.
     pub fn new(
         identity: ExecutionIdentityV1,
         max_active: usize,
@@ -204,7 +211,8 @@ pub struct TaskSchedulerQuotaSnapshot {
     pub identity: ExecutionIdentityV1,
     /// Immutable owner limit used for this live projection.
     pub max_active: usize,
-    /// Global scheduler slots currently owned by this quota identity.
+    /// Active reservations currently owned by this quota identity. This may
+    /// include quota-only leaf leases in addition to global scheduler slots.
     pub active: usize,
     /// Requests from this owner waiting in the global queue.
     pub pending: usize,
@@ -278,7 +286,9 @@ pub struct TaskSchedulerStats {
 pub struct TaskSchedulerHealthSnapshot {
     /// Configured global capacity.
     pub max_active: usize,
-    /// Number of leases currently held.
+    /// Number of global scheduler slots currently held. Quota-only leaf
+    /// reservations are visible through their quota snapshots but do not
+    /// consume this global occupancy counter.
     pub active: usize,
     /// Number of requests waiting for a lease.
     pub pending: usize,
@@ -358,14 +368,59 @@ impl TaskScheduler {
         identity: Option<ExecutionIdentityV1>,
         cancellation: &CancellationToken,
     ) -> Result<TaskLease, TaskSchedulerError> {
-        self.acquire_inner(priority, label.into(), None, identity, cancellation)
+        self.acquire_inner(
+            priority,
+            label.into(),
+            Vec::new(),
+            identity,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait for one or more quota dimensions without consuming another
+    /// global execution slot.
+    ///
+    /// This is used at leaf resource boundaries (for example, one model
+    /// generation inside an already-admitted session run). The request still
+    /// enters the same priority queue and actor as global admissions, so a
+    /// provider limit cannot be bypassed with a local semaphore and a
+    /// max-active=1 session does not deadlock while a nested model call waits.
+    pub async fn acquire_quota(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quota: &TaskSchedulerQuota,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_quotas(priority, label, std::slice::from_ref(quota), cancellation)
             .await
     }
 
-    /// Wait until this task owns a global execution slot subject to an
-    /// owner-level quota. The quota reservation is made in the same scheduler
-    /// actor as global admission, so a caller cannot bypass it by creating a
-    /// fresh local semaphore or executor handle.
+    /// Multi-dimensional quota-only counterpart of [`Self::acquire_quota`].
+    pub async fn acquire_quotas(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quotas: &[TaskSchedulerQuota],
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            quotas.to_vec(),
+            None,
+            false,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait until this task owns a global execution slot subject to a capacity
+    /// quota. The quota reservation is made in the same scheduler actor as
+    /// global admission, so a caller cannot bypass it by creating a fresh local
+    /// semaphore or executor handle.
     pub async fn acquire_with_quota(
         &self,
         priority: TaskPriority,
@@ -377,8 +432,32 @@ impl TaskScheduler {
         self.acquire_inner(
             priority,
             label.into(),
-            Some(quota.clone()),
+            vec![quota.clone()],
             identity,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait until this task owns a global execution slot subject to multiple
+    /// immutable quota dimensions. All dimensions are evaluated by the same
+    /// scheduler actor, so a caller cannot bypass one limit by splitting the
+    /// request across independent local gates.
+    pub async fn acquire_with_quotas(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quotas: &[TaskSchedulerQuota],
+        identity: Option<ExecutionIdentityV1>,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            quotas.to_vec(),
+            identity,
+            true,
             cancellation,
         )
         .await
@@ -388,8 +467,9 @@ impl TaskScheduler {
         &self,
         priority: TaskPriority,
         label: String,
-        quota: Option<TaskSchedulerQuota>,
+        quotas: Vec<TaskSchedulerQuota>,
         identity: Option<ExecutionIdentityV1>,
+        global_slot: bool,
         cancellation: &CancellationToken,
     ) -> Result<TaskLease, TaskSchedulerError> {
         if self.closed.load(Ordering::Acquire) {
@@ -403,12 +483,31 @@ impl TaskScheduler {
                 TaskSchedulerError::InvalidConfig(format!("execution identity is invalid: {error}"))
             })?;
         }
-        if let Some(quota) = &quota {
+        if quotas.len() > TASK_SCHEDULER_MAX_QUOTAS {
+            return Err(TaskSchedulerError::InvalidConfig(format!(
+                "task admission cannot contain more than {TASK_SCHEDULER_MAX_QUOTAS} quota dimensions"
+            )));
+        }
+        if !global_slot && quotas.is_empty() {
+            return Err(TaskSchedulerError::InvalidConfig(
+                "quota-only admission requires at least one quota dimension".to_string(),
+            ));
+        }
+        let mut quota_digests = HashSet::with_capacity(quotas.len());
+        for quota in &quotas {
             quota.validate()?;
+            if !quota_digests.insert(quota.identity.digest.clone()) {
+                return Err(TaskSchedulerError::InvalidConfig(
+                    "task admission contains duplicate quota identities".to_string(),
+                ));
+            }
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let quota_identity = quota.as_ref().map(|quota| quota.identity.clone());
+        let quota_identities = quotas
+            .iter()
+            .map(|quota| quota.identity.clone())
+            .collect::<Vec<_>>();
         let (ready_tx, ready_rx) = oneshot::channel();
         self.tx
             .send(SchedulerMessage::Enqueue(QueuedAdmission {
@@ -417,7 +516,8 @@ impl TaskScheduler {
                 effective_priority: priority.lane_priority(),
                 label,
                 identity: identity.clone(),
-                quota,
+                quotas,
+                global_slot,
                 enqueued_at: Instant::now(),
                 ready: ready_tx,
             }))
@@ -436,7 +536,8 @@ impl TaskScheduler {
                     tx: self.tx.clone(),
                     released: false,
                     identity,
-                    quota_identity,
+                    quota_identities,
+                    global_slot,
                 })
             }
         }
@@ -501,13 +602,20 @@ impl TaskScheduler {
     }
 }
 
-/// RAII ownership of one globally admitted execution slot.
+/// RAII ownership of one scheduler admission.
+///
+/// A normal lease consumes one global execution slot. A lease returned by
+/// [`TaskScheduler::acquire_quota`] reserves only its quota dimensions, which
+/// lets a leaf resource (such as a model generation) compose with an already
+/// held session slot without recursive scheduler deadlock.
+#[derive(Debug)]
 pub struct TaskLease {
     id: u64,
     tx: mpsc::UnboundedSender<SchedulerMessage>,
     released: bool,
     identity: Option<ExecutionIdentityV1>,
-    quota_identity: Option<ExecutionIdentityV1>,
+    quota_identities: Vec<ExecutionIdentityV1>,
+    global_slot: bool,
 }
 
 impl TaskLease {
@@ -523,7 +631,21 @@ impl TaskLease {
 
     /// Digest-only owner quota identity applied to this admission, when any.
     pub fn quota_identity(&self) -> Option<&ExecutionIdentityV1> {
-        self.quota_identity.as_ref()
+        self.quota_identities.first()
+    }
+
+    /// All digest-only quota identities applied to this admission.
+    ///
+    /// The slice is empty for an unconstrained global admission. The first
+    /// identity is retained by [`Self::quota_identity`] for compatibility
+    /// with callers that only used the original single-quota API.
+    pub fn quota_identities(&self) -> &[ExecutionIdentityV1] {
+        &self.quota_identities
+    }
+
+    /// Whether this lease consumes one of the scheduler's global slots.
+    pub const fn consumes_global_slot(&self) -> bool {
+        self.global_slot
     }
 }
 
@@ -542,7 +664,8 @@ struct QueuedAdmission {
     effective_priority: Priority,
     label: String,
     identity: Option<ExecutionIdentityV1>,
-    quota: Option<TaskSchedulerQuota>,
+    quotas: Vec<TaskSchedulerQuota>,
+    global_slot: bool,
     enqueued_at: Instant,
     ready: oneshot::Sender<Result<(), TaskSchedulerError>>,
 }
@@ -585,7 +708,8 @@ struct SchedulerState {
 
 struct ActiveAdmission {
     priority: TaskPriority,
-    quota_identity: Option<String>,
+    quota_identities: Vec<String>,
+    global_slot: bool,
 }
 
 struct QuotaState {
@@ -617,11 +741,11 @@ async fn run_scheduler(
                 if state.closing {
                     state.counters.rejected = state.counters.rejected.saturating_add(1);
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
-                } else if let Err(error) = state.register_pending_quota(item.quota.as_ref()) {
+                } else if let Err(error) = state.register_pending_quotas(&item.quotas) {
                     state.counters.rejected = state.counters.rejected.saturating_add(1);
                     let _ = item.ready.send(Err(error));
                 } else {
-                    if let Some(quota) = item.quota.as_ref() {
+                    for quota in &item.quotas {
                         if let Some(quota_state) = state.quotas.get_mut(&quota.identity.digest) {
                             quota_state.pending = quota_state.pending.saturating_add(1);
                         }
@@ -633,7 +757,7 @@ async fn run_scheduler(
             SchedulerMessage::Cancel(id) => {
                 if let Some(active) = state.active.remove(&id) {
                     state.counters.cancelled = state.counters.cancelled.saturating_add(1);
-                    state.release_active_quota(active.quota_identity.as_deref());
+                    state.release_active_quotas(&active.quota_identities);
                 } else {
                     state.cancelled.insert(id);
                     state.purge_cancelled();
@@ -644,7 +768,7 @@ async fn run_scheduler(
             SchedulerMessage::Release(id) => {
                 if let Some(active) = state.active.remove(&id) {
                     state.counters.released = state.counters.released.saturating_add(1);
-                    state.release_active_quota(active.quota_identity.as_deref());
+                    state.release_active_quotas(&active.quota_identities);
                 }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
@@ -670,7 +794,7 @@ async fn run_scheduler(
                 while let Some(item) = state.pending.pop() {
                     let item = item.into_value();
                     state.counters.rejected = state.counters.rejected.saturating_add(1);
-                    state.reject_pending_quota(item.quota.as_ref());
+                    state.reject_pending_quotas(&item.quotas);
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
                 }
                 state.cancelled.clear();
@@ -688,65 +812,58 @@ async fn run_scheduler(
 }
 
 impl SchedulerState {
-    fn register_pending_quota(
+    fn register_pending_quotas(
         &mut self,
-        quota: Option<&TaskSchedulerQuota>,
+        quotas: &[TaskSchedulerQuota],
     ) -> Result<(), TaskSchedulerError> {
-        let Some(quota) = quota else {
-            return Ok(());
-        };
-        let key = quota.identity.digest.clone();
-        match self.quotas.get(&key) {
-            Some(existing)
-                if existing.identity != quota.identity
-                    || existing.max_active != quota.max_active =>
-            {
-                Err(TaskSchedulerError::InvalidConfig(
-                    "scheduler quota identity is already registered with a different limit"
-                        .to_string(),
-                ))
-            }
-            Some(_) => Ok(()),
-            None => {
-                self.quotas.insert(
-                    key,
-                    QuotaState {
-                        identity: quota.identity.clone(),
-                        max_active: quota.max_active,
-                        active: 0,
-                        pending: 0,
-                    },
-                );
-                Ok(())
+        // Validate every existing registration before inserting any new state;
+        // a later conflict must not leave a partially registered descriptor.
+        for quota in quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(existing) = self.quotas.get(key) {
+                if existing.identity != quota.identity || existing.max_active != quota.max_active {
+                    return Err(TaskSchedulerError::InvalidConfig(
+                        "scheduler quota identity is already registered with a different limit"
+                            .to_string(),
+                    ));
+                }
             }
         }
+        for quota in quotas {
+            let key = quota.identity.digest.clone();
+            self.quotas.entry(key).or_insert_with(|| QuotaState {
+                identity: quota.identity.clone(),
+                max_active: quota.max_active,
+                active: 0,
+                pending: 0,
+            });
+        }
+        Ok(())
     }
 
-    fn reject_pending_quota(&mut self, quota: Option<&TaskSchedulerQuota>) {
-        let Some(quota) = quota else {
-            return;
-        };
-        let key = quota.identity.digest.as_str();
-        if let Some(state) = self.quotas.get_mut(key) {
-            state.pending = state.pending.saturating_sub(1);
+    fn reject_pending_quotas(&mut self, quotas: &[TaskSchedulerQuota]) {
+        for quota in quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.pending = state.pending.saturating_sub(1);
+            }
+            self.prune_idle_quota(key);
         }
-        self.prune_idle_quota(key);
     }
 
     fn cancel_pending(&mut self, item: QueuedAdmission) {
         self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-        self.reject_pending_quota(item.quota.as_ref());
+        self.reject_pending_quotas(&item.quotas);
         let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
     }
 
-    fn release_active_quota(&mut self, key: Option<&str>) {
-        let Some(key) = key else {
-            return;
-        };
-        if let Some(state) = self.quotas.get_mut(key) {
-            state.active = state.active.saturating_sub(1);
+    fn release_active_quotas(&mut self, keys: &[String]) {
+        for key in keys {
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.active = state.active.saturating_sub(1);
+            }
+            self.prune_idle_quota(key);
         }
-        self.prune_idle_quota(key);
     }
 
     fn prune_idle_quota(&mut self, key: &str) {
@@ -759,13 +876,12 @@ impl SchedulerState {
         }
     }
 
-    fn quota_allows(&self, quota: Option<&TaskSchedulerQuota>) -> bool {
-        let Some(quota) = quota else {
-            return true;
-        };
-        self.quotas
-            .get(&quota.identity.digest)
-            .is_some_and(|state| state.active < state.max_active)
+    fn quota_allows(&self, quotas: &[TaskSchedulerQuota]) -> bool {
+        quotas.iter().all(|quota| {
+            self.quotas
+                .get(&quota.identity.digest)
+                .is_some_and(|state| state.active < state.max_active)
+        })
     }
 
     fn quota_snapshot(
@@ -830,19 +946,24 @@ impl SchedulerState {
             return;
         }
         self.apply_aging();
-        while self.active.len() < self.config.max_active {
-            let Some(item) = self.pop_admissible() else {
+        loop {
+            // Recompute after every admission: quota-only leases may continue
+            // while global capacity is full, but a second global lease must
+            // never slip past the configured max-active bound.
+            let global_capacity_available = self.global_active_count() < self.config.max_active;
+            let Some(item) = self.pop_admissible(global_capacity_available) else {
                 break;
             };
             let id = item.id;
             let priority = item.priority;
             let label = item.label;
             let identity = item.identity;
-            let quota_identity = item
-                .quota
-                .as_ref()
-                .map(|quota| quota.identity.digest.clone());
-            if let Some(quota_key) = quota_identity.as_deref() {
+            let quota_identities = item
+                .quotas
+                .iter()
+                .map(|quota| quota.identity.digest.clone())
+                .collect::<Vec<_>>();
+            for quota_key in &quota_identities {
                 if let Some(quota_state) = self.quotas.get_mut(quota_key) {
                     quota_state.pending = quota_state.pending.saturating_sub(1);
                     quota_state.active = quota_state.active.saturating_add(1);
@@ -857,20 +978,21 @@ impl SchedulerState {
                 id,
                 ActiveAdmission {
                     priority,
-                    quota_identity: quota_identity.clone(),
+                    quota_identities: quota_identities.clone(),
+                    global_slot: item.global_slot,
                 },
             );
             if item.ready.send(Ok(())).is_err() {
                 self.active.remove(&id);
                 self.counters.cancelled = self.counters.cancelled.saturating_add(1);
-                self.release_active_quota(quota_identity.as_deref());
+                self.release_active_quotas(&quota_identities);
                 continue;
             }
             self.counters.admitted = self.counters.admitted.saturating_add(1);
             self.counters.total_wait_micros =
                 self.counters.total_wait_micros.saturating_add(wait_micros);
             self.counters.max_wait_micros = self.counters.max_wait_micros.max(wait_micros);
-            self.counters.peak_active = self.counters.peak_active.max(self.active.len());
+            self.counters.peak_active = self.counters.peak_active.max(self.global_active_count());
             tracing::trace!(
                 admission_id = id,
                 ?priority,
@@ -885,10 +1007,10 @@ impl SchedulerState {
     }
 
     /// Claim the first queued item that is eligible under both global capacity
-    /// and its owner quota. Items blocked by one owner remain queued while
-    /// independent owners can make progress, preventing a single fan-out from
-    /// monopolizing the shared scheduler.
-    fn pop_admissible(&mut self) -> Option<QueuedAdmission> {
+    /// and all of its capacity quotas. Items blocked by one identity remain
+    /// queued while independent identities can make progress, preventing a
+    /// single fan-out from monopolizing the shared scheduler.
+    fn pop_admissible(&mut self, global_capacity_available: bool) -> Option<QueuedAdmission> {
         let mut retained: Vec<PriorityItem<QueuedAdmission>> = Vec::new();
         let mut selected = None;
         while let Some(item) = self.pending.pop() {
@@ -896,7 +1018,10 @@ impl SchedulerState {
                 self.cancel_pending(item.into_value());
                 continue;
             }
-            if selected.is_none() && self.quota_allows(item.value().quota.as_ref()) {
+            if selected.is_none()
+                && (!item.value().global_slot || global_capacity_available)
+                && self.quota_allows(&item.value().quotas)
+            {
                 selected = Some(item.into_value());
             } else {
                 retained.push(item);
@@ -941,7 +1066,9 @@ impl SchedulerState {
     fn snapshot(&self) -> TaskSchedulerStats {
         let mut active_by_priority = TaskPriorityCounts::default();
         for active in self.active.values() {
-            active_by_priority.increment(active.priority);
+            if active.global_slot {
+                active_by_priority.increment(active.priority);
+            }
         }
         let mut pending_by_priority = TaskPriorityCounts::default();
         for item in self.pending.ordered() {
@@ -958,11 +1085,11 @@ impl SchedulerState {
                     TaskPriority::Maintenance => active_by_priority.maintenance,
                 })
                 .sum::<usize>(),
-            self.active.len()
+            self.global_active_count()
         );
         TaskSchedulerStats {
             max_active: self.config.max_active,
-            active: self.active.len(),
+            active: self.global_active_count(),
             pending: self.pending.len(),
             active_by_priority,
             pending_by_priority,
@@ -1001,6 +1128,13 @@ impl SchedulerState {
                 let _ = waiter.send(());
             }
         }
+    }
+
+    fn global_active_count(&self) -> usize {
+        self.active
+            .values()
+            .filter(|active| active.global_slot)
+            .count()
     }
 }
 

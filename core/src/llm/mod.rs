@@ -18,7 +18,7 @@ pub mod zhipu;
 // Re-export public types
 pub use admission::{
     ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
-    ModelGenerationPermit,
+    ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError,
 };
 pub use anthropic::AnthropicClient;
 pub use codex_login::CodexLoginClient;
@@ -53,6 +53,43 @@ pub trait LlmClient: Send + Sync {
     /// strings.
     fn model_generation_concurrency(&self) -> ModelGenerationConcurrency {
         ModelGenerationConcurrency::single_flight()
+    }
+
+    /// Describe the non-secret provider/model capacity pool shared by this
+    /// client. The default is `None` for custom clients that do not expose a
+    /// stable routing identity; they retain the existing per-client gate.
+    fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
+        None
+    }
+
+    /// Rebind a governed model facade to an invocation-owned generation gate.
+    ///
+    /// This is primarily used when a nested workflow supplies a tighter
+    /// admission gate than the surrounding session (for example, a Flow step
+    /// with its own `maxConcurrentGenerations` limit). Raw provider clients do
+    /// not need to implement this hook; the agent runtime can wrap them. A
+    /// client that already owns model-generation admission should preserve the
+    /// provider transport while replacing the facade's gate and, when given,
+    /// consuming the one pre-admitted permit exactly once.
+    fn bind_model_generation_admission(
+        &self,
+        _admission: ModelGenerationAdmission,
+        _preadmitted: Option<std::sync::Arc<ModelGenerationPermit>>,
+    ) -> Option<std::sync::Arc<dyn LlmClient>> {
+        None
+    }
+
+    /// Whether this client already applies the model-generation admission
+    /// contract around every provider call. Built-in run-bound clients use
+    /// this marker so structured tools do not acquire the same permit twice.
+    fn model_generation_is_managed(&self) -> bool {
+        false
+    }
+
+    /// Take queue wait accumulated by a managed client since the previous
+    /// observation. Unmanaged clients report zero.
+    fn take_model_generation_queue_wait(&self) -> Duration {
+        Duration::ZERO
     }
 
     /// Derive a provider client bound to one logical agent session.

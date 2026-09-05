@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added provider-aware model-generation admission. Built-in provider clients
+  expose a digest-only `ModelGenerationPool` identity, and regular, streaming,
+  and structured calls project that capacity into the existing agent-wide
+  scheduler across sessions, direct tools, delegated children, and dynamic
+  workflows. Quota-only leaf reservations avoid recursive single-slot
+  deadlocks; local and shared permits release on cancellation, provider
+  failure, repair boundaries, and dropped streams. Endpoint credentials,
+  prompts, outputs, and other secret material never enter the identity.
 - Added a typed per-owner admission quota to the existing agent-wide
   scheduler. `TaskSchedulerQuota` derives a bounded digest-only identity from a
   run or host scope, `acquire_with_quota` enforces the limit in the same actor

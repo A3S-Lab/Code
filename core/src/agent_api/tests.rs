@@ -680,6 +680,16 @@ impl LlmClient for NonRetryableStreamingClient {
 
 #[async_trait::async_trait]
 impl LlmClient for SessionAdmissionClient {
+    fn model_generation_pool(&self) -> Option<crate::llm::ModelGenerationPool> {
+        crate::llm::ModelGenerationPool::for_endpoint(
+            "test-provider",
+            "test-model",
+            "https://provider.test",
+            crate::llm::ModelGenerationConcurrency::single_flight(),
+        )
+        .ok()
+    }
+
     async fn complete(
         &self,
         _messages: &[Message],
@@ -1155,6 +1165,57 @@ async fn concurrent_session_direct_generations_share_provider_admission() {
         queue_waits[1] >= 80,
         "the second direct generation should wait for session capacity: {queue_waits:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn independent_sessions_share_scheduler_backed_provider_generation_capacity() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(SessionAdmissionClient::default());
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let options = |id: &str| {
+        SessionOptions::new()
+            .with_session_id(id)
+            .with_llm_client(client.clone())
+            .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+            .with_continuation(false)
+    };
+    let first = Arc::new(
+        agent
+            .session_async(dir.path().to_string_lossy(), Some(options("provider-a")))
+            .await
+            .unwrap(),
+    );
+    let second = Arc::new(
+        agent
+            .session_async(dir.path().to_string_lossy(), Some(options("provider-b")))
+            .await
+            .unwrap(),
+    );
+    let args = serde_json::json!({
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"]
+        },
+        "schema_name": "shared_provider",
+        "prompt": "Return an object whose ok field is true.",
+        "mode": "prompt",
+        "max_repair_attempts": 0,
+        "timeout_ms": 2_000
+    });
+    let (first_result, second_result) = tokio::join!(
+        first.tool("generate_object", args.clone()),
+        second.tool("generate_object", args)
+    );
+    assert!(first_result.unwrap().exit_code == 0);
+    assert!(second_result.unwrap().exit_code == 0);
+    assert_eq!(
+        client.max_active.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "sessions sharing one provider pool must not exceed its capacity"
+    );
+    agent.close().await;
 }
 
 #[tokio::test]

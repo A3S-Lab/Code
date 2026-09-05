@@ -13,12 +13,15 @@ use crate::harness_evidence::{
 };
 use crate::llm::structured::{NativeStructuredSupport, StructuredDirective};
 use crate::llm::{
-    estimate_prompt_tokens, LlmClient, LlmResponse, Message, ModelGenerationConcurrency,
-    StreamEvent, TokenUsage, ToolDefinition,
+    estimate_prompt_tokens, LlmClient, LlmResponse, Message, ModelGenerationAdmission,
+    ModelGenerationConcurrency, ModelGenerationPermit, ModelGenerationPool, StreamEvent,
+    TokenUsage, ToolDefinition,
 };
+use anyhow::Context;
 use async_trait::async_trait;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -29,6 +32,9 @@ struct LlmInvoker {
     inner: Arc<dyn LlmClient>,
     invocation: InvocationContext,
     presentation_application: ModelPresentationApplicationV1,
+    model_generation_admission: ModelGenerationAdmission,
+    preadmitted_permit: Arc<Mutex<Option<Arc<ModelGenerationPermit>>>>,
+    queue_wait_micros: Arc<AtomicU64>,
 }
 
 /// The non-streaming model-call shapes handled by the middleware boundary.
@@ -290,20 +296,107 @@ fn model_request_identity(
 }
 
 impl LlmInvoker {
+    #[cfg(test)]
     fn new(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
+        let admission = ModelGenerationAdmission::new(inner.model_generation_concurrency());
+        Self::new_with_admission(inner, invocation, admission)
+    }
+
+    fn new_with_admission(
+        inner: Arc<dyn LlmClient>,
+        invocation: InvocationContext,
+        model_generation_admission: ModelGenerationAdmission,
+    ) -> Self {
         Self {
             inner,
             invocation,
             presentation_application: ModelPresentationApplicationV1::Auxiliary,
+            model_generation_admission,
+            preadmitted_permit: Arc::new(Mutex::new(None)),
+            queue_wait_micros: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    fn profiled(inner: Arc<dyn LlmClient>, invocation: InvocationContext) -> Self {
+    fn profiled_with_admission(
+        inner: Arc<dyn LlmClient>,
+        invocation: InvocationContext,
+        model_generation_admission: ModelGenerationAdmission,
+    ) -> Self {
         Self {
             inner,
             invocation,
             presentation_application: ModelPresentationApplicationV1::Profiled,
+            model_generation_admission,
+            preadmitted_permit: Arc::new(Mutex::new(None)),
+            queue_wait_micros: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn with_preadmitted_permit(self, permit: Option<Arc<ModelGenerationPermit>>) -> Self {
+        if let Some(permit) = permit {
+            *self
+                .preadmitted_permit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(permit);
+        }
+        self
+    }
+
+    fn with_inner_preserving_state(&self, inner: Arc<dyn LlmClient>) -> Self {
+        Self {
+            inner,
+            invocation: self.invocation.clone(),
+            presentation_application: self.presentation_application,
+            model_generation_admission: self.model_generation_admission.clone(),
+            preadmitted_permit: Arc::clone(&self.preadmitted_permit),
+            queue_wait_micros: Arc::clone(&self.queue_wait_micros),
+        }
+    }
+
+    fn rebound(
+        &self,
+        admission: ModelGenerationAdmission,
+        preadmitted: Option<Arc<ModelGenerationPermit>>,
+    ) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            invocation: self.invocation.clone(),
+            presentation_application: self.presentation_application,
+            model_generation_admission: admission,
+            preadmitted_permit: Arc::new(Mutex::new(preadmitted)),
+            queue_wait_micros: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    async fn acquire_model_generation(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Arc<ModelGenerationPermit>> {
+        let preadmitted = self
+            .preadmitted_permit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let permit = match preadmitted {
+            Some(permit) => permit,
+            None => Arc::new(
+                self.model_generation_admission
+                    .acquire(cancellation)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            ),
+        };
+        let queue_wait = permit.queue_wait().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.queue_wait_micros
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(queue_wait))
+            })
+            .ok();
+        Ok(permit)
+    }
+
+    fn take_queue_wait(&self) -> Duration {
+        Duration::from_micros(self.queue_wait_micros.swap(0, Ordering::Relaxed))
     }
 
     async fn invoke_response<F>(
@@ -323,6 +416,10 @@ impl LlmInvoker {
         )
         .await?;
         let usage_binding = self.record_model_evidence(observation).await?;
+        let _generation_permit = self
+            .acquire_model_generation(self.invocation.cancellation())
+            .await
+            .context("model-generation admission failed")?;
 
         let response = tokio::select! {
             biased;
@@ -406,7 +503,24 @@ impl LlmInvoker {
         .await?;
         let usage_binding = self.record_model_evidence(observation).await?;
 
+        // A streaming permit must live as long as the returned receiver, not
+        // merely until the provider returns that receiver. This keeps active
+        // capacity truthful while tokens are still being consumed and makes
+        // dropping the receiver the normal release path.
         let caller_signal = caller_cancellation.clone();
+        let generation_permit = tokio::select! {
+            biased;
+            _ = self.invocation.cancellation().cancelled() => {
+                return Err(anyhow::anyhow!("Operation cancelled by user"));
+            }
+            _ = caller_signal.cancelled() => {
+                return Err(anyhow::anyhow!("Operation cancelled by caller"));
+            }
+            permit = self.acquire_model_generation(self.invocation.cancellation()) => {
+                permit.context("model-generation admission failed")?
+            }
+        };
+
         let (provider_cancellation, cancellation_watcher) =
             self.combine_cancellation(caller_cancellation);
         let setup = setup(provider_cancellation.clone());
@@ -434,6 +548,7 @@ impl LlmInvoker {
             provider_cancellation,
             cancellation_watcher,
             usage_binding,
+            generation_permit,
         ))
     }
 
@@ -502,6 +617,7 @@ impl LlmInvoker {
         provider_cancellation: CancellationToken,
         cancellation_watcher: JoinHandle<()>,
         usage_binding: Option<ModelUsageBinding>,
+        _generation_permit: Arc<ModelGenerationPermit>,
     ) -> mpsc::Receiver<StreamEvent> {
         let (tx, rx) = mpsc::channel(64);
         let budget_guard = self.invocation.governance().budget_guard().cloned();
@@ -509,6 +625,10 @@ impl LlmInvoker {
         let invocation = self.invocation.clone();
 
         tokio::spawn(async move {
+            // Keep the admission lease attached to the proxy task until the
+            // provider stream reaches EOF, Done, cancellation, or the caller
+            // drops the receiver.
+            let _generation_permit = _generation_permit;
             loop {
                 let event = tokio::select! {
                     biased;
@@ -600,26 +720,42 @@ impl LlmClient for LlmInvoker {
         self.inner.model_generation_concurrency()
     }
 
+    fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
+        self.inner.model_generation_pool()
+    }
+
+    fn bind_model_generation_admission(
+        &self,
+        admission: ModelGenerationAdmission,
+        preadmitted: Option<Arc<ModelGenerationPermit>>,
+    ) -> Option<Arc<dyn LlmClient>> {
+        Some(Arc::new(self.rebound(admission, preadmitted)))
+    }
+
+    fn model_generation_is_managed(&self) -> bool {
+        true
+    }
+
+    fn take_model_generation_queue_wait(&self) -> Duration {
+        self.take_queue_wait()
+    }
+
     fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
         self.inner.fork_for_session(session_id).map(|inner| {
-            Arc::new(Self {
+            let mut scoped = Self::new_with_admission(
                 inner,
-                invocation: self.invocation.clone(),
-                presentation_application: self.presentation_application,
-            }) as Arc<dyn LlmClient>
+                self.invocation.clone(),
+                self.model_generation_admission.clone(),
+            );
+            scoped.presentation_application = self.presentation_application;
+            Arc::new(scoped) as Arc<dyn LlmClient>
         })
     }
 
     fn with_active_generation_timeout(&self, timeout: Duration) -> Option<Arc<dyn LlmClient>> {
         self.inner
             .with_active_generation_timeout(timeout)
-            .map(|inner| {
-                Arc::new(Self {
-                    inner,
-                    invocation: self.invocation.clone(),
-                    presentation_application: self.presentation_application,
-                }) as Arc<dyn LlmClient>
-            })
+            .map(|inner| Arc::new(self.with_inner_preserving_state(inner)) as Arc<dyn LlmClient>)
     }
 
     async fn complete(
@@ -689,11 +825,29 @@ impl LlmClient for LlmInvoker {
 }
 
 impl AgentLoop {
+    /// Select the admission scope for a provider facade. Session builders
+    /// explicitly install a shared gate so sibling facades participate in the
+    /// same provider pool; compatibility loops retain one gate per facade,
+    /// matching their historical detached-helper behavior.
+    pub(crate) fn model_generation_admission_for_client(
+        &self,
+        client: Option<&Arc<dyn LlmClient>>,
+    ) -> ModelGenerationAdmission {
+        if self.shared_model_generation_admission {
+            return self.model_generation_admission.clone();
+        }
+        let concurrency = client
+            .map(|client| client.model_generation_concurrency())
+            .unwrap_or_else(|| self.llm_client.model_generation_concurrency());
+        ModelGenerationAdmission::new(concurrency)
+    }
+
     pub(super) fn scoped_llm_client(&self, invocation: &InvocationContext) -> Arc<dyn LlmClient> {
         let provider_client = self
             .llm_client
             .fork_for_session(invocation.session_id())
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let admission = self.model_generation_admission_for_client(Some(&provider_client));
         let provider_client = self
             .config
             .llm_api_timeout_ms
@@ -701,7 +855,84 @@ impl AgentLoop {
                 provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
             })
             .unwrap_or(provider_client);
-        Arc::new(LlmInvoker::new(provider_client, invocation.clone()))
+        Arc::new(LlmInvoker::new_with_admission(
+            provider_client,
+            invocation.clone(),
+            admission,
+        ))
+    }
+
+    /// Build the governed provider facade for a tool context that may carry a
+    /// tighter generation gate and/or one already-acquired permit.
+    ///
+    /// Dynamic workflow steps use this path to replace the session admission
+    /// with their per-step bound while retaining the exact provider transport
+    /// (including account/session forking). A managed facade is rebound rather
+    /// than wrapped recursively; recursive facades would reserve the same
+    /// single-flight capacity twice.
+    pub(crate) fn scoped_llm_client_for_tool_context(
+        &self,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel_token: &CancellationToken,
+        admission: ModelGenerationAdmission,
+        preadmitted: Option<Arc<ModelGenerationPermit>>,
+        existing_client: Option<Arc<dyn LlmClient>>,
+    ) -> Arc<dyn LlmClient> {
+        let invocation = if let Some(invocation) = self
+            .bound_invocation
+            .as_ref()
+            .filter(|invocation| invocation.matches_parts(session_id, event_tx))
+        {
+            invocation.clone()
+        } else {
+            let run_id = self.bound_invocation.as_ref().map_or_else(
+                || {
+                    self.checkpoint_run_id
+                        .clone()
+                        .unwrap_or_else(|| format!("standalone-{}", uuid::Uuid::new_v4()))
+                },
+                |bound| format!("{}-aux-{}", bound.run_id(), uuid::Uuid::new_v4()),
+            );
+            self.invocation_context(run_id, session_id, event_tx.clone(), cancel_token.clone())
+        };
+
+        let provider_client = existing_client.unwrap_or_else(|| {
+            self.llm_client
+                .fork_for_session(session_id.unwrap_or(""))
+                .unwrap_or_else(|| Arc::clone(&self.llm_client))
+        });
+
+        if provider_client.model_generation_is_managed() {
+            if let Some(rebound) =
+                provider_client.bind_model_generation_admission(admission, preadmitted)
+            {
+                return self
+                    .config
+                    .llm_api_timeout_ms
+                    .and_then(|timeout_ms| {
+                        rebound.with_active_generation_timeout(Duration::from_millis(timeout_ms))
+                    })
+                    .unwrap_or(rebound);
+            }
+            // The marker and rebinding hook are one contract for governed
+            // facades. Keep the existing client if a third-party facade only
+            // implements the marker; wrapping it would create nested gates.
+            tracing::warn!("managed LLM client did not provide a model-generation rebinding hook");
+            return provider_client;
+        }
+
+        let provider_client = self
+            .config
+            .llm_api_timeout_ms
+            .and_then(|timeout_ms| {
+                provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
+            })
+            .unwrap_or(provider_client);
+        Arc::new(
+            LlmInvoker::new_with_admission(provider_client, invocation, admission)
+                .with_preadmitted_permit(preadmitted),
+        )
     }
 
     fn scoped_profiled_llm_client(&self, invocation: &InvocationContext) -> Arc<dyn LlmClient> {
@@ -709,6 +940,7 @@ impl AgentLoop {
             .llm_client
             .fork_for_session(invocation.session_id())
             .unwrap_or_else(|| Arc::clone(&self.llm_client));
+        let admission = self.model_generation_admission_for_client(Some(&provider_client));
         let provider_client = self
             .config
             .llm_api_timeout_ms
@@ -716,7 +948,11 @@ impl AgentLoop {
                 provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
             })
             .unwrap_or(provider_client);
-        Arc::new(LlmInvoker::profiled(provider_client, invocation.clone()))
+        Arc::new(LlmInvoker::profiled_with_admission(
+            provider_client,
+            invocation.clone(),
+            admission,
+        ))
     }
 
     /// Compatibility helper for internal paths not yet carrying the aggregate

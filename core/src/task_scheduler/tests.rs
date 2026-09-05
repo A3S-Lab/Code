@@ -101,6 +101,55 @@ async fn strict_priority_and_fifo_are_enforced_globally() {
 }
 
 #[tokio::test]
+async fn global_capacity_is_recomputed_after_each_admission() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let blocker = scheduler
+        .acquire(
+            TaskPriority::Interactive,
+            "capacity-blocker",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (admitted_tx, mut admitted_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut tasks = Vec::new();
+    for index in 0..3 {
+        let scheduler = Arc::clone(&scheduler);
+        let admitted_tx = admitted_tx.clone();
+        let release = Arc::clone(&release);
+        tasks.push(tokio::spawn(async move {
+            let lease = scheduler
+                .acquire(
+                    TaskPriority::Foreground,
+                    format!("capacity-{index}"),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            admitted_tx.send(index).unwrap();
+            release.acquire().await.unwrap().forget();
+            drop(lease);
+        }));
+    }
+    wait_for_pending(&scheduler, 3).await;
+    drop(blocker);
+    assert!(admitted_rx.recv().await.is_some());
+    assert_eq!(scheduler.stats().await.unwrap().active, 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), admitted_rx.recv())
+            .await
+            .is_err(),
+        "a second global lease must not be admitted while capacity is full"
+    );
+    release.add_permits(3);
+    for task in tasks {
+        task.await.unwrap();
+    }
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
 async fn cancellation_does_not_consume_capacity() {
     let scheduler = Arc::new(scheduler(1, 60_000));
     let blocker = scheduler
@@ -613,5 +662,265 @@ async fn idle_quota_state_is_pruned_before_a_new_limit_is_registered() {
         .unwrap();
     assert_eq!(second.quota_identity(), Some(replacement.identity()));
     drop(second);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn multiple_quota_dimensions_are_atomic_and_release_together() {
+    let scheduler = Arc::new(scheduler(2, 60_000));
+    let owner = TaskSchedulerQuota::for_scope("run:multi", 2).unwrap();
+    let provider = TaskSchedulerQuota::for_scope("provider:shared", 1).unwrap();
+    let first = scheduler
+        .acquire_with_quotas(
+            TaskPriority::Foreground,
+            "multi:first",
+            &[owner.clone(), provider.clone()],
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first.quota_identities(),
+        &[owner.identity.clone(), provider.identity.clone()]
+    );
+
+    // The provider dimension blocks this request even though the owner still
+    // has one free slot. No partial owner reservation is visible.
+    let cancellation = CancellationToken::new();
+    let waiting = {
+        let scheduler = Arc::clone(&scheduler);
+        let owner = owner.clone();
+        let provider = provider.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            scheduler
+                .acquire_with_quotas(
+                    TaskPriority::Foreground,
+                    "multi:waiting",
+                    &[owner, provider],
+                    None,
+                    &cancellation,
+                )
+                .await
+        })
+    };
+    wait_for_pending(&scheduler, 1).await;
+    assert_eq!(scheduler.quota_snapshot(&owner).await.unwrap().active, 1);
+    assert_eq!(scheduler.quota_snapshot(&owner).await.unwrap().pending, 1);
+    assert!(scheduler.quota_snapshot(&provider).await.unwrap().blocked);
+
+    cancellation.cancel();
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Err(TaskSchedulerError::Cancelled)
+    ));
+    assert_eq!(scheduler.quota_snapshot(&owner).await.unwrap().pending, 0);
+    assert_eq!(scheduler.quota_snapshot(&provider).await.unwrap().active, 1);
+    drop(first);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn independent_provider_quota_can_progress_under_global_capacity() {
+    let scheduler = Arc::new(scheduler(2, 60_000));
+    let provider_a = TaskSchedulerQuota::for_scope("provider:a", 1).unwrap();
+    let provider_b = TaskSchedulerQuota::for_scope("provider:b", 1).unwrap();
+    let holder = scheduler
+        .acquire_with_quota(
+            TaskPriority::Foreground,
+            "provider-a:holder",
+            &provider_a,
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let blocked_a = {
+        let scheduler = Arc::clone(&scheduler);
+        let provider_a = provider_a.clone();
+        tokio::spawn(async move {
+            scheduler
+                .acquire_with_quota(
+                    TaskPriority::Foreground,
+                    "provider-a:blocked",
+                    &provider_a,
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    wait_for_pending(&scheduler, 1).await;
+    let b = scheduler
+        .acquire_with_quota(
+            TaskPriority::Foreground,
+            "provider-b:independent",
+            &provider_b,
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        scheduler.quota_snapshot(&provider_b).await.unwrap().active,
+        1
+    );
+    drop(b);
+    drop(holder);
+    let a = blocked_a.await.unwrap().unwrap();
+    drop(a);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn duplicate_quota_dimensions_are_rejected_before_enqueue() {
+    let scheduler = scheduler(1, 60_000);
+    let quota = TaskSchedulerQuota::for_scope("duplicate", 1).unwrap();
+    let result = scheduler
+        .acquire_with_quotas(
+            TaskPriority::Foreground,
+            "duplicate",
+            &[quota.clone(), quota],
+            None,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(TaskSchedulerError::InvalidConfig(message))
+            if message.contains("duplicate quota")
+    ));
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn quota_only_admission_does_not_consume_global_slot() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let provider = TaskSchedulerQuota::for_scope("provider:leaf", 1).unwrap();
+    let global = scheduler
+        .acquire(
+            TaskPriority::Interactive,
+            "global",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let leaf = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider:leaf-generation",
+            &provider,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(!leaf.consumes_global_slot());
+    assert!(global.consumes_global_slot());
+    assert_eq!(scheduler.stats().await.unwrap().active, 1);
+    assert_eq!(scheduler.quota_snapshot(&provider).await.unwrap().active, 1);
+    drop(leaf);
+    drop(global);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn quota_only_cancellation_releases_provider_state_and_allows_retry() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let provider = TaskSchedulerQuota::for_scope("provider:cancel", 1).unwrap();
+    let holder = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider:holder",
+            &provider,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let waiting = {
+        let scheduler = Arc::clone(&scheduler);
+        let provider = provider.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            scheduler
+                .acquire_quota(
+                    TaskPriority::Foreground,
+                    "provider:cancelled",
+                    &provider,
+                    &cancellation,
+                )
+                .await
+        })
+    };
+    wait_for_pending(&scheduler, 1).await;
+    cancellation.cancel();
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Err(TaskSchedulerError::Cancelled)
+    ));
+    assert_eq!(
+        scheduler.quota_snapshot(&provider).await.unwrap().pending,
+        0
+    );
+    drop(holder);
+    let retry = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider:retry",
+            &provider,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    drop(retry);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn independent_quota_only_provider_progress_ignores_full_global_budget() {
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let global = scheduler
+        .acquire(
+            TaskPriority::Interactive,
+            "global-holder",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let provider_a = TaskSchedulerQuota::for_scope("provider:quota-a", 1).unwrap();
+    let provider_b = TaskSchedulerQuota::for_scope("provider:quota-b", 1).unwrap();
+    let a = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider-a-generation",
+            &provider_a,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let b = scheduler
+        .acquire_quota(
+            TaskPriority::Foreground,
+            "provider-b-generation",
+            &provider_b,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(!a.consumes_global_slot());
+    assert!(!b.consumes_global_slot());
+    assert_eq!(scheduler.stats().await.unwrap().active, 1);
+    assert_eq!(
+        scheduler.quota_snapshot(&provider_a).await.unwrap().active,
+        1
+    );
+    assert_eq!(
+        scheduler.quota_snapshot(&provider_b).await.unwrap().active,
+        1
+    );
+    drop(b);
+    drop(a);
+    drop(global);
     scheduler.shutdown().await;
 }

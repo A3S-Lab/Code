@@ -109,6 +109,7 @@ fn runtime(
             closed: Arc::new(AtomicBool::new(false)),
             task_scheduler: None,
             task_priority: crate::task_scheduler::TaskPriority::Interactive,
+            provider_quota: None,
             security_provider: None,
         },
         calls,
