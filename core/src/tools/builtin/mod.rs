@@ -73,10 +73,12 @@ pub fn register_builtins(
         registry.register_builtin(Arc::new(bash::BashTool));
     }
     let semantic_enabled = capabilities.read && workspace_services.workspace_retrieval().is_some();
-    if capabilities.search || semantic_enabled {
+    let indexed_enabled = capabilities.read && workspace_services.persistent_index().is_some();
+    if capabilities.search || semantic_enabled || indexed_enabled {
         let search = search::SearchTool::new(capabilities.read)
             .with_backend_search(capabilities.search)
-            .with_semantic(semantic_enabled);
+            .with_semantic(semantic_enabled)
+            .with_indexed(indexed_enabled);
         registry.register_builtin(Arc::new(search));
     }
     if workspace_services.code_intelligence().is_some() {

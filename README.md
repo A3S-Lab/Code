@@ -13,7 +13,7 @@
 
 **A3S Code** is an async Rust runtime for building governed coding agents. It
 keeps the agent loop, workspace tools, model adapters, policy decisions,
-versioned events, ephemeral workspace retrieval, and durable evidence behind
+versioned events, workspace retrieval, and durable evidence behind
 explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
 `a3s code` terminal application.
 
@@ -535,6 +535,13 @@ is ready. Catalog metadata reports `mode: "incremental_catalog"` and zero
 query-time file reads. Custom workspace backends therefore do not introduce a
 second Code-local BM25 scorer. Plain manifest and Code Intelligence sessions do
 not start this additional catalog work.
+
+Hosts that need zvec-grep-style restart persistence can opt into
+`WorkspaceServices::local_with_indexed_retrieval`. This keeps the same manifest
+watcher and chunk admission policy, writes versioned zvec generations under
+`.a3s-code/index`, and exposes `search` with `mode: "indexed"`. The persistent
+index is workspace-owned and FTS-only; session semantic vectors remain owned by
+A3S Memory. MCP is not required and is not part of the Core dependency graph.
 
 Latency-sensitive hosts may construct
 `ManifestWorkspaceBackend::new_deferred` or

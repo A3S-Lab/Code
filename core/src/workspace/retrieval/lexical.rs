@@ -484,7 +484,7 @@ pub(crate) fn search_catalog(
     })
 }
 
-fn validate_request(request: &LexicalSearchRequest) -> Result<(), WorkspaceIndexError> {
+pub(crate) fn validate_request(request: &LexicalSearchRequest) -> Result<(), WorkspaceIndexError> {
     if request.query.trim().is_empty() {
         return Err(WorkspaceIndexError::InvalidQuery(
             "query must not be empty".to_owned(),
@@ -508,7 +508,7 @@ fn validate_request(request: &LexicalSearchRequest) -> Result<(), WorkspaceIndex
     Ok(())
 }
 
-fn path_matches(path: &str, base: &WorkspacePath, glob: Option<&glob::Pattern>) -> bool {
+pub(crate) fn path_matches(path: &str, base: &WorkspacePath, glob: Option<&glob::Pattern>) -> bool {
     let relative = if base.is_root() {
         path
     } else if path == base.as_str() {

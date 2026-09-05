@@ -564,6 +564,14 @@ chunk boundaries or repeatedly reading the same unchanged file. Each chunk
 contains a stable identifier, workspace-relative path, line range, language,
 optional symbol context, content digest, file revision, and bounded text.
 
+The framework also provides an explicit workspace-owned persistent FTS
+projection through `WorkspaceServices::local_with_indexed_retrieval`. It uses
+the same manifest watcher and catalog admission policy, publishes versioned
+zvec generations under `.a3s-code/index`, and exposes `search` mode
+`indexed`. This projection is lexical only; A3S Memory remains the session
+semantic authority. MCP is an optional external adapter and is not a Core
+dependency.
+
 The compatibility chunker is deterministic and language-independent, with line
 and UTF-8 byte ceilings. Fixed UTF-8 byte windows and recursive prioritized
 separators add bounded overlap; a trusted Rust host can return custom token,
@@ -578,9 +586,9 @@ server and must produce equivalent fallback chunks when it is unavailable.
 | Subproject | Owns | Must not own |
 | --- | --- | --- |
 | `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid/rerank policy, or prompt context |
-| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, zvec-rust FTS lexical projection, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or durable cross-session cache policy |
+| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, zvec-rust FTS lexical projection, optional workspace-owned persistent generations, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or semantic vector persistence |
 | `a3s-code-core/embedding` | Host-injected `EmbeddingProvider` contract, provider descriptor, batching, cancellation, bounded retry, and normalized embedding errors | Vector storage or workspace traversal |
-| `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence |
+| `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence; workspace FTS generations belong to the workspace layer |
 | `a3s-code-core/tools` | `semantic`/`hybrid` search modes, zvec-rust FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
 | Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
 | CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, provider-secret handling, and optional local CPU provider adapters/model-artifact admission | Reimplementing indexing, placing model runtimes in Core/Memory, or making a host-specific search protocol |
@@ -812,6 +820,7 @@ Current implementation status:
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, zvec-rust FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
+| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, restart reopen, stale-revision fencing, shared manifest coordinator, `.a3s-code` source exclusion, and the built-in `search` `indexed` mode; native persistence and indexed-tool lifecycle tests pass |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
@@ -1100,8 +1109,8 @@ proof of ranking correctness or run with repository secrets in shared CI.
 ### 6.11 Rollout and rollback
 
 1. **Developer preview:** feature compiled and tested but disabled unless a host
-   injects a provider; expose detailed status and the diagnostic `semantic`
-   mode.
+   explicitly enables persistent indexing or injects a semantic provider;
+   expose detailed index status and the diagnostic `indexed`/`semantic` modes.
 2. **Opt-in beta:** ACL and SDK configuration supported; `hybrid` recommended
    for natural-language queries while BM25 remains available explicitly.
 3. **Stable:** SDK parity, adversarial qualification, privacy documentation,
@@ -1109,10 +1118,10 @@ proof of ranking correctness or run with repository secrets in shared CI.
    of `hybrid` requires model-tool evaluation and a separate compatibility
    decision.
 
-Rollback is configuration-only: cancel the retrieval runtime, hide semantic
-tool modes, and retain existing exact, lexical, and Code Intelligence paths.
-No migration or index deletion procedure is required because the baseline
-index is session-ephemeral.
+Rollback is configuration-only: stop the persistent index coordinator, hide
+the `indexed` mode, and retain existing exact, lexical, and Code Intelligence
+paths. Existing generations remain readable for a later restart or can be
+removed explicitly by the host; no semantic session state is migrated.
 
 `WSR-PROD1` completes the stable opt-in evidence for the provider-injected
 design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does
@@ -1126,8 +1135,9 @@ different vector authority or bypass current-source verification.
 
 ### 6.12 WSR non-goals
 
-- A vector database server, durable workspace index, global daemon, or Cloud
-  retrieval service.
+- A vector database server, global daemon, or Cloud retrieval service. The
+  opt-in local zvec FTS generation is a workspace projection, not a shared
+  service or semantic vector authority.
 - Serializing vectors into Code checkpoints or sharing them across tenants,
   users, worktrees, or sessions.
 - Turning workspace chunks into `MemoryItem` values or applying memory
@@ -1137,9 +1147,10 @@ different vector authority or bypass current-source verification.
   reranker model lifecycle into A3S Memory.
 - Replacing `grep`, `glob`, saved-file Code Intelligence, or authoritative file
   reads with semantic similarity.
-- Shipping HNSW, product quantization, persistent caches, cross-session reuse,
-  or automatic local-model downloads before baseline measurements demonstrate
-  a concrete need and a separate ADR defines lifecycle and security.
+- Shipping HNSW, product quantization, persistent semantic/vector caches,
+  cross-session semantic reuse, or automatic local-model downloads before
+  baseline measurements demonstrate a concrete need and a separate ADR defines
+  lifecycle and security.
 - Enabling a neural or remote reranker by default, or sending source text to a
   second endpoint merely because an Embedding Provider is configured.
 - Sending workspace content to any embedding endpoint merely because a chat

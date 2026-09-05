@@ -57,6 +57,12 @@ impl WorkspaceCatalogReconciler {
         }
     }
 
+    pub(crate) fn catalog_snapshot(
+        &self,
+    ) -> WorkspaceIndexResult<super::catalog::ChunkCatalogSnapshot> {
+        self.catalog.snapshot()
+    }
+
     pub(crate) async fn reconcile_snapshot(
         &self,
         snapshot: &LocalWorkspaceManifestSnapshot,

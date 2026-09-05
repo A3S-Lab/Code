@@ -228,8 +228,9 @@ pub(crate) struct ZvecRustLexicalIndex {
     collection: Mutex<Option<Collection>>,
     collection_path: PathBuf,
     // The directory owns the persisted temporary collection and is removed
-    // only after the path has no open native handles.
-    _temp_dir: TempDir,
+    // only after the path has no open native handles. Persistent generations
+    // leave this unset and are managed by the workspace index coordinator.
+    _temp_dir: Option<TempDir>,
     terms: HashSet<String>,
     /// zvec primary keys are deliberately generated from the dense ordinal:
     /// the C API accepts a narrower character set than Code chunk ids (which
@@ -241,6 +242,27 @@ pub(crate) struct ZvecRustLexicalIndex {
 
 impl ZvecRustLexicalIndex {
     pub(crate) fn build<I, K, T>(documents: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (K, T)>,
+        K: AsRef<str>,
+        T: AsRef<str>,
+    {
+        let temp_dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let collection_path = temp_dir.path().join("collection");
+        let mut index = Self::build_at_path(&collection_path, documents)?;
+        index._temp_dir = Some(temp_dir);
+        Ok(index)
+    }
+
+    /// Build a native FTS collection at a caller-owned path.
+    ///
+    /// The caller is responsible for publishing the containing generation
+    /// atomically. The returned handle is closed between queries, so the path
+    /// can be renamed or removed after the handle is dropped.
+    pub(crate) fn build_at_path<I, K, T>(
+        collection_root: &std::path::Path,
+        documents: I,
+    ) -> Result<Self, String>
     where
         I: IntoIterator<Item = (K, T)>,
         K: AsRef<str>,
@@ -285,10 +307,10 @@ impl ZvecRustLexicalIndex {
             .build()
             .map_err(|error| error.to_string())?;
 
-        let temp_dir = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let collection_path = temp_dir
-            .path()
-            .join("collection")
+        if let Some(parent) = collection_root.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let collection_path = collection_root
             .to_str()
             .ok_or_else(|| "zvec lexical path is not UTF-8".to_owned())?
             .to_owned();
@@ -361,7 +383,7 @@ impl ZvecRustLexicalIndex {
         // footprint than the logical token stream. Account for the actual
         // persisted bytes so the surrounding catalog budget remains a real
         // safety bound instead of an optimistic in-memory estimate.
-        let estimated_bytes = directory_size(temp_dir.path())?.max(prepared.iter().fold(
+        let estimated_bytes = directory_size(collection_root)?.max(prepared.iter().fold(
             0usize,
             |total, (key, text)| {
                 total
@@ -374,12 +396,75 @@ impl ZvecRustLexicalIndex {
         Ok(Self {
             collection: Mutex::new(None),
             collection_path: PathBuf::from(collection_path),
-            _temp_dir: temp_dir,
+            _temp_dir: None,
             terms,
             document_count: prepared.len(),
             native_ordinals,
             estimated_bytes,
         })
+    }
+
+    /// Reopen a persisted collection without rebuilding its native postings.
+    /// `documents` must be in the same dense order used when the collection
+    /// was created; empty documents are skipped exactly as in `build_at_path`.
+    pub(crate) fn open_persistent<I, K, T>(
+        collection_root: PathBuf,
+        documents: I,
+    ) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (K, T)>,
+        K: AsRef<str>,
+        T: AsRef<str>,
+    {
+        if !collection_root.is_dir() {
+            return Err(format!(
+                "zvec lexical collection does not exist: {}",
+                collection_root.display()
+            ));
+        }
+        ensure_initialized()?;
+        let mut terms = HashSet::new();
+        let mut native_ordinals = HashMap::new();
+        let mut document_count = 0usize;
+        for (key, text) in documents {
+            let key = key.as_ref();
+            if key.is_empty() || key.contains('\0') {
+                return Err(
+                    "lexical document key must be non-empty and contain no NUL byte".into(),
+                );
+            }
+            let tokens = super::lexical::tokenize(text.as_ref());
+            if tokens.is_empty() {
+                continue;
+            }
+            terms.extend(tokens);
+            native_ordinals.insert(format!("d{document_count}"), document_count);
+            document_count = document_count.saturating_add(1);
+        }
+        let estimated_bytes = directory_size(&collection_root)?.max(
+            native_ordinals
+                .keys()
+                .map(|key| key.len().saturating_add(ESTIMATED_DOCUMENT_OVERHEAD))
+                .sum(),
+        );
+        Ok(Self {
+            collection: Mutex::new(None),
+            collection_path: collection_root,
+            _temp_dir: None,
+            terms,
+            native_ordinals,
+            document_count,
+            estimated_bytes,
+        })
+    }
+
+    pub(crate) fn relocate_collection_path(&mut self, collection_root: PathBuf) {
+        debug_assert!(self
+            .collection
+            .get_mut()
+            .map(|slot| slot.is_none())
+            .unwrap_or(true));
+        self.collection_path = collection_root;
     }
 
     pub(crate) fn document_count(&self) -> usize {

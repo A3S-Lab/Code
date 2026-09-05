@@ -20,6 +20,7 @@ fn has_sensitive_component(path: &Path) -> bool {
             name.to_string_lossy().to_ascii_lowercase().as_str(),
             ".git"
                 | ".a3s"
+                | ".a3s-code"
                 | ".ssh"
                 | ".aws"
                 | ".azure"
@@ -92,6 +93,7 @@ mod tests {
             "apps/api/.envrc",
             ".git-credentials",
             ".a3s/config.acl",
+            ".a3s-code/index/CURRENT",
             ".git/config",
             "target/generated.rs",
             "node_modules/pkg/index.js",

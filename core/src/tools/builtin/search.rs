@@ -15,6 +15,7 @@ enum SearchMode {
     Grep,
     Glob,
     Bm25,
+    Indexed,
     Semantic,
     Hybrid,
 }
@@ -25,11 +26,13 @@ impl SearchMode {
             Some("grep") => Ok(Self::Grep),
             Some("glob") => Ok(Self::Glob),
             Some("bm25") => Ok(Self::Bm25),
+            Some("indexed") => Ok(Self::Indexed),
             Some("semantic") => Ok(Self::Semantic),
             Some("hybrid") => Ok(Self::Hybrid),
-            Some(_) => {
-                Err("mode must be 'grep', 'glob', 'bm25', 'semantic', or 'hybrid'".to_string())
-            }
+            Some(_) => Err(
+                "mode must be 'grep', 'glob', 'bm25', 'indexed', 'semantic', or 'hybrid'"
+                    .to_string(),
+            ),
             None => Err("mode parameter is required".to_string()),
         }
     }
@@ -39,6 +42,7 @@ impl SearchMode {
             Self::Grep => "grep",
             Self::Glob => "glob",
             Self::Bm25 => "bm25",
+            Self::Indexed => "indexed",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
         }
@@ -54,6 +58,7 @@ pub struct SearchTool {
     backend_search_enabled: bool,
     read_enabled: bool,
     semantic_enabled: bool,
+    indexed_enabled: bool,
 }
 
 impl SearchTool {
@@ -62,6 +67,7 @@ impl SearchTool {
             backend_search_enabled: true,
             read_enabled,
             semantic_enabled: false,
+            indexed_enabled: false,
         }
     }
 
@@ -75,6 +81,11 @@ impl SearchTool {
         self
     }
 
+    pub fn with_indexed(mut self, enabled: bool) -> Self {
+        self.indexed_enabled = enabled;
+        self
+    }
+
     fn modes(&self) -> Vec<&'static str> {
         let mut modes = Vec::new();
         if self.backend_search_enabled {
@@ -82,6 +93,9 @@ impl SearchTool {
         }
         if self.backend_search_enabled && self.read_enabled {
             modes.push("bm25");
+        }
+        if self.indexed_enabled {
+            modes.push("indexed");
         }
         if self.semantic_enabled {
             modes.extend(["semantic", "hybrid"]);
@@ -106,6 +120,12 @@ impl SearchTool {
                     .to_string(),
             );
         }
+        if mode == SearchMode::Indexed && !self.indexed_enabled {
+            return Err(
+                "mode='indexed' is unavailable because this workspace did not enable a persistent index"
+                    .to_string(),
+            );
+        }
         if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) && !self.semantic_enabled {
             return Err(format!(
                 "mode='{}' is unavailable because this session did not enable semantic retrieval",
@@ -122,7 +142,10 @@ impl SearchTool {
         adapted.insert(
             match mode {
                 SearchMode::Grep | SearchMode::Glob => "pattern",
-                SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid => "query",
+                SearchMode::Bm25
+                | SearchMode::Indexed
+                | SearchMode::Semantic
+                | SearchMode::Hybrid => "query",
             }
             .to_string(),
             serde_json::Value::String(query.to_string()),
@@ -161,6 +184,15 @@ impl SearchTool {
                 copy_if_present(args, &mut adapted, "context", "context");
                 copy_if_present(args, &mut adapted, "limit", "limit");
             }
+            SearchMode::Indexed => {
+                copy_if_present(args, &mut adapted, "include", "glob");
+                copy_if_present(args, &mut adapted, "context", "context");
+                copy_if_present(args, &mut adapted, "limit", "limit");
+                adapted.insert(
+                    "_persistent_index".to_owned(),
+                    serde_json::Value::Bool(true),
+                );
+            }
             SearchMode::Semantic | SearchMode::Hybrid => {
                 copy_if_present(args, &mut adapted, "include", "include");
                 copy_if_present(args, &mut adapted, "limit", "limit");
@@ -178,7 +210,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the workspace with regex, glob, native BM25 lexical ranking, or session-scoped semantic similarity. Select the behavior with mode."
+        "Search the workspace with regex, glob, BM25 lexical ranking, a persistent zvec index, or session-scoped semantic similarity. Select the behavior with mode."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -200,6 +232,14 @@ impl Tool for SearchTool {
         if self.backend_search_enabled && self.read_enabled {
             examples.push(serde_json::json!({
                 "mode": "bm25",
+                "query": "workspace permission policy",
+                "path": "core/src",
+                "limit": 8
+            }));
+        }
+        if self.indexed_enabled {
+            examples.push(serde_json::json!({
+                "mode": "indexed",
                 "query": "workspace permission policy",
                 "path": "core/src",
                 "limit": 8
@@ -231,12 +271,12 @@ impl Tool for SearchTool {
                 "mode": {
                     "type": "string",
                     "enum": modes,
-                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks lexically; semantic ranks by meaning; hybrid fuses exact, lexical, symbol, and semantic evidence."
+                    "description": "Required. grep searches file contents with a regular expression; glob finds paths; bm25 ranks chunks lexically; indexed searches the persistent workspace FTS index; semantic ranks by meaning; hybrid fuses exact, lexical, symbol, and semantic evidence."
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic/hybrid mode."
+                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/indexed/semantic/hybrid mode."
                 },
                 "path": {
                     "type": "string",
@@ -292,9 +332,9 @@ impl Tool for SearchTool {
             {
                 ToolCapabilities::read_only_paginated(16)
             }
-            Ok(SearchMode::Bm25 | SearchMode::Semantic | SearchMode::Hybrid) => {
-                ToolCapabilities::parallel_safe_read(2)
-            }
+            Ok(
+                SearchMode::Bm25 | SearchMode::Indexed | SearchMode::Semantic | SearchMode::Hybrid,
+            ) => ToolCapabilities::parallel_safe_read(2),
             Ok(SearchMode::Grep) | Err(_) => ToolCapabilities::parallel_safe_read(16),
         }
     }
@@ -312,6 +352,7 @@ impl Tool for SearchTool {
             SearchMode::Grep => GrepTool.execute(&adapted, ctx).await?,
             SearchMode::Glob => GlobTool.execute(&adapted, ctx).await?,
             SearchMode::Bm25 => Bm25Tool.execute(&adapted, ctx).await?,
+            SearchMode::Indexed => Bm25Tool.execute(&adapted, ctx).await?,
             SearchMode::Semantic => SemanticSearchTool.execute(&adapted, ctx).await?,
             SearchMode::Hybrid => HybridSearchTool.execute(&adapted, ctx).await?,
         };
@@ -441,6 +482,29 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("file reads"));
+    }
+
+    #[test]
+    fn indexed_mode_is_explicit_and_routes_to_persistent_backend() {
+        let tool = SearchTool::new(true).with_indexed(true);
+        assert_eq!(
+            tool.parameters()["properties"]["mode"]["enum"],
+            serde_json::json!(["grep", "glob", "bm25", "indexed"])
+        );
+        let adapted = tool
+            .adapted_args(
+                SearchMode::Indexed,
+                &serde_json::json!({
+                    "mode": "indexed",
+                    "query": "workspace policy",
+                    "include": "*.rs",
+                    "limit": 5
+                }),
+            )
+            .unwrap();
+        assert_eq!(adapted["query"], "workspace policy");
+        assert_eq!(adapted["glob"], "*.rs");
+        assert_eq!(adapted["_persistent_index"], true);
     }
 
     #[test]

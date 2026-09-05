@@ -21,17 +21,19 @@ impl LocalWorkspaceCatalogRuntime {
         manifest: Arc<LocalWorkspaceManifest>,
         file_system: Arc<dyn WorkspaceFileSystem>,
     ) -> Arc<Self> {
-        Self::start_with_catalog(
+        Self::start_with_catalog_and_persistent(
             manifest,
             file_system,
             WorkspaceChunkCatalog::default_catalog(),
+            None,
         )
     }
 
-    pub(crate) fn start_with_catalog(
+    pub(crate) fn start_with_catalog_and_persistent(
         manifest: Arc<LocalWorkspaceManifest>,
         file_system: Arc<dyn WorkspaceFileSystem>,
         catalog: Arc<WorkspaceChunkCatalog>,
+        persistent: Option<Arc<super::persistent::WorkspacePersistentIndex>>,
     ) -> Arc<Self> {
         let snapshots = manifest.subscribe();
         let changes = manifest.subscribe_changes();
@@ -51,6 +53,7 @@ impl LocalWorkspaceCatalogRuntime {
             snapshots,
             changes,
             lifetime,
+            persistent,
         ));
         *runtime
             .task
@@ -88,10 +91,16 @@ async fn run_catalog_updates(
     mut snapshots: broadcast::Receiver<crate::workspace::LocalWorkspaceManifestSnapshot>,
     mut changes: broadcast::Receiver<WorkspaceFileChange>,
     lifetime: CancellationToken,
+    persistent: Option<Arc<super::persistent::WorkspacePersistentIndex>>,
 ) {
     let initial = manifest.snapshot();
     if initial.version > 0 {
-        report_reconciliation(reconciler.reconcile_snapshot(&initial).await);
+        report_reconciliation(
+            reconciler.reconcile_snapshot(&initial).await,
+            &reconciler,
+            persistent.as_ref(),
+        )
+        .await;
     }
 
     loop {
@@ -102,16 +111,16 @@ async fn run_catalog_updates(
                     tokio::time::sleep(SNAPSHOT_SETTLE_DELAY).await;
                     let batch = drain_changes(&mut changes);
                     if batch.lagged {
-                        report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await);
+                        report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await, &reconciler, persistent.as_ref()).await;
                     } else if batch.changes.is_empty() {
-                        report_reconciliation(reconciler.reconcile_snapshot(&snapshot).await);
+                        report_reconciliation(reconciler.reconcile_snapshot(&snapshot).await, &reconciler, persistent.as_ref()).await;
                     } else {
-                        report_reconciliation(reconciler.reconcile_changes(&snapshot, &batch.changes).await);
+                        report_reconciliation(reconciler.reconcile_changes(&snapshot, &batch.changes).await, &reconciler, persistent.as_ref()).await;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "workspace retrieval snapshot stream lagged; rebuilding admitted files");
-                    report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await);
+                    report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await, &reconciler, persistent.as_ref()).await;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -120,18 +129,20 @@ async fn run_catalog_updates(
                     let mut batch = drain_changes(&mut changes);
                     batch.changes.insert(0, change);
                     if batch.lagged {
-                        report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await);
+                        report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await, &reconciler, persistent.as_ref()).await;
                     } else {
                         report_reconciliation(
                             reconciler
                                 .reconcile_changes(&manifest.snapshot(), &batch.changes)
                                 .await,
-                        );
+                            &reconciler,
+                            persistent.as_ref(),
+                        ).await;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "workspace retrieval change stream lagged; rebuilding admitted files");
-                    report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await);
+                    report_reconciliation(reconciler.reconcile_after_lag(&manifest.snapshot()).await, &reconciler, persistent.as_ref()).await;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -159,11 +170,34 @@ struct DrainedChanges {
     lagged: bool,
 }
 
-fn report_reconciliation(
+async fn report_reconciliation(
     result: Result<CatalogReconcileReport, super::types::WorkspaceIndexError>,
+    reconciler: &WorkspaceCatalogReconciler,
+    persistent: Option<&Arc<super::persistent::WorkspacePersistentIndex>>,
 ) {
     match result {
         Ok(report) => {
+            if let Some(persistent) = persistent {
+                match reconciler.catalog_snapshot() {
+                    Ok(snapshot) => {
+                        let persistent = Arc::clone(persistent);
+                        if let Err(error) =
+                            tokio::task::spawn_blocking(move || persistent.sync_snapshot(&snapshot))
+                                .await
+                                .unwrap_or_else(|error| {
+                                    Err(super::types::WorkspaceIndexError::InvalidConfig(format!(
+                                        "persistent index task failed: {error}"
+                                    )))
+                                })
+                        {
+                            tracing::warn!(%error, "workspace persistent index update failed");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "workspace persistent index snapshot failed")
+                    }
+                }
+            }
             if !report.failures.is_empty() {
                 tracing::warn!(
                     source_revision = report.source_revision,

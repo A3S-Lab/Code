@@ -172,6 +172,21 @@ impl Tool for Bm25Tool {
             .map(str::trim)
             .filter(|glob| !glob.is_empty());
 
+        if args
+            .get("_persistent_index")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return match search_persistent_catalog(query, path, glob, limit, context_lines, ctx)
+                .await
+            {
+                Some(output) => Ok(output),
+                None => Ok(ToolOutput::error(
+                    "indexed search is not available: configure a persistent workspace index",
+                )),
+            };
+        }
+
         if let Some(output) =
             search_incremental_catalog(query, path.clone(), glob, limit, context_lines, ctx)
         {
@@ -303,6 +318,79 @@ impl Tool for Bm25Tool {
 
         Ok(ToolOutput::success(content).with_metadata(metadata))
     }
+}
+
+async fn search_persistent_catalog(
+    query: &str,
+    path: WorkspacePath,
+    glob: Option<&str>,
+    limit: usize,
+    context_lines: usize,
+    ctx: &ToolContext,
+) -> Option<ToolOutput> {
+    let index = ctx.workspace_services.persistent_index()?;
+    let mut request = LexicalSearchRequest::new(query);
+    request.path = path;
+    request.glob = glob.map(str::to_owned);
+    // Overfetch so stale top-ranked chunks can be removed without making a
+    // fresh lower-ranked result disappear from the requested page.
+    request.limit = limit.saturating_mul(4).min(MAX_LIMIT);
+    request.max_candidate_files = MAX_CANDIDATE_FILES;
+    request.max_results_per_file = MAX_RESULTS_PER_FILE;
+    let mut result = match index.search(&request) {
+        Ok(result) => result,
+        Err(error) => {
+            return Some(ToolOutput::error(format!(
+                "persistent indexed search failed: {error}"
+            )))
+        }
+    };
+    let cancellation = ctx.cancellation_token();
+    let (verified, filtered_stale, verification_truncated) =
+        match crate::workspace::retrieval::retain_verified(
+            result.hits,
+            limit,
+            |hit| hit.chunk.as_ref(),
+            ctx.workspace_services.fs().as_ref(),
+            ctx.workspace_services.operation_timeout(),
+            &cancellation,
+            &cancellation,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return Some(ToolOutput::error(format!(
+                    "persistent indexed source verification failed: {error}"
+                )))
+            }
+        };
+    result.hits = verified;
+    let mut output = render_incremental_result(query, result, context_lines);
+    if let Some(serde_json::Value::Object(metadata)) = output.metadata.as_mut() {
+        metadata.insert(
+            "index_kind".to_owned(),
+            serde_json::json!("persistent_zvec_fts"),
+        );
+        metadata.insert("source_verified".to_owned(), serde_json::json!(true));
+        metadata.insert(
+            "freshness".to_owned(),
+            serde_json::json!(if filtered_stale {
+                "possibly_stale"
+            } else {
+                "ready"
+            }),
+        );
+        metadata.insert(
+            "filtered_stale".to_owned(),
+            serde_json::json!(filtered_stale),
+        );
+        metadata.insert(
+            "verification_truncated".to_owned(),
+            serde_json::json!(verification_truncated),
+        );
+    }
+    Some(output)
 }
 
 fn search_incremental_catalog(
