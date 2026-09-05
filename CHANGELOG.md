@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added mixed-generation qualification for dynamic workflows. New runs pin
+  the Code runtime build, continuation identities are reconstructed from the
+  durable Run/step definitions without a second journal, and changed source,
+  input, step definitions, malformed history, or unsupported runtime builds
+  fail closed before a step body starts. Terminal replay remains idempotent
+  across retries and process generations; legacy unpinned histories remain
+  readable during the migration window.
 - Added scheduler/plan convergence for dynamic workflows. Flow history now
   projects into the canonical `ExecutionPlan` (including resumed runs),
   dynamic steps use a cancellation-aware bounded concurrency gate, and

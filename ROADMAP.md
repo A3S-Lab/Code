@@ -293,11 +293,36 @@ fan-out use its own child admission, which prevents a single-slot scheduler
 from deadlocking on a nested lease. Delegated tasks now pass their canonical
 step identity through that same global scheduler boundary.
 
-The next slice is mixed-generation restart/retry qualification: bind the
-projected plan identity and step identity to a persisted Flow continuation,
-then prove that a changed handler/input or a cancelled parent cannot duplicate
-an already committed side effect. Cloud/Use package ownership, fairness
-policy, and business-level retry decisions remain outside Code.
+The follow-up mixed-generation continuation qualification is recorded in
+section 3.3.3. Cloud/Use package ownership, fairness policy, and business-level
+retry decisions remain outside Code.
+
+### 3.3.3 Mixed-generation continuation qualification
+
+Dynamic workflow runs now pin a Code runtime build in the durable Flow
+`WorkflowSpec`. The default compatibility window accepts legacy unpinned runs
+while requiring the current build for new runs; hosts can provide an explicit
+`RuntimeBuildCompatibility` set when they retain an older worker. A continuation
+identity is reconstructed from the persisted Run/step definitions, source
+hash, initial-input digest, runtime build, and canonical plan identity. It
+excludes progress, retry events, sequence numbers, and outputs, so the same
+continuation identity survives a restart and a completed replay without a
+second journal.
+
+Before a resumed run reaches Flow execution, Code validates run ownership,
+sequence monotonicity, source/input equality, step identity consistency, and
+runtime-build syntax. Flow's own immutable start check and build compatibility
+gate then reject changed generations before any step body can run. The local
+qualification fixture proves a terminal retry replay does not repeat its
+side-effecting step and a worker on a different build cannot resume an active
+run. Legacy unpinned histories remain readable only inside the explicit
+migration window.
+
+The next slice is parent-cancellation and takeover qualification for a
+non-terminal continuation: carry the persisted continuation identity through a
+worker claim, fence a stale lease before admission, and prove a cancelled or
+reclaimed step cannot commit a duplicate side effect. Cloud/Use ownership,
+retention, and business retry policy remain outside Code.
 
 ### 3.4 Scoped capability program
 

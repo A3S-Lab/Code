@@ -20,6 +20,13 @@ pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.ident
 /// the former are identified by the Flow run/step/name and JSON input, while
 /// the latter are identified by an [`AgentStepSpec`](crate::orchestration::AgentStepSpec).
 pub const FLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-step.identity.v1";
+/// Identity domain for the immutable input portion of a dynamic workflow.
+pub const DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.input.identity.v1";
+/// Identity domain for a dynamic workflow continuation reconstructed from its
+/// durable immutable facts.
+pub const DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.continuation.identity.v1";
 /// Identity domain for the immutable definition of a projected execution plan.
 pub const EXECUTION_PLAN_IDENTITY_DOMAIN_V1: &str = "a3s.code.execution-plan.identity.v1";
 pub const WORKFLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.workflow-step.identity.v1";

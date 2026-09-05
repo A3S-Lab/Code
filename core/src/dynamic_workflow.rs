@@ -4,7 +4,10 @@
 //! Flow runtime. Flow owns durable replay and step lifecycle; A3S Code's
 //! existing `program` tool remains the sandbox and tool-call boundary.
 
-use crate::execution_identity::{ExecutionIdentityV1, FLOW_STEP_IDENTITY_DOMAIN_V1};
+use crate::execution_identity::{
+    ExecutionIdentityV1, DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1,
+    DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1, FLOW_STEP_IDENTITY_DOMAIN_V1,
+};
 use crate::llm::{ModelGenerationAdmission, ModelGenerationConcurrency};
 use crate::task_scheduler::{TaskLease, TaskPriority as SchedulerTaskPriority, TaskScheduler};
 use crate::tools::{
@@ -17,16 +20,16 @@ use crate::{
 };
 use a3s_flow::{
     FanoutFlowEventObserver, FlowEngine, FlowEvent, FlowEventEnvelope, FlowEventObserver,
-    FlowEventStore, FlowRuntime, InMemoryEventStore, LocalFileEventStore, RuntimeCommand,
-    StepInvocation, StepStatus, WorkflowInvocation, WorkflowRunSnapshot, WorkflowRunStatus,
-    WorkflowSpec,
+    FlowEventStore, FlowRuntime, InMemoryEventStore, LocalFileEventStore,
+    RuntimeBuildCompatibility, RuntimeBuildId, RuntimeCommand, StepInvocation, StepStatus,
+    WorkflowInvocation, WorkflowRunSnapshot, WorkflowRunStatus, WorkflowSpec,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,6 +48,18 @@ const DEFAULT_MAX_CONCURRENT_STEPS: usize = 4;
 const MAX_MAX_CONCURRENT_STEPS: usize = 32;
 const MAX_FLOW_STEP_ID_BYTES: usize = 256;
 const MAX_FLOW_STEP_INPUT_BYTES: usize = 64 * 1024;
+const MAX_DYNAMIC_WORKFLOW_INPUT_BYTES: usize = 128 * 1024;
+
+/// Runtime build used to pin newly-created dynamic workflow runs.
+///
+/// Deployments that need a stronger revision identity can provide an explicit
+/// [`RuntimeBuildCompatibility`] through [`DynamicWorkflowTool::with_runtime_build_compatibility`].
+pub const DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID: &str =
+    concat!("a3s-code-core-", env!("CARGO_PKG_VERSION"));
+
+/// Legacy marker used only while deriving an identity for an unpinned history
+/// created before dynamic workflow runtime-build fencing was enabled.
+const LEGACY_UNPINNED_RUNTIME_BUILD_ID: &str = "<unpinned>";
 
 /// Project-relative directory used for durable dynamic workflow history.
 pub const DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH: &str = ".a3s/workflow";
@@ -580,6 +595,210 @@ pub fn dynamic_workflow_step_identity(
     )
 }
 
+fn dynamic_workflow_input_identity(
+    input: &Value,
+) -> Result<ExecutionIdentityV1, crate::execution_identity::ExecutionIdentityError> {
+    let encoded = serde_json::to_vec(input).map_err(|error| {
+        crate::execution_identity::ExecutionIdentityError::Serialization(error.to_string())
+    })?;
+    if encoded.len() > MAX_DYNAMIC_WORKFLOW_INPUT_BYTES {
+        return Err(
+            crate::execution_identity::ExecutionIdentityError::Serialization(format!(
+                "dynamic workflow input exceeds {} bytes",
+                MAX_DYNAMIC_WORKFLOW_INPUT_BYTES
+            )),
+        );
+    }
+    ExecutionIdentityV1::derive(DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1, input)
+}
+
+/// Reconstruct the immutable identity of a dynamic workflow continuation.
+///
+/// The Flow journal already persists the run definition and every step
+/// definition. This adapter binds those facts to the current runtime build,
+/// source, and initial input without introducing a second journal. Progress,
+/// retries, event sequence, and step outputs are intentionally excluded, so a
+/// restart observes the same continuation identity before and after replay.
+/// A malformed or mixed-generation history is rejected before a step body can
+/// be admitted.
+pub fn dynamic_workflow_continuation_identity(
+    run_id: &str,
+    source: &str,
+    input: &Value,
+    runtime_build_id: &str,
+    history: &[FlowEventEnvelope],
+) -> std::result::Result<ExecutionIdentityV1, crate::execution_identity::ExecutionIdentityError> {
+    if !safe_workflow_run_id(run_id) {
+        return Err(crate::execution_identity::ExecutionIdentityError::InvalidClaimField("run_id"));
+    }
+    if source.is_empty() {
+        return Err(crate::execution_identity::ExecutionIdentityError::InvalidClaimField("source"));
+    }
+    RuntimeBuildId::new(runtime_build_id.to_string()).map_err(|error| {
+        crate::execution_identity::ExecutionIdentityError::Serialization(format!(
+            "invalid dynamic workflow runtime build id: {error}"
+        ))
+    })?;
+    let input_identity = dynamic_workflow_input_identity(input)?;
+    let expected_source_hash = source_hash(source);
+    let expected_spec = WorkflowSpec::rust_embedded(
+        "a3s-code.dynamic-workflow",
+        expected_source_hash.as_str(),
+        "ptc",
+        "run",
+    );
+    let mut saw_run_created = false;
+    let mut persisted_runtime_build: Option<String> = None;
+    let mut step_identities = BTreeMap::<String, String>::new();
+    let mut terminal_seen = false;
+
+    for (index, envelope) in history.iter().enumerate() {
+        if envelope.run_id != run_id {
+            return Err(
+                crate::execution_identity::ExecutionIdentityError::InvalidClaimField("run_id"),
+            );
+        }
+        if envelope.sequence != index as u64 + 1 {
+            return Err(
+                crate::execution_identity::ExecutionIdentityError::InvalidClaimField("sequence"),
+            );
+        }
+        if terminal_seen {
+            return Err(
+                crate::execution_identity::ExecutionIdentityError::InvalidClaimField("terminal"),
+            );
+        }
+        if index == 0 && !matches!(&envelope.event, FlowEvent::RunCreated { .. }) {
+            return Err(
+                crate::execution_identity::ExecutionIdentityError::InvalidClaimField("run_created"),
+            );
+        }
+
+        match &envelope.event {
+            FlowEvent::RunCreated {
+                spec,
+                input: persisted_input,
+            } => {
+                if saw_run_created {
+                    return Err(
+                        crate::execution_identity::ExecutionIdentityError::InvalidClaimField(
+                            "run_created",
+                        ),
+                    );
+                }
+                saw_run_created = true;
+                if spec.name != expected_spec.name
+                    || spec.runtime != expected_spec.runtime
+                    || !spec.patch_markers.is_empty()
+                    || !spec.signal_names.is_empty()
+                {
+                    return Err(
+                        crate::execution_identity::ExecutionIdentityError::InvalidClaimField(
+                            "workflow_spec",
+                        ),
+                    );
+                }
+                if spec.version != expected_source_hash {
+                    return Err(
+                        crate::execution_identity::ExecutionIdentityError::InvalidClaimField(
+                            "source",
+                        ),
+                    );
+                }
+                let persisted_input_identity = dynamic_workflow_input_identity(persisted_input)?;
+                if persisted_input_identity != input_identity {
+                    return Err(
+                        crate::execution_identity::ExecutionIdentityError::InvalidClaimField(
+                            "input",
+                        ),
+                    );
+                }
+                if let Some(build_id) = &spec.runtime_build_id {
+                    RuntimeBuildId::new(build_id.as_str().to_string()).map_err(|error| {
+                        crate::execution_identity::ExecutionIdentityError::Serialization(format!(
+                            "invalid persisted dynamic workflow runtime build id: {error}"
+                        ))
+                    })?;
+                    persisted_runtime_build = Some(build_id.as_str().to_string());
+                } else {
+                    persisted_runtime_build = Some(LEGACY_UNPINNED_RUNTIME_BUILD_ID.to_string());
+                }
+            }
+            FlowEvent::StepCreated {
+                step_id,
+                step_name,
+                input,
+                retry,
+            } => {
+                let admission_identity =
+                    dynamic_workflow_step_identity(run_id, step_id, step_name, input)?;
+                // Retry behavior is part of Flow's immutable step definition,
+                // even though it is not needed for the scheduler admission
+                // lease. Bind it here so a conflicting duplicate cannot hide
+                // behind the digest-only admission identity.
+                let identity = ExecutionIdentityV1::derive(
+                    FLOW_STEP_IDENTITY_DOMAIN_V1,
+                    &json!({
+                        "admission": admission_identity.digest,
+                        "retry": retry,
+                    }),
+                )?;
+                if step_identities
+                    .insert(step_id.clone(), identity.digest)
+                    .is_some()
+                {
+                    return Err(
+                        crate::execution_identity::ExecutionIdentityError::InvalidClaimField(
+                            "step_definition",
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        terminal_seen = matches!(
+            &envelope.event,
+            FlowEvent::RunCompleted { .. }
+                | FlowEvent::RunFailed { .. }
+                | FlowEvent::RunCancelled { .. }
+                | FlowEvent::RunTimedOut { .. }
+                | FlowEvent::RunRetryExhausted { .. }
+                | FlowEvent::RunHostShutdown { .. }
+                | FlowEvent::RunContinuedAsNew { .. }
+        );
+    }
+
+    if !history.is_empty() && !saw_run_created {
+        return Err(
+            crate::execution_identity::ExecutionIdentityError::InvalidClaimField("run_created"),
+        );
+    }
+    let effective_runtime_build = persisted_runtime_build
+        .as_deref()
+        .unwrap_or(runtime_build_id);
+    if effective_runtime_build != LEGACY_UNPINNED_RUNTIME_BUILD_ID {
+        RuntimeBuildId::new(effective_runtime_build.to_string()).map_err(|error| {
+            crate::execution_identity::ExecutionIdentityError::Serialization(format!(
+                "invalid effective dynamic workflow runtime build id: {error}"
+            ))
+        })?;
+    }
+    let plan = dynamic_workflow_execution_plan(history);
+    let plan_identity = plan.definition_identity()?;
+    ExecutionIdentityV1::derive(
+        DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1,
+        &json!({
+            "run_id": run_id,
+            "source_hash": expected_source_hash,
+            "input_identity": input_identity.digest,
+            "runtime_build_id": effective_runtime_build,
+            "plan_identity": plan_identity.digest,
+            "step_identities": step_identities,
+        }),
+    )
+}
+
 /// Project the complete durable Flow history into Code's canonical plan model.
 ///
 /// Flow remains the execution authority; this is a read-only adapter used by
@@ -862,6 +1081,7 @@ pub struct DynamicWorkflowTool {
     graph_observer: Option<FlowGraphObserver>,
     task_scheduler: Option<Arc<TaskScheduler>>,
     admit_steps_globally: bool,
+    runtime_build_compatibility: Option<RuntimeBuildCompatibility>,
 }
 
 enum DynamicWorkflowRegistry {
@@ -885,6 +1105,7 @@ impl DynamicWorkflowTool {
             graph_observer: None,
             task_scheduler: None,
             admit_steps_globally: false,
+            runtime_build_compatibility: None,
         }
     }
 
@@ -894,6 +1115,7 @@ impl DynamicWorkflowTool {
             graph_observer: None,
             task_scheduler: None,
             admit_steps_globally: false,
+            runtime_build_compatibility: None,
         }
     }
 
@@ -914,6 +1136,19 @@ impl DynamicWorkflowTool {
     ) -> Self {
         self.task_scheduler = Some(scheduler);
         self.admit_steps_globally = admit_steps_globally;
+        self
+    }
+
+    /// Fence new and resumed runs to an explicit runtime-build compatibility
+    /// set. By default the tool pins new runs to
+    /// [`DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID`] and temporarily accepts legacy
+    /// unpinned histories; hosts that can replay older builds should add them
+    /// to this compatibility set explicitly.
+    pub fn with_runtime_build_compatibility(
+        mut self,
+        compatibility: RuntimeBuildCompatibility,
+    ) -> Self {
+        self.runtime_build_compatibility = Some(compatibility);
         self
     }
 }
@@ -1001,6 +1236,29 @@ impl Tool for DynamicWorkflowTool {
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
 
+        let runtime_build_id = match &self.runtime_build_compatibility {
+            Some(compatibility) => compatibility.current_build_id().clone(),
+            None => match RuntimeBuildId::new(DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID.to_string()) {
+                Ok(build_id) => build_id,
+                Err(error) => {
+                    return Ok(ToolOutput::error(format!(
+                        "invalid dynamic workflow runtime build identity: {error}"
+                    )))
+                }
+            },
+        };
+        let runtime_build_compatibility =
+            self.runtime_build_compatibility.clone().unwrap_or_else(|| {
+                RuntimeBuildCompatibility::new(runtime_build_id.clone()).accept_unpinned()
+            });
+        let source_hash = source_hash(source);
+        let base_spec = WorkflowSpec::rust_embedded(
+            "a3s-code.dynamic-workflow",
+            source_hash.as_str(),
+            "ptc",
+            "run",
+        );
+
         let mut runtime = DynamicWorkflowRuntime::new(registry, ctx.clone(), source)
             .with_allowed_tools(allowed_tools)
             .with_limits(limits);
@@ -1014,15 +1272,58 @@ impl Tool for DynamicWorkflowTool {
             Ok(store) => store,
             Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };
-        let initial_plan = if let Some(run_id) = requested_run_id {
-            let prior_history = match store.list(run_id).await {
+        let prior_history = if let Some(run_id) = requested_run_id {
+            match store.list(run_id).await {
                 Ok(history) => history,
                 Err(a3s_flow::FlowError::RunNotFound(_)) => Vec::new(),
                 Err(error) => return Ok(ToolOutput::error(error.to_string())),
-            };
-            dynamic_workflow_execution_plan(&prior_history)
+            }
         } else {
+            Vec::new()
+        };
+        // Preserve the immutable build pin already persisted in a resumed
+        // history. A new run is pinned to this worker's current build; a
+        // legacy run remains intentionally unpinned during migration. Keeping
+        // the exact persisted spec is required because Flow treats the whole
+        // workflow definition as the idempotent start contract.
+        let (spec, effective_runtime_build_id) = prior_history
+            .iter()
+            .find_map(|envelope| match &envelope.event {
+                FlowEvent::RunCreated { spec, .. } => Some(spec.clone()),
+                _ => None,
+            })
+            .map(|persisted_spec| {
+                let runtime_build_id = persisted_spec
+                    .runtime_build_id
+                    .as_ref()
+                    .map(ToString::to_string);
+                (persisted_spec, runtime_build_id)
+            })
+            .unwrap_or_else(|| {
+                let spec = base_spec.with_runtime_build(runtime_build_id.clone());
+                (spec, Some(runtime_build_id.to_string()))
+            });
+        if let Some(run_id) = requested_run_id {
+            if let Err(error) = dynamic_workflow_continuation_identity(
+                run_id,
+                source,
+                &input,
+                runtime_build_id.as_str(),
+                &prior_history,
+            ) {
+                return Ok(ToolOutput::error(format!(
+                    "dynamic workflow continuation identity rejected: {error}"
+                )));
+            }
+        } else if let Err(error) = dynamic_workflow_input_identity(&input) {
+            return Ok(ToolOutput::error(format!(
+                "dynamic workflow input identity rejected: {error}"
+            )));
+        }
+        let initial_plan = if prior_history.is_empty() {
             ExecutionPlan::new("dynamic workflow", Complexity::Medium)
+        } else {
+            dynamic_workflow_execution_plan(&prior_history)
         };
         let mut observers: Vec<Arc<dyn FlowEventObserver>> = Vec::new();
         if let Some(tx) = ctx.agent_event_tx.clone() {
@@ -1035,21 +1336,15 @@ impl Tool for DynamicWorkflowTool {
         if let Some(observer) = &self.graph_observer {
             observers.push(Arc::new(observer.clone()));
         }
-        let engine = if observers.is_empty() {
-            FlowEngine::new(store, runtime)
-        } else {
-            FlowEngine::builder(runtime)
-                .with_store(store)
-                .with_observer(Arc::new(FanoutFlowEventObserver::from_observers(observers)))
-                .build()
-        };
-        let source_hash = source_hash(source);
-        let spec = WorkflowSpec::rust_embedded(
-            "a3s-code.dynamic-workflow",
-            source_hash.as_str(),
-            "ptc",
-            "run",
-        );
+        let mut engine_builder = FlowEngine::builder(runtime)
+            .with_store(store)
+            .with_runtime_build_compatibility(runtime_build_compatibility);
+        if !observers.is_empty() {
+            engine_builder = engine_builder
+                .with_observer(Arc::new(FanoutFlowEventObserver::from_observers(observers)));
+        }
+        let engine = engine_builder.build();
+        let input_for_identity = input.clone();
 
         let run_id = match requested_run_id {
             Some(run_id) => match engine.start_with_id(run_id, spec, input).await {
@@ -1069,6 +1364,20 @@ impl Tool for DynamicWorkflowTool {
         let history = match engine.history(&run_id).await {
             Ok(history) => history,
             Err(err) => return Ok(ToolOutput::error(err.to_string())),
+        };
+        let continuation_identity = match dynamic_workflow_continuation_identity(
+            &run_id,
+            source,
+            &input_for_identity,
+            runtime_build_id.as_str(),
+            &history,
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Ok(ToolOutput::error(format!(
+                    "dynamic workflow continuation identity rejected after replay: {error}"
+                )))
+            }
         };
 
         let output = match &snapshot.output {
@@ -1093,10 +1402,12 @@ impl Tool for DynamicWorkflowTool {
                 "status": format!("{:?}", snapshot.status),
                 "last_sequence": snapshot.last_sequence,
                 "source_hash": source_hash,
+                "runtime_build_id": effective_runtime_build_id,
                 "snapshot": snapshot,
                 "history": history,
                 "plan": plan,
                 "plan_identity": plan_identity,
+                "continuation_identity": continuation_identity,
                 "admission": runtime_for_metadata.admission_stats(),
             }
         });
