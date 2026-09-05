@@ -306,9 +306,20 @@ impl Tool for GenerateObjectTool {
                     let delta_str = serde_json::to_string(&delta).unwrap_or_default();
                     let _ = tx_clone.try_send(ToolStreamEvent::OutputDelta(delta_str));
                 });
-                structured::generate_streaming(&*llm_client, &req, callback).await
+                structured::generate_streaming_with_cancellation(
+                    &*llm_client,
+                    &req,
+                    callback,
+                    cancellation.clone(),
+                )
+                .await
             } else {
-                structured::generate_blocking(&*llm_client, &req).await
+                structured::generate_blocking_with_cancellation(
+                    &*llm_client,
+                    &req,
+                    cancellation.clone(),
+                )
+                .await
             }
         };
         let execution = run_generation_with_admission(

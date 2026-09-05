@@ -330,6 +330,20 @@ pub async fn generate_blocking(
     client: &dyn LlmClient,
     req: &StructuredRequest,
 ) -> Result<StructuredResult> {
+    generate_blocking_with_cancellation(client, req, CancellationToken::new()).await
+}
+
+/// Generate a structured object while honoring the caller's cancellation token.
+///
+/// This is the explicit model-call boundary for non-streaming structured
+/// generation. The client remains the only provider gateway; cancellation is
+/// enforced around every initial and repair call without mutating the caller's
+/// token.
+pub async fn generate_blocking_with_cancellation(
+    client: &dyn LlmClient,
+    req: &StructuredRequest,
+    cancellation: CancellationToken,
+) -> Result<StructuredResult> {
     let mode = resolve_mode(req.mode, client.native_structured_support());
     let envelope = SchemaEnvelope::for_schema(&req.schema);
     let mut messages = build_initial_messages(req, mode);
@@ -341,10 +355,12 @@ pub async fn generate_blocking(
     let mut repair_rounds: u8 = 0;
 
     loop {
-        let resp = client
-            .complete_structured(&messages, Some(&system), &tools, &directive)
-            .await
-            .context("LLM call failed during structured generation")?;
+        let resp = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => bail!("Operation cancelled by user"),
+            response = client.complete_structured(&messages, Some(&system), &tools, &directive) => response,
+        }
+        .context("LLM call failed during structured generation")?;
 
         accumulate_usage(&mut total_usage, &resp.usage);
 
@@ -415,6 +431,21 @@ pub async fn generate_streaming(
     req: &StructuredRequest,
     on_partial: PartialObjectCallback,
 ) -> Result<StructuredResult> {
+    generate_streaming_with_cancellation(client, req, on_partial, CancellationToken::new()).await
+}
+
+/// Generate a structured object with streaming partial updates while honoring
+/// the caller's cancellation token.
+///
+/// A child token is passed to the provider so cancelling this operation can
+/// abort provider I/O without ever cancelling a host-owned token. Repair calls
+/// use the same cancellation boundary as the initial stream.
+pub async fn generate_streaming_with_cancellation(
+    client: &dyn LlmClient,
+    req: &StructuredRequest,
+    on_partial: PartialObjectCallback,
+    cancellation: CancellationToken,
+) -> Result<StructuredResult> {
     let mode = resolve_mode(req.mode, client.native_structured_support());
     let envelope = SchemaEnvelope::for_schema(&req.schema);
     let mut messages = build_initial_messages(req, mode);
@@ -422,17 +453,19 @@ pub async fn generate_streaming(
     let tools = build_tools(req, mode);
     let directive = build_directive(req, mode);
 
-    let cancel_token = CancellationToken::new();
-    let mut rx = client
-        .complete_streaming_structured(
+    let provider_cancellation = cancellation.child_token();
+    let mut rx = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => bail!("Operation cancelled by user"),
+        response = client.complete_streaming_structured(
             &messages,
             Some(&system),
             &tools,
             &directive,
-            cancel_token.clone(),
-        )
-        .await
-        .context("LLM streaming call failed during structured generation")?;
+            provider_cancellation.clone(),
+        ) => response,
+    }
+    .context("LLM streaming call failed during structured generation")?;
 
     let mut json_buffer = String::new();
     let mut last_valid_partial: Option<Value> = None;
@@ -449,13 +482,15 @@ pub async fn generate_streaming(
     loop {
         let event = if let Some((_, _, deadline)) = complete_candidate.as_ref() {
             tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("Operation cancelled by user"),
                 event = rx.recv() => event,
                 _ = tokio::time::sleep_until(*deadline) => {
-                    let candidate = complete_candidate
-                        .take()
-                        .expect("complete streamed candidate exists");
+                    let Some(candidate) = complete_candidate.take() else {
+                        continue;
+                    };
                     let (value, raw_text, _) = candidate;
-                    cancel_token.cancel();
+                    provider_cancellation.cancel();
                     on_partial(&value);
                     return Ok(StructuredResult {
                         object: value,
@@ -467,11 +502,15 @@ pub async fn generate_streaming(
                 }
             }
         } else {
-            rx.recv().await
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => bail!("Operation cancelled by user"),
+                event = rx.recv() => event,
+            }
         };
         let Some(event) = event else {
             if let Some((value, raw_text, _)) = complete_candidate.take() {
-                cancel_token.cancel();
+                provider_cancellation.cancel();
                 on_partial(&value);
                 return Ok(StructuredResult {
                     object: value,
@@ -555,6 +594,7 @@ pub async fn generate_streaming(
         }
     }
 
+    provider_cancellation.cancel();
     let mut resp = final_response.context("Stream ended without Done event")?;
     let mut total_usage = TokenUsage::default();
     accumulate_usage(&mut total_usage, &resp.usage);
@@ -600,10 +640,12 @@ pub async fn generate_streaming(
             mode,
             &raw_for_context,
         );
-        resp = client
-            .complete_structured(&messages, Some(&system), &tools, &directive)
-            .await
-            .context("LLM call failed while repairing streamed structured output")?;
+        resp = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => bail!("Operation cancelled by user"),
+            response = client.complete_structured(&messages, Some(&system), &tools, &directive) => response,
+        }
+        .context("LLM call failed while repairing streamed structured output")?;
         accumulate_usage(&mut total_usage, &resp.usage);
         resolution = resolve_structured(
             &extract_raw_candidates(&resp.message, mode),

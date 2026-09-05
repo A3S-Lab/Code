@@ -209,6 +209,48 @@ impl LlmClient for CompleteObjectWithoutDoneClient {
     }
 }
 
+struct CancellationBoundaryClient;
+
+#[async_trait]
+impl LlmClient for CancellationBoundaryClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        anyhow::bail!("unexpected completion after cancellation")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        cancel_token.cancelled().await;
+        anyhow::bail!("provider observed cancellation")
+    }
+}
+
+fn cancellation_request() -> StructuredRequest {
+    StructuredRequest {
+        prompt: "Generate a value".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"type": "string"}}
+        }),
+        schema_name: "cancellation_test".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 1,
+    }
+}
+
 // ========================================================================
 // extract_json_value tests
 // ========================================================================
@@ -483,6 +525,30 @@ fn test_validate_nested_object() {
 // ========================================================================
 
 #[tokio::test]
+async fn test_generate_blocking_with_cancellation_aborts_provider_call() {
+    let cancellation = CancellationToken::new();
+    let task_cancellation = cancellation.clone();
+    let task = tokio::spawn(async move {
+        generate_blocking_with_cancellation(
+            &CancellationBoundaryClient,
+            &cancellation_request(),
+            task_cancellation,
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("cancellation must finish the model call")
+        .expect("generation task must not panic")
+        .expect_err("cancelled generation must fail");
+
+    assert!(error.to_string().contains("Operation cancelled by user"));
+}
+
+#[tokio::test]
 async fn test_generate_blocking_tool_mode_success() {
     let client = MockStructuredClient::new(vec![MockStructuredClient::tool_call_response(
         "emit_invoice",
@@ -732,6 +798,31 @@ async fn test_generate_blocking_exhausts_repairs() {
 // ========================================================================
 // generate_streaming tests
 // ========================================================================
+
+#[tokio::test]
+async fn test_generate_streaming_with_cancellation_aborts_provider_setup() {
+    let cancellation = CancellationToken::new();
+    let task_cancellation = cancellation.clone();
+    let task = tokio::spawn(async move {
+        generate_streaming_with_cancellation(
+            &CancellationBoundaryClient,
+            &cancellation_request(),
+            Box::new(|_| {}),
+            task_cancellation,
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("cancellation must finish provider setup")
+        .expect("generation task must not panic")
+        .expect_err("cancelled generation must fail");
+
+    assert!(error.to_string().contains("Operation cancelled by user"));
+}
 
 #[tokio::test]
 async fn test_generate_streaming_tool_mode() {
