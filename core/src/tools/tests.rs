@@ -171,6 +171,8 @@ fn immutable_content_binding_and_reference_reject_tampering() {
         format!("a3s+test://user:password@authorized-content/{digest}"),
         format!("a3s+test://authorized-content/{digest}?token=secret"),
         format!("a3s+test://authorized-content/{digest}#secret"),
+        format!("a3s+test://authorized-content/{digest}-copy"),
+        format!("a3s+test://authorized-content/prefix{digest}"),
     ] {
         assert!(ImmutableContentReferenceV1::new(&binding, &descriptor, unsafe_uri).is_err());
     }

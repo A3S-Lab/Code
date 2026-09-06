@@ -283,9 +283,9 @@ impl ImmutableContentReferenceV1 {
             .content_digest
             .strip_prefix("sha256:")
             .unwrap_or_default();
-        if !self.uri.contains(content_digest) {
+        if !uri_contains_digest_segment(&self.uri, content_digest) {
             return Err(reference_drift(
-                "uri is not content-addressed by the exact SHA-256 digest",
+                "uri must contain the exact SHA-256 digest as a path segment",
             ));
         }
         if !valid_sha256(&self.binding_digest)
@@ -533,6 +533,19 @@ fn valid_reference_uri(value: &str) -> bool {
             character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
         })
         && !remainder.is_empty()
+}
+
+/// Require the content digest to occupy one complete logical path segment.
+///
+/// A substring check would accept references such as `digest-copy` or an
+/// unrelated identifier containing the digest. Exact segment matching keeps
+/// the reference content-addressed without prescribing a provider's scheme or
+/// authority layout.
+fn uri_contains_digest_segment(uri: &str, digest: &str) -> bool {
+    let Some((_, remainder)) = uri.split_once("://") else {
+        return false;
+    };
+    remainder.split('/').any(|segment| segment == digest)
 }
 
 fn invalid_binding(message: impl Into<String>) -> ImmutableContentError {
