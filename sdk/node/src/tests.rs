@@ -62,6 +62,207 @@ fn sdk_capability_inventory_is_projected_from_core_without_drift() {
 }
 
 #[test]
+fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../evaluation/model-generation-pool-health-v1.json"
+    ))
+    .expect("model-generation pool health fixture is valid JSON");
+    assert_eq!(fixture["schema_version"], 1);
+    assert_eq!(fixture["report_schema_version"], 1);
+    let sample_limit = fixture["sample_limit"]
+        .as_u64()
+        .expect("fixture sample limit")
+        .min(3);
+    assert!(sample_limit > 0);
+
+    let session = build_test_session();
+    let mut aggregate: Option<NodePoolHealthAggregate> = None;
+    for _ in 0..sample_limit {
+        let health = fallback_runtime()
+            .block_on(session.model_generation_pool_health())
+            .expect("Node pool health projection succeeds")
+            .expect("fixture client publishes a provider pool");
+        assert_node_pool_health_fixture(&health, &fixture);
+        let scheduler = health.scheduler.as_ref();
+        let sample = NodePoolHealthAggregate {
+            sample_count: 0,
+            max_local_reserved: health.local_reserved,
+            max_scheduler_active: scheduler.map(|value| value.active).unwrap_or(0),
+            max_scheduler_pending: scheduler.map(|value| value.pending).unwrap_or(0),
+            admitted: scheduler.map(|value| value.admitted).unwrap_or(0),
+            released: scheduler.map(|value| value.released).unwrap_or(0),
+            cancelled: scheduler.map(|value| value.cancelled).unwrap_or(0),
+            rejected: scheduler.map(|value| value.rejected).unwrap_or(0),
+        };
+        aggregate = Some(match aggregate {
+            Some(mut previous) => {
+                previous.sample_count += 1;
+                previous.max_local_reserved = previous.max_local_reserved.max(sample.max_local_reserved);
+                previous.max_scheduler_active = previous.max_scheduler_active.max(sample.max_scheduler_active);
+                previous.max_scheduler_pending = previous.max_scheduler_pending.max(sample.max_scheduler_pending);
+                previous.admitted = previous.admitted.max(sample.admitted);
+                previous.released = previous.released.max(sample.released);
+                previous.cancelled = previous.cancelled.max(sample.cancelled);
+                previous.rejected = previous.rejected.max(sample.rejected);
+                previous
+            }
+            None => NodePoolHealthAggregate {
+                sample_count: 1,
+                ..sample
+            },
+        });
+    }
+
+    let aggregate = aggregate.expect("at least one health sample");
+    let aggregate_json = serde_json::json!({
+        "sampleCount": aggregate.sample_count,
+        "maxLocalReserved": aggregate.max_local_reserved,
+        "maxSchedulerActive": aggregate.max_scheduler_active,
+        "maxSchedulerPending": aggregate.max_scheduler_pending,
+        "admitted": aggregate.admitted,
+        "released": aggregate.released,
+        "cancelled": aggregate.cancelled,
+        "rejected": aggregate.rejected,
+    });
+    let expected_fields = fixture["aggregate_fields"]
+        .as_array()
+        .expect("fixture aggregate fields")
+        .iter()
+        .map(|value| value.as_str().expect("aggregate field name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = aggregate_json
+        .as_object()
+        .expect("aggregate object")
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_fields, expected_fields);
+    assert!(aggregate.sample_count <= fixture["sample_limit"].as_u64().unwrap());
+}
+
+#[derive(Default)]
+struct NodePoolHealthAggregate {
+    sample_count: u64,
+    max_local_reserved: i64,
+    max_scheduler_active: i64,
+    max_scheduler_pending: i64,
+    admitted: i64,
+    released: i64,
+    cancelled: i64,
+    rejected: i64,
+}
+
+fn assert_node_pool_health_fixture(
+    health: &ModelGenerationPoolHealthSnapshot,
+    fixture: &serde_json::Value,
+) {
+    let snapshot = serde_json::json!({
+        "pool": {
+            "identity": {
+                "schema": health.pool.identity.schema.clone(),
+                "domain": health.pool.identity.domain.clone(),
+                "digest": health.pool.identity.digest.clone(),
+            },
+            "maxConcurrency": health.pool.max_concurrency,
+        },
+        "localMaxConcurrency": health.local_max_concurrency,
+        "localReserved": health.local_reserved,
+        "localAvailable": health.local_available,
+        "scheduler": health.scheduler.as_ref().map(|value| serde_json::json!({
+            "identity": {
+                "schema": value.identity.schema.clone(),
+                "domain": value.identity.domain.clone(),
+                "digest": value.identity.digest.clone(),
+            },
+            "maxActive": value.max_active,
+            "observed": value.observed,
+            "live": value.live,
+            "active": value.active,
+            "pending": value.pending,
+            "blocked": value.blocked,
+            "admitted": value.admitted,
+            "released": value.released,
+            "cancelled": value.cancelled,
+            "rejected": value.rejected,
+            "peakActive": value.peak_active,
+            "totalWaitMicros": value.total_wait_micros,
+            "averageWaitMicros": value.average_wait_micros,
+            "maxWaitMicros": value.max_wait_micros,
+        })),
+    });
+    for field in fixture["required_snapshot_fields"]
+        .as_array()
+        .expect("fixture snapshot fields")
+    {
+        let field = field.as_str().expect("snapshot field name");
+        assert!(snapshot.get(field).is_some(), "missing snapshot field {field}");
+    }
+    let forbidden = fixture["forbidden_fields"]
+        .as_array()
+        .expect("fixture forbidden fields")
+        .iter()
+        .map(|value| value.as_str().expect("forbidden field name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_no_forbidden_node_keys(&snapshot, &forbidden);
+    let identity = snapshot["pool"]["identity"]
+        .as_object()
+        .expect("pool identity object");
+    for field in fixture["required_identity_fields"]
+        .as_array()
+        .expect("fixture identity fields")
+    {
+        let field = field.as_str().expect("identity field name");
+        assert!(identity.get(field).is_some(), "missing identity field {field}");
+    }
+    let max_concurrency = fixture["max_concurrency"]
+        .as_i64()
+        .expect("fixture max concurrency");
+    assert!(health.pool.max_concurrency > 0);
+    assert!(health.pool.max_concurrency <= max_concurrency);
+    assert!(health.local_max_concurrency >= 0);
+    assert!(health.local_max_concurrency <= health.pool.max_concurrency);
+    assert!(health.local_reserved >= 0);
+    assert!(health.local_available >= 0);
+    assert_eq!(
+        health.local_reserved + health.local_available,
+        health.local_max_concurrency
+    );
+    assert_eq!(
+        health.pool.identity.domain,
+        a3s_code_core::execution_identity::MODEL_GENERATION_POOL_IDENTITY_DOMAIN_V1
+    );
+    assert!(health.pool.identity.digest.starts_with("sha256:"));
+    if let Some(scheduler) = &health.scheduler {
+        assert_eq!(scheduler.identity.schema, health.pool.identity.schema);
+        assert_eq!(scheduler.identity.domain, health.pool.identity.domain);
+        assert_eq!(scheduler.identity.digest, health.pool.identity.digest);
+        assert_eq!(scheduler.max_active, health.pool.max_concurrency);
+        assert!(scheduler.active <= scheduler.max_active);
+        assert!(scheduler.pending <= scheduler.max_active);
+    }
+}
+
+fn assert_no_forbidden_node_keys(
+    value: &serde_json::Value,
+    forbidden: &std::collections::BTreeSet<&str>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                assert!(!forbidden.contains(key.as_str()), "forbidden diagnostic field {key}");
+                assert_no_forbidden_node_keys(child, forbidden);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                assert_no_forbidden_node_keys(child, forbidden);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
 fn moli_diagnostics_are_projected_without_installing() {
     let info = crate::moli_runtime::moli_runtime_info(None);
     assert_eq!(info.schema, a3s_code_core::MOLI_RUNTIME_INFO_SCHEMA_V1);

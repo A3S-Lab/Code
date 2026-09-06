@@ -87,6 +87,200 @@ fn sdk_capability_inventory_is_projected_from_core_without_drift() {
 }
 
 #[test]
+fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../evaluation/model-generation-pool-health-v1.json"
+    ))
+    .expect("model-generation pool health fixture is valid JSON");
+    assert_eq!(fixture["schema_version"], 1);
+    assert_eq!(fixture["report_schema_version"], 1);
+    let sample_limit = fixture["sample_limit"]
+        .as_u64()
+        .expect("fixture sample limit")
+        .min(3);
+    assert!(sample_limit > 0);
+
+    let session = build_test_session();
+    let mut aggregate: Option<PythonPoolHealthAggregate> = None;
+    for _ in 0..sample_limit {
+        let snapshot = serde_json::to_value(
+            get_runtime()
+                .block_on(session.inner.model_generation_pool_health())
+                .expect("Python pool health projection succeeds")
+                .expect("fixture client publishes a provider pool"),
+        )
+        .expect("serialize Python pool health");
+        assert_python_pool_health_fixture(&snapshot, &fixture);
+        let scheduler = snapshot.get("scheduler");
+        let sample = PythonPoolHealthAggregate {
+            sample_count: 0,
+            max_local_reserved: snapshot["localReserved"].as_u64().unwrap_or(0),
+            max_scheduler_active: scheduler
+                .and_then(|value| value.get("active"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            max_scheduler_pending: scheduler
+                .and_then(|value| value.get("pending"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            admitted: scheduler
+                .and_then(|value| value.get("admitted"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            released: scheduler
+                .and_then(|value| value.get("released"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            cancelled: scheduler
+                .and_then(|value| value.get("cancelled"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            rejected: scheduler
+                .and_then(|value| value.get("rejected"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        };
+        aggregate = Some(match aggregate {
+            Some(mut previous) => {
+                previous.sample_count += 1;
+                previous.max_local_reserved = previous.max_local_reserved.max(sample.max_local_reserved);
+                previous.max_scheduler_active = previous.max_scheduler_active.max(sample.max_scheduler_active);
+                previous.max_scheduler_pending = previous.max_scheduler_pending.max(sample.max_scheduler_pending);
+                previous.admitted = previous.admitted.max(sample.admitted);
+                previous.released = previous.released.max(sample.released);
+                previous.cancelled = previous.cancelled.max(sample.cancelled);
+                previous.rejected = previous.rejected.max(sample.rejected);
+                previous
+            }
+            None => PythonPoolHealthAggregate {
+                sample_count: 1,
+                ..sample
+            },
+        });
+    }
+
+    let aggregate = aggregate.expect("at least one health sample");
+    let aggregate_json = serde_json::json!({
+        "sampleCount": aggregate.sample_count,
+        "maxLocalReserved": aggregate.max_local_reserved,
+        "maxSchedulerActive": aggregate.max_scheduler_active,
+        "maxSchedulerPending": aggregate.max_scheduler_pending,
+        "admitted": aggregate.admitted,
+        "released": aggregate.released,
+        "cancelled": aggregate.cancelled,
+        "rejected": aggregate.rejected,
+    });
+    let expected_fields = fixture["aggregate_fields"]
+        .as_array()
+        .expect("fixture aggregate fields")
+        .iter()
+        .map(|value| value.as_str().expect("aggregate field name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = aggregate_json
+        .as_object()
+        .expect("aggregate object")
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_fields, expected_fields);
+    assert!(aggregate.sample_count <= fixture["sample_limit"].as_u64().unwrap());
+}
+
+#[derive(Default)]
+struct PythonPoolHealthAggregate {
+    sample_count: u64,
+    max_local_reserved: u64,
+    max_scheduler_active: u64,
+    max_scheduler_pending: u64,
+    admitted: u64,
+    released: u64,
+    cancelled: u64,
+    rejected: u64,
+}
+
+fn assert_python_pool_health_fixture(
+    snapshot: &serde_json::Value,
+    fixture: &serde_json::Value,
+) {
+    let object = snapshot.as_object().expect("pool health object");
+    for field in fixture["required_snapshot_fields"]
+        .as_array()
+        .expect("fixture snapshot fields")
+    {
+        let field = field.as_str().expect("snapshot field name");
+        assert!(object.contains_key(field), "missing snapshot field {field}");
+    }
+    let forbidden = fixture["forbidden_fields"]
+        .as_array()
+        .expect("fixture forbidden fields")
+        .iter()
+        .map(|value| value.as_str().expect("forbidden field name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_no_forbidden_python_keys(snapshot, &forbidden);
+    let identity = &snapshot["pool"]["identity"];
+    for field in fixture["required_identity_fields"]
+        .as_array()
+        .expect("fixture identity fields")
+    {
+        let field = field.as_str().expect("identity field name");
+        assert!(identity.get(field).is_some(), "missing identity field {field}");
+    }
+    let max_concurrency = fixture["max_concurrency"]
+        .as_u64()
+        .expect("fixture max concurrency");
+    let pool_max = snapshot["pool"]["maxConcurrency"]
+        .as_u64()
+        .expect("pool max concurrency");
+    let local_max = snapshot["localMaxConcurrency"]
+        .as_u64()
+        .expect("local max concurrency");
+    assert!(pool_max > 0 && pool_max <= max_concurrency);
+    assert!(local_max <= pool_max);
+    assert_eq!(
+        snapshot["localReserved"].as_u64().unwrap()
+            + snapshot["localAvailable"].as_u64().unwrap(),
+        local_max
+    );
+    assert_eq!(
+        identity["domain"],
+        a3s_code_core::execution_identity::MODEL_GENERATION_POOL_IDENTITY_DOMAIN_V1
+    );
+    assert!(identity["digest"].as_str().unwrap().starts_with("sha256:"));
+    if let Some(scheduler) = snapshot.get("scheduler") {
+        assert_eq!(scheduler["identity"], identity.clone());
+        assert_eq!(scheduler["maxActive"], snapshot["pool"]["maxConcurrency"]);
+        assert!(
+            scheduler["active"].as_u64().unwrap()
+                <= scheduler["maxActive"].as_u64().unwrap()
+        );
+        assert!(
+            scheduler["pending"].as_u64().unwrap()
+                <= scheduler["maxActive"].as_u64().unwrap()
+        );
+    }
+}
+
+fn assert_no_forbidden_python_keys(
+    value: &serde_json::Value,
+    forbidden: &std::collections::BTreeSet<&str>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                assert!(!forbidden.contains(key.as_str()), "forbidden diagnostic field {key}");
+                assert_no_forbidden_python_keys(child, forbidden);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                assert_no_forbidden_python_keys(child, forbidden);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
 fn moli_diagnostics_are_projected_without_installing() {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| {
