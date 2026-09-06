@@ -48,6 +48,11 @@ line and column zero are rejected, and a column cannot appear without a line.
 A finding or run whose fields were changed without updating its digest is
 rejected before any transition can rebind the tampered value.
 
+A `ResearchReviewBatchV1` may contain zero findings. This is the canonical
+representation of a clean reviewer result; the bound evaluator record remains
+the source of the decision and evidence identity, so hosts do not need to
+invent a synthetic finding merely to publish a successful review.
+
 Evidence facts and events carry sequence numbers, but contiguous ordering and
 durability remain host responsibilities. The payloads intentionally contain
 digests and bounded metadata rather than prompts, source text, credentials, or

@@ -14,7 +14,9 @@ const RESEARCH_REVIEW_BATCH_DIGEST_DOMAIN: &str = "a3s.code.review-batch.identit
 /// A batch does not define a rubric or a business decision. It only prevents
 /// a host from publishing a partially mixed reviewer response: every finding
 /// must belong to the same project/run, evaluation record, and evidence
-/// snapshot. Human resolution remains an explicit operation on each finding.
+/// snapshot. A batch may contain zero findings to represent a clean reviewer
+/// result; the evaluator record remains the authoritative result and evidence
+/// identity. Human resolution remains an explicit operation on each finding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResearchReviewBatchV1 {
@@ -177,7 +179,7 @@ impl ResearchReviewBatchV1 {
         validate_id("runId", &self.run_id)?;
         validate_digest_field("evaluationRecordDigest", &self.evaluation_record_digest)?;
         validate_digest_field("evidenceDigest", &self.evidence_digest)?;
-        if self.findings.is_empty() || self.findings.len() > RESEARCH_MAX_REVIEW_FINDINGS {
+        if self.findings.len() > RESEARCH_MAX_REVIEW_FINDINGS {
             return Err(ResearchContractError::InvalidField("findings"));
         }
         for pair in self.findings.windows(2) {
@@ -378,5 +380,22 @@ mod tests {
             batch.validate(),
             Err(ResearchContractError::DigestMismatch("findingDigest"))
         );
+    }
+
+    #[test]
+    fn empty_batch_represents_a_clean_review_result() {
+        let record = record();
+        let batch = ResearchReviewBatchV1::new(
+            "clean-batch",
+            "project-1",
+            "run-1",
+            record.record_digest.clone(),
+            record.result.evidence_digest.clone(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(batch.findings.is_empty());
+        assert!(batch.validate().is_ok());
     }
 }
