@@ -126,6 +126,11 @@ impl ResearchReviewBatchV1 {
                 "evaluationRecord.evidenceDigest",
             ));
         }
+        for finding in &self.findings {
+            if finding.evaluator_id != record.result.evaluator_id {
+                return Err(ResearchContractError::InvalidField("finding.evaluatorId"));
+            }
+        }
         Ok(())
     }
 
