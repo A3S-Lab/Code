@@ -369,7 +369,15 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
             );
         }
         if receivers.len() == 1 {
-            return receivers.pop().expect("one confirmation receiver");
+            // The length check and pop are adjacent today, but keep this
+            // boundary explicit rather than turning a future provider
+            // filtering change into a production panic.
+            return receivers.pop().unwrap_or_else(|| {
+                Self::immediate_response(
+                    false,
+                    Some("Confirmation provider disappeared before responding.".to_string()),
+                )
+            });
         }
 
         let (tx, rx) = oneshot::channel();
