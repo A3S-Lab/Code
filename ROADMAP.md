@@ -284,10 +284,11 @@ executor or moving verifier authority into Core.
 | `TB-PROCESS1` | Delivered | Container commands use a bounded outer timeout and Unix process-group termination/reaping | A timed-out shell cannot leave descendants consuming the Harbor budget |
 | `TB-PROVIDER1` | Delivered | OpenAI, Anthropic, and Codex login clients preserve non-retryable provider/status metadata; the runner reports `provider_rejected` with bounded diagnostics | 4xx terminal responses do not fall back or retry; provider/status metadata survives the adapter boundary |
 | `TB-OUTPUT1` | Delivered | The container adapter reuses the Core bounded head/tail capture semantics instead of buffering unbounded `wait_with_output` data | Hostile high-volume stdout/stderr remains within the tool output ceiling while preserving truncation accounting |
+| `TB-RETRY1` | Planned | Collapse Provider retry, stream-restart, and Agent circuit-breaker decisions into one typed retry authority; a retry-exhausted response becomes terminal for the current request | 429/5xx `Retry-After` is honored once, inner exhaustion is not replayed by an outer fallback, and cancellation/deadline bounds every backoff |
 | `TB-QUAL1` | Planned | Run a diagnostic task matrix first, then the complete tagged dataset with Harbor's native verifier result retained per trial | No missing verifier result, runner error, or local-only aggregate is counted as a pass or leaderboard score |
 
 The dependency order is `TB-BOUNDARY1 → TB-TERMINAL1 → TB-PROCESS1 →
-TB-PROVIDER1 → TB-OUTPUT1 → TB-QUAL1`. The Harbor environment owns task images,
+TB-PROVIDER1 → TB-OUTPUT1 → TB-RETRY1 → TB-QUAL1`. The Harbor environment owns task images,
 timeouts, artifacts, and verification; Code owns only the session loop and
 its typed evidence record. A benchmark adapter must not add a second retry
 loop, tool executor, or success definition.
