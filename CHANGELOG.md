@@ -102,6 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Serialized shared-workspace zvec generation publication, cleanup, and
   deletion with a cross-process lock; active readers hold a shared lock so
   generation collection cannot race an in-flight native query.
+- Kept compatibility Run replacement one-to-one in the FIFO index and rejected
+  event-sequence overflow before publishing a partial Run event.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays

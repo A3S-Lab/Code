@@ -306,6 +306,10 @@ impl InMemoryRunStore {
             let mut runs = self.runs.write().await;
             runs.insert(id.clone(), snapshot.clone());
             events.insert(id.clone(), RetainedRunEvents::default());
+            // This compatibility API intentionally replaces an existing
+            // record. Remove its old position first so the FIFO index remains
+            // one-to-one with the run map instead of retaining duplicate IDs.
+            order.retain(|run_id| run_id != &id);
             order.push_back(id);
             if let Some(cap) = self.max_runs {
                 while order.len() > cap {
@@ -366,6 +370,7 @@ impl InMemoryRunStore {
         // capped buffer is full it remains constant and would reuse the
         // same sequence for every subsequent event.
         let sequence = run.event_count;
+        let next_event_count = sequence.checked_add(1)?;
         // Wall clocks may move backwards and persisted runs may come from a
         // host whose clock was ahead. Keep Code's run-local observation time
         // monotonic so event-page validation and replay never regress.
@@ -385,7 +390,7 @@ impl InMemoryRunStore {
             self.max_event_bytes_per_run,
         );
         apply_event_to_snapshot(run, &event);
-        run.event_count += 1;
+        run.event_count = next_event_count;
         run.updated_at_ms = timestamp_ms;
         Some(run.clone())
     }
@@ -762,6 +767,54 @@ mod retention_tests {
         assert_eq!(replay.snapshot().session_id, winner.session_id);
         assert_eq!(replay.snapshot().prompt, winner.prompt);
         assert_eq!(store.list().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compatibility_create_replacement_keeps_one_fifo_entry() {
+        let store = InMemoryRunStore::with_retention(Some(2), None);
+        let original = store
+            .create_run_with_id("run-replaced".to_owned(), "session-1", "first")
+            .await;
+        let replacement = store
+            .create_run_with_id("run-replaced".to_owned(), "session-1", "second")
+            .await;
+
+        assert_eq!(replacement.id, original.id);
+        assert_eq!(store.list().await.len(), 1);
+        assert_eq!(store.records().await.len(), 1);
+        assert_eq!(
+            store.snapshot("run-replaced").await.unwrap().prompt,
+            "second"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_sequence_overflow_does_not_publish_a_partial_event() {
+        let store = InMemoryRunStore::new();
+        let run = store.create_run("session-1", "overflow").await;
+        store
+            .runs
+            .write()
+            .await
+            .get_mut(&run.id)
+            .unwrap()
+            .event_count = usize::MAX;
+
+        let recorded = store
+            .record_event(
+                &run.id,
+                AgentEvent::TextDelta {
+                    text: "must not publish".to_owned(),
+                },
+            )
+            .await;
+
+        assert!(recorded.is_none());
+        assert!(store.events(&run.id).await.is_empty());
+        assert_eq!(
+            store.snapshot(&run.id).await.unwrap().event_count,
+            usize::MAX
+        );
     }
 
     #[tokio::test]
