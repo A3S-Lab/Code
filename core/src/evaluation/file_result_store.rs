@@ -289,14 +289,17 @@ async fn read_records_from_path(
     path: &Path,
     max_records: usize,
 ) -> Result<Vec<EvaluationRecordV1>, EvaluationStoreError> {
-    let bytes = match tokio::fs::read(path).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(storage_error("read evaluation result store", error)),
-    };
-    if bytes.len() > EVALUATION_RESULT_STORE_MAX_BYTES {
-        return Err(EvaluationStoreError::SizeLimit);
-    }
+    let bytes =
+        match crate::bounded_io::read_file_bounded_async(path, EVALUATION_RESULT_STORE_MAX_BYTES)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(EvaluationStoreError::SizeLimit)
+            }
+            Err(error) => return Err(storage_error("read evaluation result store", error)),
+        };
     let file: EvaluationResultStoreFileV1 = serde_json::from_slice(&bytes)
         .map_err(|error| EvaluationStoreError::Corrupt(format!("decode generation: {error}")))?;
     if file.schema != EVALUATION_RESULT_STORE_SCHEMA_V1 {

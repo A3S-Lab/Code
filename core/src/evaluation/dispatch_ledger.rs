@@ -1024,14 +1024,19 @@ async fn read_records_from_path(
     path: &Path,
     max_records: usize,
 ) -> Result<BTreeMap<String, DispatchClaimRecord>, EvaluationDispatchLedgerError> {
-    let bytes = match tokio::fs::read(path).await {
+    let bytes = match crate::bounded_io::read_file_bounded_async(
+        path,
+        EVALUATION_DISPATCH_LEDGER_MAX_BYTES,
+    )
+    .await
+    {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(EvaluationDispatchLedgerError::SizeLimit)
+        }
         Err(error) => return Err(storage_error("read dispatch ledger", error)),
     };
-    if bytes.len() > EVALUATION_DISPATCH_LEDGER_MAX_BYTES {
-        return Err(EvaluationDispatchLedgerError::SizeLimit);
-    }
     let file: DispatchLedgerFileV1 = serde_json::from_slice(&bytes).map_err(|error| {
         EvaluationDispatchLedgerError::Corrupt(format!("decode ledger: {error}"))
     })?;

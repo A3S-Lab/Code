@@ -780,14 +780,16 @@ fn prune_records(records: &mut BTreeMap<String, ClaimRecord>, before_ms: u64) ->
 }
 
 async fn read_records(path: &Path) -> Result<BTreeMap<String, ClaimRecord>> {
-    let bytes = match tokio::fs::read(path).await {
+    let bytes = match crate::bounded_io::read_file_bounded_async(path, MAX_DECISION_LEDGER_BYTES)
+        .await
+    {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            anyhow::bail!("decision ledger exceeds {MAX_DECISION_LEDGER_BYTES} bytes")
+        }
         Err(error) => return Err(error).context("read decision ledger"),
     };
-    if bytes.len() > MAX_DECISION_LEDGER_BYTES {
-        anyhow::bail!("decision ledger exceeds {MAX_DECISION_LEDGER_BYTES} bytes");
-    }
     let ledger: DecisionLedgerFile =
         serde_json::from_slice(&bytes).context("decode decision ledger")?;
     if ledger.schema_version > DECISION_LEDGER_SCHEMA_VERSION {

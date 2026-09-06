@@ -79,6 +79,7 @@ pub(crate) mod agent_api;
 pub mod agent_protocol;
 pub mod agent_protocol_harness;
 pub mod agent_protocol_host;
+pub(crate) mod bounded_io;
 pub mod budget;
 pub mod capability;
 pub(crate) mod child_run;

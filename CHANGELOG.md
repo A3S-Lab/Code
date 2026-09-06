@@ -116,6 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panic a prompt build or wrap its limits.
 - Escaped context sources and text at the XML prompt boundary, preventing
   provider-controlled attributes or markup from changing the context envelope.
+- Centralized bounded file reads for evaluation, Flow, and State Graph
+  persistence so declared and concurrent-growth size violations are rejected
+  before JSON allocation and decoding.
 
 ## [8.2.0] - 2026-09-04
 

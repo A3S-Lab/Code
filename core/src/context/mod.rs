@@ -371,18 +371,11 @@ pub(crate) fn read_utf8_file_bounded(
     path: &std::path::Path,
     max_bytes: usize,
 ) -> std::io::Result<Option<String>> {
-    use std::io::Read;
-
-    let file = std::fs::File::open(path)?;
-    let limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut bytes = Vec::new();
-    file.take(limit).read_to_end(&mut bytes)?;
-
-    if bytes.len() > max_bytes {
-        return Ok(None);
-    }
+    let bytes = match crate::bounded_io::read_file_bounded(path, max_bytes) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
 
     Ok(String::from_utf8(bytes).ok())
 }
