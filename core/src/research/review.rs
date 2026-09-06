@@ -76,7 +76,17 @@ impl ResearchReviewLocationV1 {
     }
 
     fn validate(&self) -> Result<(), ResearchContractError> {
-        validate_text("location.anchor", &self.anchor, 512)
+        validate_text("location.anchor", &self.anchor, 512)?;
+        if self.line.is_some_and(|line| line == 0) {
+            return Err(ResearchContractError::InvalidField("location.line"));
+        }
+        if self.column.is_some_and(|column| column == 0) {
+            return Err(ResearchContractError::InvalidField("location.column"));
+        }
+        if self.column.is_some() && self.line.is_none() {
+            return Err(ResearchContractError::InvalidField("location.column"));
+        }
+        Ok(())
     }
 }
 
@@ -552,6 +562,51 @@ mod tests {
         assert_eq!(
             finding.validate(),
             Err(ResearchContractError::InvalidField("resolutionDigest"))
+        );
+    }
+
+    #[test]
+    fn location_coordinates_are_one_based_and_line_bound() {
+        let zero_line = ResearchReviewLocationV1::new("report.md")
+            .unwrap()
+            .with_line(0, None);
+        assert_eq!(
+            ResearchReviewFindingV1::new(
+                "finding-zero-line",
+                "project-1",
+                "run-1",
+                digest('a'),
+                ResearchReviewCategoryV1::Citation,
+                ResearchReviewSeverityV1::Warning,
+                "invalid location",
+                Some(zero_line),
+                vec![digest('b')],
+                "reviewer",
+                1,
+            ),
+            Err(ResearchContractError::InvalidField("location.line"))
+        );
+
+        let orphaned_column = ResearchReviewLocationV1 {
+            anchor: "report.md".to_owned(),
+            line: None,
+            column: Some(3),
+        };
+        assert_eq!(
+            ResearchReviewFindingV1::new(
+                "finding-orphaned-column",
+                "project-1",
+                "run-1",
+                digest('a'),
+                ResearchReviewCategoryV1::Citation,
+                ResearchReviewSeverityV1::Warning,
+                "invalid location",
+                Some(orphaned_column),
+                vec![digest('b')],
+                "reviewer",
+                1,
+            ),
+            Err(ResearchContractError::InvalidField("location.column"))
         );
     }
 
