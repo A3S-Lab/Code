@@ -70,3 +70,9 @@ terminal errors at the Core boundary. The report classifies these as
 `failed/provider_rejected` and retains only bounded diagnostic text, so an
 account, credential, or request-shape failure cannot consume the run budget via
 blind retries.
+
+Container command output is captured incrementally with the Core 100 KiB
+head/tail limit before it is returned to the Tool loop. High-volume commands
+therefore cannot make the benchmark runner buffer an unbounded stdout/stderr
+payload; truncation and byte counts remain visible through the normal Tool
+metadata observer.

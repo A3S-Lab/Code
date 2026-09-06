@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Per-command timeouts are clipped to the remaining run budget and Unix
   process groups are reaped on timeout, preventing descendant processes from
   consuming the harness deadline after a command has stopped making progress.
+- Bounded Terminal-Bench container stdout/stderr capture before it reaches the
+  Tool result path, retaining the same head/tail and truncation accounting as
+  the native workspace process boundary.
 - Added a Terminal-Bench evidence gate: an `agent_end` without a successful
   Tool execution is downgraded to `failed/evidence_missing`, and the report
   records successful Tool and artifact-evidence counters.

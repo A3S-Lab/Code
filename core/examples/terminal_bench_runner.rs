@@ -10,183 +10,25 @@
 //! `terminal_bench_runner --config /run/a3s/config.acl --workspace /root --prompt-file /run/a3s/instruction.md --result-file /logs/agent/a3s-code.result.json`
 
 mod terminal_bench_result;
+mod terminal_bench_sandbox;
 
 use a3s_code_core::execution_identity::ExecutionResultOutcomeV1;
 use a3s_code_core::hitl::AutoApproveConfirmation;
 use a3s_code_core::llm::CodexLoginClient;
-use a3s_code_core::sandbox::{
-    BashSandbox, SandboxCommandRequest, SandboxExecutionOutput, SandboxOutput,
-};
 use a3s_code_core::{
     Agent, AgentEvent, AgentStyle, PlanningMode, SessionOptions, SystemPromptSlots,
 };
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::process::Command;
 
 use terminal_bench_result::{
     classify_failure, count_artifact_evidence, persist_result, ExecutionPhase, RunProgress,
     TerminalReason, DEFAULT_EXECUTION_BUDGET_MS,
 };
 
-/// Harbor already supplies the outer container boundary. A nested bubblewrap
-/// sandbox is not available in many benchmark images, so this explicit host
-/// adapter executes through that container boundary instead of asking the
-/// model to retry a permanently unavailable default sandbox.
-struct ContainerBashSandbox {
-    workspace: PathBuf,
-    deadline: Instant,
-}
-
-impl ContainerBashSandbox {
-    fn new(workspace: PathBuf, deadline: Instant) -> Self {
-        Self {
-            workspace,
-            deadline,
-        }
-    }
-
-    fn remaining_timeout_ms(&self, requested_ms: u64) -> u64 {
-        let remaining = self
-            .deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        requested_ms.min(remaining)
-    }
-}
-
-#[async_trait]
-impl BashSandbox for ContainerBashSandbox {
-    async fn exec_command(&self, command: &str, guest_workspace: &str) -> Result<SandboxOutput> {
-        let output = self
-            .exec(SandboxCommandRequest {
-                command: command.to_string(),
-                guest_workspace: guest_workspace.to_string(),
-                timeout_ms: self.remaining_timeout_ms(120_000),
-                output_observer: None,
-                env: None,
-            })
-            .await?;
-        Ok(SandboxOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: output.exit_code,
-        })
-    }
-
-    async fn exec(&self, request: SandboxCommandRequest) -> Result<SandboxExecutionOutput> {
-        let timeout_ms = self.remaining_timeout_ms(request.timeout_ms);
-        if timeout_ms == 0 {
-            let output = SandboxExecutionOutput {
-                stdout: String::new(),
-                stderr: "command skipped because the run deadline expired\n".to_string(),
-                exit_code: 124,
-                timed_out: true,
-            };
-            if let Some(observer) = request.output_observer {
-                observer.on_output_delta(&output.stderr).await;
-                observer
-                    .on_output_complete(&a3s_code_core::workspace::CommandOutputSummary {
-                        total_bytes: output.stderr.len(),
-                        captured_bytes: output.stderr.len(),
-                        truncated: false,
-                        timed_out: true,
-                    })
-                    .await;
-            }
-            return Ok(output);
-        }
-
-        let mut shell = Command::new("bash");
-        shell
-            .arg("-lc")
-            .arg(&request.command)
-            .current_dir(&self.workspace)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            // Give the command its own process group so a timeout can reap
-            // descendants spawned by scripts, package managers, or tests.
-            shell.process_group(0);
-        }
-        if let Some(env) = request.env.as_deref() {
-            shell.envs(env);
-        }
-        let child = shell.spawn().context("spawn container bash")?;
-        let child_pid = child.id();
-        let mut wait = Box::pin(child.wait_with_output());
-        let result =
-            tokio::time::timeout(Duration::from_millis(timeout_ms.max(1)), &mut wait).await;
-        let (stdout, stderr, exit_code, timed_out) = match result {
-            Ok(output) => {
-                let output = output.context("wait for container bash")?;
-                (
-                    String::from_utf8_lossy(&output.stdout).into_owned(),
-                    String::from_utf8_lossy(&output.stderr).into_owned(),
-                    output.status.code().unwrap_or(1),
-                    false,
-                )
-            }
-            Err(_) => {
-                terminate_process_group(child_pid);
-                // Reap the process after signalling its group. This prevents
-                // a timed-out command from leaking a zombie into the task
-                // container while retaining the bounded timeout result.
-                let _ = (&mut wait).await;
-                (
-                    String::new(),
-                    "command timed out in the Harbor container\n".to_string(),
-                    124,
-                    true,
-                )
-            }
-        };
-        if let Some(observer) = request.output_observer {
-            if !stdout.is_empty() {
-                observer.on_output_delta(&stdout).await;
-            }
-            if !stderr.is_empty() {
-                observer.on_output_delta(&stderr).await;
-            }
-            observer
-                .on_output_complete(&a3s_code_core::workspace::CommandOutputSummary {
-                    total_bytes: stdout.len() + stderr.len(),
-                    captured_bytes: stdout.len() + stderr.len(),
-                    truncated: false,
-                    timed_out,
-                })
-                .await;
-        }
-        Ok(SandboxExecutionOutput {
-            stdout,
-            stderr,
-            exit_code,
-            timed_out,
-        })
-    }
-
-    async fn shutdown(&self) {}
-}
-
-#[cfg(unix)]
-fn terminate_process_group(pid: Option<u32>) {
-    if let Some(pid) = pid {
-        // A negative PID targets the process group created by
-        // `CommandExt::process_group(0)` above.
-        let _ = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-    }
-}
-
-#[cfg(not(unix))]
-fn terminate_process_group(_pid: Option<u32>) {}
+use terminal_bench_sandbox::ContainerBashSandbox;
 
 #[derive(Debug)]
 struct Args {
@@ -420,6 +262,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use a3s_code_core::sandbox::{BashSandbox, SandboxCommandRequest};
+    use std::time::Instant;
 
     #[cfg(unix)]
     #[tokio::test]
