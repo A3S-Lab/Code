@@ -43,8 +43,10 @@ through `checkpointed`, and then terminate as `completed`, `failed`, or
 previous digest before recalculating the new identity.
 
 Review findings start `open`; only `resolve` or `waive` with a content digest
-can close them. A finding or run whose fields were changed without updating its
-digest is rejected before any transition can rebind the tampered value.
+can close them. Optional source/artifact locations use one-based coordinates:
+line and column zero are rejected, and a column cannot appear without a line.
+A finding or run whose fields were changed without updating its digest is
+rejected before any transition can rebind the tampered value.
 
 Evidence facts and events carry sequence numbers, but contiguous ordering and
 durability remain host responsibilities. The payloads intentionally contain

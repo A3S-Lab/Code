@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reviewer finding locations now reject zero-based or orphaned coordinates;
+  optional columns require a one-based line so citation and figure/code links
+  cannot carry ambiguous source positions.
 - Added schema-v2 integrity fencing for persistent zvec generations. Reopen
   validates chunk payload digests, stable IDs, ranges, canonical digests, and
   duplicate IDs; corrupted generations fail closed and are rebuilt from the
