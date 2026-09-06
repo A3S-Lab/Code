@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made retry exhaustion terminal at the Agent boundary while retaining a
   bounded status/body diagnostic, preventing an exhausted Provider request from
   being replayed through streaming fallback or a second circuit-breaker loop.
+- Added a cancellation-aware retry primitive and wired streaming OpenAI and
+  Anthropic requests through it, so a cancelled run does not wait for a long
+  `Retry-After` backoff before settling.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
