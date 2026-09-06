@@ -202,7 +202,12 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
         }
     }
     progress.phase = ExecutionPhase::Joining;
-    if let Err(error) = worker.await {
+    let worker_error = worker.await.err();
+    // Session close is unconditional: even a failed worker join must release
+    // the Run-owned sandbox, capability, and event resources before execute
+    // returns to the process boundary.
+    session.close().await;
+    if let Some(error) = worker_error {
         progress.remember_error(&error);
         // An End event is the first terminal observation. Preserve it when a
         // late worker join failure occurs during cleanup; this mirrors the
@@ -213,7 +218,6 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
         }
         eprintln!("[a3s-code warning] worker ended after terminal event: {error}");
     }
-    session.close().await;
     if !progress.terminal_event {
         progress.stream_closed_without_terminal_event = true;
         anyhow::bail!("A3S Code stream ended without a terminal event")
