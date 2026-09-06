@@ -71,7 +71,10 @@ pub(super) fn build_session_capabilities(
                 .clone()
                 .unwrap_or_default(),
         )
-        .expect("resolved Tool result transform policy must be valid");
+        .map_err(|error| CodeError::SessionConfiguration {
+            field: "tool_result_transform_policy",
+            message: error.to_string(),
+        })?;
     let trace_sink = match retention_limits.max_trace_events {
         Some(cap) => crate::trace::InMemoryTraceSink::with_max_events(cap),
         None => crate::trace::InMemoryTraceSink::new(),
