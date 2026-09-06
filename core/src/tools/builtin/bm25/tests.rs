@@ -311,18 +311,10 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
         .await
         .unwrap();
     let replaced_metadata = replaced.metadata.as_ref().unwrap();
-    let replaced_paths = replaced_metadata["results"]
-        .as_array()
-        .map(|results| {
-            results
-                .iter()
-                .filter_map(|result| result["path"].as_str())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     assert!(
-        !replaced_paths.contains(&"src/state.rs"),
-        "stale source leaked through persistent BM25: {replaced_metadata:?}"
+        !replaced.content.contains("old_state_marker"),
+        "stale source leaked through persistent BM25: {replaced_metadata:?}; output={}",
+        replaced.content
     );
 
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
