@@ -152,6 +152,22 @@ impl ResearchRunV1 {
         Ok(())
     }
 
+    /// Validate that this Run has crossed the admission boundary before a
+    /// host attaches reviewer evidence or findings to it.
+    ///
+    /// A planned Run has not yet frozen an executable identity, so accepting
+    /// review output for it would allow an evaluator result to exist without
+    /// a corresponding admitted research execution. Terminal and checkpoint
+    /// states remain reviewable because hosts may inspect completed or failed
+    /// artifacts after execution.
+    pub(crate) fn validate_reviewable(&self) -> Result<(), ResearchContractError> {
+        self.validate()?;
+        if matches!(self.status, ResearchRunStatusV1::Planned) {
+            return Err(ResearchContractError::InvalidField("researchRun.status"));
+        }
+        Ok(())
+    }
+
     pub fn transition_to(
         &mut self,
         next: ResearchRunStatusV1,

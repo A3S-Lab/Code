@@ -641,6 +641,40 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         ))
     );
 
+    let planned_research = ResearchRunV1::new(
+        &run.id,
+        "research-project",
+        9,
+        digest_bytes("research-source", b"source-snapshot"),
+        evidence.snapshot_digest.clone(),
+        capability_binding.clone(),
+        "fixture-provider",
+        "fixture-model",
+        ResearchReproducibilityV1::Deterministic,
+        Some(41),
+    )
+    .unwrap();
+    let unadmitted_finding = ResearchReviewFindingV1::new(
+        "finding-unadmitted-run",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "Reviewer output requires an admitted Run.",
+        None,
+        vec![evidence.snapshot_digest.clone()],
+        "research-reviewer",
+        61_010,
+    )
+    .unwrap();
+    assert_eq!(
+        unadmitted_finding.bind_evaluation_record_for_run(&reopened_record, &planned_research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "researchRun.status"
+        ))
+    );
+
     let batch = ResearchReviewBatchV1::new_for_run(
         "research-review-batch-1",
         &research,
@@ -655,6 +689,18 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
     assert_eq!(
         batch.findings[0].provenance_receipt_digest.as_deref(),
         Some(reopened_receipt.receipt_digest.as_str())
+    );
+    assert_eq!(
+        ResearchReviewBatchV1::new_for_run(
+            "research-review-batch-unadmitted",
+            &planned_research,
+            &reopened_record,
+            evidence.snapshot_digest.clone(),
+            vec![batch.findings[0].clone()],
+        ),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "researchRun.status"
+        ))
     );
 
     let mut preclosed_finding = batch.findings[0].clone();
