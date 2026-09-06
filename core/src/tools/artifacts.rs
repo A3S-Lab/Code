@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
 
 const DEFAULT_MAX_ARTIFACTS: usize = 256;
 const DEFAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -28,6 +29,16 @@ struct ArtifactStoreSnapshot {
 pub struct ArtifactStoreLimits {
     pub max_artifacts: usize,
     pub max_bytes: usize,
+}
+
+/// Conflict raised when a content-addressed URI is reused for different
+/// artifact bytes or metadata.  The existing [`ArtifactStore::put`] method
+/// remains available for mutable cache callers; research and replay paths
+/// should use [`ArtifactStore::put_content_addressed`] instead.
+#[derive(Debug, Clone, Eq, PartialEq, Error)]
+pub enum ArtifactStoreError {
+    #[error("artifact URI '{artifact_uri}' is already bound to different content")]
+    Conflict { artifact_uri: String },
 }
 
 impl Default for ArtifactStoreLimits {
@@ -77,6 +88,33 @@ impl ArtifactStore {
         state.artifacts.insert(artifact_uri, artifact);
 
         self.enforce_limits(&mut state);
+    }
+
+    /// Insert an artifact without allowing an existing URI to be overwritten.
+    ///
+    /// Exact replay is idempotent and returns `Ok(false)`.  A URI collision
+    /// with different bytes or metadata fails closed and leaves the retained
+    /// artifact untouched.  Retention eviction remains explicit store policy:
+    /// after an object is evicted, a later create-only write may reinsert its
+    /// URI because the store no longer owns that historical object.
+    pub fn put_content_addressed(
+        &self,
+        artifact: ToolArtifact,
+    ) -> Result<bool, ArtifactStoreError> {
+        let mut state = self.inner.write().unwrap();
+        let artifact_uri = artifact.artifact_uri.clone();
+        if let Some(existing) = state.artifacts.get(&artifact_uri) {
+            if existing == &artifact {
+                return Ok(false);
+            }
+            return Err(ArtifactStoreError::Conflict { artifact_uri });
+        }
+
+        state.total_bytes += artifact.content.len();
+        state.insertion_order.push_back(artifact_uri.clone());
+        state.artifacts.insert(artifact_uri, artifact);
+        self.enforce_limits(&mut state);
+        Ok(true)
     }
 
     pub fn get(&self, artifact_uri: &str) -> Option<ToolArtifact> {
@@ -142,7 +180,9 @@ impl ArtifactStore {
             serde_json::from_str(&json).context("failed to parse artifact store snapshot")?;
         let store = Self::with_limits(limits);
         for artifact in snapshot.artifacts {
-            store.put(artifact);
+            store
+                .put_content_addressed(artifact)
+                .map_err(|error| anyhow::anyhow!("invalid artifact manifest: {error}"))?;
         }
         Ok(store)
     }
@@ -200,6 +240,33 @@ mod tests {
 
         assert_eq!(store.len(), 1);
         assert_eq!(store.get("a3s://tool-output/test/abc"), Some(artifact));
+    }
+
+    #[test]
+    fn test_content_addressed_put_is_idempotent_and_conflict_safe() {
+        let store = ArtifactStore::new();
+        let artifact = ToolArtifact {
+            artifact_id: "tool-output:test:immutable".to_string(),
+            artifact_uri: "a3s://tool-output/test/immutable".to_string(),
+            tool_name: "test".to_string(),
+            content: "immutable output".to_string(),
+            original_bytes: 16,
+            shown_bytes: 8,
+        };
+
+        assert!(store.put_content_addressed(artifact.clone()).unwrap());
+        assert!(!store.put_content_addressed(artifact.clone()).unwrap());
+        assert_eq!(store.len(), 1);
+
+        let mut conflicting = artifact.clone();
+        conflicting.content = "different output".to_string();
+        assert_eq!(
+            store.put_content_addressed(conflicting),
+            Err(ArtifactStoreError::Conflict {
+                artifact_uri: artifact.artifact_uri.clone()
+            })
+        );
+        assert_eq!(store.get(&artifact.artifact_uri), Some(artifact));
     }
 
     #[test]
