@@ -7,11 +7,12 @@ not provide MCP tools, alter a task, install a solution, or replace the
 verifier.
 
 The benchmark task instruction is uploaded byte-for-byte to
-`/run/a3s/instruction.md`. The runner uses the general writable agent style and
-disables planning pre-analysis, so the model receives that instruction as its
-single user message. This prevents task words such as `findall` from selecting
-the read-only Explore style and avoids a planner-generated rewrite. Search
-mode remains a model decision through the normal A3S Code tool descriptions.
+`/run/a3s/instruction.md`. The runner explicitly pins the general writable
+agent style and disables planning pre-analysis, so the model receives that
+instruction as its single user message. The explicit style takes precedence
+over task vocabulary (for example, `design` or `findall`) and therefore cannot
+silently route the writable session to a read-only style. Search mode remains a
+model decision through the normal A3S Code tool descriptions.
 
 Build the static runner from the Code crate:
 
@@ -34,9 +35,19 @@ harbor run -d terminal-bench/terminal-bench@4.0.0 \
   -t terminal-bench/<task> -n 1 -k 1 -y
 ```
 
-Use the official Terminal-Bench command and dataset version for leaderboard
-work. A single task is a diagnostic result, not a benchmark score. Report the
-Harbor aggregate and each trial's native `verifier_result`; a timeout, runner
-error, or missing verifier result is not a pass. Keep the Harbor job directory
-as the reproducible evidence bundle. The auth file is uploaded only to the
-ephemeral task container and is never written to the workspace or trajectory.
+For a leaderboard-compatible run, use the complete tagged dataset, five
+attempts per task, and a GPU-capable sandbox as required by Terminal-Bench:
+
+```bash
+harbor run -d terminal-bench/terminal-bench@4.0.0 \
+  -a a3s_code_agent:A3SCodeAgent \
+  -n 100 -k 5 -y
+```
+
+The exact `-n` value depends on the provider and available quota. A local
+Docker run without GPU resources or a single `-t` task is a diagnostic result,
+not a leaderboard score. Report the Harbor aggregate and each trial's native
+`verifier_result`; a timeout, runner error, or missing verifier result is not a
+pass. Keep the Harbor job directory as the reproducible evidence bundle. The
+auth file is uploaded only to the ephemeral task container and is never written
+to the workspace or trajectory.
