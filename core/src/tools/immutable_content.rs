@@ -545,7 +545,10 @@ fn uri_contains_digest_segment(uri: &str, digest: &str) -> bool {
     let Some((_, remainder)) = uri.split_once("://") else {
         return false;
     };
-    remainder.split('/').any(|segment| segment == digest)
+    let Some((_, path)) = remainder.split_once('/') else {
+        return false;
+    };
+    path.split('/').any(|segment| segment == digest)
 }
 
 fn invalid_binding(message: impl Into<String>) -> ImmutableContentError {
