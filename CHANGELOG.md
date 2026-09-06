@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native research findings and batches now expose bounded `from_slice`/`to_vec`
   helpers that validate digests before accepting JSON at a process boundary.
+- Research runs, evidence facts, provenance receipts, and projected events now
+  expose the same bounded validated JSON helpers for cross-process recovery.
 - Reviewer batch lifecycle qualification now reopens resolved and waived
   findings from strict JSON and preserves terminal transition guards across a
   process restart.

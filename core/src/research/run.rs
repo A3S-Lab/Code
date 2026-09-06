@@ -134,6 +134,20 @@ impl ResearchRunV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON run and validate its identity before returning it
+    /// to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let run: Self = super::decode_json_slice(bytes)?;
+        run.validate()?;
+        Ok(run)
+    }
+
+    /// Encode a validated run for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     /// Verify that a research run is attached to the exact Code execution
     /// target that was admitted by the host.  The target's session identity is
     /// retained by Code's execution plane; this contract only owns the shared
@@ -304,6 +318,8 @@ mod tests {
         run.transition_to(ResearchRunStatusV1::Admitted).unwrap();
         assert_ne!(before, run.run_digest);
         assert!(run.validate().is_ok());
+        let encoded = run.to_vec().unwrap();
+        assert_eq!(ResearchRunV1::from_slice(&encoded).unwrap(), run);
     }
 
     #[test]

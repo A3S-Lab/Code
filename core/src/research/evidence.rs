@@ -82,6 +82,20 @@ impl ResearchEvidenceFactV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON evidence fact and validate its identity before
+    /// returning it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let fact: Self = super::decode_json_slice(bytes)?;
+        fact.validate()?;
+        Ok(fact)
+    }
+
+    /// Encode a validated evidence fact for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     fn validate_without_digest(&self) -> Result<(), ResearchContractError> {
         if self.schema != RESEARCH_EVIDENCE_FACT_SCHEMA_V1 {
             return Err(ResearchContractError::UnsupportedSchema);
@@ -162,6 +176,8 @@ mod tests {
         )
         .unwrap();
         assert!(fact.validate().is_ok());
+        let encoded = fact.to_vec().unwrap();
+        assert_eq!(ResearchEvidenceFactV1::from_slice(&encoded).unwrap(), fact);
         let mut tampered = fact.clone();
         tampered.metadata.insert("extra".to_owned(), "x".to_owned());
         assert!(matches!(
