@@ -144,7 +144,15 @@ impl SessionCommandAdapter {
             Ok(Err(_)) => Err(LaneError::CommandError("Channel closed".to_string())),
             Err(_) => {
                 let mut tasks = self.external_tasks.write().await;
-                tasks.remove(&self.task_id);
+                let removed = tasks.remove(&self.task_id).is_some();
+                drop(tasks);
+                if removed {
+                    let _ = self.event_tx.send(AgentEvent::ExternalTaskCompleted {
+                        task_id: self.task_id.clone(),
+                        session_id: self.session_id.clone(),
+                        success: false,
+                    });
+                }
                 Err(LaneError::Timeout(Duration::from_millis(self.timeout_ms)))
             }
         }
@@ -842,6 +850,70 @@ mod tests {
             )
             .await;
         assert!(rejected.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn external_task_timeout_emits_one_terminal_failure_event() {
+        let (tx, _) = broadcast::channel(100);
+        let mut events = tx.subscribe();
+        let q = SessionLaneQueue::new("timeout", SessionQueueConfig::default(), tx)
+            .await
+            .unwrap();
+        q.set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 20,
+            },
+        )
+        .await;
+        q.start().await.unwrap();
+
+        let result = q
+            .submit(
+                SessionLane::Execute,
+                Box::new(TestCommand {
+                    value: serde_json::json!({"timeout": true}),
+                }),
+            )
+            .await;
+        let task_id = loop {
+            match tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .expect("pending event must arrive")
+                .expect("event channel must remain open")
+            {
+                AgentEvent::ExternalTaskPending { task_id, .. } => break task_id,
+                _ => {}
+            }
+        };
+
+        assert!(tokio::time::timeout(Duration::from_secs(1), result)
+            .await
+            .expect("timed-out task must resolve")
+            .unwrap()
+            .is_err());
+        loop {
+            match tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .expect("terminal event must arrive")
+                .expect("event channel must remain open")
+            {
+                AgentEvent::ExternalTaskCompleted {
+                    task_id: completed_id,
+                    success,
+                    ..
+                } => {
+                    assert_eq!(completed_id, task_id);
+                    assert!(!success);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(q.pending_external_tasks().await.is_empty());
+        q.shutdown().await;
+        q.drain(Duration::from_secs(2)).await.unwrap();
     }
 
     #[test]

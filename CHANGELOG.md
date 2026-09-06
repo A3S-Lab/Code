@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bounded native Harness change-set capture state to in-flight entries only;
   completed or failed captures now rely on the authoritative Run snapshot
   instead of accumulating one permanent status per Run.
+- Completed external queue tasks now emit a terminal failure event when their
+  deadline expires, keeping the event lifecycle balanced with completion and
+  shutdown paths.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays
