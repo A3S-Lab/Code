@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 #[cfg(feature = "zvec-rust-fts")]
 use std::fs;
+#[cfg(feature = "zvec-rust-fts")]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "zvec-rust-fts")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -369,6 +371,23 @@ impl WorkspacePersistentIndex {
                 .writer
                 .lock()
                 .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
+            let persisted = match self.read_current_manifest() {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    tracing::warn!(%error, path = %self.root.display(), "ignoring unreadable persistent CURRENT while rebuilding");
+                    None
+                }
+            };
+            if let Some((_, manifest)) = persisted {
+                let requested = (snapshot.source_revision(), snapshot.revision());
+                let on_disk = (manifest.source_revision, manifest.catalog_revision);
+                if on_disk > requested {
+                    return Err(WorkspaceIndexError::StaleRevision {
+                        requested: snapshot.source_revision(),
+                        current: manifest.source_revision,
+                    });
+                }
+            }
             let current_state = self
                 .state
                 .read()
@@ -691,31 +710,10 @@ impl WorkspacePersistentIndex {
 
     #[cfg(feature = "zvec-rust-fts")]
     fn load_current(&self) -> WorkspaceIndexResult<()> {
-        let current = self.root.join(CURRENT_FILE);
-        let generation = match fs::read_to_string(&current) {
-            Ok(value) => value.trim().to_owned(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(WorkspaceIndexError::ReadFailed {
-                    path: current.display().to_string(),
-                    message: error.to_string(),
-                })
-            }
+        let Some((generation, manifest)) = self.read_current_manifest()? else {
+            return Ok(());
         };
-        if generation.is_empty() || !safe_generation_name(&generation) {
-            return Err(WorkspaceIndexError::InvalidConfig(
-                "persistent zvec CURRENT contains an invalid generation name".to_owned(),
-            ));
-        }
         let generation_root = self.root.join(&generation);
-        let manifest: GenerationManifest = read_json(&generation_root.join(MANIFEST_FILE))?;
-        if manifest.schema_version != MANIFEST_SCHEMA_VERSION
-            || manifest.lexical_engine != self.engine.stable_id()
-        {
-            return Err(WorkspaceIndexError::InvalidConfig(
-                "persistent zvec index schema or lexical engine is incompatible".to_owned(),
-            ));
-        }
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(
             manifest
                 .chunks
@@ -755,6 +753,36 @@ impl WorkspacePersistentIndex {
             index,
         });
         Ok(())
+    }
+
+    #[cfg(feature = "zvec-rust-fts")]
+    fn read_current_manifest(&self) -> WorkspaceIndexResult<Option<(String, GenerationManifest)>> {
+        let current = self.root.join(CURRENT_FILE);
+        let generation = match fs::read_to_string(&current) {
+            Ok(value) => value.trim().to_owned(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(WorkspaceIndexError::ReadFailed {
+                    path: current.display().to_string(),
+                    message: error.to_string(),
+                })
+            }
+        };
+        if generation.is_empty() || !safe_generation_name(&generation) {
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "persistent zvec CURRENT contains an invalid generation name".to_owned(),
+            ));
+        }
+        let generation_root = self.root.join(&generation);
+        let manifest: GenerationManifest = read_json(&generation_root.join(MANIFEST_FILE))?;
+        if manifest.schema_version != MANIFEST_SCHEMA_VERSION
+            || manifest.lexical_engine != self.engine.stable_id()
+        {
+            return Err(WorkspaceIndexError::InvalidConfig(
+                "persistent zvec index schema or lexical engine is incompatible".to_owned(),
+            ));
+        }
+        Ok(Some((generation, manifest)))
     }
 }
 
@@ -848,10 +876,40 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> WorkspaceIndexResu
 
 #[cfg(feature = "zvec-rust-fts")]
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> WorkspaceIndexResult<T> {
-    let bytes = fs::read(path).map_err(|error| WorkspaceIndexError::ReadFailed {
+    const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
+    let file = fs::File::open(path).map_err(|error| WorkspaceIndexError::ReadFailed {
         path: path.display().to_string(),
         message: error.to_string(),
     })?;
+    let declared_len = file
+        .metadata()
+        .map_err(|error| WorkspaceIndexError::ReadFailed {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?
+        .len();
+    if declared_len > MAX_MANIFEST_BYTES {
+        return Err(WorkspaceIndexError::InvalidConfig(format!(
+            "persistent zvec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
+        )));
+    }
+    let mut reader = file.take(MAX_MANIFEST_BYTES + 1);
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(declared_len)
+            .unwrap_or(usize::MAX)
+            .min(1024 * 1024),
+    );
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| WorkspaceIndexError::ReadFailed {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(WorkspaceIndexError::InvalidConfig(format!(
+            "persistent zvec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
+        )));
+    }
     serde_json::from_slice(&bytes).map_err(|error| {
         WorkspaceIndexError::InvalidConfig(format!("persistent zvec manifest is invalid: {error}"))
     })

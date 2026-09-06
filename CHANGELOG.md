@@ -101,7 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shift the whole buffer on every event.
 - Serialized shared-workspace zvec generation publication, cleanup, and
   deletion with a cross-process lock; active readers hold a shared lock so
-  generation collection cannot race an in-flight native query.
+  generation collection cannot race an in-flight native query. On-disk
+  revision fencing now also rejects an older Session from regressing CURRENT,
+  and generation manifests are bounded before decode.
 - Kept compatibility Run replacement one-to-one in the FIFO index and rejected
   event-sequence overflow before publishing a partial Run event.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
