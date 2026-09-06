@@ -67,9 +67,12 @@ fn bound_message(message: String) -> String {
 }
 
 pub(crate) fn non_retryable_llm_error_message(error: &anyhow::Error) -> Option<&str> {
+    if let Some(error) = error.downcast_ref::<NonRetryableLlmError>() {
+        return Some(error.message.as_str());
+    }
     error
-        .downcast_ref::<NonRetryableLlmError>()
-        .map(|error| error.message.as_str())
+        .downcast_ref::<crate::retry::RetryExhaustedError>()
+        .map(crate::retry::RetryExhaustedError::non_retryable_message)
 }
 
 #[cfg(test)]
@@ -94,5 +97,18 @@ mod tests {
         assert_eq!(error.status(), Some(402));
         assert!(error.to_string().len() <= MAX_PROVIDER_ERROR_MESSAGE_BYTES);
         assert!(error.to_string().ends_with('…'));
+    }
+
+    #[test]
+    fn retry_exhaustion_is_terminal_at_the_agent_boundary() {
+        let error = anyhow::Error::new(crate::retry::RetryExhaustedError::new(
+            3,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "rate limited",
+        ));
+        assert_eq!(
+            non_retryable_llm_error_message(&error),
+            Some("LLM provider retry budget exhausted")
+        );
     }
 }

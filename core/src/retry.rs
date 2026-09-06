@@ -149,6 +149,13 @@ impl RetryExhaustedError {
     pub(crate) fn status(&self) -> StatusCode {
         self.status
     }
+
+    /// A stable marker consumed by the outer Agent boundary. Once this retry
+    /// authority has exhausted its budget, replaying the same request through
+    /// another fallback or circuit breaker only repeats the same side effect.
+    pub(crate) fn non_retryable_message(&self) -> &'static str {
+        "LLM provider retry budget exhausted"
+    }
 }
 
 /// Execute an async operation with retry logic.
