@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parsing diagnostics.
 - Fixed the headless Terminal-Bench runner's standalone `--help` path so it
   does not require a spurious flag value.
+- Hardened the native Harness admission boundary to reject empty workspace
+  paths before creating or loading a session, preventing accidental current-
+  directory sharing.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
