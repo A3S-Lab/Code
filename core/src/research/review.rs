@@ -260,6 +260,38 @@ impl ResearchReviewFindingV1 {
         Ok(self)
     }
 
+    /// Bind this finding to a provenance receipt and the exact research Run
+    /// admission that produced it.
+    ///
+    /// [`bind_provenance_receipt`](Self::bind_provenance_receipt) remains
+    /// available for compatibility with callers that only have the finding
+    /// and receipt.  New reviewer pipelines should pass the admitted Run as
+    /// well so Code can reject a receipt from another project revision.
+    pub fn bind_provenance_receipt_for_run(
+        self,
+        receipt: &crate::research::ResearchProvenanceReceiptV1,
+        run: &crate::research::ResearchRunV1,
+    ) -> Result<Self, ResearchContractError> {
+        self.validate()?;
+        run.validate()
+            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        if run.project_id != self.project_id {
+            return Err(ResearchContractError::InvalidField("researchRun.projectId"));
+        }
+        if run.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField("researchRun.runId"));
+        }
+        receipt
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("provenanceReceipt"))?;
+        if receipt.project_revision != run.project_revision {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.projectRevision",
+            ));
+        }
+        self.bind_provenance_receipt(receipt)
+    }
+
     pub fn resolve(
         &mut self,
         resolution_digest: impl Into<String>,

@@ -65,9 +65,12 @@ raw model/tool output.
    an opaque operation id cannot be mistaken for the bare Run id.
 3. Materialize each output as a content-addressed artifact and publish a
    `ResearchProvenanceReceiptV1`. Bind a finding to that receipt with
-   `ResearchReviewFindingV1::bind_provenance_receipt`; Code checks the exact
-   project, Run, artifact digest, and at least one retained input evidence
-   digest without interpreting the scientific rubric.
+   `ResearchReviewFindingV1::bind_provenance_receipt_for_run`, passing the
+   admitted `ResearchRunV1`; Code checks the exact project, Run, project
+   revision, artifact digest, and at least one retained input evidence digest
+   without interpreting the scientific rubric. The older
+   `bind_provenance_receipt` form remains available for callers that do not
+   retain the admitted Run, but cannot perform the project-revision check.
 4. Run a host-selected evaluator through the generic Code evaluation
    substrate, then project its bounded observations into
    `ResearchReviewFindingV1` values. Bind each finding to the exact
