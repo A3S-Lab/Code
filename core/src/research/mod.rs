@@ -42,7 +42,7 @@ pub(crate) fn validate_id(field: &'static str, value: &str) -> Result<(), Resear
     if value.is_empty()
         || value.len() > RESEARCH_MAX_ID_BYTES
         || value.contains('\0')
-        || value.lines().count() != 1
+        || value.contains(['\r', '\n'])
     {
         return Err(ResearchContractError::InvalidField(field));
     }
@@ -57,11 +57,36 @@ pub(crate) fn validate_text(
     if value.is_empty()
         || value.len() > max_bytes
         || value.contains('\0')
-        || value.lines().count() > 1
+        || value.contains(['\r', '\n'])
     {
         return Err(ResearchContractError::InvalidField(field));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_identifiers_reject_all_ascii_line_endings() {
+        for value in ["reviewer\n", "reviewer\r", "reviewer\r\n", "reviewer\nnext"] {
+            assert_eq!(
+                validate_id("id", value),
+                Err(ResearchContractError::InvalidField("id"))
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_text_rejects_all_ascii_line_endings() {
+        for value in ["finding\n", "finding\r", "finding\r\n", "finding\nnext"] {
+            assert_eq!(
+                validate_text("text", value, 128),
+                Err(ResearchContractError::InvalidField("text"))
+            );
+        }
+    }
 }
 
 pub(crate) fn validate_digest_field(
