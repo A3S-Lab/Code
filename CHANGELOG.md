@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   addition to provider, random-seed, project, Run, artifact, and evidence-input
   mismatches; the object-only compatibility binding remains available for older
   callers.
+- Added strict Run-aware evaluator binding for reviewer findings. Hosts can
+  pass the admitted `ResearchRunV1` so Code rejects cross-project Run-id reuse
+  before accepting an evaluator record; the object-only compatibility binding
+  remains available for older callers.
 - Added schema-v2 integrity fencing for persistent zvec generations. Reopen
   validates chunk payload digests, stable IDs, ranges, canonical digests, and
   duplicate IDs; corrupted generations fail closed and are rebuilt from the

@@ -215,6 +215,31 @@ impl ResearchReviewFindingV1 {
         Ok(self)
     }
 
+    /// Bind this finding to an evaluator record and the exact research Run
+    /// admission that it reviewed.
+    ///
+    /// [`bind_evaluation_record`](Self::bind_evaluation_record) remains
+    /// available for compatibility with callers that only have the finding
+    /// and record. New reviewer pipelines should pass the admitted Run as
+    /// well, because an evaluation record carries a Run id but not the
+    /// project identity that namespaces it.
+    pub fn bind_evaluation_record_for_run(
+        self,
+        record: &crate::evaluation::EvaluationRecordV1,
+        run: &crate::research::ResearchRunV1,
+    ) -> Result<Self, ResearchContractError> {
+        self.validate()?;
+        run.validate()
+            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        if run.project_id != self.project_id {
+            return Err(ResearchContractError::InvalidField("researchRun.projectId"));
+        }
+        if run.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField("researchRun.runId"));
+        }
+        self.bind_evaluation_record(record)
+    }
+
     /// Bind this finding to the exact provenance receipt for its artifact.
     ///
     /// A provenance receipt is host-produced, but Code can still reject an
