@@ -4533,6 +4533,46 @@ async fn test_agent_system_prompt_passed() {
 }
 
 #[tokio::test]
+async fn test_explicit_general_style_overrides_task_word_intent() {
+    // Task content is data for an explicitly configured execution role. A
+    // writable session must not become the read-only planning agent merely
+    // because the task contains a word such as "design".
+    let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+        "Done",
+    )]));
+    let config = AgentConfig {
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        test_tool_context(),
+        config,
+    );
+
+    agent
+        .execute(&[], "Design and write the requested output.", None)
+        .await
+        .unwrap();
+
+    let system = mock_client
+        .request_systems
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("the model must receive a system prompt");
+    assert!(system.contains("You are A3S Code"));
+    assert!(!system.contains("You are a planning agent"));
+    assert!(!system.contains("read-only task"));
+}
+
+#[tokio::test]
 async fn test_agent_max_rounds_with_persistent_tool_calls() {
     // LLM keeps calling tools forever — should hit max_tool_rounds
     let mut responses = Vec::new();

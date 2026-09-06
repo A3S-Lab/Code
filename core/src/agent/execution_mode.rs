@@ -236,6 +236,14 @@ impl AgentLoop {
         prompt: &str,
         pre_analysis: Option<&PreAnalysis>,
     ) -> AgentStyle {
+        // A host-selected prompt style is an explicit execution policy. It
+        // must be resolved before any model or keyword intent inference;
+        // otherwise ordinary task words such as "design" can silently switch
+        // a writable session into the read-only planning agent.
+        if let Some(style) = self.config.prompt_slots.style {
+            return style;
+        }
+
         if let Some(analysis) = pre_analysis {
             return analysis.intent;
         }

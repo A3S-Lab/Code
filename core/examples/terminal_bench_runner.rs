@@ -196,8 +196,12 @@ async fn main() -> Result<()> {
         .with_planning_mode(PlanningMode::Disabled)
         .with_resilience_defaults()
         .with_auto_compact(true)
-        .with_max_tool_rounds(64)
-        .with_max_continuation_turns(2)
+        // Terminal-Bench includes long-horizon tasks whose official agent
+        // timeout is measured in hours. Keep the framework's internal
+        // progress budget below that outer deadline without truncating a
+        // valid solution after a short fixed number of tool turns.
+        .with_max_tool_rounds(256)
+        .with_max_continuation_turns(8)
         .with_sandbox_handle(Arc::new(ContainerBashSandbox::new(args.workspace.clone())));
     if let Some(auth_path) = args.codex_auth {
         let model = args
