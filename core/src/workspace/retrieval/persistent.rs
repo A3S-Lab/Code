@@ -6,6 +6,8 @@
 //! after a catalog snapshot has been fully built.
 
 use super::catalog::ChunkCatalogSnapshot;
+#[cfg(feature = "zvec-rust-fts")]
+use super::chunk::{chunk_id, digest_content};
 use super::lexical::LexicalSearchRequest;
 #[cfg(feature = "zvec-rust-fts")]
 use super::lexical::{path_matches, query_terms};
@@ -25,7 +27,7 @@ use std::sync::Arc;
 use std::sync::{Condvar, Mutex, RwLock};
 
 #[cfg(feature = "zvec-rust-fts")]
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 #[cfg(feature = "zvec-rust-fts")]
 const CURRENT_FILE: &str = "CURRENT";
 #[cfg(feature = "zvec-rust-fts")]
@@ -43,6 +45,10 @@ struct PersistedChunk {
     start_byte: usize,
     end_byte: usize,
     content_digest: String,
+    /// Digest of the exact chunk text retained in the durable manifest.
+    /// `content_digest` identifies the complete source file and therefore
+    /// cannot by itself detect a damaged chunk payload after restart.
+    text_digest: String,
     source_revision: u64,
     text: String,
 }
@@ -59,6 +65,7 @@ impl PersistedChunk {
             start_byte: chunk.start_byte,
             end_byte: chunk.end_byte,
             content_digest: chunk.content_digest.to_string(),
+            text_digest: digest_content(chunk.text.as_ref()).to_string(),
             source_revision: chunk.source_revision,
             text: chunk.text.to_string(),
         }
@@ -654,6 +661,7 @@ impl WorkspacePersistentIndex {
                 "persistent zvec index schema or lexical engine is incompatible".to_owned(),
             ));
         }
+        validate_persisted_chunks(&manifest.chunks)?;
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(
             manifest
                 .chunks
@@ -796,6 +804,66 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> WorkspaceIndexResult<
 }
 
 #[cfg(feature = "zvec-rust-fts")]
+fn validate_persisted_chunks(chunks: &[PersistedChunk]) -> WorkspaceIndexResult<()> {
+    let mut ids = HashSet::with_capacity(chunks.len());
+    for (index, chunk) in chunks.iter().enumerate() {
+        if chunk.path.is_empty() {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} has an empty path"
+            )));
+        }
+        if chunk.start_byte >= chunk.end_byte {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} has an invalid byte range"
+            )));
+        }
+        if chunk.start_line == 0 || chunk.start_line > chunk.end_line {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} has an invalid line range"
+            )));
+        }
+        if !valid_sha256_digest(&chunk.content_digest) || !valid_sha256_digest(&chunk.text_digest) {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} has a non-canonical digest"
+            )));
+        }
+        let expected_text_digest = digest_content(&chunk.text);
+        if chunk.text.is_empty() || expected_text_digest.as_ref() != chunk.text_digest {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} text digest does not match its payload"
+            )));
+        }
+        let expected_id = chunk_id(
+            &chunk.path,
+            &chunk.content_digest,
+            chunk.start_byte,
+            chunk.end_byte,
+        );
+        if chunk.id != expected_id.as_str() {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest chunk {index} id does not bind its metadata"
+            )));
+        }
+        if !ids.insert(chunk.id.as_str()) {
+            return Err(WorkspaceIndexError::InvalidConfig(format!(
+                "persistent zvec manifest contains duplicate chunk id at index {index}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "zvec-rust-fts")]
+fn valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+#[cfg(feature = "zvec-rust-fts")]
 fn indexed_chunks_match(left: &[Arc<WorkspaceChunk>], right: &[Arc<WorkspaceChunk>]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -821,7 +889,7 @@ fn distinct_path_count(chunks: &[Arc<WorkspaceChunk>]) -> usize {
 
 #[cfg(all(test, feature = "zvec-rust-fts"))]
 mod tests {
-    use super::WorkspacePersistentIndex;
+    use super::{WorkspacePersistentIndex, MANIFEST_FILE};
     use crate::workspace::retrieval::{
         ChunkCatalogLimits, ChunkingConfig, LexicalSearchRequest, WorkspaceChunkCatalog,
         WorkspaceLexicalEngine,
@@ -979,6 +1047,64 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(directory.path().join("CURRENT")).expect("CURRENT"),
             format!("{}\n", second_generation)
+        );
+    }
+
+    #[test]
+    fn corrupted_generation_manifest_is_rejected_before_query() {
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::ZvecRust,
+        )
+        .expect("catalog");
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized("src/lib.rs"),
+                Some("rust"),
+                1,
+                "durable manifest integrity sentinel\n",
+            )
+            .expect("catalog replacement");
+
+        let index =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+                .expect("persistent index");
+        let snapshot = catalog.snapshot().expect("snapshot");
+        index.sync_snapshot(&snapshot).expect("generation write");
+        let generation = index.status().generation.expect("generation");
+        drop(index);
+
+        let manifest_path = directory.path().join(generation).join(MANIFEST_FILE);
+        let bytes = std::fs::read(&manifest_path).expect("manifest");
+        let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        manifest["chunks"][0]["text"] = serde_json::Value::String("tampered\n".to_owned());
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("tampered manifest");
+
+        let reopened =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+                .expect("reopen should remain recoverable");
+        assert!(!reopened.is_ready());
+        assert_eq!(
+            reopened.status().phase,
+            super::WorkspacePersistentIndexPhase::Absent
+        );
+
+        reopened
+            .sync_snapshot(&snapshot)
+            .expect("catalog snapshot rebuilds corrupted generation");
+        let result = reopened
+            .search(&LexicalSearchRequest::new("manifest integrity sentinel"))
+            .expect("rebuilt query");
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(
+            result.hits[0].chunk.text.as_ref(),
+            "durable manifest integrity sentinel\n"
         );
     }
 

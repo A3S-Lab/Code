@@ -76,6 +76,13 @@ can use `--no-default-features` and the portable scorer. Official SDKs and
 release binaries enable the native feature and must include the matching
 library; they must not download an unverified library at runtime.
 
+Persistent generations use an atomic `CURRENT` pointer and a schema-v2
+manifest. On reopen, Code verifies every retained chunk's text digest, stable
+chunk identity, byte/line range, canonical source digest, and duplicate-ID
+constraint before exposing the native collection. A damaged or incompatible
+generation is treated as absent and is rebuilt from the current catalog; it is
+never served as a partially trusted index.
+
 ## Qualification gates
 
 - The locked exact/identifier/CJK relevance fixture passes for both engines.
