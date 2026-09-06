@@ -163,6 +163,7 @@ void _session.correlationId
 void _session.hasMemory
 void _session.taskSchedulerStats()
 void _session.taskSchedulerHealth()
+void _session.modelGenerationPoolHealth()
 void _session.memoryMaintenanceHealth()
 void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })

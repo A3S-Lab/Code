@@ -34,8 +34,19 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 				if params["session_handle"] != "session-1" {
 					t.Fatalf("unexpected session health params: %#v", params)
 				}
+			case "session_model_generation_pool_health":
+				if params["session_handle"] != "session-1" {
+					t.Fatalf("unexpected provider-pool health params: %#v", params)
+				}
 			default:
 				t.Fatalf("unexpected operation %q", operation)
+			}
+			if operation == "session_model_generation_pool_health" {
+				return &ModelGenerationPoolHealthSnapshot{
+					Pool:                ModelGenerationPool{MaxConcurrency: 2},
+					LocalMaxConcurrency: 1,
+					LocalAvailable:      1,
+				}, nil
 			}
 			return TaskSchedulerStats{
 				MaxActive: 4,
@@ -64,6 +75,10 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	poolHealth, err := session.ModelGenerationPoolHealth(context.Background())
+	if err != nil || poolHealth == nil || poolHealth.Pool.MaxConcurrency != 2 {
+		t.Fatalf("unexpected provider-pool health: %#v, %v", poolHealth, err)
+	}
 	if agentStats.MaxActive != 4 || sessionStats.PendingByPriority.Background != 1 {
 		t.Fatalf("unexpected scheduler stats: agent=%#v session=%#v", agentStats, sessionStats)
 	}
@@ -75,6 +90,7 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 		"session_task_scheduler_stats",
 		"agent_task_scheduler_health",
 		"session_task_scheduler_health",
+		"session_model_generation_pool_health",
 	}
 	if got := runtime.operations(); !slices.Equal(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)

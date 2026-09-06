@@ -129,6 +129,19 @@ func (session *Session) TaskSchedulerHealth(ctx context.Context) (TaskSchedulerH
 	return result, err
 }
 
+// ModelGenerationPoolHealth returns secret-free local and shared capacity
+// health for this session's provider/model pool. A nil result means the
+// configured client does not publish a typed pool descriptor.
+func (session *Session) ModelGenerationPoolHealth(ctx context.Context) (*ModelGenerationPoolHealthSnapshot, error) {
+	const op = "session_model_generation_pool_health"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	var result *ModelGenerationPoolHealthSnapshot
+	err := session.runtime.Request(ctx, op, session.params(), &result)
+	return result, err
+}
+
 // Send executes one prompt and waits for the complete response. A nil history
 // uses and updates the session's internal conversation history.
 func (session *Session) Send(

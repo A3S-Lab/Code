@@ -468,17 +468,23 @@ workflow limits, and the complete 3,205-test Core library suite. This slice
 does not add provider rate-limit policy, billing, or a second scheduler;
 Gateway and host policy remain the owners of those concerns.
 
-The admission-hardening follow-up adds `TaskScheduler::quota_health` as a
-read-only projection over the same actor. It records admission, release,
-cancellation, and rejection counts, peak occupancy, and bounded wait
-aggregates for one digest-only quota, retaining at most 64 idle epochs and
-pruning older identities deterministically. `ModelGenerationPoolHealthSnapshot`
-composes that shared view with each facade's local reserved/available permits
-and the immutable pool descriptor; `AgentSession::model_generation_pool_health()`
-is the host-facing Rust surface. Runtime rebinds copy the exact pool identity
-while allowing a tighter local limit, and distinct provider identities retain
-isolated health epochs. No provider label, endpoint credential, prompt, output,
-or task label is added to scheduler state.
+The admission-hardening follow-up landed in Code `386d75b1` and now adds
+cross-host consumption plus noisy-neighbor qualification. Node.js, Python, and
+Go sessions expose the same read-only `ModelGenerationPoolHealthSnapshot`; the
+versioned Go bridge advertises `session_model_generation_pool_health`, and the
+capability catalog carries the operation for discovery. A repeated eight-cycle
+qualification with twelve blocked waiters per cycle proves an independent
+provider pool continues to admit work under a full global budget while
+cancellation, release, and bounded retention counters settle. No provider
+label, endpoint credential, prompt, output, or task label is added to scheduler
+state.
+
+The next admission slice is **P3/KRN-8 host qualification evidence**: exercise
+the common projection through real Node/Python/Go runtime fixtures and retain
+only bounded aggregate outcomes for release diagnostics. It must remain
+read-only metadata, avoid a second scheduler or metrics store, preserve the
+single Flow lease authority, and keep Gateway/host policy responsible for rate
+limits and billing.
 
 ### 3.4 Scoped capability program
 

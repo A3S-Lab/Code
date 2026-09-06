@@ -290,6 +290,11 @@ snapshot, not a capacity reservation. `TaskSchedulerHealth` adds bounded
 cumulative admissions, releases, cancellations, aging promotions, peak
 occupancy, and wait-time aggregates without retaining task payloads.
 
+`session.ModelGenerationPoolHealth(ctx)` returns a secret-free local/shared
+provider-pool projection when the configured client publishes a typed pool. It
+includes bounded recent admission counters and local reserved/available
+permits; clients without a pool descriptor receive `nil`.
+
 ## Memory maintenance health
 
 `session.MemoryMaintenanceHealth(ctx)` reads the same non-sensitive lifecycle

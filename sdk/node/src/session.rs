@@ -36,6 +36,20 @@ impl Session {
             .map_err(node_task_scheduler_error)
     }
 
+    /// Return secret-free local and shared capacity health for this session's
+    /// provider/model generation pool, when the configured client publishes
+    /// one. The shared projection retains only a bounded digest-only epoch.
+    #[napi]
+    pub async fn model_generation_pool_health(
+        &self,
+    ) -> napi::Result<Option<ModelGenerationPoolHealthSnapshot>> {
+        self.inner
+            .model_generation_pool_health()
+            .await
+            .map(|health| health.map(ModelGenerationPoolHealthSnapshot::from))
+            .map_err(node_task_scheduler_error)
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// `send("prompt")` is the compact prompt-first form. `send({ prompt,

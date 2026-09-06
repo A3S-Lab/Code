@@ -46,6 +46,43 @@ export interface TaskSchedulerHealthSnapshot {
   maxWaitMicros: number
   closed: boolean
 }
+/** Digest-only execution identity used by provider-pool diagnostics. */
+export interface ExecutionIdentityV1 {
+  schema: string
+  domain: string
+  digest: string
+}
+/** Provider/model capacity descriptor exposed to host diagnostics. */
+export interface ModelGenerationPool {
+  identity: ExecutionIdentityV1
+  maxConcurrency: number
+}
+/** Bounded health for one digest-only provider quota. */
+export interface TaskSchedulerQuotaHealthSnapshot {
+  identity: ExecutionIdentityV1
+  maxActive: number
+  observed: boolean
+  live: boolean
+  active: number
+  pending: number
+  blocked: boolean
+  admitted: number
+  released: number
+  cancelled: number
+  rejected: number
+  peakActive: number
+  totalWaitMicros: number
+  averageWaitMicros: number
+  maxWaitMicros: number
+}
+/** Secret-free local and shared provider-pool health for one session. */
+export interface ModelGenerationPoolHealthSnapshot {
+  pool: ModelGenerationPool
+  localMaxConcurrency: number
+  localReserved: number
+  localAvailable: number
+  scheduler?: TaskSchedulerQuotaHealthSnapshot
+}
 /** Result of admitting a host-selected run ID for detached execution. */
 export interface AgentRunSpawnObject {
   snapshot: any
@@ -1437,6 +1474,8 @@ export declare class Session {
    * for the scheduler shared by this session and its siblings.
    */
   taskSchedulerHealth(): Promise<TaskSchedulerHealthSnapshot>
+  /** Return secret-free local and shared provider-pool health for this session. */
+  modelGenerationPoolHealth(): Promise<ModelGenerationPoolHealthSnapshot | null>
   /**
    * Send a prompt or request and wait for the complete response.
    *
