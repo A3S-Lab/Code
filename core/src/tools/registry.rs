@@ -66,6 +66,17 @@ pub struct ToolRegistry {
     transform_policy: RwLock<ToolResultTransformPolicyV1>,
 }
 
+/// Output prepared by the registry's single observation pipeline.
+///
+/// Keeping the transform binding alongside the output prevents the `ToolResult`
+/// and `ToolOutput` entry points from independently reimplementing artifact,
+/// compaction, and evidence handling. The public raw-output API is intentionally
+/// only a shape projection over this prepared result.
+struct PreparedToolOutput {
+    output: ToolOutput,
+    transform_binding: ToolResultTransformBindingV1,
+}
+
 impl ToolRegistry {
     /// Create a new tool registry
     pub fn new(workspace: PathBuf) -> Self {
@@ -485,65 +496,30 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
         let start = std::time::Instant::now();
-        let policy = self.transform_policy.read().unwrap().clone();
-        let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
-
-        let tool = self.get(name);
-
-        let mut result = match tool {
-            Some(tool) => {
-                let mut output = tool.execute(args, ctx).await?;
-                self.compact_change_metadata(name, &mut output.metadata, ctx)
-                    .await?;
-                let original_content = output.content.clone();
-                let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
-                output.content = truncated.content;
-                let loss_mode = truncated.loss_mode;
-                let projected_artifact_reference = truncated.artifact.is_some();
-                let artifact = truncated.artifact.or_else(|| {
-                    self.immutable_content_adapter.as_ref().map(|_| {
-                        super::tool_output_artifact(name, &original_content, output.content.len())
-                    })
-                });
-                if let Some(mut artifact) = artifact {
-                    let compatibility_uri = artifact.artifact_uri.clone();
-                    self.store_tool_artifact(
-                        name,
-                        &original_content,
-                        &mut artifact,
-                        ImmutableContentKindV1::ToolResultOriginal,
-                        ctx,
-                    )
-                    .await?;
-                    if projected_artifact_reference {
-                        rewrite_projected_artifact_uri(
-                            &mut output.content,
-                            &compatibility_uri,
-                            &artifact.artifact_uri,
-                        )?;
-                    }
-                    output.metadata = Some(merge_tool_output_artifact_metadata(
-                        output.metadata,
-                        &artifact,
-                    ));
-                }
-                output.metadata = Some(super::attach_tool_result_evidence_with_transform_binding(
-                    output.metadata,
-                    &original_content,
-                    &output.content,
-                    loss_mode,
-                    &transform_binding,
-                )?);
-                Ok(ToolResult {
-                    name: name.to_string(),
-                    output: output.content,
-                    exit_code: if output.success { 0 } else { 1 },
-                    metadata: output.metadata,
-                    images: output.images,
-                    error_kind: output.error_kind,
-                })
+        let prepared = self.prepare_output_with_context(name, args, ctx).await?;
+        let (transform_binding, mut result) = match prepared {
+            Some(prepared) => {
+                let transform_binding = prepared.transform_binding;
+                let output = prepared.output;
+                (
+                    transform_binding,
+                    Ok(ToolResult {
+                        name: name.to_string(),
+                        output: output.content,
+                        exit_code: if output.success { 0 } else { 1 },
+                        metadata: output.metadata,
+                        images: output.images,
+                        error_kind: output.error_kind,
+                    }),
+                )
             }
-            None => Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),
+            None => {
+                let policy = self.transform_policy.read().unwrap().clone();
+                (
+                    ToolResultTransformBindingV1::from_policy(&policy)?,
+                    Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),
+                )
+            }
         };
 
         if let Ok(result) = &mut result {
@@ -562,7 +538,8 @@ impl ToolRegistry {
         result
     }
 
-    /// Execute a tool and return raw output using the registry's default context
+    /// Execute a tool and return the `ToolOutput` projection using the registry's
+    /// default context. The same observation pipeline as `execute` is applied.
     pub async fn execute_raw(
         &self,
         name: &str,
@@ -572,65 +549,78 @@ impl ToolRegistry {
         self.execute_raw_with_context(name, args, &ctx).await
     }
 
-    /// Execute a tool and return raw output with an external context
+    /// Execute a tool and return the `ToolOutput` projection with an external
+    /// context. The same observation pipeline as `execute_with_context` is applied.
     pub async fn execute_raw_with_context(
         &self,
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<Option<ToolOutput>> {
+        Ok(self
+            .prepare_output_with_context(name, args, ctx)
+            .await?
+            .map(|prepared| prepared.output))
+    }
+
+    async fn prepare_output_with_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<Option<PreparedToolOutput>> {
         let policy = self.transform_policy.read().unwrap().clone();
         let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
-        let tool = self.get(name);
+        let Some(tool) = self.get(name) else {
+            return Ok(None);
+        };
 
-        match tool {
-            Some(tool) => {
-                let mut output = tool.execute(args, ctx).await?;
-                self.compact_change_metadata(name, &mut output.metadata, ctx)
-                    .await?;
-                let original_content = output.content.clone();
-                let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
-                output.content = truncated.content;
-                let loss_mode = truncated.loss_mode;
-                let projected_artifact_reference = truncated.artifact.is_some();
-                let artifact = truncated.artifact.or_else(|| {
-                    self.immutable_content_adapter.as_ref().map(|_| {
-                        super::tool_output_artifact(name, &original_content, output.content.len())
-                    })
-                });
-                if let Some(mut artifact) = artifact {
-                    let compatibility_uri = artifact.artifact_uri.clone();
-                    self.store_tool_artifact(
-                        name,
-                        &original_content,
-                        &mut artifact,
-                        ImmutableContentKindV1::ToolResultOriginal,
-                        ctx,
-                    )
-                    .await?;
-                    if projected_artifact_reference {
-                        rewrite_projected_artifact_uri(
-                            &mut output.content,
-                            &compatibility_uri,
-                            &artifact.artifact_uri,
-                        )?;
-                    }
-                    output.metadata = Some(merge_tool_output_artifact_metadata(
-                        output.metadata,
-                        &artifact,
-                    ));
-                }
-                output.metadata = Some(super::attach_tool_result_evidence_with_transform_binding(
-                    output.metadata,
-                    &original_content,
-                    &output.content,
-                    loss_mode,
-                    &transform_binding,
-                )?);
-                Ok(Some(output))
+        let mut output = tool.execute(args, ctx).await?;
+        self.compact_change_metadata(name, &mut output.metadata, ctx)
+            .await?;
+        let original_content = output.content.clone();
+        let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
+        output.content = truncated.content;
+        let loss_mode = truncated.loss_mode;
+        let projected_artifact_reference = truncated.artifact.is_some();
+        let artifact = truncated.artifact.or_else(|| {
+            self.immutable_content_adapter
+                .as_ref()
+                .map(|_| super::tool_output_artifact(name, &original_content, output.content.len()))
+        });
+        if let Some(mut artifact) = artifact {
+            let compatibility_uri = artifact.artifact_uri.clone();
+            self.store_tool_artifact(
+                name,
+                &original_content,
+                &mut artifact,
+                ImmutableContentKindV1::ToolResultOriginal,
+                ctx,
+            )
+            .await?;
+            if projected_artifact_reference {
+                rewrite_projected_artifact_uri(
+                    &mut output.content,
+                    &compatibility_uri,
+                    &artifact.artifact_uri,
+                )?;
             }
-            None => Ok(None),
+            output.metadata = Some(merge_tool_output_artifact_metadata(
+                output.metadata,
+                &artifact,
+            ));
         }
+        output.metadata = Some(super::attach_tool_result_evidence_with_transform_binding(
+            output.metadata,
+            &original_content,
+            &output.content,
+            loss_mode,
+            &transform_binding,
+        )?);
+        Ok(Some(PreparedToolOutput {
+            output,
+            transform_binding,
+        }))
     }
 
     async fn store_tool_artifact(
