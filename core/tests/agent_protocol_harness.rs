@@ -4,9 +4,10 @@ use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::{
     Agent, AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandV1,
     AgentProtocolEventPageRequestV1, AgentProtocolHarness, AgentProtocolHarnessError,
-    AgentProtocolRunIdentityV1, AgentProtocolRunStartV1, AgentProtocolRunStateV1,
-    ModelInputSnapshotV1, ModelUsageSnapshotV1, PlanningMode, RunCapabilitySnapshotV1,
-    SessionOptions, ToolRequestOriginV1, ToolRequestSnapshotV1, AGENT_PROTOCOL_V1,
+    AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1, AgentProtocolRunStartV1,
+    AgentProtocolRunStateV1, ModelInputSnapshotV1, ModelUsageSnapshotV1, PlanningMode,
+    RunCapabilitySnapshotV1, SessionOptions, ToolRequestOriginV1, ToolRequestSnapshotV1,
+    AGENT_PROTOCOL_V1,
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -706,6 +707,42 @@ async fn harness_does_not_create_a_session_for_an_unknown_observation() {
         .await
         .expect_err("an unknown observation must not allocate a session");
 
+    assert!(matches!(error, AgentProtocolHarnessError::SessionNotFound));
+    assert_eq!(harness.session_count().await, 0);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn harness_does_not_create_a_session_for_missing_recovery() {
+    let workspace = tempfile::tempdir().unwrap();
+    let manifest = manifest();
+    let release_identity = manifest.artifact().digest().to_string();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity,
+        session_id: "missing-recovery-session".into(),
+        run_id: "recovered-run".into(),
+    };
+    let command = AgentProtocolCommandV1::Recover {
+        request: AgentProtocolRunRecoverV1 {
+            schema: AgentProtocolRunRecoverV1::SCHEMA.into(),
+            request_id: "missing-recovery:request".into(),
+            identity,
+            checkpoint_run_id: "checkpoint-run".into(),
+        },
+    };
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap();
+
+    let error = harness
+        .execute(&command)
+        .await
+        .expect_err("missing recovery must fail before creating a Session");
     assert!(matches!(error, AgentProtocolHarnessError::SessionNotFound));
     assert_eq!(harness.session_count().await, 0);
     harness.close().await;

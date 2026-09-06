@@ -254,10 +254,12 @@ impl AgentProtocolHarness {
         command: &AgentProtocolCommandV1,
     ) -> Result<AgentProtocolCommandReceiptV1, AgentProtocolHarnessError> {
         command.validate()?;
-        let create_if_missing = matches!(
-            command,
-            AgentProtocolCommandV1::Start { .. } | AgentProtocolCommandV1::Recover { .. }
-        );
+        // A normal recovery must load an existing persisted Session. Creating
+        // a fresh Session before discovering that its checkpoint is missing
+        // would publish an unusable ghost conversation. Portable checkpoint
+        // recovery has its own exact admission API below and may construct an
+        // unpublished Session from the supplied checkpoint.
+        let create_if_missing = matches!(command, AgentProtocolCommandV1::Start { .. });
         let host = self.host_for(command.identity(), create_if_missing).await?;
         host.execute(command).await.map_err(Into::into)
     }
