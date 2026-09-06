@@ -1081,3 +1081,85 @@ async fn retained_quota_health_has_a_hard_identity_bound() {
     );
     scheduler.shutdown().await;
 }
+
+#[tokio::test]
+async fn noisy_provider_waiters_do_not_starve_independent_pool_progress() {
+    const CYCLES: usize = 8;
+    const NOISY_WAITERS_PER_CYCLE: usize = 12;
+    let scheduler = Arc::new(scheduler(1, 60_000));
+    let noisy = TaskSchedulerQuota::for_scope("provider:noisy", 1).unwrap();
+    let independent = TaskSchedulerQuota::for_scope("provider:independent", 1).unwrap();
+
+    for cycle in 0..CYCLES {
+        let holder = scheduler
+            .acquire_quota(
+                TaskPriority::Foreground,
+                format!("noisy-holder-{cycle}"),
+                &noisy,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut cancellations = Vec::with_capacity(NOISY_WAITERS_PER_CYCLE);
+        let mut waiters = Vec::with_capacity(NOISY_WAITERS_PER_CYCLE);
+        for waiter in 0..NOISY_WAITERS_PER_CYCLE {
+            let cancellation = CancellationToken::new();
+            let task = tokio::spawn({
+                let scheduler = Arc::clone(&scheduler);
+                let noisy = noisy.clone();
+                let cancellation = cancellation.clone();
+                async move {
+                    scheduler
+                        .acquire_quota(
+                            TaskPriority::Urgent,
+                            format!("noisy-waiter-{cycle}-{waiter}"),
+                            &noisy,
+                            &cancellation,
+                        )
+                        .await
+                }
+            });
+            cancellations.push(cancellation);
+            waiters.push(task);
+        }
+        wait_for_pending(&scheduler, NOISY_WAITERS_PER_CYCLE).await;
+
+        let independent_lease = tokio::time::timeout(
+            Duration::from_millis(100),
+            scheduler.acquire_quota(
+                TaskPriority::Maintenance,
+                format!("independent-{cycle}"),
+                &independent,
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("an independent provider must bypass noisy quota waiters")
+        .unwrap();
+        drop(independent_lease);
+
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+        for waiter in waiters {
+            assert!(matches!(
+                waiter.await.unwrap(),
+                Err(TaskSchedulerError::Cancelled)
+            ));
+        }
+        drop(holder);
+    }
+
+    let noisy_health = scheduler.quota_health(&noisy).await.unwrap();
+    let independent_health = scheduler.quota_health(&independent).await.unwrap();
+    assert!(!noisy_health.live);
+    assert_eq!(noisy_health.admitted, CYCLES as u64);
+    assert_eq!(
+        noisy_health.cancelled,
+        (CYCLES * NOISY_WAITERS_PER_CYCLE) as u64
+    );
+    assert_eq!(noisy_health.released, CYCLES as u64);
+    assert_eq!(independent_health.admitted, CYCLES as u64);
+    assert_eq!(independent_health.released, CYCLES as u64);
+    scheduler.shutdown().await;
+}

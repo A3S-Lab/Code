@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added cross-host provider-pool health consumption. Node.js, Python, and Go
+  sessions expose the same secret-free local/shared projection (the Go JSONL
+  bridge advertises `session_model_generation_pool_health`), and capability
+  discovery lists the read-only operation. A repeated noisy-neighbor
+  qualification confirms independent provider pools continue making progress
+  while a blocked pool's waiters are cancelled and retained counters settle.
 - Added bounded provider-pool health evidence. `TaskScheduler::quota_health`
   retains at most 64 recent digest-only quota epochs with admission, release,
   cancellation, rejection, peak, and wait-time counters. Sessions expose the

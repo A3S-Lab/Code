@@ -240,6 +240,11 @@ diagnostic snapshot, not a capacity reservation. `taskSchedulerHealth()` adds
 bounded cumulative admissions, releases, cancellations, aging promotions,
 peak occupancy, and wait-time aggregates without retaining task payloads.
 
+`session.modelGenerationPoolHealth()` returns a secret-free local/shared
+provider-pool projection when the configured client publishes a typed pool. It
+includes bounded recent admission counters and local reserved/available
+permits; clients without a pool descriptor receive `null`.
+
 ## Memory maintenance health
 
 `session.memoryMaintenanceHealth()` returns the same non-sensitive lifecycle

@@ -345,6 +345,15 @@ request payloads. A nested workflow rebind copies the exact pool identity while
 changing only its local limit; a different provider pool receives an independent
 health epoch and cannot consume the first pool's capacity.
 
+The same read-only projection is available to Node.js as
+`session.modelGenerationPoolHealth()`, Python as
+`session.model_generation_pool_health()`, and Go as
+`session.ModelGenerationPoolHealth(ctx)`. The Go JSONL bridge advertises
+`session_model_generation_pool_health`; hosts can discover it through the
+capability catalog before opting into the diagnostic surface. A repeated
+noisy-neighbor qualification keeps independent provider pools progressing
+while blocked waiters are cancelled and their bounded counters settle.
+
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
 resolved before the first turn.

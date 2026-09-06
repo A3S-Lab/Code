@@ -70,6 +70,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_info",
     "session_task_scheduler_stats",
     "session_task_scheduler_health",
+    "session_model_generation_pool_health",
     "session_memory_maintenance_health",
     "session_workspace_retrieval_status",
     "session_semantic_search",
@@ -879,6 +880,14 @@ impl BridgeState {
                     .request_session(&request.params)
                     .await?
                     .task_scheduler_health()
+                    .await?;
+                encode(health)
+            }
+            "session_model_generation_pool_health" => {
+                let health = self
+                    .request_session(&request.params)
+                    .await?
+                    .model_generation_pool_health()
                     .await?;
                 encode(health)
             }

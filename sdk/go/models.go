@@ -114,6 +114,50 @@ type TaskSchedulerHealthSnapshot struct {
 	Closed            bool               `json:"closed"`
 }
 
+// ExecutionIdentityV1 is the digest-only identity used by provider-pool
+// diagnostics. It contains no provider labels, credentials, or request data.
+type ExecutionIdentityV1 struct {
+	Schema string `json:"schema"`
+	Domain string `json:"domain"`
+	Digest string `json:"digest"`
+}
+
+// ModelGenerationPool describes one provider/model capacity budget.
+type ModelGenerationPool struct {
+	Identity       ExecutionIdentityV1 `json:"identity"`
+	MaxConcurrency uint64              `json:"maxConcurrency"`
+}
+
+// TaskSchedulerQuotaHealthSnapshot contains bounded health for one provider
+// quota identity and its current or most-recent idle epoch.
+type TaskSchedulerQuotaHealthSnapshot struct {
+	Identity          ExecutionIdentityV1 `json:"identity"`
+	MaxActive         uint64              `json:"maxActive"`
+	Observed          bool                `json:"observed"`
+	Live              bool                `json:"live"`
+	Active            uint64              `json:"active"`
+	Pending           uint64              `json:"pending"`
+	Blocked           bool                `json:"blocked"`
+	Admitted          uint64              `json:"admitted"`
+	Released          uint64              `json:"released"`
+	Cancelled         uint64              `json:"cancelled"`
+	Rejected          uint64              `json:"rejected"`
+	PeakActive        uint64              `json:"peakActive"`
+	TotalWaitMicros   uint64              `json:"totalWaitMicros"`
+	AverageWaitMicros uint64              `json:"averageWaitMicros"`
+	MaxWaitMicros     uint64              `json:"maxWaitMicros"`
+}
+
+// ModelGenerationPoolHealthSnapshot composes local gate occupancy with the
+// optional shared scheduler projection for one session.
+type ModelGenerationPoolHealthSnapshot struct {
+	Pool                ModelGenerationPool               `json:"pool"`
+	LocalMaxConcurrency uint64                            `json:"localMaxConcurrency"`
+	LocalReserved       uint64                            `json:"localReserved"`
+	LocalAvailable      uint64                            `json:"localAvailable"`
+	Scheduler           *TaskSchedulerQuotaHealthSnapshot `json:"scheduler,omitempty"`
+}
+
 // DefaultSecurityProvider enables Core's built-in taint tracking and output
 // sanitization. Its concrete type is the provider selection; callers do not
 // pass a raw backend name.

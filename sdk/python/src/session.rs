@@ -87,6 +87,21 @@ impl PySession {
         task_scheduler_health_to_py(py, &health)
     }
 
+    /// Return secret-free local and shared provider/model generation-pool
+    /// health, or ``None`` when the configured client publishes no pool.
+    fn model_generation_pool_health(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self.inner.clone();
+        let health = py
+            .allow_threads(move || get_runtime().block_on(session.model_generation_pool_health()))
+            .map_err(py_task_scheduler_error)?;
+        let json = serde_json::to_string(&health).map_err(|error| {
+            PyRuntimeError::new_err(format!(
+                "Failed to serialize model-generation pool health: {error}"
+            ))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
     /// Observe periodic pruning and host-owned consolidation for this session.
     fn memory_maintenance_health(&self, py: Python<'_>) -> PyResult<PyObject> {
         memory_maintenance_health_to_py(py, &self.inner.memory_maintenance_health())
