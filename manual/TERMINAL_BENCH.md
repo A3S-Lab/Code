@@ -71,6 +71,12 @@ terminal errors at the Core boundary. The report classifies these as
 account, credential, or request-shape failure cannot consume the run budget via
 blind retries.
 
+Retry authority is single-owner: a provider consumes its bounded HTTP retry
+budget, then the Agent circuit breaker treats typed exhaustion as terminal
+instead of replaying the same request through fallback. Streaming retries honor
+the provider's `Retry-After` value, and cancellation interrupts that backoff;
+the regression suite records the expected inner request count.
+
 Container command output is captured incrementally with the Core 100 KiB
 head/tail limit before it is returned to the Tool loop. High-volume commands
 therefore cannot make the benchmark runner buffer an unbounded stdout/stderr
