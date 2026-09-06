@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a structured Terminal-Bench runner terminal report. Every invocation
+  now persists an atomic `a3s.code.terminal-bench-result.v1` record with a
+  single outcome, reason, counters, and bounded error detail, so Harbor can
+  distinguish agent, provider, deadline, and runner failures without parsing
+  stderr.
+- Added outer-deadline propagation to the Terminal-Bench container sandbox.
+  Per-command timeouts are clipped to the remaining run budget and Unix
+  process groups are reaped on timeout, preventing descendant processes from
+  consuming the harness deadline after a command has stopped making progress.
+- Added a Terminal-Bench evidence gate: an `agent_end` without a successful
+  Tool execution is downgraded to `failed/evidence_missing`, and the report
+  records successful Tool and artifact-evidence counters.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
