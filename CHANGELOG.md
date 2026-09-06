@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to equal the exact evaluator record and admitted Run evidence digests; the
   identity-only batch constructor remains available for wire-level
   compatibility.
+- Strict Run-aware batch validation now also checks every finding's evaluator
+  identity against the exact evaluator record, including for deserialized
+  batches whose finding digests were recomputed outside the builder.
 - Strict Run-aware evaluator binding now rejects evaluator records built from
   an evidence snapshot other than the admitted Run's exact snapshot.
 - Added schema-v2 integrity fencing for persistent zvec generations. Reopen

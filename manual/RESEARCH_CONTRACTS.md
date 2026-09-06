@@ -84,8 +84,9 @@ raw model/tool output.
    the admitted Run and evaluator record, before publication so a partial or
    mixed evaluator response cannot be presented as one review. The strict
    constructor and `validate_for_run` also require the batch evidence digest
-   to equal both the evaluator record and admitted Run evidence digests. The
-   older `new` constructor remains
+   to equal both the evaluator record and admitted Run evidence digests, and
+   each finding evaluator identity to equal the evaluator record. The older
+   `new` constructor remains
    available for wire-level compatibility but cannot perform those checks.
 5. Let the host apply its rubric, human approval, retention, and publication
    policy; Code only validates the supplied identities and lifecycle.

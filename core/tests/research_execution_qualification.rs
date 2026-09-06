@@ -657,6 +657,65 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         Some(reopened_receipt.receipt_digest.as_str())
     );
 
+    #[derive(serde::Serialize)]
+    struct ForgedFindingIdentity<'a> {
+        schema: &'a str,
+        finding_id: &'a str,
+        project_id: &'a str,
+        run_id: &'a str,
+        artifact_digest: &'a str,
+        category: ResearchReviewCategoryV1,
+        severity: ResearchReviewSeverityV1,
+        status: ResearchReviewStatusV1,
+        message: &'a str,
+        location: &'a Option<a3s_code_core::ResearchReviewLocationV1>,
+        evidence_digests: &'a [String],
+        evaluator_id: &'a str,
+        evaluation_record_digest: &'a str,
+        provenance_receipt_digest: &'a str,
+        observed_at_ms: u64,
+        resolution_digest: Option<&'a str>,
+    }
+    let mut forged_finding = batch.findings[0].clone();
+    forged_finding.evaluator_id = "forged-reviewer".to_owned();
+    forged_finding.finding_digest = a3s_code_core::digest_json(
+        "a3s.code.review-finding.identity.v1",
+        &ForgedFindingIdentity {
+            schema: &forged_finding.schema,
+            finding_id: &forged_finding.finding_id,
+            project_id: &forged_finding.project_id,
+            run_id: &forged_finding.run_id,
+            artifact_digest: &forged_finding.artifact_digest,
+            category: forged_finding.category,
+            severity: forged_finding.severity,
+            status: forged_finding.status,
+            message: &forged_finding.message,
+            location: &forged_finding.location,
+            evidence_digests: &forged_finding.evidence_digests,
+            evaluator_id: &forged_finding.evaluator_id,
+            evaluation_record_digest: forged_finding.evaluation_record_digest.as_deref().unwrap(),
+            provenance_receipt_digest: forged_finding.provenance_receipt_digest.as_deref().unwrap(),
+            observed_at_ms: forged_finding.observed_at_ms,
+            resolution_digest: forged_finding.resolution_digest.as_deref(),
+        },
+    )
+    .unwrap();
+    let forged_batch = ResearchReviewBatchV1::new(
+        "research-review-batch-forged-evaluator",
+        "research-project",
+        &run.id,
+        reopened_record.record_digest.clone(),
+        evidence.snapshot_digest.clone(),
+        vec![forged_finding],
+    )
+    .unwrap();
+    assert_eq!(
+        forged_batch.validate_for_run(&research, &reopened_record),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "finding.evaluatorId"
+        ))
+    );
+
     let alternate_evidence_digest = digest_bytes("research-review-evidence", b"different");
     let mixed_evidence_finding = ResearchReviewFindingV1::new(
         "finding-mixed-evidence",
