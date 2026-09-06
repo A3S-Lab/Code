@@ -54,7 +54,7 @@ impl ContextProvider for StaticContextProvider {
                 result.add_item(item.clone());
                 continue;
             }
-            if total_tokens + item_tokens > max_tokens {
+            if total_tokens.saturating_add(item_tokens) > max_tokens {
                 result.truncated = true;
 
                 if result.items.is_empty() {
@@ -68,7 +68,7 @@ impl ContextProvider for StaticContextProvider {
             if item.token_count == 0 {
                 item.token_count = item_tokens;
             }
-            total_tokens += item_tokens;
+            total_tokens = total_tokens.saturating_add(item_tokens);
             result.add_item(item);
         }
 
@@ -179,5 +179,29 @@ mod tests {
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].token_count, 6);
         assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn saturates_token_accounting_on_overflow() {
+        let provider = StaticContextProvider::from_items(
+            "static",
+            [
+                ContextItem::new("large", ContextType::Resource, "large")
+                    .with_token_count(usize::MAX),
+                ContextItem::new("next", ContextType::Resource, "next").with_token_count(1),
+            ],
+        );
+
+        let result = provider
+            .query(
+                &ContextQuery::new("prompt")
+                    .with_max_results(usize::MAX)
+                    .with_max_tokens(usize::MAX),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total_tokens, usize::MAX);
     }
 }

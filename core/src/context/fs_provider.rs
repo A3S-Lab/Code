@@ -125,8 +125,12 @@ impl FileSystemContextProvider {
                 continue;
             }
 
-            let content =
-                fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+            let Some(content) =
+                crate::context::read_utf8_file_bounded(path, self.config.max_file_size)
+                    .map_err(|e| anyhow::anyhow!("Read error: {}", e))?
+            else {
+                continue;
+            };
 
             files.push(IndexedFile {
                 path: path.to_path_buf(),
@@ -265,7 +269,9 @@ impl ContextProvider for FileSystemContextProvider {
             })
             .collect();
 
-        let total_tokens: usize = items.iter().map(|item| item.token_count).sum();
+        let total_tokens = items
+            .iter()
+            .fold(0usize, |total, item| total.saturating_add(item.token_count));
         let truncated = items.len() < files.len();
 
         Ok(ContextResult {

@@ -148,7 +148,7 @@ impl ContextAssembler {
 
         for result in results {
             for item in &result.items {
-                source_count += 1;
+                source_count = source_count.saturating_add(1);
                 let key = dedupe_key(item);
                 match deduped.get(&key) {
                     Some(existing)
@@ -191,7 +191,7 @@ impl ContextAssembler {
             }
 
             let item_tokens = estimated_tokens(&item);
-            if total_tokens + item_tokens > self.budget.max_tokens {
+            if total_tokens.saturating_add(item_tokens) > self.budget.max_tokens {
                 truncated = true;
                 continue;
             }
@@ -206,15 +206,17 @@ impl ContextAssembler {
             }
             if let Some(max_tokens) = self.source_policy.max_tokens_per_source {
                 let source_tokens = source_token_counts.get(&source_key).copied().unwrap_or(0);
-                if source_tokens + item_tokens > max_tokens {
+                if source_tokens.saturating_add(item_tokens) > max_tokens {
                     truncated = true;
                     continue;
                 }
             }
 
-            total_tokens += item_tokens;
-            *source_item_counts.entry(source_key.clone()).or_insert(0) += 1;
-            *source_token_counts.entry(source_key).or_insert(0) += item_tokens;
+            total_tokens = total_tokens.saturating_add(item_tokens);
+            let item_count = source_item_counts.entry(source_key.clone()).or_insert(0);
+            *item_count = item_count.saturating_add(1);
+            let source_tokens = source_token_counts.entry(source_key).or_insert(0);
+            *source_tokens = source_tokens.saturating_add(item_tokens);
             selected.push(item);
         }
 
@@ -540,5 +542,28 @@ mod tests {
         assert_eq!(assembly.items[0].id, "agents_md");
         assert_eq!(assembly.total_tokens, 6);
         assert!(assembly.truncated);
+    }
+
+    #[test]
+    fn assemble_saturates_token_accounting_on_overflow() {
+        let assembler = ContextAssembler::new(ContextBudget {
+            max_items: usize::MAX,
+            max_tokens: usize::MAX,
+        })
+        .with_source_policy(ContextSourcePolicy {
+            max_items_per_source: None,
+            max_tokens_per_source: None,
+        });
+        let assembly = assembler.assemble(&[result(
+            "test",
+            vec![
+                ContextItem::new("large", ContextType::Resource, "large")
+                    .with_token_count(usize::MAX),
+                ContextItem::new("next", ContextType::Resource, "next").with_token_count(1),
+            ],
+        )]);
+
+        assert_eq!(assembly.items.len(), 2);
+        assert_eq!(assembly.total_tokens, usize::MAX);
     }
 }

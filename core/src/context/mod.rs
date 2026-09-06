@@ -333,6 +333,32 @@ fn metadata_score(value: Option<&serde_json::Value>) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Read a UTF-8 file without allowing a concurrent file growth race to bypass
+/// the configured byte limit.
+///
+/// A file that is too large or is not valid UTF-8 is treated as an unsupported
+/// context candidate and returns `Ok(None)`. Actual I/O failures remain errors
+/// so callers can preserve their existing diagnostics.
+pub(crate) fn read_utf8_file_bounded(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+
+    if bytes.len() > max_bytes {
+        return Ok(None);
+    }
+
+    Ok(String::from_utf8(bytes).ok())
+}
+
 /// Result from a context provider query
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextResult {
@@ -375,7 +401,7 @@ impl ContextResult {
 
     /// Add an item to the result
     pub fn add_item(&mut self, item: ContextItem) {
-        self.total_tokens += item.token_count;
+        self.total_tokens = self.total_tokens.saturating_add(item.token_count);
         self.items.push(item);
     }
 
@@ -694,6 +720,37 @@ mod tests {
 
         assert_eq!(result.items.len(), 3);
         assert_eq!(result.total_tokens, 150);
+    }
+
+    #[test]
+    fn context_result_token_accounting_saturates_on_overflow() {
+        let mut result = ContextResult::new("provider");
+        result.add_item(
+            ContextItem::new("large", ContextType::Resource, "large").with_token_count(usize::MAX),
+        );
+        result
+            .add_item(ContextItem::new("next", ContextType::Resource, "next").with_token_count(1));
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total_tokens, usize::MAX);
+    }
+
+    #[test]
+    fn bounded_context_file_read_rejects_growth_and_invalid_utf8() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "12345").unwrap();
+        assert!(read_utf8_file_bounded(file.path(), 4).unwrap().is_none());
+        assert_eq!(
+            read_utf8_file_bounded(file.path(), 5).unwrap().as_deref(),
+            Some("12345")
+        );
+
+        file.as_file_mut().set_len(2).unwrap();
+        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        file.as_file_mut().write_all(&[0xff, 0xfe]).unwrap();
+        assert!(read_utf8_file_bounded(file.path(), 2).unwrap().is_none());
     }
 
     #[test]

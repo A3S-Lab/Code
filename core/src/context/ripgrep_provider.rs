@@ -185,9 +185,9 @@ impl RipgrepContextProvider {
                     continue;
                 }
 
-                let content = match fs::read_to_string(path) {
-                    Ok(c) => c,
-                    Err(_) => continue, // Skip binary files
+                let content = match crate::context::read_utf8_file_bounded(path, max_file_size) {
+                    Ok(Some(content)) => content,
+                    Ok(None) | Err(_) => continue, // Skip binary, oversized, or unreadable files
                 };
 
                 if content.trim().is_empty() {
@@ -331,12 +331,12 @@ impl ContextProvider for RipgrepContextProvider {
             let content = self.format_match(&file_match, &query.depth);
             let token_count = content.split_whitespace().count();
 
-            if total_tokens + token_count > query.max_tokens {
+            if total_tokens.saturating_add(token_count) > query.max_tokens {
                 result.truncated = true;
                 break;
             }
 
-            total_tokens += token_count;
+            total_tokens = total_tokens.saturating_add(token_count);
 
             result.add_item(
                 ContextItem::new(

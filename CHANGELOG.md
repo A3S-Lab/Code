@@ -110,6 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays
   byte-for-byte compatible for the same input and policy.
+- Made context-provider file reads bounded against concurrent file growth and
+  invalid UTF-8, and made token-budget accounting saturating across providers,
+  result aggregation, and source-aware assembly so hostile metadata cannot
+  panic a prompt build or wrap its limits.
 
 ## [8.2.0] - 2026-09-04
 
