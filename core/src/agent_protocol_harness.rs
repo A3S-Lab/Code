@@ -187,10 +187,16 @@ impl AgentProtocolHarness {
         if manifest.protocol() != AGENT_PROTOCOL_V1 {
             return Err(AgentProtocolHostError::ReleaseProtocolMismatch.into());
         }
+        let workspace = workspace.into();
+        if workspace.trim().is_empty() {
+            return Err(AgentProtocolHarnessError::Workspace(
+                "workspace path must not be empty".into(),
+            ));
+        }
         Ok(Self {
             manifest: Arc::new(manifest),
             agent,
-            workspace: workspace.into(),
+            workspace,
             session_options: SessionOptions::new(),
             max_sessions: AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
             sessions: RwLock::new(HashMap::new()),

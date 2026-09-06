@@ -752,3 +752,14 @@ fn harness_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<AgentProtocolHarness>();
 }
+
+#[tokio::test]
+async fn harness_rejects_empty_workspace_before_session_admission() {
+    let error = AgentProtocolHarness::new(
+        manifest(),
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        "   ",
+    )
+    .expect_err("an empty workspace must fail closed");
+    assert!(matches!(error, AgentProtocolHarnessError::Workspace(_)));
+}
