@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 const MAX_RETRY_ERROR_BODY_BYTES: usize = 4 * 1024;
 
@@ -191,10 +192,41 @@ where
     F: Fn(u32) -> Fut,
     Fut: std::future::Future<Output = AttemptOutcome<T>>,
 {
+    with_retry_inner(config, None, operation).await
+}
+
+/// Execute an async operation with retry logic that can be interrupted while
+/// waiting for a provider-directed backoff. The ordinary [`with_retry`] API is
+/// intentionally retained for callers without a cancellation scope.
+pub async fn with_retry_cancellable<T, F, Fut>(
+    config: &RetryConfig,
+    cancel_token: &CancellationToken,
+    operation: F,
+) -> anyhow::Result<T>
+where
+    F: Fn(u32) -> Fut,
+    Fut: std::future::Future<Output = AttemptOutcome<T>>,
+{
+    with_retry_inner(config, Some(cancel_token), operation).await
+}
+
+async fn with_retry_inner<T, F, Fut>(
+    config: &RetryConfig,
+    cancel_token: Option<&CancellationToken>,
+    operation: F,
+) -> anyhow::Result<T>
+where
+    F: Fn(u32) -> Fut,
+    Fut: std::future::Future<Output = AttemptOutcome<T>>,
+{
     let mut last_status = None;
     let mut last_body = String::new();
 
     for attempt in 0..=config.max_retries {
+        if cancel_token.is_some_and(|token| token.is_cancelled()) {
+            anyhow::bail!("LLM retry cancelled");
+        }
+
         match operation(attempt).await {
             AttemptOutcome::Success(value) => {
                 if attempt > 0 {
@@ -225,7 +257,14 @@ where
                         delay,
                     );
 
-                    tokio::time::sleep(delay).await;
+                    if let Some(cancel_token) = cancel_token {
+                        tokio::select! {
+                            _ = cancel_token.cancelled() => anyhow::bail!("LLM retry cancelled"),
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }
         }
@@ -641,5 +680,45 @@ mod tests {
         // Should have waited at least 100ms (the retry-after value)
         assert!(start.elapsed() >= Duration::from_millis(90));
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn cancellable_retry_stops_during_retry_after_backoff() {
+        let config = RetryConfig {
+            max_retries: 1,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+            ..Default::default()
+        };
+        let cancel_token = CancellationToken::new();
+        let call_count = Arc::new(AtomicU32::new(0));
+        let count = call_count.clone();
+        let cancellation = cancel_token.clone();
+
+        let task = tokio::spawn(async move {
+            with_retry_cancellable::<(), _, _>(&config, &cancellation, |_attempt| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    AttemptOutcome::Retryable {
+                        status: StatusCode::TOO_MANY_REQUESTS,
+                        body: "rate limited".to_string(),
+                        retry_after: Some(Duration::from_secs(300)),
+                    }
+                }
+            })
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel_token.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancellation must interrupt a long Retry-After wait")
+            .expect("retry task must not panic")
+            .expect_err("cancelled retry must fail");
+
+        assert_eq!(error.to_string(), "LLM retry cancelled");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 }

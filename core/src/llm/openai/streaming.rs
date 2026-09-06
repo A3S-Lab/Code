@@ -14,7 +14,10 @@ impl OpenAiClient {
             let url = format!("{}{}", self.base_url, self.chat_completions_path);
             let request_headers = self.request_headers();
 
-            let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let streaming_resp = crate::retry::with_retry_cancellable(
+                &self.retry_config,
+                &cancel_token,
+                |_attempt| {
                 let http = &self.http;
                 let url = &url;
                 let request_headers = request_headers.clone();
@@ -77,7 +80,8 @@ impl OpenAiClient {
                         }
                     }
                 }
-            })
+                },
+            )
             .await?;
 
             let (tx, rx) = mpsc::channel(100);

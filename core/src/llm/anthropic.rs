@@ -357,7 +357,10 @@ impl AnthropicClient {
                 ("anthropic-beta", "prompt-caching-2024-07-31"),
             ];
 
-            let streaming_resp = crate::retry::with_retry(&self.retry_config, |_attempt| {
+            let streaming_resp = crate::retry::with_retry_cancellable(
+                &self.retry_config,
+                &cancel_token,
+                |_attempt| {
                 let http = &self.http;
                 let url = &url;
                 let headers = headers.clone();
@@ -415,7 +418,8 @@ impl AnthropicClient {
                         }
                     }
                 }
-            })
+                },
+            )
             .await?;
 
             let (tx, rx) = mpsc::channel(100);
