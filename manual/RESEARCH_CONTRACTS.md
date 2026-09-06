@@ -73,6 +73,19 @@ raw model/tool output.
 5. Let the host apply its rubric, human approval, retention, and publication
    policy; Code only validates the supplied identities and lifecycle.
 
+The end-to-end qualification fixture in
+`core/tests/research_execution_qualification.rs` exercises this sequence in a
+temporary workspace. It reopens the serialized Run, evaluator dispatch ledger,
+and evaluator result store; rejects a missing or gapped evidence cursor;
+verifies terminal cancellation cannot resume; checks create-only artifact
+replay; and proves that the Code catalog and upstream A3S Use generation remain
+bound to the same Run. Run it with:
+
+```bash
+CARGO_TARGET_DIR=/tmp/a3s-code-target \
+  cargo test --locked --no-default-features --test research_execution_qualification
+```
+
 Focused contract tests live beside the implementations in
 `core/src/research/`. Run them with:
 
