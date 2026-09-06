@@ -408,4 +408,34 @@ mod tests {
         assert!(batch.findings.is_empty());
         assert!(batch.validate().is_ok());
     }
+
+    #[test]
+    fn batch_round_trip_is_strict_and_tamper_evident() {
+        let record = record();
+        let batch = ResearchReviewBatchV1::new(
+            "wire-batch",
+            "project-1",
+            "run-1",
+            record.record_digest.clone(),
+            record.result.evidence_digest.clone(),
+            vec![finding("finding-1", &record)],
+        )
+        .unwrap();
+
+        let encoded = serde_json::to_value(&batch).unwrap();
+        let reopened: ResearchReviewBatchV1 = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(reopened, batch);
+        assert!(reopened.validate().is_ok());
+
+        let mut with_unknown_field = encoded;
+        with_unknown_field["unexpected"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<ResearchReviewBatchV1>(with_unknown_field).is_err());
+
+        let mut tampered = reopened;
+        tampered.findings[0].message = "changed after publication".to_owned();
+        assert_eq!(
+            tampered.validate(),
+            Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
 }
