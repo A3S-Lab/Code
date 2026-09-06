@@ -254,9 +254,9 @@ decides how to search, review, approve, retain, and publish results.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
-| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Thirteen focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
+| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Eighteen focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
 | `RESEARCH-EXEC1` | Planned | Host adapter that drives a research run through source capture, evidence append, artifact publication, and evaluator dispatch while retaining one Code Run identity | Integration tests prove restart, cancellation, contiguous evidence, artifact immutability, and exact Code/Use binding across a real workspace |
-| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding to an immutable evaluator result without introducing a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, or evidence drift |
+| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to an immutable evaluator result without introducing a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, evidence, duplicate-id, or partial-batch drift |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
@@ -272,6 +272,13 @@ and inclusion of the evaluator's evidence snapshot digest, while preserving an
 policy resolution. Existing unbound v1 findings remain readable with their
 legacy digest identity; new bindings use a digest that includes the evaluator
 record, so result replacement cannot masquerade as the same finding.
+
+`ResearchReviewBatchV1` is the bounded publication boundary for one evaluator
+response. It requires one project/Run/evaluation-record/evidence identity for
+all findings, canonical finding ordering, and an updated batch digest after an
+explicit resolution or waiver. It remains a validation primitive: reviewer
+rubrics, severity thresholds, approval, retention, and publication stay with
+the host or Desktop.
 
 ### 3.3.1 Workflow result convergence
 
