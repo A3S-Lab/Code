@@ -83,6 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tightened immutable-content reference validation to require the exact
   content digest as a complete URI path segment, rejecting substring-based
   references that are not unambiguous content addresses.
+- Bounded native Harness change-set capture state to in-flight entries only;
+  completed or failed captures now rely on the authoritative Run snapshot
+  instead of accumulating one permanent status per Run.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays

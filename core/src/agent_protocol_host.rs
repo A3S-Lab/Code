@@ -117,7 +117,6 @@ pub struct AgentProtocolHost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChangeSetCaptureState {
     Capturing,
-    Unavailable,
 }
 
 impl AgentProtocolHost {
@@ -416,9 +415,7 @@ impl AgentProtocolHost {
             .copied()
         {
             Some(ChangeSetCaptureState::Capturing) => Err(AgentProtocolHostError::ChangeSetPending),
-            Some(ChangeSetCaptureState::Unavailable) | None => {
-                Err(AgentProtocolHostError::ChangeSetUnavailable)
-            }
+            None => Err(AgentProtocolHostError::ChangeSetUnavailable),
         }
     }
 
@@ -435,14 +432,12 @@ impl AgentProtocolHost {
                 .await
                 .ok()
                 .and_then(Result::ok);
-        self.change_set_states.write().await.insert(
-            identity.run_id.clone(),
-            if baseline.is_some() {
-                ChangeSetCaptureState::Capturing
-            } else {
-                ChangeSetCaptureState::Unavailable
-            },
-        );
+        if baseline.is_some() {
+            self.change_set_states
+                .write()
+                .await
+                .insert(identity.run_id.clone(), ChangeSetCaptureState::Capturing);
+        }
         baseline
     }
 
@@ -450,7 +445,7 @@ impl AgentProtocolHost {
         self.change_set_states
             .write()
             .await
-            .insert(identity.run_id.clone(), ChangeSetCaptureState::Unavailable);
+            .remove(&identity.run_id);
     }
 
     async fn detach_with_change_set_capture(
@@ -498,19 +493,13 @@ impl AgentProtocolHost {
                     .await
                     .ok()
                     .and_then(Result::ok);
-                    let available = match evidence {
-                        Some(evidence) => session
-                            .record_workspace_change_set(&run_id, evidence)
-                            .await
-                            .is_ok(),
-                        None => false,
-                    };
-                    let mut states = states.write().await;
-                    if available {
-                        states.remove(&run_id);
-                    } else {
-                        states.insert(run_id, ChangeSetCaptureState::Unavailable);
+                    if let Some(evidence) = evidence {
+                        let _ = session.record_workspace_change_set(&run_id, evidence).await;
                     }
+                    // A completed or failed capture is represented by the
+                    // authoritative Run snapshot. Retain only in-flight
+                    // entries so this map cannot grow with session age.
+                    states.write().await.remove(&run_id);
                 });
                 false
             }
