@@ -684,11 +684,10 @@ impl WorkspacePersistentIndex {
     fn acquire_storage_read_lock(&self) -> WorkspaceIndexResult<std::fs::File> {
         let file = self.open_storage_lock_file()?;
         let path = self.root.join(STORAGE_LOCK_FILE);
-        file.lock_shared()
-            .map_err(|error| WorkspaceIndexError::ReadFailed {
-                path: path.display().to_string(),
-                message: format!("failed to share-lock persistent index: {error}"),
-            })?;
+        fs2::FileExt::lock_shared(&file).map_err(|error| WorkspaceIndexError::ReadFailed {
+            path: path.display().to_string(),
+            message: format!("failed to share-lock persistent index: {error}"),
+        })?;
         Ok(file)
     }
 
