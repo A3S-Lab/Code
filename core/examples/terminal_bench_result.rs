@@ -223,13 +223,6 @@ pub(super) fn classify_failure(
             TerminalReason::StreamClosedWithoutTerminalEvent,
         );
     }
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("deadline") || message.contains("execution timeout") {
-        return (
-            ExecutionResultOutcomeV1::TimedOut,
-            TerminalReason::DeadlineExceeded,
-        );
-    }
     // Provider clients preserve terminal HTTP responses as a typed error. Do
     // not infer this class from rendered text: bodies are bounded and may be
     // localized or omit the word "provider" entirely.
@@ -240,6 +233,13 @@ pub(super) fn classify_failure(
         return (
             ExecutionResultOutcomeV1::Failed,
             TerminalReason::ProviderRejected,
+        );
+    }
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("deadline") || message.contains("execution timeout") {
+        return (
+            ExecutionResultOutcomeV1::TimedOut,
+            TerminalReason::DeadlineExceeded,
         );
     }
     // `with_retry` intentionally keeps its exhaustion type private to Core;
@@ -345,6 +345,19 @@ mod tests {
         let progress = RunProgress::new();
         let error = anyhow::Error::new(a3s_code_core::llm::NonRetryableLlmError::from_status(
             "openai", 402, "quota",
+        ));
+        let (outcome, reason) = classify_failure(&progress, &error);
+        assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+        assert!(matches!(reason, TerminalReason::ProviderRejected));
+    }
+
+    #[test]
+    fn typed_provider_response_wins_over_deadline_words_in_body() {
+        let progress = RunProgress::new();
+        let error = anyhow::Error::new(a3s_code_core::llm::NonRetryableLlmError::from_status(
+            "openai",
+            400,
+            "request deadline rejected by provider",
         ));
         let (outcome, reason) = classify_failure(&progress, &error);
         assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
