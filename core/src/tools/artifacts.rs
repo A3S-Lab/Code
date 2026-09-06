@@ -3,11 +3,19 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 const DEFAULT_MAX_ARTIFACTS: usize = 256;
 const DEFAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Hard safety boundary for the on-disk artifact manifest.
+///
+/// Artifact contents are already bounded by [`ArtifactStoreLimits`], but the
+/// manifest is read before those limits can be applied. Keep that read
+/// bounded so a corrupt or untrusted session directory cannot force an
+/// unbounded allocation during recovery.
+const MAX_ARTIFACT_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolArtifact {
@@ -72,7 +80,10 @@ impl ArtifactStore {
             state.insertion_order.retain(|uri| uri != &artifact_uri);
         }
 
-        state.total_bytes += artifact.content.len();
+        // Accounting is part of the eviction invariant. Saturating here
+        // keeps a malformed/oversized value from wrapping the counter and
+        // bypassing the byte limit in release builds.
+        state.total_bytes = state.total_bytes.saturating_add(artifact.content.len());
         state.insertion_order.push_back(artifact_uri.clone());
         state.artifacts.insert(artifact_uri, artifact);
 
@@ -118,8 +129,39 @@ impl ArtifactStore {
         let json = serde_json::to_string_pretty(&snapshot)
             .context("failed to serialize artifact store snapshot")?;
         let path = artifact_manifest_path(dir);
-        std::fs::write(&path, json)
-            .with_context(|| format!("failed to write artifact manifest '{}'", path.display()))?;
+        if json.len() as u64 > MAX_ARTIFACT_MANIFEST_BYTES {
+            anyhow::bail!(
+                "refusing to write artifact manifest '{}': {} bytes exceeds the {} byte limit",
+                path.display(),
+                json.len(),
+                MAX_ARTIFACT_MANIFEST_BYTES
+            );
+        }
+
+        // The manifest is the legacy fragment-store boundary. Publish it as
+        // one generation so a reader can never observe a partially written
+        // JSON document after a crash or concurrent session load.
+        let mut temp = tempfile::NamedTempFile::new_in(dir).with_context(|| {
+            format!(
+                "failed to create temporary artifact manifest in '{}'",
+                dir.display()
+            )
+        })?;
+        temp.write_all(json.as_bytes())
+            .context("failed to write temporary artifact manifest")?;
+        temp.flush()
+            .context("failed to flush temporary artifact manifest")?;
+        temp.as_file()
+            .sync_all()
+            .context("failed to sync temporary artifact manifest")?;
+        temp.persist(&path)
+            .map_err(|error| error.error)
+            .with_context(|| {
+                format!(
+                    "failed to atomically replace artifact manifest '{}'",
+                    path.display()
+                )
+            })?;
         Ok(())
     }
 
@@ -136,10 +178,9 @@ impl ArtifactStore {
             return Ok(Self::with_limits(limits));
         }
 
-        let json = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read artifact manifest '{}'", path.display()))?;
+        let json = read_manifest(&path)?;
         let snapshot: ArtifactStoreSnapshot =
-            serde_json::from_str(&json).context("failed to parse artifact store snapshot")?;
+            serde_json::from_slice(&json).context("failed to parse artifact store snapshot")?;
         let store = Self::with_limits(limits);
         for artifact in snapshot.artifacts {
             store.put(artifact);
@@ -178,6 +219,43 @@ impl Default for ArtifactStore {
 
 fn artifact_manifest_path(dir: &Path) -> std::path::PathBuf {
     dir.join("artifacts.json")
+}
+
+fn read_manifest(path: &Path) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open artifact manifest '{}'", path.display()))?;
+    let declared_len = file
+        .metadata()
+        .with_context(|| format!("failed to inspect artifact manifest '{}'", path.display()))?
+        .len();
+    if declared_len > MAX_ARTIFACT_MANIFEST_BYTES {
+        anyhow::bail!(
+            "refusing to read artifact manifest '{}': {} bytes exceeds the {} byte limit",
+            path.display(),
+            declared_len,
+            MAX_ARTIFACT_MANIFEST_BYTES
+        );
+    }
+
+    // Re-check through a bounded reader so a file that grows after metadata
+    // inspection cannot race past the allocation boundary.
+    let mut reader = file.take(MAX_ARTIFACT_MANIFEST_BYTES + 1);
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(declared_len)
+            .unwrap_or(usize::MAX)
+            .min(1024 * 1024),
+    );
+    reader
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read artifact manifest '{}'", path.display()))?;
+    if bytes.len() as u64 > MAX_ARTIFACT_MANIFEST_BYTES {
+        anyhow::bail!(
+            "refusing to read artifact manifest '{}': document exceeds the {} byte limit",
+            path.display(),
+            MAX_ARTIFACT_MANIFEST_BYTES
+        );
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -347,5 +425,18 @@ mod tests {
         let loaded = ArtifactStore::load_from_dir(dir.path()).unwrap();
 
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_artifact_store_rejects_oversized_manifest_before_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifacts.json");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_ARTIFACT_MANIFEST_BYTES + 1).unwrap();
+
+        let error = ArtifactStore::load_from_dir(dir.path()).unwrap_err();
+
+        assert!(error.to_string().contains("exceeds the"));
+        assert!(error.to_string().contains("artifact manifest"));
     }
 }
