@@ -466,10 +466,48 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         61_004,
     )
     .unwrap()
-    .bind_provenance_receipt(&reopened_receipt)
+    .bind_provenance_receipt_for_run(&reopened_receipt, &research)
     .unwrap()
     .bind_evaluation_record(&reopened_record)
     .unwrap();
+
+    let drifted_receipt = ResearchProvenanceReceiptV1::new(
+        "research-project",
+        8,
+        &run.id,
+        "figure-1",
+        ResearchArtifactKindV1::Figure,
+        reference.content_digest.clone(),
+        vec![evidence.snapshot_digest.clone()],
+        digest_bytes("research-workflow", b"workflow-v1"),
+        digest_bytes("research-code", b"code-v1"),
+        digest_bytes("research-environment", b"env-v1"),
+        "fixture-provider",
+        Some(digest_bytes("research-model", b"fixture-model")),
+        Some(41),
+        Some(digest_bytes("research-validation", b"validated")),
+    )
+    .unwrap();
+    let drifted_finding = ResearchReviewFindingV1::new(
+        "finding-drifted-revision",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The provenance revision must match the admitted Run.",
+        None,
+        vec![evidence.snapshot_digest.clone()],
+        "research-reviewer",
+        61_005,
+    )
+    .unwrap();
+    assert_eq!(
+        drifted_finding.bind_provenance_receipt_for_run(&drifted_receipt, &research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "provenanceReceipt.projectRevision"
+        ))
+    );
     let batch = ResearchReviewBatchV1::new(
         "research-review-batch-1",
         "research-project",
