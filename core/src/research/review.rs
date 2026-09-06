@@ -100,6 +100,11 @@ pub struct ResearchReviewFindingV1 {
     pub location: Option<ResearchReviewLocationV1>,
     pub evidence_digests: Vec<String>,
     pub evaluator_id: String,
+    /// Optional digest of the immutable generic evaluation record that
+    /// produced this finding.  It is optional for compatibility with
+    /// findings created before evaluator-result binding was available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_record_digest: Option<String>,
     pub observed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_digest: Option<String>,
@@ -136,6 +141,7 @@ impl ResearchReviewFindingV1 {
             location,
             evidence_digests,
             evaluator_id: evaluator_id.into(),
+            evaluation_record_digest: None,
             observed_at_ms,
             resolution_digest: None,
             finding_digest: String::new(),
@@ -152,6 +158,45 @@ impl ResearchReviewFindingV1 {
             return Err(ResearchContractError::DigestMismatch("findingDigest"));
         }
         Ok(())
+    }
+
+    /// Bind this finding to the exact generic evaluation record that produced
+    /// it.  The host still owns the rubric and finding projection, while Code
+    /// verifies that the evaluator, Run, and evidence identity cannot drift.
+    ///
+    /// The method consumes and returns the finding so callers cannot observe a
+    /// partially rebound value if validation fails.
+    pub fn bind_evaluation_record(
+        mut self,
+        record: &crate::evaluation::EvaluationRecordV1,
+    ) -> Result<Self, ResearchContractError> {
+        self.validate()?;
+        record
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("evaluationRecord"))?;
+        if record.result.target.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.target",
+            ));
+        }
+        if record.result.evaluator_id != self.evaluator_id {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evaluatorId",
+            ));
+        }
+        if self
+            .evidence_digests
+            .binary_search(&record.result.evidence_digest)
+            .is_err()
+        {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evidenceDigest",
+            ));
+        }
+        self.evaluation_record_digest = Some(record.record_digest.clone());
+        self.finding_digest = self.expected_digest()?;
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn resolve(
@@ -229,12 +274,15 @@ impl ResearchReviewFindingV1 {
         if let Some(resolution_digest) = &self.resolution_digest {
             validate_digest_field("resolutionDigest", resolution_digest)?;
         }
+        if let Some(evaluation_record_digest) = &self.evaluation_record_digest {
+            validate_digest_field("evaluationRecordDigest", evaluation_record_digest)?;
+        }
         Ok(())
     }
 
     fn expected_digest(&self) -> Result<String, ResearchContractError> {
         #[derive(Serialize)]
-        struct Identity<'a> {
+        struct LegacyIdentity<'a> {
             schema: &'a str,
             finding_id: &'a str,
             project_id: &'a str,
@@ -250,9 +298,48 @@ impl ResearchReviewFindingV1 {
             observed_at_ms: u64,
             resolution_digest: Option<&'a str>,
         }
+        let Some(evaluation_record_digest) = self.evaluation_record_digest.as_deref() else {
+            return digest(
+                RESEARCH_REVIEW_FINDING_DIGEST_DOMAIN,
+                &LegacyIdentity {
+                    schema: &self.schema,
+                    finding_id: &self.finding_id,
+                    project_id: &self.project_id,
+                    run_id: &self.run_id,
+                    artifact_digest: &self.artifact_digest,
+                    category: self.category,
+                    severity: self.severity,
+                    status: self.status,
+                    message: &self.message,
+                    location: &self.location,
+                    evidence_digests: &self.evidence_digests,
+                    evaluator_id: &self.evaluator_id,
+                    observed_at_ms: self.observed_at_ms,
+                    resolution_digest: self.resolution_digest.as_deref(),
+                },
+            );
+        };
+        #[derive(Serialize)]
+        struct BoundIdentity<'a> {
+            schema: &'a str,
+            finding_id: &'a str,
+            project_id: &'a str,
+            run_id: &'a str,
+            artifact_digest: &'a str,
+            category: ResearchReviewCategoryV1,
+            severity: ResearchReviewSeverityV1,
+            status: ResearchReviewStatusV1,
+            message: &'a str,
+            location: &'a Option<ResearchReviewLocationV1>,
+            evidence_digests: &'a [String],
+            evaluator_id: &'a str,
+            evaluation_record_digest: &'a str,
+            observed_at_ms: u64,
+            resolution_digest: Option<&'a str>,
+        }
         digest(
             RESEARCH_REVIEW_FINDING_DIGEST_DOMAIN,
-            &Identity {
+            &BoundIdentity {
                 schema: &self.schema,
                 finding_id: &self.finding_id,
                 project_id: &self.project_id,
@@ -265,6 +352,7 @@ impl ResearchReviewFindingV1 {
                 location: &self.location,
                 evidence_digests: &self.evidence_digests,
                 evaluator_id: &self.evaluator_id,
+                evaluation_record_digest,
                 observed_at_ms: self.observed_at_ms,
                 resolution_digest: self.resolution_digest.as_deref(),
             },
@@ -327,6 +415,106 @@ mod tests {
         assert_eq!(
             finding.validate(),
             Err(ResearchContractError::InvalidField("resolutionDigest"))
+        );
+    }
+
+    #[test]
+    fn finding_binds_the_exact_evaluation_record_without_importing_a_rubric() {
+        let evidence_digest = digest('b');
+        let result = crate::evaluation::EvaluationResultV1::new(
+            "citation-reviewer",
+            crate::evaluation::ExecutionTargetV1::new("session-1", "run-1"),
+            "aux-1",
+            "observed",
+            serde_json::json!({"finding_count": 1}),
+            evidence_digest.clone(),
+        )
+        .unwrap();
+        let record = crate::evaluation::EvaluationRecordV1::new(result, 2).unwrap();
+        let finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::Citation,
+            ResearchReviewSeverityV1::Warning,
+            "Citation does not support the claim.",
+            None,
+            vec![evidence_digest],
+            "citation-reviewer",
+            3,
+        )
+        .unwrap()
+        .bind_evaluation_record(&record)
+        .unwrap();
+
+        assert_eq!(
+            finding.evaluation_record_digest.as_deref(),
+            Some(record.record_digest.as_str())
+        );
+        assert!(finding.validate().is_ok());
+        let mut tampered = finding;
+        tampered.evaluation_record_digest = Some(digest('f'));
+        assert_eq!(
+            tampered.validate(),
+            Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
+
+    #[test]
+    fn finding_rejects_a_record_from_another_run_or_evidence_window() {
+        let record = crate::evaluation::EvaluationRecordV1::new(
+            crate::evaluation::EvaluationResultV1::new(
+                "numeric-reviewer",
+                crate::evaluation::ExecutionTargetV1::new("session-1", "run-2"),
+                "aux-2",
+                "observed",
+                serde_json::json!({"finding_count": 1}),
+                digest('b'),
+            )
+            .unwrap(),
+            2,
+        )
+        .unwrap();
+        let finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::Numeric,
+            ResearchReviewSeverityV1::Error,
+            "The value is not traceable.",
+            None,
+            vec![digest('b')],
+            "numeric-reviewer",
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            finding.clone().bind_evaluation_record(&record),
+            Err(ResearchContractError::InvalidField(
+                "evaluationRecord.target"
+            ))
+        );
+
+        let same_run = crate::evaluation::EvaluationRecordV1::new(
+            crate::evaluation::EvaluationResultV1::new(
+                "numeric-reviewer",
+                crate::evaluation::ExecutionTargetV1::new("session-1", "run-1"),
+                "aux-3",
+                "observed",
+                serde_json::json!({"finding_count": 1}),
+                digest('c'),
+            )
+            .unwrap(),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            finding.bind_evaluation_record(&same_run),
+            Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evidenceDigest"
+            ))
         );
     }
 

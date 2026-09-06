@@ -1,11 +1,16 @@
 use a3s_code_core::evaluation::{
-    AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1, AuxiliaryRunError,
-    AuxiliaryRunService, AuxiliaryRunSpecV1, AuxiliaryRunStateV1, EvaluationRecordV1,
-    EvaluationResultSink, EvaluationResultV1, EvidenceContentModeV1, EvidenceReadRequestV1,
-    ExecutionFactRecorder, ExecutionFrameV1, ExecutionTargetV1, InMemoryAuxiliaryRunService,
-    InMemoryEvaluationResultStore, InMemoryExecutionFactJournal, RunEvidenceReader,
+    digest_bytes, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1,
+    AuxiliaryRunError, AuxiliaryRunService, AuxiliaryRunSpecV1, AuxiliaryRunStateV1,
+    EvaluationRecordV1, EvaluationResultSink, EvaluationResultV1, EvidenceContentModeV1,
+    EvidenceReadRequestV1, ExecutionFactRecorder, ExecutionFrameV1, ExecutionTargetV1,
+    InMemoryAuxiliaryRunService, InMemoryEvaluationResultStore, InMemoryExecutionFactJournal,
+    RunEvidenceReader,
 };
 use a3s_code_core::{AgentEvent, InMemoryRunStore, RunEventRecord};
+use a3s_code_core::{
+    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewSeverityV1,
+    ResearchReviewStatusV1,
+};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,6 +110,69 @@ async fn evidence_to_auxiliary_to_result_is_publicly_composable() {
     let record = EvaluationRecordV1::new(result, 1).unwrap();
     assert!(store.write(record.clone()).await.unwrap().written);
     assert_eq!(store.list_for_target(&target).await, vec![record]);
+}
+
+#[tokio::test]
+async fn evaluator_result_binds_to_an_open_review_finding_without_implying_approval() {
+    let (runs, target, journal) = prepared_run().await;
+    let evidence = RunEvidenceReader::new(Arc::clone(&runs))
+        .with_facts(journal)
+        .read(EvidenceReadRequestV1::new(target.clone()))
+        .await
+        .unwrap();
+    let service = InMemoryAuxiliaryRunService::new(Arc::new(FixtureExecutor));
+    let spec = AuxiliaryRunSpecV1::new(
+        ExecutionFrameV1::root(target.clone()),
+        "review",
+        "inspect the bounded evidence",
+        evidence.snapshot_digest.clone(),
+    )
+    .with_id("aux-review")
+    .with_capabilities(AuxiliaryCapabilityProfileV1::tool_free());
+    let output = service
+        .spawn(spec, evidence.clone(), None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let record = EvaluationRecordV1::new(
+        EvaluationResultV1::new(
+            "integration-evaluator",
+            target,
+            "aux-review",
+            "needs_review",
+            output.value,
+            evidence.snapshot_digest.clone(),
+        )
+        .unwrap(),
+        2,
+    )
+    .unwrap();
+
+    let finding = ResearchReviewFindingV1::new(
+        "finding-1",
+        "project-1",
+        "run-integration",
+        digest_bytes("review-artifact", b"report").to_string(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The report needs an explicit environment receipt.",
+        None,
+        vec![evidence.snapshot_digest],
+        "integration-evaluator",
+        3,
+    )
+    .unwrap()
+    .bind_evaluation_record(&record)
+    .unwrap();
+
+    assert_eq!(finding.status, ResearchReviewStatusV1::Open);
+    assert_eq!(
+        finding.evaluation_record_digest.as_deref(),
+        Some(record.record_digest.as_str())
+    );
+    assert!(finding.validate().is_ok());
 }
 
 #[tokio::test]
