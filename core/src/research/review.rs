@@ -237,6 +237,11 @@ impl ResearchReviewFindingV1 {
         if run.run_id != self.run_id {
             return Err(ResearchContractError::InvalidField("researchRun.runId"));
         }
+        if record.result.evidence_digest != run.evidence_snapshot_digest {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evidenceDigest",
+            ));
+        }
         self.bind_evaluation_record(record)
     }
 

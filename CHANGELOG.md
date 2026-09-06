@@ -23,8 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remains available for older callers.
 - Added strict Run-aware review-batch construction and validation. The new
   helpers close the project/run namespace and require the batch evidence digest
-  to equal the exact evaluator record evidence digest; the identity-only batch
-  constructor remains available for wire-level compatibility.
+  to equal the exact evaluator record and admitted Run evidence digests; the
+  identity-only batch constructor remains available for wire-level
+  compatibility.
+- Strict Run-aware evaluator binding now rejects evaluator records built from
+  an evidence snapshot other than the admitted Run's exact snapshot.
 - Added schema-v2 integrity fencing for persistent zvec generations. Reopen
   validates chunk payload digests, stable IDs, ranges, canonical digests, and
   duplicate IDs; corrupted generations fail closed and are rebuilt from the

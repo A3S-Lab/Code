@@ -432,7 +432,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
 
     let result = EvaluationResultV1::new(
         "research-reviewer",
-        target,
+        target.clone(),
         "aux-research-review-1",
         "needs_review",
         serde_json::json!({"finding_count": 1}),
@@ -492,6 +492,41 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         ))
     );
 
+    let drifted_evidence_digest = digest_bytes("research-review-evidence", b"drifted");
+    let drifted_record = EvaluationRecordV1::new(
+        EvaluationResultV1::new(
+            "research-reviewer",
+            target.clone(),
+            "aux-research-review-1",
+            "needs_review",
+            serde_json::json!({"finding_count": 1}),
+            drifted_evidence_digest.clone(),
+        )
+        .unwrap(),
+        61_005,
+    )
+    .unwrap();
+    let drifted_evidence_finding = ResearchReviewFindingV1::new(
+        "finding-drifted-evidence",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The evaluator must review the admitted Run evidence snapshot.",
+        None,
+        vec![drifted_evidence_digest],
+        "research-reviewer",
+        61_006,
+    )
+    .unwrap();
+    assert_eq!(
+        drifted_evidence_finding.bind_evaluation_record_for_run(&drifted_record, &research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "evaluationRecord.evidenceDigest"
+        ))
+    );
+
     let drifted_receipt = ResearchProvenanceReceiptV1::new(
         "research-project",
         8,
@@ -520,7 +555,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_006,
+        61_007,
     )
     .unwrap();
     assert_eq!(
@@ -558,7 +593,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_007,
+        61_008,
     )
     .unwrap();
     assert_eq!(
@@ -596,7 +631,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_008,
+        61_009,
     )
     .unwrap();
     assert_eq!(

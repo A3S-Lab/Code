@@ -76,14 +76,16 @@ raw model/tool output.
    `ResearchReviewFindingV1` values. Bind each finding to the exact
    `EvaluationRecordV1` with `bind_evaluation_record_for_run`, passing the
    admitted `ResearchRunV1`; Code verifies that the evaluator, project, Run,
-   and evidence snapshot match before accepting the binding. The older
+   and the Run's exact evidence snapshot match before accepting the binding.
+   The older
    `bind_evaluation_record` form remains available for callers that do not
    retain the admitted Run, but cannot perform the project-namespace check.
    Group the bound findings with `ResearchReviewBatchV1::new_for_run`, passing
    the admitted Run and evaluator record, before publication so a partial or
    mixed evaluator response cannot be presented as one review. The strict
    constructor and `validate_for_run` also require the batch evidence digest
-   to equal the evaluator record's digest. The older `new` constructor remains
+   to equal both the evaluator record and admitted Run evidence digests. The
+   older `new` constructor remains
    available for wire-level compatibility but cannot perform those checks.
 5. Let the host apply its rubric, human approval, retention, and publication
    policy; Code only validates the supplied identities and lifecycle.
