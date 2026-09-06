@@ -134,6 +134,24 @@ impl ResearchRunV1 {
         Ok(())
     }
 
+    /// Verify that a research run is attached to the exact Code execution
+    /// target that was admitted by the host.  The target's session identity is
+    /// retained by Code's execution plane; this contract only owns the shared
+    /// Run id and refuses a cross-Run projection.
+    pub fn validate_execution_target(
+        &self,
+        target: &crate::evaluation::ExecutionTargetV1,
+    ) -> Result<(), ResearchContractError> {
+        self.validate()?;
+        target
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("executionTarget"))?;
+        if target.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField("executionTarget.runId"));
+        }
+        Ok(())
+    }
+
     pub fn transition_to(
         &mut self,
         next: ResearchRunStatusV1,
@@ -352,6 +370,36 @@ mod tests {
                 None,
             ),
             Err(ResearchContractError::InvalidField("modelId"))
+        );
+    }
+
+    #[test]
+    fn execution_target_binding_rejects_a_cross_run_projection() {
+        let run = ResearchRunV1::new(
+            "run-1",
+            "project-1",
+            1,
+            digest('a'),
+            digest('b'),
+            binding(),
+            "local",
+            "model",
+            ResearchReproducibilityV1::Reproducible,
+            None,
+        )
+        .unwrap();
+        assert!(run
+            .validate_execution_target(&crate::evaluation::ExecutionTargetV1::new(
+                "session-1",
+                "run-1"
+            ))
+            .is_ok());
+        assert_eq!(
+            run.validate_execution_target(&crate::evaluation::ExecutionTargetV1::new(
+                "session-1",
+                "run-2"
+            )),
+            Err(ResearchContractError::InvalidField("executionTarget.runId"))
         );
     }
 }

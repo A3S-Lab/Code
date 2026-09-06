@@ -55,8 +55,12 @@ raw model/tool output.
 
 1. Admit a Code `ResearchRunV1` with the exact capability binding and snapshot
    digests selected by the host.
+   Validate its `ExecutionTargetV1` with `validate_execution_target` before
+   projecting any runtime event or evidence fact.
 2. Emit `ResearchEventV1` and append `ResearchEvidenceFactV1` values as the
    run observes sources, claims, measurements, derivations, and artifacts.
+   Use `ResearchEventV1::from_core_event_for_run` when adapting Core events so
+   an opaque operation id cannot be mistaken for the bare Run id.
 3. Materialize each output as a content-addressed artifact and publish a
    `ResearchProvenanceReceiptV1`.
 4. Run a host-selected evaluator through the generic Code evaluation
