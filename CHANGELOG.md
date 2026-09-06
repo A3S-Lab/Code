@@ -92,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made legacy ArtifactStore manifests atomic and bounded. Recovery now rejects
   oversized JSON before allocation, and byte accounting saturates instead of
   wrapping around the eviction boundary.
+- Removed an `expect` from workspace catalog reconciliation; unchanged-file
+  reuse now remains explicitly fail-safe if the previous entry is absent.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays

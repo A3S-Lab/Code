@@ -123,14 +123,14 @@ impl WorkspaceCatalogReconciler {
         let mut reads = Vec::new();
         for (path, file) in eligible {
             let existing = previous.state.files.get(&path);
-            if !full_rebuild
-                && !invalidated.contains(&path)
-                && existing.is_some_and(|existing| existing.matches_manifest(&file))
-            {
-                next_files.insert(path, Arc::clone(existing.expect("checked above")));
-            } else {
-                reads.push((file, existing.cloned()));
+            if !full_rebuild && !invalidated.contains(&path) {
+                if let Some(existing) = existing.filter(|existing| existing.matches_manifest(&file))
+                {
+                    next_files.insert(path, Arc::clone(existing));
+                    continue;
+                }
             }
+            reads.push((file, existing.cloned()));
         }
 
         let catalog_changed = !reads.is_empty() || !removed_paths.is_empty();
