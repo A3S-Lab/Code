@@ -134,7 +134,7 @@ pub enum AttemptOutcome<T> {
 /// policy decisions.
 #[derive(Debug, thiserror::Error)]
 #[error("{terminal_message}")]
-pub(crate) struct RetryExhaustedError {
+pub struct RetryExhaustedError {
     attempts: u32,
     status: StatusCode,
     body: String,
@@ -155,8 +155,31 @@ impl RetryExhaustedError {
         }
     }
 
+    /// Construct a typed exhaustion value from a wire status for host-side
+    /// adapters and tests. Invalid status values conservatively map to 500.
+    pub fn from_status(attempts: u32, status: u16, body: impl Into<String>) -> Self {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        Self::new(attempts, status, body)
+    }
+
     pub(crate) fn status(&self) -> StatusCode {
         self.status
+    }
+
+    /// Number of provider attempts consumed before retry authority stopped.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    /// Last provider HTTP status, exposed without requiring callers to depend
+    /// on the internal retry module or parse the rendered diagnostic.
+    pub fn status_code(&self) -> u16 {
+        self.status.as_u16()
+    }
+
+    /// Bounded last provider response body retained for diagnostics.
+    pub fn body(&self) -> &str {
+        &self.body
     }
 
     /// A stable marker consumed by the outer Agent boundary. Once this retry

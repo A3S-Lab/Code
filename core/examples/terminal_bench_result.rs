@@ -111,6 +111,10 @@ impl RunProgress {
         {
             self.provider = provider_error.provider().map(str::to_owned);
             self.provider_status = provider_error.status();
+        } else if let Some(retry_error) =
+            error.downcast_ref::<a3s_code_core::llm::RetryExhaustedError>()
+        {
+            self.provider_status = Some(retry_error.status_code());
         }
     }
 
@@ -235,6 +239,15 @@ pub(super) fn classify_failure(
             TerminalReason::ProviderRejected,
         );
     }
+    if error
+        .downcast_ref::<a3s_code_core::llm::RetryExhaustedError>()
+        .is_some()
+    {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderExhausted,
+        );
+    }
     let message = error.to_string().to_ascii_lowercase();
     if message.contains("deadline") || message.contains("execution timeout") {
         return (
@@ -242,10 +255,9 @@ pub(super) fn classify_failure(
             TerminalReason::DeadlineExceeded,
         );
     }
-    // `with_retry` intentionally keeps its exhaustion type private to Core;
-    // the stable rendered prefix is the compatibility boundary for this
-    // process-local report until the retry policy exposes a public error
-    // projection. This is narrower than matching arbitrary provider prose.
+    // Older Agent paths may have rendered the typed exhaustion into a plain
+    // anyhow message. Keep the narrow prefix fallback for those records while
+    // preferring the public typed projection above whenever it survives.
     if message.contains("llm api request failed after") {
         return (
             ExecutionResultOutcomeV1::Failed,
@@ -376,6 +388,19 @@ mod tests {
     }
 
     #[test]
+    fn typed_retry_exhaustion_is_classified_without_rendered_text() {
+        let progress = RunProgress::new();
+        let error = anyhow::Error::new(a3s_code_core::llm::RetryExhaustedError::from_status(
+            2,
+            503,
+            "service unavailable",
+        ));
+        let (outcome, reason) = classify_failure(&progress, &error);
+        assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+        assert!(matches!(reason, TerminalReason::ProviderExhausted));
+    }
+
+    #[test]
     fn typed_provider_failure_metadata_is_retained_in_report() {
         let mut progress = RunProgress::new();
         let error = anyhow::Error::new(a3s_code_core::llm::NonRetryableLlmError::from_status(
@@ -391,6 +416,23 @@ mod tests {
         let json = serde_json::to_value(report).expect("report JSON");
         assert_eq!(json["provider"], "anthropic");
         assert_eq!(json["providerStatus"], 401);
+    }
+
+    #[test]
+    fn typed_retry_failure_status_is_retained_in_report() {
+        let mut progress = RunProgress::new();
+        let error = anyhow::Error::new(a3s_code_core::llm::RetryExhaustedError::from_status(
+            3,
+            429,
+            "rate limited",
+        ));
+        progress.remember_failure(&error);
+        let report = progress.report(
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderExhausted,
+        );
+        let json = serde_json::to_value(report).expect("report JSON");
+        assert_eq!(json["providerStatus"], 429);
     }
 
     #[test]

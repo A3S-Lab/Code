@@ -75,7 +75,9 @@ Retry authority is single-owner: a provider consumes its bounded HTTP retry
 budget, then the Agent circuit breaker treats typed exhaustion as terminal
 instead of replaying the same request through fallback. Streaming retries honor
 the provider's `Retry-After` value, and cancellation interrupts that backoff;
-the regression suite records the expected inner request count.
+the regression suite records the expected inner request count. Hosts can inspect
+the public bounded `RetryExhaustedError` projection for its status and attempt
+count without parsing provider diagnostics.
 
 Container command output is captured incrementally with the Core 100 KiB
 head/tail limit before it is returned to the Tool loop. High-volume commands

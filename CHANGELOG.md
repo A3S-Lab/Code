@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a cancellation-aware retry primitive and wired streaming OpenAI and
   Anthropic requests through it, so a cancelled run does not wait for a long
   `Retry-After` backoff before settling.
+- Exposed the bounded `RetryExhaustedError` projection through the LLM API so
+  host adapters can classify exhaustion and retain its HTTP status without
+  parsing diagnostics.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
