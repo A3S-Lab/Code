@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   login clients. Non-retryable HTTP responses retain their provider and status
   metadata, are bounded before entering diagnostics, and are classified as
   `provider_rejected` instead of being retried or inferred from error text.
+- Classified bounded retry exhaustion as `provider_exhausted` in the
+  Terminal-Bench result boundary, so repeated 429/5xx failures are observable
+  separately from agent execution errors.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,

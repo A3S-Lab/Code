@@ -242,6 +242,16 @@ pub(super) fn classify_failure(
             TerminalReason::ProviderRejected,
         );
     }
+    // `with_retry` intentionally keeps its exhaustion type private to Core;
+    // the stable rendered prefix is the compatibility boundary for this
+    // process-local report until the retry policy exposes a public error
+    // projection. This is narrower than matching arbitrary provider prose.
+    if message.contains("llm api request failed after") {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderExhausted,
+        );
+    }
     if message.contains("circuit breaker") || message.contains("provider") {
         return (
             ExecutionResultOutcomeV1::Failed,
@@ -339,6 +349,17 @@ mod tests {
         let (outcome, reason) = classify_failure(&progress, &error);
         assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
         assert!(matches!(reason, TerminalReason::ProviderRejected));
+    }
+
+    #[test]
+    fn retry_exhaustion_is_classified_as_provider_exhausted() {
+        let progress = RunProgress::new();
+        let error = anyhow::anyhow!(
+            "LLM API request failed after 11 attempts. Last status: 429 Body: rate limited"
+        );
+        let (outcome, reason) = classify_failure(&progress, &error);
+        assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+        assert!(matches!(reason, TerminalReason::ProviderExhausted));
     }
 
     #[test]
