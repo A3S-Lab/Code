@@ -99,6 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Applied trace FIFO retention during session restore as well as live writes;
   the in-memory sink now uses a deque so bounded diagnostic history does not
   shift the whole buffer on every event.
+- Serialized shared-workspace zvec generation publication, cleanup, and
+  deletion with a cross-process lock; active readers hold a shared lock so
+  generation collection cannot race an in-flight native query.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays

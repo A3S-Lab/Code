@@ -30,6 +30,8 @@ const MANIFEST_SCHEMA_VERSION: u32 = 1;
 const CURRENT_FILE: &str = "CURRENT";
 #[cfg(feature = "zvec-rust-fts")]
 const MANIFEST_FILE: &str = "manifest.json";
+#[cfg(feature = "zvec-rust-fts")]
+const STORAGE_LOCK_FILE: &str = ".index.lock";
 
 #[cfg(feature = "zvec-rust-fts")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -204,6 +206,10 @@ impl WorkspacePersistentIndex {
                 building: AtomicBool::new(false),
                 state: RwLock::new(None),
             });
+            // CURRENT publication and generation collection are shared by
+            // every session that points at this workspace. Serialize those
+            // operations across processes before inspecting the directory.
+            let storage_guard = index.acquire_storage_lock()?;
             if let Err(error) = index.load_current() {
                 tracing::warn!(%error, path = %index.root.display(), "persistent workspace index will be rebuilt");
             } else if let Some(generation) = index.status().generation {
@@ -211,6 +217,7 @@ impl WorkspacePersistentIndex {
                     tracing::warn!(%error, path = %index.root.display(), "persistent workspace generation cleanup failed");
                 }
             }
+            drop(storage_guard);
             Ok(index)
         }
     }
@@ -295,10 +302,12 @@ impl WorkspacePersistentIndex {
 
         #[cfg(feature = "zvec-rust-fts")]
         {
+            let _storage_guard = self.acquire_storage_lock()?;
             let _write_guard = self
                 .writer
                 .lock()
                 .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
+            self.wait_for_idle();
             let previous = self
                 .state
                 .write()
@@ -352,6 +361,10 @@ impl WorkspacePersistentIndex {
             let _operation = self.begin_operation()?;
             self.building.store(true, Ordering::Release);
             let _building = BuildActivityGuard(&self.building);
+            // The directory contains one shared CURRENT pointer and shared
+            // generation names. The instance-local writer is insufficient
+            // when multiple sessions/processes use the same workspace.
+            let _storage_guard = self.acquire_storage_lock()?;
             let _write_guard = self
                 .writer
                 .lock()
@@ -420,6 +433,7 @@ impl WorkspacePersistentIndex {
                     current.source_revision = snapshot.source_revision();
                     current.indexed_files = distinct_path_count(&indexed_chunks);
                     current.indexed_chunks = indexed_chunks;
+                    drop(_operation);
                     if let Err(error) = gc_generations(&self.root, &generation) {
                         tracing::warn!(%error, path = %self.root.display(), "persistent workspace generation cleanup failed");
                     }
@@ -481,6 +495,7 @@ impl WorkspacePersistentIndex {
                 .state
                 .write()
                 .map_err(|_| WorkspaceIndexError::LockPoisoned)? = Some(next);
+            drop(_operation);
             if let Err(error) = gc_generations(&self.root, &generation) {
                 tracing::warn!(%error, path = %self.root.display(), "persistent workspace generation cleanup failed");
             }
@@ -504,6 +519,11 @@ impl WorkspacePersistentIndex {
         {
             let _operation = self.begin_operation()?;
             super::lexical::validate_request(request)?;
+            // Keep the shared generation alive while the native query is
+            // executing. Writers take the exclusive counterpart before
+            // replacing/collecting generations, including from another
+            // process that points at the same workspace.
+            let _storage_guard = self.acquire_storage_read_lock()?;
             let terms = query_terms(request.query.trim(), 32);
             if terms.is_empty() {
                 return Err(WorkspaceIndexError::InvalidQuery(
@@ -625,6 +645,48 @@ impl WorkspacePersistentIndex {
         Ok(PersistentOperationGuard {
             active: Arc::clone(&self.active_operations),
         })
+    }
+
+    #[cfg(feature = "zvec-rust-fts")]
+    fn acquire_storage_lock(&self) -> WorkspaceIndexResult<std::fs::File> {
+        use fs2::FileExt;
+
+        let file = self.open_storage_lock_file()?;
+        let path = self.root.join(STORAGE_LOCK_FILE);
+        file.lock_exclusive()
+            .map_err(|error| WorkspaceIndexError::ReadFailed {
+                path: path.display().to_string(),
+                message: format!("failed to lock persistent index: {error}"),
+            })?;
+        Ok(file)
+    }
+
+    #[cfg(feature = "zvec-rust-fts")]
+    fn acquire_storage_read_lock(&self) -> WorkspaceIndexResult<std::fs::File> {
+        let file = self.open_storage_lock_file()?;
+        let path = self.root.join(STORAGE_LOCK_FILE);
+        file.lock_shared()
+            .map_err(|error| WorkspaceIndexError::ReadFailed {
+                path: path.display().to_string(),
+                message: format!("failed to share-lock persistent index: {error}"),
+            })?;
+        Ok(file)
+    }
+
+    #[cfg(feature = "zvec-rust-fts")]
+    fn open_storage_lock_file(&self) -> WorkspaceIndexResult<std::fs::File> {
+        let path = self.root.join(STORAGE_LOCK_FILE);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| WorkspaceIndexError::ReadFailed {
+                path: path.display().to_string(),
+                message: format!("failed to open persistent index lock: {error}"),
+            })?;
+        Ok(file)
     }
 
     #[cfg(feature = "zvec-rust-fts")]
