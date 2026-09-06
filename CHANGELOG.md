@@ -119,6 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Centralized bounded file reads for evaluation, Flow, and State Graph
   persistence so declared and concurrent-growth size violations are rejected
   before JSON allocation and decoding.
+- Bounded MCP artifact revalidation and Moli install-receipt recovery before
+  decoding cached files, closing the remaining untrusted cache-read paths.
 
 ## [8.2.0] - 2026-09-04
 

@@ -28,6 +28,7 @@ const RELEASE_BASE_ENV: &str = "A3S_CODE_MOLI_RELEASE_BASE_URL";
 const RECEIPT_SCHEMA: &str = "a3s-code/moli-runtime-receipt/v1";
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_INSTALL_RECEIPT_BYTES: usize = 16 * 1024;
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
 /// Schema identifier for [`MoliRuntimeInfo`].
@@ -482,7 +483,9 @@ async fn validate_cached(
     if metadata.len() == 0 || metadata.len() > MAX_BINARY_BYTES {
         return false;
     }
-    let Ok(bytes) = tokio::fs::read(receipt_path).await else {
+    let Ok(bytes) =
+        crate::bounded_io::read_file_bounded_async(receipt_path, MAX_INSTALL_RECEIPT_BYTES).await
+    else {
         return false;
     };
     let Ok(receipt) = serde_json::from_slice::<InstallReceipt>(&bytes) else {

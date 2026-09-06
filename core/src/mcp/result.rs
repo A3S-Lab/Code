@@ -360,7 +360,7 @@ async fn verify_existing_artifact(path: &Path, bytes: &[u8], digest: &str) -> Re
             path.display()
         ));
     }
-    let existing = tokio::fs::read(path)
+    let existing = crate::bounded_io::read_file_bounded_async(path, bytes.len())
         .await
         .with_context(|| format!("failed to verify MCP artifact '{}'", path.display()))?;
     if existing.len() != bytes.len() || sha256::digest(&existing) != digest {
