@@ -43,6 +43,10 @@ pub(super) struct TerminalBenchRunResultV1 {
     artifact_evidence_count: usize,
     error_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
 }
 
@@ -62,6 +66,8 @@ pub(super) struct RunProgress {
     pub(super) successful_tool_calls: usize,
     pub(super) artifact_evidence_count: usize,
     pub(super) error_count: usize,
+    pub(super) provider: Option<String>,
+    pub(super) provider_status: Option<u16>,
     pub(super) terminal_event: bool,
     pub(super) stream_closed_without_terminal_event: bool,
     pub(super) evidence_missing: bool,
@@ -78,6 +84,8 @@ impl RunProgress {
             successful_tool_calls: 0,
             artifact_evidence_count: 0,
             error_count: 0,
+            provider: None,
+            provider_status: None,
             terminal_event: false,
             stream_closed_without_terminal_event: false,
             evidence_missing: false,
@@ -94,6 +102,16 @@ impl RunProgress {
 
     pub(super) fn remember_error(&mut self, error: impl std::fmt::Display) {
         self.last_error = Some(bound_error(error.to_string()));
+    }
+
+    pub(super) fn remember_failure(&mut self, error: &anyhow::Error) {
+        self.remember_error(error);
+        if let Some(provider_error) =
+            error.downcast_ref::<a3s_code_core::llm::NonRetryableLlmError>()
+        {
+            self.provider = provider_error.provider().map(str::to_owned);
+            self.provider_status = provider_error.status();
+        }
     }
 
     pub(super) fn has_action_evidence(&self) -> bool {
@@ -126,6 +144,8 @@ impl RunProgress {
             successful_tool_calls: self.successful_tool_calls,
             artifact_evidence_count: self.artifact_evidence_count,
             error_count: self.error_count,
+            provider: self.provider.clone(),
+            provider_status: self.provider_status,
             last_error: self.last_error.clone(),
         }
     }
@@ -248,6 +268,8 @@ mod tests {
         progress.successful_tool_calls = 4;
         progress.artifact_evidence_count = 2;
         progress.error_count = 1;
+        progress.provider = Some("openai".to_string());
+        progress.provider_status = Some(402);
         progress.terminal_event = true;
         let report = progress.report(
             ExecutionResultOutcomeV1::Succeeded,
@@ -263,6 +285,8 @@ mod tests {
         assert_eq!(json["successfulToolCalls"], 4);
         assert_eq!(json["artifactEvidenceCount"], 2);
         assert_eq!(json["errorCount"], 1);
+        assert_eq!(json["provider"], "openai");
+        assert_eq!(json["providerStatus"], 402);
     }
 
     #[test]
@@ -315,6 +339,24 @@ mod tests {
         let (outcome, reason) = classify_failure(&progress, &error);
         assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
         assert!(matches!(reason, TerminalReason::ProviderRejected));
+    }
+
+    #[test]
+    fn typed_provider_failure_metadata_is_retained_in_report() {
+        let mut progress = RunProgress::new();
+        let error = anyhow::Error::new(a3s_code_core::llm::NonRetryableLlmError::from_status(
+            "anthropic",
+            401,
+            "denied",
+        ));
+        progress.remember_failure(&error);
+        let report = progress.report(
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderRejected,
+        );
+        let json = serde_json::to_value(report).expect("report JSON");
+        assert_eq!(json["provider"], "anthropic");
+        assert_eq!(json["providerStatus"], 401);
     }
 
     #[test]

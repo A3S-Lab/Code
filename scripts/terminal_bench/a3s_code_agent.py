@@ -137,6 +137,8 @@ class A3SCodeAgent(BaseAgent):
                     "turns": report.get("turns"),
                     "tool_calls": report.get("toolCalls"),
                     "error_count": report.get("errorCount"),
+                    "provider": report.get("provider"),
+                    "provider_status": report.get("providerStatus"),
                 }
             )
         elif report_read_error is not None:

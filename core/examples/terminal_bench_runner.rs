@@ -387,7 +387,7 @@ async fn main() -> Result<()> {
     let execution = execute(&args, &mut progress).await;
     let mut execution_error = execution.err();
     if let Some(error) = &execution_error {
-        progress.remember_error(error);
+        progress.remember_failure(error);
     }
     if execution_error.is_none() && !progress.has_action_evidence() {
         progress.mark_evidence_missing();

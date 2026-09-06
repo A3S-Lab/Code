@@ -55,9 +55,10 @@ to the workspace or trajectory.
 The runner writes an atomic, machine-readable terminal report to
 `/logs/agent/a3s-code.result.json`. It records the outcome (`succeeded`,
 `failed`, or `timed_out`), the terminal reason, whether an `agent_end` event was
-observed, turn/tool counters, and a bounded last error. The adapter exposes these
-fields in Harbor metadata and keeps the report beside the stdout, stderr, and
-trajectory evidence. The default Code execution budget is 840 seconds; set
+observed, turn/tool counters, provider status (when available), and a bounded
+last error. The adapter exposes these fields in Harbor metadata and keeps the
+report beside the stdout, stderr, and trajectory evidence. The default Code
+execution budget is 840 seconds; set
 `A3S_CODE_TERMINAL_BENCH_MAX_EXECUTION_MS` when the outer Harbor task has a
 different deadline, leaving enough margin for result persistence. A benchmark
 run that emits `agent_end` without any successful Tool execution is reported as
