@@ -74,8 +74,11 @@ raw model/tool output.
 4. Run a host-selected evaluator through the generic Code evaluation
    substrate, then project its bounded observations into
    `ResearchReviewFindingV1` values. Bind each finding to the exact
-   `EvaluationRecordV1` with `bind_evaluation_record`; Code verifies that the
-   evaluator, Run, and evidence snapshot match before accepting the binding.
+   `EvaluationRecordV1` with `bind_evaluation_record_for_run`, passing the
+   admitted `ResearchRunV1`; Code verifies that the evaluator, project, Run,
+   and evidence snapshot match before accepting the binding. The older
+   `bind_evaluation_record` form remains available for callers that do not
+   retain the admitted Run, but cannot perform the project-namespace check.
    Group the bound findings in a `ResearchReviewBatchV1` before publication so
    a partial or mixed evaluator response cannot be presented as one review.
 5. Let the host apply its rubric, human approval, retention, and publication

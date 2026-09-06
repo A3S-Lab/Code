@@ -468,8 +468,29 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
     .unwrap()
     .bind_provenance_receipt_for_run(&reopened_receipt, &research)
     .unwrap()
-    .bind_evaluation_record(&reopened_record)
+    .bind_evaluation_record_for_run(&reopened_record, &research)
     .unwrap();
+
+    let cross_project_finding = ResearchReviewFindingV1::new(
+        "finding-cross-project",
+        "other-research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The evaluator result must remain in its project namespace.",
+        None,
+        vec![evidence.snapshot_digest.clone()],
+        "research-reviewer",
+        61_005,
+    )
+    .unwrap();
+    assert_eq!(
+        cross_project_finding.bind_evaluation_record_for_run(&reopened_record, &research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "researchRun.projectId"
+        ))
+    );
 
     let drifted_receipt = ResearchProvenanceReceiptV1::new(
         "research-project",
@@ -499,7 +520,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_005,
+        61_006,
     )
     .unwrap();
     assert_eq!(
@@ -537,7 +558,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_006,
+        61_007,
     )
     .unwrap();
     assert_eq!(
@@ -575,7 +596,7 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         None,
         vec![evidence.snapshot_digest.clone()],
         "research-reviewer",
-        61_007,
+        61_008,
     )
     .unwrap();
     assert_eq!(
