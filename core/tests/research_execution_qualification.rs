@@ -508,6 +508,83 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
             "provenanceReceipt.projectRevision"
         ))
     );
+
+    let provider_drift_receipt = ResearchProvenanceReceiptV1::new(
+        "research-project",
+        9,
+        &run.id,
+        "figure-1",
+        ResearchArtifactKindV1::Figure,
+        reference.content_digest.clone(),
+        vec![evidence.snapshot_digest.clone()],
+        digest_bytes("research-workflow", b"workflow-v1"),
+        digest_bytes("research-code", b"code-v1"),
+        digest_bytes("research-environment", b"env-v1"),
+        "other-provider",
+        Some(digest_bytes("research-model", b"fixture-model")),
+        Some(41),
+        Some(digest_bytes("research-validation", b"validated")),
+    )
+    .unwrap();
+    let provider_drift_finding = ResearchReviewFindingV1::new(
+        "finding-drifted-provider",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The provenance provider must match the admitted Run.",
+        None,
+        vec![evidence.snapshot_digest.clone()],
+        "research-reviewer",
+        61_006,
+    )
+    .unwrap();
+    assert_eq!(
+        provider_drift_finding.bind_provenance_receipt_for_run(&provider_drift_receipt, &research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "provenanceReceipt.providerId"
+        ))
+    );
+
+    let seed_drift_receipt = ResearchProvenanceReceiptV1::new(
+        "research-project",
+        9,
+        &run.id,
+        "figure-1",
+        ResearchArtifactKindV1::Figure,
+        reference.content_digest.clone(),
+        vec![evidence.snapshot_digest.clone()],
+        digest_bytes("research-workflow", b"workflow-v1"),
+        digest_bytes("research-code", b"code-v1"),
+        digest_bytes("research-environment", b"env-v1"),
+        "fixture-provider",
+        Some(digest_bytes("research-model", b"fixture-model")),
+        Some(42),
+        Some(digest_bytes("research-validation", b"validated")),
+    )
+    .unwrap();
+    let seed_drift_finding = ResearchReviewFindingV1::new(
+        "finding-drifted-seed",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The provenance seed must match the admitted Run.",
+        None,
+        vec![evidence.snapshot_digest.clone()],
+        "research-reviewer",
+        61_007,
+    )
+    .unwrap();
+    assert_eq!(
+        seed_drift_finding.bind_provenance_receipt_for_run(&seed_drift_receipt, &research),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "provenanceReceipt.randomSeed"
+        ))
+    );
+
     let batch = ResearchReviewBatchV1::new(
         "research-review-batch-1",
         "research-project",

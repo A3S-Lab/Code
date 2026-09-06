@@ -256,7 +256,7 @@ decides how to search, review, approve, retain, and publish results.
 | --- | --- | --- | --- |
 | `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Twenty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
 | `RESEARCH-EXEC1` | Delivered | Host adapter qualification drives a research run through source capture, evidence append, create-only content-addressed artifact publication, and evaluator dispatch while retaining one Code Run identity; exact execution-target validation and explicit Run-aware Core-event projection are covered | `research_execution_qualification` passes restart/replay, cancellation terminality, contiguous evidence, artifact immutability, file-backed evaluator dispatch/result recovery, and exact Code/Use binding checks |
-| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric; strict Run-aware provenance binding also fences project-revision drift, and finding locations enforce one-based line/column coordinates | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, project-revision, evidence, provenance, duplicate-id, partial-batch drift, and malformed source locations |
+| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric; strict Run-aware provenance binding also fences project-revision, provider, and seed drift, and finding locations enforce one-based line/column coordinates | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, project-revision, provider, seed, evidence, provenance, duplicate-id, partial-batch drift, and malformed source locations |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
@@ -288,8 +288,9 @@ artifact and the reproducibility receipt used to produce it.
 
 When the admitted `ResearchRunV1` is available, hosts should use
 `bind_provenance_receipt_for_run`. In addition to the artifact, project, Run,
-and evidence checks, this verifies that the receipt's project revision is the
-revision admitted for that Run. The compatibility method
+and evidence checks, this verifies that the receipt's project revision,
+provider, and random seed are the values admitted for that Run. The
+compatibility method
 `bind_provenance_receipt` intentionally keeps its original object-only
 semantics for older integrations.
 

@@ -67,8 +67,8 @@ raw model/tool output.
    `ResearchProvenanceReceiptV1`. Bind a finding to that receipt with
    `ResearchReviewFindingV1::bind_provenance_receipt_for_run`, passing the
    admitted `ResearchRunV1`; Code checks the exact project, Run, project
-   revision, artifact digest, and at least one retained input evidence digest
-   without interpreting the scientific rubric. The older
+   revision, provider, random seed, artifact digest, and at least one retained
+   input evidence digest without interpreting the scientific rubric. The older
    `bind_provenance_receipt` form remains available for callers that do not
    retain the admitted Run, but cannot perform the project-revision check.
 4. Run a host-selected evaluator through the generic Code evaluation
