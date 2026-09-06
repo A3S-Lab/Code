@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery lists the read-only operation. A repeated noisy-neighbor
   qualification confirms independent provider pools continue making progress
   while a blocked pool's waiters are cancelled and retained counters settle.
+- Added the versioned `model-generation-pool-health-v1` cross-SDK fixture.
+  Public Node.js, Python, and Go Session projections now share one bounded
+  redaction and aggregate contract; the opt-in Go bridge check exercises the
+  same contract through JSONL without retaining provider labels, credentials,
+  routing URLs, prompts, or request payloads.
 - Added bounded provider-pool health evidence. `TaskScheduler::quota_health`
   retains at most 64 recent digest-only quota epochs with admission, release,
   cancellation, rejection, peak, and wait-time counters. Sessions expose the

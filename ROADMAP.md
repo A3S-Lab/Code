@@ -495,12 +495,19 @@ cancellation, release, and bounded retention counters settle. No provider
 label, endpoint credential, prompt, output, or task label is added to scheduler
 state.
 
-The next admission slice is **P3/KRN-8 host qualification evidence**: exercise
-the common projection through real Node/Python/Go runtime fixtures and retain
-only bounded aggregate outcomes for release diagnostics. It must remain
-read-only metadata, avoid a second scheduler or metrics store, preserve the
-single Flow lease authority, and keep Gateway/host policy responsible for rate
-limits and billing.
+**P3/KRN-8 host qualification evidence is delivered.** The versioned
+`sdk/evaluation/model-generation-pool-health-v1.json` fixture is consumed by
+the public Node.js, Python, and Go Session surfaces. Each adapter checks the
+same digest-only identity, local reservation conservation, shared/local
+capacity bounds, bounded aggregate field set, and recursive redaction list;
+the Go adapter additionally exercises the real Rust JSONL bridge when
+`A3S_CODE_GO_BRIDGE_TEST_BINARY` is configured. The default fixture uses an
+unreachable endpoint and sentinel credential, so it makes no provider request
+and cannot turn a health read into a billing operation. Core's existing
+admission tests remain the authority for active, cancelled, released, and
+retained scheduler epochs. No second scheduler or metrics store was added;
+Flow remains the sole lease authority and Gateway/hosts own rate limits and
+billing.
 
 ### 3.4 Scoped capability program
 

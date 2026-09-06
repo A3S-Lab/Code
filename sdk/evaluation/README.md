@@ -49,6 +49,25 @@ The Node fixture gate is part of `npm test`. Python and Go collect the fixture
 contract in their normal test suites; their real-provider tests skip unless
 `A3S_REAL_EVAL_ROOT` is set.
 
+## Provider-pool health fixture
+
+[`model-generation-pool-health-v1.json`](model-generation-pool-health-v1.json)
+is the language-neutral contract for the read-only provider/model capacity
+projection. It locks the schema and identity fields, a maximum sample window,
+the aggregate fields that may be retained, and the field names that must never
+appear in diagnostics. Node.js and Python run the fixture through their public
+native Session APIs; Go runs it through the public SDK and also has an opt-in
+Rust bridge path via `A3S_CODE_GO_BRIDGE_TEST_BINARY`.
+
+Each runner samples no more than three observations in the default test,
+checks local reservation conservation and shared identity equality, and emits
+only bounded maxima/counters in its aggregate. The fixture deliberately uses
+an unreachable endpoint and a sentinel credential: no model request is made,
+and the sentinel can only be detected if a secret or routing value leaks into
+the returned diagnostic object. These tests qualify projection shape and
+redaction; scheduler admission, cancellation, and release behavior remain
+covered by Core's provider-pool tests.
+
 ## Real DeepSeek matrix
 
 Build the native SDK artifact required by the language under test. For Go,
