@@ -254,7 +254,7 @@ decides how to search, review, approve, retain, and publish results.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
-| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Twenty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
+| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, lifecycle validation, and bounded validated JSON helpers for review values | Thirty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, strict unknown-field rejection, and bounded wire recovery fail closed |
 | `RESEARCH-EXEC1` | Delivered | Host adapter qualification drives a research run through source capture, evidence append, create-only content-addressed artifact publication, and evaluator dispatch while retaining one Code Run identity; exact execution-target validation and explicit Run-aware Core-event projection are covered | `research_execution_qualification` passes restart/replay, cancellation terminality, contiguous evidence, artifact immutability, file-backed evaluator dispatch/result recovery, and exact Code/Use binding checks |
 | `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric; strict Run-aware evaluator/provenance/batch validation fences project-namespace, project-revision, provider, seed, evaluator identity, and evaluator/batch-evidence drift, and finding locations enforce one-based line/column coordinates | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, project-namespace, project-revision, provider, seed, evaluator identity, evaluator-evidence, provenance, batch-evidence, duplicate-id, partial-batch drift, and malformed source locations |
 
@@ -279,6 +279,11 @@ all findings, canonical finding ordering, and an updated batch digest after an
 explicit resolution or waiver. It remains a validation primitive: reviewer
 rubrics, severity thresholds, approval, retention, and publication stay with
 the host or Desktop.
+
+Review findings and batches expose bounded `from_slice`/`to_vec` helpers for
+process boundaries. These helpers reject oversized JSON and validate the full
+nested digest tree before a host can consume or publish a value; direct
+`serde` remains available for compatibility, but is not the admission path.
 
 Findings may additionally carry a provenance-receipt digest. The optional
 binding is backward compatible with legacy findings, but once present it is
