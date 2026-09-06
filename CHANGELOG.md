@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reviewer batch lifecycle qualification now reopens resolved and waived
+  findings from strict JSON and preserves terminal transition guards across a
+  process restart.
 - Research and evaluation identity fields now reject both trailing and embedded
   CR/LF line endings. Reviewer IDs, messages, locations, and evaluator targets
   therefore cannot cross a line-delimited boundary with an ambiguous shape.

@@ -47,7 +47,9 @@ Review findings start `open`; only `resolve` or `waive` with a content digest
 can close them. Optional source/artifact locations use one-based coordinates:
 line and column zero are rejected, and a column cannot appear without a line.
 A finding or run whose fields were changed without updating its digest is
-rejected before any transition can rebind the tampered value.
+rejected before any transition can rebind the tampered value. Serialized
+resolved and waived batches reopen with their terminal state and continue to
+reject every subsequent resolution transition.
 
 A `ResearchReviewBatchV1` may contain zero findings. This is the canonical
 representation of a clean reviewer result; the bound evaluator record remains
