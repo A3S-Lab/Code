@@ -116,6 +116,11 @@ impl ResearchReviewBatchV1 {
                 "evaluationRecord.target.runId",
             ));
         }
+        if record.result.evidence_digest != run.evidence_snapshot_digest {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evidenceDigest",
+            ));
+        }
         if record.result.evidence_digest != self.evidence_digest {
             return Err(ResearchContractError::InvalidField(
                 "evaluationRecord.evidenceDigest",
