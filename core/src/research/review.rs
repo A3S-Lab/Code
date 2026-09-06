@@ -608,6 +608,26 @@ mod tests {
             ),
             Err(ResearchContractError::InvalidField("location.column"))
         );
+
+        let zero_column = ResearchReviewLocationV1::new("report.md")
+            .unwrap()
+            .with_line(2, Some(0));
+        assert_eq!(
+            ResearchReviewFindingV1::new(
+                "finding-zero-column",
+                "project-1",
+                "run-1",
+                digest('a'),
+                ResearchReviewCategoryV1::Citation,
+                ResearchReviewSeverityV1::Warning,
+                "invalid location",
+                Some(zero_column),
+                vec![digest('b')],
+                "reviewer",
+                1,
+            ),
+            Err(ResearchContractError::InvalidField("location.column"))
+        );
     }
 
     #[test]
