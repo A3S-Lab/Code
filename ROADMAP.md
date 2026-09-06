@@ -259,6 +259,39 @@ small: it does not claim a complete project aggregate, scientific knowledge
 graph, package registry, or publication service. Those capabilities belong to
 the host, A3S Use, and Desktop phases in the cross-repository roadmap.
 
+### 3.4 Terminal-Bench reliability track
+
+Terminal-Bench is a verifier-driven qualification boundary, not a second Code
+runtime. The first-principles success condition is a monotonic chain:
+
+```text
+exact task bytes → admitted Run → bounded Tool effects → verifier evidence
+→ one typed terminal result
+```
+
+The earlier diagnostic runs exposed five concrete failure classes: a text-only
+`agent_end` with no useful workspace action, stream EOF after repeated retries,
+timed-out commands whose descendants continued running, terminal provider
+responses (notably billing/credential `4xx`) consuming retry budget, and
+partial local runs being mistaken for a leaderboard score. The implementation
+order below addresses those classes without introducing a benchmark-specific
+executor or moving verifier authority into Core.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `TB-BOUNDARY1` | Delivered | Harbor uploads the instruction byte-for-byte; the runner pins the writable General style, disables planning pre-analysis, and carries one monotonic run deadline into every command | Prompt, style, and deadline boundary tests pass; no task-specific prompt rewrite occurs |
+| `TB-TERMINAL1` | Delivered | The runner persists one atomic `a3s.code.terminal-bench-result.v1` record and fails closed on stream EOF, worker failure, deadline, or missing successful Tool evidence | Result JSON and adapter metadata classify outcome/reason without stderr scraping |
+| `TB-PROCESS1` | Delivered | Container commands use a bounded outer timeout and Unix process-group termination/reaping | A timed-out shell cannot leave descendants consuming the Harbor budget |
+| `TB-PROVIDER1` | Delivered | OpenAI, Anthropic, and Codex login clients preserve non-retryable provider/status metadata; the runner reports `provider_rejected` with bounded diagnostics | 4xx terminal responses do not fall back or retry; provider/status metadata survives the adapter boundary |
+| `TB-OUTPUT1` | Planned | Reuse the Core bounded head/tail capture semantics in the container adapter instead of buffering unbounded `wait_with_output` data | Hostile high-volume stdout/stderr remains within the tool output ceiling while preserving truncation accounting |
+| `TB-QUAL1` | Planned | Run a diagnostic task matrix first, then the complete tagged dataset with Harbor's native verifier result retained per trial | No missing verifier result, runner error, or local-only aggregate is counted as a pass or leaderboard score |
+
+The dependency order is `TB-BOUNDARY1 → TB-TERMINAL1 → TB-PROCESS1 →
+TB-PROVIDER1 → TB-OUTPUT1 → TB-QUAL1`. The Harbor environment owns task images,
+timeouts, artifacts, and verification; Code owns only the session loop and
+its typed evidence record. A benchmark adapter must not add a second retry
+loop, tool executor, or success definition.
+
 ### 3.3.1 Workflow result convergence
 
 Resumable orchestration now treats a workflow checkpoint as a side-effect
