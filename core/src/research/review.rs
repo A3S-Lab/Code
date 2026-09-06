@@ -176,6 +176,20 @@ impl ResearchReviewFindingV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON finding and validate its digest before returning
+    /// it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let finding: Self = super::decode_json_slice(bytes)?;
+        finding.validate()?;
+        Ok(finding)
+    }
+
+    /// Encode a validated finding for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     /// Bind this finding to the exact generic evaluation record that produced
     /// it. The host still owns the rubric and finding projection, while Code
     /// verifies that the evaluator, Run, and evidence identity cannot drift.
@@ -752,10 +766,18 @@ mod tests {
             Some(record.record_digest.as_str())
         );
         assert!(finding.validate().is_ok());
+        let encoded = finding.to_vec().unwrap();
+        let reopened = ResearchReviewFindingV1::from_slice(&encoded).unwrap();
+        assert_eq!(reopened, finding);
         let mut tampered = finding;
         tampered.evaluation_record_digest = Some(digest('f'));
         assert_eq!(
             tampered.validate(),
+            Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+        let tampered_wire = serde_json::to_vec(&tampered).unwrap();
+        assert_eq!(
+            ResearchReviewFindingV1::from_slice(&tampered_wire),
             Err(ResearchContractError::DigestMismatch("findingDigest"))
         );
     }

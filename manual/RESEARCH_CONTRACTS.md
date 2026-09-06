@@ -34,7 +34,9 @@ All IDs and text are bounded and reject both embedded and trailing CR/LF line
 endings at the Code boundary. Digests use the existing Code SHA-256 format.
 Maps and digest lists are canonicalized before identity calculation, and every
 value uses `deny_unknown_fields` so an older host cannot silently accept a
-newer shape.
+newer shape. Hosts crossing a process boundary should use each review value's
+bounded `from_slice`/`to_vec` helpers; those helpers enforce the 32 MiB wire
+limit and validate the complete digest tree before returning a value.
 
 ## Lifecycle and integrity
 

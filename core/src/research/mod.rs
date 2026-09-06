@@ -34,9 +34,33 @@ pub use run::{
     ResearchReproducibilityV1, ResearchRunStatusV1, ResearchRunV1, RESEARCH_RUN_SCHEMA_V1,
 };
 
+/// Maximum JSON payload accepted by the explicit research wire helpers.
+pub const RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const RESEARCH_MAX_ID_BYTES: usize = 256;
 pub(crate) const RESEARCH_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub(crate) const RESEARCH_MAX_DIGESTS: usize = 512;
+
+pub(crate) fn decode_json_slice<T>(bytes: &[u8]) -> Result<T, ResearchContractError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    if bytes.len() > RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES {
+        return Err(ResearchContractError::Encoding);
+    }
+    serde_json::from_slice(bytes)
+        .map_err(|error| ResearchContractError::Serialization(error.to_string()))
+}
+
+pub(crate) fn encode_json<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, ResearchContractError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| ResearchContractError::Serialization(error.to_string()))?;
+    if bytes.len() > RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES {
+        return Err(ResearchContractError::Encoding);
+    }
+    Ok(bytes)
+}
 
 pub(crate) fn validate_id(field: &'static str, value: &str) -> Result<(), ResearchContractError> {
     if value.is_empty()

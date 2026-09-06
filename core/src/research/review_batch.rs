@@ -100,6 +100,20 @@ impl ResearchReviewBatchV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON batch and validate every nested finding and
+    /// digest before returning it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let batch: Self = super::decode_json_slice(bytes)?;
+        batch.validate()?;
+        Ok(batch)
+    }
+
+    /// Encode a validated batch for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     /// Validate this batch against the admitted Run and exact evaluator
     /// record that the host intends to publish.
     pub fn validate_for_run(
@@ -422,14 +436,15 @@ mod tests {
         )
         .unwrap();
 
-        let encoded = serde_json::to_value(&batch).unwrap();
-        let reopened: ResearchReviewBatchV1 = serde_json::from_value(encoded.clone()).unwrap();
+        let encoded = batch.to_vec().unwrap();
+        let reopened = ResearchReviewBatchV1::from_slice(&encoded).unwrap();
         assert_eq!(reopened, batch);
         assert!(reopened.validate().is_ok());
 
-        let mut with_unknown_field = encoded;
+        let mut with_unknown_field: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         with_unknown_field["unexpected"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<ResearchReviewBatchV1>(with_unknown_field).is_err());
+        let with_unknown_field = serde_json::to_vec(&with_unknown_field).unwrap();
+        assert!(ResearchReviewBatchV1::from_slice(&with_unknown_field).is_err());
 
         let mut tampered = reopened;
         tampered.findings[0].message = "changed after publication".to_owned();
