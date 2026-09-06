@@ -256,7 +256,7 @@ decides how to search, review, approve, retain, and publish results.
 | --- | --- | --- | --- |
 | `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Twenty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
 | `RESEARCH-EXEC1` | Delivered | Host adapter qualification drives a research run through source capture, evidence append, create-only content-addressed artifact publication, and evaluator dispatch while retaining one Code Run identity; exact execution-target validation and explicit Run-aware Core-event projection are covered | `research_execution_qualification` passes restart/replay, cancellation terminality, contiguous evidence, artifact immutability, file-backed evaluator dispatch/result recovery, and exact Code/Use binding checks |
-| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to an immutable evaluator result without introducing a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, evidence, duplicate-id, or partial-batch drift |
+| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, evidence, provenance, duplicate-id, or partial-batch drift |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
@@ -279,6 +279,12 @@ all findings, canonical finding ordering, and an updated batch digest after an
 explicit resolution or waiver. It remains a validation primitive: reviewer
 rubrics, severity thresholds, approval, retention, and publication stay with
 the host or Desktop.
+
+Findings may additionally carry a provenance-receipt digest. The optional
+binding is backward compatible with legacy findings, but once present it is
+included in the finding digest and cannot be replaced without producing a new
+finding identity. This makes a reviewer observation address both the exact
+artifact and the reproducibility receipt used to produce it.
 
 ### 3.3.1 Workflow result convergence
 
