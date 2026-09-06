@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added schema-v2 integrity fencing for persistent zvec generations. Reopen
+  validates chunk payload digests, stable IDs, ranges, canonical digests, and
+  duplicate IDs; corrupted generations fail closed and are rebuilt from the
+  current catalog before query use.
 - Research review findings can now bind an optional immutable provenance
   receipt. Code rejects project, Run, artifact, and evidence-input drift while
   preserving legacy finding identities and keeping reviewer policy host-owned.
