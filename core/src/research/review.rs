@@ -238,8 +238,7 @@ impl ResearchReviewFindingV1 {
         run: &crate::research::ResearchRunV1,
     ) -> Result<Self, ResearchContractError> {
         self.validate()?;
-        run.validate()
-            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        run.validate_reviewable()?;
         if run.project_id != self.project_id {
             return Err(ResearchContractError::InvalidField("researchRun.projectId"));
         }
@@ -320,8 +319,7 @@ impl ResearchReviewFindingV1 {
         run: &crate::research::ResearchRunV1,
     ) -> Result<Self, ResearchContractError> {
         self.validate()?;
-        run.validate()
-            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        run.validate_reviewable()?;
         if run.project_id != self.project_id {
             return Err(ResearchContractError::InvalidField("researchRun.projectId"));
         }

@@ -108,8 +108,7 @@ impl ResearchReviewBatchV1 {
         record: &crate::evaluation::EvaluationRecordV1,
     ) -> Result<(), ResearchContractError> {
         self.validate()?;
-        run.validate()
-            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        run.validate_reviewable()?;
         record
             .validate()
             .map_err(|_| ResearchContractError::InvalidField("evaluationRecord"))?;
