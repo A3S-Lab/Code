@@ -29,6 +29,31 @@ pub struct ResearchReviewBatchV1 {
 }
 
 impl ResearchReviewBatchV1 {
+    /// Construct a batch against the admitted Run and exact evaluator record.
+    ///
+    /// The identity-only [`new`](Self::new) constructor remains available for
+    /// compatibility with callers that only have wire-level digests. New
+    /// reviewer pipelines should use this constructor so the project/run
+    /// namespace and evaluator evidence snapshot are closed at admission.
+    pub fn new_for_run(
+        batch_id: impl Into<String>,
+        run: &crate::research::ResearchRunV1,
+        record: &crate::evaluation::EvaluationRecordV1,
+        evidence_digest: impl Into<String>,
+        findings: Vec<ResearchReviewFindingV1>,
+    ) -> Result<Self, ResearchContractError> {
+        let batch = Self::new(
+            batch_id,
+            run.project_id.clone(),
+            run.run_id.clone(),
+            record.record_digest.clone(),
+            evidence_digest,
+            findings,
+        )?;
+        batch.validate_for_run(run, record)?;
+        Ok(batch)
+    }
+
     pub fn new(
         batch_id: impl Into<String>,
         project_id: impl Into<String>,
@@ -58,6 +83,43 @@ impl ResearchReviewBatchV1 {
         validate_digest_field("batchDigest", &self.batch_digest)?;
         if self.batch_digest != self.expected_digest()? {
             return Err(ResearchContractError::DigestMismatch("batchDigest"));
+        }
+        Ok(())
+    }
+
+    /// Validate this batch against the admitted Run and exact evaluator
+    /// record that the host intends to publish.
+    pub fn validate_for_run(
+        &self,
+        run: &crate::research::ResearchRunV1,
+        record: &crate::evaluation::EvaluationRecordV1,
+    ) -> Result<(), ResearchContractError> {
+        self.validate()?;
+        run.validate()
+            .map_err(|_| ResearchContractError::InvalidField("researchRun"))?;
+        record
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("evaluationRecord"))?;
+        if run.project_id != self.project_id {
+            return Err(ResearchContractError::InvalidField("researchRun.projectId"));
+        }
+        if run.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField("researchRun.runId"));
+        }
+        if record.record_digest != self.evaluation_record_digest {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.recordDigest",
+            ));
+        }
+        if record.result.target.run_id != run.run_id {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.target.runId",
+            ));
+        }
+        if record.result.evidence_digest != self.evidence_digest {
+            return Err(ResearchContractError::InvalidField(
+                "evaluationRecord.evidenceDigest",
+            ));
         }
         Ok(())
     }

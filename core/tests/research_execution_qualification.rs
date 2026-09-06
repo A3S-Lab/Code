@@ -606,20 +606,56 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         ))
     );
 
-    let batch = ResearchReviewBatchV1::new(
+    let batch = ResearchReviewBatchV1::new_for_run(
         "research-review-batch-1",
-        "research-project",
-        &run.id,
-        reopened_record.record_digest.clone(),
+        &research,
+        &reopened_record,
         evidence.snapshot_digest.clone(),
         vec![finding],
     )
     .unwrap();
     assert!(batch.validate().is_ok());
+    assert!(batch.validate_for_run(&research, &reopened_record).is_ok());
     assert_eq!(batch.findings[0].status, ResearchReviewStatusV1::Open);
     assert_eq!(
         batch.findings[0].provenance_receipt_digest.as_deref(),
         Some(reopened_receipt.receipt_digest.as_str())
+    );
+
+    let alternate_evidence_digest = digest_bytes("research-review-evidence", b"different");
+    let mixed_evidence_finding = ResearchReviewFindingV1::new(
+        "finding-mixed-evidence",
+        "research-project",
+        &run.id,
+        reference.content_digest.clone(),
+        ResearchReviewCategoryV1::Reproducibility,
+        ResearchReviewSeverityV1::Warning,
+        "The batch evidence must match the evaluator record.",
+        None,
+        vec![
+            evidence.snapshot_digest.clone(),
+            alternate_evidence_digest.clone(),
+        ],
+        "research-reviewer",
+        61_009,
+    )
+    .unwrap()
+    .bind_evaluation_record_for_run(&reopened_record, &research)
+    .unwrap();
+    let mixed_evidence_batch = ResearchReviewBatchV1::new(
+        "research-review-batch-mixed-evidence",
+        "research-project",
+        &run.id,
+        reopened_record.record_digest.clone(),
+        alternate_evidence_digest,
+        vec![mixed_evidence_finding],
+    )
+    .unwrap();
+    assert_eq!(
+        mixed_evidence_batch.validate_for_run(&research, &reopened_record),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "evaluationRecord.evidenceDigest"
+        ))
     );
 }
 
