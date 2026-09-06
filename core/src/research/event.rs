@@ -56,6 +56,20 @@ impl ResearchEventV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON research event and validate its identity before
+    /// returning it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let event: Self = super::decode_json_slice(bytes)?;
+        event.validate()?;
+        Ok(event)
+    }
+
+    /// Encode a validated research event for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     /// Project one Core event into the research event view.
     ///
     /// Core evidence cursors are zero-based because they align with retained
@@ -206,10 +220,12 @@ mod tests {
         )
         .unwrap();
         assert!(event.validate().is_ok());
+        let encoded = event.to_vec().unwrap();
+        assert_eq!(ResearchEventV1::from_slice(&encoded).unwrap(), event);
 
         let mut encoded = serde_json::to_value(&event).unwrap();
         encoded["unexpected"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<ResearchEventV1>(encoded).is_err());
+        assert!(ResearchEventV1::from_slice(&serde_json::to_vec(&encoded).unwrap()).is_err());
     }
 
     #[test]
