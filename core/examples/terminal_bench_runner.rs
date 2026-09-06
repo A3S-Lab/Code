@@ -54,6 +54,12 @@ fn parse_args() -> Result<Args> {
     let mut codex_reasoning_effort = None;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy();
+        if matches!(flag.as_ref(), "--help" | "-h") {
+            println!(
+                "usage: terminal_bench_runner --config PATH --workspace PATH --prompt-file PATH [--result-file PATH --max-execution-time-ms MS --codex-auth PATH --codex-model MODEL --codex-reasoning-effort EFFORT]"
+            );
+            std::process::exit(0);
+        }
         let value = args
             .next()
             .with_context(|| format!("missing value for {flag}"))?;
@@ -75,12 +81,6 @@ fn parse_args() -> Result<Args> {
             "--codex-model" => codex_model = Some(value.to_string_lossy().into_owned()),
             "--codex-reasoning-effort" => {
                 codex_reasoning_effort = Some(value.to_string_lossy().into_owned())
-            }
-            "--help" | "-h" => {
-                println!(
-                    "usage: terminal_bench_runner --config PATH --workspace PATH --prompt-file PATH [--result-file PATH --max-execution-time-ms MS --codex-auth PATH --codex-model MODEL --codex-reasoning-effort EFFORT]"
-                );
-                std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument {other}"),
         }

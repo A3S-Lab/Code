@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exposed the bounded `RetryExhaustedError` projection through the LLM API so
   host adapters can classify exhaustion and retain its HTTP status without
   parsing diagnostics.
+- Fixed the headless Terminal-Bench runner's standalone `--help` path so it
+  does not require a spurious flag value.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
