@@ -283,7 +283,7 @@ executor or moving verifier authority into Core.
 | `TB-TERMINAL1` | Delivered | The runner persists one atomic `a3s.code.terminal-bench-result.v1` record and fails closed on stream EOF, worker failure, deadline, or missing successful Tool evidence | Result JSON and adapter metadata classify outcome/reason without stderr scraping |
 | `TB-PROCESS1` | Delivered | Container commands use a bounded outer timeout and Unix process-group termination/reaping | A timed-out shell cannot leave descendants consuming the Harbor budget |
 | `TB-PROVIDER1` | Delivered | OpenAI, Anthropic, and Codex login clients preserve non-retryable provider/status metadata; the runner reports `provider_rejected` with bounded diagnostics | 4xx terminal responses do not fall back or retry; provider/status metadata survives the adapter boundary |
-| `TB-OUTPUT1` | Planned | Reuse the Core bounded head/tail capture semantics in the container adapter instead of buffering unbounded `wait_with_output` data | Hostile high-volume stdout/stderr remains within the tool output ceiling while preserving truncation accounting |
+| `TB-OUTPUT1` | Delivered | The container adapter reuses the Core bounded head/tail capture semantics instead of buffering unbounded `wait_with_output` data | Hostile high-volume stdout/stderr remains within the tool output ceiling while preserving truncation accounting |
 | `TB-QUAL1` | Planned | Run a diagnostic task matrix first, then the complete tagged dataset with Harbor's native verifier result retained per trial | No missing verifier result, runner error, or local-only aggregate is counted as a pass or leaderboard score |
 
 The dependency order is `TB-BOUNDARY1 → TB-TERMINAL1 → TB-PROCESS1 →
