@@ -105,6 +105,11 @@ pub struct ResearchReviewFindingV1 {
     /// findings created before evaluator-result binding was available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluation_record_digest: Option<String>,
+    /// Optional digest of the immutable provenance receipt for the reviewed
+    /// artifact.  It is optional for compatibility with findings created
+    /// before provenance binding was available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_receipt_digest: Option<String>,
     pub observed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_digest: Option<String>,
@@ -142,6 +147,7 @@ impl ResearchReviewFindingV1 {
             evidence_digests,
             evaluator_id: evaluator_id.into(),
             evaluation_record_digest: None,
+            provenance_receipt_digest: None,
             observed_at_ms,
             resolution_digest: None,
             finding_digest: String::new(),
@@ -194,6 +200,51 @@ impl ResearchReviewFindingV1 {
             ));
         }
         self.evaluation_record_digest = Some(record.record_digest.clone());
+        self.finding_digest = self.expected_digest()?;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Bind this finding to the exact provenance receipt for its artifact.
+    ///
+    /// A provenance receipt is host-produced, but Code can still reject an
+    /// artifact/project/Run mismatch and require that the finding retain one
+    /// of the receipt's input evidence digests.  This keeps reviewer policy
+    /// outside Core while preventing a valid receipt from being attached to a
+    /// different scientific object.
+    pub fn bind_provenance_receipt(
+        mut self,
+        receipt: &crate::research::ResearchProvenanceReceiptV1,
+    ) -> Result<Self, ResearchContractError> {
+        self.validate()?;
+        receipt
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("provenanceReceipt"))?;
+        if receipt.project_id != self.project_id {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.projectId",
+            ));
+        }
+        if receipt.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.runId",
+            ));
+        }
+        if receipt.artifact_digest != self.artifact_digest {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.artifactDigest",
+            ));
+        }
+        if !receipt
+            .input_digests
+            .iter()
+            .any(|digest| self.evidence_digests.binary_search(digest).is_ok())
+        {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.inputDigests",
+            ));
+        }
+        self.provenance_receipt_digest = Some(receipt.receipt_digest.clone());
         self.finding_digest = self.expected_digest()?;
         self.validate()?;
         Ok(self)
@@ -277,6 +328,9 @@ impl ResearchReviewFindingV1 {
         if let Some(evaluation_record_digest) = &self.evaluation_record_digest {
             validate_digest_field("evaluationRecordDigest", evaluation_record_digest)?;
         }
+        if let Some(provenance_receipt_digest) = &self.provenance_receipt_digest {
+            validate_digest_field("provenanceReceiptDigest", provenance_receipt_digest)?;
+        }
         Ok(())
     }
 
@@ -299,6 +353,46 @@ impl ResearchReviewFindingV1 {
             resolution_digest: Option<&'a str>,
         }
         let Some(evaluation_record_digest) = self.evaluation_record_digest.as_deref() else {
+            if let Some(provenance_receipt_digest) = self.provenance_receipt_digest.as_deref() {
+                #[derive(Serialize)]
+                struct ProvenanceBoundIdentity<'a> {
+                    schema: &'a str,
+                    finding_id: &'a str,
+                    project_id: &'a str,
+                    run_id: &'a str,
+                    artifact_digest: &'a str,
+                    category: ResearchReviewCategoryV1,
+                    severity: ResearchReviewSeverityV1,
+                    status: ResearchReviewStatusV1,
+                    message: &'a str,
+                    location: &'a Option<ResearchReviewLocationV1>,
+                    evidence_digests: &'a [String],
+                    evaluator_id: &'a str,
+                    provenance_receipt_digest: &'a str,
+                    observed_at_ms: u64,
+                    resolution_digest: Option<&'a str>,
+                }
+                return digest(
+                    RESEARCH_REVIEW_FINDING_DIGEST_DOMAIN,
+                    &ProvenanceBoundIdentity {
+                        schema: &self.schema,
+                        finding_id: &self.finding_id,
+                        project_id: &self.project_id,
+                        run_id: &self.run_id,
+                        artifact_digest: &self.artifact_digest,
+                        category: self.category,
+                        severity: self.severity,
+                        status: self.status,
+                        message: &self.message,
+                        location: &self.location,
+                        evidence_digests: &self.evidence_digests,
+                        evaluator_id: &self.evaluator_id,
+                        provenance_receipt_digest,
+                        observed_at_ms: self.observed_at_ms,
+                        resolution_digest: self.resolution_digest.as_deref(),
+                    },
+                );
+            }
             return digest(
                 RESEARCH_REVIEW_FINDING_DIGEST_DOMAIN,
                 &LegacyIdentity {
@@ -319,6 +413,47 @@ impl ResearchReviewFindingV1 {
                 },
             );
         };
+        let Some(provenance_receipt_digest) = self.provenance_receipt_digest.as_deref() else {
+            #[derive(Serialize)]
+            struct BoundIdentity<'a> {
+                schema: &'a str,
+                finding_id: &'a str,
+                project_id: &'a str,
+                run_id: &'a str,
+                artifact_digest: &'a str,
+                category: ResearchReviewCategoryV1,
+                severity: ResearchReviewSeverityV1,
+                status: ResearchReviewStatusV1,
+                message: &'a str,
+                location: &'a Option<ResearchReviewLocationV1>,
+                evidence_digests: &'a [String],
+                evaluator_id: &'a str,
+                evaluation_record_digest: &'a str,
+                observed_at_ms: u64,
+                resolution_digest: Option<&'a str>,
+            }
+            return digest(
+                RESEARCH_REVIEW_FINDING_DIGEST_DOMAIN,
+                &BoundIdentity {
+                    schema: &self.schema,
+                    finding_id: &self.finding_id,
+                    project_id: &self.project_id,
+                    run_id: &self.run_id,
+                    artifact_digest: &self.artifact_digest,
+                    category: self.category,
+                    severity: self.severity,
+                    status: self.status,
+                    message: &self.message,
+                    location: &self.location,
+                    evidence_digests: &self.evidence_digests,
+                    evaluator_id: &self.evaluator_id,
+                    evaluation_record_digest,
+                    observed_at_ms: self.observed_at_ms,
+                    resolution_digest: self.resolution_digest.as_deref(),
+                },
+            );
+        };
+
         #[derive(Serialize)]
         struct BoundIdentity<'a> {
             schema: &'a str,
@@ -334,6 +469,7 @@ impl ResearchReviewFindingV1 {
             evidence_digests: &'a [String],
             evaluator_id: &'a str,
             evaluation_record_digest: &'a str,
+            provenance_receipt_digest: &'a str,
             observed_at_ms: u64,
             resolution_digest: Option<&'a str>,
         }
@@ -353,6 +489,7 @@ impl ResearchReviewFindingV1 {
                 evidence_digests: &self.evidence_digests,
                 evaluator_id: &self.evaluator_id,
                 evaluation_record_digest,
+                provenance_receipt_digest,
                 observed_at_ms: self.observed_at_ms,
                 resolution_digest: self.resolution_digest.as_deref(),
             },
@@ -458,6 +595,118 @@ mod tests {
         assert_eq!(
             tampered.validate(),
             Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
+
+    #[test]
+    fn finding_binds_the_exact_artifact_provenance_without_importing_policy() {
+        let evidence_digest = digest('b');
+        let receipt = crate::research::ResearchProvenanceReceiptV1::new(
+            "project-1",
+            4,
+            "run-1",
+            "figure-1",
+            crate::research::ResearchArtifactKindV1::Figure,
+            digest('a'),
+            vec![evidence_digest.clone(), digest('c')],
+            digest('d'),
+            digest('e'),
+            digest('f'),
+            "fixture-provider",
+            Some(digest('1')),
+            Some(7),
+            Some(digest('2')),
+        )
+        .unwrap();
+        let finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::FigureCode,
+            ResearchReviewSeverityV1::Warning,
+            "Figure provenance must remain reproducible.",
+            None,
+            vec![evidence_digest],
+            "reproducibility-reviewer",
+            8,
+        )
+        .unwrap()
+        .bind_provenance_receipt(&receipt)
+        .unwrap();
+
+        assert_eq!(
+            finding.provenance_receipt_digest.as_deref(),
+            Some(receipt.receipt_digest.as_str())
+        );
+        assert!(finding.validate().is_ok());
+        let mut tampered = finding;
+        tampered.provenance_receipt_digest = Some(digest('9'));
+        assert_eq!(
+            tampered.validate(),
+            Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
+
+    #[test]
+    fn finding_rejects_provenance_from_another_artifact_or_evidence_window() {
+        let receipt = crate::research::ResearchProvenanceReceiptV1::new(
+            "project-1",
+            4,
+            "run-1",
+            "figure-1",
+            crate::research::ResearchArtifactKindV1::Figure,
+            digest('a'),
+            vec![digest('b')],
+            digest('c'),
+            digest('d'),
+            digest('e'),
+            "fixture-provider",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let other_artifact = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('f'),
+            ResearchReviewCategoryV1::FigureCode,
+            ResearchReviewSeverityV1::Warning,
+            "wrong artifact",
+            None,
+            vec![digest('b')],
+            "reviewer",
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            other_artifact.bind_provenance_receipt(&receipt),
+            Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.artifactDigest"
+            ))
+        );
+
+        let other_evidence = ResearchReviewFindingV1::new(
+            "finding-2",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::FigureCode,
+            ResearchReviewSeverityV1::Warning,
+            "wrong evidence",
+            None,
+            vec![digest('f')],
+            "reviewer",
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            other_evidence.bind_provenance_receipt(&receipt),
+            Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.inputDigests"
+            ))
         );
     }
 

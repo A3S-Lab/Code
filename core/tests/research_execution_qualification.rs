@@ -466,6 +466,8 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         61_004,
     )
     .unwrap()
+    .bind_provenance_receipt(&reopened_receipt)
+    .unwrap()
     .bind_evaluation_record(&reopened_record)
     .unwrap();
     let batch = ResearchReviewBatchV1::new(
@@ -479,6 +481,10 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
     .unwrap();
     assert!(batch.validate().is_ok());
     assert_eq!(batch.findings[0].status, ResearchReviewStatusV1::Open);
+    assert_eq!(
+        batch.findings[0].provenance_receipt_digest.as_deref(),
+        Some(reopened_receipt.receipt_digest.as_str())
+    );
 }
 
 #[tokio::test]

@@ -26,7 +26,7 @@ interpret a review finding as approval.
 | `ResearchRunV1` | `a3s.code.research-run.v1` | Binds project revision, source/evidence snapshots, Code/Use capability identity, provider/model, reproducibility promise, and lifecycle status. |
 | `ResearchEvidenceFactV1` | `a3s.code.evidence-fact.v1` | Append-only, digest-only observation with a monotonic sequence and bounded metadata. |
 | `ResearchProvenanceReceiptV1` | `a3s.code.provenance-receipt.v1` | Binds an artifact to its inputs, workflow, code, environment, provider, optional model/seed, and validation output. |
-| `ResearchReviewFindingV1` | `a3s.code.review-finding.v1` | Bounded host-produced observation linked to exact artifact and evidence digests; an optional immutable evaluation-record binding prevents evaluator, Run, or evidence drift; resolution and waiver are explicit lifecycle transitions. |
+| `ResearchReviewFindingV1` | `a3s.code.review-finding.v1` | Bounded host-produced observation linked to exact artifact and evidence digests; optional immutable provenance-receipt and evaluation-record bindings prevent artifact, evaluator, Run, or evidence drift; resolution and waiver are explicit lifecycle transitions. |
 | `ResearchReviewBatchV1` | `a3s.code.review-batch.v1` | Bounded immutable projection of one evaluator result into findings; all findings share the same project, Run, evaluation record, and evidence snapshot. |
 | `ResearchEventV1` | `a3s.code.science-event.v1` | Digest-only project/run event projection for Desktop and other hosts. |
 
@@ -62,7 +62,10 @@ raw model/tool output.
    Use `ResearchEventV1::from_core_event_for_run` when adapting Core events so
    an opaque operation id cannot be mistaken for the bare Run id.
 3. Materialize each output as a content-addressed artifact and publish a
-   `ResearchProvenanceReceiptV1`.
+   `ResearchProvenanceReceiptV1`. Bind a finding to that receipt with
+   `ResearchReviewFindingV1::bind_provenance_receipt`; Code checks the exact
+   project, Run, artifact digest, and at least one retained input evidence
+   digest without interpreting the scientific rubric.
 4. Run a host-selected evaluator through the generic Code evaluation
    substrate, then project its bounded observations into
    `ResearchReviewFindingV1` values. Bind each finding to the exact

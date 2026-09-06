@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Research review findings can now bind an optional immutable provenance
+  receipt. Code rejects project, Run, artifact, and evidence-input drift while
+  preserving legacy finding identities and keeping reviewer policy host-owned.
 - Added cross-host provider-pool health consumption. Node.js, Python, and Go
   sessions expose the same secret-free local/shared projection (the Go JSONL
   bridge advertises `session_model_generation_pool_health`), and capability
