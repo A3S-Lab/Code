@@ -254,15 +254,24 @@ decides how to search, review, approve, retain, and publish results.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
-| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Eleven focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
+| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Thirteen focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
 | `RESEARCH-EXEC1` | Planned | Host adapter that drives a research run through source capture, evidence append, artifact publication, and evaluator dispatch while retaining one Code Run identity | Integration tests prove restart, cancellation, contiguous evidence, artifact immutability, and exact Code/Use binding across a real workspace |
-| `RESEARCH-REVIEW1` | Planned | Host-owned reviewer composition over the generic evaluation substrate, projecting bounded findings and human decisions without a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral |
+| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding to an immutable evaluator result without introducing a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, or evidence drift |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
 small: it does not claim a complete project aggregate, scientific knowledge
 graph, package registry, or publication service. Those capabilities belong to
 the host, A3S Use, and Desktop phases in the cross-repository roadmap.
+
+The first reviewer-composition mechanism is now Code-owned: a
+`ResearchReviewFindingV1` can bind the exact immutable `EvaluationRecordV1`
+that produced it. The binding checks evaluator identity, parent Run identity,
+and inclusion of the evaluator's evidence snapshot digest, while preserving an
+`open` finding status until the host applies its rubric and an explicit human or
+policy resolution. Existing unbound v1 findings remain readable with their
+legacy digest identity; new bindings use a digest that includes the evaluator
+record, so result replacement cannot masquerade as the same finding.
 
 ### 3.3.1 Workflow result convergence
 

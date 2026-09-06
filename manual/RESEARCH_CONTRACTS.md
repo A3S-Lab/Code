@@ -26,7 +26,7 @@ interpret a review finding as approval.
 | `ResearchRunV1` | `a3s.code.research-run.v1` | Binds project revision, source/evidence snapshots, Code/Use capability identity, provider/model, reproducibility promise, and lifecycle status. |
 | `ResearchEvidenceFactV1` | `a3s.code.evidence-fact.v1` | Append-only, digest-only observation with a monotonic sequence and bounded metadata. |
 | `ResearchProvenanceReceiptV1` | `a3s.code.provenance-receipt.v1` | Binds an artifact to its inputs, workflow, code, environment, provider, optional model/seed, and validation output. |
-| `ResearchReviewFindingV1` | `a3s.code.review-finding.v1` | Bounded host-produced observation linked to exact artifact and evidence digests; resolution and waiver are explicit lifecycle transitions. |
+| `ResearchReviewFindingV1` | `a3s.code.review-finding.v1` | Bounded host-produced observation linked to exact artifact and evidence digests; an optional immutable evaluation-record binding prevents evaluator, Run, or evidence drift; resolution and waiver are explicit lifecycle transitions. |
 | `ResearchEventV1` | `a3s.code.science-event.v1` | Digest-only project/run event projection for Desktop and other hosts. |
 
 All IDs and text are bounded. Digests use the existing Code SHA-256 format.
@@ -60,7 +60,9 @@ raw model/tool output.
    `ResearchProvenanceReceiptV1`.
 4. Run a host-selected evaluator through the generic Code evaluation
    substrate, then project its bounded observations into
-   `ResearchReviewFindingV1` values.
+   `ResearchReviewFindingV1` values. Bind each finding to the exact
+   `EvaluationRecordV1` with `bind_evaluation_record`; Code verifies that the
+   evaluator, Run, and evidence snapshot match before accepting the binding.
 5. Let the host apply its rubric, human approval, retention, and publication
    policy; Code only validates the supplied identities and lifecycle.
 
