@@ -114,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid UTF-8, and made token-budget accounting saturating across providers,
   result aggregation, and source-aware assembly so hostile metadata cannot
   panic a prompt build or wrap its limits.
+- Escaped context sources and text at the XML prompt boundary, preventing
+  provider-controlled attributes or markup from changing the context envelope.
 
 ## [8.2.0] - 2026-09-04
 

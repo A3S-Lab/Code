@@ -312,7 +312,7 @@ impl ContextItem {
         let source_attr = self
             .source
             .as_ref()
-            .map(|s| format!(" source=\"{}\"", s))
+            .map(|s| format!(" source=\"{}\"", escape_xml_attribute(s)))
             .unwrap_or_default();
         let type_str = match self.context_type {
             ContextType::Memory => "Memory",
@@ -321,9 +321,37 @@ impl ContextItem {
         };
         format!(
             "<context{} type=\"{}\">\n{}\n</context>",
-            source_attr, type_str, self.content
+            source_attr,
+            type_str,
+            escape_xml_text(&self.content)
         )
     }
+}
+
+fn escape_xml_attribute(value: &str) -> String {
+    value.chars().fold(String::new(), |mut escaped, character| {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(character),
+        }
+        escaped
+    })
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value.chars().fold(String::new(), |mut escaped, character| {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(character),
+        }
+        escaped
+    })
 }
 
 fn metadata_score(value: Option<&serde_json::Value>) -> f32 {
@@ -657,6 +685,21 @@ mod tests {
         assert_eq!(
             xml,
             "<context source=\"viking://docs/auth\" type=\"Memory\">\nMemory content\n</context>"
+        );
+    }
+
+    #[test]
+    fn test_context_item_to_xml_escapes_untrusted_source_and_content() {
+        let item = ContextItem::new(
+            "item",
+            ContextType::Resource,
+            "<directive>& keep \"quotes\"",
+        )
+        .with_source("provider://a\"&b<c>");
+
+        assert_eq!(
+            item.to_xml(),
+            "<context source=\"provider://a&quot;&amp;b&lt;c&gt;\" type=\"Resource\">\n&lt;directive&gt;&amp; keep \"quotes\"\n</context>"
         );
     }
 
