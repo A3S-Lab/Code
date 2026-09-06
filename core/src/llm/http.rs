@@ -536,7 +536,15 @@ mod tests {
                 .await;
         });
 
-        let client = ReqwestHttpClient::with_timeout(Duration::from_millis(50)).unwrap();
+        // A localhost timeout must exercise reqwest's request deadline, not a
+        // developer/CI HTTP proxy. Build the client while holding the same
+        // environment lock as the proxy configuration tests, then release the
+        // lock before awaiting the network operation.
+        let client = {
+            let _guard = proxy_env_lock().lock().unwrap();
+            clear_proxy_env();
+            ReqwestHttpClient::with_timeout(Duration::from_millis(50)).unwrap()
+        };
         let started = std::time::Instant::now();
         let err = match client
             .post(
