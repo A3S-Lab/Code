@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened the native Harness admission boundary to reject empty workspace
   paths before creating or loading a session, preventing accidental current-
   directory sharing.
+- Hardened ordinary Harness recovery to load only an existing persisted
+  Session; missing checkpoints no longer publish an empty ghost Session.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,
