@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Research and evaluation identity fields now reject both trailing and embedded
+  CR/LF line endings. Reviewer IDs, messages, locations, and evaluator targets
+  therefore cannot cross a line-delimited boundary with an ambiguous shape.
 - Reviewer finding locations now reject zero-based or orphaned coordinates;
   optional columns require a one-based line so citation and figure/code links
   cannot carry ambiguous source positions.

@@ -30,7 +30,8 @@ interpret a review finding as approval.
 | `ResearchReviewBatchV1` | `a3s.code.review-batch.v1` | Bounded immutable projection of one evaluator result into findings; all findings share the same project, Run, evaluation record, and evidence snapshot. |
 | `ResearchEventV1` | `a3s.code.science-event.v1` | Digest-only project/run event projection for Desktop and other hosts. |
 
-All IDs and text are bounded. Digests use the existing Code SHA-256 format.
+All IDs and text are bounded and reject both embedded and trailing CR/LF line
+endings at the Code boundary. Digests use the existing Code SHA-256 format.
 Maps and digest lists are canonicalized before identity calculation, and every
 value uses `deny_unknown_fields` so an older host cannot silently accept a
 newer shape.
