@@ -23,6 +23,7 @@ pub(super) enum TerminalReason {
     StartupFailed,
     ExecutionFailed,
     EvidenceMissing,
+    ProviderRejected,
     ProviderExhausted,
     DeadlineExceeded,
 }
@@ -209,6 +210,18 @@ pub(super) fn classify_failure(
             TerminalReason::DeadlineExceeded,
         );
     }
+    // Provider clients preserve terminal HTTP responses as a typed error. Do
+    // not infer this class from rendered text: bodies are bounded and may be
+    // localized or omit the word "provider" entirely.
+    if error
+        .downcast_ref::<a3s_code_core::llm::NonRetryableLlmError>()
+        .is_some()
+    {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderRejected,
+        );
+    }
     if message.contains("circuit breaker") || message.contains("provider") {
         return (
             ExecutionResultOutcomeV1::Failed,
@@ -291,6 +304,17 @@ mod tests {
         let (outcome, reason) = classify_failure(&progress, &error);
         assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
         assert!(matches!(reason, TerminalReason::EvidenceMissing));
+    }
+
+    #[test]
+    fn typed_provider_response_is_classified_without_text_matching() {
+        let progress = RunProgress::new();
+        let error = anyhow::Error::new(a3s_code_core::llm::NonRetryableLlmError::from_status(
+            "openai", 402, "quota",
+        ));
+        let (outcome, reason) = classify_failure(&progress, &error);
+        assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+        assert!(matches!(reason, TerminalReason::ProviderRejected));
     }
 
     #[test]

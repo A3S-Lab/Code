@@ -201,11 +201,12 @@ impl AnthropicClient {
                                     retry_after: None,
                                 }
                             } else {
-                                AttemptOutcome::Fatal(anyhow::anyhow!(
-                                    "Anthropic API error at {} ({}): {}",
-                                    url,
-                                    status,
-                                    resp.body
+                                AttemptOutcome::Fatal(anyhow::Error::new(
+                                    crate::llm::NonRetryableLlmError::from_status(
+                                        &self.provider_name,
+                                        status.as_u16(),
+                                        format!("at {url}: {}", resp.body),
+                                    ),
                                 ))
                             }
                         }
@@ -404,11 +405,12 @@ impl AnthropicClient {
                                 retry_after,
                             }
                         } else {
-                            AttemptOutcome::Fatal(anyhow::anyhow!(
-                                "Anthropic API error at {} ({}): {}",
-                                url,
-                                status,
-                                resp.error_body
+                            AttemptOutcome::Fatal(anyhow::Error::new(
+                                crate::llm::NonRetryableLlmError::from_status(
+                                    &self.provider_name,
+                                    status.as_u16(),
+                                    format!("at {url}: {}", resp.error_body),
+                                ),
                             ))
                         }
                     }

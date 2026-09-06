@@ -190,6 +190,19 @@ impl LlmClient for CodexLoginClient {
             .post_streaming(&url, headers, &body, cancel_token)
             .await?;
         if !(200..300).contains(&response.status) {
+            // Authentication, authorization, request-shape, and billing
+            // failures cannot be repaired by replaying the same Responses
+            // request. Preserve the status as a typed terminal error so the
+            // outer Agent loop does not turn a 402/401 into repeated calls.
+            if matches!(response.status, 400 | 401 | 402 | 403 | 404) {
+                return Err(anyhow::Error::new(
+                    crate::llm::NonRetryableLlmError::from_status(
+                        "codex",
+                        response.status,
+                        response.error_body,
+                    ),
+                ));
+            }
             return Err(anyhow!(
                 "codex /responses HTTP {}: {}",
                 response.status,

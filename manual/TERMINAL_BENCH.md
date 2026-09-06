@@ -63,3 +63,9 @@ different deadline, leaving enough margin for result persistence. A benchmark
 run that emits `agent_end` without any successful Tool execution is reported as
 `failed/evidence_missing`; this prevents a text-only response from being
 counted as a valid artifact-producing run.
+
+Provider HTTP responses that are not retryable are represented as typed
+terminal errors at the Core boundary. The report classifies these as
+`failed/provider_rejected` and retains only bounded diagnostic text, so an
+account, credential, or request-shape failure cannot consume the run budget via
+blind retries.

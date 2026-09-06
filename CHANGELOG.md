@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a Terminal-Bench evidence gate: an `agent_end` without a successful
   Tool execution is downgraded to `failed/evidence_missing`, and the report
   records successful Tool and artifact-evidence counters.
+- Added typed terminal provider-status errors for OpenAI, Anthropic, and Codex
+  login clients. Non-retryable HTTP responses retain their provider and status
+  metadata, are bounded before entering diagnostics, and are classified as
+  `provider_rejected` instead of being retried or inferred from error text.
 - Added identity-bound workflow result convergence. Resumable workflow
   checkpoints and Flow decision ledgers now persist bounded, digest-only
   terminal receipts, fence stale workers across claim/renew/complete/release,

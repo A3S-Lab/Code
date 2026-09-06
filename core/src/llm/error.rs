@@ -7,18 +7,63 @@ use thiserror::Error;
 /// The message must be safe to show directly to an end user. Provider clients
 /// should use this only for precise terminal conditions, such as an exhausted
 /// account quota, and not for ordinary transient rate limits.
+const MAX_PROVIDER_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+
 #[derive(Debug, Error)]
 #[error("{message}")]
 pub struct NonRetryableLlmError {
     message: String,
+    provider: Option<String>,
+    status: Option<u16>,
 }
 
 impl NonRetryableLlmError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: bound_message(message.into()),
+            provider: None,
+            status: None,
         }
     }
+
+    /// Construct a terminal provider response without relying on rendered
+    /// error text for retry decisions. The response body is bounded because
+    /// provider gateways may return arbitrarily large diagnostic payloads.
+    pub fn from_status(provider: impl Into<String>, status: u16, body: impl Into<String>) -> Self {
+        let provider = provider.into();
+        let mut error = Self::new(format!(
+            "{provider} API returned HTTP {status}: {}",
+            body.into()
+        ));
+        error.provider = Some(provider);
+        error.status = Some(status);
+        error
+    }
+
+    /// Provider label, when the error came from an HTTP response.
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
+    }
+
+    /// HTTP status, when the error came from an HTTP response.
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+}
+
+fn bound_message(message: String) -> String {
+    if message.len() <= MAX_PROVIDER_ERROR_MESSAGE_BYTES {
+        return message;
+    }
+    let mut bounded = String::with_capacity(MAX_PROVIDER_ERROR_MESSAGE_BYTES);
+    for character in message.chars() {
+        if bounded.len() + character.len_utf8() + 3 > MAX_PROVIDER_ERROR_MESSAGE_BYTES {
+            break;
+        }
+        bounded.push(character);
+    }
+    bounded.push('…');
+    bounded
 }
 
 pub(crate) fn non_retryable_llm_error_message(error: &anyhow::Error) -> Option<&str> {
@@ -40,5 +85,14 @@ mod tests {
             non_retryable_llm_error_message(&error),
             Some("quota exhausted")
         );
+    }
+
+    #[test]
+    fn provider_status_is_typed_and_message_is_bounded() {
+        let error = NonRetryableLlmError::from_status("deepseek", 402, "x".repeat(10_000));
+        assert_eq!(error.provider(), Some("deepseek"));
+        assert_eq!(error.status(), Some(402));
+        assert!(error.to_string().len() <= MAX_PROVIDER_ERROR_MESSAGE_BYTES);
+        assert!(error.to_string().ends_with('…'));
     }
 }

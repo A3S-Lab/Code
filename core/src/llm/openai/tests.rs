@@ -26,6 +26,41 @@ struct ChunksThenPendingSseHttp {
     chunks: Vec<String>,
 }
 
+struct StatusHttp {
+    status: u16,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::http::HttpClient for StatusHttp {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+        Ok(crate::llm::http::HttpResponse {
+            status: self.status,
+            body: "provider error".to_string(),
+        })
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+        Ok(crate::llm::http::StreamingHttpResponse {
+            status: self.status,
+            retry_after: None,
+            byte_stream: Box::pin(futures::stream::empty()),
+            error_body: "provider error".to_string(),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::llm::http::HttpClient for MockSseHttp {
     async fn post(
@@ -202,6 +237,24 @@ async fn streaming_parser_closes_when_caller_cancels() {
         .await
         .expect("provider parser must stop after cancellation");
     assert!(next.is_none());
+}
+
+#[tokio::test]
+async fn non_retryable_http_status_preserves_provider_and_status() {
+    use crate::llm::{LlmClient, NonRetryableLlmError};
+
+    let client = OpenAiClient::new("k".to_string(), "model".to_string())
+        .with_retry_config(crate::retry::RetryConfig::disabled())
+        .with_http_client(std::sync::Arc::new(StatusHttp { status: 402 }));
+    let error = client
+        .complete(&[Message::user("go")], None, &[])
+        .await
+        .expect_err("billing failure must fail without a retry");
+    let typed = error
+        .downcast_ref::<NonRetryableLlmError>()
+        .expect("provider status must remain typed");
+    assert_eq!(typed.provider(), Some("openai"));
+    assert_eq!(typed.status(), Some(402));
 }
 
 #[tokio::test]
