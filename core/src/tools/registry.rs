@@ -73,7 +73,7 @@ pub struct ToolRegistry {
 /// compaction, and evidence handling. The public raw-output API is intentionally
 /// only a shape projection over this prepared result.
 struct PreparedToolOutput {
-    output: ToolOutput,
+    output: Option<ToolOutput>,
     transform_binding: ToolResultTransformBindingV1,
 }
 
@@ -497,29 +497,17 @@ impl ToolRegistry {
     ) -> Result<ToolResult> {
         let start = std::time::Instant::now();
         let prepared = self.prepare_output_with_context(name, args, ctx).await?;
-        let (transform_binding, mut result) = match prepared {
-            Some(prepared) => {
-                let transform_binding = prepared.transform_binding;
-                let output = prepared.output;
-                (
-                    transform_binding,
-                    Ok(ToolResult {
-                        name: name.to_string(),
-                        output: output.content,
-                        exit_code: if output.success { 0 } else { 1 },
-                        metadata: output.metadata,
-                        images: output.images,
-                        error_kind: output.error_kind,
-                    }),
-                )
-            }
-            None => {
-                let policy = self.transform_policy.read().unwrap().clone();
-                (
-                    ToolResultTransformBindingV1::from_policy(&policy)?,
-                    Ok(ToolResult::error(name, format!("Unknown tool: {}", name))),
-                )
-            }
+        let transform_binding = prepared.transform_binding;
+        let mut result = match prepared.output {
+            Some(output) => Ok(ToolResult {
+                name: name.to_string(),
+                output: output.content,
+                exit_code: if output.success { 0 } else { 1 },
+                metadata: output.metadata,
+                images: output.images,
+                error_kind: output.error_kind,
+            }),
+            None => Ok(ToolResult::error(name, format!("Unknown tool: {name}"))),
         };
 
         if let Ok(result) = &mut result {
@@ -560,7 +548,7 @@ impl ToolRegistry {
         Ok(self
             .prepare_output_with_context(name, args, ctx)
             .await?
-            .map(|prepared| prepared.output))
+            .output)
     }
 
     async fn prepare_output_with_context(
@@ -568,11 +556,14 @@ impl ToolRegistry {
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<Option<PreparedToolOutput>> {
+    ) -> Result<PreparedToolOutput> {
         let policy = self.transform_policy.read().unwrap().clone();
         let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
         let Some(tool) = self.get(name) else {
-            return Ok(None);
+            return Ok(PreparedToolOutput {
+                output: None,
+                transform_binding,
+            });
         };
 
         let mut output = tool.execute(args, ctx).await?;
@@ -617,10 +608,10 @@ impl ToolRegistry {
             loss_mode,
             &transform_binding,
         )?);
-        Ok(Some(PreparedToolOutput {
-            output,
+        Ok(PreparedToolOutput {
+            output: Some(output),
             transform_binding,
-        }))
+        })
     }
 
     async fn store_tool_artifact(
