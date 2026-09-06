@@ -26,6 +26,8 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
+const MAX_RETRY_ERROR_BODY_BYTES: usize = 4 * 1024;
+
 /// Configuration for API retry behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
@@ -130,19 +132,25 @@ pub enum AttemptOutcome<T> {
 /// The rendered body is diagnostic only; callers use the retained status for
 /// policy decisions.
 #[derive(Debug, thiserror::Error)]
-#[error("LLM API request failed after {attempts} attempts. Last status: {status} Body: {body}")]
+#[error("{terminal_message}")]
 pub(crate) struct RetryExhaustedError {
     attempts: u32,
     status: StatusCode,
     body: String,
+    terminal_message: String,
 }
 
 impl RetryExhaustedError {
     pub(crate) fn new(attempts: u32, status: StatusCode, body: impl Into<String>) -> Self {
+        let body = bound_retry_body(body.into());
+        let terminal_message = format!(
+            "LLM API request failed after {attempts} attempts. Last status: {status} Body: {body}"
+        );
         Self {
             attempts,
             status,
-            body: body.into(),
+            body,
+            terminal_message,
         }
     }
 
@@ -153,9 +161,24 @@ impl RetryExhaustedError {
     /// A stable marker consumed by the outer Agent boundary. Once this retry
     /// authority has exhausted its budget, replaying the same request through
     /// another fallback or circuit breaker only repeats the same side effect.
-    pub(crate) fn non_retryable_message(&self) -> &'static str {
-        "LLM provider retry budget exhausted"
+    pub(crate) fn non_retryable_message(&self) -> &str {
+        &self.terminal_message
     }
+}
+
+fn bound_retry_body(body: String) -> String {
+    if body.len() <= MAX_RETRY_ERROR_BODY_BYTES {
+        return body;
+    }
+    let mut bounded = String::with_capacity(MAX_RETRY_ERROR_BODY_BYTES);
+    for character in body.chars() {
+        if bounded.len() + character.len_utf8() + 3 > MAX_RETRY_ERROR_BODY_BYTES {
+            break;
+        }
+        bounded.push(character);
+    }
+    bounded.push('…');
+    bounded
 }
 
 /// Execute an async operation with retry logic.
@@ -243,6 +266,18 @@ mod tests {
             .downcast_ref::<RetryExhaustedError>()
             .expect("retry exhaustion must retain its typed status");
         assert_eq!(exhausted.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn retry_exhaustion_bounds_provider_body_without_losing_status() {
+        let error = RetryExhaustedError::new(
+            2,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "错误".repeat(MAX_RETRY_ERROR_BODY_BYTES),
+        );
+        assert!(error.to_string().len() <= MAX_RETRY_ERROR_BODY_BYTES + 128);
+        assert!(error.to_string().contains("503"));
+        assert!(error.to_string().ends_with('…'));
     }
 
     // ========================================================================

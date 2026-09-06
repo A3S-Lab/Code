@@ -106,9 +106,10 @@ mod tests {
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             "rate limited",
         ));
-        assert_eq!(
-            non_retryable_llm_error_message(&error),
-            Some("LLM provider retry budget exhausted")
-        );
+        let message = non_retryable_llm_error_message(&error)
+            .expect("retry exhaustion must be terminal at the Agent boundary");
+        assert!(message.contains("LLM API request failed after 3 attempts"));
+        assert!(message.contains("429"));
+        assert!(message.contains("rate limited"));
     }
 }
