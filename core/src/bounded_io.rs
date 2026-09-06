@@ -3,6 +3,11 @@
 use std::io::{self, Read};
 use std::path::Path;
 
+pub(crate) const MAX_AGENT_DIRECTORY_FILE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_CONFIG_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_SKILL_FILE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_SUBAGENT_FILE_BYTES: usize = 256 * 1024;
+
 fn read_limit(max_bytes: usize) -> u64 {
     u64::try_from(max_bytes)
         .unwrap_or(u64::MAX)
@@ -35,6 +40,13 @@ pub(crate) fn read_file_bounded(path: &Path, max_bytes: usize) -> io::Result<Vec
         return Err(too_large(max_bytes));
     }
     Ok(bytes)
+}
+
+/// Read a bounded UTF-8 text file, preserving I/O and encoding failures for
+/// configuration-style callers that must fail closed.
+pub(crate) fn read_utf8_file_bounded(path: &Path, max_bytes: usize) -> io::Result<String> {
+    let bytes = read_file_bounded(path, max_bytes)?;
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Async counterpart of [`read_file_bounded`].

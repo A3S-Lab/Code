@@ -250,7 +250,10 @@ fn load_agents_from_dir_inner(dir: &Path, agents: &mut Vec<AgentDefinition>) {
         };
 
         // Read file content
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = crate::bounded_io::read_utf8_file_bounded(
+            &path,
+            crate::bounded_io::MAX_SUBAGENT_FILE_BYTES,
+        ) else {
             tracing::warn!("Failed to read agent file: {}", path.display());
             continue;
         };

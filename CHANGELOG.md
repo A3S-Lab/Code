@@ -121,6 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before JSON allocation and decoding.
 - Bounded MCP artifact revalidation and Moli install-receipt recovery before
   decoding cached files, closing the remaining untrusted cache-read paths.
+- Added bounded UTF-8 loading for ACL configuration, primary agent-directory
+  documents, skills, and worker definitions so filesystem-driven prompt and
+  policy inputs cannot bypass their memory boundary.
 
 ## [8.2.0] - 2026-09-04
 

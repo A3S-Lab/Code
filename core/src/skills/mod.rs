@@ -163,7 +163,10 @@ impl Skill {
 
     /// Load a skill from a file
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())?;
+        let content = crate::bounded_io::read_utf8_file_bounded(
+            path.as_ref(),
+            crate::bounded_io::MAX_SKILL_FILE_BYTES,
+        )?;
         let mut skill =
             Self::parse(&content).ok_or_else(|| anyhow::anyhow!("Failed to parse skill file"))?;
 

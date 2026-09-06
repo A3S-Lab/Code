@@ -146,7 +146,11 @@ impl AgentDir {
 
         // instructions.md (required) → role SLOT. Using a slot (not a raw system
         // prompt) keeps the harness's BOUNDARIES/response-format/verification.
-        let instructions = std::fs::read_to_string(dir.join("instructions.md")).map_err(|e| {
+        let instructions = crate::bounded_io::read_utf8_file_bounded(
+            &dir.join("instructions.md"),
+            crate::bounded_io::MAX_AGENT_DIRECTORY_FILE_BYTES,
+        )
+        .map_err(|e| {
             CodeError::Context(format!(
                 "agent dir {} is missing required instructions.md: {e}",
                 dir.display()
@@ -222,8 +226,11 @@ fn collect_md_paths(
 fn load_schedules(dir: &Path) -> Result<Vec<ScheduleSpec>> {
     let mut out = Vec::new();
     for path in md_files(dir, &["md"])? {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
+        let content = crate::bounded_io::read_utf8_file_bounded(
+            &path,
+            crate::bounded_io::MAX_AGENT_DIRECTORY_FILE_BYTES,
+        )
+        .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
         let (front, body) = split_frontmatter(&content);
         let front = front.ok_or_else(|| {
             CodeError::Context(format!(
@@ -291,8 +298,11 @@ fn load_tools(dir: &Path) -> Result<Vec<ToolSpec>> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for path in md_files(dir, &["md"])? {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
+        let content = crate::bounded_io::read_utf8_file_bounded(
+            &path,
+            crate::bounded_io::MAX_AGENT_DIRECTORY_FILE_BYTES,
+        )
+        .map_err(|e| CodeError::Context(format!("read {}: {e}", path.display())))?;
         let (front, body) = split_frontmatter(&content);
         let front = front.ok_or_else(|| {
             CodeError::Context(format!(

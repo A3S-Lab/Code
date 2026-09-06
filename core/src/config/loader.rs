@@ -489,7 +489,11 @@ impl CodeConfig {
     /// `.acl` is the only supported config file extension. JSON and legacy
     /// `.hcl` config files are not supported.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
+        let content = crate::bounded_io::read_utf8_file_bounded(
+            path,
+            crate::bounded_io::MAX_CONFIG_FILE_BYTES,
+        )
+        .map_err(|e| {
             CodeError::Config(format!(
                 "Failed to read config file {}: {}",
                 path.display(),
