@@ -35,7 +35,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 
 #[cfg(feature = "zvec-rust-fts")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedChunk {
     id: String,
     path: String,
@@ -89,7 +89,7 @@ impl PersistedChunk {
 
 #[cfg(feature = "zvec-rust-fts")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenerationManifest {
     schema_version: u32,
     lexical_engine: String,
