@@ -4,6 +4,7 @@
 //! separate from model-visible tool output and from large artifacts.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -89,7 +90,7 @@ pub trait TraceSink: Send + Sync {
 
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryTraceSink {
-    events: Arc<RwLock<Vec<TraceEvent>>>,
+    events: Arc<RwLock<VecDeque<TraceEvent>>>,
     /// FIFO retention cap (`None` = unlimited). When set, the oldest
     /// event is dropped on each new `record` once the buffer exceeds
     /// this size. Useful for long-running sessions that would
@@ -106,17 +107,30 @@ impl InMemoryTraceSink {
     /// Construct a sink that retains at most `max_events` records.
     pub fn with_max_events(max_events: usize) -> Self {
         Self {
-            events: Arc::new(RwLock::new(Vec::with_capacity(max_events.min(1024)))),
+            events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events.min(1024)))),
             max_events: Some(max_events),
         }
     }
 
     pub fn events(&self) -> Vec<TraceEvent> {
-        self.events.read().unwrap().clone()
+        self.events.read().unwrap().iter().cloned().collect()
     }
 
+    /// Replace the retained history while applying the same FIFO policy used
+    /// by live recording. Restored sessions must not bypass the configured
+    /// retention boundary.
     pub fn replace_events(&self, events: Vec<TraceEvent>) {
-        *self.events.write().unwrap() = events;
+        let mut retained = VecDeque::with_capacity(
+            self.max_events
+                .map(|cap| events.len().min(cap))
+                .unwrap_or(events.len()),
+        );
+        let skip = self
+            .max_events
+            .map(|cap| events.len().saturating_sub(cap))
+            .unwrap_or(0);
+        retained.extend(events.into_iter().skip(skip));
+        *self.events.write().unwrap() = retained;
     }
 
     pub fn clear(&self) {
@@ -127,17 +141,12 @@ impl InMemoryTraceSink {
 impl TraceSink for InMemoryTraceSink {
     fn record(&self, event: TraceEvent) {
         let mut events = self.events.write().unwrap();
-        events.push(event);
-        // FIFO trim — keep the buffer at most `max_events`. We drain
-        // from the front rather than truncating the back so the most
-        // recent entries (most useful for debugging) are preserved.
-        // Steady-state cost is one O(n) shift per push at cap; acceptable
-        // for diagnostic traces. Switch to VecDeque if hot-path tracing
-        // ever becomes a perf bottleneck.
+        events.push_back(event);
+        // FIFO trim — keep the buffer at most `max_events`. VecDeque keeps
+        // this hot-path eviction O(1), including for long-lived sessions.
         if let Some(cap) = self.max_events {
-            if events.len() > cap {
-                let excess = events.len() - cap;
-                events.drain(..excess);
+            while events.len() > cap {
+                events.pop_front();
             }
         }
     }
@@ -287,5 +296,25 @@ mod tests {
             sink.record(dummy_event(i));
         }
         assert_eq!(sink.events().len(), 50);
+    }
+
+    #[test]
+    fn replacing_events_applies_fifo_retention() {
+        let sink = InMemoryTraceSink::with_max_events(3);
+        sink.replace_events((0..10).map(dummy_event).collect());
+
+        let events = sink.events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].duration_ms, 7);
+        assert_eq!(events[2].duration_ms, 9);
+    }
+
+    #[test]
+    fn zero_retention_drops_restored_and_live_events() {
+        let sink = InMemoryTraceSink::with_max_events(0);
+        sink.replace_events(vec![dummy_event(1), dummy_event(2)]);
+        sink.record(dummy_event(3));
+
+        assert!(sink.events().is_empty());
     }
 }

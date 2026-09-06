@@ -96,6 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuse now remains explicitly fail-safe if the previous entry is absent.
 - Kept confirmation aggregation fail-safe when a provider receiver is
   unexpectedly absent, returning a denied response instead of panicking.
+- Applied trace FIFO retention during session restore as well as live writes;
+  the in-memory sink now uses a deque so bounded diagnostic history does not
+  shift the whole buffer on every event.
 - Reduced peak memory in the Tool-result transform path. Structured JSON
   sampling now consumes arrays incrementally and repeated-line folding no
   longer collects a full line index; the v1 output and evidence contract stays
