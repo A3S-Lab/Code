@@ -30,7 +30,7 @@ pub use crate::dynamic_workflow::{
     register_dynamic_workflow_with_scheduler,
 };
 pub use agent_dir_script_tool::AgentDirScriptTool;
-pub use artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
+pub use artifacts::{ArtifactStore, ArtifactStoreError, ArtifactStoreLimits, ToolArtifact};
 pub use builtin::{
     register_generate_object, register_program, register_program_with_catalog, register_task,
     register_task_with_mcp, register_task_with_mcp_managers,

@@ -661,14 +661,16 @@ impl ToolRegistry {
             return Ok(());
         }
 
-        self.artifact_store.put(ToolArtifact {
-            artifact_id: artifact.artifact_id.clone(),
-            artifact_uri: artifact.artifact_uri.clone(),
-            tool_name: tool_name.to_string(),
-            content: content.to_string(),
-            original_bytes: artifact.original_bytes,
-            shown_bytes: artifact.shown_bytes,
-        });
+        self.artifact_store
+            .put_content_addressed(ToolArtifact {
+                artifact_id: artifact.artifact_id.clone(),
+                artifact_uri: artifact.artifact_uri.clone(),
+                tool_name: tool_name.to_string(),
+                content: content.to_string(),
+                original_bytes: artifact.original_bytes,
+                shown_bytes: artifact.shown_bytes,
+            })
+            .map_err(|error| anyhow::anyhow!("immutable Tool artifact conflict: {error}"))?;
         Ok(())
     }
 
