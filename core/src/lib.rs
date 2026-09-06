@@ -316,11 +316,12 @@ pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlo
 pub use research::{
     ResearchArtifactKindV1, ResearchContractError, ResearchEventV1, ResearchEvidenceFactKindV1,
     ResearchEvidenceFactV1, ResearchProvenanceReceiptV1, ResearchReproducibilityV1,
-    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
-    ResearchReviewSeverityV1, ResearchReviewStatusV1, ResearchRunStatusV1, ResearchRunV1,
-    RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1, RESEARCH_EVIDENCE_FACT_SCHEMA_V1,
-    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
-    RESEARCH_RUN_SCHEMA_V1,
+    ResearchReviewBatchV1, ResearchReviewCategoryV1, ResearchReviewFindingV1,
+    ResearchReviewLocationV1, ResearchReviewSeverityV1, ResearchReviewStatusV1,
+    ResearchRunStatusV1, ResearchRunV1, RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1,
+    RESEARCH_EVIDENCE_FACT_SCHEMA_V1, RESEARCH_MAX_REVIEW_FINDINGS,
+    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REVIEW_BATCH_SCHEMA_V1,
+    RESEARCH_REVIEW_FINDING_SCHEMA_V1, RESEARCH_RUN_SCHEMA_V1,
 };
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{

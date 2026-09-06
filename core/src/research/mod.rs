@@ -10,6 +10,7 @@ mod event;
 mod evidence;
 mod provenance;
 mod review;
+mod review_batch;
 mod run;
 
 pub use error::ResearchContractError;
@@ -25,6 +26,9 @@ pub use provenance::{
 pub use review::{
     ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
     ResearchReviewSeverityV1, ResearchReviewStatusV1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
+};
+pub use review_batch::{
+    ResearchReviewBatchV1, RESEARCH_MAX_REVIEW_FINDINGS, RESEARCH_REVIEW_BATCH_SCHEMA_V1,
 };
 pub use run::{
     ResearchReproducibilityV1, ResearchRunStatusV1, ResearchRunV1, RESEARCH_RUN_SCHEMA_V1,
