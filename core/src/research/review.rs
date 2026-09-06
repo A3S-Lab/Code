@@ -289,6 +289,16 @@ impl ResearchReviewFindingV1 {
                 "provenanceReceipt.projectRevision",
             ));
         }
+        if receipt.provider_id != run.provider_id {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.providerId",
+            ));
+        }
+        if receipt.random_seed != run.random_seed {
+            return Err(ResearchContractError::InvalidField(
+                "provenanceReceipt.randomSeed",
+            ));
+        }
         self.bind_provenance_receipt(receipt)
     }
 
