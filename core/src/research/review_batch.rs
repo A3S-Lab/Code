@@ -2,6 +2,7 @@
 
 use super::{
     digest, validate_digest_field, validate_id, ResearchContractError, ResearchReviewFindingV1,
+    ResearchReviewStatusV1,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +37,10 @@ impl ResearchReviewBatchV1 {
     /// The identity-only [`new`](Self::new) constructor remains available for
     /// compatibility with callers that only have wire-level digests. New
     /// reviewer pipelines should use this constructor so the project/run
-    /// namespace and evaluator evidence snapshot are closed at admission.
+    /// namespace and evaluator evidence snapshot are closed at admission. A
+    /// newly admitted batch must contain only open findings; resolved or
+    /// waived findings must be restored from the already-published batch and
+    /// changed through the explicit transition methods below.
     pub fn new_for_run(
         batch_id: impl Into<String>,
         run: &crate::research::ResearchRunV1,
@@ -53,6 +57,13 @@ impl ResearchReviewBatchV1 {
             findings,
         )?;
         batch.validate_for_run(run, record)?;
+        if batch
+            .findings
+            .iter()
+            .any(|finding| !matches!(finding.status, ResearchReviewStatusV1::Open))
+        {
+            return Err(ResearchContractError::InvalidField("finding.status"));
+        }
         Ok(batch)
     }
 

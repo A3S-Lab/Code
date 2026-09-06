@@ -657,6 +657,21 @@ async fn research_execution_restarts_with_contiguous_evidence_and_exact_bindings
         Some(reopened_receipt.receipt_digest.as_str())
     );
 
+    let mut preclosed_finding = batch.findings[0].clone();
+    preclosed_finding.resolve(digest('9')).unwrap();
+    assert_eq!(
+        ResearchReviewBatchV1::new_for_run(
+            "research-review-batch-preclosed",
+            &research,
+            &reopened_record,
+            evidence.snapshot_digest.clone(),
+            vec![preclosed_finding],
+        ),
+        Err(a3s_code_core::ResearchContractError::InvalidField(
+            "finding.status"
+        ))
+    );
+
     #[derive(serde::Serialize)]
     struct ForgedFindingIdentity<'a> {
         schema: &'a str,
