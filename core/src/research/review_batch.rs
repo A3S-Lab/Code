@@ -438,4 +438,64 @@ mod tests {
             Err(ResearchContractError::DigestMismatch("findingDigest"))
         );
     }
+
+    #[test]
+    fn closed_batch_round_trip_preserves_terminal_finding_state() {
+        let record = record();
+        let mut resolved = ResearchReviewBatchV1::new(
+            "resolved-wire-batch",
+            "project-1",
+            "run-1",
+            record.record_digest.clone(),
+            record.result.evidence_digest.clone(),
+            vec![finding("finding-1", &record)],
+        )
+        .unwrap();
+        resolved.resolve_finding("finding-1", digest('c')).unwrap();
+        let reopened: ResearchReviewBatchV1 =
+            serde_json::from_slice(&serde_json::to_vec(&resolved).unwrap()).unwrap();
+        assert_eq!(reopened, resolved);
+        assert_eq!(
+            reopened.findings[0].status,
+            ResearchReviewStatusV1::Resolved
+        );
+        assert!(reopened.validate().is_ok());
+        assert_eq!(
+            reopened.clone().resolve_finding("finding-1", digest('d')),
+            Err(ResearchContractError::InvalidTransition {
+                from: "resolved",
+                to: "resolved"
+            })
+        );
+        assert_eq!(
+            reopened.clone().waive_finding("finding-1", digest('e')),
+            Err(ResearchContractError::InvalidTransition {
+                from: "resolved",
+                to: "waived"
+            })
+        );
+
+        let mut waived = ResearchReviewBatchV1::new(
+            "waived-wire-batch",
+            "project-1",
+            "run-1",
+            record.record_digest.clone(),
+            record.result.evidence_digest.clone(),
+            vec![finding("finding-2", &record)],
+        )
+        .unwrap();
+        waived.waive_finding("finding-2", digest('f')).unwrap();
+        let mut reopened: ResearchReviewBatchV1 =
+            serde_json::from_slice(&serde_json::to_vec(&waived).unwrap()).unwrap();
+        assert_eq!(reopened, waived);
+        assert_eq!(reopened.findings[0].status, ResearchReviewStatusV1::Waived);
+        assert!(reopened.validate().is_ok());
+        assert_eq!(
+            reopened.resolve_finding("finding-2", digest('1')),
+            Err(ResearchContractError::InvalidTransition {
+                from: "waived",
+                to: "resolved"
+            })
+        );
+    }
 }
