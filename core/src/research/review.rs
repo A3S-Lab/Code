@@ -177,8 +177,10 @@ impl ResearchReviewFindingV1 {
     }
 
     /// Bind this finding to the exact generic evaluation record that produced
-    /// it.  The host still owns the rubric and finding projection, while Code
+    /// it. The host still owns the rubric and finding projection, while Code
     /// verifies that the evaluator, Run, and evidence identity cannot drift.
+    /// Replaying the same record is idempotent; replacing an established
+    /// binding is rejected so a published observation remains immutable.
     ///
     /// The method consumes and returns the finding so callers cannot observe a
     /// partially rebound value if validation fails.
@@ -208,6 +210,13 @@ impl ResearchReviewFindingV1 {
             return Err(ResearchContractError::InvalidField(
                 "evaluationRecord.evidenceDigest",
             ));
+        }
+        if let Some(bound_digest) = &self.evaluation_record_digest {
+            if bound_digest != &record.record_digest {
+                return Err(ResearchContractError::InvalidField(
+                    "evaluationRecordDigest",
+                ));
+            }
         }
         self.evaluation_record_digest = Some(record.record_digest.clone());
         self.finding_digest = self.expected_digest()?;
@@ -249,9 +258,10 @@ impl ResearchReviewFindingV1 {
     ///
     /// A provenance receipt is host-produced, but Code can still reject an
     /// artifact/project/Run mismatch and require that the finding retain one
-    /// of the receipt's input evidence digests.  This keeps reviewer policy
-    /// outside Core while preventing a valid receipt from being attached to a
-    /// different scientific object.
+    /// of the receipt's input evidence digests. Replaying the same receipt is
+    /// idempotent; replacing an established binding is rejected. This keeps
+    /// reviewer policy outside Core while preventing a valid receipt from
+    /// being attached to a different scientific object.
     pub fn bind_provenance_receipt(
         mut self,
         receipt: &crate::research::ResearchProvenanceReceiptV1,
@@ -283,6 +293,13 @@ impl ResearchReviewFindingV1 {
             return Err(ResearchContractError::InvalidField(
                 "provenanceReceipt.inputDigests",
             ));
+        }
+        if let Some(bound_digest) = &self.provenance_receipt_digest {
+            if bound_digest != &receipt.receipt_digest {
+                return Err(ResearchContractError::InvalidField(
+                    "provenanceReceiptDigest",
+                ));
+            }
         }
         self.provenance_receipt_digest = Some(receipt.receipt_digest.clone());
         self.finding_digest = self.expected_digest()?;
@@ -746,6 +763,48 @@ mod tests {
     }
 
     #[test]
+    fn evaluation_binding_is_idempotent_but_cannot_drift() {
+        let evidence_digest = digest('b');
+        let result = crate::evaluation::EvaluationResultV1::new(
+            "citation-reviewer",
+            crate::evaluation::ExecutionTargetV1::new("session-1", "run-1"),
+            "aux-1",
+            "observed",
+            serde_json::json!({"finding_count": 1}),
+            evidence_digest.clone(),
+        )
+        .unwrap();
+        let record = crate::evaluation::EvaluationRecordV1::new(result.clone(), 2).unwrap();
+        let different_record = crate::evaluation::EvaluationRecordV1::new(result, 3).unwrap();
+        assert_ne!(record.record_digest, different_record.record_digest);
+
+        let finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::Citation,
+            ResearchReviewSeverityV1::Warning,
+            "Citation does not support the claim.",
+            None,
+            vec![evidence_digest],
+            "citation-reviewer",
+            3,
+        )
+        .unwrap()
+        .bind_evaluation_record(&record)
+        .unwrap();
+        let replayed = finding.clone().bind_evaluation_record(&record).unwrap();
+        assert_eq!(replayed, finding);
+        assert_eq!(
+            finding.bind_evaluation_record(&different_record),
+            Err(ResearchContractError::InvalidField(
+                "evaluationRecordDigest"
+            ))
+        );
+    }
+
+    #[test]
     fn finding_binds_the_exact_artifact_provenance_without_importing_policy() {
         let evidence_digest = digest('b');
         let receipt = crate::research::ResearchProvenanceReceiptV1::new(
@@ -792,6 +851,71 @@ mod tests {
         assert_eq!(
             tampered.validate(),
             Err(ResearchContractError::DigestMismatch("findingDigest"))
+        );
+    }
+
+    #[test]
+    fn provenance_binding_is_idempotent_but_cannot_drift() {
+        let evidence_digest = digest('b');
+        let receipt = crate::research::ResearchProvenanceReceiptV1::new(
+            "project-1",
+            4,
+            "run-1",
+            "figure-1",
+            crate::research::ResearchArtifactKindV1::Figure,
+            digest('a'),
+            vec![evidence_digest.clone()],
+            digest('c'),
+            digest('d'),
+            digest('e'),
+            "fixture-provider",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let different_receipt = crate::research::ResearchProvenanceReceiptV1::new(
+            "project-1",
+            4,
+            "run-1",
+            "figure-1",
+            crate::research::ResearchArtifactKindV1::Figure,
+            digest('a'),
+            vec![evidence_digest.clone()],
+            digest('c'),
+            digest('d'),
+            digest('e'),
+            "fixture-provider",
+            None,
+            None,
+            Some(digest('f')),
+        )
+        .unwrap();
+        assert_ne!(receipt.receipt_digest, different_receipt.receipt_digest);
+
+        let finding = ResearchReviewFindingV1::new(
+            "finding-1",
+            "project-1",
+            "run-1",
+            digest('a'),
+            ResearchReviewCategoryV1::FigureCode,
+            ResearchReviewSeverityV1::Warning,
+            "Figure provenance must remain reproducible.",
+            None,
+            vec![evidence_digest],
+            "reproducibility-reviewer",
+            8,
+        )
+        .unwrap()
+        .bind_provenance_receipt(&receipt)
+        .unwrap();
+        let replayed = finding.clone().bind_provenance_receipt(&receipt).unwrap();
+        assert_eq!(replayed, finding);
+        assert_eq!(
+            finding.bind_provenance_receipt(&different_receipt),
+            Err(ResearchContractError::InvalidField(
+                "provenanceReceiptDigest"
+            ))
         );
     }
 
