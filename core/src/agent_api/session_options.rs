@@ -586,10 +586,12 @@ impl SessionOptions {
     ///
     /// - `max_parse_retries = 2`
     /// - `tool_timeout_ms = 120_000` (2 minutes)
+    /// - `llm_api_timeout_ms = 120_000` (2 minutes)
     /// - `circuit_breaker_threshold = 3`
     pub fn with_resilience_defaults(self) -> Self {
         self.with_parse_retries(2)
             .with_tool_timeout(120_000)
+            .with_llm_api_timeout(120_000)
             .with_circuit_breaker(3)
     }
 

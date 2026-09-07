@@ -406,7 +406,8 @@ pub struct SessionOptions {
     pub max_continuation_turns: Option<u32>,
     /// Maximum execution time in milliseconds.
     /// `None` = no timeout (default).
-    /// When set, the execution loop will abort if it exceeds this duration.
+    /// When set, the execution loop, active LLM attempts, and retry backoff
+    /// will abort if they exceed this duration.
     pub max_execution_time_ms: Option<u64>,
     /// Optional MCP manager for connecting to external MCP servers.
     ///

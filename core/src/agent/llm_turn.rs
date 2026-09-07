@@ -47,6 +47,8 @@ struct LlmCallRequest<'a> {
     session_id: Option<&'a str>,
     event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
     cancel_token: &'a tokio_util::sync::CancellationToken,
+    execution_start: std::time::Instant,
+    max_execution_time_ms: Option<u64>,
 }
 
 fn is_budget_exhausted(error: &anyhow::Error) -> bool {
@@ -135,6 +137,8 @@ impl AgentLoop {
                 session_id,
                 event_tx,
                 cancel_token,
+                execution_start: state.execution_start(),
+                max_execution_time_ms: self.config.max_execution_time_ms,
             })
             .await?;
 
@@ -254,15 +258,14 @@ impl AgentLoop {
 
         loop {
             attempt += 1;
+            // A provider-specific generation timeout is only an optimisation;
+            // the framework still owns the run deadline.  Give every attempt
+            // a child cancellation scope and enforce the configured timeout
+            // around the whole call so a provider that ignores the optional
+            // timeout hook cannot hold the agent loop indefinitely.
+            let attempt_cancel = request.cancel_token.child_token();
             let result = self
-                .call_llm(
-                    &llm_client,
-                    request.messages,
-                    request.system,
-                    request.tools,
-                    request.event_tx,
-                    request.cancel_token,
-                )
+                .call_llm_with_timeout(&llm_client, &request, &attempt_cancel)
                 .await;
             match result {
                 Ok(response) => return Ok(response),
@@ -302,13 +305,7 @@ impl AgentLoop {
                         // deltas/tool drafts from the failed attempt, but keep
                         // the original user message and all prior turns.
                         self.emit_turn_start(request.turn, request.event_tx).await;
-                        tokio::select! {
-                            biased;
-                            _ = request.cancel_token.cancelled() => {
-                                anyhow::bail!("Operation cancelled by user")
-                            }
-                            _ = tokio::time::sleep(delay) => {}
-                        }
+                        self.wait_for_retry_delay(&request, delay).await?;
                         continue;
                     }
 
@@ -324,13 +321,11 @@ impl AgentLoop {
                             error = %error,
                             "LLM call failed, will retry"
                         );
-                        tokio::select! {
-                            biased;
-                            _ = request.cancel_token.cancelled() => {
-                                anyhow::bail!("Operation cancelled by user")
-                            }
-                            _ = tokio::time::sleep(Duration::from_millis(100 * attempt as u64)) => {}
-                        }
+                        self.wait_for_retry_delay(
+                            &request,
+                            Duration::from_millis(100 * attempt as u64),
+                        )
+                        .await?;
                         continue;
                     }
 
@@ -359,6 +354,105 @@ impl AgentLoop {
                     .await;
                     self.emit_error(request.event_tx, msg.clone()).await;
                     anyhow::bail!(msg);
+                }
+            }
+        }
+    }
+
+    async fn wait_for_retry_delay(
+        &self,
+        request: &LlmCallRequest<'_>,
+        delay: Duration,
+    ) -> anyhow::Result<()> {
+        let remaining = request.max_execution_time_ms.map(|limit| {
+            Duration::from_millis(
+                limit.saturating_sub(request.execution_start.elapsed().as_millis() as u64),
+            )
+        });
+
+        match remaining {
+            Some(remaining) if remaining <= delay => {
+                tokio::select! {
+                    biased;
+                    _ = request.cancel_token.cancelled() => {
+                        anyhow::bail!("Operation cancelled by user")
+                    }
+                    _ = tokio::time::sleep(remaining) => {}
+                }
+                anyhow::bail!("Execution timeout reached during LLM retry backoff")
+            }
+            Some(_) | None => {
+                tokio::select! {
+                    biased;
+                    _ = request.cancel_token.cancelled() => {
+                        anyhow::bail!("Operation cancelled by user")
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn call_llm_with_timeout(
+        &self,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        request: &LlmCallRequest<'_>,
+        attempt_cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<LlmResponse> {
+        let call = self.call_llm(
+            llm_client,
+            request.messages,
+            request.system,
+            request.tools,
+            request.event_tx,
+            attempt_cancel,
+        );
+        let provider_timeout = self
+            .config
+            .llm_api_timeout_ms
+            .map(|timeout_ms| Duration::from_millis(timeout_ms.max(1)));
+        let run_timeout = request.max_execution_time_ms.map(|max_time_ms| {
+            let elapsed_ms = request.execution_start.elapsed().as_millis() as u64;
+            Duration::from_millis(max_time_ms.saturating_sub(elapsed_ms))
+        });
+        let timeout = match (provider_timeout, run_timeout) {
+            (Some(provider), Some(run)) => Some(provider.min(run)),
+            (Some(provider), None) => Some(provider),
+            (None, Some(run)) => Some(run),
+            (None, None) => None,
+        };
+        let Some(timeout) = timeout else {
+            return call.await;
+        };
+
+        if timeout.is_zero() {
+            attempt_cancel.cancel();
+            return Err(anyhow::anyhow!(
+                "Execution timeout reached before starting the LLM call"
+            ));
+        }
+
+        match tokio::time::timeout(timeout, call).await {
+            Ok(result) => result,
+            Err(_) => {
+                // Cancel the attempt scope before returning so streaming
+                // providers and background transports get a deterministic
+                // shutdown signal. The parent run remains retryable.
+                attempt_cancel.cancel();
+                let elapsed_ms = request.execution_start.elapsed().as_millis() as u64;
+                if request
+                    .max_execution_time_ms
+                    .is_some_and(|limit| elapsed_ms >= limit)
+                {
+                    Err(anyhow::anyhow!(
+                        "Execution timeout reached during LLM call after {elapsed_ms} ms"
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "LLM call timed out after {} ms",
+                        timeout.as_millis()
+                    ))
                 }
             }
         }
@@ -474,21 +568,37 @@ impl AgentLoop {
             "Auto-compact triggered"
         );
 
-        let mut changed = false;
-        if let Some(pruned) = crate::compaction::prune_tool_outputs(
+        // Compaction is a transaction: prepare a candidate transcript, but do
+        // not mutate the live state until summary generation succeeds. A
+        // provider failure or timeout must never turn an in-memory failure
+        // into irreversible loss of tool evidence.
+        let (compaction_input, pruned_tool_outputs) = match crate::compaction::prune_tool_outputs(
             &state.messages,
             compaction_budget.target_context_tokens,
         ) {
-            state.messages = pruned;
-            changed = true;
-            tracing::info!("Tool output pruning applied");
+            Some(pruned) => (pruned, true),
+            None => (state.messages.clone(), false),
+        };
+        if pruned_tool_outputs {
+            tracing::info!("Tool output pruning prepared for compaction");
         }
 
-        let timeout_ms = self
+        let provider_timeout_ms = self
             .config
             .llm_api_timeout_ms
             .unwrap_or(DEFAULT_AUTO_COMPACT_TIMEOUT_MS)
             .max(1);
+        let timeout_ms = self
+            .config
+            .max_execution_time_ms
+            .map(|max_time_ms| {
+                provider_timeout_ms.min(max_time_ms.saturating_sub(state.elapsed_ms()))
+            })
+            .unwrap_or(provider_timeout_ms);
+        if timeout_ms == 0 {
+            tracing::warn!("Auto-compact skipped because the execution deadline has elapsed");
+            return true;
+        }
         let compaction_client =
             self.scoped_llm_client_for_parts(session_id, event_tx, cancel_token);
         let compact_result = tokio::select! {
@@ -500,7 +610,7 @@ impl AgentLoop {
                 Duration::from_millis(timeout_ms),
                 crate::compaction::compact_messages(
                     session_id.unwrap_or(""),
-                    &state.messages,
+                    &compaction_input,
                     &compaction_client,
                     compaction_budget,
                 ),
@@ -522,6 +632,7 @@ impl AgentLoop {
             }
         };
 
+        let mut changed = false;
         let mut compact_summary = None;
         if let Some(compacted) = compact_result {
             state.messages = compacted.messages;

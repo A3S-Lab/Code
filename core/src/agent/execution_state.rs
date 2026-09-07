@@ -108,6 +108,10 @@ impl ExecutionLoopState {
         self.execution_start.elapsed().as_millis() as u64
     }
 
+    pub(super) fn execution_start(&self) -> Instant {
+        self.execution_start
+    }
+
     pub(super) fn convergence_checkpoint(&self) -> crate::loop_checkpoint::LoopConvergenceState {
         crate::loop_checkpoint::LoopConvergenceState {
             parse_error_count: self.parse_error_count,

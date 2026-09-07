@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::{ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType};
-use crate::llm::{ContentBlock, StreamEvent};
+use crate::llm::{ContentBlock, StreamEvent, ToolResultContentField};
 use crate::permissions::PermissionPolicy;
 use crate::prompts::AgentStyle;
 use crate::tools::ToolExecutor;
@@ -487,6 +487,7 @@ struct BlockingExtractionLlmClient {
 struct HangingCompactionLlmClient {
     response: LlmResponse,
     complete_calls: AtomicUsize,
+    streaming_requests: std::sync::Mutex<Vec<Vec<Message>>>,
 }
 
 fn pre_analysis_user_request(prompt_text: &str) -> String {
@@ -530,6 +531,7 @@ impl HangingCompactionLlmClient {
         Self {
             response,
             complete_calls: AtomicUsize::new(0),
+            streaming_requests: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -613,11 +615,15 @@ impl LlmClient for HangingCompactionLlmClient {
 
     async fn complete_streaming(
         &self,
-        _messages: &[Message],
+        messages: &[Message],
         _system: Option<&str>,
         _tools: &[ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.streaming_requests
+            .lock()
+            .unwrap()
+            .push(messages.to_vec());
         let response = self.response.clone();
         let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {
@@ -3160,6 +3166,149 @@ async fn scoped_streaming_memory_extraction_is_promoted_and_run_supervised() {
     assert_eq!(report.tasks_timed_out, 0, "{report:?}");
 
     session_scope.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn llm_timeout_is_enforced_when_provider_ignores_generation_timeout() {
+    let mock_client = Arc::new(HangingCompactionLlmClient::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        llm_api_timeout_ms: Some(20),
+        circuit_breaker_threshold: 1,
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.execute_with_session(&[], "finish despite a stalled provider", None, None, None),
+    )
+    .await
+    .expect("framework timeout must bound a provider that ignores its optional timeout hook")
+    .expect_err("a timed-out provider call must fail the turn");
+
+    assert!(error.to_string().contains("timed out after 20 ms"));
+    assert_eq!(mock_client.complete_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn max_execution_time_bounds_a_stalled_llm_call() {
+    let mock_client = Arc::new(HangingCompactionLlmClient::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        llm_api_timeout_ms: Some(1_000),
+        max_execution_time_ms: Some(200),
+        circuit_breaker_threshold: 1,
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.execute_with_session(&[], "finish before the run deadline", None, None, None),
+    )
+    .await
+    .expect("max_execution_time_ms must bound a provider call")
+    .expect_err("the stalled provider must not complete");
+
+    assert!(error.to_string().contains("Execution timeout reached"));
+    assert_eq!(mock_client.complete_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn auto_compact_failure_keeps_original_tool_evidence() {
+    let mock_client = Arc::new(HangingCompactionLlmClient::new());
+    let preserved_output = "preserve this tool evidence".repeat(2_000);
+    let history = vec![
+        Message::user("inspect the workspace"),
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "search".to_string(),
+                input: serde_json::json!({"mode": "grep", "pattern": "evidence"}),
+            }],
+            reasoning_content: None,
+        },
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1".to_string(),
+                content: ToolResultContentField::Text(preserved_output.clone()),
+                is_error: None,
+            }],
+            reasoning_content: None,
+        },
+        Message::assistant("search completed"),
+    ];
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        auto_compact: true,
+        auto_compact_threshold: 0.01,
+        max_context_tokens: 1_000,
+        llm_api_timeout_ms: Some(20),
+        circuit_breaker_threshold: 1,
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client.clone(),
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+    let (event_tx, _event_rx) = mpsc::channel(128);
+
+    let result = agent
+        .execute_with_session(
+            &history,
+            "return the inspected evidence",
+            None,
+            Some(event_tx),
+            None,
+        )
+        .await
+        .expect("the streaming response should still complete after compaction timeout");
+    assert_eq!(result.text, "Final answer complete.");
+
+    let requests = mock_client.streaming_requests.lock().unwrap();
+    let sent_messages = requests.first().expect("one streaming request");
+    let sent_tool_result = sent_messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::ToolResult { content, .. } => Some(content.as_text()),
+            _ => None,
+        })
+        .expect("the original tool result must remain in the request");
+    assert_eq!(sent_tool_result, preserved_output);
 }
 
 #[tokio::test]

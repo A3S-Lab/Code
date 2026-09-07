@@ -5020,6 +5020,12 @@ async fn test_session_options_builders() {
     assert!(auto.enabled);
     assert!(!auto.allow_manual_delegation);
     assert!(!auto.auto_parallel);
+
+    let resilient = SessionOptions::new().with_resilience_defaults();
+    assert_eq!(resilient.max_parse_retries, Some(2));
+    assert_eq!(resilient.tool_timeout_ms, Some(120_000));
+    assert_eq!(resilient.llm_api_timeout_ms, Some(120_000));
+    assert_eq!(resilient.circuit_breaker_threshold, Some(3));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -178,9 +178,10 @@ pub(crate) struct AgentConfig {
     pub max_continuation_turns: u32,
     /// Maximum execution time in milliseconds (`None` = no timeout).
     ///
-    /// When set, the entire execution loop is wrapped in a timeout check.
-    /// If execution exceeds this duration, the loop bails with an error.
-    /// This prevents runaway executions that consume excessive API quota.
+    /// When set, the execution loop, active LLM attempts, and retry backoff
+    /// share this deadline. If execution exceeds it, the loop bails with an
+    /// error instead of allowing a provider call or retry sleep to overrun the
+    /// run's quota.
     pub max_execution_time_ms: Option<u64>,
     /// Host-supplied budget guard consulted before every LLM call (and
     /// after, for usage accounting). `None` means no enforcement.
