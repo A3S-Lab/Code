@@ -197,7 +197,7 @@ impl LlmClient for CodexLoginClient {
             // failures cannot be repaired by replaying the same Responses
             // request. Preserve the status as a typed terminal error so the
             // outer Agent loop does not turn a 402/401 into repeated calls.
-            if matches!(response.status, 400 | 401 | 402 | 403 | 404) {
+            if matches!(response.status, 400..=404) {
                 return Err(anyhow::Error::new(
                     crate::llm::NonRetryableLlmError::from_status(
                         "codex",
