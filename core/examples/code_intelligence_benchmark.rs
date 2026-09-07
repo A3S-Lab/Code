@@ -66,9 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let target = WorkspacePath::from_normalized("src/module_00/file_0000.rs");
 
     let cold_started = Instant::now();
-    let cold = provider
-        .document_symbols(&target, CancellationToken::new())
-        .await?;
+    let cold = wait_for_document_symbols(provider.as_ref(), &target).await?;
     let cold_elapsed = cold_started.elapsed();
     ensure_nonempty("cold document-symbol", cold.items.len())?;
 
@@ -258,6 +256,34 @@ async fn wait_for_manifest(
     })
     .await
     .map_err(|_| anyhow::anyhow!("workspace manifest exceeded its 15 second deadline"))?
+}
+
+async fn wait_for_document_symbols(
+    provider: &dyn WorkspaceCodeIntelligence,
+    target: &WorkspacePath,
+) -> anyhow::Result<a3s_code_core::CodeQueryResult<a3s_code_core::DocumentSymbol>> {
+    // LocalCodeIntelligence::start returns before the first layout refresh
+    // installs a runtime lease. Cold-query qualification includes that prepare
+    // window instead of racing it.
+    let mut status = provider.subscribe_status();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match provider
+                .document_symbols(target, CancellationToken::new())
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(a3s_code_core::CodeIntelligenceError::Unavailable { .. }) => {
+                    // Avoid missing a status update that landed between the
+                    // unavailable probe and this waiter.
+                    let _ = tokio::time::timeout(Duration::from_millis(50), status.changed()).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Code Intelligence exceeded its 60 second prepare deadline"))?
 }
 
 fn ensure_nonempty(operation: &str, count: usize) -> anyhow::Result<()> {

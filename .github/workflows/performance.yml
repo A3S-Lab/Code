@@ -155,10 +155,13 @@ jobs:
           | tee performance-results/flow-state-graph.json
 
       - name: Qualify Code Intelligence large-workspace lifecycle
-        run: >-
-          cargo run --locked --release -p a3s-code-core
-          --example code_intelligence_benchmark
-          | tee performance-results/code-intelligence.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p a3s-code-core \
+            --example code_intelligence_benchmark \
+            | tee performance-results/code-intelligence.json
+          jq -e '.passed == true' performance-results/code-intelligence.json >/dev/null
 
       - name: Qualify context assembly and memory recall
         run: >-
