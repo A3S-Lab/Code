@@ -68,6 +68,12 @@ impl ExecutionCoordinator {
                     }
                 }
                 crate::task_scheduler::TaskSchedulerError::Closed => CodeError::TaskSchedulerClosed,
+                crate::task_scheduler::TaskSchedulerError::AtCapacity { limit } => {
+                    CodeError::TaskAdmissionLimit {
+                        session_id: session_id.to_owned(),
+                        limit,
+                    }
+                }
                 crate::task_scheduler::TaskSchedulerError::InvalidConfig(message) => {
                     CodeError::Config(message)
                 }

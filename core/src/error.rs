@@ -110,6 +110,11 @@ pub enum CodeError {
     #[error("Task scheduler is closed")]
     TaskSchedulerClosed,
 
+    /// The owning agent's global task scheduler has reached its bounded
+    /// pending-admission limit.
+    #[error("Task admission queue for session '{session_id}' is full (limit {limit})")]
+    TaskAdmissionLimit { session_id: String, limit: usize },
+
     /// A host replayed a run id with different immutable session or input
     /// identity. The existing run is preserved and no work is started.
     #[error("Run '{run_id}' is already bound to different immutable input")]
@@ -182,6 +187,7 @@ impl CodeError {
             Self::SessionBusy { .. } => "SESSION_BUSY",
             Self::TaskAdmissionCancelled { .. } => "TASK_ADMISSION_CANCELLED",
             Self::TaskSchedulerClosed => "TASK_SCHEDULER_CLOSED",
+            Self::TaskAdmissionLimit { .. } => "TASK_ADMISSION_LIMIT",
             Self::RunIdentityConflict { .. } => "RUN_IDENTITY_CONFLICT",
             Self::RunControl(error) => error.code(),
             Self::BudgetExhausted { .. } => "BUDGET_EXHAUSTED",

@@ -129,6 +129,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made task admission backpressured and separated release control from the
   bounded admission queue, so abandoned or cancelled work cannot leak slots or
   grow scheduler memory without a bound.
+- Added an explicit pending-admission ceiling with a typed capacity error, so
+  scheduler pressure is observable instead of silently accumulating queued
+  work.
 
 ## [8.2.0] - 2026-09-04
 

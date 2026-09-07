@@ -17,10 +17,11 @@ use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MAX_ACTIVE: usize = 4;
 const DEFAULT_AGING_INTERVAL_MS: u64 = 30_000;
-// Admission is backpressured before this many messages can be retained by the
-// scheduler actor. Release notifications use a separate control channel and
-// therefore cannot be starved by a full admission queue.
+// The actor retains at most MAX_PENDING_ADMISSIONS queued items. The ingress
+// buffer is deliberately smaller; release notifications use a separate
+// control channel and therefore cannot be starved by admission traffic.
 const MAX_PENDING_ADMISSIONS: usize = 4_096;
+const ADMISSION_CHANNEL_CAPACITY: usize = 256;
 
 /// Relative importance of work admitted through an agent's shared scheduler.
 ///
@@ -127,6 +128,8 @@ pub enum TaskSchedulerError {
     Cancelled,
     #[error("task scheduler is closed")]
     Closed,
+    #[error("task admission queue is full (limit {limit})")]
+    AtCapacity { limit: usize },
 }
 
 /// Counts grouped by the stable public priority classes.
@@ -177,7 +180,7 @@ impl TaskScheduler {
     /// Start a scheduler on the current Tokio runtime.
     pub fn new(config: TaskSchedulerConfig) -> Result<Self, TaskSchedulerError> {
         config.validate()?;
-        let (tx, rx) = mpsc::channel(MAX_PENDING_ADMISSIONS);
+        let (tx, rx) = mpsc::channel(ADMISSION_CHANNEL_CAPACITY);
         let (release_tx, release_rx) = mpsc::unbounded_channel();
         let closed = Arc::new(AtomicBool::new(false));
         tokio::spawn(run_scheduler(rx, release_rx, config, Arc::clone(&closed)));
@@ -215,9 +218,9 @@ impl TaskScheduler {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                // Dropping the lease emits Release. Because Enqueue was sent
-                // first on this channel, the actor removes either the queued
-                // item or the just-admitted slot without a tombstone set.
+                // An unarmed lease emits no Release. Once Enqueue has been
+                // accepted, the armed lease removes either the queued item or
+                // the just-admitted slot through the control channel.
                 Err(TaskSchedulerError::Cancelled)
             }
             sent = self.tx.send(SchedulerMessage::Enqueue(QueuedAdmission {
@@ -336,12 +339,7 @@ async fn run_scheduler(
         };
         match message {
             SchedulerMessage::Enqueue(item) => {
-                if state.closing {
-                    let _ = item.ready.send(Err(TaskSchedulerError::Closed));
-                } else {
-                    state.pending.push(item.priority.lane_priority(), item);
-                    state.dispatch();
-                }
+                state.enqueue(item);
             }
             SchedulerMessage::Release(id) => {
                 if state.active.remove(&id).is_none() {
@@ -374,6 +372,19 @@ async fn run_scheduler(
 }
 
 impl SchedulerState {
+    fn enqueue(&mut self, item: QueuedAdmission) {
+        if self.closing {
+            let _ = item.ready.send(Err(TaskSchedulerError::Closed));
+        } else if self.pending.len() >= MAX_PENDING_ADMISSIONS {
+            let _ = item.ready.send(Err(TaskSchedulerError::AtCapacity {
+                limit: MAX_PENDING_ADMISSIONS,
+            }));
+        } else {
+            self.pending.push(item.priority.lane_priority(), item);
+            self.dispatch();
+        }
+    }
+
     fn remove_pending(&mut self, id: u64) {
         if self.pending.is_empty() {
             return;
@@ -519,6 +530,48 @@ mod tests {
             Poll::Ready(())
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn pending_admissions_have_an_explicit_memory_bound() {
+        let mut state = SchedulerState {
+            config: TaskSchedulerConfig::default(),
+            pending: PriorityQueue::new(),
+            active: HashMap::new(),
+            closing: false,
+            shutdown_waiters: Vec::new(),
+        };
+        let mut receivers = Vec::with_capacity(MAX_PENDING_ADMISSIONS + 1);
+        for id in 0..MAX_PENDING_ADMISSIONS {
+            let (ready, receiver) = oneshot::channel();
+            receivers.push(receiver);
+            state.pending.push(
+                TaskPriority::Background.lane_priority(),
+                QueuedAdmission {
+                    id: id as u64,
+                    priority: TaskPriority::Background,
+                    label: "bounded".to_string(),
+                    enqueued_at: Instant::now(),
+                    ready,
+                },
+            );
+        }
+        let (ready, receiver) = oneshot::channel();
+        state.enqueue(QueuedAdmission {
+            id: MAX_PENDING_ADMISSIONS as u64,
+            priority: TaskPriority::Background,
+            label: "rejected".to_string(),
+            enqueued_at: Instant::now(),
+            ready,
+        });
+        assert_eq!(state.pending.len(), MAX_PENDING_ADMISSIONS);
+        assert!(matches!(
+            receiver.await.unwrap(),
+            Err(TaskSchedulerError::AtCapacity {
+                limit: MAX_PENDING_ADMISSIONS
+            })
+        ));
+        drop(receivers);
     }
 
     #[tokio::test]
