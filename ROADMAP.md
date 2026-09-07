@@ -264,6 +264,28 @@ small: it does not claim a complete project aggregate, scientific knowledge
 graph, package registry, or publication service. Those capabilities belong to
 the host, A3S Use, and Desktop phases in the cross-repository roadmap.
 
+### 3.3.9 Core event fabric
+
+The core identity and event-fabric slice (KRN-1) is delivered as an adapter
+layer, not a second audit database. `CoreIdentity` carries the shared
+`OperationId`, `SourceRevision`, `CapabilityStamp`, `EvidenceCursor`, and
+`ArtifactRef` plane with an injectable logical clock; `CoreEventIdentity`
+adapts agent and retained run events into canonical, domain-separated,
+digest-only identities; and `CoreEventLog` appends those identities into one
+bounded, hash-chained stream per operation where duplicate-content conflicts,
+cursor gaps and skips, causality forks, stale capability generations, and
+regressing source revisions fail closed. Identical re-delivery replays
+idempotently, FIFO retention keeps explicit gaps while the cursor, chain
+head, generation, and source pins survive trimming, and paged replay
+revalidates every retained entry so tampering is detected rather than
+trusted. The run journal, evaluation fact journal, and research projections
+remain the compatibility authorities; routing every projection through the
+log is an incremental migration with per-surface replay proofs, and the
+research projection already preserves one identity through the log in its
+committed regression.
+
+
+
 ### 3.4 Terminal-Bench reliability track
 
 Terminal-Bench is a verifier-driven qualification boundary, not a second Code

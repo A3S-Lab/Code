@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the append-only core event log (KRN-1 event fabric). One bounded,
+  hash-chained `CoreEventLog` stream per operation over
+  `CoreEventIdentity` values: admission fails closed on duplicate-content
+  conflicts, cursor gaps and skips, causality forks, stale capability
+  generations, and regressing source revisions; identical re-delivery
+  replays idempotently; FIFO retention keeps explicit gaps while cursor,
+  chain-head, generation, and source pins survive trimming; and paged
+  replay revalidates every retained entry so tampering is detected.
 - Added run-deadline enforcement across LLM attempts and retry backoff. Each
   provider attempt runs under a child cancellation scope with the configured
   provider timeout clipped to the remaining run budget, so a provider that
