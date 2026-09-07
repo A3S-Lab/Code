@@ -86,36 +86,41 @@ impl PersistentIndexCoordinator {
         let _ = self.updates.send(Arc::new(snapshot));
     }
 
-    /// Queue a coalesced update and, when the durable projection is still
-    /// absent, publish this snapshot on a detached thread before returning.
+    /// Publish a catalog snapshot into the durable projection.
     ///
-    /// Windows serial CI observed catalog revision 1 with index phase Absent
-    /// for 60s: the background worker alone was not enough for first publish.
+    /// When the index is still absent, sync this snapshot on a detached thread
+    /// *before* waking the coalescing worker so the first generation cannot
+    /// race two writers on the same staging directory (Windows serial CI).
     async fn publish(&self, snapshot: super::catalog::ChunkCatalogSnapshot) {
-        self.submit(snapshot.clone());
         if self.index.is_ready() {
+            self.submit(snapshot);
             return;
         }
         let index = Arc::clone(&self.index);
-        let snapshot = Arc::new(snapshot);
+        let pending = Arc::new(snapshot.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         if std::thread::Builder::new()
             .name("a3s-persistent-publish".to_owned())
             .spawn(move || {
-                let _ = tx.send(index.sync_snapshot(snapshot.as_ref()));
+                let _ = tx.send(index.sync_snapshot(pending.as_ref()));
             })
             .is_err()
         {
             tracing::warn!("failed to spawn inline persistent publish worker");
+            self.submit(snapshot);
             return;
         }
         match rx.await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                self.submit(snapshot);
+            }
             Ok(Err(error)) => {
-                tracing::warn!(%error, "inline persistent publish failed");
+                tracing::warn!(%error, "inline persistent publish failed; queueing for retry");
+                self.submit(snapshot);
             }
             Err(_) => {
                 tracing::warn!("inline persistent publish worker dropped its result");
+                self.submit(snapshot);
             }
         }
     }

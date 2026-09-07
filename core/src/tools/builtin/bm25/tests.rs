@@ -203,24 +203,43 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
     let index = services.persistent_index().unwrap();
     tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {
-            if catalog.snapshot().unwrap().source_revision() > 0 && index.is_ready() {
-                break;
+            let snapshot = catalog.snapshot().unwrap();
+            if snapshot.source_revision() > 0 {
+                if index.is_ready() {
+                    break;
+                }
+                // Drive first publish from the wait loop so a stranded
+                // coordinator cannot leave catalog revision 1 without a
+                // durable generation. Surface the sync error on timeout.
+                if let Err(error) = index.sync_snapshot(&snapshot) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let _ = error;
+                    continue;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap_or_else(|_| {
+        let snapshot = catalog.snapshot().ok();
+        let sync_error = snapshot.as_ref().and_then(|snapshot| {
+            index
+                .sync_snapshot(snapshot)
+                .err()
+                .map(|error| error.to_string())
+        });
         panic!(
-            "persistent index did not become ready; catalog_revision={:?} index={:?}",
-            catalog.snapshot().map(|snapshot| {
+            "persistent index did not become ready; catalog_revision={:?} index={:?} sync_error={sync_error:?} root={}",
+            snapshot.as_ref().map(|snapshot| {
                 (
                     snapshot.source_revision(),
                     snapshot.revision(),
                     snapshot.chunks().len(),
                 )
             }),
-            index.status()
+            index.status(),
+            index.root().display()
         )
     });
 
@@ -286,27 +305,39 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     let index = services.persistent_index().unwrap();
     let initial_status = tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {
+            let snapshot = catalog.snapshot().unwrap();
             let status = index.status();
-            if catalog.snapshot().unwrap().source_revision() > 0
+            if snapshot.source_revision() > 0
                 && status.phase == crate::workspace::WorkspacePersistentIndexPhase::Ready
             {
                 break status;
+            }
+            if snapshot.source_revision() > 0 {
+                let _ = index.sync_snapshot(&snapshot);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap_or_else(|_| {
+        let snapshot = catalog.snapshot().ok();
+        let sync_error = snapshot.as_ref().and_then(|snapshot| {
+            index
+                .sync_snapshot(snapshot)
+                .err()
+                .map(|error| error.to_string())
+        });
         panic!(
-            "initial persistent index did not become ready; catalog={:?} index={:?}",
-            catalog.snapshot().map(|snapshot| {
+            "initial persistent index did not become ready; catalog={:?} index={:?} sync_error={sync_error:?} root={}",
+            snapshot.as_ref().map(|snapshot| {
                 (
                     snapshot.source_revision(),
                     snapshot.revision(),
                     snapshot.chunks().len(),
                 )
             }),
-            index.status()
+            index.status(),
+            index.root().display()
         )
     });
     let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
