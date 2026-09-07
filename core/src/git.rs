@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_GIT_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 
 thread_local! {
     static GIT_CANCELLATION: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
@@ -303,16 +304,8 @@ fn run_git_os_with_executable_and_env(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("Git stderr was not piped"))?;
-    let stdout = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut stdout = stdout;
-        stdout.read_to_end(&mut output).map(|_| output)
-    });
-    let stderr = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut stderr = stderr;
-        stderr.read_to_end(&mut output).map(|_| output)
-    });
+    let stdout = std::thread::spawn(move || read_git_output(stdout));
+    let stderr = std::thread::spawn(move || read_git_output(stderr));
     let mut process_group =
         crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
     let deadline = Instant::now() + timeout;
@@ -368,6 +361,38 @@ fn run_git_os_with_executable_and_env(
     let status = status.ok_or_else(|| anyhow!("Git command exited without a status"))?;
 
     Ok((status.success(), stdout, stderr))
+}
+
+/// Drain a Git pipe while enforcing a hard retained-byte ceiling.
+///
+/// The reader continues draining after the ceiling is reached so the child
+/// can exit normally instead of blocking on a full pipe. The caller receives
+/// an error after process reaping, while memory remains bounded regardless of
+/// repository or helper output.
+fn read_git_output(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut exceeded = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_GIT_CAPTURE_BYTES.saturating_sub(output.len());
+        let retained = remaining.min(read);
+        output.extend_from_slice(&buffer[..retained]);
+        if retained < read {
+            exceeded = true;
+        }
+    }
+    if exceeded {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Git command output exceeds the {MAX_GIT_CAPTURE_BYTES}-byte limit"),
+        ))
+    } else {
+        Ok(output)
+    }
 }
 
 // ==================== Git Operations ====================
@@ -1012,6 +1037,14 @@ mod tests {
             environment.get("GCM_INTERACTIVE").map(String::as_str),
             Some("never")
         );
+    }
+
+    #[test]
+    fn git_output_reader_bounds_retained_bytes() {
+        let input = vec![b'x'; MAX_GIT_CAPTURE_BYTES + 1];
+        let error = read_git_output(std::io::Cursor::new(input))
+            .expect_err("output beyond the hard cap must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[cfg(unix)]

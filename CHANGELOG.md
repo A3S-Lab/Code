@@ -140,6 +140,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handle for concurrent growth before exposing bytes to an LLM provider.
 - Applied the shared bounded-read policy to remote Git mTLS certificate and
   private-key files before constructing the HTTP identity.
+- Bounded local Git stdout/stderr capture at 16 MiB while continuing to drain
+  child pipes, preventing hostile repository or helper output from growing
+  process memory without deadlocking command reaping.
 
 ## [8.2.0] - 2026-09-04
 
