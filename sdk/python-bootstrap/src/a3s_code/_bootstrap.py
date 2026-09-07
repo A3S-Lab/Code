@@ -191,8 +191,9 @@ def _platform_tag() -> str:
         if machine in ("x86_64", "amd64"):
             return "manylinux_2_28_x86_64"
         if machine in ("arm64", "aarch64"):
-            # aarch64 wheels ship a zvec runtime that requires glibc 2.38+.
-            return "manylinux_2_38_aarch64"
+            # aarch64 wheels ship a zvec runtime that requires glibc 2.38+,
+            # and are built/audited as manylinux_2_39.
+            return "manylinux_2_39_aarch64"
     elif sys_plat == "win32":
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
@@ -201,7 +202,7 @@ def _platform_tag() -> str:
     raise BootstrapError(
         f"a3s-code: no native wheel published for {sys_plat}/{machine}. "
         "Supported platforms: macOS arm64 (11+), macOS Intel (12+), "
-        "Linux x86_64 (glibc 2.28+), Linux arm64 (glibc 2.38+), "
+        "Linux x86_64 (glibc 2.28+), Linux arm64 (glibc 2.39+), "
         "Windows x86_64/arm64."
     )
 
