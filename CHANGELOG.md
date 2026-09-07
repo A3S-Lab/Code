@@ -138,6 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a full queue cannot delay closure or drain of active leases.
 - Bounded file-backed multimodal attachments at 16 MiB and rechecked the opened
   handle for concurrent growth before exposing bytes to an LLM provider.
+- Applied the shared bounded-read policy to remote Git mTLS certificate and
+  private-key files before constructing the HTTP identity.
 
 ## [8.2.0] - 2026-09-04
 

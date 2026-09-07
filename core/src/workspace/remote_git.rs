@@ -687,20 +687,24 @@ fn load_mtls_identity(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
 ) -> Result<reqwest::Identity> {
-    let cert = std::fs::read(cert_path).map_err(|e| {
-        anyhow!(
-            "failed to read mTLS client_cert_pem at {}: {}",
-            cert_path.display(),
-            e
-        )
-    })?;
-    let key = std::fs::read(key_path).map_err(|e| {
-        anyhow!(
-            "failed to read mTLS client_key_pem at {}: {}",
-            key_path.display(),
-            e
-        )
-    })?;
+    let cert =
+        crate::bounded_io::read_file_bounded(cert_path, crate::bounded_io::MAX_CONFIG_FILE_BYTES)
+            .map_err(|e| {
+            anyhow!(
+                "failed to read mTLS client_cert_pem at {}: {}",
+                cert_path.display(),
+                e
+            )
+        })?;
+    let key =
+        crate::bounded_io::read_file_bounded(key_path, crate::bounded_io::MAX_CONFIG_FILE_BYTES)
+            .map_err(|e| {
+                anyhow!(
+                    "failed to read mTLS client_key_pem at {}: {}",
+                    key_path.display(),
+                    e
+                )
+            })?;
 
     let mut pem = Vec::with_capacity(cert.len() + key.len() + 1);
     pem.extend_from_slice(&cert);

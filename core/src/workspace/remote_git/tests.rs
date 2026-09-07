@@ -83,6 +83,26 @@ fn mtls_rejects_invalid_pem_blob() {
 }
 
 #[test]
+fn mtls_rejects_oversized_pem_before_identity_construction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cert = tmp.path().join("oversized-cert.pem");
+    let key = tmp.path().join("key.pem");
+    let cert_file = std::fs::File::create(&cert).unwrap();
+    cert_file
+        .set_len((crate::bounded_io::MAX_CONFIG_FILE_BYTES + 1) as u64)
+        .unwrap();
+    std::fs::write(&key, b"not a pem").unwrap();
+
+    let cfg = RemoteGitBackendConfig::new("http://localhost", "r")
+        .client_cert_pem(&cert)
+        .client_key_pem(&key);
+    let error = RemoteGitBackend::new(cfg).expect_err("oversized cert must fail closed");
+    assert!(error
+        .to_string()
+        .contains("failed to read mTLS client_cert_pem"));
+}
+
+#[test]
 fn mtls_accepts_self_signed_pair_from_rcgen() {
     // rcgen produces a valid cert + PKCS#8 key pair; `reqwest::Identity`
     // (rustls-tls backend) should accept the concatenated PEM blob.
