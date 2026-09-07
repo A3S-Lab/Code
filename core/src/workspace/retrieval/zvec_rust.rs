@@ -28,6 +28,20 @@ const MAX_OPEN_COLLECTIONS: usize = 4;
 // A zvec close releases the collection lock synchronously, but its native
 // segment teardown can briefly outlive the FFI call under heavy parallel
 // churn. Keep retries bounded while allowing that teardown to settle.
+
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{stripped}"));
+        }
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
 const OPEN_RETRY_DELAYS_MS: &[u64] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
 struct PreparedLexicalDocument {
@@ -293,7 +307,7 @@ impl ZvecRustLexicalIndex {
         if let Some(parent) = collection_root.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let collection_path = collection_root
+        let collection_path = strip_windows_verbatim_prefix(collection_root.to_path_buf())
             .to_str()
             .ok_or_else(|| "zvec lexical path is not UTF-8".to_owned())?
             .to_owned();
@@ -435,7 +449,7 @@ impl ZvecRustLexicalIndex {
             .get_mut()
             .map(|slot| slot.is_none())
             .unwrap_or(true));
-        self.collection_path = collection_root;
+        self.collection_path = strip_windows_verbatim_prefix(collection_root);
     }
 
     pub(crate) fn document_count(&self) -> usize {

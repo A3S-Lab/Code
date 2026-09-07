@@ -186,7 +186,10 @@ impl WorkspacePersistentIndex {
         root: impl Into<PathBuf>,
         engine: WorkspaceLexicalEngine,
     ) -> WorkspaceIndexResult<Arc<Self>> {
-        let root = root.into();
+        // zvec rejects Windows verbatim (`\\?\`) paths from `canonicalize()`.
+        // Workspace roots are commonly canonicalized before the index is
+        // configured, so strip the prefix at the durable-index boundary.
+        let root = strip_windows_verbatim_prefix(root.into());
         #[cfg(not(feature = "zvec-rust-fts"))]
         {
             let _ = (&root, engine);
@@ -844,6 +847,24 @@ fn remove_path_if_exists(path: &Path) -> WorkspaceIndexResult<()> {
     }
 }
 
+/// Strip Windows extended-length prefixes that `canonicalize()` adds.
+///
+/// Native zvec rejects `\\?\C:\...` paths as invalid. Persistent index roots
+/// often inherit a canonicalized workspace path, so normalize at this boundary.
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{stripped}"));
+        }
+        if let Some(stripped) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
 #[cfg(feature = "zvec-rust-fts")]
 fn write_current(root: &Path, generation: &str) -> WorkspaceIndexResult<()> {
     let temporary = root.join(".CURRENT.tmp");
@@ -1008,12 +1029,79 @@ fn distinct_path_count(chunks: &[Arc<WorkspaceChunk>]) -> usize {
 
 #[cfg(all(test, feature = "zvec-rust-fts"))]
 mod tests {
-    use super::{WorkspacePersistentIndex, MANIFEST_FILE};
+    use super::{
+        strip_windows_verbatim_prefix, WorkspacePersistentIndex, MANIFEST_FILE,
+    };
     use crate::workspace::retrieval::{
         ChunkCatalogLimits, ChunkingConfig, LexicalSearchRequest, WorkspaceChunkCatalog,
         WorkspaceLexicalEngine,
     };
     use crate::workspace::WorkspacePath;
+    use std::path::PathBuf;
+
+    #[test]
+    fn strip_windows_verbatim_prefix_removes_extended_length_form() {
+        let stripped = strip_windows_verbatim_prefix(PathBuf::from(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\.tmpIndex\.a3s-code\index",
+        ));
+        #[cfg(windows)]
+        assert_eq!(
+            stripped,
+            PathBuf::from(r"C:\Users\runneradmin\AppData\Local\Temp\.tmpIndex\.a3s-code\index")
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            stripped,
+            PathBuf::from(r"\\?\C:\Users\runneradmin\AppData\Local\Temp\.tmpIndex\.a3s-code\index")
+        );
+    }
+
+    #[cfg(feature = "zvec-rust-fts")]
+    #[test]
+    fn persistent_index_opens_under_windows_verbatim_prefix() {
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let root = directory.path().join(".a3s-code").join("index");
+        std::fs::create_dir_all(&root).expect("index root");
+        let open_root = {
+            #[cfg(windows)]
+            {
+                let canonical = std::fs::canonicalize(&root).expect("canonicalize index root");
+                if canonical.to_string_lossy().starts_with(r"\\?\") {
+                    canonical
+                } else {
+                    PathBuf::from(format!(r"\\?\{}", canonical.display()))
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                root.clone()
+            }
+        };
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::ZvecRust,
+        )
+        .expect("catalog");
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized("src/lib.rs"),
+                Some("rust"),
+                1,
+                "verbatim path persistent sentinel\n",
+            )
+            .expect("catalog replacement");
+        let index = WorkspacePersistentIndex::open(open_root, WorkspaceLexicalEngine::ZvecRust)
+            .expect("persistent index under verbatim prefix");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("snapshot"))
+            .expect("generation write under verbatim prefix");
+        assert!(index.is_ready());
+        assert!(
+            !index.root().to_string_lossy().starts_with(r"\\?\"),
+            "persistent index root should strip the Windows verbatim prefix"
+        );
+    }
 
     #[test]
     fn persistent_generation_survives_reopen_and_replaces_removed_content() {
