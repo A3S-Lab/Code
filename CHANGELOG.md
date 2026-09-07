@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Made SDK FFI runtime initialization fallible (KRN-9 slice). The Node
+  binding-owned fallback Tokio runtime no longer panics the process:
+  spawn/block_on surface a stable napi error, all call sites propagate
+  it, and the deprecated sync cancel/close expose it to JS. The Python
+  module validates its Tokio runtime once at import with a stable
+  `RuntimeError`. `TaskSchedulerError::AtCapacity` now maps to
+  `TASK_ADMISSION_AT_CAPACITY` in both SDKs, and the Node type
+  bindings are regenerated to include the merged Moli runtime
+  diagnostics.
 - Added the end-to-end research reviewer qualification (`RESEARCH-REVIEW1`).
   A host-owned reviewer now composes through the real evaluation substrate:
   bounded run evidence feeds an auxiliary reviewer run, its evaluator result
