@@ -63,15 +63,19 @@ async fn main() -> anyhow::Result<()> {
     let file_root = tempfile::tempdir()?;
     let file_store = FileSessionStore::new(file_root.path()).await?;
     let file = measure_store(&file_store, &snapshot, compact_bytes).await?;
-    let (file_count_before_delete, file_bytes_before_delete) = file_tree_stats(file_root.path())?;
-    let overwrite_passed = file_count_before_delete == 1
-        && file_bytes_before_delete == u64::try_from(persisted_bytes)?;
+    let before_delete = classify_store_files(file_root.path())?;
+    // Session snapshots must not accumulate across overwrites. The digest-only
+    // WAL is an intentional auxiliary durability file and may remain present.
+    let overwrite_passed = before_delete.session_files == 1
+        && before_delete.session_bytes == u64::try_from(persisted_bytes)?
+        && before_delete.unexpected_files == 0;
     file_store.delete(&snapshot.session.id).await?;
-    let (file_count_after_delete, file_bytes_after_delete) = file_tree_stats(file_root.path())?;
+    let after_delete = classify_store_files(file_root.path())?;
     let file_cleanup_passed = !file_store.exists(&snapshot.session.id).await?
         && file_store.list().await?.is_empty()
-        && file_count_after_delete == 0
-        && file_bytes_after_delete == 0;
+        && after_delete.session_files == 0
+        && after_delete.session_bytes == 0
+        && after_delete.unexpected_files == 0;
 
     let memory_passed = memory.save.p95_ms <= MEMORY_SAVE_P95_BUDGET_MS
         && memory.load.p95_ms <= MEMORY_LOAD_P95_BUDGET_MS
@@ -108,10 +112,15 @@ async fn main() -> anyhow::Result<()> {
             "save": latency_json(file.save, FILE_SAVE_P95_BUDGET_MS),
             "load": latency_json(file.load, FILE_LOAD_P95_BUDGET_MS),
             "sessionCountAfterOverwrite": file.list_count,
-            "regularFilesAfterOverwrite": file_count_before_delete,
-            "bytesAfterOverwrite": file_bytes_before_delete,
-            "regularFilesAfterDelete": file_count_after_delete,
-            "bytesAfterDelete": file_bytes_after_delete,
+            "regularFilesAfterOverwrite": before_delete.session_files + before_delete.wal_files,
+            "sessionFilesAfterOverwrite": before_delete.session_files,
+            "walFilesAfterOverwrite": before_delete.wal_files,
+            "bytesAfterOverwrite": before_delete.session_bytes + before_delete.wal_bytes,
+            "sessionBytesAfterOverwrite": before_delete.session_bytes,
+            "regularFilesAfterDelete": after_delete.session_files + after_delete.wal_files,
+            "sessionFilesAfterDelete": after_delete.session_files,
+            "walFilesAfterDelete": after_delete.wal_files,
+            "bytesAfterDelete": after_delete.session_bytes + after_delete.wal_bytes,
             "overwriteWithoutAccumulationPassed": overwrite_passed,
             "deleteCleanupPassed": file_cleanup_passed,
             "filesystemAndFsyncIncluded": true,
@@ -251,23 +260,49 @@ fn validate_loaded(
     Ok(())
 }
 
-fn file_tree_stats(root: &Path) -> anyhow::Result<(usize, u64)> {
+fn classify_store_files(root: &Path) -> anyhow::Result<StoreFileStats> {
     let mut directories = vec![root.to_path_buf()];
-    let mut files = 0usize;
-    let mut bytes = 0u64;
+    let mut stats = StoreFileStats::default();
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(directory)? {
             let entry = entry?;
+            let path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                directories.push(entry.path());
-            } else if file_type.is_file() {
-                files = files.saturating_add(1);
-                bytes = bytes.saturating_add(entry.metadata()?.len());
+                directories.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let bytes = entry.metadata()?.len();
+            if is_session_store_wal_path(root, &path) {
+                stats.wal_files = stats.wal_files.saturating_add(1);
+                stats.wal_bytes = stats.wal_bytes.saturating_add(bytes);
+            } else if path.extension().is_some_and(|ext| ext == "json") {
+                stats.session_files = stats.session_files.saturating_add(1);
+                stats.session_bytes = stats.session_bytes.saturating_add(bytes);
+            } else {
+                stats.unexpected_files = stats.unexpected_files.saturating_add(1);
             }
         }
     }
-    Ok((files, bytes))
+    Ok(stats)
+}
+
+fn is_session_store_wal_path(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .ok()
+        .is_some_and(|relative| relative == Path::new("v1/wal/session-store.ndjson"))
+}
+
+#[derive(Default)]
+struct StoreFileStats {
+    session_files: usize,
+    session_bytes: u64,
+    wal_files: usize,
+    wal_bytes: u64,
+    unexpected_files: usize,
 }
 
 fn latency(mut samples: Vec<Duration>) -> anyhow::Result<Latency> {

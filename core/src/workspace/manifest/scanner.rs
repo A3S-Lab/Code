@@ -292,7 +292,18 @@ pub(super) fn path_has_noise_component(path: &Path) -> bool {
         };
         matches!(
             name.to_string_lossy().as_ref(),
-            ".git" | "node_modules" | "target" | ".next" | "dist" | ".DS_Store"
+            // Control-plane and package/build trees must not invalidate the
+            // workspace catalog. Persistent retrieval writes under `.a3s-code/`
+            // inside the workspace; treating those as source changes republishes
+            // mid-query and empties hybrid hits (revision-changed).
+            ".git"
+                | ".a3s"
+                | ".a3s-code"
+                | "node_modules"
+                | "target"
+                | ".next"
+                | "dist"
+                | ".DS_Store"
         )
     })
 }
@@ -326,6 +337,23 @@ mod cancellation_tests {
     use std::cell::Cell;
     #[cfg(unix)]
     use std::sync::Arc;
+
+    #[test]
+    fn control_plane_and_package_dirs_are_noise() {
+        for path in [
+            ".a3s-code/index/CURRENT",
+            ".a3s/os-auth.json",
+            "node_modules/pkg/index.js",
+            "target/debug/build.rs",
+            ".git/config",
+        ] {
+            assert!(
+                path_has_noise_component(Path::new(path)),
+                "{path} should be ignored as workspace noise"
+            );
+        }
+        assert!(!path_has_noise_component(Path::new("src/lib.rs")));
+    }
 
     #[test]
     fn cancellable_scan_skips_a_pre_cancelled_workspace() {

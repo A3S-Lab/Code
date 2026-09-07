@@ -625,10 +625,12 @@ fn file_change_batch_ignores_external_and_invalid_paths() {
     let outside = root.parent().unwrap().join("outside.rs");
     let invalid = root.join("../escape.rs");
     let ignored = root.join("node_modules/package/index.js");
+    let control_plane = root.join(".a3s-code/index/CURRENT");
     let events = vec![
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(outside),
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(invalid),
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(ignored),
+        Event::new(EventKind::Modify(ModifyKind::Any)).add_path(control_plane),
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(root.clone()),
     ];
 

@@ -83,10 +83,16 @@ impl LocalWorkspaceAccessBoundary {
             })
             .collect();
 
+        // Package/build stores often use legitimate multi-link artifacts.
+        // a3s-sandbox hardlink scans may still enumerate them (older crates.io
+        // builds skipped only control-plane dirs). Keep those paths out of the
+        // eager deny set so the multi-link policy below can allow ordinary
+        // package hardlinks while still denying credential inode aliases.
         let denied_hardlink_paths: HashSet<PathBuf> = workspace_hardlink_paths(workspace)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|path| path.strip_prefix(workspace).ok().map(Path::to_path_buf))
+            .filter(|path| !is_skipped_workspace_tree(path))
             .collect();
 
         CredentialScan {
