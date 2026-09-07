@@ -152,9 +152,13 @@ jobs:
         run: cargo clean
 
       - name: Default tests
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace
 
       - name: Feature-gated library tests
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace --all-features --lib
 
   # ───────────────────────────────────────────────
@@ -191,6 +195,10 @@ jobs:
         # a3s-sandbox's AppContainer backend temporarily reserves DOS drive
         # mappings and mutates host ACLs. Keep the test process serial so
         # unrelated Code tests cannot race those process-global resources.
+        # Go bridge / FFI tests need a larger default stack than Windows CI
+        # provides; match the Linux Default tests env.
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace --lib -- --test-threads=1
 
   # ───────────────────────────────────────────────

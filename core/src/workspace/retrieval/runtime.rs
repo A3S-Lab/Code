@@ -452,15 +452,55 @@ async fn run_catalog_updates(
     lifetime: CancellationToken,
     persistent: Option<Arc<PersistentIndexCoordinator>>,
 ) {
-    let initial = manifest.snapshot();
-    if initial.version > 0 {
-        report_reconciliation(
-            reconciler.reconcile_snapshot(&initial).await,
-            &reconciler,
-            persistent.as_ref(),
-        )
-        .await;
+    // Catalog runtime can start while the first scan is still in flight, or
+    // after it already published (broadcast fans out only to live subscribers).
+    // Poll live manifest state until the first non-empty revision so Windows
+    // serial CI does not sit idle waiting only on a missed channel message.
+    let mut seeded = false;
+    while !seeded {
+        let initial = manifest.snapshot();
+        if initial.version > 0 {
+            report_reconciliation(
+                reconciler.reconcile_snapshot(&initial).await,
+                &reconciler,
+                persistent.as_ref(),
+            )
+            .await;
+            seeded = true;
+            break;
+        }
+        tokio::select! {
+            _ = lifetime.cancelled() => return,
+            update = snapshots.recv() => match update {
+                Ok(snapshot) => {
+                    if snapshot.version > 0 {
+                        report_reconciliation(
+                            reconciler.reconcile_snapshot(&snapshot).await,
+                            &reconciler,
+                            persistent.as_ref(),
+                        )
+                        .await;
+                        seeded = true;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let snapshot = manifest.snapshot();
+                    if snapshot.version > 0 {
+                        report_reconciliation(
+                            reconciler.reconcile_after_lag(&snapshot).await,
+                            &reconciler,
+                            persistent.as_ref(),
+                        )
+                        .await;
+                        seeded = true;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
     }
+    let _ = seeded;
 
     loop {
         tokio::select! {

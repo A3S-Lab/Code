@@ -104,9 +104,13 @@ jobs:
           bash scripts/check_semver.sh 5.3.5
 
       - name: Default tests
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace
 
       - name: Feature-gated library tests
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace --all-features --lib
 
       - name: Agent convergence benchmark
@@ -198,6 +202,8 @@ jobs:
         # a3s-sandbox's AppContainer backend temporarily reserves DOS drive
         # mappings and mutates host ACLs. Keep the test process serial so
         # unrelated Code tests cannot race those process-global resources.
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace --lib -- --test-threads=1
 
       - uses: actions/setup-go@v6

@@ -2,6 +2,13 @@ use super::*;
 use crate::workspace::WorkspaceLexicalEngine;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::time::Duration;
+
+/// Windows CI runs the full lib suite serially (`--test-threads=1`) under
+/// antivirus/IO pressure; persistent projection publish routinely exceeds the
+/// old 15s local-dev budget. Keep the same deadline everywhere so readiness
+/// failures stay deterministic across platforms.
+const PERSISTENT_INDEX_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn context_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext) {
     let temp = tempfile::tempdir().unwrap();
@@ -181,7 +188,7 @@ async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads()
 }
 
 #[cfg(feature = "zvec-rust-fts")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("src/cache.rs");
@@ -194,16 +201,28 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
     let services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
     let catalog = services.chunk_catalog().unwrap();
     let index = services.persistent_index().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {
             if catalog.snapshot().unwrap().source_revision() > 0 && index.is_ready() {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("persistent index did not become ready");
+    .unwrap_or_else(|_| {
+        panic!(
+            "persistent index did not become ready; catalog_revision={:?} index={:?}",
+            catalog.snapshot().map(|snapshot| {
+                (
+                    snapshot.source_revision(),
+                    snapshot.revision(),
+                    snapshot.chunks().len(),
+                )
+            }),
+            index.status()
+        )
+    });
 
     let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
     let result = Bm25Tool
@@ -227,13 +246,18 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
     drop(context);
     let reopened_services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
     let reopened_index = reopened_services.persistent_index().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         while !reopened_index.is_ready() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("reopened persistent index did not become ready");
+    .unwrap_or_else(|_| {
+        panic!(
+            "reopened persistent index did not become ready; status={:?}",
+            reopened_index.status()
+        )
+    });
     let reopened_context =
         ToolContext::new(temp.path().to_path_buf()).with_workspace_services(reopened_services);
     let reopened_result = Bm25Tool
@@ -250,7 +274,7 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
 }
 
 #[cfg(feature = "zvec-rust-fts")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("src/state.rs");
@@ -260,7 +284,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     let services = crate::workspace::WorkspaceServices::local_with_retrieval(temp.path());
     let catalog = services.chunk_catalog().unwrap();
     let index = services.persistent_index().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let initial_status = tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {
             let status = index.status();
             if catalog.snapshot().unwrap().source_revision() > 0
@@ -268,12 +292,23 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
             {
                 break status;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("initial persistent index did not become ready");
-    let initial_status = index.status();
+    .unwrap_or_else(|_| {
+        panic!(
+            "initial persistent index did not become ready; catalog={:?} index={:?}",
+            catalog.snapshot().map(|snapshot| {
+                (
+                    snapshot.source_revision(),
+                    snapshot.revision(),
+                    snapshot.chunks().len(),
+                )
+            }),
+            index.status()
+        )
+    });
     let context = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
 
     let initial = Bm25Tool
@@ -317,7 +352,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
         replaced.content
     );
 
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {
             let status = index.status();
             if status.source_revision > initial_status.source_revision
@@ -325,11 +360,17 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
             {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("persistent index did not publish the replacement generation");
+    .unwrap_or_else(|_| {
+        panic!(
+            "persistent index did not publish the replacement generation; initial={:?} current={:?}",
+            initial_status,
+            index.status()
+        )
+    });
 
     let current = Bm25Tool
         .execute(

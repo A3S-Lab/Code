@@ -49,7 +49,7 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
 }
 
 #[cfg(feature = "zvec-rust-fts")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
@@ -67,7 +67,9 @@ async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
         .await
         .unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(15), async {
+    // Serial Windows CI suites need headroom beyond the local 15s budget for
+    // first persistent projection publish under disk/antivirus pressure.
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let result = session
                 .tool(
