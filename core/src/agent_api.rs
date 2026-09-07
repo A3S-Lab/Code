@@ -475,6 +475,9 @@ pub struct AgentSession {
     /// Provider-reported generation capacity shared by every loop and
     /// host-direct tool call created for this session.
     model_generation_admission: crate::llm::ModelGenerationAdmission,
+    /// Secret-free middleware stage counters shared by every loop rebuilt for
+    /// this session (`OPT-OBS1`).
+    middleware_obs: Arc<crate::agent::ModelMiddlewareObs>,
     /// Agent-wide execution admission shared across sibling sessions.
     task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
     /// Base priority for this session's top-level operations.
@@ -509,9 +512,16 @@ pub struct AgentSession {
     memory: Option<Arc<crate::memory::AgentMemory>>,
     /// Optional session store for persistence.
     session_store: Option<Arc<dyn crate::store::SessionStore>>,
-    /// Host-owned destination for same-boundary portable checkpoints.
-    session_checkpoint_export_sink:
-        Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>,
+    /// Host-owned destination for exact live tool-boundary checkpoints.
+    ///
+    /// This extension does not replace the Session store. Code captures one
+    /// canonical `SessionSnapshotV1` and its matching logical resume boundary,
+    /// then hands the immutable export to this sink. Host storage policy and
+    /// cross-process fencing remain outside Code. SDKs may install the sink
+    /// after construction through
+    /// [`AgentSession::set_session_checkpoint_export_sink`].
+    runtime_session_checkpoint_export_sink:
+        std::sync::Mutex<Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>>,
     /// Runtime-owned fields used to build lossless persistence generations.
     persistence_state: Arc<RwLock<session_persistence::SessionPersistenceState>>,
     /// Auto-save after each completed `send()` or default-history `stream()`.

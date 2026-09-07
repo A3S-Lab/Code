@@ -69,6 +69,8 @@ impl AgentLoop {
             &output,
             normalized.is_error,
             normalized.images,
+            normalized.trust,
+            normalized.redaction_reviewed,
         );
     }
 }

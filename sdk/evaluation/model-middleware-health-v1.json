@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "report_schema_version": 1,
+  "fixture_id": "model-middleware-health-v1",
+  "required_snapshot_fields": [
+    "trustAdmitted",
+    "trustRejected",
+    "providerCalls",
+    "usageRecorded",
+    "completionCalls",
+    "streamingCalls",
+    "trustedToolResults",
+    "workspaceDataToolResults",
+    "externalToolResults",
+    "externalRedactionReviewed"
+  ],
+  "forbidden_fields": [
+    "provider",
+    "model",
+    "endpoint",
+    "url",
+    "api_key",
+    "apiKey",
+    "authorization",
+    "prompt",
+    "request",
+    "label",
+    "secret",
+    "token",
+    "toolResult",
+    "content",
+    "messages"
+  ]
+}

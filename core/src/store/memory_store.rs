@@ -1,4 +1,7 @@
-use super::{SessionData, SessionSnapshotV1, SessionStore, SessionStoreCapabilities};
+use super::{
+    snapshot_content_digest, SessionData, SessionSnapshotV1, SessionStore,
+    SessionStoreCapabilities, SessionStoreCommitEventV1, SessionStoreCommitWatch,
+};
 use crate::loop_checkpoint::LoopCheckpoint;
 use crate::orchestration::WorkflowCheckpoint;
 use crate::run::RunRecord;
@@ -8,6 +11,8 @@ use crate::trace::TraceEvent;
 use crate::verification::VerificationReport;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 
 // ============================================================================
 // In-Memory Session Store (for testing)
@@ -20,12 +25,14 @@ pub struct MemorySessionStore {
     sessions: tokio::sync::RwLock<HashMap<String, MemorySessionEntry>>,
     loop_checkpoints: tokio::sync::RwLock<HashMap<String, LoopCheckpoint>>,
     workflow_checkpoints: tokio::sync::RwLock<HashMap<String, WorkflowCheckpoint>>,
+    commit_watch: broadcast::Sender<SessionStoreCommitEventV1>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct MemorySessionEntry {
     session: Option<SessionData>,
     artifacts: Vec<ToolArtifact>,
+    retained_artifact_uris: Vec<String>,
     trace_events: Vec<TraceEvent>,
     run_records: Vec<RunRecord>,
     verification_reports: Vec<VerificationReport>,
@@ -37,6 +44,7 @@ impl MemorySessionEntry {
         Self {
             session: Some(snapshot.session.clone()),
             artifacts: snapshot.artifacts.clone(),
+            retained_artifact_uris: snapshot.retained_artifact_uris.clone(),
             trace_events: snapshot.trace_events.clone(),
             run_records: snapshot.run_records.clone(),
             verification_reports: snapshot.verification_reports.clone(),
@@ -50,6 +58,7 @@ impl MemorySessionEntry {
             schema_version: super::SESSION_SNAPSHOT_SCHEMA_VERSION,
             session,
             artifacts: self.artifacts.clone(),
+            retained_artifact_uris: self.retained_artifact_uris.clone(),
             trace_events: self.trace_events.clone(),
             run_records: self.run_records.clone(),
             verification_reports: self.verification_reports.clone(),
@@ -60,11 +69,28 @@ impl MemorySessionEntry {
 
 impl MemorySessionStore {
     pub fn new() -> Self {
+        let (commit_watch, _) = super::watch::commit_watch_channel();
         Self {
             sessions: tokio::sync::RwLock::new(HashMap::new()),
             loop_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
             workflow_checkpoints: tokio::sync::RwLock::new(HashMap::new()),
+            commit_watch,
         }
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn publish_commit(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
+        let digest = snapshot_content_digest(snapshot)?;
+        let event =
+            SessionStoreCommitEventV1::new(snapshot.session.id.clone(), digest, Self::now_ms())?;
+        let _ = self.commit_watch.send(event);
+        Ok(())
     }
 }
 
@@ -93,7 +119,38 @@ impl SessionStore for MemorySessionStore {
             snapshot.session.id.clone(),
             MemorySessionEntry::from_snapshot(snapshot),
         );
+        self.publish_commit(snapshot)?;
         Ok(())
+    }
+
+    async fn save_snapshot_cas(
+        &self,
+        snapshot: &SessionSnapshotV1,
+        expected_current_digest: Option<&str>,
+    ) -> Result<bool> {
+        snapshot.ensure_loadable()?;
+        let mut sessions = self.sessions.write().await;
+        if let Some(expected) = expected_current_digest {
+            let current = sessions
+                .get(&snapshot.session.id)
+                .and_then(MemorySessionEntry::snapshot);
+            match current {
+                Some(existing) => {
+                    let digest = snapshot_content_digest(&existing)?;
+                    if digest != expected {
+                        return Ok(false);
+                    }
+                }
+                None => return Ok(false),
+            }
+        }
+        sessions.insert(
+            snapshot.session.id.clone(),
+            MemorySessionEntry::from_snapshot(snapshot),
+        );
+        drop(sessions);
+        self.publish_commit(snapshot)?;
+        Ok(true)
     }
 
     async fn load_snapshot(&self, id: &str) -> Result<Option<SessionSnapshotV1>> {
@@ -109,9 +166,16 @@ impl SessionStore for MemorySessionStore {
         Ok(snapshot)
     }
 
+    async fn watch_commits(&self) -> Result<SessionStoreCommitWatch> {
+        Ok(SessionStoreCommitWatch::new(self.commit_watch.subscribe()))
+    }
+
     fn capabilities(&self) -> SessionStoreCapabilities {
         SessionStoreCapabilities {
             atomic_session_snapshots: true,
+            aggregate_cas: true,
+            reference_aware_artifact_gc: true,
+            watch: true,
             ..SessionStoreCapabilities::default()
         }
     }
@@ -143,23 +207,23 @@ impl SessionStore for MemorySessionStore {
     }
 
     async fn save_artifacts(&self, id: &str, artifacts: &ArtifactStore) -> Result<()> {
-        self.sessions
-            .write()
-            .await
-            .entry(id.to_string())
-            .or_default()
-            .artifacts = artifacts.artifacts();
+        let mut retained: Vec<String> = artifacts.retained_uris().into_iter().collect();
+        retained.sort();
+        let mut sessions = self.sessions.write().await;
+        let entry = sessions.entry(id.to_string()).or_default();
+        entry.artifacts = artifacts.artifacts();
+        entry.retained_artifact_uris = retained;
         Ok(())
     }
 
     async fn load_artifacts(&self, id: &str) -> Result<Option<ArtifactStore>> {
-        let artifacts = self
-            .sessions
-            .read()
-            .await
-            .get(id)
-            .map(|entry| entry.artifacts.clone());
-        Ok(artifacts.map(|artifacts| super::session_snapshot::artifact_store_from(&artifacts)))
+        let entry = self.sessions.read().await.get(id).cloned();
+        Ok(entry.map(|entry| {
+            super::session_snapshot::artifact_store_from_with_retention(
+                &entry.artifacts,
+                &entry.retained_artifact_uris,
+            )
+        }))
     }
 
     async fn save_trace_events(&self, id: &str, events: &[TraceEvent]) -> Result<()> {

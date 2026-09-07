@@ -12,6 +12,7 @@ mod manager;
 mod policy;
 mod risk;
 mod rule;
+mod style_specialty;
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +28,7 @@ pub use risk::{
     ToolRiskAssessment, ToolRiskDimensions, ToolRiskLevel, ToolRiskReason, ToolRiskType,
 };
 pub use rule::PermissionRule;
+pub use style_specialty::specialty_permission_policy;
 
 /// Trait for checking tool execution permissions.
 ///

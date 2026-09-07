@@ -2401,6 +2401,120 @@ async fn delegated_child_uses_the_parent_runs_exact_projected_mcp_binding() {
     newer_client.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn projected_mcp_bindings_starve_manager_tool_registration() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (parent_binding, parent_transport, parent_client) =
+        crate::mcp::test_support::ready_binding(
+            "catalog",
+            "generation-one",
+            vec![crate::mcp::test_support::mcp_tool(
+                "lookup",
+                "generation-one",
+            )],
+        )
+        .await;
+    let (_poison_binding, poison_transport, poison_client) =
+        crate::mcp::test_support::ready_binding(
+            "catalog",
+            "manager-refresh",
+            vec![
+                crate::mcp::test_support::mcp_tool("lookup", "manager-refresh"),
+                crate::mcp::test_support::mcp_tool("poison", "should-not-reach-child"),
+            ],
+        )
+        .await;
+    let manager = Arc::new(crate::mcp::McpManager::new());
+    manager
+        .insert_client_for_test("catalog", Arc::clone(&poison_client))
+        .await;
+    let manager_tools = manager.get_all_tools().await;
+    assert_eq!(
+        manager_tools.len(),
+        2,
+        "manager fixture must expose lookup+poison before child build: {manager_tools:?}"
+    );
+
+    let registry = AgentRegistry::new();
+    registry.register(
+        crate::subagent::WorkerAgentSpec::custom("mcp-worker", "Use projected MCP")
+            .with_permissions(
+                PermissionPolicy::new()
+                    .allow("mcp__catalog__lookup(*)")
+                    .allow("mcp__catalog__poison(*)"),
+            )
+            .with_prompt("Call the projected MCP tool exactly once.")
+            .with_max_steps(3)
+            .into_agent_definition(),
+    );
+    let llm = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "delegated-mcp",
+            "mcp__catalog__lookup",
+            serde_json::json!({"generation": "one"}),
+        ),
+        MockLlmClient::text_response("delegated MCP complete"),
+    ]));
+    let executor = TaskExecutor::with_mcp_managers(
+        Arc::new(registry),
+        Arc::clone(&llm) as Arc<dyn LlmClient>,
+        workspace.path().to_string_lossy().to_string(),
+        vec![manager],
+    )
+    .with_projected_mcp_bindings(vec![parent_binding])
+    .with_child_tool_presentation(crate::tools::ToolPresentationProfileV1::direct());
+
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "mcp-worker".to_string(),
+                description: "Use the pinned MCP generation".to_string(),
+                prompt: "Call lookup once.".to_string(),
+                background: false,
+                max_steps: Some(3),
+                output_schema: None,
+            },
+            None,
+            Some("parent-run"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "delegated child failed: {}", result.output);
+    let offered: Vec<String> = llm
+        .request_tool_definitions
+        .lock()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(|definition| definition.name.clone())
+        .collect();
+    assert!(
+        offered.iter().any(|name| name == "mcp__catalog__lookup"),
+        "projected lookup must remain available: {offered:?}"
+    );
+    assert!(
+        !offered.iter().any(|name| name == "mcp__catalog__poison"),
+        "manager refresh must not inject unbound MCP tools when projected bindings exist: {offered:?}"
+    );
+    let lookup_description = llm
+        .request_tool_definitions
+        .lock()
+        .unwrap()
+        .iter()
+        .flatten()
+        .find(|definition| definition.name == "mcp__catalog__lookup")
+        .expect("lookup definition")
+        .description
+        .clone();
+    assert_eq!(lookup_description, "generation-one");
+    assert_eq!(parent_transport.calls().len(), 1);
+    assert!(poison_transport.calls().is_empty());
+
+    parent_client.close().await.unwrap();
+    poison_client.close().await.unwrap();
+}
+
 struct RedactingSourceSecurityProvider;
 
 impl crate::security::SecurityProvider for RedactingSourceSecurityProvider {
@@ -2762,6 +2876,30 @@ async fn background_task_updates_shared_tracker_without_an_event_receiver() {
             url_or_path: "source.md".to_string(),
         }]
     );
+}
+
+#[tokio::test]
+async fn task_scheduler_without_typed_pool_skips_shared_provider_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("local only")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_task_scheduler(Arc::clone(&scheduler), false);
+    assert!(
+        !executor.has_provider_model_generation_admission(),
+        "clients without ModelGenerationPool must not get fake shared provider admission"
+    );
+    assert!(!executor.provider_admission_publishes_typed_pool());
+    scheduler.shutdown().await;
 }
 
 #[tokio::test]

@@ -24,6 +24,7 @@ mod run_binding;
 mod runtime;
 mod scope;
 mod scope_error;
+mod sdk_batch;
 mod set;
 mod source;
 mod supervisor;
@@ -75,6 +76,10 @@ pub use scope::{
     Session, Subtask, Turn,
 };
 pub use scope_error::CapabilityScopeError;
+pub use sdk_batch::{
+    SdkCapabilityBatchError, SdkCapabilityBatchV1, SdkCapabilityCommitReceiptV1,
+    SdkSkillCapabilityV1, SDK_CAPABILITY_BATCH_SCHEMA,
+};
 pub use set::{
     CapabilitySet, CAPABILITY_SET_DIGEST_DOMAIN, CAPABILITY_SET_SCHEMA, MAX_CAPABILITIES,
     MAX_CAPABILITY_CANONICAL_BYTES, MAX_CAPABILITY_DEPENDENCY_EDGES, MAX_CAPABILITY_SOURCES,

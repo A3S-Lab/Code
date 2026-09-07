@@ -405,6 +405,41 @@ impl<'a> ImmutableContentWriteRequestV1<'a> {
     }
 }
 
+/// Cross-language wire form for [`ImmutableContentWriteRequestV1`] (SDK-IMM1).
+///
+/// Hosts receive the secret-free binding and descriptor plus base64 content.
+/// Authorization and object lifecycle remain host responsibilities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SdkImmutableContentWriteRequestV1 {
+    pub binding: ImmutableContentAdapterBindingV1,
+    pub descriptor: ImmutableContentDescriptorV1,
+    pub content_base64: String,
+}
+
+impl SdkImmutableContentWriteRequestV1 {
+    pub fn from_request(request: &ImmutableContentWriteRequestV1<'_>) -> Self {
+        use base64::Engine;
+        Self {
+            binding: request.binding().clone(),
+            descriptor: request.descriptor().clone(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(request.content()),
+        }
+    }
+
+    pub fn content_bytes(&self) -> ImmutableContentResult<Vec<u8>> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(self.content_base64.as_bytes())
+            .map_err(|_| {
+                ImmutableContentError::Provider(
+                    "immutable content write request contentBase64 is not valid standard base64"
+                        .to_string(),
+                )
+            })
+    }
+}
+
 /// Host port for create-only, exact-replay immutable content retention.
 ///
 /// The host must scope this object to an authorization already resolved
@@ -561,4 +596,32 @@ fn invalid_descriptor(message: impl Into<String>) -> ImmutableContentError {
 
 fn reference_drift(message: impl Into<String>) -> ImmutableContentError {
     ImmutableContentError::ReferenceDrift(message.into())
+}
+
+#[cfg(test)]
+mod sdk_wire_tests {
+    use super::*;
+
+    #[test]
+    fn sdk_write_request_round_trips_base64_content() {
+        let binding =
+            ImmutableContentAdapterBindingV1::new(format!("sha256:{}", "a".repeat(64)), 4096)
+                .unwrap();
+        let content = b"immutable-content-fixture-v1";
+        let descriptor = ImmutableContentDescriptorV1::new(
+            ImmutableContentKindV1::ToolResultOriginal,
+            TOOL_RESULT_CONTENT_MEDIA_TYPE,
+            content,
+        )
+        .unwrap();
+        let request = ImmutableContentWriteRequestV1::new(&binding, &descriptor, content).unwrap();
+        let wire = SdkImmutableContentWriteRequestV1::from_request(&request);
+        assert!(!wire.content_base64.is_empty());
+        assert_eq!(wire.content_bytes().unwrap(), content);
+        assert_eq!(wire.binding.binding_digest, binding.binding_digest);
+        assert_eq!(
+            wire.descriptor.descriptor_digest,
+            descriptor.descriptor_digest
+        );
+    }
 }

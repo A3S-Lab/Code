@@ -453,6 +453,9 @@ pub(crate) fn remove_isolated_worktree(repo_path: &Path, destination: &Path) -> 
 
 /// Capture tracked and untracked, non-ignored workspace content as one Git
 /// tree without mutating the worktree index or branch.
+///
+/// Code-private `.a3s-code/` state is always omitted so Harness change sets
+/// stay product-workspace evidence and never absorb binary index generations.
 pub(crate) fn snapshot_workspace_tree(repo_path: &Path) -> Result<WorkspaceTreeSnapshot> {
     if !is_git_repo(repo_path) {
         return Err(anyhow!("Agent Harness workspace is not a Git repository"));
@@ -482,6 +485,8 @@ pub(crate) fn snapshot_workspace_tree(repo_path: &Path) -> Result<WorkspaceTreeS
                 OsString::from("-A"),
                 OsString::from("--"),
                 OsString::from("."),
+                OsString::from(":(exclude).a3s-code"),
+                OsString::from(":(exclude).a3s-code/**"),
             ],
             &environment,
         )?;
@@ -1113,5 +1118,62 @@ mod tests {
         assert!(error.to_string().contains("cancelled"));
         std::thread::sleep(Duration::from_millis(700));
         assert!(!leak.exists());
+    }
+
+    #[test]
+    fn snapshot_workspace_tree_excludes_code_private_index() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git_success_with_env(&repo, &[OsString::from("init")], &[]).unwrap();
+        run_git_success_with_env(
+            &repo,
+            &[
+                OsString::from("config"),
+                OsString::from("user.name"),
+                OsString::from("A3S Test"),
+            ],
+            &[],
+        )
+        .unwrap();
+        run_git_success_with_env(
+            &repo,
+            &[
+                OsString::from("config"),
+                OsString::from("user.email"),
+                OsString::from("test@a3s.invalid"),
+            ],
+            &[],
+        )
+        .unwrap();
+        std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+        run_git_success_with_env(
+            &repo,
+            &[OsString::from("add"), OsString::from("seed.txt")],
+            &[],
+        )
+        .unwrap();
+        run_git_success_with_env(
+            &repo,
+            &[
+                OsString::from("commit"),
+                OsString::from("-m"),
+                OsString::from("seed"),
+            ],
+            &[],
+        )
+        .unwrap();
+
+        let baseline = snapshot_workspace_tree(&repo).unwrap();
+        std::fs::write(repo.join("product.txt"), "product\n").unwrap();
+        let index_root = repo.join(".a3s-code").join("index");
+        std::fs::create_dir_all(&index_root).unwrap();
+        std::fs::write(index_root.join("CURRENT"), b"\0\x01\x02binary-index").unwrap();
+
+        let result = snapshot_workspace_tree(&repo).unwrap();
+        let patch = diff_workspace_trees(&repo, &baseline, &result, 1024 * 1024).unwrap();
+        let patch = String::from_utf8(patch).expect("product patch stays UTF-8");
+        assert!(patch.contains("diff --git a/product.txt b/product.txt"));
+        assert!(!patch.contains(".a3s-code"));
     }
 }

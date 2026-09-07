@@ -95,18 +95,36 @@ PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
 echo "[11/14] Running Go SDK bridge integration"
-cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+mkdir -p zvec-runtime
+bash scripts/package_zvec.sh "$HOST_TARGET" zvec-runtime
+export ZVEC_LIB_DIR="$WORKSPACE/zvec-runtime"
+export ZVEC_AUTO_BUILD=0
+# Debug bridge binaries carry @loader_path/zvec (or $ORIGIN/zvec). Stage the
+# verified library next to the binary so local macOS runs do not depend on
+# DYLD_LIBRARY_PATH, which SIP often strips from child processes.
 TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
 if [[ "$TARGET_ROOT" != /* ]]; then
   TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
 fi
+mkdir -p "$TARGET_ROOT/debug/zvec"
+cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+# Re-stage after cargo build in case the debug/zvec directory was cleaned.
+mkdir -p "$TARGET_ROOT/debug/zvec"
+cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
 BRIDGE_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge"
 if [ -f "$BRIDGE_BINARY.exe" ]; then
   BRIDGE_BINARY="$BRIDGE_BINARY.exe"
 fi
 (
   cd sdk/go
+  # Debug builds of the Go bridge can overflow the default tokio worker stack
+  # on macOS; keep local preflight aligned with a larger Rust thread stack.
   A3S_CODE_GO_BRIDGE_TEST_BINARY="$BRIDGE_BINARY" \
+  RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
     go test ./...
 )
 

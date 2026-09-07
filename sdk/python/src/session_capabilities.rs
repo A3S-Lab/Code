@@ -355,6 +355,28 @@ impl PySession {
         json_string_to_py(py, &json.to_string())
     }
 
+    /// Apply one SDK-transported Skill capability batch (SDK-CAP1).
+    ///
+    /// Stages serializable Skill values into one atomic catalog generation.
+    fn apply_capability_batch(&self, py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let batch: a3s_code_core::capability::SdkCapabilityBatchV1 =
+            serde_json::from_str(&py_any_to_json(batch)?)
+                .map_err(|e| PyValueError::new_err(format!("Invalid SDK capability batch: {e}")))?;
+        let session = self.inner.clone();
+        let receipt = py.allow_threads(move || {
+            get_runtime().block_on(async {
+                session
+                    .apply_sdk_capability_batch(batch)
+                    .await
+                    .map_err(|e| PyRuntimeError::new_err(format!("Capability batch error: {e}")))
+            })
+        })?;
+        let json = serde_json::to_string(&receipt).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize capability receipt: {e}"))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
     /// Return a stored tool artifact by URI, or ``None`` if it is not retained.
     pub(super) fn get_artifact(&self, py: Python<'_>, artifact_uri: &str) -> PyResult<PyObject> {
         let json = serde_json::to_string(&self.inner.get_artifact(artifact_uri))

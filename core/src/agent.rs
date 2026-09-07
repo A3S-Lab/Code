@@ -39,6 +39,9 @@ mod hook_runtime;
 mod invocation_context;
 pub(crate) use invocation_context::InvocationContext;
 mod llm_invoker;
+mod model_middleware_obs;
+pub use model_middleware_obs::ModelMiddlewareHealthSnapshot;
+pub(crate) use model_middleware_obs::ModelMiddlewareObs;
 mod llm_turn;
 mod loop_builder;
 mod loop_runtime;
@@ -957,6 +960,9 @@ pub(crate) struct AgentLoop {
     /// detached maintenance work (for example background memory extraction)
     /// cannot stall the foreground turn.
     shared_model_generation_admission: bool,
+    /// Secret-free middleware stage counters shared with the session when
+    /// installed via [`AgentLoop::with_model_middleware_obs`].
+    middleware_obs: Arc<ModelMiddlewareObs>,
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     config: AgentConfig,

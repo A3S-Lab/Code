@@ -25,8 +25,10 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
+mod immutable_content;
 mod serve;
 mod workspace_retrieval;
+use immutable_content::*;
 use workspace_retrieval::*;
 
 pub const BRIDGE_PROTOCOL_VERSION: u16 = 2;
@@ -71,6 +73,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_task_scheduler_stats",
     "session_task_scheduler_health",
     "session_model_generation_pool_health",
+    "session_model_middleware_health",
     "session_memory_maintenance_health",
     "session_workspace_retrieval_status",
     "session_semantic_search",
@@ -99,6 +102,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_current_cognitive_package_binding",
     "session_ensure_recovery_capability_binding",
     "session_drain_capability_cleanup",
+    "session_apply_capability_batch",
     "session_trace_events",
     "session_get_artifact",
     "session_read_file",
@@ -167,6 +171,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_unregister_hook",
     "session_hook_count",
     "session_set_budget_guard",
+    "session_set_session_checkpoint_export_sink",
     "session_register_command",
     "session_list_commands",
     "callback_response",
@@ -384,7 +389,9 @@ impl BridgeState {
         &self,
         options: BridgeSessionOptions,
     ) -> Result<SessionOptions, BridgeFailure> {
-        let callbacks = if options.workspace_retrieval.is_some() {
+        let callbacks = if options.workspace_retrieval.is_some()
+            || options.immutable_content_adapter.is_some()
+        {
             Some(self.callback_client().await?)
         } else {
             None
@@ -892,6 +899,13 @@ impl BridgeState {
                     .await?;
                 encode(health)
             }
+            "session_model_middleware_health" => {
+                let health = self
+                    .request_session(&request.params)
+                    .await?
+                    .model_middleware_health();
+                encode(health)
+            }
             "session_memory_maintenance_health" => {
                 let health = self
                     .request_session(&request.params)
@@ -1130,6 +1144,19 @@ impl BridgeState {
                     "effects_timed_out": report.effects_timed_out,
                     "clean": report.is_clean(),
                 }))
+            }
+            "session_apply_capability_batch" => {
+                let batch: a3s_code_core::capability::SdkCapabilityBatchV1 =
+                    required(&request.params, "batch")?;
+                let receipt = self
+                    .request_session(&request.params)
+                    .await?
+                    .apply_sdk_capability_batch(batch)
+                    .await
+                    .map_err(|error| {
+                        BridgeFailure::new("CAPABILITY_BATCH_ERROR", error.to_string())
+                    })?;
+                encode(receipt)
             }
             "session_trace_events" => {
                 let events = self.request_session(&request.params).await?.trace_events();
@@ -1786,6 +1813,25 @@ impl BridgeState {
                 }
                 Ok(json!({ "configured": true }))
             }
+            "session_set_session_checkpoint_export_sink" => {
+                let handler_id = optional::<String>(&request.params, "handler_id")?;
+                let session = self.request_session(&request.params).await?;
+                match handler_id {
+                    Some(handler_id) => {
+                        let timeout_ms =
+                            optional::<u64>(&request.params, "timeout_ms")?.unwrap_or(30_000);
+                        session.set_session_checkpoint_export_sink(Some(Arc::new(
+                            BridgeCheckpointExportSink {
+                                client: self.callback_client().await?,
+                                handler_id,
+                                timeout_ms,
+                            },
+                        )))?;
+                    }
+                    None => session.set_session_checkpoint_export_sink(None)?,
+                }
+                Ok(json!({ "configured": true }))
+            }
             "session_register_command" => {
                 let name: String = required(&request.params, "name")?;
                 let description: String = required(&request.params, "description")?;
@@ -2273,6 +2319,42 @@ struct BridgeBudgetGuard {
     client: Arc<CallbackClient>,
     handler_id: String,
     timeout_ms: u64,
+}
+
+struct BridgeCheckpointExportSink {
+    client: Arc<CallbackClient>,
+    handler_id: String,
+    timeout_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::SessionCheckpointExportSink for BridgeCheckpointExportSink {
+    async fn export_checkpoint(
+        &self,
+        checkpoint: a3s_code_core::SessionCheckpointExportV1,
+    ) -> anyhow::Result<()> {
+        let wire = a3s_code_core::SdkSessionCheckpointExportV1::from_export(&checkpoint);
+        let payload = serde_json::to_value(&wire)
+            .map_err(|error| anyhow::anyhow!("serialize checkpoint export: {error}"))?;
+        let reply = self
+            .client
+            .invoke(
+                &self.handler_id,
+                "export_checkpoint",
+                payload,
+                self.timeout_ms,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        if reply.is_null() || reply.get("ok").and_then(|v| v.as_bool()) != Some(false) {
+            return Ok(());
+        }
+        let message = reply
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("checkpoint export denied by host");
+        Err(anyhow::anyhow!(message.to_string()))
+    }
 }
 
 #[async_trait::async_trait]
@@ -2928,6 +3010,7 @@ struct BridgeSessionOptions {
     workspace_backend: Option<BridgeWorkspaceBackend>,
     remote_git: Option<BridgeRemoteGitConfig>,
     workspace_retrieval: Option<BridgeWorkspaceRetrievalOptions>,
+    immutable_content_adapter: Option<BridgeImmutableContentAdapterOptions>,
     session_id: Option<String>,
     tenant_id: Option<String>,
     principal: Option<String>,
@@ -3085,13 +3168,25 @@ impl BridgeSessionOptions {
             ));
         }
         if let Some(value) = self.workspace_retrieval {
+            let callbacks = callbacks
+                .as_ref()
+                .ok_or_else(|| {
+                    BridgeFailure::new(
+                        "CALLBACK_UNAVAILABLE",
+                        "workspace_retrieval requires the callback transport",
+                    )
+                })?
+                .clone();
+            options = options.with_workspace_retrieval(value.into_core(callbacks)?);
+        }
+        if let Some(value) = self.immutable_content_adapter {
             let callbacks = callbacks.ok_or_else(|| {
                 BridgeFailure::new(
                     "CALLBACK_UNAVAILABLE",
-                    "workspace_retrieval requires the callback transport",
+                    "immutable_content_adapter requires the callback transport",
                 )
             })?;
-            options = options.with_workspace_retrieval(value.into_core(callbacks)?);
+            options = options.with_immutable_content_adapter(value.into_core(callbacks)?);
         }
         if let Some(value) = self.session_id {
             options = options.with_session_id(value);

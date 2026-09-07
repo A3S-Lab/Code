@@ -156,7 +156,7 @@ pub mod verification;
 pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
-pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult};
+pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult, ModelMiddlewareHealthSnapshot};
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentSession, ProjectedFlowHandle, ProjectedUiHandle, ReadFileOptions,
     SessionBuilder, SessionOptions, ToolCallResult,
@@ -321,14 +321,24 @@ pub use orchestration::{
 };
 pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
 pub use research::{
-    ResearchArtifactKindV1, ResearchContractError, ResearchEventV1, ResearchEvidenceFactKindV1,
-    ResearchEvidenceFactV1, ResearchProvenanceReceiptV1, ResearchReproducibilityV1,
-    ResearchReviewBatchV1, ResearchReviewCategoryV1, ResearchReviewFindingV1,
-    ResearchReviewLocationV1, ResearchReviewSeverityV1, ResearchReviewStatusV1,
-    ResearchRunStatusV1, ResearchRunV1, RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1,
-    RESEARCH_EVIDENCE_FACT_SCHEMA_V1, RESEARCH_MAX_REVIEW_FINDINGS,
-    RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES, RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1,
-    RESEARCH_REVIEW_BATCH_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1, RESEARCH_RUN_SCHEMA_V1,
+    ResearchArtifactKindV1, ResearchCitationV1, ResearchClaimStatusV1, ResearchClaimV1,
+    ResearchContractError, ResearchEventV1, ResearchEvidenceCompletenessV1,
+    ResearchEvidenceFactKindV1, ResearchEvidenceFactV1, ResearchEvidenceGraphV1,
+    ResearchProtocolError, ResearchProvenanceReceiptV1, ResearchReproducibilityManifestV1,
+    ResearchReproducibilityV1, ResearchRerunLineageV1, ResearchReviewBatchV1,
+    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
+    ResearchReviewSeverityV1, ResearchReviewStatusV1, ResearchRunStatusV1, ResearchRunV1,
+    ResearchWireEnvelopeV1, ResearchWireKindDescriptorV1, ResearchWireKindV1, ResearchWireTypeV1,
+    ResearchWorkflowPlanV1, ResearchWorkflowStepV1, RESEARCH_ARTIFACT_KINDS,
+    RESEARCH_CITATION_SCHEMA_V1, RESEARCH_CLAIM_SCHEMA_V1, RESEARCH_EVENT_SCHEMA_V1,
+    RESEARCH_EVIDENCE_FACT_SCHEMA_V1, RESEARCH_EVIDENCE_GRAPH_SCHEMA_V1,
+    RESEARCH_MAX_EVIDENCE_GRAPH_CITATIONS, RESEARCH_MAX_EVIDENCE_GRAPH_CLAIMS,
+    RESEARCH_MAX_REVIEW_FINDINGS, RESEARCH_MAX_WORKFLOW_STEPS, RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES,
+    RESEARCH_PROTOCOL_SCHEMA_V1, RESEARCH_PROTOCOL_VERSION_V1,
+    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REPRODUCIBILITY_MANIFEST_SCHEMA_V1,
+    RESEARCH_RERUN_LINEAGE_SCHEMA_V1, RESEARCH_REVIEW_BATCH_SCHEMA_V1,
+    RESEARCH_REVIEW_FINDING_SCHEMA_V1, RESEARCH_RUN_SCHEMA_V1, RESEARCH_WIRE_KIND_DESCRIPTORS_V1,
+    RESEARCH_WORKFLOW_PLAN_SCHEMA_V1, RESEARCH_WORKFLOW_STEP_SCHEMA_V1,
 };
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
@@ -346,13 +356,14 @@ pub use sdk_capabilities::{
     sdk_capabilities, sdk_capabilities_schema, SdkCapability, SDK_CAPABILITIES_SCHEMA_V1,
 };
 pub use session_checkpoint::{
-    SessionCheckpointDescriptorV1, SessionCheckpointError, SessionCheckpointExportSink,
-    SessionCheckpointExportV1, SessionCheckpointPayloadV1, SessionLogicalResumeEvidenceV1,
-    SessionSnapshotEvidenceV1, SESSION_CHECKPOINT_DESCRIPTOR_SCHEMA_V1,
-    SESSION_CHECKPOINT_ENCODING_V1, SESSION_CHECKPOINT_FORMAT_V1,
-    SESSION_CHECKPOINT_LOGICAL_RESUME_SEMANTICS_V1, SESSION_CHECKPOINT_MAX_CONTENT_BYTES,
-    SESSION_CHECKPOINT_MEDIA_TYPE_V1, SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1,
-    SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1, SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
+    SdkSessionCheckpointExportV1, SessionCheckpointDescriptorV1, SessionCheckpointError,
+    SessionCheckpointExportSink, SessionCheckpointExportV1, SessionCheckpointPayloadV1,
+    SessionLogicalResumeEvidenceV1, SessionSnapshotEvidenceV1,
+    SESSION_CHECKPOINT_DESCRIPTOR_SCHEMA_V1, SESSION_CHECKPOINT_ENCODING_V1,
+    SESSION_CHECKPOINT_FORMAT_V1, SESSION_CHECKPOINT_LOGICAL_RESUME_SEMANTICS_V1,
+    SESSION_CHECKPOINT_MAX_CONTENT_BYTES, SESSION_CHECKPOINT_MEDIA_TYPE_V1,
+    SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1, SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1,
+    SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
 };
 pub use state_graph::{
     graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
@@ -379,10 +390,10 @@ pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,
     ImmutableContentDescriptorV1, ImmutableContentError, ImmutableContentKindV1,
     ImmutableContentReferenceV1, ImmutableContentResult, ImmutableContentWriteRequestV1,
-    ToolPresentationError, ToolPresentationModeV1, ToolPresentationProfileV1,
-    IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1, IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1,
-    IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
-    TOOL_RESULT_CONTENT_MEDIA_TYPE,
+    SdkImmutableContentWriteRequestV1, ToolPresentationError, ToolPresentationModeV1,
+    ToolPresentationProfileV1, IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1,
+    IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1, IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1,
+    TOOL_PRESENTATION_PROFILE_V1_SCHEMA, TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind, ToolResultTrustV1};
 pub use use_runtime_tasks::{

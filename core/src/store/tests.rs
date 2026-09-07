@@ -1095,6 +1095,11 @@ async fn test_file_store_health_check_bad_dir() {
     let store = FileSessionStore {
         dir: std::path::PathBuf::from("/nonexistent/path/that/does/not/exist"),
         write_lock: tokio::sync::Mutex::new(()),
+        wal: FileSessionStoreWal::new("/nonexistent/path/that/does/not/exist"),
+        next_wal_sequence: std::sync::atomic::AtomicU64::new(1),
+        held_writer_lease: tokio::sync::Mutex::new(None),
+        commit_watch: super::watch::commit_watch_channel().0,
+        encryption: None,
     };
     assert!(store.health_check().await.is_err());
 }
@@ -1471,15 +1476,317 @@ fn store_capabilities_default_to_explicit_negotiation() {
     assert!(!defaults.watch);
     assert!(!defaults.reference_aware_artifact_gc);
 
-    // The in-process adapters advertise exactly the atomic snapshot they
-    // prove; the extended guarantees remain unset until the WAL/CAS and
-    // fenced-file migration lands them.
+    // Memory advertises atomic snapshots, aggregate CAS, reference-aware
+    // artifact GC, and commit watch (STORE-CAS1 / STORE-GC2 / STORE-WATCH1).
+    // FileSessionStore additionally advertises append-only WAL (STORE-WAL1)
+    // and writer lease fencing (STORE-LEASE1).
     let memory = crate::store::memory_store::MemorySessionStore::default();
     assert_eq!(
         memory.capabilities(),
         SessionStoreCapabilities {
             atomic_session_snapshots: true,
+            aggregate_cas: true,
+            reference_aware_artifact_gc: true,
+            watch: true,
             ..SessionStoreCapabilities::default()
         }
+    );
+}
+
+#[tokio::test]
+async fn file_store_encryption_at_rest_round_trips_and_hides_plaintext() {
+    let dir = tempdir().unwrap();
+    let key = [9u8; 32];
+    let store = FileSessionStore::with_encryption_key(dir.path(), &key)
+        .await
+        .unwrap();
+    assert!(store.capabilities().encrypted_at_rest);
+
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    let path = encoded_file_path(dir.path(), "sessions", "test-session-1");
+    let on_disk = tokio::fs::read(&path).await.unwrap();
+    assert!(
+        SessionStoreAtRestCipher::is_sealed(&on_disk),
+        "snapshot must be sealed at rest"
+    );
+    assert!(
+        !String::from_utf8_lossy(&on_disk).contains("Test Session"),
+        "session plaintext must not appear on disk"
+    );
+
+    let reopened = FileSessionStore::with_encryption_key(dir.path(), &key)
+        .await
+        .unwrap();
+    let loaded = reopened
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("decryptable snapshot");
+    assert_eq!(loaded.session.config.name, "Test Session");
+
+    let wrong = FileSessionStore::with_encryption_key(dir.path(), &[1u8; 32])
+        .await
+        .unwrap();
+    let err = wrong
+        .load_snapshot("test-session-1")
+        .await
+        .expect_err("wrong key must fail closed");
+    assert!(
+        err.to_string().contains("decrypt") || err.to_string().contains("at-rest"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn file_and_memory_store_watch_commits_after_snapshot() {
+    let dir = tempdir().unwrap();
+    let file = FileSessionStore::new(dir.path()).await.unwrap();
+    assert!(file.capabilities().watch);
+    let memory = MemorySessionStore::default();
+    assert!(memory.capabilities().watch);
+
+    let mut file_watch = file.watch_commits().await.unwrap();
+    let mut memory_watch = memory.watch_commits().await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    let digest = snapshot_content_digest(&snapshot).unwrap();
+
+    file.save_snapshot(&snapshot).await.unwrap();
+    memory.save_snapshot(&snapshot).await.unwrap();
+
+    let file_event = file_watch.recv().await.unwrap();
+    let memory_event = memory_watch.recv().await.unwrap();
+    assert_eq!(file_event.session_id, "test-session-1");
+    assert_eq!(file_event.snapshot_digest, digest);
+    assert_eq!(memory_event.session_id, "test-session-1");
+    assert_eq!(memory_event.snapshot_digest, digest);
+}
+
+#[tokio::test]
+async fn file_and_memory_store_persist_artifact_retention_roots() {
+    let dir = tempdir().unwrap();
+    let file = FileSessionStore::new(dir.path()).await.unwrap();
+    assert!(file.capabilities().reference_aware_artifact_gc);
+    let memory = MemorySessionStore::default();
+    assert!(memory.capabilities().reference_aware_artifact_gc);
+
+    let artifacts = ArtifactStore::with_limits(crate::tools::ArtifactStoreLimits {
+        max_artifacts: 2,
+        max_bytes: 16 * 1024 * 1024,
+    });
+    for (name, content) in [("keep", "keep-bytes"), ("drop", "drop-bytes")] {
+        artifacts.put(crate::tools::ToolArtifact {
+            artifact_id: format!("tool-output:test:{name}"),
+            artifact_uri: format!("a3s://tool-output/test/{name}"),
+            tool_name: "test".to_string(),
+            content: content.to_string(),
+            original_bytes: content.len(),
+            shown_bytes: content.len(),
+        });
+    }
+    artifacts.pin_uris(["a3s://tool-output/test/keep"]);
+
+    let session = create_test_session_data();
+    let snapshot = SessionSnapshotV1::new(
+        session,
+        &artifacts,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    file.save_snapshot(&snapshot).await.unwrap();
+    memory.save_snapshot(&snapshot).await.unwrap();
+
+    let file_store = file
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("file")
+        .artifact_store();
+    let memory_store = memory
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("memory")
+        .artifact_store();
+    assert!(file_store
+        .retained_uris()
+        .contains("a3s://tool-output/test/keep"));
+    assert_eq!(file_store.gc_unreferenced(), 1);
+    assert!(file_store.get("a3s://tool-output/test/keep").is_some());
+    assert!(file_store.get("a3s://tool-output/test/drop").is_none());
+    assert_eq!(memory_store.gc_unreferenced(), 1);
+    assert!(memory_store.get("a3s://tool-output/test/keep").is_some());
+}
+
+#[tokio::test]
+async fn file_store_writer_lease_takeover_fences_stale_holder() {
+    let dir = tempdir().unwrap();
+    let first = FileSessionStore::new(dir.path()).await.unwrap();
+    assert!(first.capabilities().lease_fencing);
+    let lease_a = first.acquire_writer_lease("worker-a").await.unwrap();
+    assert_eq!(lease_a.epoch, 1);
+
+    let snapshot = create_test_snapshot().await;
+    first.save_snapshot(&snapshot).await.unwrap();
+
+    let second = FileSessionStore::new(dir.path()).await.unwrap();
+    let lease_b = second.acquire_writer_lease("worker-b").await.unwrap();
+    assert_eq!(lease_b.epoch, 2);
+    assert_eq!(
+        second.writer_lease().await.unwrap().unwrap().holder_id,
+        "worker-b"
+    );
+
+    let mut stale = snapshot.clone();
+    stale.session.config.name = "stale-after-takeover".into();
+    let err = first
+        .save_snapshot(&stale)
+        .await
+        .expect_err("stale holder must fail closed after takeover");
+    assert!(
+        err.to_string().contains("lease lost") || err.to_string().contains("taken over"),
+        "unexpected error: {err}"
+    );
+
+    let mut next = snapshot.clone();
+    next.session.config.name = "holder-b".into();
+    second.save_snapshot(&next).await.unwrap();
+    let loaded = second
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("snapshot");
+    assert_eq!(loaded.session.config.name, "holder-b");
+}
+
+#[tokio::test]
+async fn file_and_memory_store_cas_match_writes_and_mismatch_skips() {
+    let dir = tempdir().unwrap();
+    let file = FileSessionStore::new(dir.path()).await.unwrap();
+    assert!(file.capabilities().aggregate_cas);
+    let memory = crate::store::memory_store::MemorySessionStore::default();
+    assert!(memory.capabilities().aggregate_cas);
+
+    let snapshot = create_test_snapshot().await;
+    let digest = snapshot_content_digest(&snapshot).unwrap();
+
+    assert!(file.save_snapshot_cas(&snapshot, None).await.unwrap());
+    assert!(memory.save_snapshot_cas(&snapshot, None).await.unwrap());
+
+    let mut next = snapshot.clone();
+    next.session.config.name = "cas-next".into();
+    assert!(file.save_snapshot_cas(&next, Some(&digest)).await.unwrap());
+    assert!(memory
+        .save_snapshot_cas(&next, Some(&digest))
+        .await
+        .unwrap());
+
+    let mut stale = next.clone();
+    stale.session.config.name = "cas-stale".into();
+    let wrong = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    assert!(!file.save_snapshot_cas(&stale, Some(wrong)).await.unwrap());
+    assert!(!memory.save_snapshot_cas(&stale, Some(wrong)).await.unwrap());
+
+    let loaded_file = file
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("file snapshot");
+    let loaded_memory = memory
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("memory snapshot");
+    assert_eq!(loaded_file.session.config.name, "cas-next");
+    assert_eq!(loaded_memory.session.config.name, "cas-next");
+}
+
+#[tokio::test]
+async fn file_store_wal_records_intent_and_commit_for_each_snapshot() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    assert!(store.capabilities().append_only_event_log);
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    let wal = FileSessionStoreWal::new(dir.path());
+    let (entries, next) = wal.load_entries().await.unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].phase, SessionStoreWalPhaseV1::Intent);
+    assert_eq!(entries[1].phase, SessionStoreWalPhaseV1::Committed);
+    assert_eq!(entries[0].sequence, entries[1].sequence);
+    assert_eq!(next, entries[0].sequence + 1);
+    assert_eq!(
+        entries[0].snapshot_digest,
+        snapshot_content_digest(&snapshot).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn file_store_wal_recovery_seals_open_intent_when_snapshot_matches() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    // Simulate crash after atomic replace but before commit: drop the trailing
+    // Committed line while leaving the Intent and durable snapshot intact.
+    let wal_path = FileSessionStoreWal::new(dir.path()).path().to_path_buf();
+    let raw = tokio::fs::read_to_string(&wal_path).await.unwrap();
+    let mut lines: Vec<&str> = raw.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(lines.len(), 2);
+    lines.pop();
+    tokio::fs::write(&wal_path, format!("{}\n", lines[0]))
+        .await
+        .unwrap();
+
+    let recovered = FileSessionStore::new(dir.path()).await.unwrap();
+    let loaded = recovered
+        .load_snapshot("test-session-1")
+        .await
+        .unwrap()
+        .expect("snapshot survives crash window");
+    assert_eq!(loaded.session.id, "test-session-1");
+
+    let (entries, _) = FileSessionStoreWal::new(dir.path())
+        .load_entries()
+        .await
+        .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry.phase, SessionStoreWalPhaseV1::Committed)),
+        "recovery must seal the open intent when the durable snapshot matches"
+    );
+}
+
+#[tokio::test]
+async fn file_store_wal_rejects_duplicate_intent_sequences_on_reopen() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+
+    let wal = FileSessionStoreWal::new(dir.path());
+    let digest = snapshot_content_digest(&snapshot).unwrap();
+    let duplicate = SessionStoreWalEntryV1::new(
+        1,
+        "test-session-1",
+        digest,
+        SessionStoreWalPhaseV1::Intent,
+        99,
+    )
+    .unwrap();
+    wal.append(&duplicate).await.unwrap();
+    let err = FileSessionStoreWal::new(dir.path())
+        .load_entries()
+        .await
+        .expect_err("duplicate intent sequence must fail closed");
+    assert!(
+        err.to_string().contains("conflicts"),
+        "unexpected error: {err}"
     );
 }

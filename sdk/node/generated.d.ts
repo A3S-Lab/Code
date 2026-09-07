@@ -86,6 +86,19 @@ export interface ModelGenerationPoolHealthSnapshot {
   localAvailable: number
   scheduler?: TaskSchedulerQuotaHealthSnapshot
 }
+/** Secret-free middleware stage counters for one session observation window. */
+export interface ModelMiddlewareHealthSnapshot {
+  trustAdmitted: number
+  trustRejected: number
+  providerCalls: number
+  usageRecorded: number
+  completionCalls: number
+  streamingCalls: number
+  trustedToolResults: number
+  workspaceDataToolResults: number
+  externalToolResults: number
+  externalRedactionReviewed: number
+}
 /** Result of admitting a host-selected run ID for detached execution. */
 export interface AgentRunSpawnObject {
   snapshot: any
@@ -576,6 +589,13 @@ export interface SessionOptions {
    * starts in the background and all vectors remain in memory for this session.
    */
   workspaceRetrieval?: WorkspaceRetrievalOptions
+  /**
+   * Host-owned create-only immutable Tool content retention (SDK-IMM1).
+   *
+   * Pass `new ImmutableContentAdapterOptions(authorityDigest, maximumBytes, adapterName, put)`.
+   * Every raw Tool output writes through this port before release.
+   */
+  immutableContentAdapter?: ImmutableContentAdapterOptions
   /**
    * Optional remote git provider. When set, the resulting session attaches
    * a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
@@ -1135,6 +1155,10 @@ export interface WorkspaceHybridSearchResultObject {
   truncated: boolean
   fallback?: string
 }
+/** Structural SessionOptions shape. Pass an `ImmutableContentAdapterOptions` instance. */
+export interface ImmutableContentAdapterOptionsObject {
+  instanceId: string
+}
 export interface AgentResult {
   text: string
   toolCallsCount: number
@@ -1484,6 +1508,13 @@ export declare class Session {
    */
   modelGenerationPoolHealth(): Promise<ModelGenerationPoolHealthSnapshot | null>
   /**
+   * Return secret-free middleware stage counters for this session.
+   *
+   * Values never retain prompts, tool plaintext, credentials, or digests of
+   * private content—only stage outcomes and trust-label cardinality.
+   */
+  modelMiddlewareHealth(): ModelMiddlewareHealthSnapshot
+  /**
    * Send a prompt or request and wait for the complete response.
    *
    * `send("prompt")` is the compact prompt-first form. `send({ prompt,
@@ -1797,6 +1828,15 @@ export declare class Session {
    * `null` for the whole handlers arg to clear the guard.
    */
   setBudgetGuard(handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null): void
+  /**
+   * Install a host-owned live checkpoint export sink (SDK-CP1).
+   *
+   * The callback receives one JSON object:
+   * `{ descriptor, contentBase64 }` and may return a Promise. Throw or
+   * return `{ ok: false, error }` to surface a durable-export failure
+   * (the live Run still continues). Pass `null` to clear the sink.
+   */
+  setSessionCheckpointExportSink(handler: ((payload: { descriptor: any; contentBase64: string }) => any) | null, timeoutMs?: number | null): void
   /** Check if memory is available for this session. */
   get hasMemory(): boolean
   /**
@@ -2121,6 +2161,13 @@ export declare class Session {
   ensureRecoveryCapabilityBinding(binding: any): void
   /** Drain retired host capability effects and return the cleanup report. */
   drainCapabilityCleanup(): Promise<any>
+  /**
+   * Apply one SDK-transported Skill capability batch (SDK-CAP1).
+   *
+   * Stages serializable Skill values into one atomic catalog generation.
+   * Tool/Hook/MCP callback adapters remain Rust-host-only.
+   */
+  applyCapabilityBatch(batch: any): Promise<any>
   /** Return a stored tool artifact by URI, or null if it is not retained. */
   getArtifact(artifactUri: string): any
 }
@@ -2184,6 +2231,11 @@ export declare class DeterministicWorkspaceReranker {
   set maxFingerprintsPerCandidate(value: number)
   get maxScratchBytes(): number
   set maxScratchBytes(value: number)
+}
+/** Host-owned create-only retention adapter for SessionOptions (SDK-IMM1). */
+export declare class ImmutableContentAdapterOptions {
+  constructor(authorityDigest: string, maximumBytes: number, adapterName: string, put: (request: { binding: any; descriptor: any; contentBase64: string }) => any, timeoutMs?: number | null)
+  get instanceId(): string
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {

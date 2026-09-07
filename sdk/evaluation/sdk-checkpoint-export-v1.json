@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "fixture_id": "sdk-checkpoint-export-v1",
+  "export_schema": "a3s.code.sdk_session_checkpoint_export.v1",
+  "required_export_fields": [
+    "descriptor",
+    "contentBase64"
+  ],
+  "required_descriptor_fields": [
+    "schema",
+    "format",
+    "media_type",
+    "snapshot",
+    "size_bytes",
+    "content_digest",
+    "descriptor_digest"
+  ],
+  "sample_export": {
+    "descriptor": {
+      "schema": "a3s.code.session_checkpoint_descriptor.v1",
+      "format": "a3s.code.session_checkpoint.v1",
+      "media_type": "application/vnd.a3s.session-checkpoint+json",
+      "snapshot": {
+        "schema": "a3s.code.session_snapshot_evidence.v1",
+        "session_id": "sdk-cp1-fixture",
+        "size_bytes": 12,
+        "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "size_bytes": 12,
+      "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "descriptor_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "contentBase64": "eyJmaXh0dXJlIjp0cnVlfQ=="
+  },
+  "forbidden_fields": [
+    "api_key",
+    "apiKey",
+    "authorization",
+    "prompt",
+    "secret",
+    "token"
+  ]
+}

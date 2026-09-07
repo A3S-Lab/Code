@@ -39,6 +39,34 @@ impl AgentSession {
             .clone()
     }
 
+    /// Install or clear the host-owned live checkpoint export sink (SDK-CP1).
+    ///
+    /// Takes effect on the next `send` / `stream` that opens a checkpoint
+    /// channel. Callback-backed SDK hosts use this after session construction
+    /// because value-typed `SessionOptions` cannot carry language callables.
+    pub fn set_session_checkpoint_export_sink(
+        &self,
+        sink: Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>,
+    ) -> crate::error::Result<()> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_session_checkpoint_export_sink
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *slot = sink;
+        })
+    }
+
+    /// Return the currently installed live checkpoint export sink, if any.
+    pub fn session_checkpoint_export_sink(
+        &self,
+    ) -> Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>> {
+        self.runtime_session_checkpoint_export_sink
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Return pending HITL tool confirmations for this session.
     pub async fn pending_confirmations(&self) -> Vec<PendingConfirmationInfo> {
         HitlControl::from_session(self)

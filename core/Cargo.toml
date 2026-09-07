@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "8.2.0"
+version = "8.3.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -36,7 +36,7 @@ a3s-lane = "0.5"
 # drift underneath the Code runtime manager.
 a3s-search = { version = "=3.1.0", git = "https://github.com/A3S-Lab/Search.git", rev = "c30e3dd04de8f2874113cda435439d6938bd3eb6", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
-a3s-sandbox = { version = "=0.1.0", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "09c46aaf18e4be2c881459fa71ece8a9d8c45283" }
+a3s-sandbox = { version = "=0.1.1", path = "../../sandbox" }
 # Official zvec Rust binding used by the workspace full-text index. The
 # dependency is optional so minimal/no-native builds can retain the portable
 # scorer, while product builds enable the bundled feature and ship the
@@ -93,6 +93,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 glob = "0.3"
 ignore = "0.4"
 notify = "8"
+aes-gcm = "0.10"
 
 # Diff for edit tool
 similar = "2.4"
@@ -154,6 +155,24 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [features]
 default = ["headless-search", "zvec-rust-fts-bundled"]
+# ---------------------------------------------------------------------------
+# Release profiles (KRN-10). Embedders select a profile instead of composing
+# native/runtime dependencies by hand; each profile documents the surface it
+# adds over `minimal`. `default` remains the full local product build.
+# ---------------------------------------------------------------------------
+# Identity/events/capabilities, the governed agent loop, workspace tools,
+# evaluation, and research contracts — no browser, native FTS library, S3,
+# telemetry, or serve daemon.
+minimal = []
+# Minimal plus the workspace persistent zvec FTS lexical path.
+local-code = ["zvec-rust-fts-bundled"]
+# Local code plus durable SQLite memory vectors and browser-backed web
+# search for literature/evidence collection.
+scientific = ["local-code", "durable-memory-sqlite", "headless-search"]
+# Local code plus S3 workspaces, OpenTelemetry export, and the serve daemon.
+server = ["local-code", "s3", "telemetry", "serve"]
+# Every optional surface.
+full = ["scientific", "server"]
 # Enable the locally durable SQLite vector index for semantic-memory hosts.
 durable-memory-sqlite = ["a3s-memory/sqlite"]
 # Enable browser-backed search plus managed browser lifecycle

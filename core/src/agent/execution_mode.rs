@@ -244,18 +244,26 @@ impl AgentLoop {
             return style;
         }
 
+        // Auto / pre-analysis intent must not rewrite the primary session into
+        // a specialty read-only prompt. Specialty roles remain delegated agents
+        // with hard permission policies; the main loop stays GeneralPurpose so
+        // coding capability cannot silently regress.
         if let Some(analysis) = pre_analysis {
-            return analysis.intent;
+            tracing::debug!(
+                intent = ?analysis.intent,
+                intent.source = "pre_analysis_nonbinding",
+                "Pre-analysis intent recorded without changing primary prompt style"
+            );
+        } else {
+            let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
+            tracing::debug!(
+                intent.classification = ?style,
+                intent.confidence = ?confidence,
+                intent.source = "local_fallback_nonbinding",
+                "Local intent recorded without changing primary prompt style"
+            );
         }
-
-        let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
-        tracing::debug!(
-            intent.classification = ?style,
-            intent.confidence = ?confidence,
-            intent.source = "local_fallback",
-            "Intent classified locally"
-        );
-        style
+        AgentStyle::GeneralPurpose
     }
 
     pub(super) fn resolve_planning_decision(

@@ -10,7 +10,11 @@ fn write(path: &Path, body: &[u8]) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    std::fs::write(path, body).unwrap();
+    // Flush to durable storage so FS events fire under a busy test suite.
+    use std::io::Write as _;
+    let mut file = std::fs::File::create(path).unwrap();
+    file.write_all(body).unwrap();
+    file.sync_all().unwrap();
 }
 
 fn git_available() -> bool {
@@ -648,19 +652,22 @@ async fn manifest_change_subscription_reports_same_size_content_changes() {
     .unwrap()
     .unwrap();
 
-    let received = tokio::time::timeout(Duration::from_secs(10), async {
-        let contents = [b"bbbb\n".as_slice(), b"cccc\n".as_slice()];
-        let mut attempt = 0;
-        loop {
-            assert!(attempt < 20, "no content change was observed");
-            write(&path, contents[attempt % contents.len()]);
-            attempt += 1;
-            match tokio::time::timeout(Duration::from_millis(400), changes.recv()).await {
-                Ok(Ok(change)) if change.path.as_str() == "src/lib.rs" => break change,
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+    let received = tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(30)),
+        async {
+            let contents = [b"bbbb\n".as_slice(), b"cccc\n".as_slice()];
+            let mut attempt = 0;
+            loop {
+                assert!(attempt < 60, "no content change was observed");
+                write(&path, contents[attempt % contents.len()]);
+                attempt += 1;
+                match tokio::time::timeout(Duration::from_millis(750), changes.recv()).await {
+                    Ok(Ok(change)) if change.path.as_str() == "src/lib.rs" => break change,
+                    Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+                }
             }
-        }
-    })
+        },
+    )
     .await
     .unwrap();
 

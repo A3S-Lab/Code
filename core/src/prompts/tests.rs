@@ -67,7 +67,7 @@ fn test_slots_default_builds_system_default() {
     let built = slots.build();
     assert!(built.contains("Core Behaviour"));
     assert!(built.contains("Tool Usage Strategy"));
-    assert!(built.contains("Completion Criteria"));
+    assert!(built.contains("Evidence and completion"));
     assert!(built.contains("Response Format"));
     assert!(built.contains("A3S Code"));
     assert!(built.contains("## Runtime Contract"));
@@ -108,10 +108,44 @@ fn test_default_prompt_matches_current_runtime_contract() {
         "default prompt retains removed SRT wording"
     );
     assert!(
-        built.len() < 12_000,
+        built.len() < 11_000,
         "default prompt grew beyond its budget: {} bytes",
         built.len()
     );
+}
+
+#[test]
+fn readonly_styles_do_not_advertise_mutating_repository_tools() {
+    for style in [
+        AgentStyle::Plan,
+        AgentStyle::Explore,
+        AgentStyle::Verification,
+        AgentStyle::CodeReview,
+    ] {
+        let built = SystemPromptSlots::default().with_style(style).build();
+        assert!(
+            built.contains("read-oriented")
+                || built.contains("READ-ONLY")
+                || built.contains("read-only"),
+            "{style:?} should stay read-oriented"
+        );
+        assert!(
+            !built.contains("`edit`: pass `file_path`, `old_string`"),
+            "{style:?} must not advertise edit mutation recipe"
+        );
+        assert!(
+            !built.contains("`write`: pass `file_path` and `content`"),
+            "{style:?} must not advertise write mutation recipe"
+        );
+        assert!(
+            !built.contains("`patch`: pass `file_path` and a valid unified diff"),
+            "{style:?} must not advertise patch mutation recipe"
+        );
+        assert!(
+            !built.contains("sandbox_permissions=\"require_escalated\""),
+            "{style:?} must not advertise host escalation recipe"
+        );
+    }
 }
 
 #[test]
@@ -193,15 +227,17 @@ fn test_boundaries_not_duplicated_in_general_purpose() {
 
 #[test]
 fn test_repository_tool_contract_is_injected_for_every_style() {
-    let required_contract = [
+    let shared = [
         "## Repository Tool Contract",
         "`file_path`",
         "`files`",
         "`max_output_bytes`",
         "`metadata.batch.continuation`",
+        "`metadata.page.next_cursor`",
+    ];
+    let writable = [
         "`output_mode`",
         "`files_with_matches`",
-        "`metadata.page.next_cursor`",
         "`sort: \"path\"`",
         "`dry_run`",
         "`expected_replacements`",
@@ -216,17 +252,42 @@ fn test_repository_tool_contract_is_injected_for_every_style() {
         AgentStyle::CodeReview,
     ] {
         let built = SystemPromptSlots::default().with_style(style).build();
-        for expected in required_contract {
+        for expected in shared {
             assert!(
                 built.contains(expected),
                 "style {style:?} missing repository-tool guidance: {expected}"
             );
         }
-        for capability in ["`read`", "`search`", "`edit`", "`bash`", "`task`"] {
+        for capability in ["`read`", "`search`", "`bash`"] {
             assert!(
                 built.contains(capability),
                 "style {style:?} lost core capability guidance: {capability}"
             );
+        }
+        if style.uses_readonly_tool_contract() {
+            assert!(
+                built.contains("read-oriented")
+                    || built.contains("READ-ONLY")
+                    || built.contains("read-only"),
+                "{style:?} should stay read-oriented"
+            );
+            assert!(
+                !built.contains("`edit`: pass `file_path`, `old_string`"),
+                "{style:?} must not advertise edit mutation recipe"
+            );
+        } else {
+            for expected in writable {
+                assert!(
+                    built.contains(expected),
+                    "style {style:?} missing writable repository-tool guidance: {expected}"
+                );
+            }
+            for capability in ["`edit`", "`task`"] {
+                assert!(
+                    built.contains(capability),
+                    "style {style:?} lost mutating capability guidance: {capability}"
+                );
+            }
         }
     }
 }

@@ -35,12 +35,86 @@ struct LlmInvoker {
     model_generation_admission: ModelGenerationAdmission,
     preadmitted_permit: Arc<Mutex<Option<Arc<ModelGenerationPermit>>>>,
     queue_wait_micros: Arc<AtomicU64>,
+    middleware_obs: Arc<super::ModelMiddlewareObs>,
 }
 
-/// The non-streaming model-call shapes handled by the middleware boundary.
+/// Explicit stages of the run-bound model middleware pipeline (OPT-MW1).
 ///
-/// Keeping this discriminator next to the request prevents each caller from
-/// independently choosing evidence and budget semantics for a provider call.
+/// Every non-streaming and streaming provider call advances through these
+/// phases in order. Callers must not invent a parallel admission path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelMiddlewareStage {
+    TrustAdmission,
+    BudgetAdmission,
+    EvidenceCapture,
+    GenerationAdmission,
+    ProviderCall,
+    UsageAccounting,
+}
+
+/// Digest-free trust counters collected before a provider call (OPT-TRUST1).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PromptTrustAdmission {
+    trusted: u32,
+    workspace_data: u32,
+    external: u32,
+    redaction_reviewed: u32,
+    external_reviewed: u32,
+}
+
+fn admit_prompt_trust(messages: &[Message]) -> anyhow::Result<PromptTrustAdmission> {
+    use crate::llm::{ContentBlock, ToolResultTrustV1};
+
+    let mut admission = PromptTrustAdmission::default();
+    for message in messages {
+        for block in &message.content {
+            let ContentBlock::ToolResult {
+                trust,
+                redaction_reviewed,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            match trust {
+                ToolResultTrustV1::Trusted => {
+                    admission.trusted = admission.trusted.saturating_add(1)
+                }
+                ToolResultTrustV1::WorkspaceData => {
+                    admission.workspace_data = admission.workspace_data.saturating_add(1)
+                }
+                ToolResultTrustV1::External => {
+                    admission.external = admission.external.saturating_add(1);
+                    if *redaction_reviewed {
+                        admission.external_reviewed = admission.external_reviewed.saturating_add(1);
+                    }
+                }
+            }
+            if *redaction_reviewed {
+                admission.redaction_reviewed = admission.redaction_reviewed.saturating_add(1);
+            }
+            // External content that crossed a network/MCP boundary must be
+            // reviewed before prompt use. Legacy WorkspaceData without a
+            // review bit remains loadable for migration.
+            if *trust == ToolResultTrustV1::External && !*redaction_reviewed {
+                anyhow::bail!(
+                    "model middleware trust admission failed at {:?}: external tool result requires redaction review before prompt use",
+                    ModelMiddlewareStage::TrustAdmission
+                );
+            }
+            // Instruction-adjacent positions may only carry Trusted content.
+            // Tool-result blocks are data-plane; host instruction text must
+            // not be smuggled as a non-trusted tool_result.
+            if message.role == "system" && !trust.may_instruct() {
+                anyhow::bail!(
+                    "model middleware trust admission failed at {:?}: non-trusted content cannot occupy an instruction-adjacent position",
+                    ModelMiddlewareStage::TrustAdmission
+                );
+            }
+        }
+    }
+    Ok(admission)
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelCallKind {
     Completion,
@@ -307,6 +381,20 @@ impl LlmInvoker {
         invocation: InvocationContext,
         model_generation_admission: ModelGenerationAdmission,
     ) -> Self {
+        Self::new_with_admission_and_obs(
+            inner,
+            invocation,
+            model_generation_admission,
+            super::ModelMiddlewareObs::shared(),
+        )
+    }
+
+    fn new_with_admission_and_obs(
+        inner: Arc<dyn LlmClient>,
+        invocation: InvocationContext,
+        model_generation_admission: ModelGenerationAdmission,
+        middleware_obs: Arc<super::ModelMiddlewareObs>,
+    ) -> Self {
         Self {
             inner,
             invocation,
@@ -314,13 +402,29 @@ impl LlmInvoker {
             model_generation_admission,
             preadmitted_permit: Arc::new(Mutex::new(None)),
             queue_wait_micros: Arc::new(AtomicU64::new(0)),
+            middleware_obs,
         }
     }
 
+    #[allow(dead_code)]
     fn profiled_with_admission(
         inner: Arc<dyn LlmClient>,
         invocation: InvocationContext,
         model_generation_admission: ModelGenerationAdmission,
+    ) -> Self {
+        Self::profiled_with_admission_and_obs(
+            inner,
+            invocation,
+            model_generation_admission,
+            super::ModelMiddlewareObs::shared(),
+        )
+    }
+
+    fn profiled_with_admission_and_obs(
+        inner: Arc<dyn LlmClient>,
+        invocation: InvocationContext,
+        model_generation_admission: ModelGenerationAdmission,
+        middleware_obs: Arc<super::ModelMiddlewareObs>,
     ) -> Self {
         Self {
             inner,
@@ -329,6 +433,7 @@ impl LlmInvoker {
             model_generation_admission,
             preadmitted_permit: Arc::new(Mutex::new(None)),
             queue_wait_micros: Arc::new(AtomicU64::new(0)),
+            middleware_obs,
         }
     }
 
@@ -350,6 +455,7 @@ impl LlmInvoker {
             model_generation_admission: self.model_generation_admission.clone(),
             preadmitted_permit: Arc::clone(&self.preadmitted_permit),
             queue_wait_micros: Arc::clone(&self.queue_wait_micros),
+            middleware_obs: Arc::clone(&self.middleware_obs),
         }
     }
 
@@ -365,6 +471,7 @@ impl LlmInvoker {
             model_generation_admission: admission,
             preadmitted_permit: Arc::new(Mutex::new(preadmitted)),
             queue_wait_micros: Arc::new(AtomicU64::new(0)),
+            middleware_obs: Arc::clone(&self.middleware_obs),
         }
     }
 
@@ -401,12 +508,30 @@ impl LlmInvoker {
 
     async fn invoke_response<F>(
         &self,
+        messages: &[Message],
         observation: ModelCallObservation<'_>,
         invocation: F,
     ) -> anyhow::Result<LlmResponse>
     where
         F: Future<Output = anyhow::Result<LlmResponse>> + Send,
     {
+        let trust = match admit_prompt_trust(messages) {
+            Ok(admission) => {
+                self.middleware_obs.record_trust_admitted(
+                    false,
+                    admission.trusted,
+                    admission.workspace_data,
+                    admission.external,
+                    admission.external_reviewed,
+                );
+                admission
+            }
+            Err(error) => {
+                self.middleware_obs.record_trust_rejected();
+                return Err(error);
+            }
+        };
+        let _ = (trust, ModelMiddlewareStage::BudgetAdmission);
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
@@ -415,12 +540,16 @@ impl LlmInvoker {
             self.invocation.cancellation(),
         )
         .await?;
+        let _ = ModelMiddlewareStage::EvidenceCapture;
         let usage_binding = self.record_model_evidence(observation).await?;
+        let _ = ModelMiddlewareStage::GenerationAdmission;
         let _generation_permit = self
             .acquire_model_generation(self.invocation.cancellation())
             .await
             .context("model-generation admission failed")?;
 
+        let _ = ModelMiddlewareStage::ProviderCall;
+        self.middleware_obs.record_provider_call();
         let response = tokio::select! {
             biased;
             _ = self.invocation.cancellation().cancelled() => {
@@ -428,6 +557,7 @@ impl LlmInvoker {
             }
             response = invocation => response?,
         };
+        let _ = ModelMiddlewareStage::UsageAccounting;
         record_after_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
@@ -441,6 +571,7 @@ impl LlmInvoker {
             self.invocation.cancellation(),
         )
         .await?;
+        self.middleware_obs.record_usage();
         Ok(response)
     }
 
@@ -458,6 +589,7 @@ impl LlmInvoker {
         let response = match request.kind {
             ModelCallKind::Completion => {
                 self.invoke_response(
+                    request.messages,
                     observation,
                     self.inner
                         .complete(request.messages, request.system, request.tools),
@@ -469,6 +601,7 @@ impl LlmInvoker {
                     anyhow::anyhow!("structured model request is missing its directive")
                 })?;
                 self.invoke_response(
+                    request.messages,
                     observation,
                     self.inner.complete_structured(
                         request.messages,
@@ -485,6 +618,7 @@ impl LlmInvoker {
 
     async fn invoke_stream<F, Fut>(
         &self,
+        messages: &[Message],
         observation: ModelCallObservation<'_>,
         caller_cancellation: CancellationToken,
         setup: F,
@@ -493,6 +627,23 @@ impl LlmInvoker {
         F: FnOnce(CancellationToken) -> Fut + Send,
         Fut: Future<Output = anyhow::Result<mpsc::Receiver<StreamEvent>>> + Send,
     {
+        let _trust = match admit_prompt_trust(messages) {
+            Ok(admission) => {
+                self.middleware_obs.record_trust_admitted(
+                    true,
+                    admission.trusted,
+                    admission.workspace_data,
+                    admission.external,
+                    admission.external_reviewed,
+                );
+                admission
+            }
+            Err(error) => {
+                self.middleware_obs.record_trust_rejected();
+                return Err(error);
+            }
+        };
+        let _ = ModelMiddlewareStage::BudgetAdmission;
         check_before_llm(
             self.invocation.governance().budget_guard(),
             self.invocation.session_id(),
@@ -501,6 +652,7 @@ impl LlmInvoker {
             self.invocation.cancellation(),
         )
         .await?;
+        let _ = ModelMiddlewareStage::EvidenceCapture;
         let usage_binding = self.record_model_evidence(observation).await?;
 
         // A streaming permit must live as long as the returned receiver, not
@@ -508,6 +660,7 @@ impl LlmInvoker {
         // capacity truthful while tokens are still being consumed and makes
         // dropping the receiver the normal release path.
         let caller_signal = caller_cancellation.clone();
+        let _ = ModelMiddlewareStage::GenerationAdmission;
         let generation_permit = tokio::select! {
             biased;
             _ = self.invocation.cancellation().cancelled() => {
@@ -524,6 +677,8 @@ impl LlmInvoker {
         let (provider_cancellation, cancellation_watcher) =
             self.combine_cancellation(caller_cancellation);
         let setup = setup(provider_cancellation.clone());
+        let _ = ModelMiddlewareStage::ProviderCall;
+        self.middleware_obs.record_provider_call();
         let setup_result = tokio::select! {
             biased;
             _ = self.invocation.cancellation().cancelled() => {
@@ -543,6 +698,7 @@ impl LlmInvoker {
             }
         };
 
+        let _ = (_trust, ModelMiddlewareStage::UsageAccounting);
         Ok(self.proxy_stream(
             inner_rx,
             provider_cancellation,
@@ -623,6 +779,7 @@ impl LlmInvoker {
         let budget_guard = self.invocation.governance().budget_guard().cloned();
         let session_id = self.invocation.session_id().to_string();
         let invocation = self.invocation.clone();
+        let middleware_obs = Arc::clone(&self.middleware_obs);
 
         tokio::spawn(async move {
             // Keep the admission lease attached to the proxy task until the
@@ -641,7 +798,7 @@ impl LlmInvoker {
                 };
                 if let StreamEvent::Done(response) = &event {
                     record_after_llm(budget_guard.as_ref(), &session_id, &response.usage).await;
-                    if let Err(error) = record_model_usage(
+                    match record_model_usage(
                         &invocation,
                         usage_binding.as_ref(),
                         &response.usage,
@@ -649,14 +806,19 @@ impl LlmInvoker {
                     )
                     .await
                     {
-                        if provider_cancellation.is_cancelled() {
-                            break;
+                        Ok(()) => {
+                            middleware_obs.record_usage();
                         }
-                        tracing::warn!(
-                            error = %error,
-                            call_sequence = usage_binding.as_ref().map(|binding| binding.call_sequence()),
-                            "Failed to record model usage evidence"
-                        );
+                        Err(error) => {
+                            if provider_cancellation.is_cancelled() {
+                                break;
+                            }
+                            tracing::warn!(
+                                error = %error,
+                                call_sequence = usage_binding.as_ref().map(|binding| binding.call_sequence()),
+                                "Failed to record model usage evidence"
+                            );
+                        }
                     }
                 }
                 let finished = matches!(event, StreamEvent::Done(_));
@@ -684,29 +846,39 @@ impl LlmInvoker {
         let caller_cancellation = request.caller_cancellation.clone();
         let receiver = match request.kind {
             ModelStreamKind::Streaming => {
-                self.invoke_stream(observation, caller_cancellation, |provider_token| {
-                    self.inner.complete_streaming(
-                        request.messages,
-                        request.system,
-                        request.tools,
-                        provider_token,
-                    )
-                })
+                self.invoke_stream(
+                    request.messages,
+                    observation,
+                    caller_cancellation,
+                    |provider_token| {
+                        self.inner.complete_streaming(
+                            request.messages,
+                            request.system,
+                            request.tools,
+                            provider_token,
+                        )
+                    },
+                )
                 .await?
             }
             ModelStreamKind::StreamingStructured => {
                 let directive = request.directive.ok_or_else(|| {
                     anyhow::anyhow!("structured streaming request is missing its directive")
                 })?;
-                self.invoke_stream(observation, caller_cancellation, |provider_token| {
-                    self.inner.complete_streaming_structured(
-                        request.messages,
-                        request.system,
-                        request.tools,
-                        directive,
-                        provider_token,
-                    )
-                })
+                self.invoke_stream(
+                    request.messages,
+                    observation,
+                    caller_cancellation,
+                    |provider_token| {
+                        self.inner.complete_streaming_structured(
+                            request.messages,
+                            request.system,
+                            request.tools,
+                            directive,
+                            provider_token,
+                        )
+                    },
+                )
                 .await?
             }
         };
@@ -741,15 +913,9 @@ impl LlmClient for LlmInvoker {
     }
 
     fn fork_for_session(&self, session_id: &str) -> Option<Arc<dyn LlmClient>> {
-        self.inner.fork_for_session(session_id).map(|inner| {
-            let mut scoped = Self::new_with_admission(
-                inner,
-                self.invocation.clone(),
-                self.model_generation_admission.clone(),
-            );
-            scoped.presentation_application = self.presentation_application;
-            Arc::new(scoped) as Arc<dyn LlmClient>
-        })
+        self.inner
+            .fork_for_session(session_id)
+            .map(|inner| Arc::new(self.with_inner_preserving_state(inner)) as Arc<dyn LlmClient>)
     }
 
     fn with_active_generation_timeout(&self, timeout: Duration) -> Option<Arc<dyn LlmClient>> {
@@ -855,10 +1021,11 @@ impl AgentLoop {
                 provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
             })
             .unwrap_or(provider_client);
-        Arc::new(LlmInvoker::new_with_admission(
+        Arc::new(LlmInvoker::new_with_admission_and_obs(
             provider_client,
             invocation.clone(),
             admission,
+            Arc::clone(&self.middleware_obs),
         ))
     }
 
@@ -904,8 +1071,8 @@ impl AgentLoop {
         });
 
         if provider_client.model_generation_is_managed() {
-            if let Some(rebound) =
-                provider_client.bind_model_generation_admission(admission, preadmitted)
+            if let Some(rebound) = provider_client
+                .bind_model_generation_admission(admission.clone(), preadmitted.clone())
             {
                 return self
                     .config
@@ -915,11 +1082,13 @@ impl AgentLoop {
                     })
                     .unwrap_or(rebound);
             }
-            // The marker and rebinding hook are one contract for governed
-            // facades. Keep the existing client if a third-party facade only
-            // implements the marker; wrapping it would create nested gates.
-            tracing::warn!("managed LLM client did not provide a model-generation rebinding hook");
-            return provider_client;
+            // Marker without rebind is not a governed facade: returning the raw
+            // client would skip trust/budget/evidence middleware (OPT-PATH1).
+            // Fall through and wrap with LlmInvoker so run-bound tool calls stay
+            // on the single middleware path.
+            tracing::warn!(
+                "managed LLM client did not provide a model-generation rebinding hook; wrapping with LlmInvoker"
+            );
         }
 
         let provider_client = self
@@ -930,8 +1099,13 @@ impl AgentLoop {
             })
             .unwrap_or(provider_client);
         Arc::new(
-            LlmInvoker::new_with_admission(provider_client, invocation, admission)
-                .with_preadmitted_permit(preadmitted),
+            LlmInvoker::new_with_admission_and_obs(
+                provider_client,
+                invocation,
+                admission,
+                Arc::clone(&self.middleware_obs),
+            )
+            .with_preadmitted_permit(preadmitted),
         )
     }
 
@@ -948,10 +1122,11 @@ impl AgentLoop {
                 provider_client.with_active_generation_timeout(Duration::from_millis(timeout_ms))
             })
             .unwrap_or(provider_client);
-        Arc::new(LlmInvoker::profiled_with_admission(
+        Arc::new(LlmInvoker::profiled_with_admission_and_obs(
             provider_client,
             invocation.clone(),
             admission,
+            Arc::clone(&self.middleware_obs),
         ))
     }
 

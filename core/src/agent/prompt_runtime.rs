@@ -25,14 +25,18 @@ impl AgentLoop {
             return style;
         }
 
-        let (style, confidence) = AgentStyle::detect_with_confidence(prompt);
+        // Keep the primary session on GeneralPurpose unless the host explicitly
+        // selected a specialty style. Keyword detection remains available for
+        // planning heuristics and delegated agents, but must not silently
+        // downgrade the writable coding prompt.
+        let (detected, confidence) = AgentStyle::detect_with_confidence(prompt);
         tracing::debug!(
-            intent.classification = ?style,
+            intent.classification = ?detected,
             intent.confidence = ?confidence,
-            intent.source = "local",
-            "Intent classified locally"
+            intent.source = "local_nonbinding",
+            "Intent classified locally without changing primary prompt style"
         );
-        style
+        AgentStyle::GeneralPurpose
     }
 
     pub(super) async fn resolve_prompt_mode(

@@ -1,0 +1,85 @@
+{
+  "schema": "a3s.code.research-wire.v1",
+  "version": 1,
+  "max_message_bytes": 33554432,
+  "kinds": [
+    {
+      "variant": "ResearchRun",
+      "constant": "RESEARCH_RUN",
+      "wire_name": "research_run",
+      "payload_type": "ResearchRunV1"
+    },
+    {
+      "variant": "ResearchEvidenceFact",
+      "constant": "RESEARCH_EVIDENCE_FACT",
+      "wire_name": "research_evidence_fact",
+      "payload_type": "ResearchEvidenceFactV1"
+    },
+    {
+      "variant": "ResearchClaim",
+      "constant": "RESEARCH_CLAIM",
+      "wire_name": "research_claim",
+      "payload_type": "ResearchClaimV1"
+    },
+    {
+      "variant": "ResearchCitation",
+      "constant": "RESEARCH_CITATION",
+      "wire_name": "research_citation",
+      "payload_type": "ResearchCitationV1"
+    },
+    {
+      "variant": "ResearchEvidenceGraph",
+      "constant": "RESEARCH_EVIDENCE_GRAPH",
+      "wire_name": "research_evidence_graph",
+      "payload_type": "ResearchEvidenceGraphV1"
+    },
+    {
+      "variant": "ResearchWorkflowStep",
+      "constant": "RESEARCH_WORKFLOW_STEP",
+      "wire_name": "research_workflow_step",
+      "payload_type": "ResearchWorkflowStepV1"
+    },
+    {
+      "variant": "ResearchWorkflowPlan",
+      "constant": "RESEARCH_WORKFLOW_PLAN",
+      "wire_name": "research_workflow_plan",
+      "payload_type": "ResearchWorkflowPlanV1"
+    },
+    {
+      "variant": "ResearchRerunLineage",
+      "constant": "RESEARCH_RERUN_LINEAGE",
+      "wire_name": "research_rerun_lineage",
+      "payload_type": "ResearchRerunLineageV1"
+    },
+    {
+      "variant": "ResearchProvenanceReceipt",
+      "constant": "RESEARCH_PROVENANCE_RECEIPT",
+      "wire_name": "research_provenance_receipt",
+      "payload_type": "ResearchProvenanceReceiptV1"
+    },
+    {
+      "variant": "ResearchReproducibilityManifest",
+      "constant": "RESEARCH_REPRODUCIBILITY_MANIFEST",
+      "wire_name": "research_reproducibility_manifest",
+      "payload_type": "ResearchReproducibilityManifestV1"
+    },
+    {
+      "variant": "ResearchReviewFinding",
+      "constant": "RESEARCH_REVIEW_FINDING",
+      "wire_name": "research_review_finding",
+      "payload_type": "ResearchReviewFindingV1"
+    },
+    {
+      "variant": "ResearchReviewBatch",
+      "constant": "RESEARCH_REVIEW_BATCH",
+      "wire_name": "research_review_batch",
+      "payload_type": "ResearchReviewBatchV1"
+    },
+    {
+      "variant": "ResearchEvent",
+      "constant": "RESEARCH_EVENT",
+      "wire_name": "research_event",
+      "payload_type": "ResearchEventV1"
+    }
+  ]
+}

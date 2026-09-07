@@ -49,10 +49,17 @@ import type {
   EvaluationWireMessageV1,
   EvaluationWireKindV1,
   KnownEvaluationWireKindV1,
+  // From research-protocol-v1.d.ts (generated from the Rust catalog):
+  ResearchWireEnvelopeV1,
+  ResearchWireMessageV1,
+  ResearchWireKindV1,
+  KnownResearchWireKindV1,
 } from './index.js'
 import {
   EVALUATION_WIRE_KINDS_V1,
   EvaluationWireTypeV1,
+  RESEARCH_WIRE_KINDS_V1,
+  ResearchWireTypeV1,
   ToolPresentationMode,
   WorkspaceLexicalEngineOption,
 } from './index.js'
@@ -145,6 +152,21 @@ void _evaluationKind
 void _knownEvaluationKind
 void EvaluationWireTypeV1.EVALUATION_RECORD
 void EVALUATION_WIRE_KINDS_V1
+const _researchEnvelope: ResearchWireEnvelopeV1 = {
+  schema: 'a3s.code.research-wire.v1',
+  version: 1,
+  kind: 'research_event',
+  payload: {},
+}
+const _researchMessage: ResearchWireMessageV1 = _researchEnvelope
+const _researchKind: ResearchWireKindV1 = 'research_event'
+const _knownResearchKind: KnownResearchWireKindV1 = 'research_reproducibility_manifest'
+void _researchEnvelope
+void _researchMessage
+void _researchKind
+void _knownResearchKind
+void ResearchWireTypeV1.RESEARCH_EVENT
+void RESEARCH_WIRE_KINDS_V1
 const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
 const _serveFailureCode: A3sCodeErrorCode = 'SERVE_STARTUP_FAILED'
 
@@ -164,6 +186,7 @@ void _session.hasMemory
 void _session.taskSchedulerStats()
 void _session.taskSchedulerHealth()
 void _session.modelGenerationPoolHealth()
+void _session.modelMiddlewareHealth()
 void _session.memoryMaintenanceHealth()
 void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })

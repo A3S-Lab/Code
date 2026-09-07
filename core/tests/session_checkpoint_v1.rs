@@ -177,18 +177,18 @@ fn semantic_and_logical_state_form_one_exact_portable_checkpoint() {
 
     assert_eq!(descriptor.format, SESSION_CHECKPOINT_FORMAT_V1);
     assert_eq!(descriptor.media_type, SESSION_CHECKPOINT_MEDIA_TYPE_V1);
-    assert_eq!(descriptor.size_bytes, 2062);
+    assert_eq!(descriptor.size_bytes, 2090);
     assert_eq!(
         descriptor.content_digest,
-        "sha256:9e66c6ab9896727d3094ec9278974001e80a70c25b199b4706efd7e1c6520302"
+        "sha256:122347d3f89487c21d788c9dda54b5883f4e79459aae7b6e4bfd5728049312e0"
     );
     assert_eq!(
         descriptor.descriptor_digest,
-        "sha256:6d01924f9b243433fde22496958090f8017d87695af7dd3646c306675b97e8a4"
+        "sha256:8492af9da1760810869d7e0e25e8b3f7850e31152056596fed3c74872efa1b44"
     );
     assert_eq!(
         descriptor.snapshot.evidence_digest,
-        "sha256:0388b0c594c04f00f13b3a6954754385b847f0f68e0d72382e7edf89903653f0"
+        "sha256:bcf4108a8ebc5c94c2722d25c513e58a2926e8bd6def80ddae8d6a2aff77363d"
     );
     let logical = descriptor.logical_resume.as_ref().unwrap();
     assert_eq!(

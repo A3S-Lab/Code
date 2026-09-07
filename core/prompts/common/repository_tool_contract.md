@@ -21,8 +21,8 @@ continuations.
   candidate files in grep/BM25/semantic/hybrid modes. Grep also accepts
   `context`, `case_sensitive`, and `output_mode`; `files_with_matches` and
   `count` use `limit`/`cursor` for paginated results. Glob accepts
-  `limit`/`cursor` and `sort`; use `sort: "path"`
-  for deterministic pages. BM25 accepts `limit` and `context`. Copy the exact
+  `limit`/`cursor` and `sort`; use `sort: "path"` for deterministic pages.
+  BM25 accepts `limit` and `context`. Copy the exact
   `metadata.page.next_cursor` and stop when it is absent.
 - `edit`: pass `file_path`, `old_string`, and `new_string`; set `replace_all`
   only when every occurrence should change. For `replace_all` or any mechanical

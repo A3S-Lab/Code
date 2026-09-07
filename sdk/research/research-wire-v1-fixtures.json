@@ -1,0 +1,70 @@
+{
+  "schema": "a3s.code.research-wire.v1",
+  "version": 1,
+  "valid": {
+    "schema": "a3s.code.research-wire.v1",
+    "version": 1,
+    "kind": "research_event",
+    "payload": {
+      "schema": "a3s.code.science-event.v1",
+      "projectId": "fixture-project",
+      "projectRevision": 1,
+      "runId": "fixture-run",
+      "sequence": 1,
+      "eventType": "research.run.admitted",
+      "payloadDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "observedAtMs": 1,
+      "eventDigest": "sha256:3107e7cc70926565f2bc43e0cf0c23ce6c0ba4ddd4ed76bc863677473bd47329"
+    }
+  },
+  "unknown_top_level_field": {
+    "schema": "a3s.code.research-wire.v1",
+    "version": 1,
+    "kind": "research_event",
+    "payload": {
+      "schema": "a3s.code.science-event.v1",
+      "projectId": "fixture-project",
+      "projectRevision": 1,
+      "runId": "fixture-run",
+      "sequence": 1,
+      "eventType": "research.run.admitted",
+      "payloadDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "observedAtMs": 1,
+      "eventDigest": "sha256:3107e7cc70926565f2bc43e0cf0c23ce6c0ba4ddd4ed76bc863677473bd47329"
+    },
+    "future_field": true
+  },
+  "unknown_payload_field": {
+    "schema": "a3s.code.research-wire.v1",
+    "version": 1,
+    "kind": "research_event",
+    "payload": {
+      "schema": "a3s.code.science-event.v1",
+      "projectId": "fixture-project",
+      "projectRevision": 1,
+      "runId": "fixture-run",
+      "sequence": 1,
+      "eventType": "research.run.admitted",
+      "payloadDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "observedAtMs": 1,
+      "eventDigest": "sha256:3107e7cc70926565f2bc43e0cf0c23ce6c0ba4ddd4ed76bc863677473bd47329",
+      "future_field": true
+    }
+  },
+  "unsupported_version": {
+    "schema": "a3s.code.research-wire.v1",
+    "version": 2,
+    "kind": "research_event",
+    "payload": {
+      "schema": "a3s.code.science-event.v1",
+      "projectId": "fixture-project",
+      "projectRevision": 1,
+      "runId": "fixture-run",
+      "sequence": 1,
+      "eventType": "research.run.admitted",
+      "payloadDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "observedAtMs": 1,
+      "eventDigest": "sha256:3107e7cc70926565f2bc43e0cf0c23ce6c0ba4ddd4ed76bc863677473bd47329"
+    }
+  }
+}

@@ -338,6 +338,28 @@ mod codec;
 
 pub use artifact::SessionCheckpointExportV1;
 
+/// Cross-language wire form for [`SessionCheckpointExportV1`] (SDK-CP1).
+///
+/// Hosts receive the secret-free descriptor plus base64 payload bytes. Content
+/// may include conversation and Tool data; authorization and retention remain
+/// host responsibilities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SdkSessionCheckpointExportV1 {
+    pub descriptor: SessionCheckpointDescriptorV1,
+    pub content_base64: String,
+}
+
+impl SdkSessionCheckpointExportV1 {
+    pub fn from_export(export: &SessionCheckpointExportV1) -> Self {
+        use base64::Engine;
+        Self {
+            descriptor: export.descriptor().clone(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(export.content()),
+        }
+    }
+}
+
 /// Host-owned destination for exact checkpoints captured from a live Run.
 ///
 /// Code invokes the sink only at a completed tool-round boundary, after the

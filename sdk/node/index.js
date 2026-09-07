@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, moliRuntimeInfo, ensureMoli, moliDefaultVersion, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, moliRuntimeInfo, ensureMoli, moliDefaultVersion, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -334,6 +334,7 @@ module.exports.WorkspaceLexicalEngineOption = WorkspaceLexicalEngineOption
 module.exports.WorkspaceRetrievalOptions = WorkspaceRetrievalOptions
 module.exports.CallbackEmbeddingProvider = CallbackEmbeddingProvider
 module.exports.DeterministicWorkspaceReranker = DeterministicWorkspaceReranker
+module.exports.ImmutableContentAdapterOptions = ImmutableContentAdapterOptions
 module.exports.Agent = Agent
 module.exports.ServeHandle = ServeHandle
 
@@ -496,7 +497,7 @@ wrapA3sCodeErrors(Session && Session.prototype, [
   'registerAgentDir', 'registerWorkerAgent', 'registerWorkerAgents',
   'registerDynamicWorkflowRuntime', 'unregisterDynamicTool',
   'registerHook', 'unregisterHook', 'registerCommand',
-  'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup',
+  'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup', 'applyCapabilityBatch',
 ])
 wrapA3sCodeErrors(StateGraphRuntime, ['restore'])
 wrapA3sCodeErrors(StateGraphRuntime && StateGraphRuntime.prototype, [

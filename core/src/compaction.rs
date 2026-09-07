@@ -356,6 +356,7 @@ fn render_message_for_summary(message: &Message) -> String {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 let status = if *is_error == Some(true) {
                     "error"
@@ -683,6 +684,8 @@ mod tests {
                 tool_use_id: tool_id.to_string(),
                 content: ToolResultContentField::Text(content.to_string()),
                 is_error: None,
+                trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                redaction_reviewed: false,
             }],
             reasoning_content: None,
         }
@@ -731,11 +734,15 @@ mod tests {
                         tool_use_id: "first".to_string(),
                         content: ToolResultContentField::Text("one".to_string()),
                         is_error: None,
+                        trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                        redaction_reviewed: false,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "second".to_string(),
                         content: ToolResultContentField::Text("two".to_string()),
                         is_error: None,
+                        trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                        redaction_reviewed: false,
                     },
                 ],
                 reasoning_content: None,

@@ -9,6 +9,8 @@
  * protocol types are generated from the core catalog into
  * `event-protocol-v1.d.ts`. Evaluation wire types are generated from
  * `core/src/evaluation/protocol.rs` into `evaluation-protocol-v1.d.ts`.
+ * Research wire types are generated from `core/src/research/protocol.rs`
+ * into `research-protocol-v1.d.ts`.
  *
  * Edit the Rust sources or the event artifact generator, not generated files.
  */
@@ -16,6 +18,7 @@ export * from './generated'
 export * from './extra-types'
 export * from './event-protocol-v1'
 export * from './evaluation-protocol-v1'
+export * from './research-protocol-v1'
 
 declare module './generated' {
   interface EventStream extends AsyncIterable<AgentEvent> {

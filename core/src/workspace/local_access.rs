@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::Metadata;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Optional access policy for the local workspace backend.
 ///
@@ -29,22 +30,42 @@ pub enum LocalWorkspaceAccessPolicy {
 }
 
 #[derive(Debug)]
-pub(crate) struct LocalWorkspaceAccessBoundary {
+struct CredentialScan {
     sensitive_file_ids: HashSet<FileIdentity>,
     denied_hardlink_paths: HashSet<PathBuf>,
-    source_egress: bool,
-    name: &'static str,
+}
+
+#[derive(Debug)]
+enum AccessBoundaryKind {
+    /// Path-pattern denials are O(1); hard-link identity discovery runs on the
+    /// first `ensure_access` so interactive TUI takeover is not blocked by a
+    /// full-tree credential scan of large workspaces.
+    Credential {
+        workspace: PathBuf,
+        scan: OnceLock<CredentialScan>,
+    },
+    SourceEgress,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalWorkspaceAccessBoundary {
+    kind: AccessBoundaryKind,
 }
 
 impl LocalWorkspaceAccessBoundary {
     pub(crate) fn for_policy(policy: LocalWorkspaceAccessPolicy, workspace: &Path) -> Option<Self> {
         match policy {
             LocalWorkspaceAccessPolicy::Unrestricted => None,
-            LocalWorkspaceAccessPolicy::CredentialBoundary => Some(Self::discover(workspace)),
+            LocalWorkspaceAccessPolicy::CredentialBoundary => Some(Self {
+                kind: AccessBoundaryKind::Credential {
+                    workspace: workspace.to_path_buf(),
+                    scan: OnceLock::new(),
+                },
+            }),
         }
     }
 
-    fn discover(workspace: &Path) -> Self {
+    fn discover(workspace: &Path) -> CredentialScan {
         let mut paths = sensitive_paths();
         if let Ok(workspace_paths) = workspace_sensitive_paths(workspace) {
             paths.extend(workspace_paths);
@@ -52,7 +73,7 @@ impl LocalWorkspaceAccessBoundary {
         paths.sort();
         paths.dedup();
 
-        let sensitive_file_ids = paths
+        let sensitive_file_ids: HashSet<FileIdentity> = paths
             .into_iter()
             .filter_map(|path| {
                 let metadata = std::fs::metadata(&path).ok()?;
@@ -62,17 +83,24 @@ impl LocalWorkspaceAccessBoundary {
             })
             .collect();
 
-        let denied_hardlink_paths = workspace_hardlink_paths(workspace)
+        let denied_hardlink_paths: HashSet<PathBuf> = workspace_hardlink_paths(workspace)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|path| path.strip_prefix(workspace).ok().map(Path::to_path_buf))
             .collect();
 
-        Self {
+        CredentialScan {
             sensitive_file_ids,
             denied_hardlink_paths,
-            source_egress: false,
-            name: "credential",
+        }
+    }
+
+    fn credential_scan(&self) -> Option<&CredentialScan> {
+        match &self.kind {
+            AccessBoundaryKind::Credential { workspace, scan } => {
+                Some(scan.get_or_init(|| Self::discover(workspace)))
+            }
+            AccessBoundaryKind::SourceEgress => None,
         }
     }
 
@@ -82,10 +110,7 @@ impl LocalWorkspaceAccessBoundary {
     /// file at the actual read instead.
     pub(crate) fn for_source_egress() -> Self {
         Self {
-            sensitive_file_ids: HashSet::new(),
-            denied_hardlink_paths: HashSet::new(),
-            source_egress: true,
-            name: "source egress",
+            kind: AccessBoundaryKind::SourceEgress,
         }
     }
 
@@ -101,7 +126,8 @@ impl LocalWorkspaceAccessBoundary {
         if self.path_is_denied(logical_path) {
             return self.denied(operation);
         }
-        if self.denied_hardlink_paths.contains(logical_path) {
+        let scan = self.credential_scan();
+        if scan.is_some_and(|scan| scan.denied_hardlink_paths.contains(logical_path)) {
             return self.denied(operation);
         }
 
@@ -115,7 +141,9 @@ impl LocalWorkspaceAccessBoundary {
         if resolved_relative.is_some_and(|path| self.path_is_denied(path)) {
             return self.denied(operation);
         }
-        if resolved_relative.is_some_and(|path| self.denied_hardlink_paths.contains(path)) {
+        if resolved_relative
+            .is_some_and(|path| scan.is_some_and(|scan| scan.denied_hardlink_paths.contains(path)))
+        {
             return self.denied(operation);
         }
 
@@ -130,7 +158,7 @@ impl LocalWorkspaceAccessBoundary {
         if link_count <= 1 {
             return Ok(());
         }
-        if self.source_egress {
+        if matches!(self.kind, AccessBoundaryKind::SourceEgress) {
             return self.denied(operation);
         }
 
@@ -138,7 +166,8 @@ impl LocalWorkspaceAccessBoundary {
         let Some(identity) = FileIdentity::from_path(&checked_path, metadata) else {
             return self.denied(operation);
         };
-        let aliases_known_sensitive = self.sensitive_file_ids.contains(&identity);
+        let aliases_known_sensitive =
+            scan.is_some_and(|scan| scan.sensitive_file_ids.contains(&identity));
         let inside_package_or_build_tree = is_skipped_workspace_tree(relative);
 
         // Source-tree multi-link files are denied conservatively because one
@@ -153,18 +182,18 @@ impl LocalWorkspaceAccessBoundary {
     }
 
     fn path_is_denied(&self, path: &Path) -> bool {
-        if self.source_egress {
-            source_egress::path_is_denied(path)
-        } else {
-            is_sensitive_workspace_path(path)
+        match self.kind {
+            AccessBoundaryKind::SourceEgress => source_egress::path_is_denied(path),
+            AccessBoundaryKind::Credential { .. } => is_sensitive_workspace_path(path),
         }
     }
 
     fn denied(&self, operation: &'static str) -> Result<()> {
-        bail!(
-            "local workspace {} boundary denied {operation} access",
-            self.name
-        )
+        let name = match self.kind {
+            AccessBoundaryKind::Credential { .. } => "credential",
+            AccessBoundaryKind::SourceEgress => "source egress",
+        };
+        bail!("local workspace {name} boundary denied {operation} access")
     }
 }
 

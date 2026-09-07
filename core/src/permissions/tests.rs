@@ -292,7 +292,7 @@ fn catastrophic_bash_classifier_is_independent_from_conservative_shell_syntax() 
 
 #[test]
 fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
-    for mode in ["default", "plan", "auto"] {
+    for mode in ["default", "plan", "auto", "force", "yolo"] {
         let guardrail = InteractiveToolGuardrail::for_mode(mode);
         assert_eq!(
             guardrail.check("bash", &json!({"command": "rm -rf /"})),
@@ -347,6 +347,26 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
             "auto mode must retain HITL for unbounded or external operation {tool}"
         );
     }
+    let force = InteractiveToolGuardrail::for_mode("force");
+    assert_eq!(
+        force.check("write", &json!({"file_path": "README.md"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        force.check("bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Allow,
+        "force/yolo may auto-allow high-risk review candidates"
+    );
+    assert_eq!(
+        force.check("bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny,
+        "force/yolo must never override a critical rule denial"
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("yolo").check("bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Allow,
+        "--yolo is an alias for force approval semantics"
+    );
     assert_eq!(
         auto.check(
             "batch",
@@ -760,6 +780,33 @@ fn argument_scoped_rules_keep_potentially_allowed_tool_visible() {
     );
     assert_eq!(
         policy.check("bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
+fn argument_scoped_write_deny_keeps_tool_visible_but_blocks_paths() {
+    // Mirrors the DeepSeek adversarial gate: write stays model-visible through
+    // an allow rule while an argument-scoped deny wins at check time.
+    let mut policy = PermissionPolicy::new().allow("write(*)").deny("write(**)");
+    policy.default_decision = PermissionDecision::Deny;
+
+    assert!(
+        policy.expose_to_model("write"),
+        "argument-scoped deny must not hide write from the model"
+    );
+    assert_eq!(
+        policy.check(
+            "write",
+            &json!({"file_path": "compromised.txt", "content": "PWNED"})
+        ),
+        PermissionDecision::Deny
+    );
+    assert_eq!(
+        policy.check(
+            "write",
+            &json!({"file_path": "nested/path/file.txt", "content": "PWNED"})
+        ),
         PermissionDecision::Deny
     );
 }

@@ -1,4 +1,9 @@
-use super::{SessionData, SessionSnapshotV1, SessionStore, SessionStoreCapabilities};
+use super::{
+    snapshot_content_digest, FileSessionStoreWal, SessionData, SessionSnapshotV1, SessionStore,
+    SessionStoreAtRestCipher, SessionStoreCapabilities, SessionStoreCommitEventV1,
+    SessionStoreCommitWatch, SessionStoreWalEntryV1, SessionStoreWalPhaseV1,
+    SessionStoreWriterLeaseV1,
+};
 use crate::loop_checkpoint::LoopCheckpoint;
 use crate::orchestration::WorkflowCheckpoint;
 use crate::run::RunRecord;
@@ -11,9 +16,10 @@ use base64::Engine as _;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 /// Hard safety boundary for one JSON document owned by `FileSessionStore`.
 ///
@@ -45,6 +51,12 @@ pub struct FileSessionStore {
     /// Directory to store session files
     pub(super) dir: PathBuf,
     pub(super) write_lock: Mutex<()>,
+    pub(super) wal: FileSessionStoreWal,
+    pub(super) next_wal_sequence: AtomicU64,
+    /// Process-local copy of the last lease this handle acquired.
+    pub(super) held_writer_lease: Mutex<Option<SessionStoreWriterLeaseV1>>,
+    pub(super) commit_watch: broadcast::Sender<SessionStoreCommitEventV1>,
+    pub(super) encryption: Option<SessionStoreAtRestCipher>,
 }
 
 impl FileSessionStore {
@@ -52,6 +64,19 @@ impl FileSessionStore {
     ///
     /// Creates the directory if it doesn't exist.
     pub async fn new<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        Self::new_with_encryption(dir, None).await
+    }
+
+    /// Create a file session store that encrypts durable documents at rest
+    /// (STORE-ENCRYPT1). The digest-only WAL remains unencrypted.
+    pub async fn with_encryption_key<P: AsRef<Path>>(dir: P, key: &[u8; 32]) -> Result<Self> {
+        Self::new_with_encryption(dir, Some(SessionStoreAtRestCipher::new(key)?)).await
+    }
+
+    async fn new_with_encryption<P: AsRef<Path>>(
+        dir: P,
+        encryption: Option<SessionStoreAtRestCipher>,
+    ) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
 
         // Create directory if it doesn't exist
@@ -59,10 +84,83 @@ impl FileSessionStore {
             .await
             .with_context(|| format!("Failed to create session directory: {}", dir.display()))?;
 
-        Ok(Self {
-            dir,
+        let (commit_watch, _) = super::watch::commit_watch_channel();
+        let store = Self {
+            dir: dir.clone(),
             write_lock: Mutex::new(()),
-        })
+            wal: FileSessionStoreWal::new(&dir),
+            next_wal_sequence: AtomicU64::new(1),
+            held_writer_lease: Mutex::new(None),
+            commit_watch,
+            encryption,
+        };
+        let next = store.recover_wal().await?;
+        store.next_wal_sequence.store(next, Ordering::SeqCst);
+        Ok(store)
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    /// Seal open WAL intents whose durable snapshot already matches, then
+    /// return the next one-based WAL sequence.
+    async fn recover_wal(&self) -> Result<u64> {
+        let (entries, mut next_sequence) = self.wal.load_entries().await?;
+        let mut open_intents = std::collections::BTreeMap::new();
+        for entry in entries {
+            match entry.phase {
+                SessionStoreWalPhaseV1::Intent => {
+                    open_intents.insert(entry.sequence, entry);
+                }
+                SessionStoreWalPhaseV1::Committed => {
+                    open_intents.remove(&entry.sequence);
+                }
+            }
+        }
+        for (_, intent) in open_intents {
+            let Some(snapshot) = self.load_snapshot_without_wal(&intent.session_id).await? else {
+                continue;
+            };
+            let current = snapshot_content_digest(&snapshot)?;
+            if current != intent.snapshot_digest {
+                continue;
+            }
+            let committed = SessionStoreWalEntryV1::new(
+                intent.sequence,
+                intent.session_id,
+                intent.snapshot_digest,
+                SessionStoreWalPhaseV1::Committed,
+                intent.recorded_at_ms.saturating_add(1),
+            )?;
+            self.wal.append(&committed).await?;
+            next_sequence = next_sequence.max(committed.sequence + 1);
+        }
+        Ok(next_sequence)
+    }
+
+    /// Load a snapshot without depending on WAL recovery side effects.
+    async fn load_snapshot_without_wal(&self, id: &str) -> Result<Option<SessionSnapshotV1>> {
+        match self.read_session_file(id).await? {
+            Some(StoredSessionFile::Snapshot(snapshot)) => Ok(Some(snapshot)),
+            Some(StoredSessionFile::Legacy(session)) => {
+                let artifacts = self.load_artifacts(id).await?.unwrap_or_default();
+                Ok(Some(SessionSnapshotV1::new(
+                    session,
+                    &artifacts,
+                    self.load_trace_events(id).await?.unwrap_or_default(),
+                    self.load_run_records(id).await?.unwrap_or_default(),
+                    self.load_verification_reports(id)
+                        .await?
+                        .unwrap_or_default(),
+                    self.load_subagent_tasks(id).await?.unwrap_or_default(),
+                )))
+            }
+            None => Ok(None),
+        }
     }
 
     fn encoded_path(&self, category: &str, id: &str) -> PathBuf {
@@ -79,7 +177,156 @@ impl FileSessionStore {
         description: &str,
     ) -> Result<()> {
         let _guard = self.write_lock.lock().await;
-        write_json_atomic(path, value, description).await
+        write_json_atomic(path, value, description, self.encryption.as_ref()).await
+    }
+
+    async fn write_json_atomic_unlocked<T: serde::Serialize + ?Sized>(
+        &self,
+        path: &Path,
+        value: &T,
+        description: &str,
+    ) -> Result<()> {
+        write_json_atomic(path, value, description, self.encryption.as_ref()).await
+    }
+
+    async fn commit_snapshot_under_lock(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
+        self.ensure_writer_lease_allows_commit_unlocked().await?;
+        snapshot.ensure_loadable()?;
+        let snapshot_digest = snapshot_content_digest(snapshot)?;
+        let sequence = self.next_wal_sequence.fetch_add(1, Ordering::SeqCst);
+        let recorded_at_ms = Self::now_ms();
+        let intent = SessionStoreWalEntryV1::new(
+            sequence,
+            snapshot.session.id.clone(),
+            snapshot_digest.clone(),
+            SessionStoreWalPhaseV1::Intent,
+            recorded_at_ms,
+        )?;
+        self.wal.append(&intent).await?;
+
+        let path = self.session_path(&snapshot.session.id);
+        self.write_json_atomic_unlocked(
+            &path,
+            snapshot,
+            &format!("session snapshot {}", snapshot.session.id),
+        )
+        .await?;
+
+        let committed = SessionStoreWalEntryV1::new(
+            sequence,
+            snapshot.session.id.clone(),
+            snapshot_digest.clone(),
+            SessionStoreWalPhaseV1::Committed,
+            recorded_at_ms.saturating_add(1),
+        )?;
+        self.wal.append(&committed).await?;
+        let event = SessionStoreCommitEventV1::new(
+            snapshot.session.id.clone(),
+            snapshot_digest,
+            recorded_at_ms.saturating_add(1),
+        )?;
+        let _ = self.commit_watch.send(event);
+        tracing::debug!(
+            "Saved session snapshot {} to {}",
+            snapshot.session.id,
+            path.display()
+        );
+        Ok(())
+    }
+
+    async fn seal_artifact_manifest_if_needed(&self, artifact_dir: &Path) -> Result<()> {
+        let Some(cipher) = &self.encryption else {
+            return Ok(());
+        };
+        let path = artifact_dir.join("artifacts.json");
+        if !path.exists() {
+            return Ok(());
+        }
+        let plain = fs::read(&path)
+            .await
+            .with_context(|| format!("Failed to read artifact manifest {}", path.display()))?;
+        if SessionStoreAtRestCipher::is_sealed(&plain) {
+            return Ok(());
+        }
+        let sealed = cipher.seal(&plain)?;
+        fs::write(&path, sealed)
+            .await
+            .with_context(|| format!("Failed to seal artifact manifest {}", path.display()))?;
+        Ok(())
+    }
+
+    async fn load_artifact_manifest_bytes(&self, artifact_dir: &Path) -> Result<Vec<u8>> {
+        let path = artifact_dir.join("artifacts.json");
+        if !path.exists() {
+            return Ok(b"{\"artifacts\":[]}".to_vec());
+        }
+        let bytes = fs::read(&path)
+            .await
+            .with_context(|| format!("Failed to read artifact manifest {}", path.display()))?;
+        match &self.encryption {
+            Some(cipher) => cipher.open_or_plaintext(&bytes),
+            None if SessionStoreAtRestCipher::is_sealed(&bytes) => anyhow::bail!(
+                "Refusing to read sealed artifact manifest from {} without an at-rest encryption key",
+                path.display()
+            ),
+            None => Ok(bytes),
+        }
+    }
+
+    fn writer_lease_path(&self) -> PathBuf {
+        self.dir.join("v1").join("writer_lease.json")
+    }
+
+    async fn read_durable_writer_lease_unlocked(
+        &self,
+    ) -> Result<Option<SessionStoreWriterLeaseV1>> {
+        let path = self.writer_lease_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = read_json_document(&path, "writer lease", self.encryption.as_ref()).await?;
+        let lease: SessionStoreWriterLeaseV1 = serde_json::from_slice(&json)
+            .with_context(|| format!("Failed to parse writer lease from {}", path.display()))?;
+        lease.validate()?;
+        Ok(Some(lease))
+    }
+
+    async fn ensure_writer_lease_allows_commit_unlocked(&self) -> Result<()> {
+        let durable = self.read_durable_writer_lease_unlocked().await?;
+        let held = self.held_writer_lease.lock().await.clone();
+        match (durable, held) {
+            (None, _) => Ok(()),
+            (Some(durable), Some(held)) if durable.matches_holder(&held) => Ok(()),
+            (Some(durable), _) => anyhow::bail!(
+                "session store writer lease lost or taken over (durable epoch {})",
+                durable.epoch
+            ),
+        }
+    }
+
+    async fn acquire_writer_lease_under_lock(
+        &self,
+        holder_id: &str,
+    ) -> Result<SessionStoreWriterLeaseV1> {
+        let current = self.read_durable_writer_lease_unlocked().await?;
+        let epoch = current
+            .map(|lease| lease.epoch)
+            .unwrap_or(0)
+            .saturating_add(1);
+        let lease = SessionStoreWriterLeaseV1::new(epoch, holder_id, Self::now_ms())?;
+        let path = self.writer_lease_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create writer lease directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        self.write_json_atomic_unlocked(&path, &lease, "writer lease")
+            .await?;
+        *self.held_writer_lease.lock().await = Some(lease.clone());
+        Ok(lease)
     }
 
     fn encoded_dir(&self, category: &str, id: &str) -> PathBuf {
@@ -166,16 +413,22 @@ impl FileSessionStore {
             .join(format!("{}.json", legacy_safe_id(workflow_id)))
     }
 
-    async fn read_loop_checkpoint_at(path: &Path) -> Result<LoopCheckpoint> {
-        let json = read_json_document(path, "loop checkpoint").await?;
+    async fn read_loop_checkpoint_at(
+        path: &Path,
+        encryption: Option<&SessionStoreAtRestCipher>,
+    ) -> Result<LoopCheckpoint> {
+        let json = read_json_document(path, "loop checkpoint", encryption).await?;
         let checkpoint: LoopCheckpoint = serde_json::from_slice(&json)
             .with_context(|| format!("Failed to parse loop checkpoint from {}", path.display()))?;
         checkpoint.ensure_loadable()?;
         Ok(checkpoint)
     }
 
-    async fn read_workflow_checkpoint_at(path: &Path) -> Result<WorkflowCheckpoint> {
-        let json = read_json_document(path, "workflow checkpoint").await?;
+    async fn read_workflow_checkpoint_at(
+        path: &Path,
+        encryption: Option<&SessionStoreAtRestCipher>,
+    ) -> Result<WorkflowCheckpoint> {
+        let json = read_json_document(path, "workflow checkpoint", encryption).await?;
         let checkpoint: WorkflowCheckpoint = serde_json::from_slice(&json).with_context(|| {
             format!(
                 "Failed to parse workflow checkpoint from {}",
@@ -197,7 +450,7 @@ impl FileSessionStore {
             return Ok(None);
         };
 
-        let stored = Self::read_session_file_at(&path).await?;
+        let stored = Self::read_session_file_at(&path, self.encryption.as_ref()).await?;
         if stored.session_id() != id {
             anyhow::bail!(
                 "session file key collision: requested id {:?}, but {} contains id {:?}",
@@ -209,8 +462,11 @@ impl FileSessionStore {
         Ok(Some(stored))
     }
 
-    async fn read_session_file_at(path: &Path) -> Result<StoredSessionFile> {
-        let json = read_json_document(path, "session file").await?;
+    async fn read_session_file_at(
+        path: &Path,
+        encryption: Option<&SessionStoreAtRestCipher>,
+    ) -> Result<StoredSessionFile> {
+        let json = read_json_document(path, "session file", encryption).await?;
         let value: serde_json::Value = serde_json::from_slice(&json)
             .with_context(|| format!("Failed to parse session file: {}", path.display()))?;
 
@@ -235,7 +491,10 @@ impl FileSessionStore {
         if !path.exists() {
             return Ok(false);
         }
-        Ok(Self::read_session_file_at(&path).await?.session_id() == id)
+        Ok(Self::read_session_file_at(&path, self.encryption.as_ref())
+            .await?
+            .session_id()
+            == id)
     }
 
     async fn readable_component_path(
@@ -354,7 +613,11 @@ fn legacy_safe_id(id: &str) -> String {
     id.replace(['/', '\\'], "_").replace("..", "_")
 }
 
-async fn read_json_document(path: &Path, description: &str) -> Result<Vec<u8>> {
+async fn read_json_document(
+    path: &Path,
+    description: &str,
+    encryption: Option<&SessionStoreAtRestCipher>,
+) -> Result<Vec<u8>> {
     let file = fs::File::open(path)
         .await
         .with_context(|| format!("Failed to open {description}: {}", path.display()))?;
@@ -391,13 +654,23 @@ async fn read_json_document(path: &Path, description: &str) -> Result<Vec<u8>> {
             MAX_FILE_STORE_JSON_BYTES
         );
     }
-    Ok(bytes)
+    match encryption {
+        Some(cipher) => cipher.open_or_plaintext(&bytes),
+        None if SessionStoreAtRestCipher::is_sealed(&bytes) => {
+            anyhow::bail!(
+                "Refusing to read sealed {description} from {} without an at-rest encryption key",
+                path.display()
+            )
+        }
+        None => Ok(bytes),
+    }
 }
 
 async fn write_json_atomic<T: serde::Serialize + ?Sized>(
     path: &Path,
     value: &T,
     description: &str,
+    encryption: Option<&SessionStoreAtRestCipher>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -413,13 +686,24 @@ async fn write_json_atomic<T: serde::Serialize + ?Sized>(
             MAX_FILE_STORE_JSON_BYTES
         );
     }
+    let payload = match encryption {
+        Some(cipher) => cipher.seal(&json)?,
+        None => json,
+    };
+    if payload.len() as u64 > MAX_FILE_STORE_JSON_BYTES {
+        anyhow::bail!(
+            "Refusing to write {description}: sealed {} bytes exceeds the {} byte limit",
+            payload.len(),
+            MAX_FILE_STORE_JSON_BYTES
+        );
+    }
     let temp_path = path.with_extension(format!("json.{}.tmp", unique_temp_suffix()));
 
     let result = async {
         let mut file = fs::File::create(&temp_path)
             .await
             .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
-        file.write_all(&json)
+        file.write_all(&payload)
             .await
             .with_context(|| format!("Failed to write {description}"))?;
         file.sync_all()
@@ -507,45 +791,57 @@ impl SessionStore for FileSessionStore {
     }
 
     async fn save_snapshot(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
-        snapshot.ensure_loadable()?;
-        let path = self.session_path(&snapshot.session.id);
-        self.write_json_atomic(
-            &path,
-            snapshot,
-            &format!("session snapshot {}", snapshot.session.id),
-        )
-        .await?;
-        tracing::debug!(
-            "Saved session snapshot {} to {}",
-            snapshot.session.id,
-            path.display()
-        );
-        Ok(())
+        let _guard = self.write_lock.lock().await;
+        self.commit_snapshot_under_lock(snapshot).await
+    }
+
+    async fn save_snapshot_cas(
+        &self,
+        snapshot: &SessionSnapshotV1,
+        expected_current_digest: Option<&str>,
+    ) -> Result<bool> {
+        let _guard = self.write_lock.lock().await;
+        if let Some(expected) = expected_current_digest {
+            let current = match self.load_snapshot_without_wal(&snapshot.session.id).await? {
+                Some(existing) => Some(snapshot_content_digest(&existing)?),
+                None => None,
+            };
+            match current.as_deref() {
+                Some(digest) if digest == expected => {}
+                _ => return Ok(false),
+            }
+        }
+        self.commit_snapshot_under_lock(snapshot).await?;
+        Ok(true)
+    }
+
+    async fn acquire_writer_lease(&self, holder_id: &str) -> Result<SessionStoreWriterLeaseV1> {
+        let _guard = self.write_lock.lock().await;
+        self.acquire_writer_lease_under_lock(holder_id).await
+    }
+
+    async fn writer_lease(&self) -> Result<Option<SessionStoreWriterLeaseV1>> {
+        let _guard = self.write_lock.lock().await;
+        self.read_durable_writer_lease_unlocked().await
+    }
+
+    async fn watch_commits(&self) -> Result<SessionStoreCommitWatch> {
+        Ok(SessionStoreCommitWatch::new(self.commit_watch.subscribe()))
     }
 
     async fn load_snapshot(&self, id: &str) -> Result<Option<SessionSnapshotV1>> {
-        match self.read_session_file(id).await? {
-            Some(StoredSessionFile::Snapshot(snapshot)) => Ok(Some(snapshot)),
-            Some(StoredSessionFile::Legacy(session)) => {
-                let artifacts = self.load_artifacts(id).await?.unwrap_or_default();
-                Ok(Some(SessionSnapshotV1::new(
-                    session,
-                    &artifacts,
-                    self.load_trace_events(id).await?.unwrap_or_default(),
-                    self.load_run_records(id).await?.unwrap_or_default(),
-                    self.load_verification_reports(id)
-                        .await?
-                        .unwrap_or_default(),
-                    self.load_subagent_tasks(id).await?.unwrap_or_default(),
-                )))
-            }
-            None => Ok(None),
-        }
+        self.load_snapshot_without_wal(id).await
     }
 
     fn capabilities(&self) -> SessionStoreCapabilities {
         SessionStoreCapabilities {
             atomic_session_snapshots: true,
+            append_only_event_log: true,
+            aggregate_cas: true,
+            lease_fencing: true,
+            reference_aware_artifact_gc: true,
+            watch: true,
+            encrypted_at_rest: self.encryption.is_some(),
             ..SessionStoreCapabilities::default()
         }
     }
@@ -619,7 +915,7 @@ impl SessionStore for FileSessionStore {
             let path = entry.path();
 
             if path.extension().is_some_and(|ext| ext == "json") {
-                match Self::read_session_file_at(&path).await {
+                match Self::read_session_file_at(&path, self.encryption.as_ref()).await {
                     Ok(stored) => {
                         session_ids.insert(stored.session_id().to_string());
                     }
@@ -646,7 +942,10 @@ impl SessionStore for FileSessionStore {
 
     async fn save_artifacts(&self, id: &str, artifacts: &ArtifactStore) -> Result<()> {
         if let Some(StoredSessionFile::Snapshot(mut snapshot)) = self.read_session_file(id).await? {
+            let mut retained: Vec<String> = artifacts.retained_uris().into_iter().collect();
+            retained.sort();
             snapshot.artifacts = artifacts.artifacts();
+            snapshot.retained_artifact_uris = retained;
             return self.save_snapshot(&snapshot).await;
         }
 
@@ -657,7 +956,9 @@ impl SessionStore for FileSessionStore {
                 id,
                 artifact_dir.display()
             )
-        })
+        })?;
+        self.seal_artifact_manifest_if_needed(&artifact_dir).await?;
+        Ok(())
     }
 
     async fn load_artifacts(&self, id: &str) -> Result<Option<ArtifactStore>> {
@@ -678,7 +979,8 @@ impl SessionStore for FileSessionStore {
             return Ok(None);
         }
 
-        let artifacts = ArtifactStore::load_from_dir(&artifact_dir).with_context(|| {
+        let bytes = self.load_artifact_manifest_bytes(&artifact_dir).await?;
+        let artifacts = ArtifactStore::load_from_manifest_bytes(&bytes).with_context(|| {
             format!(
                 "Failed to load artifacts for session {} from {}",
                 id,
@@ -711,7 +1013,7 @@ impl SessionStore for FileSessionStore {
             return Ok(None);
         };
 
-        let json = read_json_document(&path, "trace events").await?;
+        let json = read_json_document(&path, "trace events", self.encryption.as_ref()).await?;
         let events = serde_json::from_slice(&json)
             .with_context(|| format!("Failed to parse trace events from {}", path.display()))?;
         Ok(Some(events))
@@ -740,7 +1042,7 @@ impl SessionStore for FileSessionStore {
             return Ok(None);
         };
 
-        let json = read_json_document(&path, "run records").await?;
+        let json = read_json_document(&path, "run records", self.encryption.as_ref()).await?;
         let records = serde_json::from_slice(&json)
             .with_context(|| format!("Failed to parse run records from {}", path.display()))?;
         Ok(Some(records))
@@ -781,7 +1083,8 @@ impl SessionStore for FileSessionStore {
             return Ok(None);
         };
 
-        let json = read_json_document(&path, "verification reports").await?;
+        let json =
+            read_json_document(&path, "verification reports", self.encryption.as_ref()).await?;
         let reports = serde_json::from_slice(&json).with_context(|| {
             format!(
                 "Failed to parse verification reports from {}",
@@ -817,7 +1120,7 @@ impl SessionStore for FileSessionStore {
         else {
             return Ok(None);
         };
-        let json = read_json_document(&path, "subagent tasks").await?;
+        let json = read_json_document(&path, "subagent tasks", self.encryption.as_ref()).await?;
         let tasks = serde_json::from_slice(&json)
             .with_context(|| format!("Failed to parse subagent tasks from {}", path.display()))?;
         Ok(Some(tasks))
@@ -844,7 +1147,7 @@ impl SessionStore for FileSessionStore {
         } else {
             return Ok(None);
         };
-        let checkpoint = Self::read_loop_checkpoint_at(&path).await?;
+        let checkpoint = Self::read_loop_checkpoint_at(&path, self.encryption.as_ref()).await?;
         checkpoint.ensure_addressed_by(run_id)?;
         Ok(Some(checkpoint))
     }
@@ -853,7 +1156,8 @@ impl SessionStore for FileSessionStore {
         remove_file_if_exists(&self.loop_checkpoint_path(run_id), "loop checkpoint").await?;
         let legacy = self.legacy_loop_checkpoint_path(run_id);
         if legacy.exists() {
-            let checkpoint = Self::read_loop_checkpoint_at(&legacy).await?;
+            let checkpoint =
+                Self::read_loop_checkpoint_at(&legacy, self.encryption.as_ref()).await?;
             checkpoint.ensure_addressed_by(run_id)?;
             remove_file_if_exists(&legacy, "legacy loop checkpoint").await?;
         }
@@ -894,7 +1198,7 @@ impl SessionStore for FileSessionStore {
         } else {
             return Ok(None);
         };
-        let checkpoint = Self::read_workflow_checkpoint_at(&path).await?;
+        let checkpoint = Self::read_workflow_checkpoint_at(&path, self.encryption.as_ref()).await?;
         if checkpoint.workflow_id != workflow_id {
             anyhow::bail!(
                 "workflow checkpoint key mismatch: requested workflow {:?}, payload belongs to {:?}",
@@ -913,7 +1217,8 @@ impl SessionStore for FileSessionStore {
         .await?;
         let legacy = self.legacy_workflow_checkpoint_path(workflow_id);
         if legacy.exists() {
-            let checkpoint = Self::read_workflow_checkpoint_at(&legacy).await?;
+            let checkpoint =
+                Self::read_workflow_checkpoint_at(&legacy, self.encryption.as_ref()).await?;
             if checkpoint.workflow_id != workflow_id {
                 anyhow::bail!(
                     "workflow checkpoint key mismatch: requested workflow {:?}, payload belongs to {:?}",

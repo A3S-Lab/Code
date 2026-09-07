@@ -282,15 +282,35 @@ func prepareWorkspaceRetrievalOptions(
 	return wire, handlerID, nil
 }
 
-func prepareSessionOptions(runtime Runtime, value any) (any, string, error) {
+func prepareSessionOptions(runtime Runtime, value any) (any, []string, error) {
 	if value == nil {
-		return nil, "", nil
+		return nil, nil, nil
 	}
 	options, ok := value.(*SessionOptions)
 	if !ok {
-		return value, "", nil
+		return value, nil, nil
 	}
-	return prepareWorkspaceRetrievalOptions(runtime, options)
+	prepared, retrievalID, err := prepareWorkspaceRetrievalOptions(runtime, options)
+	if err != nil {
+		return nil, nil, err
+	}
+	prepared, immutableID, err := prepareImmutableContentAdapterOptions(runtime, prepared, options)
+	if err != nil {
+		if retrievalID != "" {
+			if callbacks, ok := runtime.(callbackRuntime); ok {
+				callbacks.unregisterCallback(retrievalID)
+			}
+		}
+		return nil, nil, err
+	}
+	var callbackIDs []string
+	if retrievalID != "" {
+		callbackIDs = append(callbackIDs, retrievalID)
+	}
+	if immutableID != "" {
+		callbackIDs = append(callbackIDs, immutableID)
+	}
+	return prepared, callbackIDs, nil
 }
 
 func (agent *Agent) trackRetrievalCallback(sessionID, callbackID string) {
@@ -377,12 +397,19 @@ func (agent *Agent) releaseAllRetrievalCallbacks() {
 }
 
 func (handle *ServeHandle) releaseRetrievalCallback() {
-	if handle == nil || handle.retrievalCallback == "" {
+	if handle == nil {
 		return
 	}
-	callbackID := handle.retrievalCallback
+	ids := handle.retrievalCallbacks
+	if len(ids) == 0 && handle.retrievalCallback != "" {
+		ids = []string{handle.retrievalCallback}
+	}
+	handle.retrievalCallbacks = nil
 	handle.retrievalCallback = ""
-	if handle.owner != nil {
+	if handle.owner == nil {
+		return
+	}
+	for _, callbackID := range ids {
 		handle.owner.releaseRetrievalCallback(callbackID)
 	}
 }

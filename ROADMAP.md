@@ -257,12 +257,22 @@ decides how to search, review, approve, retain, and publish results.
 | `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, lifecycle validation, and bounded validated JSON helpers for every research value | Thirty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, strict unknown-field rejection, and bounded wire recovery fail closed |
 | `RESEARCH-EXEC1` | Delivered | Host adapter qualification drives a research run through source capture, evidence append, create-only content-addressed artifact publication, and evaluator dispatch while retaining one Code Run identity; exact execution-target validation and explicit Run-aware Core-event projection are covered | `research_execution_qualification` passes restart/replay, cancellation terminality, contiguous evidence, artifact immutability, file-backed evaluator dispatch/result recovery, and exact Code/Use binding checks |
 | `RESEARCH-REVIEW1` | Delivered | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric; strict Run-aware evaluator/provenance/batch validation fences project-namespace, project-revision, provider, seed, evaluator identity, and evaluator/batch-evidence drift, and finding locations enforce one-based line/column coordinates; `research_review_qualification` proves the full chain through a real auxiliary reviewer dispatch, result-store retention, run-aware batch publication, strict wire round-trip, and terminal resolve/waive decisions | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, project-namespace, project-revision, provider, seed, evaluator identity, evaluator-evidence, provenance, batch-evidence, duplicate-id, partial-batch drift, and malformed source locations |
+| `RESEARCH-FABRIC1` | Delivered | Versioned `ResearchClaimV1`, `ResearchCitationV1`, and `ResearchEvidenceGraphV1` with digest-only statements, explicit `proposed`/`supported`/`conflicted`/`unsupported` claim states, Run-aware graph admission, citation-to-claim closure, and measured publication completeness (`ResearchEvidenceCompletenessV1`) that rejects proposed claims and unlinked support digests | Unit tests prove wire round-trip, illegal transitions, orphan citations, mixed Run drift, and that every publication-ready claim carries support citations or an explicit gap digest without importing scientific rubrics |
+| `RESEARCH-WORKFLOW1` | Delivered | Versioned `ResearchWorkflowStepV1`/`ResearchWorkflowPlanV1` bridge workflow step identities and optional `ExecutionResultReceiptV1` bindings into a research Run, with seed fencing and DAG validation; `ResearchRerunLineageV1` projects finding-triggered affected steps in dependency-first order, closing transitive dependents without rewriting the parent evidence ledger | Unit tests prove receipt identity/evidence fencing, seed drift rejection, transitive re-run selection, and lineage wire round-trip |
+| `RESEARCH-REPRO1` | Delivered | Versioned `ResearchReproducibilityManifestV1` binds provider/model identity, optional model-revision digest, environment lock, code/workflow/parameter digests, seed, tolerance digests, and output artifact digests to one research Run without retaining prompts or credentials; Run-aware and provenance validation fence seed, provider, environment, workflow, code, and output-set drift | Unit tests prove wire round-trip, sorted unique digest lists, seed drift rejection, and that every declared output artifact must appear in matching provenance receipts |
+| `RESEARCH-PROTO1` | Delivered | Additive `ResearchWireEnvelopeV1` projection for every research contract value, with one Rust catalog and generated Node/Python/Go declarations | Strict Rust decode validates schema/version/kind, size, and typed payloads; generated catalog and negative fixtures are parity-checked across SDK projections; Cloud remains the business transport owner |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
 small: it does not claim a complete project aggregate, scientific knowledge
-graph, package registry, or publication service. Those capabilities belong to
-the host, A3S Use, and Desktop phases in the cross-repository roadmap.
+graph store, package registry, or publication service. `RESEARCH-FABRIC1`
+adds the claim/citation completeness fabric, `RESEARCH-WORKFLOW1` adds
+the workflow-step bridge plus affected-step re-run lineage hosts need for
+reviewer-driven partial recompute, and `RESEARCH-REPRO1` closes the KRN-7
+reproducibility-manifest fence. `RESEARCH-PROTO1` publishes the same
+strict research wire envelope to Node/Python/Go. Broader Desktop project aggregates,
+host rubrics/UI, and Use science packages remain in the cross-repository
+scientific discovery roadmap.
 
 ### 3.3.9 Core event fabric
 
@@ -294,10 +304,22 @@ watch, and reference-aware artifact GC — beside the existing atomic
 snapshot flag. Every new flag defaults to unadvertised so hosts must
 negotiate before relying on a semantics, and a capability test locks the
 default-and-advertise contract. The built-in memory and file adapters
-continue to advertise exactly the atomic snapshot generations they prove;
-the WAL-plus-immutable-snapshot file migration and reference-aware
-artifact retention land incrementally behind these flags.
+advertise the atomic snapshot, aggregate CAS, reference-aware artifact GC,
+and commit watch they prove; the file adapter additionally advertises its
+append-only WAL and writer lease fencing.
 
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `STORE-WAL1` | Delivered | `FileSessionStore` records digest-only Intent/Committed WAL entries around each atomic snapshot replace; reopen seals an open Intent when the durable snapshot digest still matches, duplicate Intent sequences fail closed, and the file adapter advertises `append_only_event_log` | Focused store tests prove intent+commit pairing, crash-window recovery, and duplicate-sequence rejection without changing the public SessionStore API |
+| `STORE-CAS1` | Delivered | `SessionStore::save_snapshot_cas` compare-and-swaps one complete generation against an expected content digest; memory and file adapters advertise `aggregate_cas`, and a mismatch returns `Ok(false)` without writing | Focused store tests prove match→write and mismatch→no-write for both adapters under one store lock / map write |
+| `STORE-LEASE1` | Delivered | `SessionStore::acquire_writer_lease` publishes a store-wide durable epoch; `FileSessionStore` fences snapshot commits so a stale holder fails closed after takeover and advertises `lease_fencing` | Focused store tests prove acquire bumps epoch, takeover rejects the prior holder, and the new holder can still commit |
+| `STORE-GC1` | Delivered | `ArtifactStore` retains host-supplied URI roots so limit eviction cannot drop reachable content; `gc_unreferenced` removes only unpinned objects | Unit tests prove pinned URIs survive count eviction and that GC keeps exactly the retained root set |
+| `STORE-GC2` | Delivered | Session snapshots and artifact manifests persist retention roots; memory and file adapters round-trip them through `SessionStore` and advertise `reference_aware_artifact_gc` | Focused store tests prove reload keeps pins and GC still drops only unreferenced objects |
+| `STORE-WATCH1` | Delivered | `SessionStore::watch_commits` notifies subscribers after a durable snapshot commit; memory and file adapters publish digest-only `SessionStoreCommitEventV1` and advertise `watch` | Focused store tests prove a subscriber receives the committed session id and digest for both adapters |
+| `STORE-ENCRYPT1` | Delivered | `FileSessionStore::with_encryption_key` seals durable JSON documents and artifact manifests with AES-256-GCM; wrong keys fail closed; digest-only WAL stays unencrypted; the adapter advertises `encrypted_at_rest` only when constructed with a key | Focused store tests prove on-disk bytes are sealed, round-trip decrypt works, and a mismatched key cannot load |
+
+KRN-6 session-store capability negotiation is complete for the built-in
+adapters; Cloud/Harbor/host gates remain outside this slice.
 ### 3.3.10 Tool result trust boundary
 
 The KRN-5 trust slice is delivered at the value boundary. `ToolResultTrustV1`
@@ -309,12 +331,52 @@ projection label their outputs at construction). The label travels with the
 value through `ToolOutput -> ToolResult` conversion and the SDK wire
 contract, and `may_instruct()` / `requires_redaction_review()` give adapters
 one predicate instead of re-deriving trust from tool names: only `trusted`
-content may occupy an instruction-adjacent position, and all non-trusted
-content requires redaction review before prompt use. The governed
+content may occupy an instruction-adjacent position, and `external` content
+requires redaction review before prompt use. The governed
 invocation state machine, admission quotas, and retry/deadline semantics
 delivered by the merged line complete the Tool side of KRN-5; routing every
 model call through one explicit middleware pipeline remains incremental
 work on top of the existing admission/budget/cancellation/evidence stages.
+
+| Gate | State | Code-owned outcome | Exit criteria |
+| --- | --- | --- | --- |
+| `OPT-MW1` | Delivered | Every run-bound completion and streaming call advances through one explicit middleware stage order: trust admission → budget → evidence → generation admission → provider → usage | Focused invoker tests prove unreviewed external tool results fail closed before provider use; streaming and non-streaming share the same trust gate |
+| `OPT-TRUST1` | Delivered | `ToolResultTrustV1` is preserved through `NormalizedToolResult` into `ContentBlock::ToolResult`, host guards are labeled `Trusted`, and external results require `redaction_reviewed` before prompt use | Unit tests prove trust round-trip, middleware rejection of unreviewed external content, and that provider adapters still omit trust fields from vendor payloads |
+| `OPT-OBS1` | Delivered | Session-shared secret-free middleware counters expose trust admit/reject, provider, usage, and trust-label cardinality via `model_middleware_health()` without retaining prompts or tool plaintext; Node/Python/Go SDKs project the same surface | Invoker tests prove reject/admit/provider/usage counters, streaming Done records usage, rebuilt loops share one observation Arc, and SDK alignment/fixtures cover the cross-language projection |
+| `OPT-PATH1` | Delivered | Run-bound tool-context scoping never returns a raw provider when a client claims managed generation without a rebinding hook; the path wraps with `LlmInvoker` so trust/budget/evidence stay on the single middleware pipeline | Invoker test `managed_marker_without_rebind_still_enforces_trust_middleware` proves unreviewed External still fails trust admission and provider is not called |
+| `OPT-TRUST2` | Delivered | `requires_redaction_review()` matches the middleware fail-closed gate (External only); WorkspaceData remains loadable without that gate; `may_instruct()` stays Trusted-only | Predicate + middleware unit tests agree; ROADMAP prose no longer claims all non-trusted content is middleware-enforced |
+| `OPT-MCP1` | Delivered | When a parent Run already projected `McpBinding`s, delegated children register only those bindings; `McpManager.get_all_tools()` is starved so manager refresh cannot inject unbound MCP tools | Task test `projected_mcp_bindings_starve_manager_tool_registration` with Direct presentation proves `mcp__catalog__poison` is absent while projected lookup remains |
+| `OPT-POOL1` | Delivered | Shared provider capacity for Task children requires a typed `ModelGenerationPool`; quota-only scheduler bindings without a pool do not publish product `pool_health`; detached/local loops remain local-only | Admission tests distinguish quota-without-pool vs typed pool; TaskExecutor without a pool skips provider admission |
+| `SDK-CAP1` | Delivered (Skill slice) | Cross-language hosts apply serializable Skill batches through `apply_capability_batch` / `ApplyCapabilityBatch` (Node/Python/Go) backed by `SdkCapabilityBatchV1`; recovery bootstrap remains Rust-host-only until typed adapters exist | Core session test advances catalog gen 0→1 and name-conflicts; SDK fixtures + `sdk_api_alignment_check` cover the public surface |
+| `SDK-CP1` | Delivered | Cross-language hosts install a live `SessionCheckpointExportSink` through `set_session_checkpoint_export_sink` / `setSessionCheckpointExportSink` / `SetSessionCheckpointExportSink` (Node/Python/Go) with `SdkSessionCheckpointExportV1` wire (`descriptor` + `contentBase64`); SessionOptions still omits the trait-object field | Core runtime setter captures the next boundary; SDK fixtures + alignment cover install/clear and secret-free wire fields |
+| `SDK-IMM1` | Delivered | Cross-language hosts inject `ImmutableContentAdapter` through SessionOptions (`ImmutableContentAdapterOptions` / dict / Go options) with `SdkImmutableContentWriteRequestV1` put wire; CAR-02 host path is no longer Rust-only | Fixture + Go prepare/put tests; Node/Python SessionOptions conversion; `sdk_api_alignment_check` requires the SessionOptions field |
+| `OPT-PERF1` | Standing (not triggered) | Open only when a release performance profile exceeds a [PERFORMANCE_QUALIFICATION](manual/PERFORMANCE_QUALIFICATION.md) budget; optimize the over-budget path only | Fresh local release `agent_convergence_benchmark` passed (4/4 cases; 9 LLM / 8 tool attempts / 6 executed / 235 tokens); capability ledger green |
+| `OPT-CTX1` | Standing (not triggered) | Open only when long-session context assembly or recall exceeds retained budgets; reuse compaction/evidence, no second context store | Fresh local release `context_memory_benchmark` passed (`context-memory-corpus-v1`; context p95 76.9 ms vs 500 ms; recall p95 0.064 ms vs 250 ms) |
+| `OPT-TOOL1` | Standing (not triggered) | Open only when hostile tool output still blows change-set / truncation ceilings; strengthen transform/bound and keep `.a3s-code` excluded | No over-budget signal from qualification or local profiles; harness exclude regression remains the standing guard |
+| `OPT-HOSTINV1` | Delivered (Core slice) | Permission / confirmation / budget stay authoritative over prompt text: argument-scoped deny keeps tools model-visible but blocks execution; confirmation fails closed without a manager; budget accounting survives resume | Hermetic policy + MockLlm agent tests (`argument_scoped_write_deny_*`, `prompt_injected_write_cannot_cross_*`); `safety_gate` 12/12; release `agent_convergence` checkpoint-resume case |
+| `PROMPT-ALIGN1` | Delivered | System prompts match real capability: primary Auto stays GeneralPurpose; explicit specialty styles get read-only repo contracts + hard permission checkers; default prompt stays under budget without dropping GP mutating-tool guidance | Hermetic prompt/style tests + live `test_prompt_capability_real_llm` (GP write succeeds; explicit Explore cannot write) |
+
+`may_instruct()` / `requires_redaction_review()` remain the single predicates
+adapters use. Middleware fail-closes only on unreviewed
+[`ToolResultTrustV1::External`]; workspace-produced data is model-visible but
+not subject to that redaction-review gate. No second model-call path around
+`LlmInvoker` is allowed (`OPT-PATH1`).
+
+Optimization Phase 0 baseline is locked by the capability evidence ledger
+(`scripts/check_capability_verification.py`) and the retained
+[performance qualification](manual/PERFORMANCE_QUALIFICATION.md) budgets.
+Phase 3 measurement (2026-09-07) re-checked the ledger plus fresh local
+release `agent_convergence` and `context_memory` profiles: all passed, so
+`OPT-PERF1` / `OPT-CTX1` / `OPT-TOOL1` stay closed. Further optimization
+work stays evidence-driven against those ceilings and must not introduce a
+second model-call path around `LlmInvoker`.
+
+Phase 4 product-shell work (unified approval UX, Skills/`AGENTS.md` discovery
+conventions, default workspace-writable + network allowlist posture) remains
+host/Desktop/CLI owned. Code's deliverables are `OPT-HOSTINV1` (prompts cannot
+bypass permission, confirmation, or budget gates) and `PROMPT-ALIGN1` (prompt
+text, model-visible tool contracts, and hard permission overlays stay aligned
+for Auto vs explicit specialty styles).
 
 ### 3.4 Terminal-Bench reliability track
 

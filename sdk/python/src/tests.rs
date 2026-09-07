@@ -191,6 +191,102 @@ fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
     assert!(aggregate.sample_count <= fixture["sample_limit"].as_u64().unwrap());
 }
 
+#[test]
+fn model_middleware_health_fixture_is_secret_free_default() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../evaluation/model-middleware-health-v1.json"
+    ))
+    .expect("model-middleware health fixture is valid JSON");
+    assert_eq!(fixture["schema_version"], 1);
+    assert_eq!(fixture["fixture_id"], "model-middleware-health-v1");
+
+    let session = build_test_session();
+    let encoded = serde_json::to_value(session.inner.model_middleware_health())
+        .expect("python middleware health serializes");
+    assert_python_middleware_health_fixture(&encoded, &fixture);
+}
+
+#[test]
+fn sdk_capability_batch_fixture_commits_skill_generation() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../evaluation/sdk-capability-batch-v1.json"
+    ))
+    .expect("sdk capability batch fixture is valid JSON");
+    assert_eq!(fixture["schema_version"], 1);
+    assert_eq!(fixture["fixture_id"], "sdk-capability-batch-v1");
+
+    let batch: a3s_code_core::capability::SdkCapabilityBatchV1 =
+        serde_json::from_value(fixture["sample_batch"].clone())
+            .expect("sample batch deserializes");
+    let session = build_test_session();
+    let receipt = get_runtime()
+        .block_on(session.inner.apply_sdk_capability_batch(batch))
+        .expect("SDK capability batch must commit");
+    let encoded = serde_json::to_value(&receipt).expect("receipt serializes");
+
+    assert_eq!(
+        encoded["previousGeneration"],
+        fixture["expected_receipt"]["previousGeneration"]
+    );
+    assert_eq!(
+        encoded["committedGeneration"],
+        fixture["expected_receipt"]["committedGeneration"]
+    );
+    for field in fixture["required_receipt_fields"]
+        .as_array()
+        .expect("required receipt fields")
+    {
+        let name = field.as_str().unwrap();
+        assert!(encoded.get(name).is_some(), "missing receipt field {name}");
+    }
+    assert_no_forbidden_middleware_fields(&encoded, &fixture);
+    assert_eq!(session.inner.capability_catalog_stamp().generation().get(), 1);
+}
+
+fn assert_python_middleware_health_fixture(
+    snapshot: &serde_json::Value,
+    fixture: &serde_json::Value,
+) {
+    let required = fixture["required_snapshot_fields"]
+        .as_array()
+        .expect("required snapshot fields");
+    for field in required {
+        let name = field.as_str().expect("field name");
+        assert_eq!(
+            snapshot.get(name).and_then(|v| v.as_u64()),
+            Some(0),
+            "missing or non-zero field {name}"
+        );
+    }
+    assert_no_forbidden_middleware_fields(snapshot, fixture);
+}
+
+fn assert_no_forbidden_middleware_fields(value: &serde_json::Value, fixture: &serde_json::Value) {
+    let forbidden = fixture["forbidden_fields"]
+        .as_array()
+        .expect("forbidden fields")
+        .iter()
+        .map(|v| v.as_str().expect("forbidden field"))
+        .collect::<std::collections::BTreeSet<_>>();
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                assert!(
+                    !forbidden.contains(key.as_str()),
+                    "forbidden diagnostic field {key}"
+                );
+                assert_no_forbidden_middleware_fields(child, fixture);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                assert_no_forbidden_middleware_fields(child, fixture);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[derive(Default)]
 struct PythonPoolHealthAggregate {
     sample_count: u64,

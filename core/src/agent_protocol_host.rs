@@ -470,6 +470,7 @@ impl AgentProtocolHost {
                 let states = Arc::clone(&self.change_set_states);
                 tokio::spawn(async move {
                     let _ = worker.await;
+                    let run_id_for_state = run_id.clone();
                     let evidence = tokio::task::spawn_blocking(move || {
                         let result = crate::git::snapshot_workspace_tree(&workspace)?;
                         let patch = crate::git::diff_workspace_trees(
@@ -494,12 +495,14 @@ impl AgentProtocolHost {
                     .ok()
                     .and_then(Result::ok);
                     if let Some(evidence) = evidence {
-                        let _ = session.record_workspace_change_set(&run_id, evidence).await;
+                        let _ = session
+                            .record_workspace_change_set(&run_id_for_state, evidence)
+                            .await;
                     }
                     // A completed or failed capture is represented by the
                     // authoritative Run snapshot. Retain only in-flight
                     // entries so this map cannot grow with session age.
-                    states.write().await.remove(&run_id);
+                    states.write().await.remove(&run_id_for_state);
                 });
                 false
             }

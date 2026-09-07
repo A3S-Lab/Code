@@ -221,6 +221,72 @@ func (session *Session) SetBudgetGuard(
 	return nil
 }
 
+// SetSessionCheckpointExportSink installs a host-owned live checkpoint export
+// callback (SDK-CP1). Pass a nil handler to clear.
+func (session *Session) SetSessionCheckpointExportSink(
+	ctx context.Context,
+	handler *SessionCheckpointExportHandler,
+) error {
+	const op = "session_set_session_checkpoint_export_sink"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	params := session.params()
+	callbacks, supportsCallbacks := session.runtime.(callbackRuntime)
+	var callbackID string
+	if handler != nil {
+		if !supportsCallbacks {
+			return sdkError(op, CodeUnavailable, "runtime does not support Go callbacks", nil)
+		}
+		timeout := handler.Timeout
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+		if timeout < 0 {
+			return invalid(op, "callback timeout cannot be negative")
+		}
+		if handler.ExportCheckpoint == nil {
+			return invalid(op, "ExportCheckpoint is required")
+		}
+		var err error
+		callbackID, err = callbacks.registerCallback(
+			func(callbackCtx context.Context, method string, payload json.RawMessage) (any, error) {
+				if method != "export_checkpoint" {
+					return nil, fmt.Errorf("unexpected checkpoint callback method %q", method)
+				}
+				var export SdkSessionCheckpointExportV1
+				if err := json.Unmarshal(payload, &export); err != nil {
+					return nil, err
+				}
+				if err := handler.ExportCheckpoint(callbackCtx, export); err != nil {
+					return map[string]any{"ok": false, "error": err.Error()}, nil
+				}
+				return map[string]any{"ok": true}, nil
+			},
+		)
+		if err != nil {
+			return err
+		}
+		params["handler_id"] = callbackID
+		params["timeout_ms"] = timeout.Milliseconds()
+	}
+	if err := session.runtime.Request(ctx, op, params, nil); err != nil {
+		if callbackID != "" {
+			callbacks.unregisterCallback(callbackID)
+		}
+		return err
+	}
+
+	session.callbackMu.Lock()
+	previous := session.checkpointCallback
+	session.checkpointCallback = callbackID
+	session.callbackMu.Unlock()
+	if previous != "" && supportsCallbacks {
+		callbacks.unregisterCallback(previous)
+	}
+	return nil
+}
+
 func (session *Session) RegisterCommand(
 	ctx context.Context,
 	name string,

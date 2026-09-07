@@ -425,6 +425,8 @@ impl ScopedToolInvoker {
                 .as_ref()
                 .map(|kind| crate::security::sanitize_tool_error_kind(provider.as_ref(), kind));
         }
+        // Governed finish always counts as redaction review for the prompt
+        // boundary: either SecurityProvider sanitized, or the host opted out.
 
         let post_hook = self.agent.fire_post_tool_use(
             &self.session_id,

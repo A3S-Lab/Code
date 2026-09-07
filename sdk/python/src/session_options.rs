@@ -149,6 +149,13 @@ pub(super) struct PySessionOptions {
     /// Maximum time to wait for a Python BudgetGuard callback. Defaults to
     /// 5000 milliseconds. A timed-out check is denied.
     pub(super) budget_guard_timeout_ms: u64,
+    /// Host-owned immutable content adapter (SDK-IMM1).
+    ///
+    /// Accepts a dict with ``authority_digest``, ``maximum_bytes``,
+    /// ``adapter_name`` / ``name``, ``put`` callable, and optional
+    /// ``timeout_ms``. ``put`` receives one dict with ``binding``,
+    /// ``descriptor``, and ``contentBase64`` and must return a reference dict.
+    pub(super) immutable_content_adapter: Option<pyo3::PyObject>,
     /// Optional FIFO retention caps on the session's in-memory stores.
     /// Accepts a dict with optional integer keys:
     ///
@@ -242,6 +249,11 @@ impl Clone for PySessionOptions {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
             }),
             budget_guard_timeout_ms: self.budget_guard_timeout_ms,
+            immutable_content_adapter: pyo3::Python::with_gil(|py| {
+                self.immutable_content_adapter
+                    .as_ref()
+                    .map(|o| o.clone_ref(py))
+            }),
             retention_limits: pyo3::Python::with_gil(|py| {
                 self.retention_limits.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -315,6 +327,7 @@ impl PySessionOptions {
             auto_save: false,
             budget_guard: None,
             budget_guard_timeout_ms: DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
+            immutable_content_adapter: None,
             retention_limits: None,
             trajectory_path: None,
             trajectory_mode: None,
@@ -1019,6 +1032,21 @@ impl PySessionOptions {
         }
         self.budget_guard_timeout_ms = value;
         Ok(())
+    }
+
+    /// Host-owned immutable content adapter (SDK-IMM1). See field docs.
+    #[getter]
+    fn get_immutable_content_adapter(&self) -> Option<pyo3::PyObject> {
+        pyo3::Python::with_gil(|py| {
+            self.immutable_content_adapter
+                .as_ref()
+                .map(|o| o.clone_ref(py))
+        })
+    }
+
+    #[setter]
+    fn set_immutable_content_adapter(&mut self, value: Option<pyo3::PyObject>) {
+        self.immutable_content_adapter = value;
     }
 
     /// Optional FIFO retention config as a dict with ``unbounded`` and any subset of:

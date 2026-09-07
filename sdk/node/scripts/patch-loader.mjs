@@ -180,7 +180,7 @@ wrapA3sCodeErrors(Session && Session.prototype, [
   'registerAgentDir', 'registerWorkerAgent', 'registerWorkerAgents',
   'registerDynamicWorkflowRuntime', 'unregisterDynamicTool',
   'registerHook', 'unregisterHook', 'registerCommand',
-  'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup',
+  'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup', 'applyCapabilityBatch',
 ])
 wrapA3sCodeErrors(StateGraphRuntime, ['restore'])
 wrapA3sCodeErrors(StateGraphRuntime && StateGraphRuntime.prototype, [

@@ -40,7 +40,11 @@ pub(super) fn runtime_checkpoint_channel(
 ) {
     let (tx, rx) = mpsc::channel(CHECKPOINT_BOUNDARY_CHANNEL_CAPACITY);
     let session_store = session.session_store.clone();
-    let export_sink = session.session_checkpoint_export_sink.clone();
+    let export_sink = session
+        .runtime_session_checkpoint_export_sink
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let enabled = session_store.is_some() || export_sink.is_some();
     let sink = enabled.then(|| {
         Arc::new(RuntimeCheckpointSender {

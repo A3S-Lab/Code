@@ -4,6 +4,26 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.3.0] - 2026-09-07
+
+### Added
+
+- Exposed Skill-only `apply_capability_batch` (`SDK-CAP1`) with
+  `SdkCapabilityBatchV1` wire fixtures.
+- Exposed live `set_session_checkpoint_export_sink` (`SDK-CP1`) with
+  `SdkSessionCheckpointExportV1` (`descriptor` + `contentBase64`).
+- Exposed `ImmutableContentAdapter` SessionOptions injection (`SDK-IMM1`) with
+  `SdkImmutableContentWriteRequestV1` put wire.
+- Projected secret-free `session.model_middleware_health` (`OPT-OBS1`).
+
+### Changed
+
+- Updated the bundled Core runtime to 8.3.0 with single-path `LlmInvoker`
+  middleware (trust/budget/evidence), managed rebind fail-closed wrapping,
+  projected-MCP starvation, typed model-generation pool admission, the Core
+  host-invariant permission gate regressions, and prompt/capability alignment
+  (`PROMPT-ALIGN1`).
+
 ## [8.2.0] - 2026-09-04
 
 ### Added

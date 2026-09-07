@@ -225,6 +225,25 @@ fn finish_agent_session(
         .clone()
         .unwrap_or_else(|| agent.config.prompt_slots.clone());
 
+    // Explicit specialty styles get matching hard permission gates when the
+    // host did not already supply a policy/checker. Soft prompt text alone is
+    // not a security boundary.
+    let (permission_policy, permission_checker) = match (
+        opts.permission_policy.clone(),
+        opts.permission_checker.clone(),
+        prompt_slots.style,
+    ) {
+        (None, None, Some(style)) => match crate::permissions::specialty_permission_policy(style) {
+            Some(policy) => {
+                let checker: Arc<dyn crate::permissions::PermissionChecker> =
+                    Arc::new(policy.clone());
+                (Some(policy), Some(checker))
+            }
+            None => (None, None),
+        },
+        (policy, checker, _) => (policy, checker),
+    };
+
     let session_id = resolved.session_id.clone();
 
     let memory = Some(Arc::clone(&resolved.memory));
@@ -240,8 +259,8 @@ fn finish_agent_session(
             .clone()
             .unwrap_or_else(|| base.tool_presentation_profile.clone()),
         security_provider: opts.security_provider.clone(),
-        permission_checker: opts.permission_checker.clone(),
-        permission_policy: opts.permission_policy.clone(),
+        permission_checker,
+        permission_policy,
         confirmation_manager: runtime.confirmation_manager.clone(),
         confirmation_policy: opts.confirmation_policy.clone(),
         queue_config: resolved.queue_config.clone(),
@@ -383,6 +402,7 @@ fn finish_agent_session(
     let session = AgentSession {
         llm_client,
         model_generation_admission,
+        middleware_obs: crate::agent::ModelMiddlewareObs::shared(),
         task_scheduler: Arc::clone(&agent.task_scheduler),
         task_priority: opts.task_priority,
         tool_executor,
@@ -402,7 +422,9 @@ fn finish_agent_session(
         run_admission,
         command_queue,
         session_store,
-        session_checkpoint_export_sink: opts.session_checkpoint_export_sink.clone(),
+        runtime_session_checkpoint_export_sink: std::sync::Mutex::new(
+            opts.session_checkpoint_export_sink.clone(),
+        ),
         persistence_state: Arc::new(RwLock::new(
             super::session_persistence::SessionPersistenceState::default(),
         )),

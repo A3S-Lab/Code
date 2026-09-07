@@ -361,6 +361,13 @@ impl ModelGenerationAdmission {
         self.bounded.scheduler.is_some()
     }
 
+    /// Whether this admission publishes a typed product
+    /// [`ModelGenerationPool`] (OPT-POOL1). Scheduler quota without a pool is
+    /// not product shared-capacity evidence.
+    pub(crate) fn publishes_model_generation_pool(&self) -> bool {
+        self.bounded.pool.is_some()
+    }
+
     /// Return secret-free pool configuration and point-in-time health.
     ///
     /// `None` means this admission was created for a custom client that did
@@ -843,6 +850,60 @@ mod tests {
             1
         );
         drop(permit);
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_quota_without_typed_pool_is_not_product_pool_health() {
+        let scheduler = Arc::new(
+            crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+                max_active: 1,
+                aging_interval_ms: 60_000,
+            })
+            .unwrap(),
+        );
+        let quota = crate::task_scheduler::TaskSchedulerQuota::for_scope("compat-only", 1).unwrap();
+        let admission = ModelGenerationAdmission::new(ModelGenerationConcurrency::single_flight())
+            .with_scheduler_quota(
+                Arc::clone(&scheduler),
+                quota,
+                crate::task_scheduler::TaskPriority::Foreground,
+                "compat-generation",
+            )
+            .unwrap();
+        assert!(admission.has_scheduler_quota());
+        assert!(!admission.publishes_model_generation_pool());
+        assert!(admission.pool_health().await.unwrap().is_none());
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn typed_pool_publishes_product_pool_health() {
+        let scheduler = Arc::new(
+            crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+                max_active: 1,
+                aging_interval_ms: 60_000,
+            })
+            .unwrap(),
+        );
+        let pool = ModelGenerationPool::for_client(
+            "provider",
+            "model",
+            Some("https://example.test/v1"),
+            None,
+            ModelGenerationConcurrency::single_flight(),
+        )
+        .unwrap();
+        let admission = ModelGenerationAdmission::new(ModelGenerationConcurrency::single_flight())
+            .with_model_generation_pool(
+                Arc::clone(&scheduler),
+                pool,
+                crate::task_scheduler::TaskPriority::Foreground,
+                "product-generation",
+            )
+            .unwrap();
+        assert!(admission.publishes_model_generation_pool());
+        assert!(admission.pool_health().await.unwrap().is_some());
         scheduler.shutdown().await;
     }
 }

@@ -102,6 +102,20 @@ impl PySession {
         json_string_to_py(py, &json)
     }
 
+    /// Return secret-free middleware stage counters for this session.
+    ///
+    /// Counters never retain prompts, tool plaintext, credentials, or digests
+    /// of private content—only stage outcomes and trust-label cardinality.
+    fn model_middleware_health(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let health = self.inner.model_middleware_health();
+        let json = serde_json::to_string(&health).map_err(|error| {
+            PyRuntimeError::new_err(format!(
+                "Failed to serialize model-middleware health: {error}"
+            ))
+        })?;
+        json_string_to_py(py, &json)
+    }
+
     /// Observe periodic pruning and host-owned consolidation for this session.
     fn memory_maintenance_health(&self, py: Python<'_>) -> PyResult<PyObject> {
         memory_maintenance_health_to_py(py, &self.inner.memory_maintenance_health())
@@ -1209,6 +1223,35 @@ impl PySession {
         }
         self.inner
             .set_budget_guard(Some(Arc::new(PyBudgetGuard::new(guard, timeout_ms))))
+            .map_err(py_code_error)
+    }
+
+    /// Install or clear a host-owned live checkpoint export sink (SDK-CP1).
+    ///
+    /// ``handler`` receives one dict with ``descriptor`` and ``contentBase64``.
+    /// Raise or return ``{"ok": False, "error": "..."}`` to surface a durable
+    /// export failure; the live Run still continues. Pass ``None`` to clear.
+    #[pyo3(signature = (handler=None, timeout_ms=30_000))]
+    fn set_session_checkpoint_export_sink(
+        &self,
+        handler: Option<pyo3::PyObject>,
+        timeout_ms: u64,
+    ) -> PyResult<()> {
+        let Some(handler) = handler else {
+            return self
+                .inner
+                .set_session_checkpoint_export_sink(None)
+                .map_err(py_code_error);
+        };
+        if timeout_ms == 0 {
+            return Err(PyValueError::new_err(
+                "timeout_ms must be greater than zero",
+            ));
+        }
+        self.inner
+            .set_session_checkpoint_export_sink(Some(Arc::new(PyCheckpointExportSink::new(
+                handler, timeout_ms,
+            ))))
             .map_err(py_code_error)
     }
 

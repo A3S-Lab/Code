@@ -34,11 +34,12 @@ type Session struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	callbackMu        sync.Mutex
-	hookCallbacks     map[string]string
-	commandCallbacks  map[string]string
-	budgetCallback    string
-	retrievalCallback string
+	callbackMu         sync.Mutex
+	hookCallbacks      map[string]string
+	commandCallbacks   map[string]string
+	budgetCallback     string
+	checkpointCallback string
+	retrievalCallback  string
 }
 
 func (session *Session) ID() string {
@@ -138,6 +139,18 @@ func (session *Session) ModelGenerationPoolHealth(ctx context.Context) (*ModelGe
 		return nil, err
 	}
 	var result *ModelGenerationPoolHealthSnapshot
+	err := session.runtime.Request(ctx, op, session.params(), &result)
+	return result, err
+}
+
+// ModelMiddlewareHealth returns secret-free middleware stage counters for this
+// session. Counters never retain prompts, tool plaintext, or credentials.
+func (session *Session) ModelMiddlewareHealth(ctx context.Context) (ModelMiddlewareHealthSnapshot, error) {
+	const op = "session_model_middleware_health"
+	if err := validateSession(session, ctx, op); err != nil {
+		return ModelMiddlewareHealthSnapshot{}, err
+	}
+	var result ModelMiddlewareHealthSnapshot
 	err := session.runtime.Request(ctx, op, session.params(), &result)
 	return result, err
 }
@@ -526,20 +539,23 @@ func (session *Session) releaseCallbacks() {
 	if session.budgetCallback != "" {
 		ids = append(ids, session.budgetCallback)
 	}
+	if session.checkpointCallback != "" {
+		ids = append(ids, session.checkpointCallback)
+	}
 	retrievalCallback := session.retrievalCallback
 	session.hookCallbacks = nil
 	session.commandCallbacks = nil
 	session.budgetCallback = ""
+	session.checkpointCallback = ""
 	session.retrievalCallback = ""
 	session.callbackMu.Unlock()
 	for _, id := range ids {
 		runtime.unregisterCallback(id)
 	}
-	if retrievalCallback != "" {
+	if session.owner != nil && session.id != "" {
+		session.owner.releaseSessionRetrievalCallbacks(session.id)
+	} else if retrievalCallback != "" {
 		runtime.unregisterCallback(retrievalCallback)
-		if session.owner != nil {
-			session.owner.forgetRetrievalCallback(retrievalCallback)
-		}
 	}
 }
 

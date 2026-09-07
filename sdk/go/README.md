@@ -295,6 +295,10 @@ provider-pool projection when the configured client publishes a typed pool. It
 includes bounded recent admission counters and local reserved/available
 permits; clients without a pool descriptor receive `nil`.
 
+`session.ModelMiddlewareHealth(ctx)` returns secret-free middleware stage
+counters (trust admit/reject, provider, usage, completion/streaming, and
+trust-label tallies). The snapshot never retains prompts or tool plaintext.
+
 ## Memory maintenance health
 
 `session.MemoryMaintenanceHealth(ctx)` reads the same non-sensitive lifecycle

@@ -316,9 +316,14 @@ pub(super) async fn open_protocol_session_async(
         options = options.with_session_store(store);
     }
     if persisted {
-        resume_protocol_session_async(agent, &session_id, workspace, options)
-            .await
-            .map(Some)
+        Box::pin(resume_protocol_session_async(
+            agent,
+            &session_id,
+            workspace,
+            options,
+        ))
+        .await
+        .map(Some)
     } else {
         create_session_async(agent, workspace, Some(options))
             .await

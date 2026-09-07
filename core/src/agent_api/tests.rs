@@ -1103,8 +1103,16 @@ async fn test_session_default() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent.session_async("/tmp/test-workspace", None).await;
     assert!(session.is_ok());
-    let debug = format!("{:?}", session.unwrap());
+    let session = session.unwrap();
+    let debug = format!("{:?}", session);
     assert!(debug.contains("AgentSession"));
+    let health = session.model_middleware_health();
+    assert_eq!(health.trust_admitted, 0);
+    assert_eq!(health.trust_rejected, 0);
+    let encoded = serde_json::to_value(&health).expect("middleware health must serialize");
+    assert_eq!(encoded["trustAdmitted"], 0);
+    assert!(encoded.get("prompt").is_none());
+    assert!(encoded.get("toolResult").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

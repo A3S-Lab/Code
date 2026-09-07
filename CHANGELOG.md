@@ -7,8 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.3.0] - 2026-09-07
+
+### Fixed
+
+- Closed managed LLM rebind passthrough (`OPT-PATH1`). When a client claims
+  managed model generation but declines `bind_model_generation_admission`,
+  run-bound tool-context scoping wraps with `LlmInvoker` instead of returning
+  the raw provider, so trust/budget/evidence middleware cannot be skipped.
+- Aligned trust review predicates with middleware (`OPT-TRUST2`).
+  `ToolResultTrustV1::requires_redaction_review()` is External-only, matching
+  the fail-closed prompt admission gate; WorkspaceData stays loadable without
+  that gate while `may_instruct()` remains Trusted-only.
+- Starved mutable MCP manager registration for projected bindings (`OPT-MCP1`).
+  Delegated children with parent-run `McpBinding`s no longer call
+  `McpManager.get_all_tools()`, so a manager refresh cannot inject unbound MCP
+  tools into the child tool set.
+- Required typed `ModelGenerationPool` for shared Task provider admission
+  (`OPT-POOL1`). Scheduler quota without a pool remains non-product (no
+  `pool_health`); TaskExecutor clients without a pool keep local-only
+  generation gates.
+
+### Changed
+
+- Aligned primary-session system prompts with first-principles capability
+  boundaries (`PROMPT-ALIGN1`). Auto/pre-analysis intent no longer silently
+  switches the primary session into specialty Explore/Plan/Verification
+  prompts; explicit host `AgentStyle` selection installs matching hard
+  permission checkers plus a read-only repository-tool contract; GeneralPurpose
+  keeps the full mutating tool contract. Real-LLM gate
+  `test_prompt_capability_real_llm` proves GP can still `write` and explicit
+  Explore cannot.
+- Locked optimization Phase 3 measurement gates as standing/not-triggered
+  (`OPT-PERF1` / `OPT-CTX1` / `OPT-TOOL1`). Fresh local release
+  `agent_convergence` and `context_memory` profiles plus the capability
+  ledger stayed within [PERFORMANCE_QUALIFICATION](manual/PERFORMANCE_QUALIFICATION.md)
+  budgets, so no speculative performance rewrite opened.
+- Documented the Core Phase 4 invariant slice (`OPT-HOSTINV1`): prompts cannot
+  bypass permission/confirmation/budget. Added hermetic
+  `write(*)`/`write(**)` visibility+deny coverage and a MockLlm agent regression
+  that denies injected writes before execution; host/Desktop/CLI shell UX remains
+  out of Core.
+
 ### Added
 
+- Exposed host-owned `ImmutableContentAdapter` injection on Node, Python, and Go
+  SessionOptions (`SDK-IMM1`). Hosts supply authority digest, byte ceiling, adapter
+  name, and a `put` callback receiving `SdkImmutableContentWriteRequestV1`
+  (`binding` + `descriptor` + `contentBase64`). Shared
+  `sdk/evaluation/sdk-immutable-content-v1.json` fixtures cover the wire
+  contract.
+- Exposed host-owned live checkpoint export sinks on Node, Python, and Go SDKs
+  (`SDK-CP1`). Hosts install `set_session_checkpoint_export_sink` /
+  `setSessionCheckpointExportSink` / `SetSessionCheckpointExportSink` and receive
+  `SdkSessionCheckpointExportV1` (`descriptor` + `contentBase64`); SessionOptions
+  still omits the trait-object callable. Shared
+  `sdk/evaluation/sdk-checkpoint-export-v1.json` fixtures cover the wire
+  contract.
+- Exposed Skill-only `apply_capability_batch` on Node, Python, and Go SDKs
+  (`SDK-CAP1`). Hosts stage serializable `SdkCapabilityBatchV1` values into one
+  atomic catalog generation; Tool/Hook/MCP callback adapters and recovery
+  bootstrap remain Rust-host-only. Shared
+  `sdk/evaluation/sdk-capability-batch-v1.json` fixtures cover the wire
+  contract.
+- Projected `session.model_middleware_health` through Node, Python, and Go SDKs
+  (`OPT-OBS1`), matching the Rust secret-free middleware stage counters and
+  closing the Rust-only intentional omission. Shared
+  `sdk/evaluation/model-middleware-health-v1.json` fixtures cover Node, Python,
+  and Go secret-free field contracts.
+- Added secret-free model-middleware health counters (`OPT-OBS1`). Sessions
+  expose `model_middleware_health()` with trust admit/reject, provider, usage,
+  completion/streaming, and trust-label tallies; counters survive AgentLoop
+  rebuilds and never retain prompts or tool plaintext.
+- Closed the KRN-5 model middleware gap (`OPT-MW1` / `OPT-TRUST1`). Every
+  run-bound completion and streaming call now admits prompt trust before
+  budget/evidence/generation stages; `ToolResultTrustV1` is preserved into
+  message `tool_result` blocks, host guards are Trusted, and external results
+  fail closed until `redaction_reviewed` is set.
+- Added file session-store encryption at rest (`STORE-ENCRYPT1` / KRN-6).
+  `FileSessionStore::with_encryption_key` seals durable documents and artifact
+  manifests with AES-256-GCM; wrong keys fail closed; the digest-only WAL
+  stays unencrypted; `encrypted_at_rest` is advertised only when a key is
+  configured.
+- Added session-store commit watch notifications (`STORE-WATCH1` / KRN-6).
+  `SessionStore::watch_commits` delivers digest-only
+  `SessionStoreCommitEventV1` values after a durable snapshot commit; memory
+  and file adapters advertise `watch`.
+- Added SessionStore retention-root persistence (`STORE-GC2` / KRN-6).
+  Session snapshots and on-disk artifact manifests carry retained URI roots;
+  memory and file adapters round-trip them and advertise
+  `reference_aware_artifact_gc`.
+- Added store-wide writer lease fencing (`STORE-LEASE1` / KRN-6).
+  `SessionStore::acquire_writer_lease` publishes a durable epoch; after a
+  takeover, `FileSessionStore` rejects stale holders on snapshot commit and
+  advertises `lease_fencing` for hosts that negotiate durability.
+- Added aggregate session-store compare-and-swap (`STORE-CAS1` / KRN-6).
+  `SessionStore::save_snapshot_cas` commits one complete generation when the
+  expected current digest matches (or is omitted); mismatches return
+  `Ok(false)` without writing. Built-in memory and file adapters advertise
+  `aggregate_cas` for hosts that negotiate durability.
+- Added the file session-store write-ahead log (`STORE-WAL1` / KRN-6).
+  `FileSessionStore` appends digest-only Intent/Committed WAL records around
+  each atomic snapshot replace, seals open intents on reopen when the durable
+  snapshot still matches, rejects duplicate Intent sequences, and advertises
+  `append_only_event_log` for hosts that negotiate durability.
+- Added reference-aware artifact retention (`STORE-GC1` / KRN-6).
+  `ArtifactStore` pins host-supplied URI roots so limit eviction cannot drop
+  reachable content, and `gc_unreferenced` removes only unpinned objects.
 - Extended `SessionStoreCapabilities` with the KRN-6 durability
   guarantees: aggregate CAS, append-only event log, lease fencing,
   encryption at rest, watch, and reference-aware artifact GC. Every flag
@@ -212,6 +317,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while retaining the endpoint-specific streaming limit for diffs.
 - Bounded local Codex auth-cache reads at 1 MiB before JSON parsing, keeping
   oversized credential files outside the login client memory boundary.
+
+### Fixed
+
+- Excluded Code-private `.a3s-code/` state from Harness Git workspace snapshots
+  so change-set patches stay product-workspace evidence (UTF-8 product diffs)
+  even when retrieval indexes are present on disk. Boxed protocol-session
+  resume futures so default debug test stacks remain bounded during store
+  restart replay.
+
 
 ## [8.2.0] - 2026-09-04
 

@@ -865,20 +865,8 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
 
 /// Permission policy for explore agent (read-only)
 fn explore_permissions() -> PermissionPolicy {
-    let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls", "web_fetch", "web_search"])
-        .deny_all(&["write", "edit", "download", "task", "parallel_task"])
-        .allow("Bash(ls:*)")
-        .allow("Bash(cat:*)")
-        .allow("Bash(head:*)")
-        .allow("Bash(tail:*)")
-        .allow("Bash(find:*)")
-        .allow("Bash(wc:*)")
-        .deny("Bash(rm:*)")
-        .deny("Bash(mv:*)")
-        .deny("Bash(cp:*)");
-    policy.default_decision = PermissionDecision::Deny;
-    policy
+    crate::permissions::specialty_permission_policy(crate::prompts::AgentStyle::Explore)
+        .expect("explore specialty policy")
 }
 
 /// Permission policy for general agent (full access except task)
@@ -905,29 +893,20 @@ fn general_permissions() -> PermissionPolicy {
 
 /// Permission policy for plan agent (read-only)
 fn plan_permissions() -> PermissionPolicy {
-    let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls"])
-        .deny_all(&["write", "edit", "download", "bash", "task", "parallel_task"]);
-    policy.default_decision = PermissionDecision::Deny;
-    policy
+    crate::permissions::specialty_permission_policy(crate::prompts::AgentStyle::Plan)
+        .expect("plan specialty policy")
 }
 
 /// Permission policy for verification agent (read-heavy with runtime checks)
 fn verification_permissions() -> PermissionPolicy {
-    let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls", "bash", "web_fetch", "web_search"])
-        .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
-    policy.default_decision = PermissionDecision::Deny;
-    policy
+    crate::permissions::specialty_permission_policy(crate::prompts::AgentStyle::Verification)
+        .expect("verification specialty policy")
 }
 
 /// Permission policy for review agent (read-heavy with optional lightweight checks)
 fn review_permissions() -> PermissionPolicy {
-    let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls", "bash", "web_fetch", "web_search"])
-        .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
-    policy.default_decision = PermissionDecision::Deny;
-    policy
+    crate::permissions::specialty_permission_policy(crate::prompts::AgentStyle::CodeReview)
+        .expect("review specialty policy")
 }
 
 // ============================================================================

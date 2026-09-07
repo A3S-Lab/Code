@@ -59,9 +59,9 @@ jobs:
 
       - name: Install Rust
         # Pinned: brotli 8.0.3 (transitive via optional SDK features) fails
-        # to compile on newer stable rustc; 1.94.1 is the known-good build that
+        # to compile on newer stable rustc; 1.98.1 is the known-good build that
         # shipped earlier releases. Revisit when the brotli/toolchain break clears.
-        uses: dtolnay/rust-toolchain@1.94.1
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.settings.target }}
 

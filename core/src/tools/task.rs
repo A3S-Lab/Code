@@ -185,6 +185,10 @@ pub struct TaskExecutor {
     mcp_managers: Vec<Arc<McpManager>>,
     /// Exact projected MCP bindings inherited from the admitted parent Run.
     mcp_bindings: Vec<Arc<McpBinding>>,
+    /// Optional Tool presentation profile forced onto delegated children.
+    /// Tests use Direct so Adaptive selection cannot hide manager-injected
+    /// MCP tools and mask OPT-MCP1 regressions.
+    child_tool_presentation: Option<crate::tools::ToolPresentationProfileV1>,
     /// Exact host tools owned by this executor. They are installed only in
     /// child executors and remain bounded by the composed parent/child
     /// governance context.
@@ -246,6 +250,7 @@ impl TaskExecutor {
             workspace,
             mcp_managers: Vec::new(),
             mcp_bindings: Vec::new(),
+            child_tool_presentation: None,
             scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
@@ -291,6 +296,7 @@ impl TaskExecutor {
             workspace,
             mcp_managers,
             mcp_bindings: Vec::new(),
+            child_tool_presentation: None,
             scoped_tools: Vec::new(),
             parent_context: None,
             search_config: None,
@@ -316,6 +322,15 @@ impl TaskExecutor {
     /// Run. These bindings are never rediscovered through a manager.
     pub(crate) fn with_projected_mcp_bindings(mut self, bindings: Vec<Arc<McpBinding>>) -> Self {
         self.mcp_bindings = bindings;
+        self
+    }
+
+    /// Force a Tool presentation profile on delegated children.
+    pub(crate) fn with_child_tool_presentation(
+        mut self,
+        profile: crate::tools::ToolPresentationProfileV1,
+    ) -> Self {
+        self.child_tool_presentation = Some(profile);
         self
     }
 
@@ -418,33 +433,37 @@ impl TaskExecutor {
         scheduler: Arc<crate::task_scheduler::TaskScheduler>,
         schedule_foreground: bool,
     ) -> Self {
-        self.provider_admission = self.provider_quota.clone().and_then(|quota| {
-            let admission = crate::llm::ModelGenerationAdmission::new(
+        // OPT-POOL1: shared provider capacity requires a typed
+        // `ModelGenerationPool`. Without one, children keep a local-only gate
+        // and must not attach a scheduler quota that would look like a product
+        // shared pool.
+        self.provider_admission = self.llm_client.model_generation_pool().and_then(|pool| {
+            crate::llm::ModelGenerationAdmission::new(
                 self.llm_client.model_generation_concurrency(),
-            );
-            if let Some(pool) = self.llm_client.model_generation_pool() {
-                admission
-                    .with_model_generation_pool(
-                        Arc::clone(&scheduler),
-                        pool,
-                        crate::task_scheduler::TaskPriority::Foreground,
-                        "task-child-model-generation",
-                    )
-                    .ok()
-            } else {
-                admission
-                    .with_scheduler_quota(
-                        Arc::clone(&scheduler),
-                        quota,
-                        crate::task_scheduler::TaskPriority::Foreground,
-                        "task-child-model-generation",
-                    )
-                    .ok()
-            }
+            )
+            .with_model_generation_pool(
+                Arc::clone(&scheduler),
+                pool,
+                crate::task_scheduler::TaskPriority::Foreground,
+                "task-child-model-generation",
+            )
+            .ok()
         });
         self.task_scheduler = Some(scheduler);
         self.schedule_foreground = schedule_foreground;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_provider_model_generation_admission(&self) -> bool {
+        self.provider_admission.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_admission_publishes_typed_pool(&self) -> bool {
+        self.provider_admission
+            .as_ref()
+            .is_some_and(|admission| admission.publishes_model_generation_pool())
     }
 
     fn visible_agents(&self) -> Vec<AgentDefinition> {
@@ -772,34 +791,40 @@ impl TaskExecutor {
         };
 
         // Register MCP tools so child agents can access MCP servers.
-        for mcp in &self.mcp_managers {
-            let all_tools = tokio::select! {
-                biased;
-                _ = cancel_token.cancelled() => {
-                    anyhow::bail!("Operation cancelled before child execution");
+        // When the parent Run already projected exact McpBindings, those
+        // bindings are the routing authority (OPT-MCP1). Manager snapshots are
+        // mutable refresh caches and must not inject unbound tools into the
+        // delegated child.
+        // When the parent Run already projected exact McpBindings, those
+        // bindings are the routing authority (OPT-MCP1). Manager snapshots are
+        // mutable refresh caches and must not inject unbound tools into the
+        // delegated child.
+        if self.mcp_bindings.is_empty() {
+            for mcp in &self.mcp_managers {
+                let all_tools = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        anyhow::bail!("Operation cancelled before child execution");
+                    }
+                    tools = mcp.get_all_tools() => tools,
+                };
+                let mut by_server: std::collections::HashMap<
+                    String,
+                    Vec<crate::mcp::protocol::McpTool>,
+                > = std::collections::HashMap::new();
+                for (server, tool) in all_tools {
+                    by_server.entry(server).or_default().push(tool);
                 }
-                tools = mcp.get_all_tools() => tools,
-            };
-            let mut by_server: std::collections::HashMap<
-                String,
-                Vec<crate::mcp::protocol::McpTool>,
-            > = std::collections::HashMap::new();
-            for (server, tool) in all_tools {
-                by_server.entry(server).or_default().push(tool);
-            }
-            for (server_name, tools) in by_server {
-                let wrappers =
-                    crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp));
-                for wrapper in wrappers {
-                    child_executor.register_dynamic_tool(wrapper);
+                for (server_name, tools) in by_server {
+                    let wrappers =
+                        crate::mcp::tools::create_mcp_tools(&server_name, tools, Arc::clone(mcp));
+                    for wrapper in wrappers {
+                        child_executor.register_dynamic_tool(wrapper);
+                    }
                 }
             }
         }
-        // Projected bindings are registered after compatibility sources. Run
-        // admission already proved their names conflict-free against its
-        // frozen parent executor. Registering the exact binding last prevents
-        // a later mutable manager refresh from replacing that generation in a
-        // delegated child.
+        // Projected bindings are the Run-frozen MCP generation.
         for binding in &self.mcp_bindings {
             if cancel_token.is_cancelled() {
                 anyhow::bail!("Operation cancelled before child execution");
@@ -830,6 +855,9 @@ impl TaskExecutor {
         agent.apply_to(&mut child_config);
         if let Some(ref parent_ctx) = self.parent_context {
             parent_ctx.apply_to(&mut child_config);
+        }
+        if let Some(profile) = self.child_tool_presentation.clone() {
+            child_config.tool_presentation_profile = profile;
         }
         // A delegated task is already the output of a parent planning
         // decision. Running the generic pre-analysis/planning classifier again

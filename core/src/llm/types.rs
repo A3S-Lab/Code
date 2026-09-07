@@ -4,6 +4,41 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 
+/// Typed trust label for tool-result content at the value boundary (KRN-5).
+///
+/// Only [`ToolResultTrustV1::Trusted`] content may occupy an instruction-adjacent
+/// position. Non-trusted content is model-visible data. Content that crossed an
+/// external boundary ([`ToolResultTrustV1::External`]) requires redaction review
+/// before prompt use; middleware fail-closes when that review bit is unset.
+/// Workspace-produced data stays loadable without that gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultTrustV1 {
+    /// Produced or cryptographically verified by the host runtime itself.
+    Trusted,
+    /// Produced inside the governed workspace boundary by local tools.
+    #[default]
+    WorkspaceData,
+    /// Crossed an external boundary (web, MCP, download).
+    External,
+}
+
+impl ToolResultTrustV1 {
+    /// Whether this content may occupy an instruction-adjacent position.
+    pub const fn may_instruct(self) -> bool {
+        matches!(self, Self::Trusted)
+    }
+
+    /// Whether redaction/egress review must run before prompt use.
+    ///
+    /// Matches the model-middleware trust gate: only
+    /// [`ToolResultTrustV1::External`] fails closed without
+    /// `redaction_reviewed`.
+    pub const fn requires_redaction_review(self) -> bool {
+        matches!(self, Self::External)
+    }
+}
+
 /// Maximum bytes loaded by [`Attachment::from_file`].
 pub const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -194,7 +229,20 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: ToolResultContentField,
         is_error: Option<bool>,
+        /// Prompt-boundary trust label. Absent legacy payloads default to
+        /// [`ToolResultTrustV1::WorkspaceData`]. Provider adapters must not
+        /// forward this field on the wire.
+        #[serde(default, skip_serializing_if = "tool_result_trust_is_default")]
+        trust: ToolResultTrustV1,
+        /// Set after governed sanitization (or for host-authored Trusted
+        /// results). External results require this before model admission.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        redaction_reviewed: bool,
     },
+}
+
+fn tool_result_trust_is_default(trust: &ToolResultTrustV1) -> bool {
+    *trust == ToolResultTrustV1::WorkspaceData
 }
 
 /// The `content` field of a `ToolResult` block.
@@ -314,12 +362,41 @@ impl Message {
     }
 
     pub fn tool_result(tool_use_id: &str, content: &str, is_error: bool) -> Self {
+        Self::tool_result_with_trust(
+            tool_use_id,
+            content,
+            is_error,
+            ToolResultTrustV1::WorkspaceData,
+            false,
+        )
+    }
+
+    /// Host-authored tool result (guards, control-plane errors).
+    pub fn tool_result_trusted(tool_use_id: &str, content: &str, is_error: bool) -> Self {
+        Self::tool_result_with_trust(
+            tool_use_id,
+            content,
+            is_error,
+            ToolResultTrustV1::Trusted,
+            true,
+        )
+    }
+
+    pub fn tool_result_with_trust(
+        tool_use_id: &str,
+        content: &str,
+        is_error: bool,
+        trust: ToolResultTrustV1,
+        redaction_reviewed: bool,
+    ) -> Self {
         Self {
             role: "user".to_string(),
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.to_string(),
                 content: ToolResultContentField::Text(content.to_string()),
                 is_error: Some(is_error),
+                trust,
+                redaction_reviewed,
             }],
             reasoning_content: None,
         }
@@ -331,6 +408,24 @@ impl Message {
         text: &str,
         images: &[Attachment],
         is_error: bool,
+    ) -> Self {
+        Self::tool_result_with_images_and_trust(
+            tool_use_id,
+            text,
+            images,
+            is_error,
+            ToolResultTrustV1::WorkspaceData,
+            false,
+        )
+    }
+
+    pub fn tool_result_with_images_and_trust(
+        tool_use_id: &str,
+        text: &str,
+        images: &[Attachment],
+        is_error: bool,
+        trust: ToolResultTrustV1,
+        redaction_reviewed: bool,
     ) -> Self {
         let mut blocks: Vec<ToolResultContent> = vec![ToolResultContent::Text {
             text: text.to_string(),
@@ -350,6 +445,8 @@ impl Message {
                 tool_use_id: tool_use_id.to_string(),
                 content: ToolResultContentField::Blocks(blocks),
                 is_error: Some(is_error),
+                trust,
+                redaction_reviewed,
             }],
             reasoning_content: None,
         }

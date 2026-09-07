@@ -1,6 +1,6 @@
 use super::execution_state::ExecutionLoopState;
 use super::AgentLoop;
-use crate::llm::{Attachment, Message};
+use crate::llm::{Attachment, Message, ToolResultTrustV1};
 use crate::tools::{ToolErrorKind, ToolResult};
 use crate::verification::VerificationReport;
 use serde_json::Value;
@@ -12,6 +12,9 @@ pub(super) struct NormalizedToolResult {
     pub(super) metadata: Option<Value>,
     pub(super) images: Vec<Attachment>,
     pub(super) error_kind: Option<ToolErrorKind>,
+    pub(super) trust: ToolResultTrustV1,
+    /// True after governed sanitization or for host-authored Trusted results.
+    pub(super) redaction_reviewed: bool,
 }
 
 impl NormalizedToolResult {
@@ -24,6 +27,8 @@ impl NormalizedToolResult {
                 metadata: result.metadata,
                 images: result.images,
                 error_kind: result.error_kind,
+                trust: result.trust,
+                redaction_reviewed: false,
             }
             .with_evidence(),
             Err(error) => Self::tool_error(error.to_string()),
@@ -45,6 +50,9 @@ impl NormalizedToolResult {
             metadata: None,
             images: Vec::new(),
             error_kind,
+            // Host-authored denial text is control-plane content.
+            trust: ToolResultTrustV1::Trusted,
+            redaction_reviewed: true,
         }
         .with_evidence()
     }
@@ -60,6 +68,8 @@ impl NormalizedToolResult {
             metadata: None,
             images: Vec::new(),
             error_kind: Some(ToolErrorKind::InvalidArgument { message }),
+            trust: ToolResultTrustV1::Trusted,
+            redaction_reviewed: true,
         }
         .with_evidence()
     }
@@ -72,6 +82,9 @@ impl NormalizedToolResult {
             metadata: result.metadata,
             images: result.images,
             error_kind: result.error_kind,
+            trust: result.trust,
+            // Caller already passed through the governed invoker finish path.
+            redaction_reviewed: true,
         }
         .with_evidence()
     }
@@ -84,7 +97,7 @@ impl NormalizedToolResult {
             metadata: self.metadata,
             images: self.images,
             error_kind: self.error_kind,
-            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
+            trust: self.trust,
         }
     }
 
@@ -96,6 +109,8 @@ impl NormalizedToolResult {
             metadata: None,
             images: Vec::new(),
             error_kind: None,
+            trust: ToolResultTrustV1::Trusted,
+            redaction_reviewed: true,
         }
         .with_evidence()
     }
@@ -137,15 +152,28 @@ pub(super) fn push_tool_result_message(
     output: &str,
     is_error: bool,
     images: Vec<Attachment>,
+    trust: ToolResultTrustV1,
+    redaction_reviewed: bool,
 ) {
     if images.is_empty() {
+        state.messages.push(Message::tool_result_with_trust(
+            tool_id,
+            output,
+            is_error,
+            trust,
+            redaction_reviewed,
+        ));
+    } else {
         state
             .messages
-            .push(Message::tool_result(tool_id, output, is_error));
-    } else {
-        state.messages.push(Message::tool_result_with_images(
-            tool_id, output, &images, is_error,
-        ));
+            .push(Message::tool_result_with_images_and_trust(
+                tool_id,
+                output,
+                &images,
+                is_error,
+                trust,
+                redaction_reviewed,
+            ));
     }
 }
 
@@ -162,6 +190,8 @@ mod tests {
         assert!(!result.output.contains("[transient"));
         assert!(!result.output.contains("[permanent"));
         assert_eq!(result.error_kind, None);
+        assert_eq!(result.trust, ToolResultTrustV1::Trusted);
+        assert!(result.redaction_reviewed);
         let evidence = result
             .metadata
             .as_ref()
@@ -172,5 +202,15 @@ mod tests {
             crate::tools::TOOL_RESULT_EVIDENCE_SCHEMA_V1
         );
         assert_eq!(evidence["loss_mode"], "none");
+    }
+
+    #[test]
+    fn from_execution_preserves_external_trust() {
+        let result = NormalizedToolResult::from_execution(Ok(ToolResult::success_external(
+            "web_fetch",
+            "body".to_string(),
+        )));
+        assert_eq!(result.trust, ToolResultTrustV1::External);
+        assert!(!result.redaction_reviewed);
     }
 }

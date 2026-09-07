@@ -350,6 +350,26 @@ impl Session {
         }))
     }
 
+    /// Apply one SDK-transported Skill capability batch (SDK-CAP1).
+    ///
+    /// Stages serializable Skill values into one atomic catalog generation.
+    /// Tool/Hook/MCP callback adapters remain Rust-host-only.
+    #[napi]
+    pub async fn apply_capability_batch(
+        &self,
+        batch: serde_json::Value,
+    ) -> napi::Result<serde_json::Value> {
+        let batch: a3s_code_core::capability::SdkCapabilityBatchV1 = serde_json::from_value(batch)
+            .map_err(|e| napi::Error::from_reason(format!("Invalid SDK capability batch: {e}")))?;
+        let session = self.inner.clone();
+        let receipt = session
+            .apply_sdk_capability_batch(batch)
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Capability batch error: {e}")))?;
+        serde_json::to_value(receipt)
+            .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
+    }
+
     /// Return a stored tool artifact by URI, or null if it is not retained.
     #[napi]
     pub fn get_artifact(&self, artifact_uri: String) -> napi::Result<serde_json::Value> {

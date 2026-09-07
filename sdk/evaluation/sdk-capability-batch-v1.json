@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "fixture_id": "sdk-capability-batch-v1",
+  "batch_schema": "a3s.code.sdk_capability_batch.v1",
+  "required_batch_fields": [
+    "schemaVersion",
+    "generation",
+    "sourceId",
+    "skills"
+  ],
+  "required_skill_fields": [
+    "localId",
+    "name",
+    "kind",
+    "content"
+  ],
+  "required_receipt_fields": [
+    "previousGeneration",
+    "committedGeneration",
+    "previousDigest",
+    "committedDigest"
+  ],
+  "sample_batch": {
+    "schemaVersion": 1,
+    "generation": 1,
+    "sourceId": "sdk-cap1-fixture",
+    "skills": [
+      {
+        "localId": "type-hints",
+        "name": "type-hints",
+        "kind": "instruction",
+        "content": "Prefer explicit types."
+      }
+    ]
+  },
+  "expected_receipt": {
+    "previousGeneration": 0,
+    "committedGeneration": 1
+  },
+  "forbidden_fields": [
+    "api_key",
+    "apiKey",
+    "authorization",
+    "prompt",
+    "secret",
+    "token",
+    "content"
+  ]
+}

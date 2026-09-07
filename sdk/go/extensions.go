@@ -300,3 +300,24 @@ func (session *Session) DrainCapabilityCleanup(ctx context.Context) (*Capability
 	}
 	return &result, nil
 }
+
+// ApplyCapabilityBatch stages one serializable Skill capability batch (SDK-CAP1).
+func (session *Session) ApplyCapabilityBatch(ctx context.Context, batch SdkCapabilityBatchV1) (*SdkCapabilityCommitReceiptV1, error) {
+	const op = "session_apply_capability_batch"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	if batch.SchemaVersion != 1 {
+		return nil, invalid(op, "schemaVersion must be 1")
+	}
+	if len(batch.Skills) == 0 {
+		return nil, invalid(op, "skills must not be empty")
+	}
+	params := session.params()
+	params["batch"] = batch
+	var result SdkCapabilityCommitReceiptV1
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

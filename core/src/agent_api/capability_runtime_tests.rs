@@ -1606,3 +1606,37 @@ fn capability_run_guards_are_send_and_sync() {
     assert_send_sync::<crate::capability::SessionCapabilityRun>();
     assert_send_sync::<Arc<dyn UseGenerationLeaseProvider>>();
 }
+
+#[tokio::test]
+async fn apply_sdk_capability_batch_advances_host_skill_generation() {
+    let session = test_session("sdk-cap1-host-skill-batch").await;
+    assert_eq!(session.capability_catalog_stamp().generation().get(), 0);
+
+    let receipt = session
+        .apply_sdk_capability_batch(crate::capability::SdkCapabilityBatchV1 {
+            schema_version: 1,
+            generation: 1,
+            source_id: "sdk-cap1-fixture".to_string(),
+            skills: vec![crate::capability::SdkSkillCapabilityV1 {
+                local_id: "type-hints".to_string(),
+                name: "type-hints".to_string(),
+                kind: "instruction".to_string(),
+                content: "Prefer explicit types.".to_string(),
+            }],
+        })
+        .await
+        .expect("SDK skill batch must commit");
+
+    assert_eq!(receipt.previous_generation, 0);
+    assert_eq!(receipt.committed_generation, 1);
+    assert_eq!(session.capability_catalog_stamp().generation().get(), 1);
+    assert!(matches!(
+        session.add_skill(skill("type-hints", "compatibility")),
+        Err(crate::error::CodeError::Capability(
+            CapabilityRuntimeError::RuntimeNameConflict {
+                kind: CapabilityKind::Skill,
+                ..
+            }
+        ))
+    ));
+}

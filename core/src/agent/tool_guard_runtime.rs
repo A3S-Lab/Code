@@ -46,9 +46,11 @@ impl AgentLoop {
                 .ok();
             }
 
-            state
-                .messages
-                .push(Message::tool_result(&tool_call.id, &error_msg, true));
+            state.messages.push(Message::tool_result_trusted(
+                &tool_call.id,
+                &error_msg,
+                true,
+            ));
             self.config.rl_trajectory_recorder.record_tool_result(
                 session_id.unwrap_or(""),
                 state.current_turn(),
@@ -106,7 +108,7 @@ impl AgentLoop {
                 .ok();
             }
 
-            state.messages.push(Message::tool_result(
+            state.messages.push(Message::tool_result_trusted(
                 &tool_call.id,
                 &parse_outcome.output,
                 true,

@@ -581,7 +581,8 @@ fn finish_agent_loop(
         session.tool_context.clone(),
         config,
     )
-    .with_model_generation_admission(session.model_generation_admission.clone());
+    .with_model_generation_admission(session.model_generation_admission.clone())
+    .with_model_middleware_obs(Arc::clone(&session.middleware_obs));
     if let Some(queue) = &session.command_queue {
         agent_loop = agent_loop.with_queue(Arc::clone(queue));
     }

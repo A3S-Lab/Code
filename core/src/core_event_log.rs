@@ -1,7 +1,7 @@
 //! Append-only core event log shared by runtime projections.
 //!
 //! This is the KRN-1 event fabric: one bounded, hash-chained log of
-//! [`CoreEventIdentity`](crate::core_identity::CoreEventIdentity) values per
+//! [`CoreEventIdentity`] values per
 //! operation. The existing run journal, evaluation fact journal, and research
 //! projections remain the compatibility authorities; this log lets a host
 //! append and replay one canonical event stream where duplicate, reordered,

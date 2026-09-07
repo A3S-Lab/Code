@@ -50,6 +50,15 @@ impl Session {
             .map_err(node_task_scheduler_error)
     }
 
+    /// Return secret-free middleware stage counters for this session.
+    ///
+    /// Values never retain prompts, tool plaintext, credentials, or digests of
+    /// private content—only stage outcomes and trust-label cardinality.
+    #[napi]
+    pub fn model_middleware_health(&self) -> ModelMiddlewareHealthSnapshot {
+        self.inner.model_middleware_health().into()
+    }
+
     /// Send a prompt or request and wait for the complete response.
     ///
     /// `send("prompt")` is the compact prompt-first form. `send({ prompt,
@@ -1088,6 +1097,90 @@ impl Session {
         self.inner
             .set_budget_guard(Some(guard))
             .map_err(node_code_error)?;
+        Ok(())
+    }
+
+    /// Install a host-owned live checkpoint export sink (SDK-CP1).
+    ///
+    /// The callback receives one JSON object:
+    /// `{ descriptor, contentBase64 }` and may return a Promise. Throw or
+    /// return `{ ok: false, error }` to surface a durable-export failure
+    /// (the live Run still continues). Pass `null` to clear the sink.
+    #[napi(
+        ts_args_type = "handler: ((payload: { descriptor: any; contentBase64: string }) => any) | null, timeoutMs?: number | null"
+    )]
+    pub fn set_session_checkpoint_export_sink(
+        &self,
+        env: Env,
+        handler: Option<napi::JsFunction>,
+        timeout_ms: Option<u32>,
+    ) -> napi::Result<()> {
+        use napi::bindgen_prelude::Promise;
+        use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
+
+        let Some(handler) = handler else {
+            self.inner
+                .set_session_checkpoint_export_sink(None)
+                .map_err(node_code_error)?;
+            return Ok(());
+        };
+
+        let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000) as u64);
+        let single_obj = |ctx: ThreadSafeCallContext<serde_json::Value>| {
+            Ok(vec![ctx.env.to_js_value(&ctx.value)?])
+        };
+        let safe = wrap_sync_callback(&env, handler)?;
+        let mut tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal> =
+            safe.create_threadsafe_function(0, single_obj)?;
+        tsfn.unref(&env)?;
+
+        let sink: Arc<dyn a3s_code_core::SessionCheckpointExportSink> =
+            Arc::new(NodeCheckpointExportSink { callback: tsfn, timeout });
+        self.inner
+            .set_session_checkpoint_export_sink(Some(sink))
+            .map_err(node_code_error)?;
+        Ok(())
+    }
+}
+
+struct NodeCheckpointExportSink {
+    callback: napi::threadsafe_function::ThreadsafeFunction<
+        serde_json::Value,
+        napi::threadsafe_function::ErrorStrategy::Fatal,
+    >,
+    timeout: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::SessionCheckpointExportSink for NodeCheckpointExportSink {
+    async fn export_checkpoint(
+        &self,
+        checkpoint: a3s_code_core::SessionCheckpointExportV1,
+    ) -> anyhow::Result<()> {
+        use napi::bindgen_prelude::Promise;
+
+        let wire = a3s_code_core::SdkSessionCheckpointExportV1::from_export(&checkpoint);
+        let value = serde_json::to_value(&wire)
+            .map_err(|error| anyhow::anyhow!("serialize checkpoint export: {error}"))?;
+        let callback = self.callback.call_async::<Promise<serde_json::Value>>(value);
+        let resolved = tokio::time::timeout(self.timeout, callback)
+            .await
+            .map_err(|_| anyhow::anyhow!("checkpoint export callback timed out"))?
+            .map_err(|error| anyhow::anyhow!("checkpoint export callback failed: {error}"))?
+            .await
+            .map_err(|error| anyhow::anyhow!("checkpoint export promise rejected: {error}"))?;
+        if resolved.is_null() || resolved.is_boolean() && resolved.as_bool() == Some(true) {
+            return Ok(());
+        }
+        if let Some(object) = resolved.as_object() {
+            if object.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                let message = object
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("checkpoint export denied by host");
+                return Err(anyhow::anyhow!(message.to_string()));
+            }
+        }
         Ok(())
     }
 }

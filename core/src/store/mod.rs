@@ -40,21 +40,34 @@
 //! }
 //! ```
 
+mod encryption;
 mod file_store;
+mod lease;
 mod memory_store;
 mod session_data;
 mod session_snapshot;
+mod wal;
+mod watch;
 
 #[cfg(test)]
 mod tests;
 
+pub use encryption::SessionStoreAtRestCipher;
 pub use file_store::FileSessionStore;
+pub use lease::{SessionStoreWriterLeaseV1, SESSION_STORE_WRITER_LEASE_SCHEMA_V1};
 pub use memory_store::MemorySessionStore;
 pub use session_data::{
     ContextUsage, LlmConfigData, SessionConfig, SessionData, SessionState,
     DEFAULT_AUTO_COMPACT_THRESHOLD,
 };
 pub use session_snapshot::{SessionSnapshotV1, SESSION_SNAPSHOT_SCHEMA_VERSION};
+pub use wal::{
+    snapshot_content_digest, FileSessionStoreWal, SessionStoreWalEntryV1, SessionStoreWalPhaseV1,
+    SESSION_STORE_WAL_ENTRY_SCHEMA_V1,
+};
+pub use watch::{
+    SessionStoreCommitEventV1, SessionStoreCommitWatch, SESSION_STORE_COMMIT_EVENT_SCHEMA_V1,
+};
 
 use crate::loop_checkpoint::LoopCheckpoint;
 use crate::run::RunRecord;
@@ -125,6 +138,56 @@ pub trait SessionStore: Send + Sync {
     async fn save_snapshot(&self, _snapshot: &SessionSnapshotV1) -> Result<()> {
         bail!(
             "session store '{}' does not support aggregate session snapshots",
+            self.backend_name()
+        )
+    }
+
+    /// Compare-and-swap save of one complete generation (STORE-CAS1).
+    ///
+    /// When `expected_current_digest` is `None`, the write is unconditional.
+    /// When `Some(digest)`, the currently durable snapshot for the same
+    /// session id must exist and match that digest; otherwise the method
+    /// returns `Ok(false)` without writing. Successful commits return
+    /// `Ok(true)`.
+    async fn save_snapshot_cas(
+        &self,
+        snapshot: &SessionSnapshotV1,
+        expected_current_digest: Option<&str>,
+    ) -> Result<bool> {
+        if expected_current_digest.is_some() {
+            bail!(
+                "session store '{}' does not support aggregate snapshot CAS",
+                self.backend_name()
+            );
+        }
+        self.save_snapshot(snapshot).await?;
+        Ok(true)
+    }
+
+    /// Acquire (or take over) the store-wide writer lease (STORE-LEASE1).
+    ///
+    /// Successful callers receive the new durable epoch. After a takeover,
+    /// any previously held epoch is stale and must fail closed on the next
+    /// fenced snapshot commit.
+    async fn acquire_writer_lease(&self, _holder_id: &str) -> Result<SessionStoreWriterLeaseV1> {
+        bail!(
+            "session store '{}' does not support writer lease fencing",
+            self.backend_name()
+        )
+    }
+
+    /// Read the currently durable writer lease, if any.
+    async fn writer_lease(&self) -> Result<Option<SessionStoreWriterLeaseV1>> {
+        Ok(None)
+    }
+
+    /// Subscribe to durable snapshot commit notifications (STORE-WATCH1).
+    ///
+    /// Events are published only after a complete generation is durable.
+    /// Lagged subscribers may skip intermediate commits.
+    async fn watch_commits(&self) -> Result<SessionStoreCommitWatch> {
+        bail!(
+            "session store '{}' does not support commit watch notifications",
             self.backend_name()
         )
     }

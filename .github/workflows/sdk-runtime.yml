@@ -54,6 +54,8 @@ jobs:
         run: |
           node scripts/generate_evaluation_protocol_artifacts.mjs --check
           node scripts/check_evaluation_protocol_artifacts.mjs
+          node scripts/generate_research_protocol_artifacts.mjs --check
+          node scripts/check_research_protocol_artifacts.mjs
 
       - name: Build Node SDK native module
         run: npm run build:debug
@@ -99,6 +101,8 @@ jobs:
         run: |
           node scripts/generate_evaluation_protocol_artifacts.mjs --check
           node scripts/check_evaluation_protocol_artifacts.mjs
+          node scripts/generate_research_protocol_artifacts.mjs --check
+          node scripts/check_research_protocol_artifacts.mjs
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip

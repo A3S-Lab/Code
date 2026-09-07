@@ -33,6 +33,72 @@ pub(super) fn apply_planning_mode(
     }
 }
 
+fn parse_py_immutable_content_adapter(
+    value: &pyo3::PyObject,
+) -> PyResult<a3s_code_core::ImmutableContentAdapterSession> {
+    Python::with_gil(|py| {
+        let obj = value.bind(py);
+        let authority_digest: String = obj
+            .get_item("authority_digest")
+            .or_else(|_| obj.getattr("authority_digest"))
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "immutable_content_adapter requires authority_digest",
+                )
+            })?
+            .extract()?;
+        let maximum_bytes: u64 = obj
+            .get_item("maximum_bytes")
+            .or_else(|_| obj.getattr("maximum_bytes"))
+            .map_err(|_| {
+                PyValueError::new_err("immutable_content_adapter requires maximum_bytes")
+            })?
+            .extract()?;
+        let adapter_name: String = obj
+            .get_item("adapter_name")
+            .or_else(|_| obj.get_item("name"))
+            .or_else(|_| obj.getattr("adapter_name"))
+            .or_else(|_| obj.getattr("name"))
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "immutable_content_adapter requires adapter_name or name",
+                )
+            })?
+            .extract()?;
+        let put = obj
+            .get_item("put")
+            .or_else(|_| obj.getattr("put"))
+            .map_err(|_| PyValueError::new_err("immutable_content_adapter requires put"))?;
+        if !put.is_callable() {
+            return Err(PyValueError::new_err(
+                "immutable_content_adapter.put must be callable",
+            ));
+        }
+        let timeout_ms: u64 = obj
+            .get_item("timeout_ms")
+            .or_else(|_| obj.getattr("timeout_ms"))
+            .ok()
+            .and_then(|v| v.extract().ok())
+            .unwrap_or(30_000);
+        if timeout_ms == 0 {
+            return Err(PyValueError::new_err(
+                "immutable_content_adapter.timeout_ms must be greater than zero",
+            ));
+        }
+        let binding =
+            a3s_code_core::ImmutableContentAdapterBindingV1::new(authority_digest, maximum_bytes)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let adapter: std::sync::Arc<dyn a3s_code_core::ImmutableContentAdapter> =
+            std::sync::Arc::new(PyImmutableContentAdapter::new(
+                adapter_name,
+                put.unbind(),
+                timeout_ms,
+            ));
+        a3s_code_core::ImmutableContentAdapterSession::new(binding, adapter)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    })
+}
+
 /// Build options for synchronous SDK entry points.
 ///
 /// A host callback-backed retrieval provider must be bound to a live asyncio
@@ -337,6 +403,9 @@ fn build_rust_session_options_inner(
         let wrapped: std::sync::Arc<dyn a3s_code_core::budget::BudgetGuard> =
             std::sync::Arc::new(PyBudgetGuard::new(guard, so.budget_guard_timeout_ms));
         o = o.with_budget_guard(wrapped);
+    }
+    if let Some(adapter) = so.immutable_content_adapter {
+        o = o.with_immutable_content_adapter(parse_py_immutable_content_adapter(&adapter)?);
     }
     if let Some(retention) = so.retention_limits {
         if let Some(limits) = parse_py_retention_limits(&retention) {

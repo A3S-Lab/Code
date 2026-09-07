@@ -109,9 +109,18 @@ impl LocalCodeIntelligence {
             query_timeout,
         });
 
-        provider
-            .refresh_snapshot(provider.manifest.snapshot())
-            .await?;
+        // Do not block interactive TUI takeover on the first layout resolve.
+        // The manifest stays inactive until after the first flushed frame; the
+        // update task below refreshes as soon as activation/snapshots arrive.
+        // A best-effort background pass covers hosts that never activate.
+        let bootstrap = Arc::clone(&provider);
+        let lifetime = provider.lifetime.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = lifetime.cancelled() => {}
+                _ = bootstrap.refresh_snapshot(bootstrap.manifest.snapshot()) => {}
+            }
+        });
         let weak = Arc::downgrade(&provider);
         let task = tokio::spawn(run_manifest_updates(
             weak,
@@ -488,6 +497,16 @@ mod tests {
         )
         .await
         .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if provider.generation.load(Ordering::Acquire) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background bootstrap refresh should finish");
         let generation = provider.generation.load(Ordering::Acquire);
         assert_eq!(generation, 1);
 

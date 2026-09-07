@@ -101,7 +101,7 @@ impl WorkspaceSourceSnapshotV1 {
     /// derived-data revisions that were admitted against it.
     ///
     /// `content_digest` must be computed with
-    /// [`workspace_content_digest`](workspace_content_digest) over the same
+    /// [`workspace_content_digest`] over the same
     /// eligible file set the manifest revision describes, so two callers that
     /// observe the same files derive the same identity.
     pub fn from_manifest(

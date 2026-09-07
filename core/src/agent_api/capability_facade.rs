@@ -346,6 +346,25 @@ impl AgentSession {
         prepared.commit()
     }
 
+    /// Apply one SDK-transported capability batch (SDK-CAP1 Skill slice).
+    ///
+    /// Cross-language hosts stage serializable Skill values. The session cancel
+    /// token bounds preparation; hosts that need cooperative abort should close
+    /// the session or cancel the owning Run.
+    pub async fn apply_sdk_capability_batch(
+        &self,
+        batch: crate::capability::SdkCapabilityBatchV1,
+    ) -> std::result::Result<
+        crate::capability::SdkCapabilityCommitReceiptV1,
+        crate::capability::SdkCapabilityBatchError,
+    > {
+        let session_batch = batch.into_session_batch()?;
+        let receipt = self
+            .apply_capability_batch(session_batch, self.session_cancel.child_token())
+            .await?;
+        Ok(crate::capability::SdkCapabilityCommitReceiptV1::from_receipt(&receipt))
+    }
+
     /// Reconstruct one exact historical capability generation on an untouched
     /// recovery Session.
     ///

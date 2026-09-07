@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -31,6 +31,9 @@ pub struct ToolArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ArtifactStoreSnapshot {
     artifacts: Vec<ToolArtifact>,
+    /// Host-supplied retention roots that must survive eviction/GC.
+    #[serde(default)]
+    retained_uris: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +66,8 @@ struct ArtifactStoreState {
     artifacts: HashMap<String, ToolArtifact>,
     insertion_order: VecDeque<String>,
     total_bytes: usize,
+    /// URIs that must survive limit eviction and explicit GC until unpinned.
+    retained_uris: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,12 +162,66 @@ impl ArtifactStore {
         self.ordered_artifacts()
     }
 
+    /// Pin artifact URIs so limit eviction and unreferenced GC cannot remove
+    /// content still reachable from a retained identity (STORE-GC1).
+    pub fn pin_uris(&self, uris: impl IntoIterator<Item = impl Into<String>>) {
+        let mut state = self.inner.write().unwrap();
+        for uri in uris {
+            let uri = uri.into();
+            if !uri.is_empty() {
+                state.retained_uris.insert(uri);
+            }
+        }
+    }
+
+    /// Replace the retained URI set with exactly the supplied roots.
+    pub fn set_retained_uris(&self, uris: impl IntoIterator<Item = impl Into<String>>) {
+        let mut state = self.inner.write().unwrap();
+        state.retained_uris.clear();
+        for uri in uris {
+            let uri = uri.into();
+            if !uri.is_empty() {
+                state.retained_uris.insert(uri);
+            }
+        }
+    }
+
+    pub fn retained_uris(&self) -> HashSet<String> {
+        self.inner.read().unwrap().retained_uris.clone()
+    }
+
+    /// Remove artifacts that are not in the retained root set.
+    ///
+    /// Returns the number of removed objects. Retained roots that are absent
+    /// from the store are ignored; present retained objects are never removed.
+    pub fn gc_unreferenced(&self) -> usize {
+        let mut state = self.inner.write().unwrap();
+        let removable: Vec<String> = state
+            .insertion_order
+            .iter()
+            .filter(|uri| !state.retained_uris.contains(uri.as_str()))
+            .cloned()
+            .collect();
+        let mut removed = 0usize;
+        for uri in removable {
+            if let Some(artifact) = state.artifacts.remove(&uri) {
+                state.total_bytes = state.total_bytes.saturating_sub(artifact.content.len());
+                state.insertion_order.retain(|queued| queued != &uri);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub fn save_to_dir(&self, dir: impl AsRef<Path>) -> Result<()> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create artifact directory '{}'", dir.display()))?;
+        let mut retained: Vec<String> = self.retained_uris().into_iter().collect();
+        retained.sort();
         let snapshot = ArtifactStoreSnapshot {
             artifacts: self.ordered_artifacts(),
+            retained_uris: retained,
         };
         let json = serde_json::to_string_pretty(&snapshot)
             .context("failed to serialize artifact store snapshot")?;
@@ -207,6 +266,33 @@ impl ArtifactStore {
         Self::load_from_dir_with_limits(dir, ArtifactStoreLimits::default())
     }
 
+    pub fn load_from_manifest_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::load_from_manifest_bytes_with_limits(bytes, ArtifactStoreLimits::default())
+    }
+
+    pub fn load_from_manifest_bytes_with_limits(
+        bytes: &[u8],
+        limits: ArtifactStoreLimits,
+    ) -> Result<Self> {
+        if bytes.len() as u64 > MAX_ARTIFACT_MANIFEST_BYTES {
+            anyhow::bail!(
+                "refusing to parse artifact manifest: {} bytes exceeds the {} byte limit",
+                bytes.len(),
+                MAX_ARTIFACT_MANIFEST_BYTES
+            );
+        }
+        let snapshot: ArtifactStoreSnapshot =
+            serde_json::from_slice(bytes).context("failed to parse artifact store snapshot")?;
+        let store = Self::with_limits(limits);
+        for artifact in snapshot.artifacts {
+            store
+                .put_content_addressed(artifact)
+                .map_err(|error| anyhow::anyhow!("invalid artifact manifest: {error}"))?;
+        }
+        store.set_retained_uris(snapshot.retained_uris);
+        Ok(store)
+    }
+
     pub fn load_from_dir_with_limits(
         dir: impl AsRef<Path>,
         limits: ArtifactStoreLimits,
@@ -217,22 +303,14 @@ impl ArtifactStore {
         }
 
         let json = read_manifest(&path)?;
-        let snapshot: ArtifactStoreSnapshot =
-            serde_json::from_slice(&json).context("failed to parse artifact store snapshot")?;
-        let store = Self::with_limits(limits);
-        for artifact in snapshot.artifacts {
-            store
-                .put_content_addressed(artifact)
-                .map_err(|error| anyhow::anyhow!("invalid artifact manifest: {error}"))?;
-        }
-        Ok(store)
+        Self::load_from_manifest_bytes_with_limits(&json, limits)
     }
 
     fn enforce_limits(&self, state: &mut ArtifactStoreState) {
         while state.artifacts.len() > self.limits.max_artifacts
             || state.total_bytes > self.limits.max_bytes
         {
-            let Some(uri) = state.insertion_order.pop_front() else {
+            let Some(uri) = pop_oldest_evictable(state) else {
                 break;
             };
             if let Some(removed) = state.artifacts.remove(&uri) {
@@ -249,6 +327,23 @@ impl ArtifactStore {
             .filter_map(|uri| state.artifacts.get(uri).cloned())
             .collect()
     }
+}
+
+fn pop_oldest_evictable(state: &mut ArtifactStoreState) -> Option<String> {
+    let mut skipped = VecDeque::new();
+    let mut evicted = None;
+    while let Some(uri) = state.insertion_order.pop_front() {
+        if state.retained_uris.contains(&uri) {
+            skipped.push_back(uri);
+            continue;
+        }
+        evicted = Some(uri);
+        break;
+    }
+    while let Some(uri) = skipped.pop_back() {
+        state.insertion_order.push_front(uri);
+    }
+    evicted
 }
 
 impl Default for ArtifactStore {
@@ -505,5 +600,69 @@ mod tests {
 
         assert!(error.to_string().contains("exceeds the"));
         assert!(error.to_string().contains("artifact manifest"));
+    }
+
+    #[test]
+    fn retained_uris_survive_limit_eviction() {
+        let store = ArtifactStore::with_limits(ArtifactStoreLimits {
+            max_artifacts: 2,
+            max_bytes: 1024,
+        });
+        store.put(ToolArtifact {
+            artifact_id: "tool-output:test:pinned".to_string(),
+            artifact_uri: "a3s://tool-output/test/pinned".to_string(),
+            tool_name: "test".to_string(),
+            content: "pinned".to_string(),
+            original_bytes: 6,
+            shown_bytes: 3,
+        });
+        store.put(ToolArtifact {
+            artifact_id: "tool-output:test:kept".to_string(),
+            artifact_uri: "a3s://tool-output/test/kept".to_string(),
+            tool_name: "test".to_string(),
+            content: "kept".to_string(),
+            original_bytes: 4,
+            shown_bytes: 2,
+        });
+        store.set_retained_uris([
+            "a3s://tool-output/test/pinned",
+            "a3s://tool-output/test/kept",
+        ]);
+        store.put(ToolArtifact {
+            artifact_id: "tool-output:test:third".to_string(),
+            artifact_uri: "a3s://tool-output/test/third".to_string(),
+            tool_name: "test".to_string(),
+            content: "third".to_string(),
+            original_bytes: 5,
+            shown_bytes: 2,
+        });
+        assert!(store.get("a3s://tool-output/test/pinned").is_some());
+        assert!(store.get("a3s://tool-output/test/kept").is_some());
+        assert!(
+            store.get("a3s://tool-output/test/third").is_none(),
+            "unpinned overflow should still be evicted"
+        );
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn gc_unreferenced_keeps_only_retained_roots() {
+        let store = ArtifactStore::new();
+        for index in 0..3 {
+            store.put(ToolArtifact {
+                artifact_id: format!("tool-output:test:{index}"),
+                artifact_uri: format!("a3s://tool-output/test/{index}"),
+                tool_name: "test".to_string(),
+                content: format!("artifact {index}"),
+                original_bytes: 10,
+                shown_bytes: 4,
+            });
+        }
+        store.set_retained_uris(["a3s://tool-output/test/1"]);
+        assert_eq!(store.gc_unreferenced(), 2);
+        assert!(store.get("a3s://tool-output/test/0").is_none());
+        assert!(store.get("a3s://tool-output/test/1").is_some());
+        assert!(store.get("a3s://tool-output/test/2").is_none());
+        assert_eq!(store.retained_uris().len(), 1);
     }
 }

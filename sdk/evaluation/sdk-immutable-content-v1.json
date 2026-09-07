@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "fixture_id": "sdk-immutable-content-v1",
+  "write_request_schema": "a3s.code.sdk_immutable_content_write_request.v1",
+  "required_write_request_fields": [
+    "binding",
+    "descriptor",
+    "contentBase64"
+  ],
+  "required_binding_fields": [
+    "schema",
+    "authority_digest",
+    "maximum_bytes",
+    "binding_digest"
+  ],
+  "required_descriptor_fields": [
+    "schema",
+    "kind",
+    "media_type",
+    "size_bytes",
+    "content_digest",
+    "descriptor_digest"
+  ],
+  "required_reference_fields": [
+    "schema",
+    "binding_digest",
+    "uri",
+    "content_digest",
+    "media_type",
+    "size_bytes",
+    "reference_digest"
+  ],
+  "sample_write_request": {
+    "binding": {
+      "schema": "a3s.code.immutable-content-adapter-binding.v1",
+      "authority_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "maximum_bytes": 4096,
+      "binding_digest": "sha256:ab673b6e854b0ba81def7a4ca8dd6d788e546525fb7be1a05b03a59b3b6a1e58"
+    },
+    "descriptor": {
+      "schema": "a3s.code.immutable-content-descriptor.v1",
+      "kind": "tool_result_original",
+      "media_type": "text/plain; charset=utf-8",
+      "size_bytes": 29,
+      "content_digest": "sha256:fd2b0f87b1c922dbda69f22f5ebb196fe428d1f104175b7cc95e2d52283e9e7e",
+      "descriptor_digest": "sha256:a582eb2341233027d25783d3879a099b6a16e5c5c44dae198d366408dffe95bc"
+    },
+    "contentBase64": "aW1tdXRhYmxlLWNvbnRlbnQtZml4dHVyZS12MQ=="
+  },
+  "sample_reference": {
+    "schema": "a3s.code.immutable-content-reference.v1",
+    "binding_digest": "sha256:ab673b6e854b0ba81def7a4ca8dd6d788e546525fb7be1a05b03a59b3b6a1e58",
+    "uri": "a3s+test://sdk-imm1/fd2b0f87b1c922dbda69f22f5ebb196fe428d1f104175b7cc95e2d52283e9e7e",
+    "content_digest": "sha256:fd2b0f87b1c922dbda69f22f5ebb196fe428d1f104175b7cc95e2d52283e9e7e",
+    "media_type": "text/plain; charset=utf-8",
+    "size_bytes": 29,
+    "reference_digest": "sha256:91aa82d35dd4b49cc5e82df0dde1b9136acdde775fdb7425a4c688790f60ad69"
+  },
+  "forbidden_fields": [
+    "api_key",
+    "apiKey",
+    "authorization",
+    "secret",
+    "token",
+    "credential"
+  ]
+}

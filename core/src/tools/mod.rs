@@ -43,8 +43,9 @@ pub use immutable_content::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,
     ImmutableContentDescriptorV1, ImmutableContentError, ImmutableContentKindV1,
     ImmutableContentReferenceV1, ImmutableContentResult, ImmutableContentWriteRequestV1,
-    IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1, IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1,
-    IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_RESULT_CONTENT_MEDIA_TYPE,
+    SdkImmutableContentWriteRequestV1, IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1,
+    IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1, IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1,
+    TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 pub(crate) use invocation::{
     registry_bound_tool_invoker, registry_tool_invoker, HostDirectPolicy, InvocationOrigin,
@@ -400,38 +401,9 @@ fn signed_delta(value: usize, baseline: usize) -> i64 {
 
 /// Typed trust label for tool-result content at the value boundary (KRN-5).
 ///
-/// The label decides which downstream checks apply, so redaction and
-/// instruction-boundary rules stop being re-derived from tool names in each
-/// adapter. Only [`ToolResultTrustV1::Trusted`] content may occupy an
-/// instruction-adjacent position; all other content is model-visible data,
-/// and content that crossed an external boundary additionally requires
-/// redaction review before prompt use.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolResultTrustV1 {
-    /// Produced or cryptographically verified by the host runtime itself
-    /// (control-plane results, host-injected capability receipts).
-    Trusted,
-    /// Produced inside the governed workspace boundary by local tools.
-    /// Model-visible as data; never an instruction.
-    #[default]
-    WorkspaceData,
-    /// Crossed an external boundary (web search, MCP servers, remote
-    /// workspaces). Highest-caution channel for prompt use.
-    External,
-}
-
-impl ToolResultTrustV1 {
-    /// Whether this content may occupy an instruction-adjacent position.
-    pub const fn may_instruct(self) -> bool {
-        matches!(self, Self::Trusted)
-    }
-
-    /// Whether redaction/egress review must run before prompt use.
-    pub const fn requires_redaction_review(self) -> bool {
-        !matches!(self, Self::Trusted)
-    }
-}
+/// Re-exported from the LLM types plane so prompt messages and tool values
+/// share one label without a circular module dependency.
+pub use crate::llm::ToolResultTrustV1;
 
 /// Tool execution result returned by direct tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

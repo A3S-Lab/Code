@@ -1,4 +1,4 @@
-use super::{AgentConfig, AgentLoop};
+use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
 use crate::llm::{LlmClient, ModelGenerationAdmission};
 use crate::loop_checkpoint::LoopCheckpointSink;
 use crate::session_lane_queue::SessionLaneQueue;
@@ -18,6 +18,7 @@ impl AgentLoop {
             llm_client,
             model_generation_admission,
             shared_model_generation_admission: false,
+            middleware_obs: ModelMiddlewareObs::shared(),
             tool_executor,
             tool_context,
             config,
@@ -43,6 +44,23 @@ impl AgentLoop {
         self.model_generation_admission = admission;
         self.shared_model_generation_admission = true;
         self
+    }
+
+    /// Reuse the middleware observation window owned by the surrounding session.
+    ///
+    /// Loops are rebuilt per host-direct call; stage counters must survive those
+    /// rebuilds so hosts can inspect one secret-free health snapshot per session.
+    pub(crate) fn with_model_middleware_obs(
+        mut self,
+        middleware_obs: Arc<ModelMiddlewareObs>,
+    ) -> Self {
+        self.middleware_obs = middleware_obs;
+        self
+    }
+
+    /// Return secret-free middleware stage counters for this loop's observation window.
+    pub(crate) fn model_middleware_health(&self) -> ModelMiddlewareHealthSnapshot {
+        self.middleware_obs.snapshot()
     }
 
     pub(crate) fn with_capability_runtime(

@@ -48,6 +48,14 @@ impl AgentSession {
         self.model_generation_admission.pool_health().await
     }
 
+    /// Return secret-free middleware stage counters for this session.
+    ///
+    /// Counters never retain prompts, tool plaintext, credentials, or digests of
+    /// private content—only stage outcomes and trust-label cardinality (`OPT-OBS1`).
+    pub fn model_middleware_health(&self) -> crate::agent::ModelMiddlewareHealthSnapshot {
+        self.middleware_obs.snapshot()
+    }
+
     /// Get a snapshot of command entries (name, description, optional usage).
     ///
     /// Acquires the command registry lock briefly and returns owned data.

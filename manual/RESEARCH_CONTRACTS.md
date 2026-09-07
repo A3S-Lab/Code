@@ -25,10 +25,22 @@ interpret a review finding as approval.
 | --- | --- | --- |
 | `ResearchRunV1` | `a3s.code.research-run.v1` | Binds project revision, source/evidence snapshots, Code/Use capability identity, provider/model, reproducibility promise, and lifecycle status. |
 | `ResearchEvidenceFactV1` | `a3s.code.evidence-fact.v1` | Append-only, digest-only observation with a monotonic sequence and bounded metadata. |
+| `ResearchClaimV1` | `a3s.code.research-claim.v1` | Digest-only claim statement with explicit `proposed`, `supported`, `conflicted`, or `unsupported` status; support, conflict, and gap digests are mutually exclusive by state. |
+| `ResearchCitationV1` | `a3s.code.research-citation.v1` | Bounded citation linking one claim to a source digest and source-span digest without retaining source plaintext. |
+| `ResearchEvidenceGraphV1` | `a3s.code.evidence-graph.v1` | Canonical claim/citation projection for one Run; measures publication completeness and rejects orphan citations or unlinked support digests. |
+| `ResearchWorkflowStepV1` | `a3s.code.research-workflow-step.v1` | Research-visible workflow step with input/output digests, dependency edges, and optional binding to an `ExecutionResultReceiptV1`. |
+| `ResearchWorkflowPlanV1` | `a3s.code.research-workflow-plan.v1` | Bounded DAG of workflow steps for one Run, fenced to the Run seed and workflow digest. |
+| `ResearchRerunLineageV1` | `a3s.code.research-rerun-lineage.v1` | Finding-triggered affected-step set in dependency-first order for partial recompute without rewriting parent evidence. |
 | `ResearchProvenanceReceiptV1` | `a3s.code.provenance-receipt.v1` | Binds an artifact to its inputs, workflow, code, environment, provider, optional model/seed, and validation output. |
+| `ResearchReproducibilityManifestV1` | `a3s.code.reproducibility-manifest.v1` | Digests and non-secret parameters that make one Run reproducible: provider/model, optional model revision, environment lock, code/workflow/parameter digests, seed, tolerances, and output artifacts. |
 | `ResearchReviewFindingV1` | `a3s.code.review-finding.v1` | Bounded host-produced observation linked to exact artifact and evidence digests; optional immutable provenance-receipt and evaluation-record bindings prevent artifact, evaluator, Run, or evidence drift; resolution and waiver are explicit lifecycle transitions. |
 | `ResearchReviewBatchV1` | `a3s.code.review-batch.v1` | Bounded immutable projection of one evaluator result into findings; all findings share the same project, Run, evaluation record, and evidence snapshot. |
 | `ResearchEventV1` | `a3s.code.science-event.v1` | Digest-only project/run event projection for Desktop and other hosts. |
+
+Hosts that need a process-boundary envelope use `ResearchWireEnvelopeV1`
+(`a3s.code.research-wire.v1`) with the generated Node/Python/Go projections
+under `sdk/research/`. Regenerate with
+`node scripts/generate_research_protocol_artifacts.mjs`.
 
 All IDs and text are bounded and reject both embedded and trailing CR/LF line
 endings at the Code boundary. Digests use the existing Code SHA-256 format.
@@ -52,6 +64,14 @@ A finding or run whose fields were changed without updating its digest is
 rejected before any transition can rebind the tampered value. Serialized
 resolved and waived batches reopen with their terminal state and continue to
 reject every subsequent resolution transition.
+
+Claims start `proposed`. Hosts must call `mark_supported`, `mark_conflicted`,
+or `mark_unsupported` with the matching digest set before publication.
+`ResearchEvidenceGraphV1::validate_publication_completeness` rejects any
+remaining proposed claim and requires every supported claim's support digests
+to resolve to citations retained in the same graph. Unsupported claims must
+carry an explicit gap digest so missing evidence stays visible rather than
+becoming an implicit success.
 
 A `ResearchReviewBatchV1` may contain zero findings. This is the canonical
 representation of a clean reviewer result; the bound evaluator record remains
@@ -81,6 +101,20 @@ raw model/tool output.
    input evidence digest without interpreting the scientific rubric. The older
    `bind_provenance_receipt` form remains available for callers that do not
    retain the admitted Run, but cannot perform the project-revision check.
+3b. Project claims and citations into a `ResearchEvidenceGraphV1` with
+   `new_for_run`. Mark each claim supported, conflicted, or unsupported with
+   explicit digests, then call `validate_publication_completeness` before a
+   host treats the claim set as publishable. Code measures completeness; it
+   does not invent claim text or decide scientific validity.
+3c. Admit a `ResearchWorkflowPlanV1` for the same Run. Bind each completed
+   step to its `ExecutionResultReceiptV1` when available. After review
+   findings land, project a `ResearchRerunLineageV1` so only affected steps
+   and their dependents recompute; Code does not rewrite the parent ledger.
+3d. Publish a `ResearchReproducibilityManifestV1` with
+   `new_for_run`, then call `validate_against_provenance` against the
+   Run's artifact receipts so seed, environment, workflow, code, and
+   declared output digests cannot drift before export. Code fences
+   identity; hosts retain prompts and credentials behind digests.
 4. Run a host-selected evaluator through the generic Code evaluation
    substrate, then project its bounded observations into
    `ResearchReviewFindingV1` values. Bind each finding to the exact

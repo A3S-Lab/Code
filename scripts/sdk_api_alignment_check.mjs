@@ -20,7 +20,14 @@ const INTENTIONAL_AGENT_OMISSIONS = new Map([
 const INTENTIONAL_SESSION_OMISSIONS = new Map([
   ['command_registry', 'Rust MutexGuard; SDKs expose list_commands/register_command instead.'],
   ['session_cancel_token', 'Tokio CancellationToken; SDKs expose cancel/close instead.'],
-  ['budget_guard', 'Rust trait-object getter; SDKs expose SessionOptions and set_budget_guard.'],
+  [
+    'budget_guard',
+    'Rust trait-object getter; SDKs expose SessionOptions and set_budget_guard.',
+  ],
+  [
+    'session_checkpoint_export_sink',
+    'Rust trait-object getter; SDKs expose set_session_checkpoint_export_sink.',
+  ],
   ['subagent_tracker', 'Rust tracker handle for custom in-process executors.'],
   ['memory', 'Rust memory handle; SDKs expose typed memory methods and has_memory.'],
   ['id', 'Redundant with session_id in SDKs.'],
@@ -67,8 +74,8 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'Requires Rust capability adapters, an exact historical generation, and a Tokio cancellation token; SDK-safe recovery providers need typed callback adapters.',
   ],
   [
-    'apply_capability_batch',
-    'Requires Rust capability adapters and a Tokio cancellation token; SDK-safe providers need typed callback adapters.',
+    'apply_sdk_capability_batch',
+    'Internal serializable Skill-batch helper; SDKs expose apply_capability_batch with SdkCapabilityBatchV1 JSON.',
   ],
 ]);
 
@@ -119,12 +126,8 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
     'Rust CognitiveContextProvider trait object; cross-language hosts need a typed callback adapter before this can be value-typed.',
   ],
   [
-    'immutable_content_adapter',
-    'Rust ImmutableContentAdapter trait object; cross-language hosts need a typed callback adapter before this can be value-typed.',
-  ],
-  [
     'session_checkpoint_export_sink',
-    'Rust SessionCheckpointExportSink trait object; cross-language hosts need a typed immutable-object callback adapter before this can be value-typed.',
+    'Node cannot carry host callables in value-typed SessionOptions; SDKs expose set_session_checkpoint_export_sink.',
   ],
   [
     'durable_memory',
@@ -636,6 +639,8 @@ assertContainsAll('Go Session', goSession, [
   'CurrentCognitivePackageBinding',
   'EnsureRecoveryCapabilityBinding',
   'DrainCapabilityCleanup',
+  'ApplyCapabilityBatch',
+  'SetSessionCheckpointExportSink',
 ]);
 assertContainsAll('Go SessionOptions', goSessionOptions, [
   'Model',
@@ -662,6 +667,7 @@ assertContainsAll('Go SessionOptions', goSessionOptions, [
   'MaxToolRounds',
   'MaxParallelTasks',
   'PromptSlots',
+  'ImmutableContentAdapter',
 ]);
 assertContainsAll('Go StateGraphRuntime', goMethods(go, 'StateGraphRuntime'), [
   'BranchID',

@@ -25,6 +25,9 @@ pub enum InteractiveApprovalMode {
     Plan,
     /// Streamline bounded workspace side effects while retaining HITL elsewhere.
     Auto,
+    /// Cursor-like `--force`/`--yolo`: allow high-risk review candidates without
+    /// HITL. Critical rule denials remain non-bypassable.
+    Force,
 }
 
 impl InteractiveApprovalMode {
@@ -32,6 +35,7 @@ impl InteractiveApprovalMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "plan" => Self::Plan,
             "auto" => Self::Auto,
+            "force" | "yolo" => Self::Force,
             _ => Self::Default,
         }
     }
@@ -39,15 +43,15 @@ impl InteractiveApprovalMode {
     /// Apply the mode decision matrix to an explainable risk assessment.
     ///
     /// Routine calls are quiet in every mode. Default and plan require human
-    /// confirmation for bounded mutations, while auto streamlines them. High
-    /// risk is marked as a constrained-review candidate and falls back to HITL
-    /// through the legacy permission interface. Critical rule denials are
-    /// non-bypassable.
+    /// confirmation for bounded mutations, while auto streamlines them. Force
+    /// also streamlines high-risk review candidates. Critical rule denials are
+    /// non-bypassable in every mode.
     pub const fn action_for(self, assessment: &ToolRiskAssessment) -> ToolRiskAction {
         match (self, assessment.level) {
             (_, ToolRiskLevel::Routine) => ToolRiskAction::Allow,
-            (Self::Auto, ToolRiskLevel::Bounded) => ToolRiskAction::Allow,
+            (Self::Auto | Self::Force, ToolRiskLevel::Bounded) => ToolRiskAction::Allow,
             (_, ToolRiskLevel::Bounded) => ToolRiskAction::RequireConfirmation,
+            (Self::Force, ToolRiskLevel::High) => ToolRiskAction::Allow,
             (_, ToolRiskLevel::High) => ToolRiskAction::ReviewByLlm,
             (_, ToolRiskLevel::Critical) => ToolRiskAction::RuleDeny,
         }

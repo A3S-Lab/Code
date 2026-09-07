@@ -239,7 +239,19 @@ impl LlmClient for CompletedStreamingClient {
         _system: Option<&str>,
         _tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        anyhow::bail!("non-streaming is not used by this test")
+        Ok(LlmResponse {
+            message: Message::assistant("completed"),
+            usage: TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 2,
+                total_tokens: 13,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("stop".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
     }
 
     async fn complete_streaming(
@@ -1054,4 +1066,319 @@ async fn run_cancellation_interrupts_usage_backpressure_after_provider_use() {
         .unwrap_err();
     assert!(error.to_string().contains("cancelled"));
     assert_eq!(observed_sessions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn admit_prompt_trust_rejects_unreviewed_external_tool_results() {
+    let messages = [Message::tool_result_with_trust(
+        "ext-1",
+        "remote body",
+        false,
+        crate::llm::ToolResultTrustV1::External,
+        false,
+    )];
+    let err = admit_prompt_trust(&messages).expect_err("external must require review");
+    assert!(
+        err.to_string().contains("redaction review"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn trust_predicates_match_middleware_external_only_review_gate() {
+    use crate::llm::ToolResultTrustV1;
+    assert!(
+        !ToolResultTrustV1::WorkspaceData.requires_redaction_review(),
+        "workspace data is inside the governance boundary; middleware does not fail-close on it"
+    );
+    assert!(ToolResultTrustV1::External.requires_redaction_review());
+    assert!(!ToolResultTrustV1::Trusted.requires_redaction_review());
+    assert!(ToolResultTrustV1::Trusted.may_instruct());
+    assert!(!ToolResultTrustV1::WorkspaceData.may_instruct());
+    assert!(!ToolResultTrustV1::External.may_instruct());
+
+    let admitted = admit_prompt_trust(&[Message::tool_result_with_trust(
+        "ws-1",
+        "local body",
+        false,
+        ToolResultTrustV1::WorkspaceData,
+        false,
+    )])
+    .expect("unreviewed workspace data remains loadable");
+    assert_eq!(admitted.workspace_data, 1);
+    assert_eq!(admitted.external, 0);
+}
+
+#[test]
+fn admit_prompt_trust_accepts_reviewed_external_and_counts_labels() {
+    let messages = [
+        Message::tool_result_with_trust(
+            "ext-1",
+            "remote body",
+            false,
+            crate::llm::ToolResultTrustV1::External,
+            true,
+        ),
+        Message::tool_result_trusted("host-1", "denied", true),
+        Message::tool_result("local-1", "ok", false),
+    ];
+    let admission = admit_prompt_trust(&messages).expect("reviewed external is admitted");
+    assert_eq!(admission.external, 1);
+    assert_eq!(admission.trusted, 1);
+    assert_eq!(admission.workspace_data, 1);
+    assert_eq!(admission.redaction_reviewed, 2);
+}
+
+#[derive(Clone)]
+struct ManagedMarkerWithoutRebindClient {
+    provider_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LlmClient for ManagedMarkerWithoutRebindClient {
+    fn model_generation_is_managed(&self) -> bool {
+        true
+    }
+
+    fn bind_model_generation_admission(
+        &self,
+        _admission: ModelGenerationAdmission,
+        _preadmitted: Option<Arc<ModelGenerationPermit>>,
+    ) -> Option<Arc<dyn LlmClient>> {
+        None
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.provider_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(LlmResponse {
+            message: Message::assistant("should-not-reach"),
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            stop_reason: Some("stop".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        self.provider_calls.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel(1);
+        let _ = tx
+            .send(StreamEvent::Done(LlmResponse {
+                message: Message::assistant("should-not-reach"),
+                usage: TokenUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                },
+                stop_reason: Some("stop".to_string()),
+                token_logprobs: Vec::new(),
+                meta: None,
+            }))
+            .await;
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn managed_marker_without_rebind_still_enforces_trust_middleware() {
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let agent = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    );
+    let admission =
+        ModelGenerationAdmission::new(crate::llm::ModelGenerationConcurrency::single_flight());
+    let scoped = agent.scoped_llm_client_for_tool_context(
+        Some("opt-path1"),
+        &None,
+        &CancellationToken::new(),
+        admission,
+        None,
+        Some(Arc::new(ManagedMarkerWithoutRebindClient {
+            provider_calls: Arc::clone(&provider_calls),
+        }) as Arc<dyn LlmClient>),
+    );
+    let err = scoped
+        .complete(
+            &[Message::tool_result_with_trust(
+                "ext-1",
+                "remote body",
+                false,
+                crate::llm::ToolResultTrustV1::External,
+                false,
+            )],
+            None,
+            &[],
+        )
+        .await
+        .expect_err("marker-only managed clients must still hit trust admission");
+    assert!(
+        err.to_string().contains("trust admission"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+    let health = agent.model_middleware_health();
+    assert_eq!(health.trust_rejected, 1);
+    assert_eq!(health.provider_calls, 0);
+}
+
+#[tokio::test]
+async fn governed_complete_fails_closed_on_unreviewed_external_tool_result() {
+    let agent = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    );
+    let scoped =
+        agent.scoped_llm_client_for_parts(Some("trust-session"), &None, &CancellationToken::new());
+    let err = scoped
+        .complete(
+            &[Message::tool_result_with_trust(
+                "ext-1",
+                "remote body",
+                false,
+                crate::llm::ToolResultTrustV1::External,
+                false,
+            )],
+            None,
+            &[],
+        )
+        .await
+        .expect_err("middleware must reject unreviewed external content");
+    assert!(
+        err.to_string().contains("trust admission"),
+        "unexpected error: {err}"
+    );
+    let health = agent.model_middleware_health();
+    assert_eq!(health.trust_rejected, 1);
+    assert_eq!(health.trust_admitted, 0);
+    assert_eq!(health.provider_calls, 0);
+}
+
+#[tokio::test]
+async fn middleware_obs_counts_trust_admit_provider_and_usage_on_complete() {
+    let agent = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    );
+    let scoped =
+        agent.scoped_llm_client_for_parts(Some("obs-complete"), &None, &CancellationToken::new());
+    scoped
+        .complete(&[Message::user("hello")], None, &[])
+        .await
+        .expect("complete should succeed");
+    let health = agent.model_middleware_health();
+    assert_eq!(health.trust_admitted, 1);
+    assert_eq!(health.trust_rejected, 0);
+    assert_eq!(health.completion_calls, 1);
+    assert_eq!(health.streaming_calls, 0);
+    assert_eq!(health.provider_calls, 1);
+    assert_eq!(health.usage_recorded, 1);
+}
+
+#[tokio::test]
+async fn middleware_obs_counts_streaming_usage_on_done() {
+    let agent = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    );
+    let scoped =
+        agent.scoped_llm_client_for_parts(Some("obs-stream"), &None, &CancellationToken::new());
+    let mut rx = scoped
+        .complete_streaming(
+            &[Message::user("hello")],
+            None,
+            &[],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("streaming setup should succeed");
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        if matches!(event, StreamEvent::Done(_)) {
+            saw_done = true;
+        }
+    }
+    assert!(saw_done, "stream must emit Done");
+    let health = agent.model_middleware_health();
+    assert_eq!(health.trust_admitted, 1);
+    assert_eq!(health.streaming_calls, 1);
+    assert_eq!(health.completion_calls, 0);
+    assert_eq!(health.provider_calls, 1);
+    assert_eq!(health.usage_recorded, 1);
+}
+
+#[tokio::test]
+async fn middleware_obs_survives_agent_loop_rebuild_with_shared_arc() {
+    let shared = crate::agent::ModelMiddlewareObs::shared();
+    let first = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    )
+    .with_model_middleware_obs(Arc::clone(&shared));
+    let scoped =
+        first.scoped_llm_client_for_parts(Some("obs-shared"), &None, &CancellationToken::new());
+    let _ = scoped
+        .complete(
+            &[Message::tool_result_with_trust(
+                "ext-1",
+                "remote body",
+                false,
+                crate::llm::ToolResultTrustV1::External,
+                false,
+            )],
+            None,
+            &[],
+        )
+        .await
+        .expect_err("reject once");
+
+    let second = AgentLoop::new(
+        Arc::new(CompletedStreamingClient),
+        Arc::new(crate::tools::ToolExecutor::new("/tmp".to_string())),
+        crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp")),
+        crate::agent::AgentConfig::default(),
+    )
+    .with_model_middleware_obs(Arc::clone(&shared));
+    let scoped =
+        second.scoped_llm_client_for_parts(Some("obs-shared-2"), &None, &CancellationToken::new());
+    scoped
+        .complete(&[Message::user("hello")], None, &[])
+        .await
+        .expect("complete after rebuild");
+
+    let health = second.model_middleware_health();
+    assert_eq!(health.trust_rejected, 1);
+    assert_eq!(health.trust_admitted, 1);
+    assert_eq!(health.provider_calls, 1);
+    assert_eq!(health.usage_recorded, 1);
+    assert_eq!(first.model_middleware_health(), health);
 }

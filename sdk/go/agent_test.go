@@ -97,6 +97,41 @@ func TestTaskSchedulerStatsUseStableAgentAndSessionOperations(t *testing.T) {
 	}
 }
 
+func TestModelMiddlewareHealthUsesStableSessionOperation(t *testing.T) {
+	runtime := &fakeRuntime{
+		request: func(
+			_ context.Context,
+			operation string,
+			params map[string]any,
+		) (any, error) {
+			if operation != "session_model_middleware_health" {
+				t.Fatalf("unexpected operation %q", operation)
+			}
+			if params["session_handle"] != "session-obs" {
+				t.Fatalf("unexpected session params: %#v", params)
+			}
+			return ModelMiddlewareHealthSnapshot{
+				TrustAdmitted: 2,
+				TrustRejected: 1,
+				ProviderCalls: 2,
+				UsageRecorded: 2,
+			}, nil
+		},
+	}
+	session := &Session{runtime: runtime, handle: "session-obs"}
+	health, err := session.ModelMiddlewareHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.TrustAdmitted != 2 || health.TrustRejected != 1 || health.ProviderCalls != 2 {
+		t.Fatalf("unexpected middleware health: %#v", health)
+	}
+	want := []string{"session_model_middleware_health"}
+	if got := runtime.operations(); !slices.Equal(got, want) {
+		t.Fatalf("operations = %v, want %v", got, want)
+	}
+}
+
 func TestMemoryMaintenanceHealthUsesStableSessionOperation(t *testing.T) {
 	lastAffected := uint64(3)
 	lastError := "bounded failure"

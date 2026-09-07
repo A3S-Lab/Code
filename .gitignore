@@ -56,3 +56,5 @@ logs/
 # Local SDK build/test residue (runtime index locks, copied native libs)
 **/.a3s-code/
 sdk/node/zvec/
+sdk/python/python/a3s_code/zvec/
+zvec-runtime/

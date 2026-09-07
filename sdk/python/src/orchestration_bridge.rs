@@ -356,3 +356,151 @@ fn parse_py_budget_decision(
         _ => Err(format!("unknown budget decision '{decision}'")),
     }
 }
+
+pub(super) struct PyCheckpointExportSink {
+    callback: pyo3::Py<pyo3::PyAny>,
+    timeout_ms: u64,
+}
+
+impl PyCheckpointExportSink {
+    pub(super) fn new(callback: pyo3::Py<pyo3::PyAny>, timeout_ms: u64) -> Self {
+        Self {
+            callback,
+            timeout_ms,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::SessionCheckpointExportSink for PyCheckpointExportSink {
+    async fn export_checkpoint(
+        &self,
+        checkpoint: a3s_code_core::SessionCheckpointExportV1,
+    ) -> anyhow::Result<()> {
+        let wire = a3s_code_core::SdkSessionCheckpointExportV1::from_export(&checkpoint);
+        let payload = serde_json::to_string(&wire)
+            .map_err(|error| anyhow::anyhow!("serialize checkpoint export: {error}"))?;
+        let timeout_ms = self.timeout_ms;
+        let callback = pyo3::Python::with_gil(|py| self.callback.clone_ref(py));
+        let task = tokio::task::spawn_blocking(move || {
+            pyo3::Python::with_gil(|py| -> anyhow::Result<()> {
+                let callback = callback.bind(py);
+                let json_mod = py.import("json")?;
+                let value = json_mod.call_method1("loads", (payload,))?;
+                let result = callback.call1((value,))?;
+                if result.is_none() {
+                    return Ok(());
+                }
+                if let Ok(flag) = result.extract::<bool>() {
+                    if flag {
+                        return Ok(());
+                    }
+                    return Err(anyhow::anyhow!("checkpoint export denied by host"));
+                }
+                if let Ok(dict) = result.downcast::<pyo3::types::PyDict>() {
+                    if dict
+                        .get_item("ok")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.extract::<bool>().ok())
+                        == Some(false)
+                    {
+                        let message = dict
+                            .get_item("error")
+                            .ok()
+                            .flatten()
+                            .and_then(|v| v.extract::<String>().ok())
+                            .unwrap_or_else(|| "checkpoint export denied by host".to_string());
+                        return Err(anyhow::anyhow!(message));
+                    }
+                }
+                Ok(())
+            })
+        });
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(anyhow::anyhow!(
+                "Python checkpoint export worker failed: {error}"
+            )),
+            Err(_) => Err(anyhow::anyhow!(
+                "Python checkpoint export did not respond within {timeout_ms}ms"
+            )),
+        }
+    }
+}
+
+pub(super) struct PyImmutableContentAdapter {
+    name: String,
+    callback: pyo3::Py<pyo3::PyAny>,
+    timeout_ms: u64,
+}
+
+impl PyImmutableContentAdapter {
+    pub(super) fn new(name: String, callback: pyo3::Py<pyo3::PyAny>, timeout_ms: u64) -> Self {
+        Self {
+            name,
+            callback,
+            timeout_ms,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl a3s_code_core::ImmutableContentAdapter for PyImmutableContentAdapter {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn put(
+        &self,
+        request: &a3s_code_core::ImmutableContentWriteRequestV1<'_>,
+    ) -> a3s_code_core::ImmutableContentResult<a3s_code_core::ImmutableContentReferenceV1> {
+        let wire = a3s_code_core::SdkImmutableContentWriteRequestV1::from_request(request);
+        let payload = serde_json::to_string(&wire).map_err(|error| {
+            a3s_code_core::ImmutableContentError::Provider(format!(
+                "serialize immutable content write request: {error}"
+            ))
+        })?;
+        let timeout_ms = self.timeout_ms;
+        let callback = pyo3::Python::with_gil(|py| self.callback.clone_ref(py));
+        let task = tokio::task::spawn_blocking(move || {
+            pyo3::Python::with_gil(|py| -> a3s_code_core::ImmutableContentResult<
+                a3s_code_core::ImmutableContentReferenceV1,
+            > {
+                let callback = callback.bind(py);
+                let json_mod = py.import("json").map_err(|error| {
+                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                })?;
+                let value = json_mod.call_method1("loads", (payload,)).map_err(|error| {
+                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                })?;
+                let result = callback.call1((value,)).map_err(|error| {
+                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                })?;
+                let encoded = json_mod
+                    .call_method1("dumps", (result,))
+                    .map_err(|error| {
+                        a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                    })?
+                    .extract::<String>()
+                    .map_err(|error| {
+                        a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                    })?;
+                serde_json::from_str(&encoded).map_err(|error| {
+                    a3s_code_core::ImmutableContentError::Provider(format!(
+                        "immutable content put returned an invalid reference: {error}"
+                    ))
+                })
+            })
+        });
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(a3s_code_core::ImmutableContentError::Provider(format!(
+                "Python immutable content worker failed: {error}"
+            ))),
+            Err(_) => Err(a3s_code_core::ImmutableContentError::Provider(format!(
+                "Python immutable content put did not respond within {timeout_ms}ms"
+            ))),
+        }
+    }
+}

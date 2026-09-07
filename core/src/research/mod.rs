@@ -5,23 +5,43 @@
 //! is acceptable. A3S Use owns package and environment authority; hosts own
 //! scientific policy and human decisions.
 
+mod citation;
+mod claim;
 mod error;
 mod event;
 mod evidence;
+mod evidence_graph;
+mod protocol;
 mod provenance;
+mod reproducibility;
 mod review;
 mod review_batch;
 mod run;
+mod workflow;
 
+pub use citation::{ResearchCitationV1, RESEARCH_CITATION_SCHEMA_V1};
+pub use claim::{ResearchClaimStatusV1, ResearchClaimV1, RESEARCH_CLAIM_SCHEMA_V1};
 pub use error::ResearchContractError;
 pub use event::{ResearchEventV1, RESEARCH_EVENT_SCHEMA_V1, RESEARCH_MAX_EVENT_TYPE_BYTES};
 pub use evidence::{
     ResearchEvidenceFactKindV1, ResearchEvidenceFactV1, RESEARCH_EVIDENCE_FACT_SCHEMA_V1,
     RESEARCH_MAX_FACT_METADATA, RESEARCH_MAX_METADATA_VALUE_BYTES,
 };
+pub use evidence_graph::{
+    ResearchEvidenceCompletenessV1, ResearchEvidenceGraphV1, RESEARCH_EVIDENCE_GRAPH_SCHEMA_V1,
+    RESEARCH_MAX_EVIDENCE_GRAPH_CITATIONS, RESEARCH_MAX_EVIDENCE_GRAPH_CLAIMS,
+};
+pub use protocol::{
+    ResearchProtocolError, ResearchWireEnvelopeV1, ResearchWireKindDescriptorV1,
+    ResearchWireKindV1, ResearchWireTypeV1, RESEARCH_PROTOCOL_SCHEMA_V1,
+    RESEARCH_PROTOCOL_VERSION_V1, RESEARCH_WIRE_KIND_DESCRIPTORS_V1,
+};
 pub use provenance::{
     ResearchArtifactKindV1, ResearchProvenanceReceiptV1, RESEARCH_ARTIFACT_KINDS,
     RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1,
+};
+pub use reproducibility::{
+    ResearchReproducibilityManifestV1, RESEARCH_REPRODUCIBILITY_MANIFEST_SCHEMA_V1,
 };
 pub use review::{
     ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
@@ -33,9 +53,14 @@ pub use review_batch::{
 pub use run::{
     ResearchReproducibilityV1, ResearchRunStatusV1, ResearchRunV1, RESEARCH_RUN_SCHEMA_V1,
 };
+pub use workflow::{
+    ResearchRerunLineageV1, ResearchWorkflowPlanV1, ResearchWorkflowStepV1,
+    RESEARCH_MAX_WORKFLOW_STEPS, RESEARCH_RERUN_LINEAGE_SCHEMA_V1,
+    RESEARCH_WORKFLOW_PLAN_SCHEMA_V1, RESEARCH_WORKFLOW_STEP_SCHEMA_V1,
+};
 
 /// Maximum JSON payload accepted by the explicit research wire helpers.
-pub const RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+pub use protocol::RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES;
 pub(crate) const RESEARCH_MAX_ID_BYTES: usize = 256;
 pub(crate) const RESEARCH_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub(crate) const RESEARCH_MAX_DIGESTS: usize = 512;

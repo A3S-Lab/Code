@@ -37,10 +37,15 @@ pub const BOUNDARIES: &str = include_str!("../prompts/common/boundaries.md");
 
 /// Canonical repository-tool arguments and context-efficient usage strategy.
 ///
-/// Appended to every assembled system prompt so general, planning, exploration,
-/// review, and verification styles share one tool contract.
+/// Appended to writable / general styles so parameter and pagination guidance
+/// stay aligned with the registered schemas.
 pub const REPOSITORY_TOOL_CONTRACT: &str =
     include_str!("../prompts/common/repository_tool_contract.md");
+
+/// Read-oriented repository-tool contract for specialty styles that must not
+/// advertise mutating tools while claiming a read-only role.
+pub const REPOSITORY_TOOL_CONTRACT_READONLY: &str =
+    include_str!("../prompts/common/repository_tool_contract_readonly.md");
 
 /// Shared runtime contract for authority, scope, run control, evidence, and
 /// completion semantics.
@@ -195,6 +200,27 @@ pub enum DetectionConfidence {
 }
 
 impl AgentStyle {
+    /// Returns true if this style is a specialty read-oriented role whose
+    /// prompt must not advertise workspace mutations as normal work.
+    pub fn uses_readonly_tool_contract(&self) -> bool {
+        matches!(
+            self,
+            AgentStyle::Plan
+                | AgentStyle::Explore
+                | AgentStyle::Verification
+                | AgentStyle::CodeReview
+        )
+    }
+
+    /// Repository-tool contract fragment for this style.
+    pub fn repository_tool_contract(&self) -> &'static str {
+        if self.uses_readonly_tool_contract() {
+            REPOSITORY_TOOL_CONTRACT_READONLY
+        } else {
+            REPOSITORY_TOOL_CONTRACT
+        }
+    }
+
     /// Returns the base system prompt for this style.
     pub fn base_prompt(&self) -> &'static str {
         match self {
@@ -527,10 +553,11 @@ impl SystemPromptSlots {
         // control, and evidence semantics cannot drift between built-in agents.
         parts.push(RUNTIME_CONTRACT.replace('\r', "").trim_end().to_string());
 
-        // 2c. Repository-tool contract — shared by every style so parameter and
-        // pagination guidance cannot drift between built-in agents.
+        // 2c. Repository-tool contract — style-scoped so read-oriented roles do
+        // not advertise mutating tools while claiming a read-only task.
         parts.push(
-            REPOSITORY_TOOL_CONTRACT
+            style
+                .repository_tool_contract()
                 .replace('\r', "")
                 .trim_end()
                 .to_string(),

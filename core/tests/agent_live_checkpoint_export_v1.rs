@@ -454,3 +454,50 @@ async fn checkpoint_export_failure_is_observable_but_does_not_halt_the_live_run(
     assert_eq!(sink.take().len(), 1);
     session.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_set_session_checkpoint_export_sink_captures_next_boundary() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("evidence.txt"),
+        "runtime sink evidence\n",
+    )
+    .unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = agent
+        .session_async(
+            workspace.path().display().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_session_id("runtime-export-session")
+                    .with_llm_client(Arc::new(ScriptedClient::new(vec![
+                        tool_response("read-boundary-1", "evidence.txt"),
+                        final_response(),
+                    ])))
+                    .with_permission_policy(PermissionPolicy::new().allow("read(*)"))
+                    .with_planning_mode(PlanningMode::Disabled)
+                    .with_continuation(false),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(session.session_checkpoint_export_sink().is_none());
+    let sink = Arc::new(RecordingExportSink::default());
+    session
+        .set_session_checkpoint_export_sink(Some(
+            Arc::clone(&sink) as Arc<dyn SessionCheckpointExportSink>
+        ))
+        .unwrap();
+    assert!(session.session_checkpoint_export_sink().is_some());
+
+    let result = session.send("read the evidence", None).await.unwrap();
+    assert_eq!(result.text, "boundary export complete");
+    let exports = sink.take();
+    assert_eq!(exports.len(), 1);
+    let wire = a3s_code_core::SdkSessionCheckpointExportV1::from_export(&exports[0]);
+    assert!(!wire.content_base64.is_empty());
+    assert!(!wire.descriptor.content_digest.is_empty());
+
+    session.close().await;
+}

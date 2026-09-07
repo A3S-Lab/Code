@@ -158,6 +158,21 @@ type ModelGenerationPoolHealthSnapshot struct {
 	Scheduler           *TaskSchedulerQuotaHealthSnapshot `json:"scheduler,omitempty"`
 }
 
+// ModelMiddlewareHealthSnapshot exposes secret-free middleware stage counters
+// for one session observation window (OPT-OBS1).
+type ModelMiddlewareHealthSnapshot struct {
+	TrustAdmitted             uint64 `json:"trustAdmitted"`
+	TrustRejected             uint64 `json:"trustRejected"`
+	ProviderCalls             uint64 `json:"providerCalls"`
+	UsageRecorded             uint64 `json:"usageRecorded"`
+	CompletionCalls           uint64 `json:"completionCalls"`
+	StreamingCalls            uint64 `json:"streamingCalls"`
+	TrustedToolResults        uint64 `json:"trustedToolResults"`
+	WorkspaceDataToolResults  uint64 `json:"workspaceDataToolResults"`
+	ExternalToolResults       uint64 `json:"externalToolResults"`
+	ExternalRedactionReviewed uint64 `json:"externalRedactionReviewed"`
+}
+
 // DefaultSecurityProvider enables Core's built-in taint tracking and output
 // sanitization. Its concrete type is the provider selection; callers do not
 // pass a raw backend name.
@@ -242,47 +257,48 @@ type SessionOptions struct {
 	// SecurityProvider selects the typed security boundary for this session.
 	SecurityProvider *DefaultSecurityProvider `json:"security_provider,omitempty"`
 	// Deprecated: use SecurityProvider: NewDefaultSecurityProvider().
-	DefaultSecurity            *bool                      `json:"default_security,omitempty"`
-	WorkspaceBackend           *WorkspaceBackendConfig    `json:"workspace_backend,omitempty"`
-	RemoteGit                  *RemoteGitBackendConfig    `json:"remote_git,omitempty"`
-	WorkspaceRetrieval         *WorkspaceRetrievalOptions `json:"-"`
-	SessionID                  string                     `json:"session_id,omitempty"`
-	TenantID                   string                     `json:"tenant_id,omitempty"`
-	Principal                  string                     `json:"principal,omitempty"`
-	AgentTemplateID            string                     `json:"agent_template_id,omitempty"`
-	CorrelationID              string                     `json:"correlation_id,omitempty"`
-	HostEnv                    *HostEnvConfig             `json:"host_env,omitempty"`
-	PlanningMode               PlanningMode               `json:"planning_mode,omitempty"`
-	GoalTracking               *bool                      `json:"goal_tracking,omitempty"`
-	AutoSave                   *bool                      `json:"auto_save,omitempty"`
-	MaxParseRetries            *uint32                    `json:"max_parse_retries,omitempty"`
-	ToolTimeoutMS              *uint64                    `json:"tool_timeout_ms,omitempty"`
-	LLMAPITimeoutMS            *uint64                    `json:"llm_api_timeout_ms,omitempty"`
-	CircuitBreakerThreshold    *uint32                    `json:"circuit_breaker_threshold,omitempty"`
-	DuplicateToolCallThreshold *uint32                    `json:"duplicate_tool_call_threshold,omitempty"`
-	AutoCompact                *bool                      `json:"auto_compact,omitempty"`
-	AutoCompactThreshold       *float32                   `json:"auto_compact_threshold,omitempty"`
-	MaxContextTokens           *uint                      `json:"max_context_tokens,omitempty"`
-	ArtifactStoreLimits        *ArtifactStoreLimits       `json:"artifact_store_limits,omitempty"`
-	ToolResultTransformPolicy  *ToolResultTransformPolicy `json:"tool_result_transform_policy,omitempty"`
-	ToolPresentationProfile    *ToolPresentationProfile   `json:"tool_presentation_profile,omitempty"`
-	ContinuationEnabled        *bool                      `json:"continuation_enabled,omitempty"`
-	MaxContinuationTurns       *uint32                    `json:"max_continuation_turns,omitempty"`
-	Temperature                *float32                   `json:"temperature,omitempty"`
-	ThinkingBudget             *uint                      `json:"thinking_budget,omitempty"`
-	MaxToolRounds              *uint                      `json:"max_tool_rounds,omitempty"`
-	MaxParallelTasks           *uint                      `json:"max_parallel_tasks,omitempty"`
-	AutoDelegationEnabled      *bool                      `json:"auto_delegation_enabled,omitempty"`
-	AutoDelegation             *AutoDelegationConfig      `json:"auto_delegation,omitempty"`
-	ManualDelegationEnabled    *bool                      `json:"manual_delegation_enabled,omitempty"`
-	AutoParallelDelegation     *bool                      `json:"auto_parallel_delegation,omitempty"`
-	LLMLogprobs                *bool                      `json:"llm_logprobs,omitempty"`
-	LLMTopLogprobs             *uint                      `json:"llm_top_logprobs,omitempty"`
-	MaxExecutionTimeMS         *uint64                    `json:"max_execution_time_ms,omitempty"`
-	RetentionLimits            *RetentionLimits           `json:"retention_limits,omitempty"`
-	Trajectory                 *TrajectoryConfig          `json:"trajectory,omitempty"`
-	InlineSkills               []InlineSkill              `json:"inline_skills,omitempty"`
-	PromptSlots                *PromptSlots               `json:"prompt_slots,omitempty"`
+	DefaultSecurity            *bool                           `json:"default_security,omitempty"`
+	WorkspaceBackend           *WorkspaceBackendConfig         `json:"workspace_backend,omitempty"`
+	RemoteGit                  *RemoteGitBackendConfig         `json:"remote_git,omitempty"`
+	WorkspaceRetrieval         *WorkspaceRetrievalOptions      `json:"-"`
+	ImmutableContentAdapter    *ImmutableContentAdapterOptions `json:"-"`
+	SessionID                  string                          `json:"session_id,omitempty"`
+	TenantID                   string                          `json:"tenant_id,omitempty"`
+	Principal                  string                          `json:"principal,omitempty"`
+	AgentTemplateID            string                          `json:"agent_template_id,omitempty"`
+	CorrelationID              string                          `json:"correlation_id,omitempty"`
+	HostEnv                    *HostEnvConfig                  `json:"host_env,omitempty"`
+	PlanningMode               PlanningMode                    `json:"planning_mode,omitempty"`
+	GoalTracking               *bool                           `json:"goal_tracking,omitempty"`
+	AutoSave                   *bool                           `json:"auto_save,omitempty"`
+	MaxParseRetries            *uint32                         `json:"max_parse_retries,omitempty"`
+	ToolTimeoutMS              *uint64                         `json:"tool_timeout_ms,omitempty"`
+	LLMAPITimeoutMS            *uint64                         `json:"llm_api_timeout_ms,omitempty"`
+	CircuitBreakerThreshold    *uint32                         `json:"circuit_breaker_threshold,omitempty"`
+	DuplicateToolCallThreshold *uint32                         `json:"duplicate_tool_call_threshold,omitempty"`
+	AutoCompact                *bool                           `json:"auto_compact,omitempty"`
+	AutoCompactThreshold       *float32                        `json:"auto_compact_threshold,omitempty"`
+	MaxContextTokens           *uint                           `json:"max_context_tokens,omitempty"`
+	ArtifactStoreLimits        *ArtifactStoreLimits            `json:"artifact_store_limits,omitempty"`
+	ToolResultTransformPolicy  *ToolResultTransformPolicy      `json:"tool_result_transform_policy,omitempty"`
+	ToolPresentationProfile    *ToolPresentationProfile        `json:"tool_presentation_profile,omitempty"`
+	ContinuationEnabled        *bool                           `json:"continuation_enabled,omitempty"`
+	MaxContinuationTurns       *uint32                         `json:"max_continuation_turns,omitempty"`
+	Temperature                *float32                        `json:"temperature,omitempty"`
+	ThinkingBudget             *uint                           `json:"thinking_budget,omitempty"`
+	MaxToolRounds              *uint                           `json:"max_tool_rounds,omitempty"`
+	MaxParallelTasks           *uint                           `json:"max_parallel_tasks,omitempty"`
+	AutoDelegationEnabled      *bool                           `json:"auto_delegation_enabled,omitempty"`
+	AutoDelegation             *AutoDelegationConfig           `json:"auto_delegation,omitempty"`
+	ManualDelegationEnabled    *bool                           `json:"manual_delegation_enabled,omitempty"`
+	AutoParallelDelegation     *bool                           `json:"auto_parallel_delegation,omitempty"`
+	LLMLogprobs                *bool                           `json:"llm_logprobs,omitempty"`
+	LLMTopLogprobs             *uint                           `json:"llm_top_logprobs,omitempty"`
+	MaxExecutionTimeMS         *uint64                         `json:"max_execution_time_ms,omitempty"`
+	RetentionLimits            *RetentionLimits                `json:"retention_limits,omitempty"`
+	Trajectory                 *TrajectoryConfig               `json:"trajectory,omitempty"`
+	InlineSkills               []InlineSkill                   `json:"inline_skills,omitempty"`
+	PromptSlots                *PromptSlots                    `json:"prompt_slots,omitempty"`
 }
 
 // Ptr is a convenience for pointer-valued options that distinguish an
@@ -380,6 +396,32 @@ type CapabilityCleanupReport struct {
 	EffectsFailed   uint `json:"effects_failed"`
 	EffectsTimedOut uint `json:"effects_timed_out"`
 	Clean           bool `json:"clean"`
+}
+
+// SdkCapabilityBatchV1 is the cross-language Skill-only capability batch wire
+// format (SDK-CAP1).
+type SdkCapabilityBatchV1 struct {
+	SchemaVersion uint32                 `json:"schemaVersion"`
+	Generation    uint64                 `json:"generation"`
+	SourceID      string                 `json:"sourceId"`
+	Skills        []SdkSkillCapabilityV1 `json:"skills"`
+}
+
+// SdkSkillCapabilityV1 stages one Skill value into a catalog generation.
+type SdkSkillCapabilityV1 struct {
+	LocalID string `json:"localId"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Content string `json:"content"`
+}
+
+// SdkCapabilityCommitReceiptV1 reports the catalog stamp transition after an
+// SDK capability batch commit.
+type SdkCapabilityCommitReceiptV1 struct {
+	PreviousGeneration  uint64 `json:"previousGeneration"`
+	CommittedGeneration uint64 `json:"committedGeneration"`
+	PreviousDigest      string `json:"previousDigest"`
+	CommittedDigest     string `json:"committedDigest"`
 }
 
 type ToolArtifact struct {
@@ -1020,6 +1062,19 @@ type BudgetGuardHandlers struct {
 	RecordAfterLLM  func(context.Context, BudgetUsageContext) error
 	CheckBeforeTool func(context.Context, BudgetToolContext) (*BudgetDecision, error)
 	Timeout         time.Duration
+}
+
+// SdkSessionCheckpointExportV1 is the cross-language live checkpoint export
+// wire format (SDK-CP1).
+type SdkSessionCheckpointExportV1 struct {
+	Descriptor    json.RawMessage `json:"descriptor"`
+	ContentBase64 string          `json:"contentBase64"`
+}
+
+// SessionCheckpointExportHandler installs a host-owned live checkpoint sink.
+type SessionCheckpointExportHandler struct {
+	ExportCheckpoint func(context.Context, SdkSessionCheckpointExportV1) error
+	Timeout          time.Duration
 }
 
 type CommandContext struct {

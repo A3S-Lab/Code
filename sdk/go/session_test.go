@@ -450,6 +450,18 @@ func TestSessionCallbackAPIsRegisterAndReleaseHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := session.SetSessionCheckpointExportSink(ctx, &SessionCheckpointExportHandler{
+		ExportCheckpoint: func(_ context.Context, export SdkSessionCheckpointExportV1) error {
+			if export.ContentBase64 == "" {
+				t.Fatal("empty checkpoint content")
+			}
+			return nil
+		},
+		Timeout: time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := session.RegisterCommand(
 		ctx,
 		"status",
@@ -464,12 +476,14 @@ func TestSessionCallbackAPIsRegisterAndReleaseHandlers(t *testing.T) {
 	}
 
 	runtime.mu.Lock()
-	if len(runtime.callbacks) != 3 {
-		t.Fatalf("callbacks = %d, want 3", len(runtime.callbacks))
+	if len(runtime.callbacks) != 4 {
+		t.Fatalf("callbacks = %d, want 4", len(runtime.callbacks))
 	}
 	budgetID := session.budgetCallback
+	checkpointID := session.checkpointCallback
 	commandID := session.commandCallbacks["status"]
 	budgetCallback := runtime.callbacks[budgetID]
+	checkpointCallback := runtime.callbacks[checkpointID]
 	commandCallback := runtime.callbacks[commandID]
 	runtime.mu.Unlock()
 
@@ -480,6 +494,17 @@ func TestSessionCallbackAPIsRegisterAndReleaseHandlers(t *testing.T) {
 	)
 	if err != nil || decision.(*BudgetDecision).Decision != "deny" {
 		t.Fatalf("budget callback = %#v, %v", decision, err)
+	}
+	checkpointReply, err := checkpointCallback(
+		ctx,
+		"export_checkpoint",
+		json.RawMessage(`{"descriptor":{"schema":"x"},"contentBase64":"e30="}`),
+	)
+	if err != nil {
+		t.Fatalf("checkpoint callback err: %v", err)
+	}
+	if reply, ok := checkpointReply.(map[string]any); !ok || reply["ok"] != true {
+		t.Fatalf("checkpoint callback = %#v", checkpointReply)
 	}
 	command, err := commandCallback(
 		ctx,
@@ -494,6 +519,9 @@ func TestSessionCallbackAPIsRegisterAndReleaseHandlers(t *testing.T) {
 		t.Fatalf("UnregisterHook = %v, %v", removed, err)
 	}
 	if err := session.SetBudgetGuard(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetSessionCheckpointExportSink(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := session.Close(ctx); err != nil {

@@ -224,6 +224,7 @@ mod tests {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "tool-123");
                 assert_eq!(content, "result data");
@@ -551,6 +552,7 @@ mod extra_llm_tests {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "t1");
                 assert_eq!(content, "output");
@@ -808,6 +810,8 @@ mod extra_llm_tests {
             tool_use_id: "t1".into(),
             content: "out".into(),
             is_error: Some(false),
+            trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+            redaction_reviewed: false,
         };
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["type"], "tool_result");
@@ -1884,6 +1888,7 @@ mod extra_llm_tests2 {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "id-123");
                 assert_eq!(content, "error occurred");
@@ -2122,6 +2127,8 @@ mod extra_llm_tests2 {
                 tool_use_id: "call-123".to_string(),
                 content: "result".into(),
                 is_error: Some(false),
+                trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                redaction_reviewed: false,
             }],
             reasoning_content: None,
         }];
@@ -2349,6 +2356,7 @@ mod extra_llm_tests2 {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "t1");
                 assert_eq!(content, "output");
@@ -2558,6 +2566,8 @@ mod extra_llm_tests3 {
                     tool_use_id: "t1".to_string(),
                     content: "result".into(),
                     is_error: Some(false),
+                    trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                    redaction_reviewed: false,
                 },
             ],
             reasoning_content: None,
@@ -2929,6 +2939,7 @@ mod extra_llm_tests3 {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "t1");
                 assert_eq!(content, "output");
@@ -3490,6 +3501,7 @@ mod multimodal_tests {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "t1");
                 assert_eq!(*is_error, Some(false));
@@ -3570,6 +3582,8 @@ mod multimodal_tests {
                     },
                 ]),
                 is_error: Some(false),
+                trust: crate::llm::ToolResultTrustV1::WorkspaceData,
+                redaction_reviewed: false,
             }],
             reasoning_content: None,
         }];

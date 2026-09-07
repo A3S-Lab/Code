@@ -241,6 +241,12 @@ pub struct SessionOptions {
     /// starts in the background and all vectors remain in memory for this session.
     #[napi(ts_type = "WorkspaceRetrievalOptions")]
     pub workspace_retrieval: Option<WorkspaceRetrievalOptionsObject>,
+    /// Host-owned create-only immutable Tool content retention (SDK-IMM1).
+    ///
+    /// Pass `new ImmutableContentAdapterOptions(authorityDigest, maximumBytes, adapterName, put)`.
+    /// Every raw Tool output writes through this port before release.
+    #[napi(ts_type = "ImmutableContentAdapterOptions")]
+    pub immutable_content_adapter: Option<ImmutableContentAdapterOptionsObject>,
     /// Optional remote git provider. When set, the resulting session attaches
     /// a `RemoteGitBackend` on top of `workspaceBackend` so the built-in
     /// `git` tool is available even on object-storage workspaces.
@@ -823,6 +829,9 @@ pub(super) fn js_session_options_to_rust(
     }
     if let Some(ref retrieval) = o.workspace_retrieval {
         opts = opts.with_workspace_retrieval(js_workspace_retrieval_to_rust(retrieval)?);
+    }
+    if let Some(ref immutable) = o.immutable_content_adapter {
+        opts = opts.with_immutable_content_adapter(js_immutable_content_to_rust(immutable)?);
     }
     // Build prompt slots if any slot is set
     if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()

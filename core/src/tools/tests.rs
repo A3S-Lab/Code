@@ -1223,14 +1223,14 @@ fn tool_result_trust_labels_are_typed_at_the_value_boundary() {
     use crate::tools::{ToolOutput, ToolResultTrustV1};
 
     // Local tool output defaults to workspace data: model-visible, never an
-    // instruction, and subject to redaction review before prompt use.
+    // instruction, and loadable without the external redaction-review gate.
     let local = ToolOutput::success("local".to_owned());
     assert_eq!(local.trust, ToolResultTrustV1::WorkspaceData);
     assert!(!local.trust.may_instruct());
-    assert!(local.trust.requires_redaction_review());
+    assert!(!local.trust.requires_redaction_review());
 
     // External content is labeled by the crossing tool, not re-derived from
-    // the tool name by each adapter.
+    // the tool name by each adapter; middleware fails closed until reviewed.
     let external = ToolOutput::success_external("remote".to_owned());
     assert_eq!(external.trust, ToolResultTrustV1::External);
     assert!(!external.trust.may_instruct());

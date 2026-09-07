@@ -334,6 +334,10 @@ provider-pool projection when the configured client publishes a typed pool. It
 includes bounded recent admission counters and local reserved/available
 permits; clients without a pool descriptor receive `None`.
 
+`session.model_middleware_health()` returns secret-free middleware stage
+counters (trust admit/reject, provider, usage, completion/streaming, and
+trust-label tallies). The snapshot never retains prompts or tool plaintext.
+
 ## Memory maintenance health
 
 `session.memory_maintenance_health()` returns a typed, non-sensitive lifecycle

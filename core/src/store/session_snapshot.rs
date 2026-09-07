@@ -21,6 +21,9 @@ pub struct SessionSnapshotV1 {
     pub session: SessionData,
     #[serde(default)]
     pub artifacts: Vec<ToolArtifact>,
+    /// Retention roots for reference-aware artifact GC (STORE-GC2).
+    #[serde(default)]
+    pub retained_artifact_uris: Vec<String>,
     #[serde(default)]
     pub trace_events: Vec<TraceEvent>,
     #[serde(default)]
@@ -40,10 +43,14 @@ impl SessionSnapshotV1 {
         verification_reports: Vec<VerificationReport>,
         subagent_tasks: Vec<SubagentTaskSnapshot>,
     ) -> Self {
+        let mut retained_artifact_uris: Vec<String> =
+            artifacts.retained_uris().into_iter().collect();
+        retained_artifact_uris.sort();
         Self {
             schema_version: SESSION_SNAPSHOT_SCHEMA_VERSION,
             session,
             artifacts: artifacts.artifacts(),
+            retained_artifact_uris,
             trace_events,
             run_records,
             verification_reports,
@@ -96,7 +103,7 @@ impl SessionSnapshotV1 {
     }
 
     pub fn artifact_store(&self) -> ArtifactStore {
-        artifact_store_from(&self.artifacts)
+        artifact_store_from_with_retention(&self.artifacts, &self.retained_artifact_uris)
     }
 
     pub(crate) fn artifact_store_requirements(&self) -> ArtifactStoreLimits {
@@ -379,7 +386,10 @@ fn validate_tool_result_transform_metadata(
     Ok(())
 }
 
-pub(super) fn artifact_store_from(artifacts: &[ToolArtifact]) -> ArtifactStore {
+pub(super) fn artifact_store_from_with_retention(
+    artifacts: &[ToolArtifact],
+    retained_uris: &[String],
+) -> ArtifactStore {
     // A snapshot is an authoritative persisted generation. Rehydrating it
     // through the default in-memory limits must not silently evict records
     // that were accepted by a store configured with larger limits.
@@ -391,6 +401,9 @@ pub(super) fn artifact_store_from(artifacts: &[ToolArtifact]) -> ArtifactStore {
     });
     for artifact in artifacts {
         store.put(artifact.clone());
+    }
+    if !retained_uris.is_empty() {
+        store.set_retained_uris(retained_uris.iter().cloned());
     }
     store
 }

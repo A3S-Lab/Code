@@ -93,6 +93,7 @@ use a3s_code_core::{
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
     InterruptRequest as RustInterruptRequest,
     ModelGenerationPoolHealthSnapshot as RustModelGenerationPoolHealthSnapshot,
+    ModelMiddlewareHealthSnapshot as RustModelMiddlewareHealthSnapshot,
     PlanningMode as RustPlanningMode, SdkCapability as RustSdkCapability,
     SessionOptions as RustSessionOptions, SteerRequest as RustSteerRequest,
     TaskPriorityCounts as RustTaskPriorityCounts,
@@ -387,6 +388,39 @@ impl From<RustModelGenerationPoolHealthSnapshot> for ModelGenerationPoolHealthSn
             local_reserved: scheduler_count(value.local_reserved),
             local_available: scheduler_count(value.local_available),
             scheduler: value.scheduler.map(Into::into),
+        }
+    }
+}
+
+/// Secret-free middleware stage counters for one session observation window.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ModelMiddlewareHealthSnapshot {
+    pub trust_admitted: i64,
+    pub trust_rejected: i64,
+    pub provider_calls: i64,
+    pub usage_recorded: i64,
+    pub completion_calls: i64,
+    pub streaming_calls: i64,
+    pub trusted_tool_results: i64,
+    pub workspace_data_tool_results: i64,
+    pub external_tool_results: i64,
+    pub external_redaction_reviewed: i64,
+}
+
+impl From<RustModelMiddlewareHealthSnapshot> for ModelMiddlewareHealthSnapshot {
+    fn from(value: RustModelMiddlewareHealthSnapshot) -> Self {
+        Self {
+            trust_admitted: scheduler_counter(value.trust_admitted),
+            trust_rejected: scheduler_counter(value.trust_rejected),
+            provider_calls: scheduler_counter(value.provider_calls),
+            usage_recorded: scheduler_counter(value.usage_recorded),
+            completion_calls: scheduler_counter(value.completion_calls),
+            streaming_calls: scheduler_counter(value.streaming_calls),
+            trusted_tool_results: scheduler_counter(value.trusted_tool_results),
+            workspace_data_tool_results: scheduler_counter(value.workspace_data_tool_results),
+            external_tool_results: scheduler_counter(value.external_tool_results),
+            external_redaction_reviewed: scheduler_counter(value.external_redaction_reviewed),
         }
     }
 }
@@ -1055,6 +1089,9 @@ mod session_tools;
 mod workspace_retrieval;
 pub use workspace_retrieval::*;
 
+mod immutable_content;
+pub use immutable_content::*;
+
 mod session_governance;
 
 mod session_capabilities;
@@ -1248,6 +1285,8 @@ fn js_content_block_to_rust(block: &ContentBlockObject) -> RustContentBlock {
                 block.result_content.clone().unwrap_or_default(),
             ),
             is_error: block.is_error,
+            trust: a3s_code_core::llm::ToolResultTrustV1::default(),
+            redaction_reviewed: false,
         },
         _ => RustContentBlock::Text {
             text: block.text.clone().unwrap_or_default(),
@@ -1281,6 +1320,8 @@ fn rust_content_block_to_js(block: &RustContentBlock) -> ContentBlockObject {
             tool_use_id,
             content,
             is_error,
+            trust: _,
+            redaction_reviewed: _,
         } => ContentBlockObject {
             block_type: "tool_result".to_string(),
             text: None,

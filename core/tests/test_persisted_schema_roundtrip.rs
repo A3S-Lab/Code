@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use a3s_code_core::llm::{
     ContentBlock, ImageSource, Message, TokenUsage, ToolResultContent, ToolResultContentField,
+    ToolResultTrustV1,
 };
 use a3s_code_core::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
 use a3s_code_core::orchestration::{
@@ -252,6 +253,8 @@ fn gen_content_block(rng: &mut Rng) -> ContentBlock {
             } else {
                 None
             },
+            trust: ToolResultTrustV1::WorkspaceData,
+            redaction_reviewed: false,
         },
     }
 }
