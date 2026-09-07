@@ -19,13 +19,32 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
-  <a href="#whats-new-in-80">v8</a> ·
+  <a href="#whats-new-in-83">v8.3</a> ·
+  <a href="#whats-new-in-80">v8.0</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#documentation">Documentation</a>
 </p>
+
+## What's new in 8.3
+
+- **Negotiable session-store durability (KRN-6).** Aggregate CAS, append-only
+  WAL, writer lease fencing, optional AES-256-GCM encryption at rest, commit
+  watch, and reference-aware artifact GC are advertised only when proven.
+- **Typed tool-result trust (KRN-5).** Trusted / workspace / external labels
+  cross the tool→model boundary; run-bound calls admit prompt trust before
+  later middleware; `model_middleware_health` is secret-free on all SDKs.
+- **Workspace source snapshots (KRN-4)** bind retrieval results to a
+  tamper-evident identity that survives derived-index rebuilds.
+- **Fallible FFI runtime init (KRN-9)** for Node.js and Python, plus host-owned
+  immutable-content adapters, checkpoint export sinks, and Skill capability
+  batches on Node.js / Python / Go.
+- **Linux arm64 Python wheels** ship as `manylinux_2_39_aarch64` (glibc 2.39+)
+  to match the bundled zvec runtime.
+
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.3.0`).
 
 ## What's new in 8.0
 
@@ -1224,12 +1243,13 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
-The Python release workflow in v8.2.0 uses the stable `cp310-abi3` interface,
-with Apple Silicon targeting macOS 11+, Intel targeting macOS 12+, and glibc
-2.28+ Linux targets for both x86_64 and arm64. Windows x86_64 and arm64 wheels
-are also published. Each native wheel carries the matching Moli sidecar, while
-the pure-Python bootstrap extracts it into the shared verified cache; one wheel
-therefore covers CPython 3.10–3.14 on each target.
+The Python release workflow in v8.3.0 uses the stable `cp310-abi3` interface,
+with Apple Silicon targeting macOS 11+, Intel targeting macOS 12+, Linux x86_64
+on glibc 2.28+, and Linux arm64 on glibc 2.39+ (`manylinux_2_39_aarch64`).
+Windows x86_64 and arm64 wheels are also published. Each native wheel carries
+the matching Moli sidecar, while the pure-Python bootstrap extracts it into the
+shared verified cache; one wheel therefore covers CPython 3.10–3.14 on each
+target.
 
 If `python3.14 -m pip` reports `No module named pip`, repair that interpreter
 before installing the SDK, then install into the same interpreter:

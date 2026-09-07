@@ -36,14 +36,15 @@ from the first release produced with the Intel build matrix.
 For an Intel Mac on macOS 12 or later, replace the platform suffix with
 `macosx_12_0_x86_64`.
 
-The v8.2.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
+The v8.3.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
 per supported platform. It supports CPython 3.10–3.14 on Apple Silicon
-(macOS 11+), Intel (`x86_64`, macOS 12+), Linux glibc 2.28+ (`x86_64` and
-`aarch64`), and Windows (`x86_64` and `arm64`). Each native wheel includes
-the target Moli sidecar and provenance record. The bootstrap extracts the
-sidecar into the verified per-user cache; concurrent processes share the same
-installation. Linux musl is not bundled because upstream Moli has no musl
-asset; provide an explicit/system browser or select another backend there.
+(macOS 11+), Intel (`x86_64`, macOS 12+), Linux x86_64 (glibc 2.28+), Linux
+arm64 (glibc 2.39+ / `manylinux_2_39_aarch64`), and Windows (`x86_64` and
+`arm64`). Each native wheel includes the target Moli sidecar and provenance
+record. The bootstrap extracts the sidecar into the verified per-user cache;
+concurrent processes share the same installation. Linux musl is not bundled
+because upstream Moli has no musl asset; provide an explicit/system browser or
+select another backend there.
 
 The release pins `a3s-search` v3.1.0 and uses Moli for JavaScript-capable
 `web_search` by default. `sdk_capabilities()` exposes the complete product

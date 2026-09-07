@@ -19,7 +19,7 @@ go get github.com/A3S-Lab/Code/sdk/go/v8
 
 Download the `a3s-code-go-bridge` asset for the same A3S Code release from
 [GitHub Releases](https://github.com/A3S-Lab/Code/releases). Verify it against
-`a3s-code-go-bridge-SHA256SUMS`. v8.2.0 publishes standalone bridge binaries and
+`a3s-code-go-bridge-SHA256SUMS`. v8.3.0 publishes standalone bridge binaries and
 Moli-containing bundles for Linux, macOS, and Windows on both x86_64 and arm64
 GNU/MSVC targets. The bundle is the convenient self-contained option; the
 standalone binary can still use the shared Moli cache. Build from source for a

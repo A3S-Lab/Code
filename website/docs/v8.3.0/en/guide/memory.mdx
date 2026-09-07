@@ -1,0 +1,114 @@
+---
+title: 'Memory'
+description: 'Session memory stores and explicit recall'
+---
+
+# Memory
+
+Memory records reusable facts about previous work. It should help the harness recall patterns without flooding every prompt.
+
+## Default Store
+
+Every session gets a memory store by default. Plain SDK sessions use a
+file-backed store at `<workspace>/.a3s/memory` if you do not pass one. The
+`a3s code` TUI uses the same `memory_dir` setting that its `/memory` panel
+browses; by default that is `~/.a3s/memory`, so memories carry across projects
+unless you configure a project-local path. Set `memory_dir` in config or pass a
+typed store object to override the backend for one session. If the file store
+cannot be created, the session falls back to an in-memory store and exposes an
+init warning.
+
+## Override Stores
+
+```ts
+import { FileMemoryStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+```
+
+## LLM Extraction
+
+LLM memory extraction is enabled by default when memory is available. The agent
+submits every completed non-empty session turn to the active model. The model,
+not a keyword list or tool-type heuristic, decides whether the turn contains
+anything that can change a future answer or action. It must return an empty
+`items` array when nothing qualifies. Tool calls and tool results are context
+for that judgment; they are never mechanically copied into long-term memory.
+
+Automatic output is deliberately narrow. The runtime accepts only `semantic`
+memories for durable facts, preferences, and decisions, or `procedural`
+memories for reusable workflows and failure lessons. Each item must include a
+validated `source`, `importance`, `confidence`, `scope`, and a non-empty
+future-value `reason`. Stored metadata also records the workspace, session ID,
+and `a3s.memory.durable.v1` schema. The runtime rejects malformed output and
+obvious API keys, tokens, password assignments, and private keys; these checks
+validate structure and safety rather than judging semantic value.
+
+The extraction prompt includes a small set of related existing memories. The
+model can use `supersedes` for a directly replaced or consolidated memory and
+`conflicts_with` for a contradiction that should remain visible. The runtime
+accepts only relation IDs it supplied to the model. It removes accepted
+superseded items, preserves conflicts, and includes relation annotations in
+future recall. The storage layer otherwise merges only normalized exact
+duplicates; it does not infer semantic equivalence from term overlap.
+
+The TUI registers extraction before publishing the final event, then processes
+completed turns in FIFO order in the
+background. A slow extraction does not delay the final response, and a later
+turn is queued rather than dropped. Graceful session close waits up to its
+bounded extraction deadline for work accepted before close, preventing an
+immediate UI shutdown from silently losing the completed turn.
+
+`rememberSuccess` and `rememberFailure` remain explicit SDK operations for a
+host that intentionally wants to store those records. The normal agent runtime
+does not call them for each tool result.
+
+## Store Hygiene
+
+Default memory stores return the canonical item for normalized exact duplicate
+content, raising importance and preserving useful tags, provenance, and
+relation metadata. Distinct but related wording remains separate unless the LLM
+explicitly consolidates it through `supersedes`.
+
+Automatic pruning removes stale, low-importance memories when configured, but it
+hard-protects curated memories: pinned/protected items, frequently recalled
+items, consolidated memories, and memories carrying `supersedes` or
+`conflicts_with` relation metadata.
+
+You can tune extraction limits in `config.acl`:
+
+```acl
+memory {
+  llmExtraction = true
+  llmExtractionMaxItems = 5
+  llmExtractionMaxInputChars = 8000
+}
+```
+
+## Write Memory
+
+```ts
+await session.rememberSuccess(
+  'release preflight',
+  ['bash', 'grep'],
+  'Release checks passed after provider verification',
+);
+
+await session.rememberFailure(
+  'provider verification',
+  'missing PROVIDER_BASE_URL',
+  ['bash'],
+);
+```
+
+## Recall
+
+```ts
+const related = await session.recallSimilar('release provider verification', 5);
+const recent = await session.memoryRecent(10);
+const tagged = await session.recallByTags(['release'], 10);
+```
+
+Use recalled memory as supporting context. Verification evidence still comes from current commands and traces.

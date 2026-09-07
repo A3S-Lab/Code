@@ -1,0 +1,183 @@
+---
+title: '运行限制'
+description: '运行时限制、压缩、超时与熔断'
+---
+
+# 运行限制
+
+Limit options 是 session 级控制项，用于长任务、噪声工具输出和 provider
+失败场景。
+
+## 会话选项
+
+```ts
+const session = agent.session('/repo', {
+  maxToolRounds: 24,
+  maxParseRetries: 3,
+  toolTimeoutMs: 120000,
+  circuitBreakerThreshold: 4,
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  continuationEnabled: true,
+  maxContinuationTurns: 3,
+});
+```
+
+## 选项用途
+
+这些 option 的意图：
+
+- `maxToolRounds` 是单个 turn 的 tool iteration 预算。
+- `maxParseRetries` 是格式错误工具调用的恢复预算。
+- `toolTimeoutMs` 是每个 tool 的超时时间，单位毫秒。
+- `circuitBreakerThreshold` 是连续 provider 失败阈值。
+- `autoCompact` 和 `autoCompactThreshold` 控制 context compaction 行为。
+- `continuationEnabled` 和 `maxContinuationTurns` 控制 continuation injection。
+
+## 实用默认值
+
+CI、发布和用户可见自动化应使用严格限制；本地探索可以放宽预算，但有副作用的任务仍要显式验证。
+
+## 保留上限
+
+session 会把 run 历史、trace events 和 subagent task 快照保存在内存里。
+`SessionRetentionLimits` 使用保守的有限默认值，避免长时间会话无限增长。可以覆盖
+任意单项 FIFO 上限；只有明确设置 `unbounded: true` 才会启用无限保留。
+
+五个相互独立的上限：
+
+| 字段                          | 触发上限时的效果                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `max_runs_retained`           | 新建 run 超过上限时，**最旧**的 run 及其全部 events 被丢弃。                                                         |
+| `max_events_per_run`          | run 中最旧的 events 按 FIFO 丢弃。run 快照的 `event_count` **不会**被递减——它保持有史以来记录的累计总数。            |
+| `max_event_bytes_per_run`     | 丢弃最旧的 run events，直到满足序列化字节上限；单条超大 event 不会被保留。                                           |
+| `max_trace_events`            | trace sink 超过上限后，每次新写入都会丢弃最旧的一条 event。                                                          |
+| `max_terminal_subagent_tasks` | 超过上限后丢弃最旧的**终态**（completed / failed / cancelled）subagent task 快照。**running 的任务永远不会被丢弃。** |
+
+所有上限都是软上限：触发时在插入处丢弃最旧条目，绝不返回错误。
+
+```ts
+const session = agent.session('/repo', {
+  retentionLimits: {
+    maxRunsRetained: 100,
+    maxEventsPerRun: 5000,
+    maxEventBytesPerRun: 16 * 1024 * 1024,
+    maxTraceEvents: 20000,
+    maxTerminalSubagentTasks: 500,
+  },
+});
+```
+
+```python
+opts = SessionOptions()
+opts.retention_limits = {
+    'max_runs_retained': 100,
+    'max_events_per_run': 5000,
+    'max_event_bytes_per_run': 16 * 1024 * 1024,
+    'max_trace_events': 20000,
+    'max_terminal_subagent_tasks': 500,
+}
+session = agent.session('/repo', opts)
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	RetentionLimits: &code.RetentionLimits{
+		MaxRunsRetained:          code.Ptr(uint(100)),
+		MaxEventsPerRun:          code.Ptr(uint(5_000)),
+		MaxEventBytesPerRun:      code.Ptr(uint(16 * 1024 * 1024)),
+		MaxTraceEvents:           code.Ptr(uint(20_000)),
+		MaxTerminalSubagentTasks: code.Ptr(uint(500)),
+	},
+})
+```
+
+Rust 使用对应的 `SessionRetentionLimits` builder 方法。
+
+## 预算守卫
+
+`BudgetGuard`（见更新日志 [3.3.0]）是一套由宿主提供的成本与配额契约。框架本身
+不强制执行预算——它只定义决策点，并咨询宿主注入的守卫。在 LLM 与工具调用处接入
+三个钩子：
+
+- `check_before_llm` —— 在每次 LLM 调用之前。
+- `record_after_llm` —— 在每次成功的 LLM 调用之后，带上服务提供商的实际用量，
+  以便宿主准确累计消费。
+- `check_before_tool` —— 在每次工具调用之前。
+
+每个 `check_*` 返回三种决策之一：
+
+- `Allow` —— 正常继续，不发出事件。
+- `SoftLimit { resource, consumed, limit, message }` —— 发出
+  `AgentEvent::BudgetThresholdHit { kind: "soft" }` 并**继续执行**。会话内的钩子
+  可以据此采取动作，例如自动压缩或下一轮换用更便宜的模型。
+- `Deny { resource, reason }` —— 以 `CodeError::BudgetExhausted` 中止本次调用。
+  **会话仍然保持打开**——调用方可以稍后重试，或在宿主重新分配预算后重试。
+
+### Node.js：`session.setBudgetGuard({...})`
+
+每个回调接收**单个 `ctx` 对象**（不是位置参数），并返回一个决策对象（或 `null` /
+`{ decision: 'allow' }` 表示放行）：
+
+```ts
+session.setBudgetGuard({
+  checkBeforeLlm: (ctx) => {
+    // ctx.sessionId, ctx.estimatedTokens
+    if (overMonthlyCap(ctx.sessionId)) {
+      return {
+        decision: 'deny',
+        resource: 'llm_tokens',
+        reason: 'monthly cap',
+      };
+    }
+    return { decision: 'allow' };
+  },
+  recordAfterLlm: (ctx) => {
+    // ctx.sessionId, ctx.usage —— usage 的 key 是 camelCase：
+    // promptTokens, completionTokens, totalTokens, cacheReadTokens, cacheWriteTokens
+    addSpend(ctx.sessionId, ctx.usage.totalTokens);
+  },
+  checkBeforeTool: (ctx) => {
+    // ctx.sessionId, ctx.toolName
+    return { decision: 'allow' };
+  },
+  timeoutMs: 5000, // 可选，默认 5000
+});
+```
+
+Node.js 桥接层采用**失败即拒绝**策略：`check_*` 回调若未在 `timeoutMs` 内返回，
+或返回无法解析的值，都会被当作**拒绝**处理。预算控制绝不能在预算守卫卡住时悄悄
+自我失效（参见更新日志 `[3.3.0]` 中 Node.js 预算守卫的“失败时放行”修复）。
+
+回调**绝不能抛出异常。** 受 napi-rs 约束，回调抛出的异常会在返回值转换阶段中止宿主
+进程。请用 `try/catch` 包裹逻辑并返回一个决策（例如拒绝），而不是抛异常。卡住的情况
+由“失败即拒绝”的超时机制安全处理，详见更新日志 [3.3.0] 的已知限制。
+
+### Python：会话选项 `budget_guard`
+
+Python 在 `budget_guard` 这个 `SessionOptions` 字段上提供一个 `BudgetGuard` 形态的
+对象。未定义的方法视为放行且不执行操作。Python 回调使用**位置参数**，框架会捕获
+它们抛出的任何异常（抛异常的 `check_*` 默认视为放行）：
+
+```python
+class MyBudgetGuard:
+    def check_before_llm(self, session_id, est_tokens):
+        if over_monthly_cap(session_id):
+            return {'decision': 'deny', 'resource': 'llm_tokens', 'reason': 'monthly cap'}
+        return {'decision': 'allow'}
+
+    def record_after_llm(self, session_id, usage):
+        # usage 是一个 dict，key 为 snake_case：
+        # total_tokens, cache_read_tokens（以及 prompt_tokens, completion_tokens, cache_write_tokens）
+        add_spend(session_id, usage['total_tokens'])
+
+    def check_before_tool(self, session_id, tool_name):
+        return {'decision': 'allow'}
+
+opts = SessionOptions()
+opts.budget_guard = MyBudgetGuard()
+session = agent.session('/repo', opts)
+```
+
+决策返回字典 `{"decision": "deny", "resource": ..., "reason": ...}`（以及
+`"soft"` / `"allow"`）在两个 SDK 上具有相同结构。

@@ -1,0 +1,82 @@
+---
+title: 'Skills'
+description: 'Prompt-time skills, inline skills, and the Skill tool'
+---
+
+# Skills
+
+Skills are reusable instructions that the harness can discover and rank.
+File-backed skill directories, inline skills, explicit registries, and
+`search_skills` share the same discovery path. A3S Code no longer ships default
+embedded skills; `builtinSkills: true` is accepted by the SDKs as a compatibility
+no-op.
+
+## Compatibility Flag
+
+```ts
+const session = agent.session('/repo', {
+  builtinSkills: true,
+});
+```
+
+This flag does not add default skills. Put reusable behavior in project skill
+files, inline skills, or agent definitions.
+
+## Skill Files
+
+Store Markdown files with frontmatter in a skill directory:
+
+```md
+---
+name: release-review
+description: Review release blockers and verification evidence
+allowed-tools: 'read(*), search(*), bash(cargo test*)'
+---
+
+Check package metadata, changelog, release scripts, and CI status.
+Return blockers first.
+```
+
+```ts
+const session = agent.session('/repo', {
+  skillDirs: ['/repo/.a3s/skills'],
+});
+```
+
+Use `skillDirs` for skill files. Use `agentDirs` for worker/subagent
+definitions.
+
+## Inline Skills
+
+```ts
+const session = agent.session('/repo', {
+  inlineSkills: [
+    {
+      name: 'strict-release-review',
+      kind: 'instruction',
+      content: 'Always separate blockers from nice-to-have improvements.',
+    },
+  ],
+});
+```
+
+## Skill Tool
+
+`search_skills` finds relevant skills:
+
+```ts
+await session.tool('search_skills', {
+  query: 'release blockers',
+  limit: 5,
+});
+```
+
+Markdown skill files with `allowed-tools` frontmatter and inline skills are both
+discoverable. Skill administration is an SDK or filesystem concern rather than
+a model-visible management tool.
+
+When a skill is invoked through the `Skill` tool, `allowed-tools` is
+fail-secure: omitted frontmatter grants no tools to that skill invocation.
+Declare the smallest needed allow-list. Ordinary session tool calls are not
+restricted by active skills unless `enforceActiveSkillToolRestrictions` is
+explicitly enabled for legacy behavior.

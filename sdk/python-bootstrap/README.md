@@ -7,14 +7,15 @@ platform from the project's
 the wheel's sha256 against the release manifest, extracts the compiled
 extension into a per-user cache, and exposes the normal `a3s_code` API.
 
-The v8.2.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
+The v8.3.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
 platform. That wheel is installable by CPython 3.10, 3.11, 3.12, 3.13, and
-3.14. Supported native targets are macOS arm64/x86_64, Linux glibc 2.28+
-arm64/x86_64, and Windows arm64/x86_64. Every supported wheel contains its
-target Moli sidecar and provenance record. Linux musl is intentionally omitted
-because upstream Moli publishes no musl asset; use a system/explicit browser
-or another backend there. The loader still falls back to exact per-minor names
-when reading older release manifests.
+3.14. Supported native targets are macOS arm64/x86_64, Linux x86_64
+(glibc 2.28+), Linux arm64 (glibc 2.39+ / `manylinux_2_39_aarch64`), and
+Windows arm64/x86_64. Every supported wheel contains its target Moli sidecar
+and provenance record. Linux musl is intentionally omitted because upstream
+Moli publishes no musl asset; use a system/explicit browser or another backend
+there. The loader still falls back to exact per-minor names when reading older
+release manifests.
 
 Subsequent imports use the cached extension. Cache lives under a
 platform-specific directory, `~/.cache/a3s-code/<version>/<platform-tag>/`
@@ -37,7 +38,8 @@ through PyPI.
 
 - macOS arm64 (Apple Silicon, macOS 11+)
 - macOS x86_64 (Intel, macOS 12+)
-- Linux x86_64 and arm64 (glibc 2.28+)
+- Linux x86_64 (glibc 2.28+)
+- Linux arm64 (glibc 2.39+)
 - Windows x86_64 and arm64
 
 CPython 3.10, 3.11, 3.12, 3.13, and 3.14.
