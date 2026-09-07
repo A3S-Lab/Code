@@ -37,17 +37,21 @@ impl PersistentIndexCoordinator {
             watch::channel::<Option<Arc<super::catalog::ChunkCatalogSnapshot>>>(None);
         let task = tokio::spawn(async move {
             loop {
-                let Some(mut pending) = (tokio::select! {
-                    _ = lifetime.cancelled() => None,
+                let mut pending = tokio::select! {
+                    _ = lifetime.cancelled() => return,
                     changed = pending_updates.changed() => {
                         if changed.is_err() {
-                            None
-                        } else {
-                            pending_updates.borrow_and_update().clone()
+                            return;
+                        }
+                        // Channel starts at None. The first `changed()` can fire
+                        // before any catalog submit; treating that as shutdown
+                        // strands the durable projection on slow hosts (Windows
+                        // CI: catalog revision ready, index phase Absent).
+                        match pending_updates.borrow_and_update().clone() {
+                            Some(snapshot) => snapshot,
+                            None => continue,
                         }
                     },
-                }) else {
-                    break;
                 };
 
                 // Coalesce a short burst of saves. Keep the newest source
@@ -224,6 +228,44 @@ mod tests {
     };
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persistent_coordinator_survives_initial_none_before_first_submit() {
+        let temp = tempfile::tempdir().expect("temporary workspace");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::ZvecRust,
+        )
+        .expect("catalog");
+        let path = WorkspacePath::from_normalized("src/late.rs");
+        catalog
+            .replace_file(&path, Some("rust"), 1, "pub fn late_marker() {}\n")
+            .expect("catalog replacement");
+        let index = WorkspacePersistentIndex::open(
+            temp.path().join(".a3s-code/index"),
+            WorkspaceLexicalEngine::ZvecRust,
+        )
+        .expect("persistent index");
+        let lifetime = CancellationToken::new();
+        let coordinator = PersistentIndexCoordinator::start(index.clone(), lifetime.clone());
+
+        // Let the coordinator observe the channel's initial None before any
+        // durable snapshot is submitted — the Windows CI failure mode.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        coordinator.submit(catalog.snapshot().expect("catalog snapshot"));
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !index.is_ready() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("persistent coordinator exited after the initial None watch notification");
+        assert_eq!(index.status().source_revision, 1);
+        lifetime.cancel();
+        coordinator.shutdown();
+    }
 
     #[tokio::test]
     async fn persistent_coordinator_coalesces_a_save_burst_to_the_newest_snapshot() {
