@@ -84,7 +84,7 @@ def test_sdk_immutable_content_fixture() -> None:
             try:
                 assert session is not None
             finally:
-                await session.close()
-                await agent.close()
+                await session.close_async()
+                await agent.close_async()
 
     asyncio.run(scenario())

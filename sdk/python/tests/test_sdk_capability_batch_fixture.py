@@ -70,7 +70,7 @@ def test_sdk_capability_batch_fixture() -> None:
                 stamp = session.capability_catalog_stamp()
                 assert stamp["generation"] == 1
             finally:
-                await session.close()
-                await agent.close()
+                await session.close_async()
+                await agent.close_async()
 
     asyncio.run(scenario())

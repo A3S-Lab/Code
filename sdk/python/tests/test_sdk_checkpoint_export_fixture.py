@@ -73,7 +73,7 @@ def test_sdk_checkpoint_export_fixture() -> None:
                 assert invoked["count"] == 0
                 session.set_session_checkpoint_export_sink(None)
             finally:
-                await session.close()
-                await agent.close()
+                await session.close_async()
+                await agent.close_async()
 
     asyncio.run(scenario())

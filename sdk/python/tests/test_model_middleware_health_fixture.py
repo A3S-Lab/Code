@@ -60,7 +60,7 @@ def test_model_middleware_health_fixture() -> None:
                 assert isinstance(health, dict)
                 _assert_snapshot(health)
             finally:
-                await session.close()
-                await agent.close()
+                await session.close_async()
+                await agent.close_async()
 
     asyncio.run(scenario())
