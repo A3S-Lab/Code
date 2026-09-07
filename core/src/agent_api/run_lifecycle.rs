@@ -334,6 +334,11 @@ pub(super) struct BlockingRunLifecycle {
     coordinator: ExecutionCoordinator,
     persistence: Option<SessionPersistenceContext>,
     cleanup: RunCleanupState,
+    /// Owned runtime event collector. Owning the join handle here makes it a
+    /// compile error to settle a blocking Run without joining its collector;
+    /// a dropped-by-accident handle is exactly the detached task the
+    /// coordinator is meant to prevent.
+    collector: Option<JoinHandle<()>>,
 }
 
 impl BlockingRunLifecycle {
@@ -346,7 +351,13 @@ impl BlockingRunLifecycle {
             cleanup: RunCleanupState::from_session(session, coordinator.run_id()),
             coordinator,
             persistence,
+            collector: None,
         }
+    }
+
+    pub(super) fn with_collector(mut self, collector: JoinHandle<()>) -> Self {
+        self.collector = Some(collector);
+        self
     }
 
     pub(super) async fn set_cancel_token(&self, token: tokio_util::sync::CancellationToken) {
@@ -354,8 +365,7 @@ impl BlockingRunLifecycle {
     }
 
     pub(super) async fn complete<E>(
-        self,
-        runtime_collector: JoinHandle<()>,
+        mut self,
         result: std::result::Result<AgentResult, E>,
     ) -> Result<AgentResult>
     where
@@ -366,7 +376,9 @@ impl BlockingRunLifecycle {
             result.as_ref().err().map(ToString::to_string),
         );
         self.cleanup.clear_cancel_token().await;
-        let _ = runtime_collector.await;
+        if let Some(collector) = self.collector.as_mut() {
+            let _ = collector.await;
+        }
 
         // The run reached a terminal state in-process — its loop checkpoint
         // is dead weight. Only a process crash (this code never runs) should

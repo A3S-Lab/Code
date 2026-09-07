@@ -51,7 +51,6 @@ pub(super) struct BlockingRunContext {
     agent_loop: AgentLoop,
     capability_run: crate::capability::SessionCapabilityRun,
     invocation: InvocationContext,
-    runtime_collector: JoinHandle<()>,
     lifecycle: BlockingRunLifecycle,
 }
 
@@ -131,12 +130,12 @@ impl BlockingRunContext {
             Some(agent_events),
             Some(checkpoints),
         );
+        let lifecycle = lifecycle.with_collector(runtime_collector);
 
         Ok(Self {
             agent_loop,
             capability_run,
             invocation,
-            runtime_collector,
             lifecycle,
         })
     }
@@ -151,7 +150,6 @@ impl BlockingRunContext {
             agent_loop,
             capability_run,
             invocation,
-            runtime_collector,
             lifecycle,
         } = self;
         let result = settle_capability_run(
@@ -164,7 +162,7 @@ impl BlockingRunContext {
         // Drop the run-owned event sender before waiting for the collector;
         // otherwise the receiver can never observe channel closure.
         drop(invocation);
-        lifecycle.complete(runtime_collector, result).await
+        lifecycle.complete(result).await
     }
 
     pub(super) async fn execute_from_messages(
@@ -190,7 +188,6 @@ impl BlockingRunContext {
             agent_loop,
             capability_run,
             invocation,
-            runtime_collector,
             lifecycle,
         } = self;
         let result = settle_capability_run(
@@ -201,7 +198,7 @@ impl BlockingRunContext {
         )
         .await;
         drop(invocation);
-        lifecycle.complete(runtime_collector, result).await
+        lifecycle.complete(result).await
     }
 }
 
