@@ -5,7 +5,7 @@ use super::types::WorkspaceIndexError;
 use crate::workspace::{LocalWorkspaceManifest, WorkspaceFileChange, WorkspaceFileSystem};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -24,7 +24,7 @@ const PERSISTENT_INDEX_RETRY_DELAYS: &[Duration] = &[
 /// bursts into one build of the newest snapshot instead of rebuilding every
 /// intermediate revision.
 struct PersistentIndexCoordinator {
-    updates: watch::Sender<Option<Arc<super::catalog::ChunkCatalogSnapshot>>>,
+    updates: mpsc::UnboundedSender<Arc<super::catalog::ChunkCatalogSnapshot>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -34,23 +34,16 @@ impl PersistentIndexCoordinator {
         lifetime: CancellationToken,
     ) -> Arc<Self> {
         let (updates, mut pending_updates) =
-            watch::channel::<Option<Arc<super::catalog::ChunkCatalogSnapshot>>>(None);
+            mpsc::unbounded_channel::<Arc<super::catalog::ChunkCatalogSnapshot>>();
         let task = tokio::spawn(async move {
             loop {
                 let mut pending = tokio::select! {
                     _ = lifetime.cancelled() => return,
-                    changed = pending_updates.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                        // Channel starts at None. The first `changed()` can fire
-                        // before any catalog submit; treating that as shutdown
-                        // strands the durable projection on slow hosts (Windows
-                        // CI: catalog revision ready, index phase Absent).
-                        match pending_updates.borrow_and_update().clone() {
-                            Some(snapshot) => snapshot,
-                            None => continue,
-                        }
+                    next = pending_updates.recv() => match next {
+                        Some(snapshot) => snapshot,
+                        // Sender dropped (shutdown) — leave without stranding
+                        // an in-flight catalog that already published.
+                        None => return,
                     },
                 };
 
@@ -62,15 +55,13 @@ impl PersistentIndexCoordinator {
                     tokio::select! {
                         _ = lifetime.cancelled() => return,
                         _ = &mut settle => break,
-                        changed = pending_updates.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                            if let Some(update) = pending_updates.borrow_and_update().clone() {
+                        next = pending_updates.recv() => match next {
+                            Some(update) => {
                                 if is_newer_snapshot(&update, &pending) {
                                     pending = update;
                                 }
                             }
+                            None => break,
                         },
                     }
                 }
@@ -91,7 +82,7 @@ impl PersistentIndexCoordinator {
     }
 
     fn submit(&self, snapshot: super::catalog::ChunkCatalogSnapshot) {
-        self.updates.send_replace(Some(Arc::new(snapshot)));
+        let _ = self.updates.send(Arc::new(snapshot));
     }
 
     fn shutdown(&self) {
@@ -110,30 +101,54 @@ async fn sync_snapshot_with_retry(
     persistent: Arc<super::persistent::WorkspacePersistentIndex>,
     mut pending: Arc<super::catalog::ChunkCatalogSnapshot>,
     lifetime: &CancellationToken,
-    pending_updates: &mut watch::Receiver<Option<Arc<super::catalog::ChunkCatalogSnapshot>>>,
+    pending_updates: &mut mpsc::UnboundedReceiver<Arc<super::catalog::ChunkCatalogSnapshot>>,
 ) {
     let mut retries = 0usize;
     loop {
         let snapshot = Arc::clone(&pending);
         let persistent = Arc::clone(&persistent);
-        let result =
-            tokio::task::spawn_blocking(move || persistent.sync_snapshot(snapshot.as_ref())).await;
+        // Keep durable sync off Tokio's blocking pool. Under Windows
+        // `--test-threads=1` suites the pool can stay saturated by other
+        // crate work, so `spawn_blocking` never runs while the catalog is
+        // already at revision 1 and the index stays Absent.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let spawn_result = std::thread::Builder::new()
+            .name("a3s-persistent-sync".to_owned())
+            .spawn(move || {
+                let _ = tx.send(persistent.sync_snapshot(snapshot.as_ref()));
+            });
+        let result = match spawn_result {
+            Ok(_join) => rx.await.map_err(|_| ()),
+            Err(_) => Err(()),
+        };
         match result {
             Ok(Ok(())) => return,
             Ok(Err(error)) => {
-                if !retryable_index_error(&error) || retries >= PERSISTENT_INDEX_RETRY_DELAYS.len()
-                {
-                    tracing::warn!(%error, "workspace persistent index update failed");
-                    return;
+                let retryable = retryable_index_error(&error);
+                tracing::warn!(%error, retryable, retries, "workspace persistent index update failed");
+                if !retryable {
+                    let Some(newer_snapshot) = wait_for_index_retry(
+                        Duration::from_secs(1),
+                        lifetime,
+                        pending_updates,
+                        &mut pending,
+                    )
+                    .await
+                    else {
+                        return;
+                    };
+                    if newer_snapshot {
+                        retries = 0;
+                    }
+                    continue;
                 }
-                retries += 1;
-                let Some(newer_snapshot) = wait_for_index_retry(
-                    PERSISTENT_INDEX_RETRY_DELAYS[retries - 1],
-                    lifetime,
-                    pending_updates,
-                    &mut pending,
-                )
-                .await
+                let delay = PERSISTENT_INDEX_RETRY_DELAYS
+                    .get(retries.min(PERSISTENT_INDEX_RETRY_DELAYS.len().saturating_sub(1)))
+                    .copied()
+                    .unwrap_or(Duration::from_secs(1));
+                retries = retries.saturating_add(1);
+                let Some(newer_snapshot) =
+                    wait_for_index_retry(delay, lifetime, pending_updates, &mut pending).await
                 else {
                     return;
                 };
@@ -141,14 +156,11 @@ async fn sync_snapshot_with_retry(
                     retries = 0;
                 }
             }
-            Err(error) => {
-                if retries >= PERSISTENT_INDEX_RETRY_DELAYS.len() {
-                    tracing::warn!(%error, "workspace persistent index task failed");
-                    return;
-                }
-                retries += 1;
+            Err(()) => {
+                tracing::warn!(retries, "workspace persistent index sync worker failed");
+                retries = retries.saturating_add(1);
                 let Some(newer_snapshot) = wait_for_index_retry(
-                    PERSISTENT_INDEX_RETRY_DELAYS[retries - 1],
+                    Duration::from_millis(250),
                     lifetime,
                     pending_updates,
                     &mut pending,
@@ -168,28 +180,45 @@ async fn sync_snapshot_with_retry(
 async fn wait_for_index_retry(
     delay: Duration,
     lifetime: &CancellationToken,
-    pending_updates: &mut watch::Receiver<Option<Arc<super::catalog::ChunkCatalogSnapshot>>>,
+    pending_updates: &mut mpsc::UnboundedReceiver<Arc<super::catalog::ChunkCatalogSnapshot>>,
     pending: &mut Arc<super::catalog::ChunkCatalogSnapshot>,
 ) -> Option<bool> {
     let retry = tokio::time::sleep(delay);
     tokio::pin!(retry);
     tokio::select! {
         _ = lifetime.cancelled() => None,
-        _ = &mut retry => Some(false),
-        changed = pending_updates.changed() => {
-            if changed.is_err() {
-                return None;
-            }
-            let mut newer_snapshot = false;
-            if let Some(update) = pending_updates.borrow_and_update().clone() {
+        _ = &mut retry => {
+            Some(drain_newer_snapshots(pending_updates, pending))
+        }
+        next = pending_updates.recv() => match next {
+            Some(update) => {
+                let mut newer_snapshot = false;
                 if is_newer_snapshot(&update, pending) {
                     *pending = update;
                     newer_snapshot = true;
                 }
+                if drain_newer_snapshots(pending_updates, pending) {
+                    newer_snapshot = true;
+                }
+                Some(newer_snapshot)
             }
-            Some(newer_snapshot)
+            None => None,
         }
     }
+}
+
+fn drain_newer_snapshots(
+    pending_updates: &mut mpsc::UnboundedReceiver<Arc<super::catalog::ChunkCatalogSnapshot>>,
+    pending: &mut Arc<super::catalog::ChunkCatalogSnapshot>,
+) -> bool {
+    let mut newer_snapshot = false;
+    while let Ok(update) = pending_updates.try_recv() {
+        if is_newer_snapshot(&update, pending) {
+            *pending = update;
+            newer_snapshot = true;
+        }
+    }
+    newer_snapshot
 }
 
 fn retryable_index_error(error: &WorkspaceIndexError) -> bool {
