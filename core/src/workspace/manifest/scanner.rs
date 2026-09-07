@@ -8,7 +8,6 @@ use crate::language::LanguageCatalog;
 use ignore::WalkBuilder;
 use notify::{Event, EventKind};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,10 +116,7 @@ fn command_stdout_cancellable(
     let mut process_group =
         crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
     let mut stdout = child.stdout.take()?;
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    let reader = thread::spawn(move || crate::git::read_git_output_bounded(&mut stdout));
 
     let deadline = Instant::now() + timeout;
     let status = loop {

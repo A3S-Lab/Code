@@ -304,8 +304,8 @@ fn run_git_os_with_executable_and_env(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("Git stderr was not piped"))?;
-    let stdout = std::thread::spawn(move || read_git_output(stdout));
-    let stderr = std::thread::spawn(move || read_git_output(stderr));
+    let stdout = std::thread::spawn(move || read_git_output_bounded(stdout));
+    let stderr = std::thread::spawn(move || read_git_output_bounded(stderr));
     let mut process_group =
         crate::tools::process::ProcessGroupGuard::for_process_id(Some(child.id()));
     let deadline = Instant::now() + timeout;
@@ -369,7 +369,7 @@ fn run_git_os_with_executable_and_env(
 /// can exit normally instead of blocking on a full pipe. The caller receives
 /// an error after process reaping, while memory remains bounded regardless of
 /// repository or helper output.
-fn read_git_output(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_git_output_bounded(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
     let mut exceeded = false;
@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn git_output_reader_bounds_retained_bytes() {
         let input = vec![b'x'; MAX_GIT_CAPTURE_BYTES + 1];
-        let error = read_git_output(std::io::Cursor::new(input))
+        let error = read_git_output_bounded(std::io::Cursor::new(input))
             .expect_err("output beyond the hard cap must fail closed");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }

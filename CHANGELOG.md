@@ -143,6 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bounded local Git stdout/stderr capture at 16 MiB while continuing to drain
   child pipes, preventing hostile repository or helper output from growing
   process memory without deadlocking command reaping.
+- Reused the bounded Git capture path for workspace `git ls-files` discovery,
+  keeping manifest scans under the same process-output limit.
 
 ## [8.2.0] - 2026-09-04
 
