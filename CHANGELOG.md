@@ -124,6 +124,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added bounded UTF-8 loading for ACL configuration, primary agent-directory
   documents, skills, and worker definitions so filesystem-driven prompt and
   policy inputs cannot bypass their memory boundary.
+- Made retry-attempt diagnostics saturating at `u32::MAX`, so an extreme
+  configured retry budget cannot overflow terminal accounting or log metadata.
+- Made task admission backpressured and separated release control from the
+  bounded admission queue, so abandoned or cancelled work cannot leak slots or
+  grow scheduler memory without a bound.
 
 ## [8.2.0] - 2026-09-04
 

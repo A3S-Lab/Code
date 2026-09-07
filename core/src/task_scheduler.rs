@@ -6,7 +6,7 @@
 
 use a3s_lane::{Priority, PriorityQueue};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -17,6 +17,10 @@ use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MAX_ACTIVE: usize = 4;
 const DEFAULT_AGING_INTERVAL_MS: u64 = 30_000;
+// Admission is backpressured before this many messages can be retained by the
+// scheduler actor. Release notifications use a separate control channel and
+// therefore cannot be starved by a full admission queue.
+const MAX_PENDING_ADMISSIONS: usize = 4_096;
 
 /// Relative importance of work admitted through an agent's shared scheduler.
 ///
@@ -163,7 +167,8 @@ pub struct TaskSchedulerStats {
 /// Shared actor handle. One instance belongs to each `Agent`.
 #[derive(Debug)]
 pub struct TaskScheduler {
-    tx: mpsc::UnboundedSender<SchedulerMessage>,
+    tx: mpsc::Sender<SchedulerMessage>,
+    release_tx: mpsc::UnboundedSender<u64>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
 }
@@ -172,11 +177,13 @@ impl TaskScheduler {
     /// Start a scheduler on the current Tokio runtime.
     pub fn new(config: TaskSchedulerConfig) -> Result<Self, TaskSchedulerError> {
         config.validate()?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(MAX_PENDING_ADMISSIONS);
+        let (release_tx, release_rx) = mpsc::unbounded_channel();
         let closed = Arc::new(AtomicBool::new(false));
-        tokio::spawn(run_scheduler(rx, config, Arc::clone(&closed)));
+        tokio::spawn(run_scheduler(rx, release_rx, config, Arc::clone(&closed)));
         Ok(Self {
             tx,
+            release_tx,
             next_id: AtomicU64::new(1),
             closed,
         })
@@ -198,29 +205,36 @@ impl TaskScheduler {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (ready_tx, ready_rx) = oneshot::channel();
-        self.tx
-            .send(SchedulerMessage::Enqueue(QueuedAdmission {
+        let lease = TaskLease {
+            id,
+            release_tx: self.release_tx.clone(),
+            released: false,
+        };
+
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                // Dropping the lease emits Release. Because Enqueue was sent
+                // first on this channel, the actor removes either the queued
+                // item or the just-admitted slot without a tombstone set.
+                Err(TaskSchedulerError::Cancelled)
+            }
+            sent = self.tx.send(SchedulerMessage::Enqueue(QueuedAdmission {
                 id,
                 priority,
                 label: label.into(),
                 enqueued_at: Instant::now(),
                 ready: ready_tx,
-            }))
-            .map_err(|_| TaskSchedulerError::Closed)?;
-
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                let _ = self.tx.send(SchedulerMessage::Cancel(id));
-                Err(TaskSchedulerError::Cancelled)
-            }
-            ready = ready_rx => {
-                ready.map_err(|_| TaskSchedulerError::Closed)??;
-                Ok(TaskLease {
-                    id,
-                    tx: self.tx.clone(),
-                    released: false,
-                })
+            })) => {
+                sent.map_err(|_| TaskSchedulerError::Closed)?;
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(TaskSchedulerError::Cancelled),
+                    ready = ready_rx => {
+                        ready.map_err(|_| TaskSchedulerError::Closed)??;
+                        Ok(lease)
+                    }
+                }
             }
         }
     }
@@ -230,6 +244,7 @@ impl TaskScheduler {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(SchedulerMessage::Stats(tx))
+            .await
             .map_err(|_| TaskSchedulerError::Closed)?;
         rx.await.map_err(|_| TaskSchedulerError::Closed)
     }
@@ -240,7 +255,7 @@ impl TaskScheduler {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        if self.tx.send(SchedulerMessage::Shutdown(tx)).is_ok() {
+        if self.tx.send(SchedulerMessage::Shutdown(tx)).await.is_ok() {
             let _ = rx.await;
         }
     }
@@ -249,7 +264,7 @@ impl TaskScheduler {
 /// RAII ownership of one globally admitted execution slot.
 pub struct TaskLease {
     id: u64,
-    tx: mpsc::UnboundedSender<SchedulerMessage>,
+    release_tx: mpsc::UnboundedSender<u64>,
     released: bool,
 }
 
@@ -264,7 +279,7 @@ impl Drop for TaskLease {
     fn drop(&mut self) {
         if !self.released {
             self.released = true;
-            let _ = self.tx.send(SchedulerMessage::Release(self.id));
+            let _ = self.release_tx.send(self.id);
         }
     }
 }
@@ -279,7 +294,6 @@ struct QueuedAdmission {
 
 enum SchedulerMessage {
     Enqueue(QueuedAdmission),
-    Cancel(u64),
     Release(u64),
     Stats(oneshot::Sender<TaskSchedulerStats>),
     Shutdown(oneshot::Sender<()>),
@@ -288,27 +302,32 @@ enum SchedulerMessage {
 struct SchedulerState {
     config: TaskSchedulerConfig,
     pending: PriorityQueue<QueuedAdmission>,
-    cancelled: HashSet<u64>,
     active: HashMap<u64, TaskPriority>,
     closing: bool,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
 }
 
 async fn run_scheduler(
-    mut rx: mpsc::UnboundedReceiver<SchedulerMessage>,
+    mut rx: mpsc::Receiver<SchedulerMessage>,
+    mut release_rx: mpsc::UnboundedReceiver<u64>,
     config: TaskSchedulerConfig,
     closed: Arc<AtomicBool>,
 ) {
     let mut state = SchedulerState {
         config,
         pending: PriorityQueue::new(),
-        cancelled: HashSet::new(),
         active: HashMap::new(),
         closing: false,
         shutdown_waiters: Vec::new(),
     };
 
-    while let Some(message) = rx.recv().await {
+    loop {
+        let message = tokio::select! {
+            biased;
+            Some(id) = release_rx.recv() => SchedulerMessage::Release(id),
+            Some(message) = rx.recv() => message,
+            else => break,
+        };
         match message {
             SchedulerMessage::Enqueue(item) => {
                 if state.closing {
@@ -318,16 +337,10 @@ async fn run_scheduler(
                     state.dispatch();
                 }
             }
-            SchedulerMessage::Cancel(id) => {
-                if state.active.remove(&id).is_none() {
-                    state.cancelled.insert(id);
-                    state.purge_cancelled();
-                }
-                state.dispatch();
-                state.finish_shutdown_if_idle();
-            }
             SchedulerMessage::Release(id) => {
-                state.active.remove(&id);
+                if state.active.remove(&id).is_none() {
+                    state.remove_pending(id);
+                }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
             }
@@ -341,7 +354,6 @@ async fn run_scheduler(
                     let item = item.into_value();
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
                 }
-                state.cancelled.clear();
                 state.shutdown_waiters.push(reply);
                 state.finish_shutdown_if_idle();
             }
@@ -356,13 +368,13 @@ async fn run_scheduler(
 }
 
 impl SchedulerState {
-    fn purge_cancelled(&mut self) {
-        if self.cancelled.is_empty() || self.pending.is_empty() {
+    fn remove_pending(&mut self, id: u64) {
+        if self.pending.is_empty() {
             return;
         }
         let mut retained = Vec::with_capacity(self.pending.len());
         while let Some(item) = self.pending.pop() {
-            if self.cancelled.remove(&item.value().id) {
+            if item.value().id == id {
                 let item = item.into_value();
                 let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
             } else {
@@ -384,10 +396,6 @@ impl SchedulerState {
                 break;
             };
             let item = item.into_value();
-            if self.cancelled.remove(&item.id) {
-                continue;
-            }
-
             let id = item.id;
             let priority = item.priority;
             let label = item.label;
@@ -469,6 +477,9 @@ impl SchedulerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::{poll_fn, Future};
+    use std::pin::Pin;
+    use std::task::Poll;
     use std::time::Duration;
 
     fn scheduler(max_active: usize, aging_interval_ms: u64) -> TaskScheduler {
@@ -494,6 +505,70 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("scheduler never reached {expected} pending tasks");
+    }
+
+    async fn poll_once_pending(mut future: Pin<&mut impl Future>) {
+        poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dropped_acquire_releases_unclaimed_slot() {
+        let scheduler = scheduler(1, 60_000);
+        let cancellation = CancellationToken::new();
+        let mut admission =
+            Box::pin(scheduler.acquire(TaskPriority::Interactive, "unclaimed", &cancellation));
+        poll_once_pending(admission.as_mut()).await;
+        // The actor has sent readiness, but acquire has not consumed it yet.
+        assert_eq!(scheduler.stats().await.unwrap().active, 1);
+        drop(admission);
+        assert_eq!(scheduler.stats().await.unwrap().active, 0);
+        tokio::time::timeout(Duration::from_secs(1), scheduler.shutdown())
+            .await
+            .expect("an abandoned admission must not prevent shutdown");
+    }
+
+    #[tokio::test]
+    async fn dropped_acquire_removes_pending_without_free_capacity() {
+        let scheduler = scheduler(1, 60_000);
+        let cancellation = CancellationToken::new();
+        let blocker = scheduler
+            .acquire(TaskPriority::Interactive, "blocker", &cancellation)
+            .await
+            .unwrap();
+        let mut admission =
+            Box::pin(scheduler.acquire(TaskPriority::Background, "abandoned", &cancellation));
+        poll_once_pending(admission.as_mut()).await;
+        assert_eq!(scheduler.stats().await.unwrap().pending, 1);
+        drop(admission);
+        let stats = scheduler.stats().await.unwrap();
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.active, 1);
+        drop(blocker);
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_readiness_releases_unclaimed_slot() {
+        let scheduler = scheduler(1, 60_000);
+        let cancellation = CancellationToken::new();
+        let mut admission = Box::pin(scheduler.acquire(
+            TaskPriority::Interactive,
+            "cancelled-after-readiness",
+            &cancellation,
+        ));
+        poll_once_pending(admission.as_mut()).await;
+        assert_eq!(scheduler.stats().await.unwrap().active, 1);
+        cancellation.cancel();
+        assert!(matches!(
+            admission.await,
+            Err(TaskSchedulerError::Cancelled)
+        ));
+        assert_eq!(scheduler.stats().await.unwrap().active, 0);
+        scheduler.shutdown().await;
     }
 
     #[tokio::test]

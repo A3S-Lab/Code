@@ -205,6 +205,17 @@ fn bound_retry_body(body: String) -> String {
     bounded
 }
 
+/// Return the total number of provider attempts represented by a retry budget.
+///
+/// A retry budget is expressed as retries after the initial request. Keep the
+/// diagnostic projection total even for a hostile `u32::MAX` configuration;
+/// overflowing here would turn a bounded accounting value into zero (or panic
+/// in debug builds) while the retry loop is still handling its terminal path.
+#[inline]
+fn total_attempts(max_retries: u32) -> u32 {
+    max_retries.saturating_add(1)
+}
+
 /// Execute an async operation with retry logic.
 ///
 /// The `operation` closure is called on each attempt and must return an `AttemptOutcome`.
@@ -275,8 +286,8 @@ where
                     tracing::warn!(
                         "LLM API request failed with {} (attempt {}/{}), retrying in {:?}",
                         status,
-                        attempt + 1,
-                        config.max_retries + 1,
+                        attempt.saturating_add(1),
+                        total_attempts(config.max_retries),
                         delay,
                     );
 
@@ -296,7 +307,7 @@ where
     // All retries exhausted
     let status = last_status.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     Err(anyhow::Error::new(RetryExhaustedError::new(
-        config.max_retries + 1,
+        total_attempts(config.max_retries),
         status,
         last_body,
     )))
@@ -340,6 +351,13 @@ mod tests {
         assert!(error.to_string().len() <= MAX_RETRY_ERROR_BODY_BYTES + 128);
         assert!(error.to_string().contains("503"));
         assert!(error.to_string().ends_with('…'));
+    }
+
+    #[test]
+    fn total_attempts_saturates_at_u32_max() {
+        assert_eq!(total_attempts(0), 1);
+        assert_eq!(total_attempts(10), 11);
+        assert_eq!(total_attempts(u32::MAX), u32::MAX);
     }
 
     // ========================================================================
