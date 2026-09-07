@@ -1,4 +1,4 @@
-use super::{AgentConfig, AgentLoop, ModelMiddlewareObs};
+use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
 use crate::llm::{LlmClient, ModelGenerationAdmission};
 use crate::loop_checkpoint::LoopCheckpointSink;
 use crate::session_lane_queue::SessionLaneQueue;
@@ -56,6 +56,15 @@ impl AgentLoop {
     ) -> Self {
         self.middleware_obs = middleware_obs;
         self
+    }
+
+    /// Return secret-free middleware stage counters for this loop's observation window.
+    ///
+    /// The session facade reads the shared obs Arc directly; unit tests still
+    /// query health through [`AgentLoop`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn model_middleware_health(&self) -> ModelMiddlewareHealthSnapshot {
+        self.middleware_obs.snapshot()
     }
 
     pub(crate) fn with_capability_runtime(

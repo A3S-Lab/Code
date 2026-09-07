@@ -178,6 +178,8 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11d81534611bb41e3b6b65270842b6fbce0974c713df21fcfed8c4271ea76272"
 dependencies = [
  "anyhow",
  "async-trait",

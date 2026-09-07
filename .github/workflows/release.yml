@@ -144,6 +144,7 @@ jobs:
         run: |
           cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
           A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
+          RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
             go test -race ./...
         working-directory: sdk/go
 
