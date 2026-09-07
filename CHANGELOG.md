@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the typed workspace source snapshot (KRN-4 slice).
+  `WorkspaceSourceSnapshotV1` binds the manifest scan revision, an
+  order-independent eligible-content digest, the eligibility, document,
+  catalog, and index-generation revisions into one canonical
+  tamper-evident identity. Results bound to a snapshot remain current
+  across derived-index rebuilds and go stale on any manifest, content,
+  eligibility, or root change; the qualification proves served chunk
+  digests, catalog revisions, and admitting snapshots form one traceable
+  chain and that concurrent edits invalidate prior results.
 - Made SDK FFI runtime initialization fallible (KRN-9 slice). The Node
   binding-owned fallback Tokio runtime no longer panics the process:
   spawn/block_on surface a stable napi error, all call sites propagate

@@ -20,6 +20,7 @@ pub(crate) mod retrieval;
 mod s3;
 mod services;
 mod source_egress;
+pub mod source_snapshot;
 
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use local::LocalWorkspaceBackend;
@@ -54,6 +55,11 @@ pub use retrieval::{
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 pub use services::{WorkspaceServices, WorkspaceServicesBuilder};
+pub use source_snapshot::{
+    workspace_content_digest, WorkspaceSourceSnapshotError, WorkspaceSourceSnapshotV1,
+    WORKSPACE_SOURCE_CONTENT_DOMAIN_V1, WORKSPACE_SOURCE_SNAPSHOT_DIGEST_DOMAIN_V1,
+    WORKSPACE_SOURCE_SNAPSHOT_SCHEMA_V1,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;

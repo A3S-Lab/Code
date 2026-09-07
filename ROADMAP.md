@@ -841,6 +841,23 @@ duplicate semantic index, shadow authority, or hidden backend selector. A
 lexical failure can reduce lexical coverage but cannot change semantic
 authority or current-source verification.
 
+#### Workspace source snapshot authority (KRN-4 slice)
+
+`WorkspaceSourceSnapshotV1` is the typed revision authority that binds the
+manifest scan revision, an order-independent digest of the eligible file
+content identity, the eligibility policy revision, the settled document/LSP
+revision, the chunk catalog revision, and the derived index generation into
+one canonical, tamper-evident value. Results bound to a snapshot stay
+current while the manifest content is unchanged (an index rebuild alone
+never invalidates them) and go stale the moment the manifest revision,
+eligible content, eligibility policy, or root changes — stale results
+cannot cross a source snapshot boundary. The committed qualification
+proves a served chunk digest, the catalog revision the hit was served
+from, and the admitting snapshot are one traceable chain, and that a
+concurrent edit invalidates prior results instead of yielding a false
+current answer. The manifest, catalog, and each index remain their own
+authorities; consumers migrate onto the snapshot incrementally.
+
 ### 6.2 First-principles decisions
 
 1. A normal coding workspace is small enough for exact vector scanning. A
