@@ -9,8 +9,8 @@
 //! Usage:
 //! `terminal_bench_runner --config /run/a3s/config.acl --workspace /root --prompt-file /run/a3s/instruction.md --result-file /logs/agent/a3s-code.result.json`
 
-mod terminal_bench_result;
-mod terminal_bench_sandbox;
+mod result;
+mod sandbox;
 
 use a3s_code_core::execution_identity::ExecutionResultOutcomeV1;
 use a3s_code_core::hitl::AutoApproveConfirmation;
@@ -23,12 +23,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use terminal_bench_result::{
+use result::{
     classify_failure, count_artifact_evidence, persist_result, ExecutionPhase, RunProgress,
     TerminalReason, DEFAULT_EXECUTION_BUDGET_MS,
 };
 
-use terminal_bench_sandbox::ContainerBashSandbox;
+use sandbox::ContainerBashSandbox;
 
 #[derive(Debug)]
 struct Args {
