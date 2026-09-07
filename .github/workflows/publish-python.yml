@@ -42,7 +42,9 @@ jobs:
             zvec: true
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            manylinux: 2_28
+            # Bundled zvec_c_api.so for aarch64 needs GLIBC_2.38 symbols;
+            # manylinux_2_28 audit rejects that shared library.
+            manylinux: 2_38
             python_architecture: arm64
             zvec: true
           - host: windows-11-arm

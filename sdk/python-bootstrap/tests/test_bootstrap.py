@@ -78,7 +78,7 @@ class WheelFilenameTests(unittest.TestCase):
     def test_linux_arm64_cp312(self):
         self.assertEqual(
             self._filename_for("linux", "aarch64", 12),
-            "a3s_code-3.2.1-cp312-cp312-manylinux_2_28_aarch64.whl",
+            "a3s_code-3.2.1-cp312-cp312-manylinux_2_38_aarch64.whl",
         )
 
     def test_macos_arm64_cp311(self):

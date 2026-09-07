@@ -89,6 +89,39 @@ jobs:
         with:
           version: 0.13.0
 
+      - name: Wrap Zig to drop unsupported aarch64 linker args
+        # rustc injects `--fix-cortex-a53-843419` for aarch64-linux targets;
+        # Zig 0.13's bundled ld rejects it. Filter the flag (and the -Wl=
+        # form) before invoking the real zig binary.
+        if: matrix.settings.zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_ZIG="$(command -v zig)"
+          WRAP_DIR="${RUNNER_TEMP}/zig-wrap"
+          mkdir -p "$WRAP_DIR"
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            echo "REAL_ZIG=$(printf '%q' "$REAL_ZIG")"
+            cat <<'EOF'
+          args=()
+          for arg in "$@"; do
+            case "$arg" in
+              --fix-cortex-a53-843419|-Wl,--fix-cortex-a53-843419)
+                continue
+                ;;
+              *)
+                args+=("$arg")
+                ;;
+            esac
+          done
+          exec "$REAL_ZIG" "${args[@]}"
+          EOF
+          } > "$WRAP_DIR/zig"
+          chmod +x "$WRAP_DIR/zig"
+          echo "$WRAP_DIR" >> "$GITHUB_PATH"
+
       - name: Stage verified zvec runtime
         if: matrix.settings.zvec
         shell: bash
