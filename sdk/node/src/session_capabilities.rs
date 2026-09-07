@@ -308,9 +308,11 @@ impl Session {
     /// Preview the model-facing Tool definitions for a prompt.
     #[napi]
     pub fn presented_tool_definitions(&self, prompt: String) -> napi::Result<serde_json::Value> {
-        serde_json::to_value(self.inner.presented_tool_definitions(&prompt).map_err(|e| {
-            napi::Error::from_reason(format!("Tool presentation error: {e}"))
-        })?)
+        serde_json::to_value(
+            self.inner
+                .presented_tool_definitions(&prompt)
+                .map_err(|e| napi::Error::from_reason(format!("Tool presentation error: {e}")))?,
+        )
         .map_err(|e| napi::Error::from_reason(format!("Serialization error: {e}")))
     }
 

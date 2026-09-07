@@ -33,7 +33,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
-            .spawn(async move { memory.remember_success(&task, &tools, &result).await })
+            .spawn(async move { memory.remember_success(&task, &tools, &result).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Remember failed: {e}")))
@@ -57,7 +57,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
-            .spawn(async move { memory.remember_failure(&task, &error, &tools).await })
+            .spawn(async move { memory.remember_failure(&task, &error, &tools).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Remember failed: {e}")))
@@ -81,7 +81,7 @@ impl Session {
             .clone();
         let limit = limit.unwrap_or(5) as usize;
         let items = get_runtime()
-            .spawn(async move { memory.recall_similar(&query, limit).await })
+            .spawn(async move { memory.recall_similar(&query, limit).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
@@ -107,7 +107,7 @@ impl Session {
             .clone();
         let limit = limit.unwrap_or(10) as usize;
         let items = get_runtime()
-            .spawn(async move { memory.recall_by_tags(&tags, limit).await })
+            .spawn(async move { memory.recall_by_tags(&tags, limit).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
@@ -128,7 +128,7 @@ impl Session {
             .clone();
         let limit = limit.unwrap_or(10) as usize;
         let items = get_runtime()
-            .spawn(async move { memory.get_recent(limit).await })
+            .spawn(async move { memory.get_recent(limit).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Recall failed: {e}")))?;
@@ -147,7 +147,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let stats = get_runtime()
-            .spawn(async move { memory.stats().await })
+            .spawn(async move { memory.stats().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|e| napi::Error::from_reason(format!("Stats failed: {e}")))?;
@@ -168,7 +168,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = get_runtime()
-            .spawn(async move { memory.get_working().await })
+            .spawn(async move { memory.get_working().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&items)
@@ -186,7 +186,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
-            .spawn(async move { memory.clear_working().await })
+            .spawn(async move { memory.clear_working().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -204,7 +204,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         let items = get_runtime()
-            .spawn(async move { memory.get_short_term().await })
+            .spawn(async move { memory.get_short_term().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&items)
@@ -222,7 +222,7 @@ impl Session {
             .ok_or_else(|| napi::Error::from_reason(MEMORY_UNAVAILABLE_MESSAGE))?
             .clone();
         get_runtime()
-            .spawn(async move { memory.clear_short_term().await })
+            .spawn(async move { memory.clear_short_term().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }

@@ -23,7 +23,7 @@ impl ServeHandle {
         let handle = Arc::clone(&self.inner);
         let error_handle = Arc::clone(&handle);
         get_runtime()
-            .spawn(async move { handle.stop().await })
+            .spawn(async move { handle.stop().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|error| node_serve_error(&error_handle, error))?;

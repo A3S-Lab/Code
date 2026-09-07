@@ -38,9 +38,7 @@ pub fn moli_runtime_info(config: Option<HeadlessConfig>) -> MoliRuntimeInfo {
 /// Ensure a verified Moli executable is available and return its path.
 #[napi(js_name = "ensureMoli")]
 pub async fn ensure_moli(config: Option<HeadlessConfig>) -> napi::Result<String> {
-    let config = config
-        .map(Into::into)
-        .unwrap_or_else(a3s_code_core::config::HeadlessConfig::default);
+    let config: a3s_code_core::config::HeadlessConfig = config.map(Into::into).unwrap_or_default();
     let timeout = std::time::Duration::from_secs(config.moli_download_timeout_secs);
     let path = a3s_code_core::ensure_moli(&config, timeout)
         .await

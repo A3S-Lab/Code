@@ -17,10 +17,7 @@ impl JsStateGraphRuntime {
         catch_unwind,
         ts_args_type = "correlationId?: string | null, options?: StateGraphOptions"
     )]
-    pub fn new(
-        correlation_id: Option<String>,
-        options: Option<StateGraphOptions>,
-    ) -> Self {
+    pub fn new(correlation_id: Option<String>, options: Option<StateGraphOptions>) -> Self {
         let options = options.unwrap_or_default();
         let limits = RuntimeLimits {
             max_events: options
@@ -234,7 +231,10 @@ mod tests {
             .project_external(event.into(), ADD_TASK.into())
             .unwrap();
         assert_eq!(outcome, "applied");
-        assert_eq!(runtime.check_external(event.into()).unwrap(), Some("duplicate".into()));
+        assert_eq!(
+            runtime.check_external(event.into()).unwrap(),
+            Some("duplicate".into())
+        );
         let events = runtime.events_json().unwrap();
         let graph = strict_replay(events).unwrap();
         let graph: serde_json::Value = serde_json::from_str(&graph).unwrap();

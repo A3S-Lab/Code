@@ -62,10 +62,9 @@ impl AsyncAgentCreateCall {
 #[pymethods]
 impl AsyncAgentCreateConfigCall {
     fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let config = self
-            .config
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("async typed agent creation already consumed"))?;
+        let config = self.config.take().ok_or_else(|| {
+            PyRuntimeError::new_err("async typed agent creation already consumed")
+        })?;
         let agent = py
             .allow_threads(move || get_runtime().block_on(RustAgent::from_config(config)))
             .map_err(py_code_error)?;
@@ -404,10 +403,9 @@ impl AsyncSessionControlCall {
 #[pymethods]
 impl AsyncSessionRunControlCall {
     fn __call__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let operation = self
-            .operation
-            .take()
-            .ok_or_else(|| PyRuntimeError::new_err("async run-control operation already consumed"))?;
+        let operation = self.operation.take().ok_or_else(|| {
+            PyRuntimeError::new_err("async run-control operation already consumed")
+        })?;
         let session = Arc::clone(&self.session);
         match operation {
             AsyncSessionRunControlOperation::Steer(request) => {
@@ -423,9 +421,8 @@ impl AsyncSessionRunControlCall {
                 rust_json_to_py(py, &receipt, "run-control receipt")
             }
             AsyncSessionRunControlOperation::Snapshot => {
-                let snapshot = py.allow_threads(move || {
-                    get_runtime().block_on(session.run_control_snapshot())
-                });
+                let snapshot = py
+                    .allow_threads(move || get_runtime().block_on(session.run_control_snapshot()));
                 rust_json_to_py(py, &snapshot, "run-control snapshot")
             }
         }

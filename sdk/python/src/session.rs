@@ -803,8 +803,9 @@ impl PySession {
         let receipt = py
             .allow_threads(move || get_runtime().block_on(session.steer(request)))
             .map_err(py_code_error)?;
-        let json = serde_json::to_string(&receipt)
-            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}")))?;
+        let json = serde_json::to_string(&receipt).map_err(|error| {
+            PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}"))
+        })?;
         json_string_to_py(py, &json)
     }
 
@@ -831,18 +832,15 @@ impl PySession {
     /// ``reason``, ``force``, ``request_id``, ``run_id``, optimistic turn
     /// fields, and ``deadline_ms``.
     #[pyo3(signature = (options=None))]
-    fn interrupt(
-        &self,
-        py: Python<'_>,
-        options: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyObject> {
+    fn interrupt(&self, py: Python<'_>, options: Option<&Bound<'_, PyDict>>) -> PyResult<PyObject> {
         let request = py_interrupt_request(options)?;
         let session = self.inner.clone();
         let receipt = py
             .allow_threads(move || get_runtime().block_on(session.interrupt(request)))
             .map_err(py_code_error)?;
-        let json = serde_json::to_string(&receipt)
-            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}")))?;
+        let json = serde_json::to_string(&receipt).map_err(|error| {
+            PyRuntimeError::new_err(format!("Failed to serialize run-control receipt: {error}"))
+        })?;
         json_string_to_py(py, &json)
     }
 
@@ -867,10 +865,11 @@ impl PySession {
     /// Return the active run-control snapshot, or ``None`` when idle.
     fn run_control_snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
         let session = self.inner.clone();
-        let snapshot = py
-            .allow_threads(move || get_runtime().block_on(session.run_control_snapshot()));
-        let json = serde_json::to_string(&snapshot)
-            .map_err(|error| PyRuntimeError::new_err(format!("Failed to serialize run-control snapshot: {error}")))?;
+        let snapshot =
+            py.allow_threads(move || get_runtime().block_on(session.run_control_snapshot()));
+        let json = serde_json::to_string(&snapshot).map_err(|error| {
+            PyRuntimeError::new_err(format!("Failed to serialize run-control snapshot: {error}"))
+        })?;
         json_string_to_py(py, &json)
     }
 

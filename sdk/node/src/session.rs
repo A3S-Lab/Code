@@ -93,7 +93,7 @@ impl Session {
     pub async fn resume_run(&self, checkpoint_run_id: String) -> napi::Result<AgentResult> {
         let session = self.inner.clone();
         let result = get_runtime()
-            .spawn(async move { session.resume_run(&checkpoint_run_id).await })
+            .spawn(async move { session.resume_run(&checkpoint_run_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -112,7 +112,7 @@ impl Session {
     ) -> napi::Result<AgentRunSpawnObject> {
         let session = self.inner.clone();
         let spawn = get_runtime()
-            .spawn(async move { session.spawn_run_with_id(&run_id, &prompt).await })
+            .spawn(async move { session.spawn_run_with_id(&run_id, &prompt).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -135,7 +135,7 @@ impl Session {
                 session
                     .spawn_recovery_with_run_id(&checkpoint_run_id, &run_id)
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -169,7 +169,7 @@ impl Session {
                 .spawn(async move {
                     let executor = session.agent_executor();
                     execute_steps_parallel(executor, rust_specs, None).await
-                })
+                })?
                 .await
                 .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
             return Ok(Either::A(
@@ -184,7 +184,7 @@ impl Session {
                 let wf = session.workflow_with_token_budget(Some(limit));
                 let outcomes = wf.parallel(rust_specs).await;
                 (outcomes, wf.budget_snapshot())
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(Either::B(WorkflowParallelResult {
@@ -227,7 +227,7 @@ impl Session {
                     None,
                 )
                 .await)
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(napi::Error::from_reason)?;
@@ -300,7 +300,7 @@ impl Session {
                 .map(|o| o.map(StepOutcomeObject::from))
                 .collect();
             deferred.resolve(move |_env| Ok(mapped));
-        });
+        })?;
         Ok(promise)
     }
 
@@ -363,7 +363,7 @@ impl Session {
                 session
                     .send_with_attachments(&prompt, &rust_attachments, rust_history.as_deref())
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -393,7 +393,7 @@ impl Session {
                 session
                     .stream_with_attachments(&prompt, &rust_attachments, rust_history.as_deref())
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -415,7 +415,7 @@ impl Session {
     pub async fn runs(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let runs = get_runtime()
-            .spawn(async move { session.runs().await })
+            .spawn(async move { session.runs().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(runs)
@@ -427,7 +427,7 @@ impl Session {
     pub async fn run_snapshot(&self, run_id: String) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let snapshot = get_runtime()
-            .spawn(async move { session.run_snapshot(&run_id).await })
+            .spawn(async move { session.run_snapshot(&run_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(snapshot)
@@ -444,7 +444,7 @@ impl Session {
         let session_id = self.inner.session_id().to_string();
         let requested_run_id = run_id.clone();
         let events = get_runtime()
-            .spawn(async move { session.run_events(&requested_run_id).await })
+            .spawn(async move { session.run_events(&requested_run_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         let envelopes = events
@@ -480,7 +480,7 @@ impl Session {
                 session
                     .run_event_page(&requested_run_id, after_sequence, limit)
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         let Some(page) = page else {
@@ -512,7 +512,7 @@ impl Session {
                     Some(run) => run.snapshot().await,
                     None => None,
                 }
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(snapshot)
@@ -524,7 +524,7 @@ impl Session {
     pub async fn active_tools(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let active_tools = get_runtime()
-            .spawn(async move { session.active_tools().await })
+            .spawn(async move { session.active_tools().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(active_tools)
@@ -537,7 +537,7 @@ impl Session {
     pub async fn subagent_task(&self, task_id: String) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let snapshot = get_runtime()
-            .spawn(async move { session.subagent_task(&task_id).await })
+            .spawn(async move { session.subagent_task(&task_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(snapshot)
@@ -550,7 +550,7 @@ impl Session {
     pub async fn subagent_tasks(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let tasks = get_runtime()
-            .spawn(async move { session.subagent_tasks().await })
+            .spawn(async move { session.subagent_tasks().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(tasks)
@@ -562,7 +562,7 @@ impl Session {
     pub async fn pending_subagent_tasks(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let tasks = get_runtime()
-            .spawn(async move { session.pending_subagent_tasks().await })
+            .spawn(async move { session.pending_subagent_tasks().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(tasks)
@@ -576,7 +576,7 @@ impl Session {
     pub async fn cancel_subagent_task(&self, task_id: String) -> napi::Result<bool> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.cancel_subagent_task(&task_id).await })
+            .spawn(async move { session.cancel_subagent_task(&task_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -586,7 +586,7 @@ impl Session {
     pub async fn cancel_run(&self, run_id: String) -> napi::Result<bool> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.cancel_run(&run_id).await })
+            .spawn(async move { session.cancel_run(&run_id).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -607,15 +607,13 @@ impl Session {
             request.request_id = options.request_id;
             request.run_id = options.run_id;
             request.expected_turn_id = options.expected_turn_id;
-            request.expected_turn_revision = optional_u64(
-                options.expected_turn_revision,
-                "expectedTurnRevision",
-            )?;
+            request.expected_turn_revision =
+                optional_u64(options.expected_turn_revision, "expectedTurnRevision")?;
             request.deadline_ms = optional_u64(options.deadline_ms, "deadlineMs")?;
         }
         let session = self.inner.clone();
         let receipt = get_runtime()
-            .spawn(async move { session.steer(request).await })
+            .spawn(async move { session.steer(request).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -637,14 +635,12 @@ impl Session {
         request.request_id = options.request_id;
         request.run_id = options.run_id;
         request.expected_turn_id = options.expected_turn_id;
-        request.expected_turn_revision = optional_u64(
-            options.expected_turn_revision,
-            "expectedTurnRevision",
-        )?;
+        request.expected_turn_revision =
+            optional_u64(options.expected_turn_revision, "expectedTurnRevision")?;
         request.deadline_ms = optional_u64(options.deadline_ms, "deadlineMs")?;
         let session = self.inner.clone();
         let receipt = get_runtime()
-            .spawn(async move { session.interrupt(request).await })
+            .spawn(async move { session.interrupt(request).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -658,7 +654,7 @@ impl Session {
     pub async fn run_control_snapshot(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let snapshot = get_runtime()
-            .spawn(async move { session.run_control_snapshot().await })
+            .spawn(async move { session.run_control_snapshot().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(snapshot)
@@ -737,20 +733,21 @@ impl Session {
         }
 
         let timeout_ms = hook.config.timeout_ms;
-        let handler: Option<Arc<dyn a3s_code_core::hooks::HookHandler>> = if let Some(js_fn) = handler {
-            let safe_handler = wrap_sync_callback(&env, js_fn)?;
-            let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal> = safe_handler
-                .create_threadsafe_function(
-                    0,
-                    |ctx: ThreadSafeCallContext<serde_json::Value>| {
-                        let js_val = ctx.env.to_js_value(&ctx.value)?;
-                        Ok(vec![js_val])
-                    },
-                )?;
-            Some(Arc::new(NodeCallbackHandler { tsfn, timeout_ms }))
-        } else {
-            None
-        };
+        let handler: Option<Arc<dyn a3s_code_core::hooks::HookHandler>> =
+            if let Some(js_fn) = handler {
+                let safe_handler = wrap_sync_callback(&env, js_fn)?;
+                let tsfn: ThreadsafeFunction<serde_json::Value, ErrorStrategy::Fatal> =
+                    safe_handler.create_threadsafe_function(
+                        0,
+                        |ctx: ThreadSafeCallContext<serde_json::Value>| {
+                            let js_val = ctx.env.to_js_value(&ctx.value)?;
+                            Ok(vec![js_val])
+                        },
+                    )?;
+                Some(Arc::new(NodeCallbackHandler { tsfn, timeout_ms }))
+            } else {
+                None
+            };
 
         // Construct every fallible JavaScript bridge before atomically
         // publishing the definition and matching callback.
@@ -834,7 +831,7 @@ impl Session {
     pub async fn save(&self) -> napi::Result<()> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.save().await })
+            .spawn(async move { session.save().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)
@@ -938,7 +935,7 @@ impl Session {
     /// @returns `true` if an operation was cancelled, `false` if no operation was in progress
     /// @deprecated Prefer `cancelAsync()` to avoid blocking the JavaScript event loop.
     #[napi]
-    pub fn cancel(&self) -> bool {
+    pub fn cancel(&self) -> napi::Result<bool> {
         let session = self.inner.clone();
         get_runtime().block_on(session.cancel())
     }
@@ -949,7 +946,7 @@ impl Session {
     pub async fn cancel_async(&self) -> napi::Result<bool> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.cancel().await })
+            .spawn(async move { session.cancel().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -970,7 +967,7 @@ impl Session {
         let abort_grace =
             std::time::Duration::from_millis(u64::from(abort_grace_ms.unwrap_or(1_000)));
         get_runtime()
-            .spawn(async move { session.cancel_and_settle(grace, abort_grace).await })
+            .spawn(async move { session.cancel_and_settle(grace, abort_grace).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -981,7 +978,7 @@ impl Session {
     /// cleanly without waiting on session-scoped background workers.
     /// @deprecated Prefer `closeAsync()` to avoid blocking the JavaScript event loop.
     #[napi]
-    pub fn close(&self) {
+    pub fn close(&self) -> napi::Result<()> {
         let session = self.inner.clone();
         get_runtime().block_on(session.close())
     }
@@ -992,7 +989,7 @@ impl Session {
     pub async fn close_async(&self) -> napi::Result<()> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.close().await })
+            .spawn(async move { session.close().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(())

@@ -30,10 +30,10 @@
 //! Convention this crate follows so the boundary stays safe: never
 //! `.unwrap()` / `.expect()` / `panic!` in those contexts. Propagate with `?`
 //! into a `napi::Error`, or fail closed with `unwrap_or_else` inside
-//! threadsafe callbacks. (Audited 2026-05: the only production panic site is
-//! the lazy Tokio-runtime build in `fallback_runtime()`, reached from within
-//! `#[napi]` bodies; the spawned-task and threadsafe-callback paths are
-//! panic-free by construction.)
+//! threadsafe callbacks. (Audited 2026-05, updated 2026-09: the formerly
+//! panicking lazy Tokio-runtime build in `fallback_runtime()` is now
+//! fallible — `spawn`/`block_on` surface a stable napi error — leaving no
+//! production panic sites in `#[napi]` bodies.)
 
 #[macro_use]
 extern crate napi_derive;
@@ -91,13 +91,14 @@ use a3s_code_core::{
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
-    InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
-    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions,
-    TaskPriorityCounts as RustTaskPriorityCounts, TaskSchedulerStats as RustTaskSchedulerStats,
-    TaskSchedulerHealthSnapshot as RustTaskSchedulerHealthSnapshot,
+    InterruptRequest as RustInterruptRequest,
     ModelGenerationPoolHealthSnapshot as RustModelGenerationPoolHealthSnapshot,
+    PlanningMode as RustPlanningMode, SdkCapability as RustSdkCapability,
+    SessionOptions as RustSessionOptions, SteerRequest as RustSteerRequest,
+    TaskPriorityCounts as RustTaskPriorityCounts,
+    TaskSchedulerHealthSnapshot as RustTaskSchedulerHealthSnapshot,
     TaskSchedulerQuotaHealthSnapshot as RustTaskSchedulerQuotaHealthSnapshot,
-    SdkCapability as RustSdkCapability, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
+    TaskSchedulerStats as RustTaskSchedulerStats, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 use napi::Either;
 use napi::Env;
@@ -114,6 +115,7 @@ fn node_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> napi::
         a3s_code_core::TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
         a3s_code_core::TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
         a3s_code_core::TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+        a3s_code_core::TaskSchedulerError::AtCapacity { .. } => "TASK_ADMISSION_AT_CAPACITY",
     };
     napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
 }
@@ -145,36 +147,50 @@ use std::sync::{
 
 struct NapiRuntime;
 
-fn fallback_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("a3s-code-node-worker")
-            .build()
-            .expect("failed to create Tokio runtime for Node bindings")
-    })
+/// Build the binding-owned fallback runtime.
+///
+/// KRN-9: FFI initialization is fallible. A build failure surfaces through
+/// every spawn/block_on call as a stable napi error instead of panicking the
+/// Node process from an unrelated async task.
+fn fallback_runtime() -> napi::Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> =
+        OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("a3s-code-node-worker")
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|message| {
+            napi::Error::new(
+                napi::Status::GenericFailure,
+                format!("a3s-code-node runtime initialization failed: {message}"),
+            )
+        })
 }
 
 impl NapiRuntime {
-    fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
+    fn spawn<F>(&self, fut: F) -> napi::Result<tokio::task::JoinHandle<F::Output>>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
         // Try the current runtime first; otherwise use the binding-owned runtime.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(fut)
+            Ok(handle.spawn(fut))
         } else {
-            fallback_runtime().spawn(fut)
+            fallback_runtime().map(|runtime| runtime.spawn(fut))
         }
     }
 
-    fn block_on<F: Future>(&self, fut: F) -> F::Output {
+    fn block_on<F: Future>(&self, fut: F) -> napi::Result<F::Output> {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(fut)
+            Ok(handle.block_on(fut))
         } else {
-            fallback_runtime().block_on(fut)
+            fallback_runtime().map(|runtime| runtime.block_on(fut))
         }
     }
 }
@@ -532,7 +548,7 @@ async fn send_session_request(
 ) -> napi::Result<AgentResult> {
     let result = if attachments.is_empty() {
         get_runtime()
-            .spawn(async move { session.send(&prompt, history.as_deref()).await })
+            .spawn(async move { session.send(&prompt, history.as_deref()).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
     } else {
@@ -541,7 +557,7 @@ async fn send_session_request(
                 session
                     .send_with_attachments(&prompt, &attachments, history.as_deref())
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
     }
@@ -558,7 +574,7 @@ async fn stream_session_request(
 ) -> napi::Result<EventStream> {
     let (rx, handle) = if attachments.is_empty() {
         get_runtime()
-            .spawn(async move { session.stream(&prompt, history.as_deref()).await })
+            .spawn(async move { session.stream(&prompt, history.as_deref()).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
     } else {
@@ -567,7 +583,7 @@ async fn stream_session_request(
                 session
                     .stream_with_attachments(&prompt, &attachments, history.as_deref())
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
     }
@@ -860,7 +876,7 @@ impl EventStream {
         let done_flag = self.done.clone();
         let lifecycle = self.lifecycle.clone();
         let result = get_runtime()
-            .spawn(async move { recv_stream_event(rx, lifecycle).await })
+            .spawn(async move { recv_stream_event(rx, lifecycle).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         match result {
@@ -946,8 +962,8 @@ use typed_providers::*;
 mod session_options;
 use session_options::*;
 
-mod search_config;
 mod moli_runtime;
+mod search_config;
 pub use moli_runtime::{ensure_moli, moli_default_version, moli_runtime_info};
 
 // ============================================================================

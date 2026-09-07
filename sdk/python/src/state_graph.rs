@@ -213,10 +213,18 @@ mod tests {
         let runtime = PyStateGraphRuntime::new(None, None, None);
         let event = r#"{"source":"queue","stream_id":"orders","sequence":1,"event_id":"e1","name":"order.created","payload":{"id":"o1"}}"#;
         assert_eq!(runtime.check_external(event).unwrap(), None);
-        assert_eq!(runtime.project_external(event, ADD_TASK).unwrap(), "applied");
-        assert_eq!(runtime.check_external(event).unwrap(), Some("duplicate".into()));
-        let graph: serde_json::Value =
-            serde_json::from_str(&PyStateGraphRuntime::strict_replay(&runtime.events_json().unwrap()).unwrap()).unwrap();
+        assert_eq!(
+            runtime.project_external(event, ADD_TASK).unwrap(),
+            "applied"
+        );
+        assert_eq!(
+            runtime.check_external(event).unwrap(),
+            Some("duplicate".into())
+        );
+        let graph: serde_json::Value = serde_json::from_str(
+            &PyStateGraphRuntime::strict_replay(&runtime.events_json().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(graph["version"], 1);
     }
 }

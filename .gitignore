@@ -52,3 +52,7 @@ logs/
 
 # Generated Agent release publication artifacts
 /fixtures/agent-release-contract/out/
+
+# Local SDK build/test residue (runtime index locks, copied native libs)
+**/.a3s-code/
+sdk/node/zvec/

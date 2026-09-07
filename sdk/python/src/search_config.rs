@@ -140,6 +140,7 @@ pub(super) struct PyHeadlessConfig {
 #[pymethods]
 impl PyHeadlessConfig {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (backend=None, browser_path=None, max_tabs=None, auto_download_moli=None, moli_version=None, moli_sha256=None, moli_cache_dir=None, moli_download_timeout_secs=None, launch_args=None, proxy_url=None))]
     pub(super) fn new(
         backend: Option<PyBrowserBackend>,

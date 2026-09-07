@@ -1,5 +1,5 @@
-use super::*;
 use super::search_config::PySearchConfig;
+use super::*;
 
 /// Per-session configuration options.
 ///

@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, BrowserBackend, moliRuntimeInfo, ensureMoli, moliDefaultVersion, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, moliRuntimeInfo, ensureMoli, moliDefaultVersion, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -322,10 +322,10 @@ module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
 module.exports.S3WorkspaceBackend = S3WorkspaceBackend
 module.exports.ToolPresentationMode = ToolPresentationMode
-module.exports.BrowserBackend = BrowserBackend
 module.exports.moliRuntimeInfo = moliRuntimeInfo
 module.exports.ensureMoli = ensureMoli
 module.exports.moliDefaultVersion = moliDefaultVersion
+module.exports.BrowserBackend = BrowserBackend
 module.exports.Session = Session
 module.exports.LineWorkspaceChunkingStrategy = LineWorkspaceChunkingStrategy
 module.exports.FixedWindowWorkspaceChunkingStrategy = FixedWindowWorkspaceChunkingStrategy

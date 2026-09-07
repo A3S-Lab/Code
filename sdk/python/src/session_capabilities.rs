@@ -300,8 +300,9 @@ impl PySession {
 
     /// Return the typed model-facing Tool presentation profile.
     pub(super) fn tool_presentation_profile(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let json = serde_json::to_string(self.inner.tool_presentation_profile())
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize Tool profile: {e}")))?;
+        let json = serde_json::to_string(self.inner.tool_presentation_profile()).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize Tool profile: {e}"))
+        })?;
         json_string_to_py(py, &json)
     }
 
@@ -315,23 +316,22 @@ impl PySession {
             .inner
             .presented_tool_definitions(prompt)
             .map_err(|e| PyRuntimeError::new_err(format!("Tool presentation error: {e}")))?;
-        let json = serde_json::to_string(&definitions)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize Tool definitions: {e}")))?;
+        let json = serde_json::to_string(&definitions).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize Tool definitions: {e}"))
+        })?;
         json_string_to_py(py, &json)
     }
 
     /// Return the exact cognitive package binding, when one is installed.
     fn current_cognitive_package_binding(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let json = serde_json::to_string(&self.inner.current_cognitive_package_binding())
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize cognitive binding: {e}")))?;
+        let json = serde_json::to_string(&self.inner.current_cognitive_package_binding()).map_err(
+            |e| PyRuntimeError::new_err(format!("Failed to serialize cognitive binding: {e}")),
+        )?;
         json_string_to_py(py, &json)
     }
 
     /// Validate a persisted capability binding before recovery.
-    fn ensure_recovery_capability_binding(
-        &self,
-        binding: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    fn ensure_recovery_capability_binding(&self, binding: &Bound<'_, PyAny>) -> PyResult<()> {
         let binding = serde_json::from_str(&py_any_to_json(binding)?)
             .map_err(|e| PyValueError::new_err(format!("Invalid capability binding: {e}")))?;
         self.inner
@@ -342,7 +342,8 @@ impl PySession {
     /// Drain retired host capability effects and return a JSON-safe report.
     fn drain_capability_cleanup(&self, py: Python<'_>) -> PyResult<PyObject> {
         let session = self.inner.clone();
-        let report = py.allow_threads(move || get_runtime().block_on(session.drain_capability_cleanup()));
+        let report =
+            py.allow_threads(move || get_runtime().block_on(session.drain_capability_cleanup()));
         let json = serde_json::json!({
             "rollback_batches": report.rollback_batches,
             "retired_batches": report.retired_batches,

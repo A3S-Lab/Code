@@ -24,7 +24,7 @@ impl Agent {
     #[napi(factory)]
     pub async fn create(config_source: String) -> napi::Result<Self> {
         let agent = get_runtime()
-            .spawn(async move { RustAgent::new(config_source).await })
+            .spawn(async move { RustAgent::new(config_source).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -44,7 +44,7 @@ impl Agent {
         let config: RustCodeConfig = serde_json::from_value(config)
             .map_err(|error| napi::Error::from_reason(format!("Invalid CodeConfig: {error}")))?;
         let agent = get_runtime()
-            .spawn(async move { RustAgent::from_config(config).await })
+            .spawn(async move { RustAgent::from_config(config).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -101,7 +101,7 @@ impl Agent {
         let rust_opts = js_session_options_to_rust(options)?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .block_on(agent.session_async(workspace, Some(rust_opts)))
+            .block_on(agent.session_async(workspace, Some(rust_opts)))?
             .map_err(node_code_error)?;
         Ok(Session {
             inner: Arc::new(session),
@@ -119,7 +119,7 @@ impl Agent {
         let rust_opts = js_session_options_to_rust(options)?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .spawn(async move { agent.session_async(workspace, Some(rust_opts)).await })
+            .spawn(async move { agent.session_async(workspace, Some(rust_opts)).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -151,7 +151,7 @@ impl Agent {
         let opts = js_session_options_to_rust(Some(options))?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .block_on(agent.resume_session_async(&session_id, opts))
+            .block_on(agent.resume_session_async(&session_id, opts))?
             .map_err(node_code_error)?;
         Ok(Session {
             inner: Arc::new(session),
@@ -169,7 +169,7 @@ impl Agent {
         let opts = js_session_options_to_rust(Some(options))?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .spawn(async move { agent.resume_session_async(&session_id, opts).await })
+            .spawn(async move { agent.resume_session_async(&session_id, opts).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -197,7 +197,7 @@ impl Agent {
         let agent = Arc::clone(&self.inner);
         let current = Arc::clone(&current.inner);
         let session = get_runtime()
-            .spawn(async move { agent.replace_session_async(current.as_ref(), opts).await })
+            .spawn(async move { agent.replace_session_async(current.as_ref(), opts).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -240,7 +240,7 @@ impl Agent {
             .transpose()?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .block_on(agent.session_for_agent_async(workspace, &def, opts))
+            .block_on(agent.session_for_agent_async(workspace, &def, opts))?
             .map_err(node_code_error)?;
         Ok(Session {
             inner: Arc::new(session),
@@ -271,7 +271,7 @@ impl Agent {
             .transpose()?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .spawn(async move { agent.session_for_agent_async(workspace, &def, opts).await })
+            .spawn(async move { agent.session_for_agent_async(workspace, &def, opts).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -301,7 +301,7 @@ impl Agent {
             .transpose()?;
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
-            .block_on(agent.session_for_worker_async(workspace, worker, opts))
+            .block_on(agent.session_for_worker_async(workspace, worker, opts))?
             .map_err(node_code_error)?;
         Ok(Session {
             inner: Arc::new(session),
@@ -326,7 +326,7 @@ impl Agent {
                 agent
                     .session_for_worker_async(workspace, worker, opts)
                     .await
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -438,7 +438,7 @@ impl Agent {
                     return Err((handle.failure_code(), error));
                 }
                 Ok(handle)
-            })
+            })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(|(failure_code, error)| node_serve_error_code(failure_code, error))?;

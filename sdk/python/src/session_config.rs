@@ -367,7 +367,10 @@ impl PyToolPresentationProfile {
     }
 
     fn __repr__(&self) -> String {
-        format!("ToolPresentationProfile(mode='{}')", self.inner.mode().as_str())
+        format!(
+            "ToolPresentationProfile(mode='{}')",
+            self.inner.mode().as_str()
+        )
     }
 }
 

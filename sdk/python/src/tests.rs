@@ -143,9 +143,14 @@ fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
         aggregate = Some(match aggregate {
             Some(mut previous) => {
                 previous.sample_count += 1;
-                previous.max_local_reserved = previous.max_local_reserved.max(sample.max_local_reserved);
-                previous.max_scheduler_active = previous.max_scheduler_active.max(sample.max_scheduler_active);
-                previous.max_scheduler_pending = previous.max_scheduler_pending.max(sample.max_scheduler_pending);
+                previous.max_local_reserved =
+                    previous.max_local_reserved.max(sample.max_local_reserved);
+                previous.max_scheduler_active = previous
+                    .max_scheduler_active
+                    .max(sample.max_scheduler_active);
+                previous.max_scheduler_pending = previous
+                    .max_scheduler_pending
+                    .max(sample.max_scheduler_pending);
                 previous.admitted = previous.admitted.max(sample.admitted);
                 previous.released = previous.released.max(sample.released);
                 previous.cancelled = previous.cancelled.max(sample.cancelled);
@@ -198,10 +203,7 @@ struct PythonPoolHealthAggregate {
     rejected: u64,
 }
 
-fn assert_python_pool_health_fixture(
-    snapshot: &serde_json::Value,
-    fixture: &serde_json::Value,
-) {
+fn assert_python_pool_health_fixture(snapshot: &serde_json::Value, fixture: &serde_json::Value) {
     let object = snapshot.as_object().expect("pool health object");
     for field in fixture["required_snapshot_fields"]
         .as_array()
@@ -223,7 +225,10 @@ fn assert_python_pool_health_fixture(
         .expect("fixture identity fields")
     {
         let field = field.as_str().expect("identity field name");
-        assert!(identity.get(field).is_some(), "missing identity field {field}");
+        assert!(
+            identity.get(field).is_some(),
+            "missing identity field {field}"
+        );
     }
     let max_concurrency = fixture["max_concurrency"]
         .as_u64()
@@ -237,8 +242,7 @@ fn assert_python_pool_health_fixture(
     assert!(pool_max > 0 && pool_max <= max_concurrency);
     assert!(local_max <= pool_max);
     assert_eq!(
-        snapshot["localReserved"].as_u64().unwrap()
-            + snapshot["localAvailable"].as_u64().unwrap(),
+        snapshot["localReserved"].as_u64().unwrap() + snapshot["localAvailable"].as_u64().unwrap(),
         local_max
     );
     assert_eq!(
@@ -249,14 +253,8 @@ fn assert_python_pool_health_fixture(
     if let Some(scheduler) = snapshot.get("scheduler") {
         assert_eq!(scheduler["identity"], identity.clone());
         assert_eq!(scheduler["maxActive"], snapshot["pool"]["maxConcurrency"]);
-        assert!(
-            scheduler["active"].as_u64().unwrap()
-                <= scheduler["maxActive"].as_u64().unwrap()
-        );
-        assert!(
-            scheduler["pending"].as_u64().unwrap()
-                <= scheduler["maxActive"].as_u64().unwrap()
-        );
+        assert!(scheduler["active"].as_u64().unwrap() <= scheduler["maxActive"].as_u64().unwrap());
+        assert!(scheduler["pending"].as_u64().unwrap() <= scheduler["maxActive"].as_u64().unwrap());
     }
 }
 
@@ -267,7 +265,10 @@ fn assert_no_forbidden_python_keys(
     match value {
         serde_json::Value::Object(object) => {
             for (key, child) in object {
-                assert!(!forbidden.contains(key.as_str()), "forbidden diagnostic field {key}");
+                assert!(
+                    !forbidden.contains(key.as_str()),
+                    "forbidden diagnostic field {key}"
+                );
                 assert_no_forbidden_python_keys(child, forbidden);
             }
         }
@@ -664,16 +665,23 @@ fn session_options_map_search_config() {
 #[test]
 fn search_config_defaults_match_core_when_optional_fields_are_omitted() {
     let core = build_rust_session_options(PySessionOptions {
-        search_config: Some(PySearchConfig::new(20, None, Some(PyHeadlessConfig::new(
-            None, None, None, None, None, None, None, None, None, None,
-        )))),
+        search_config: Some(PySearchConfig::new(
+            20,
+            None,
+            Some(PyHeadlessConfig::new(
+                None, None, None, None, None, None, None, None, None, None,
+            )),
+        )),
         ..PySessionOptions::new()
     })
     .unwrap();
     let search = core.search_config.expect("search config");
     assert_eq!(search.timeout, 20);
     let headless = search.headless.expect("headless config");
-    assert_eq!(headless.backend, a3s_code_core::config::BrowserBackend::Moli);
+    assert_eq!(
+        headless.backend,
+        a3s_code_core::config::BrowserBackend::Moli
+    );
     assert_eq!(headless.max_tabs, 4);
     assert!(headless.auto_download_moli);
 }

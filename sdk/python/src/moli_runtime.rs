@@ -17,13 +17,8 @@ pub(super) fn py_moli_runtime_info(
 
 /// Ensure a verified Moli executable is available and return its path.
 #[pyfunction(name = "ensure_moli", signature = (config=None))]
-pub(super) fn py_ensure_moli(
-    py: Python<'_>,
-    config: Option<PyHeadlessConfig>,
-) -> PyResult<String> {
-    let config = config
-        .map(Into::into)
-        .unwrap_or_else(a3s_code_core::config::HeadlessConfig::default);
+pub(super) fn py_ensure_moli(py: Python<'_>, config: Option<PyHeadlessConfig>) -> PyResult<String> {
+    let config: a3s_code_core::config::HeadlessConfig = config.map(Into::into).unwrap_or_default();
     let timeout = std::time::Duration::from_secs(config.moli_download_timeout_secs);
     let path = py
         .allow_threads(move || get_runtime().block_on(a3s_code_core::ensure_moli(&config, timeout)))
@@ -36,4 +31,3 @@ pub(super) fn py_ensure_moli(
 pub(super) fn py_moli_default_version() -> String {
     a3s_code_core::default_moli_version().to_owned()
 }
-

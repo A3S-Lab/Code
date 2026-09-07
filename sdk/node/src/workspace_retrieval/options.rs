@@ -218,15 +218,19 @@ pub(crate) fn js_workspace_retrieval_to_rust(
         max_bytes,
         shutdown_timeout: Duration::from_millis(shutdown_timeout_ms as u64),
     });
-    retrieval = retrieval.with_lexical_engine(match options
-        .lexical_engine
-        .unwrap_or_else(default_lexical_engine)
-    {
-        WorkspaceLexicalEngineOption::Portable => a3s_code_core::WorkspaceLexicalEngine::Portable,
-        WorkspaceLexicalEngineOption::ZvecRust => {
-            a3s_code_core::WorkspaceLexicalEngine::ZvecRust
-        }
-    });
+    retrieval = retrieval.with_lexical_engine(
+        match options
+            .lexical_engine
+            .unwrap_or_else(default_lexical_engine)
+        {
+            WorkspaceLexicalEngineOption::Portable => {
+                a3s_code_core::WorkspaceLexicalEngine::Portable
+            }
+            WorkspaceLexicalEngineOption::ZvecRust => {
+                a3s_code_core::WorkspaceLexicalEngine::ZvecRust
+            }
+        },
+    );
     if let Some(reranker) = reranker {
         retrieval = retrieval.with_rerank_options(reranker);
     }

@@ -405,5 +405,4 @@ mod tests {
         assert!(search_limit(Some(26)).is_err());
         assert_eq!(search_limit(None).unwrap(), 10);
     }
-
 }

@@ -1,5 +1,7 @@
+use super::search_config::{
+    BrowserBackend, HeadlessConfig, SearchConfig, SearchEngineConfig, SearchHealthConfig,
+};
 use super::*;
-use super::search_config::{BrowserBackend, HeadlessConfig, SearchConfig, SearchEngineConfig, SearchHealthConfig};
 
 #[test]
 fn agent_run_spawn_object_preserves_snapshot_and_replay_state() {
@@ -50,7 +52,10 @@ fn inline_skill_conversion_is_typed_and_rejects_invalid_input() {
 fn sdk_capability_inventory_is_projected_from_core_without_drift() {
     let capabilities = sdk_capabilities();
     assert!(capabilities.len() >= 20);
-    assert_eq!(sdk_capabilities_schema(), a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1);
+    assert_eq!(
+        sdk_capabilities_schema(),
+        a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1
+    );
     assert!(capabilities.iter().any(|item| item.id == "web_search"));
     assert!(capabilities.iter().any(|item| item.id == "moli_runtime"));
     assert!(capabilities
@@ -79,6 +84,7 @@ fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
     let mut aggregate: Option<NodePoolHealthAggregate> = None;
     for _ in 0..sample_limit {
         let health = fallback_runtime()
+            .expect("test runtime builds")
             .block_on(session.model_generation_pool_health())
             .expect("Node pool health projection succeeds")
             .expect("fixture client publishes a provider pool");
@@ -97,9 +103,14 @@ fn model_generation_pool_health_fixture_is_bounded_and_secret_free() {
         aggregate = Some(match aggregate {
             Some(mut previous) => {
                 previous.sample_count += 1;
-                previous.max_local_reserved = previous.max_local_reserved.max(sample.max_local_reserved);
-                previous.max_scheduler_active = previous.max_scheduler_active.max(sample.max_scheduler_active);
-                previous.max_scheduler_pending = previous.max_scheduler_pending.max(sample.max_scheduler_pending);
+                previous.max_local_reserved =
+                    previous.max_local_reserved.max(sample.max_local_reserved);
+                previous.max_scheduler_active = previous
+                    .max_scheduler_active
+                    .max(sample.max_scheduler_active);
+                previous.max_scheduler_pending = previous
+                    .max_scheduler_pending
+                    .max(sample.max_scheduler_pending);
                 previous.admitted = previous.admitted.max(sample.admitted);
                 previous.released = previous.released.max(sample.released);
                 previous.cancelled = previous.cancelled.max(sample.cancelled);
@@ -195,7 +206,10 @@ fn assert_node_pool_health_fixture(
         .expect("fixture snapshot fields")
     {
         let field = field.as_str().expect("snapshot field name");
-        assert!(snapshot.get(field).is_some(), "missing snapshot field {field}");
+        assert!(
+            snapshot.get(field).is_some(),
+            "missing snapshot field {field}"
+        );
     }
     let forbidden = fixture["forbidden_fields"]
         .as_array()
@@ -212,7 +226,10 @@ fn assert_node_pool_health_fixture(
         .expect("fixture identity fields")
     {
         let field = field.as_str().expect("identity field name");
-        assert!(identity.get(field).is_some(), "missing identity field {field}");
+        assert!(
+            identity.get(field).is_some(),
+            "missing identity field {field}"
+        );
     }
     let max_concurrency = fixture["max_concurrency"]
         .as_i64()
@@ -249,7 +266,10 @@ fn assert_no_forbidden_node_keys(
     match value {
         serde_json::Value::Object(object) => {
             for (key, child) in object {
-                assert!(!forbidden.contains(key.as_str()), "forbidden diagnostic field {key}");
+                assert!(
+                    !forbidden.contains(key.as_str()),
+                    "forbidden diagnostic field {key}"
+                );
                 assert_no_forbidden_node_keys(child, forbidden);
             }
         }
@@ -267,7 +287,10 @@ fn moli_diagnostics_are_projected_without_installing() {
     let info = crate::moli_runtime::moli_runtime_info(None);
     assert_eq!(info.schema, a3s_code_core::MOLI_RUNTIME_INFO_SCHEMA_V1);
     assert_eq!(info.version, a3s_code_core::default_moli_version());
-    assert!(info.cache_dir.as_deref().is_some_and(|path| !path.is_empty()));
+    assert!(info
+        .cache_dir
+        .as_deref()
+        .is_some_and(|path| !path.is_empty()));
     assert!(info.auto_download);
 }
 
@@ -275,8 +298,14 @@ fn moli_diagnostics_are_projected_without_installing() {
 fn session_exposes_serializable_capability_and_tool_projection_views() {
     let session = build_test_session();
     let stamp = session.capability_catalog_stamp().unwrap();
-    assert!(stamp.get("generation").and_then(serde_json::Value::as_u64).is_some());
-    assert!(stamp.get("digest").and_then(serde_json::Value::as_str).is_some());
+    assert!(stamp
+        .get("generation")
+        .and_then(serde_json::Value::as_u64)
+        .is_some());
+    assert!(stamp
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     let profile = session.tool_presentation_profile().unwrap();
     assert_eq!(profile["schema"], "a3s.code.tool-presentation-profile.v1");
     let definitions = session
@@ -373,7 +402,7 @@ fn memory_session_store_identity_survives_save_and_resume() {
     let create_options = js_session_options_to_rust(Some(options(true))).unwrap();
     let resume_options = js_session_options_to_rust(Some(options(false))).unwrap();
 
-    fallback_runtime().block_on(async {
+    fallback_runtime().expect("test runtime builds").block_on(async {
         let agent = RustAgent::from_config(sdk_test_config()).await.unwrap();
         let session = agent
             .session_async(
@@ -414,9 +443,11 @@ fn memory_session_store_handles_fail_closed_and_do_not_leak() {
 
 fn build_test_session() -> Session {
     let agent = fallback_runtime()
+        .expect("test runtime builds")
         .block_on(RustAgent::from_config(sdk_test_config()))
         .unwrap();
     let session = fallback_runtime()
+        .expect("test runtime builds")
         .block_on(agent.session_async("/tmp/a3s-code-node-sdk-api", None))
         .unwrap();
     Session {
@@ -543,7 +574,10 @@ fn search_config_omitted_fields_use_core_defaults() {
     .unwrap();
     let search = opts.search_config.expect("search config");
     assert_eq!(search.timeout, 20);
-    assert_eq!(search.headless.unwrap().backend, a3s_code_core::config::BrowserBackend::Moli);
+    assert_eq!(
+        search.headless.unwrap().backend,
+        a3s_code_core::config::BrowserBackend::Moli
+    );
 }
 
 #[test]

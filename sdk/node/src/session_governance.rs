@@ -33,7 +33,7 @@ impl Session {
         };
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.set_lane_handler(rust_lane, rust_config).await })
+            .spawn(async move { session.set_lane_handler(rust_lane, rust_config).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -58,7 +58,7 @@ impl Session {
         };
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.complete_external_task(&task_id, ext_result).await })
+            .spawn(async move { session.complete_external_task(&task_id, ext_result).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))
     }
@@ -68,7 +68,7 @@ impl Session {
     pub async fn pending_external_tasks(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let tasks = get_runtime()
-            .spawn(async move { session.pending_external_tasks().await })
+            .spawn(async move { session.pending_external_tasks().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&tasks)
@@ -84,7 +84,7 @@ impl Session {
     pub async fn pending_confirmations(&self) -> napi::Result<Vec<PendingConfirmation>> {
         let session = self.inner.clone();
         let pending = get_runtime()
-            .spawn(async move { session.pending_confirmations().await })
+            .spawn(async move { session.pending_confirmations().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(pending.into_iter().map(PendingConfirmation::from).collect())
@@ -105,7 +105,7 @@ impl Session {
     ) -> napi::Result<bool> {
         let session = self.inner.clone();
         get_runtime()
-            .spawn(async move { session.confirm_tool_use(&tool_id, approved, reason).await })
+            .spawn(async move { session.confirm_tool_use(&tool_id, approved, reason).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)
@@ -116,7 +116,7 @@ impl Session {
     pub async fn cancel_confirmations(&self) -> napi::Result<u32> {
         let session = self.inner.clone();
         let count = get_runtime()
-            .spawn(async move { session.cancel_confirmations().await })
+            .spawn(async move { session.cancel_confirmations().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(count as u32)
@@ -127,7 +127,7 @@ impl Session {
     pub async fn queue_stats(&self) -> napi::Result<QueueStats> {
         let session = self.inner.clone();
         let stats = get_runtime()
-            .spawn(async move { session.queue_stats().await })
+            .spawn(async move { session.queue_stats().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(QueueStats {
@@ -185,7 +185,7 @@ impl Session {
             .collect::<Vec<_>>();
         let session = self.inner.clone();
         let report = get_runtime()
-            .spawn(async move { session.verify_commands(&subject, &rust_commands).await })
+            .spawn(async move { session.verify_commands(&subject, &rust_commands).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;
@@ -205,7 +205,7 @@ impl Session {
     pub async fn dead_letters(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let letters = get_runtime()
-            .spawn(async move { session.dead_letters().await })
+            .spawn(async move { session.dead_letters().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         serde_json::to_value(&letters)
@@ -222,7 +222,7 @@ impl Session {
     pub async fn queue_metrics(&self) -> napi::Result<serde_json::Value> {
         let session = self.inner.clone();
         let snapshot = get_runtime()
-            .spawn(async move { session.queue_metrics().await })
+            .spawn(async move { session.queue_metrics().await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?;
         Ok(metrics_snapshot_to_json(snapshot))

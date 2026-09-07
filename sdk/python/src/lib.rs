@@ -27,9 +27,10 @@
 //! Convention this crate follows so the boundary stays safe: the Rust→Python
 //! bridges that run on tokio worker threads (`PythonCallbackHandler`,
 //! `PyBudgetGuard`, `PySlashCommand`) never `.unwrap()` / `panic!`; they use
-//! `.ok()` / `unwrap_or_else` and fail closed. (Audited 2026-05: the only
-//! production panic site is the lazy Tokio-runtime build in `get_runtime()`,
-//! reached only from caught pyfunction frames.)
+//! `.ok()` / `unwrap_or_else` and fail closed. (Audited 2026-05, updated
+//! 2026-09: the formerly lazy Tokio-runtime build is now validated at module
+//! import by `ensure_runtime` with a stable `RuntimeError`; after a
+//! successful import there are no production panic sites.)
 
 use a3s_code_core::commands::{
     CommandContext as RustCommandContext, CommandOutput as RustCommandOutput,
@@ -64,9 +65,9 @@ use a3s_code_core::{
     AgentEvent as RustAgentEvent, AgentEventProjectionV1 as RustAgentEventProjectionV1,
     AgentResult as RustAgentResult, AgentRunSpawn as RustAgentRunSpawn,
     AgentSession as RustAgentSession, EventProtocolError as RustEventProtocolError,
-    InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
-    PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions, AGENT_EVENT_TYPES_V1,
-    EVENT_ENVELOPE_V1_VERSION, SdkCapability as RustSdkCapability,
+    InterruptRequest as RustInterruptRequest, PlanningMode as RustPlanningMode,
+    SdkCapability as RustSdkCapability, SessionOptions as RustSessionOptions,
+    SteerRequest as RustSteerRequest, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 use pyo3::exceptions::{
     PyRuntimeError, PyStopAsyncIteration, PyStopIteration, PyTypeError, PyValueError,
@@ -93,6 +94,7 @@ fn py_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> PyErr {
         a3s_code_core::TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
         a3s_code_core::TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
         a3s_code_core::TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+        a3s_code_core::TaskSchedulerError::AtCapacity { .. } => "TASK_ADMISSION_AT_CAPACITY",
     };
     py_error_with_code(code, error.to_string())
 }
@@ -163,19 +165,46 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+fn build_runtime() -> std::result::Result<Runtime, String> {
+    // Optimized runtime configuration for I/O-intensive workloads
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_cpus::get() * 2) // 2x CPU cores for better I/O handling
+        .max_blocking_threads(512) // More blocking threads for CPU-intensive tasks
+        .thread_name("a3s-code-worker")
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+/// Shared lazy runtime. A successful module import resolves this to `Ok`
+/// exactly once; every later FFI call only reads the validated value.
+static RUNTIME: std::sync::OnceLock<std::result::Result<Runtime, String>> =
+    std::sync::OnceLock::new();
+
+/// Force runtime initialization at module import with a stable error.
+///
+/// KRN-9: FFI initialization is fallible at a deterministic boundary. When
+/// the Tokio runtime cannot be built, importing `a3s_code._native` raises a
+/// stable `RuntimeError` instead of letting a later, unrelated FFI call
+/// panic the process.
+fn ensure_runtime(py: Python<'_>) -> PyResult<()> {
+    let outcome = RUNTIME.get_or_init(build_runtime);
+    if let Err(message) = outcome {
+        return Err(PyRuntimeError::new_err(format!(
+            "a3s-code-python runtime initialization failed: {message}"
+        )));
+    }
+    let _ = py;
+    Ok(())
+}
+
 fn get_runtime() -> &'static Runtime {
-    use std::sync::OnceLock;
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        // Optimized runtime configuration for I/O-intensive workloads
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(num_cpus::get() * 2) // 2x CPU cores for better I/O handling
-            .max_blocking_threads(512) // More blocking threads for CPU-intensive tasks
-            .thread_name("a3s-code-worker")
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime")
-    })
+    let outcome = RUNTIME.get_or_init(build_runtime);
+    // The only failure window is a first call that races a failed import;
+    // the module init path has already surfaced the stable error to Python.
+    outcome
+        .as_ref()
+        .expect("tokio runtime validated at module import")
 }
 
 fn json_string_to_py(py: Python<'_>, json: &str) -> PyResult<PyObject> {
@@ -984,7 +1013,10 @@ impl From<RustSdkCapability> for PySdkCapability {
 #[pymethods]
 impl PySdkCapability {
     fn __repr__(&self) -> String {
-        format!("SdkCapability(id='{}', category='{}')", self.id, self.category)
+        format!(
+            "SdkCapability(id='{}', category='{}')",
+            self.id, self.category
+        )
     }
 }
 
@@ -1011,6 +1043,7 @@ impl PySkillInfo {
 /// A3S Code - Native AI coding agent library for Python.
 #[pymodule(name = "_native")]
 fn a3s_code_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    ensure_runtime(m.py())?;
     module_registration::register(m)
 }
 

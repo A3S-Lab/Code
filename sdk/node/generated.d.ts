@@ -28,7 +28,10 @@ export interface TaskSchedulerStats {
   pendingByPriority: TaskPriorityCounts
   closed: boolean
 }
-/** Bounded cumulative admission and fairness diagnostics for an Agent's shared priority scheduler. */
+/**
+ * Bounded cumulative admission and fairness diagnostics for an Agent's
+ * shared priority scheduler.
+ */
 export interface TaskSchedulerHealthSnapshot {
   maxActive: number
   active: number
@@ -814,6 +817,22 @@ export interface QueueStats {
   totalActive: number
   externalPending: number
 }
+/** Secret-free Moli runtime diagnostics. */
+export interface MoliRuntimeInfo {
+  schema: string
+  version: string
+  target?: string
+  executable?: string
+  packaged: boolean
+  cacheDir?: string
+  autoDownload: boolean
+}
+/** Return the current Moli resolution path without downloading anything. */
+export declare function moliRuntimeInfo(config?: HeadlessConfig | undefined | null): MoliRuntimeInfo
+/** Ensure a verified Moli executable is available and return its path. */
+export declare function ensureMoli(config?: HeadlessConfig | undefined | null): Promise<string>
+/** Return the pinned Moli release version used by this Code build. */
+export declare function moliDefaultVersion(): string
 /** Configuration for a search engine. */
 export interface SearchEngineConfig {
   /** Whether the engine is enabled. Omission keeps Core's default (`true`). */
@@ -861,22 +880,6 @@ export interface SearchConfig {
   engines?: Record<string, SearchEngineConfig>
   headless?: HeadlessConfig
 }
-/** Secret-free Moli runtime diagnostics. */
-export interface MoliRuntimeInfo {
-  schema: string
-  version: string
-  target?: string
-  executable?: string
-  packaged: boolean
-  cacheDir?: string
-  autoDownload: boolean
-}
-/** Return the current Moli resolution path without downloading anything. */
-export declare function moliRuntimeInfo(config?: HeadlessConfig | undefined | null): MoliRuntimeInfo
-/** Ensure a verified Moli executable is available and return its path. */
-export declare function ensureMoli(config?: HeadlessConfig | undefined | null): Promise<string>
-/** Return the pinned Moli release version used by this Code build. */
-export declare function moliDefaultVersion(): string
 /** A single message in conversation history. */
 export interface MessageObject {
   role: string
@@ -1474,7 +1477,11 @@ export declare class Session {
    * for the scheduler shared by this session and its siblings.
    */
   taskSchedulerHealth(): Promise<TaskSchedulerHealthSnapshot>
-  /** Return secret-free local and shared provider-pool health for this session. */
+  /**
+   * Return secret-free local and shared capacity health for this session's
+   * provider/model generation pool, when the configured client publishes
+   * one. The shared projection retains only a bounded digest-only epoch.
+   */
   modelGenerationPoolHealth(): Promise<ModelGenerationPoolHealthSnapshot | null>
   /**
    * Send a prompt or request and wait for the complete response.

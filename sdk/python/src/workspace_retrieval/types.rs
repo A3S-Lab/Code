@@ -171,5 +171,4 @@ pub(super) fn retrieval_error(error: a3s_code_core::WorkspaceRetrievalError) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
 }
