@@ -255,9 +255,10 @@ Every session created by an `Agent` shares this scheduler. Priorities are
 one level per `aging_interval_ms`, up to interactive priority, so sustained
 interactive traffic cannot permanently starve background work.
 
-Admission is backpressured at a bounded queue (4,096 entries); release
-notifications use a separate control path so cancellation and dropped callers
-always return capacity even when the admission queue is full.
+Admission is backpressured at a bounded queue (4,096 entries); release and
+shutdown notifications use separate control paths so cancellation, dropped
+callers, and shutdown always make progress even when the admission queue is
+full.
 
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are

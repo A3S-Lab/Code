@@ -172,6 +172,7 @@ pub struct TaskSchedulerStats {
 pub struct TaskScheduler {
     tx: mpsc::Sender<SchedulerMessage>,
     release_tx: mpsc::UnboundedSender<u64>,
+    shutdown_tx: mpsc::UnboundedSender<oneshot::Sender<()>>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
 }
@@ -182,11 +183,19 @@ impl TaskScheduler {
         config.validate()?;
         let (tx, rx) = mpsc::channel(ADMISSION_CHANNEL_CAPACITY);
         let (release_tx, release_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
         let closed = Arc::new(AtomicBool::new(false));
-        tokio::spawn(run_scheduler(rx, release_rx, config, Arc::clone(&closed)));
+        tokio::spawn(run_scheduler(
+            rx,
+            release_rx,
+            shutdown_rx,
+            config,
+            Arc::clone(&closed),
+        ));
         Ok(Self {
             tx,
             release_tx,
+            shutdown_tx,
             next_id: AtomicU64::new(1),
             closed,
         })
@@ -263,7 +272,7 @@ impl TaskScheduler {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        if self.tx.send(SchedulerMessage::Shutdown(tx)).await.is_ok() {
+        if self.shutdown_tx.send(tx).is_ok() {
             let _ = rx.await;
         }
     }
@@ -319,6 +328,7 @@ struct SchedulerState {
 async fn run_scheduler(
     mut rx: mpsc::Receiver<SchedulerMessage>,
     mut release_rx: mpsc::UnboundedReceiver<u64>,
+    mut shutdown_rx: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
     config: TaskSchedulerConfig,
     closed: Arc<AtomicBool>,
 ) {
@@ -334,6 +344,7 @@ async fn run_scheduler(
         let message = tokio::select! {
             biased;
             Some(id) = release_rx.recv() => SchedulerMessage::Release(id),
+            Some(reply) = shutdown_rx.recv() => SchedulerMessage::Shutdown(reply),
             Some(message) = rx.recv() => message,
             else => break,
         };

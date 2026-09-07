@@ -134,6 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an explicit pending-admission ceiling with a typed capacity error, so
   scheduler pressure is observable instead of silently accumulating queued
   work.
+- Made scheduler shutdown control-plane prioritized over admission backpressure,
+  so a full queue cannot delay closure or drain of active leases.
 
 ## [8.2.0] - 2026-09-04
 
