@@ -118,7 +118,9 @@ jobs:
             NAPI_ARGS+=(--zig)
           fi
           if [[ "${{ matrix.settings.zvec }}" != "true" ]]; then
-            NAPI_ARGS+=(--cargo-flags "--no-default-features")
+            # Clipanion treats a following `--no-default-features` token as a
+            # new flag unless it is attached with `=`.
+            NAPI_ARGS+=(--cargo-flags=--no-default-features)
           fi
           npx napi build "${NAPI_ARGS[@]}"
           node scripts/patch-loader.mjs
