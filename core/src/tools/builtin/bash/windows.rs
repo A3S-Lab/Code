@@ -599,6 +599,7 @@ pub(crate) async fn maybe_execute_simple_windows_http_command(command: &str) -> 
         })),
         images: vec![],
         error_kind: None,
+        trust: crate::tools::ToolResultTrustV1::External,
     })
 }
 
