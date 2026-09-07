@@ -55,6 +55,7 @@ pub const DEFAULT_MAX_DIFF_BYTES: u64 = 1024 * 1024;
 /// Default ceiling on `log` `max_count` — caps the per-call response size
 /// even when the model requests more.
 pub const DEFAULT_MAX_LOG_ENTRIES: usize = 200;
+const MAX_REMOTE_JSON_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Configuration for a [`RemoteGitBackend`].
 ///
@@ -247,15 +248,14 @@ impl RemoteGitBackend {
             send_result.map_err(|e| anyhow!("remote git call '{}' transport error: {}", op, e))?;
 
         let status = resp.status();
+        let body = read_response_bytes_bounded(resp, MAX_REMOTE_JSON_BYTES).await?;
         if status.is_success() {
-            let parsed = resp
-                .json::<Resp>()
-                .await
+            let parsed = serde_json::from_slice::<Resp>(&body)
                 .map_err(|e| anyhow!("remote git '{}' response body decode error: {}", op, e))?;
             return Ok(parsed);
         }
 
-        let body_text = resp.text().await.unwrap_or_default();
+        let body_text = String::from_utf8_lossy(&body).into_owned();
         Err(map_error_response(op, status, &body_text))
     }
 
@@ -284,7 +284,8 @@ impl RemoteGitBackend {
         if status.is_success() {
             return Ok(());
         }
-        let body_text = resp.text().await.unwrap_or_default();
+        let body = read_response_bytes_bounded(resp, MAX_REMOTE_JSON_BYTES).await?;
+        let body_text = String::from_utf8_lossy(&body).into_owned();
         Err(map_error_response(op, status, &body_text))
     }
 
@@ -392,6 +393,38 @@ impl RemoteGitBackend {
         }
         Ok(buf)
     }
+}
+
+/// Read a non-streaming JSON/error response without allowing an untrusted
+/// remote Git server to allocate an unbounded body buffer.
+async fn read_response_bytes_bounded(
+    response: reqwest::Response,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    use futures::StreamExt;
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        return Err(anyhow!(
+            "remote git response Content-Length exceeds client cap {} bytes",
+            max_bytes
+        ));
+    }
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| anyhow!("remote git response stream error: {error}"))?;
+        if body.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err(anyhow!(
+                "remote git response body exceeded client cap {} bytes",
+                max_bytes
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[derive(Serialize)]

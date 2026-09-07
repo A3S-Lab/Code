@@ -162,6 +162,22 @@ async fn status_happy_path() {
 }
 
 #[tokio::test]
+async fn ordinary_json_response_is_bounded_before_decode() {
+    let (server, backend) = server_and_backend().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/repos/test/git/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; (4 * 1024 * 1024) + 1]))
+        .mount(&server)
+        .await;
+
+    let error = backend
+        .status()
+        .await
+        .expect_err("an oversized JSON response must fail closed");
+    assert!(error.to_string().contains("client cap"));
+}
+
+#[tokio::test]
 async fn log_respects_client_max_log_entries() {
     let server = MockServer::start().await;
     let cfg = RemoteGitBackendConfig::new(server.uri(), "test")

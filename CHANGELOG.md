@@ -145,6 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process memory without deadlocking command reaping.
 - Reused the bounded Git capture path for workspace `git ls-files` discovery,
   keeping manifest scans under the same process-output limit.
+- Bounded ordinary remote Git JSON and error responses at 4 MiB before decode,
+  while retaining the endpoint-specific streaming limit for diffs.
 
 ## [8.2.0] - 2026-09-04
 
