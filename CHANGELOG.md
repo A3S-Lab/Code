@@ -126,6 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy inputs cannot bypass their memory boundary.
 - Made retry-attempt diagnostics saturating at `u32::MAX`, so an extreme
   configured retry budget cannot overflow terminal accounting or log metadata.
+- Added a hard Core retry budget ceiling; host-supplied retry configurations
+  above 100 retries now fail before the first provider request.
 - Made task admission backpressured and separated release control from the
   bounded admission queue, so abandoned or cancelled work cannot leak slots or
   grow scheduler memory without a bound.

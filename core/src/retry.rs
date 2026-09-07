@@ -28,6 +28,12 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 const MAX_RETRY_ERROR_BODY_BYTES: usize = 4 * 1024;
+/// Hard upper bound for provider retries accepted by the Core loop.
+///
+/// Retry configuration can be supplied by a host, so allowing an arbitrary
+/// `u32` here would turn a transient provider failure into an effectively
+/// unbounded resource reservation.
+pub const MAX_RETRIES: u32 = 100;
 
 /// Configuration for API retry behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +259,14 @@ where
     F: Fn(u32) -> Fut,
     Fut: std::future::Future<Output = AttemptOutcome<T>>,
 {
+    if config.max_retries > MAX_RETRIES {
+        anyhow::bail!(
+            "retry configuration max_retries={} exceeds the maximum of {}",
+            config.max_retries,
+            MAX_RETRIES
+        );
+    }
+
     let mut last_status = None;
     let mut last_body = String::new();
 
@@ -358,6 +372,25 @@ mod tests {
         assert_eq!(total_attempts(0), 1);
         assert_eq!(total_attempts(10), 11);
         assert_eq!(total_attempts(u32::MAX), u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn excessive_retry_budget_is_rejected_before_provider_use() {
+        let config = RetryConfig {
+            max_retries: MAX_RETRIES + 1,
+            ..RetryConfig::default()
+        };
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_operation = Arc::clone(&calls);
+        let error = with_retry::<(), _, _>(&config, move |_| {
+            calls_for_operation.fetch_add(1, Ordering::Relaxed);
+            async { AttemptOutcome::Success(()) }
+        })
+        .await
+        .expect_err("an excessive retry budget must fail closed");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert!(error.to_string().contains("exceeds the maximum"));
     }
 
     // ========================================================================

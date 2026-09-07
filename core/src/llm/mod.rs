@@ -45,7 +45,7 @@ use tokio_util::sync::CancellationToken;
 // `LlmConfig::retry_config` and provider builder methods already expose this
 // type in the public API. Re-export it from the same module so hosts can
 // configure retry authority without reaching into a crate-private module.
-pub use crate::retry::{RetryConfig, RetryExhaustedError};
+pub use crate::retry::{RetryConfig, RetryExhaustedError, MAX_RETRIES};
 
 /// LLM client trait
 #[async_trait]
