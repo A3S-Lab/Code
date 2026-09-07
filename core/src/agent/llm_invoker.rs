@@ -376,6 +376,7 @@ impl LlmInvoker {
         Self::new_with_admission(inner, invocation, admission)
     }
 
+    #[cfg(test)]
     fn new_with_admission(
         inner: Arc<dyn LlmClient>,
         invocation: InvocationContext,

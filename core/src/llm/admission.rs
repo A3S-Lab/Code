@@ -364,6 +364,7 @@ impl ModelGenerationAdmission {
     /// Whether this admission publishes a typed product
     /// [`ModelGenerationPool`] (OPT-POOL1). Scheduler quota without a pool is
     /// not product shared-capacity evidence.
+    #[cfg(test)]
     pub(crate) fn publishes_model_generation_pool(&self) -> bool {
         self.bounded.pool.is_some()
     }

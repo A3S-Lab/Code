@@ -842,7 +842,6 @@ impl SessionStore for FileSessionStore {
             reference_aware_artifact_gc: true,
             watch: true,
             encrypted_at_rest: self.encryption.is_some(),
-            ..SessionStoreCapabilities::default()
         }
     }
 

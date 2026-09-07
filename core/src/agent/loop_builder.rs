@@ -1,4 +1,4 @@
-use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
+use super::{AgentConfig, AgentLoop, ModelMiddlewareObs};
 use crate::llm::{LlmClient, ModelGenerationAdmission};
 use crate::loop_checkpoint::LoopCheckpointSink;
 use crate::session_lane_queue::SessionLaneQueue;
@@ -56,11 +56,6 @@ impl AgentLoop {
     ) -> Self {
         self.middleware_obs = middleware_obs;
         self
-    }
-
-    /// Return secret-free middleware stage counters for this loop's observation window.
-    pub(crate) fn model_middleware_health(&self) -> ModelMiddlewareHealthSnapshot {
-        self.middleware_obs.snapshot()
     }
 
     pub(crate) fn with_capability_runtime(

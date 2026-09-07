@@ -326,6 +326,7 @@ impl TaskExecutor {
     }
 
     /// Force a Tool presentation profile on delegated children.
+    #[cfg(test)]
     pub(crate) fn with_child_tool_presentation(
         mut self,
         profile: crate::tools::ToolPresentationProfileV1,

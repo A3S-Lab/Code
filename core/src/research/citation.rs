@@ -29,6 +29,7 @@ pub struct ResearchCitationV1 {
 }
 
 impl ResearchCitationV1 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         citation_id: impl Into<String>,
         project_id: impl Into<String>,
