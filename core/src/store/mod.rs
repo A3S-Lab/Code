@@ -65,10 +65,33 @@ use crate::verification::VerificationReport;
 use anyhow::{bail, Result};
 
 /// Persistence guarantees advertised by a session store implementation.
+///
+/// Hosts inspect these flags before relying on a durability semantics; a
+/// missing guarantee means the caller must arrange it above the store. The
+/// flags describe what an implementation already proves with its own tests,
+/// not aspirations (KRN-6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SessionStoreCapabilities {
     /// A complete [`SessionSnapshotV1`] is committed as one atomic generation.
     pub atomic_session_snapshots: bool,
+    /// Saving a generation whose identity already exists either replaces it
+    /// under one compare-and-swap decision or fails without a partial write;
+    /// concurrent writers never interleave generations.
+    pub aggregate_cas: bool,
+    /// Events are appended once with monotonically increasing sequence and
+    /// can be replayed after reopen; duplicates fail closed.
+    pub append_only_event_log: bool,
+    /// Cross-process writers are fenced by a lease so a stale process cannot
+    /// overwrite a newer generation after a takeover.
+    pub lease_fencing: bool,
+    /// Persisted bytes are encrypted at rest by the backend itself.
+    pub encrypted_at_rest: bool,
+    /// The store can notify watchers of committed generations.
+    pub watch: bool,
+    /// Artifact garbage collection is reference-aware: content reachable
+    /// from a retained provenance receipt, review finding, checkpoint, or
+    /// publication is never removed.
+    pub reference_aware_artifact_gc: bool,
 }
 
 // ============================================================================

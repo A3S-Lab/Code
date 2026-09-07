@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extended `SessionStoreCapabilities` with the KRN-6 durability
+  guarantees: aggregate CAS, append-only event log, lease fencing,
+  encryption at rest, watch, and reference-aware artifact GC. Every flag
+  defaults to unadvertised — hosts negotiate before relying on a
+  semantics — and the built-in memory/file adapters continue to
+  advertise exactly the atomic snapshot they prove.
 - Added typed tool result trust labels (KRN-5 slice).
   `ToolResultTrustV1` marks every tool result and tool output as trusted,
   workspace data, or external; web search, web fetch, download, and MCP

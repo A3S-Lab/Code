@@ -1454,3 +1454,32 @@ async fn test_file_store_workflow_checkpoint_atomic_no_temp_leftovers() {
         "the final workflow checkpoint file must exist, got: {names:?}"
     );
 }
+
+#[test]
+fn store_capabilities_default_to_explicit_negotiation() {
+    use super::SessionStoreCapabilities;
+
+    // Every KRN-6 guarantee starts unadvertised: hosts must negotiate before
+    // relying on CAS, append-only logs, fencing, encryption, watch, or
+    // reference-aware artifact GC. Only proven guarantees are set.
+    let defaults = SessionStoreCapabilities::default();
+    assert!(defaults.atomic_session_snapshots == defaults.aggregate_cas);
+    assert!(!defaults.aggregate_cas);
+    assert!(!defaults.append_only_event_log);
+    assert!(!defaults.lease_fencing);
+    assert!(!defaults.encrypted_at_rest);
+    assert!(!defaults.watch);
+    assert!(!defaults.reference_aware_artifact_gc);
+
+    // The in-process adapters advertise exactly the atomic snapshot they
+    // prove; the extended guarantees remain unset until the WAL/CAS and
+    // fenced-file migration lands them.
+    let memory = crate::store::memory_store::MemorySessionStore::default();
+    assert_eq!(
+        memory.capabilities(),
+        SessionStoreCapabilities {
+            atomic_session_snapshots: true,
+            ..SessionStoreCapabilities::default()
+        }
+    );
+}

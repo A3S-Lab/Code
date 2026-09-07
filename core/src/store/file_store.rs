@@ -546,6 +546,7 @@ impl SessionStore for FileSessionStore {
     fn capabilities(&self) -> SessionStoreCapabilities {
         SessionStoreCapabilities {
             atomic_session_snapshots: true,
+            ..SessionStoreCapabilities::default()
         }
     }
 

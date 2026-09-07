@@ -286,6 +286,18 @@ committed regression.
 
 
 
+### 3.3.10 Store durability negotiation (KRN-6 slice)
+
+`SessionStoreCapabilities` now advertises the full KRN-6 guarantee set —
+aggregate CAS, append-only event log, lease fencing, encryption at rest,
+watch, and reference-aware artifact GC — beside the existing atomic
+snapshot flag. Every new flag defaults to unadvertised so hosts must
+negotiate before relying on a semantics, and a capability test locks the
+default-and-advertise contract. The built-in memory and file adapters
+continue to advertise exactly the atomic snapshot generations they prove;
+the WAL-plus-immutable-snapshot file migration and reference-aware
+artifact retention land incrementally behind these flags.
+
 ### 3.3.10 Tool result trust boundary
 
 The KRN-5 trust slice is delivered at the value boundary. `ToolResultTrustV1`
