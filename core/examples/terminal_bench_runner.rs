@@ -9,7 +9,9 @@
 //! Usage:
 //! `terminal_bench_runner --config /run/a3s/config.acl --workspace /root --prompt-file /run/a3s/instruction.md --result-file /logs/agent/a3s-code.result.json`
 
+#[path = "terminal_bench_runner/result.rs"]
 mod result;
+#[path = "terminal_bench_runner/sandbox.rs"]
 mod sandbox;
 
 use a3s_code_core::execution_identity::ExecutionResultOutcomeV1;
