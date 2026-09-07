@@ -205,10 +205,11 @@ impl TaskScheduler {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let lease = TaskLease {
+        let mut lease = TaskLease {
             id,
             release_tx: self.release_tx.clone(),
             released: false,
+            armed: false,
         };
 
         tokio::select! {
@@ -227,6 +228,10 @@ impl TaskScheduler {
                 ready: ready_tx,
             })) => {
                 sent.map_err(|_| TaskSchedulerError::Closed)?;
+                // Release notifications use a separate control channel. Arm
+                // the lease only after Enqueue was accepted so cancellation
+                // before the send cannot publish an unmatched Release.
+                lease.armed = true;
                 tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => Err(TaskSchedulerError::Cancelled),
@@ -266,6 +271,7 @@ pub struct TaskLease {
     id: u64,
     release_tx: mpsc::UnboundedSender<u64>,
     released: bool,
+    armed: bool,
 }
 
 impl TaskLease {
@@ -277,7 +283,7 @@ impl TaskLease {
 
 impl Drop for TaskLease {
     fn drop(&mut self) {
-        if !self.released {
+        if self.armed && !self.released {
             self.released = true;
             let _ = self.release_tx.send(self.id);
         }
@@ -568,6 +574,27 @@ mod tests {
             Err(TaskSchedulerError::Cancelled)
         ));
         assert_eq!(scheduler.stats().await.unwrap().active, 0);
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_racing_enqueue_never_leaves_an_orphaned_request() {
+        let scheduler = scheduler(1, 60_000);
+        let cancellation = CancellationToken::new();
+        let mut admission = Box::pin(scheduler.acquire(
+            TaskPriority::Interactive,
+            "cancelled-during-enqueue",
+            &cancellation,
+        ));
+        poll_once_pending(admission.as_mut()).await;
+        cancellation.cancel();
+        assert!(matches!(
+            admission.await,
+            Err(TaskSchedulerError::Cancelled)
+        ));
+        let stats = scheduler.stats().await.unwrap();
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.pending, 0);
         scheduler.shutdown().await;
     }
 
