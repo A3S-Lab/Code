@@ -454,6 +454,9 @@ impl StreamRunLifecycle {
                     .clear_loop_checkpoint(self.cleanup.run_id())
                     .await;
             }
+            // A worker that panicked or aborted before settling must not
+            // leave a non-terminal Run behind released cleanup.
+            self.coordinator.ensure_settled_after_join().await;
             self.cleanup.clear_cancel_token().await;
             self.cleanup.finish().await;
         });

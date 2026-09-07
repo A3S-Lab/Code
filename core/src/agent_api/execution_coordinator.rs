@@ -245,6 +245,22 @@ impl ExecutionCoordinator {
             .await;
     }
 
+    /// Safety net for detached execution: after every owned worker has been
+    /// joined, guarantee the Run reached a terminal state even when the
+    /// worker died before settling (panic, abort, or a missed error path).
+    ///
+    /// This is the KRN-2 invariant that a joined worker can never leave a
+    /// non-terminal Run behind released cleanup. It is idempotent with the
+    /// normal settle path: when the worker already settled, this call is the
+    /// duplicate the atomic guard ignores.
+    pub(super) async fn ensure_settled_after_join(&self) {
+        let transition = self.terminal_for(
+            false,
+            Some("execution worker ended without a terminal result".to_owned()),
+        );
+        self.settle_terminal(transition).await;
+    }
+
     /// Build the invocation context used by blocking and streaming workers.
     pub(super) fn invocation(
         &self,
@@ -357,5 +373,68 @@ mod tests {
         let snapshot = run_store.snapshot("run-1").await.unwrap();
         assert_eq!(snapshot.status, crate::run::RunStatus::Failed);
         assert_eq!(snapshot.error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn a_joined_worker_can_never_leave_a_non_terminal_run() {
+        let cancellation = CancellationToken::new();
+        let run_control = RunControlInbox::new(
+            "session-1".to_owned(),
+            "run-1".to_owned(),
+            cancellation.clone(),
+        );
+        let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+        run_store
+            .create_run_with_id("run-1".to_owned(), "session-1", "prompt")
+            .await;
+        let coordinator = ExecutionCoordinator {
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            cancellation,
+            run_control,
+            run_store: Arc::clone(&run_store),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        // A worker that never settled (panic/abort path) still gets one
+        // terminal transition from the join safety net.
+        coordinator.ensure_settled_after_join().await;
+        let snapshot = run_store.snapshot("run-1").await.unwrap();
+        assert_eq!(snapshot.status, crate::run::RunStatus::Failed);
+        assert!(snapshot.error.is_some());
+
+        // The safety net never rewrites an already-settled Run.
+        coordinator
+            .settle_terminal(RunTerminalTransition::Cancelled)
+            .await;
+        let snapshot = run_store.snapshot("run-1").await.unwrap();
+        assert_eq!(snapshot.status, crate::run::RunStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_join_settles_to_cancelled() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let run_control = RunControlInbox::new(
+            "session-1".to_owned(),
+            "run-1".to_owned(),
+            cancellation.clone(),
+        );
+        let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+        run_store
+            .create_run_with_id("run-1".to_owned(), "session-1", "prompt")
+            .await;
+        let coordinator = ExecutionCoordinator {
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            cancellation,
+            run_control,
+            run_store: Arc::clone(&run_store),
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        coordinator.ensure_settled_after_join().await;
+        let snapshot = run_store.snapshot("run-1").await.unwrap();
+        assert_eq!(snapshot.status, crate::run::RunStatus::Cancelled);
     }
 }
