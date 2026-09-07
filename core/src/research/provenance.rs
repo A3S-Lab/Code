@@ -106,6 +106,20 @@ impl ResearchProvenanceReceiptV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON provenance receipt and validate its identity
+    /// before returning it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let receipt: Self = super::decode_json_slice(bytes)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    /// Encode a validated provenance receipt for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     fn validate_without_digest(&self) -> Result<(), ResearchContractError> {
         if self.schema != RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1 {
             return Err(ResearchContractError::UnsupportedSchema);
@@ -212,6 +226,11 @@ mod tests {
         .unwrap();
         assert_eq!(receipt.input_digests, vec![digest('b'), digest('c')]);
         assert!(receipt.validate().is_ok());
+        let encoded = receipt.to_vec().unwrap();
+        assert_eq!(
+            ResearchProvenanceReceiptV1::from_slice(&encoded).unwrap(),
+            receipt
+        );
     }
 
     #[test]

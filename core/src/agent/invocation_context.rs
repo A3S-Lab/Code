@@ -283,6 +283,9 @@ impl InvocationContext {
         if !self.session_id.is_empty() {
             context = context.with_session_id(self.session_id.to_string());
         }
+        if !self.run_id.is_empty() {
+            context = context.with_run_id(self.run_id.to_string());
+        }
         if let Some(tx) = &self.agent_event_tx {
             context = context.with_agent_event_tx(tx.clone());
         }
@@ -398,6 +401,7 @@ mod tests {
         let tool_context = context.bind_tool_context(ToolContext::new(PathBuf::from(".")));
 
         assert_eq!(tool_context.session_id.as_deref(), Some("session-1"));
+        assert_eq!(tool_context.run_id(), Some("run-1"));
         assert!(!tool_context.is_cancelled());
         token.cancel();
         assert!(tool_context.is_cancelled());

@@ -56,6 +56,20 @@ impl ResearchEventV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON research event and validate its identity before
+    /// returning it to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let event: Self = super::decode_json_slice(bytes)?;
+        event.validate()?;
+        Ok(event)
+    }
+
+    /// Encode a validated research event for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
     /// Project one Core event into the research event view.
     ///
     /// Core evidence cursors are zero-based because they align with retained
@@ -70,6 +84,26 @@ impl ResearchEventV1 {
         project_revision: u64,
         event: &CoreEventIdentity,
     ) -> Result<Self, ResearchContractError> {
+        Self::from_core_event_for_run(
+            project_id,
+            project_revision,
+            event.identity.operation_id.as_str(),
+            event,
+        )
+    }
+
+    /// Project a Core event while supplying the actual Code Run identity.
+    ///
+    /// `CoreEventIdentity::operation_id` is intentionally opaque and may
+    /// represent a session-scoped operation rather than the bare Run id.
+    /// Research projections must therefore use this explicit adapter whenever
+    /// a host has the owning `ExecutionTargetV1` available.
+    pub fn from_core_event_for_run(
+        project_id: impl Into<String>,
+        project_revision: u64,
+        run_id: impl Into<String>,
+        event: &CoreEventIdentity,
+    ) -> Result<Self, ResearchContractError> {
         event
             .validate()
             .map_err(|_| ResearchContractError::InvalidField("coreEvent"))?;
@@ -82,7 +116,7 @@ impl ResearchEventV1 {
         Self::new(
             project_id,
             project_revision,
-            Some(event.identity.operation_id.as_str().to_owned()),
+            Some(run_id.into()),
             sequence,
             format!("code.{}", event.event_type.replace('_', "-")),
             event.payload_digest.clone(),
@@ -186,10 +220,12 @@ mod tests {
         )
         .unwrap();
         assert!(event.validate().is_ok());
+        let encoded = event.to_vec().unwrap();
+        assert_eq!(ResearchEventV1::from_slice(&encoded).unwrap(), event);
 
         let mut encoded = serde_json::to_value(&event).unwrap();
         encoded["unexpected"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<ResearchEventV1>(encoded).is_err());
+        assert!(ResearchEventV1::from_slice(&serde_json::to_vec(&encoded).unwrap()).is_err());
     }
 
     #[test]
@@ -214,6 +250,29 @@ mod tests {
         assert_eq!(projected.event_type, "code.text-delta");
         assert_eq!(projected.payload_digest, core.payload_digest);
         assert_eq!(projected.observed_at_ms, 42);
+        assert!(projected.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_run_projection_does_not_confuse_operation_and_run_identity() {
+        let core = CoreEventIdentity::from_agent_event(
+            CoreIdentity::new(
+                OperationId::new("session-1/run-1/turn-2").unwrap(),
+                SourceRevision::new(4),
+                None,
+                EvidenceCursor::new(6),
+            ),
+            42,
+            &AgentEvent::TextDelta {
+                text: "finding".to_owned(),
+            },
+        )
+        .unwrap();
+        let projected =
+            ResearchEventV1::from_core_event_for_run("project-1", 3, "run-1", &core).unwrap();
+
+        assert_eq!(projected.run_id.as_deref(), Some("run-1"));
+        assert_ne!(projected.run_id.as_deref(), Some("session-1/run-1/turn-2"));
         assert!(projected.validate().is_ok());
     }
 }

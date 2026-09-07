@@ -134,6 +134,54 @@ impl ResearchRunV1 {
         Ok(())
     }
 
+    /// Decode a bounded JSON run and validate its identity before returning it
+    /// to a caller at a process boundary.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ResearchContractError> {
+        let run: Self = super::decode_json_slice(bytes)?;
+        run.validate()?;
+        Ok(run)
+    }
+
+    /// Encode a validated run for a process boundary.
+    pub fn to_vec(&self) -> Result<Vec<u8>, ResearchContractError> {
+        self.validate()?;
+        super::encode_json(self)
+    }
+
+    /// Verify that a research run is attached to the exact Code execution
+    /// target that was admitted by the host.  The target's session identity is
+    /// retained by Code's execution plane; this contract only owns the shared
+    /// Run id and refuses a cross-Run projection.
+    pub fn validate_execution_target(
+        &self,
+        target: &crate::evaluation::ExecutionTargetV1,
+    ) -> Result<(), ResearchContractError> {
+        self.validate()?;
+        target
+            .validate()
+            .map_err(|_| ResearchContractError::InvalidField("executionTarget"))?;
+        if target.run_id != self.run_id {
+            return Err(ResearchContractError::InvalidField("executionTarget.runId"));
+        }
+        Ok(())
+    }
+
+    /// Validate that this Run has crossed the admission boundary before a
+    /// host attaches reviewer evidence or findings to it.
+    ///
+    /// A planned Run has not yet frozen an executable identity, so accepting
+    /// review output for it would allow an evaluator result to exist without
+    /// a corresponding admitted research execution. Terminal and checkpoint
+    /// states remain reviewable because hosts may inspect completed or failed
+    /// artifacts after execution.
+    pub(crate) fn validate_reviewable(&self) -> Result<(), ResearchContractError> {
+        self.validate()?;
+        if matches!(self.status, ResearchRunStatusV1::Planned) {
+            return Err(ResearchContractError::InvalidField("researchRun.status"));
+        }
+        Ok(())
+    }
+
     pub fn transition_to(
         &mut self,
         next: ResearchRunStatusV1,
@@ -270,6 +318,8 @@ mod tests {
         run.transition_to(ResearchRunStatusV1::Admitted).unwrap();
         assert_ne!(before, run.run_digest);
         assert!(run.validate().is_ok());
+        let encoded = run.to_vec().unwrap();
+        assert_eq!(ResearchRunV1::from_slice(&encoded).unwrap(), run);
     }
 
     #[test]
@@ -352,6 +402,36 @@ mod tests {
                 None,
             ),
             Err(ResearchContractError::InvalidField("modelId"))
+        );
+    }
+
+    #[test]
+    fn execution_target_binding_rejects_a_cross_run_projection() {
+        let run = ResearchRunV1::new(
+            "run-1",
+            "project-1",
+            1,
+            digest('a'),
+            digest('b'),
+            binding(),
+            "local",
+            "model",
+            ResearchReproducibilityV1::Reproducible,
+            None,
+        )
+        .unwrap();
+        assert!(run
+            .validate_execution_target(&crate::evaluation::ExecutionTargetV1::new(
+                "session-1",
+                "run-1"
+            ))
+            .is_ok());
+        assert_eq!(
+            run.validate_execution_target(&crate::evaluation::ExecutionTargetV1::new(
+                "session-1",
+                "run-2"
+            )),
+            Err(ResearchContractError::InvalidField("executionTarget.runId"))
         );
     }
 }

@@ -226,6 +226,13 @@ Python, and Go intentionally do not accept a primitive backend name for this
 Rust host callback; an official managed-host surface requires a separately
 typed, authorized adapter contract.
 
+The local fallback now has an explicit `ArtifactStore::put_content_addressed`
+operation for replay and research paths. It returns an idempotent replay for
+the exact same artifact and rejects a URI collision with different bytes or
+metadata without changing the retained value. The compatibility `put`
+operation remains available for mutable cache callers; Code's Tool artifact
+fallback uses the create-only operation.
+
 ## Tool-result transform binding
 
 An executed Tool result carries a separate

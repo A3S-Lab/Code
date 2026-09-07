@@ -279,28 +279,23 @@ impl ScopedToolInvoker {
             .ok();
         }
 
-        let preadmitted = ctx.has_model_generation_permit();
-        let llm_client = if preadmitted {
-            ctx.llm_client().unwrap_or_else(|| {
-                self.agent.scoped_llm_client_for_parts(
-                    (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
-                    &self.event_tx,
-                    &ctx.cancellation_token(),
-                )
-            })
-        } else {
-            self.agent.scoped_llm_client_for_parts(
-                (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
-                &self.event_tx,
-                &ctx.cancellation_token(),
-            )
-        };
-        let model_generation_admission = if preadmitted {
-            ctx.model_generation_admission()
-                .unwrap_or_else(|| self.agent.model_generation_admission.clone())
-        } else {
-            self.agent.model_generation_admission.clone()
-        };
+        let existing_llm_client = ctx.llm_client();
+        let model_generation_admission = ctx.model_generation_admission().unwrap_or_else(|| {
+            self.agent
+                .model_generation_admission_for_client(existing_llm_client.as_ref())
+        });
+        // Claim an outer permit before constructing the provider facade. The
+        // facade consumes it for the first underlying generation, then
+        // releases it before any structured repair call can acquire again.
+        let preadmitted = ctx.model_generation_permit(&model_generation_admission);
+        let llm_client = self.agent.scoped_llm_client_for_tool_context(
+            (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
+            &self.event_tx,
+            &ctx.cancellation_token(),
+            model_generation_admission.clone(),
+            preadmitted,
+            existing_llm_client,
+        );
         let governed_ctx = ctx
             .clone()
             .with_llm_client(llm_client)

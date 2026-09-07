@@ -32,6 +32,7 @@ pub(super) struct DirectToolRuntime {
     closed: Arc<AtomicBool>,
     task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
     task_priority: crate::task_scheduler::TaskPriority,
+    provider_quota: Option<crate::task_scheduler::TaskSchedulerQuota>,
     security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
 }
 
@@ -46,6 +47,20 @@ impl DirectToolRuntime {
             closed: Arc::clone(&session.closed),
             task_scheduler: Some(Arc::clone(&session.task_scheduler)),
             task_priority: session.task_priority,
+            // Session-owned model-generation permits already reserve this
+            // provider quota through the shared scheduler. Avoid holding the
+            // same dimension across the whole host-tool call, which would
+            // recursively block a nested `generate_object` invocation.
+            provider_quota: (!session.model_generation_admission.has_scheduler_quota())
+                .then(|| session.llm_client.model_generation_pool())
+                .flatten()
+                .and_then(|pool| {
+                    crate::task_scheduler::TaskSchedulerQuota::new(
+                        pool.identity.clone(),
+                        pool.max_concurrency().get(),
+                    )
+                    .ok()
+                }),
             security_provider: session.config.security_provider.clone(),
         }
     }
@@ -155,10 +170,12 @@ impl DirectToolRuntime {
     async fn call_invocation(&self, invocation: ToolInvocation) -> Result<ToolCallResult> {
         self.ensure_open()?;
         let cancel = self.session_cancel.child_token();
-        let _task_lease = ExecutionCoordinator::acquire_optional_task(
+        let quotas = self.provider_quota.as_slice();
+        let _task_lease = ExecutionCoordinator::acquire_optional_task_with_quotas(
             self.task_scheduler.as_deref(),
             self.task_priority,
             format!("{}:tool:{}", self.session_id, invocation.name),
+            quotas,
             &self.session_id,
             &cancel,
             &self.closed,
@@ -389,6 +406,7 @@ mod tests {
             closed: Arc::new(AtomicBool::new(false)),
             task_scheduler: None,
             task_priority: crate::task_scheduler::TaskPriority::Interactive,
+            provider_quota: None,
             security_provider,
         }
     }
@@ -914,6 +932,7 @@ mod tests {
             closed: Arc::new(AtomicBool::new(false)),
             task_scheduler: None,
             task_priority: crate::task_scheduler::TaskPriority::Interactive,
+            provider_quota: None,
             security_provider: None,
         };
 

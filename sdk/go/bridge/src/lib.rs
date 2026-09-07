@@ -53,6 +53,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "agent_create_config",
     "agent_refresh_mcp_tools",
     "agent_task_scheduler_stats",
+    "agent_task_scheduler_health",
     "agent_replace_session",
     "agent_session_for_agent",
     "agent_session_for_worker",
@@ -68,6 +69,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_resume",
     "session_info",
     "session_task_scheduler_stats",
+    "session_task_scheduler_health",
+    "session_model_generation_pool_health",
     "session_memory_maintenance_health",
     "session_workspace_retrieval_status",
     "session_semantic_search",
@@ -304,6 +307,7 @@ impl From<TaskSchedulerError> for BridgeFailure {
             TaskSchedulerError::InvalidConfig(_) => "INVALID_CONFIG",
             TaskSchedulerError::Cancelled => "TASK_ADMISSION_CANCELLED",
             TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
+            TaskSchedulerError::AtCapacity { .. } => "TASK_ADMISSION_AT_CAPACITY",
         };
         Self::new(code, error.to_string())
     }
@@ -704,6 +708,14 @@ impl BridgeState {
                     .await?;
                 encode(stats)
             }
+            "agent_task_scheduler_health" => {
+                let health = self
+                    .agent(&required::<String>(&request.params, "agent_id")?)
+                    .await?
+                    .task_scheduler_health()
+                    .await?;
+                encode(health)
+            }
             "agent_replace_session" => {
                 let agent_id: String = required(&request.params, "agent_id")?;
                 let current = self.request_session(&request.params).await?;
@@ -863,6 +875,22 @@ impl BridgeState {
                     .task_scheduler_stats()
                     .await?;
                 encode(stats)
+            }
+            "session_task_scheduler_health" => {
+                let health = self
+                    .request_session(&request.params)
+                    .await?
+                    .task_scheduler_health()
+                    .await?;
+                encode(health)
+            }
+            "session_model_generation_pool_health" => {
+                let health = self
+                    .request_session(&request.params)
+                    .await?
+                    .model_generation_pool_health()
+                    .await?;
+                encode(health)
             }
             "session_memory_maintenance_health" => {
                 let health = self

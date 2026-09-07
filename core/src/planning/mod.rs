@@ -237,11 +237,79 @@ impl ExecutionPlan {
         self.estimated_steps = self.steps.len();
     }
 
+    /// Insert or update one step while preserving the plan's insertion order.
+    ///
+    /// Flow replay can deliver the same durable step definition more than
+    /// once (for example when an observer is attached during a resumed run).
+    /// Keeping this operation on the canonical plan prevents each adapter from
+    /// implementing a subtly different deduplication and status policy.
+    pub fn upsert_step(&mut self, step: Task) {
+        let tool = step.tool.clone();
+        if let Some(existing) = self.steps.iter_mut().find(|item| item.id == step.id) {
+            // A terminal event is authoritative for the step. A duplicate
+            // StepCreated/Started notification must not regress a completed,
+            // failed, or cancelled task back to an active state.
+            existing.status = merge_status(existing.status, step.status);
+            existing.content = step.content;
+            existing.priority = step.priority;
+            existing.tool = step.tool.clone();
+            existing.dependencies = step.dependencies;
+            existing.success_criteria = step.success_criteria;
+        } else {
+            self.steps.push(step);
+        }
+        self.estimated_steps = self.steps.len();
+        if let Some(tool) = tool {
+            self.add_required_tool(tool);
+        }
+    }
+
     pub fn add_required_tool(&mut self, tool: impl Into<String>) {
         let tool_str = tool.into();
         if !self.required_tools.contains(&tool_str) {
             self.required_tools.push(tool_str);
         }
+    }
+
+    /// Derive an identity for the immutable plan definition.
+    ///
+    /// Mutable status is deliberately excluded: restarting or retrying a Flow
+    /// must keep the same plan identity while its progress changes. The
+    /// identity contains only already-materialized task definitions and
+    /// exposes no task output or other runtime evidence. Dynamic Flow adapters
+    /// bound user-facing descriptions before they enter this projection.
+    pub fn definition_identity(
+        &self,
+    ) -> Result<
+        crate::execution_identity::ExecutionIdentityV1,
+        crate::execution_identity::ExecutionIdentityError,
+    > {
+        let steps = self
+            .steps
+            .iter()
+            .map(|step| {
+                serde_json::json!({
+                    "id": step.id,
+                    "content": step.content,
+                    "priority": step.priority,
+                    "tool": step.tool,
+                    "dependencies": step.dependencies,
+                    "success_criteria": step.success_criteria,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut required_tools = self.required_tools.clone();
+        required_tools.sort();
+        required_tools.dedup();
+        crate::execution_identity::ExecutionIdentityV1::derive(
+            crate::execution_identity::EXECUTION_PLAN_IDENTITY_DOMAIN_V1,
+            &serde_json::json!({
+                "goal": self.goal,
+                "complexity": self.complexity,
+                "required_tools": required_tools,
+                "steps": steps,
+            }),
+        )
     }
 
     /// Get steps that are ready to execute (dependencies met)
@@ -264,7 +332,7 @@ impl ExecutionPlan {
     /// Update the status of a step by ID
     pub fn mark_status(&mut self, step_id: &str, status: TaskStatus) {
         if let Some(step) = self.steps.iter_mut().find(|s| s.id == step_id) {
-            step.status = status;
+            step.status = merge_status(step.status, status);
         }
     }
 
@@ -296,6 +364,18 @@ impl ExecutionPlan {
             .count();
         completed as f32 / self.steps.len() as f32
     }
+}
+
+/// Merge a replay notification without allowing duplicate delivery to regress
+/// an already observed lifecycle transition.
+fn merge_status(current: TaskStatus, incoming: TaskStatus) -> TaskStatus {
+    if !current.is_active() {
+        return current;
+    }
+    if current == TaskStatus::InProgress && incoming == TaskStatus::Pending {
+        return current;
+    }
+    incoming
 }
 
 // ============================================================================
@@ -644,6 +724,35 @@ mod tests {
         let ready = plan.get_ready_steps();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "s3");
+    }
+
+    #[test]
+    fn upsert_preserves_order_and_does_not_regress_status() {
+        let mut plan = ExecutionPlan::new("Test", Complexity::Simple);
+        plan.upsert_step(
+            Task::new("step", "First")
+                .with_tool("read")
+                .with_status(TaskStatus::InProgress),
+        );
+        plan.upsert_step(
+            Task::new("step", "Updated")
+                .with_tool("read")
+                .with_status(TaskStatus::Pending),
+        );
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].content, "Updated");
+        assert_eq!(plan.steps[0].status, TaskStatus::InProgress);
+        assert_eq!(plan.required_tools, vec!["read"]);
+    }
+
+    #[test]
+    fn definition_identity_ignores_progress_status() {
+        let mut plan = ExecutionPlan::new("Test", Complexity::Simple);
+        plan.add_step(Task::new("step", "First").with_tool("read"));
+        let before = plan.definition_identity().unwrap();
+        plan.mark_status("step", TaskStatus::Completed);
+        let after = plan.definition_identity().unwrap();
+        assert_eq!(before, after);
     }
 
     // ========================================================================

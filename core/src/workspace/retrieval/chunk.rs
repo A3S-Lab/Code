@@ -186,7 +186,7 @@ fn line_ranges(content: &str, ranges: &[WorkspaceChunkRange]) -> Vec<(usize, usi
     anchors
 }
 
-fn chunk_id(
+pub(crate) fn chunk_id(
     path: &str,
     content_digest: &str,
     start_byte: usize,

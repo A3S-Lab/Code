@@ -225,8 +225,14 @@ pub use durable_memory::{
     DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 pub use dynamic_workflow::{
-    dynamic_workflow_store_path, DynamicWorkflowRuntime, DynamicWorkflowScriptLimits,
-    DynamicWorkflowTool, DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
+    dynamic_workflow_claim_identity, dynamic_workflow_continuation_identity,
+    dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
+    register_dynamic_workflow, register_dynamic_workflow_with_event_store,
+    register_dynamic_workflow_with_scheduler, CrossProcessFlowEventStore,
+    DynamicWorkflowAdmissionStats, DynamicWorkflowControl, DynamicWorkflowControlDiagnostics,
+    DynamicWorkflowControlSnapshot, DynamicWorkflowHealthSnapshot, DynamicWorkflowRuntime,
+    DynamicWorkflowScriptLimits, DynamicWorkflowTool, DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID,
+    DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
 pub use embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
@@ -273,11 +279,11 @@ pub use event_protocol::{
 };
 pub use flow_graph::{
     run_object_id as flow_run_object_id, step_object_id as flow_step_object_id,
-    FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionDispatchError,
-    FlowDecisionDispatcher, FlowDecisionHealthSnapshot, FlowDecisionHealthStatus,
-    FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink, FlowDecisionStep,
-    FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver, MemoryFlowDecisionLedger,
-    FLOW_GRAPH_SOURCE,
+    FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionClaimState,
+    FlowDecisionDispatchError, FlowDecisionDispatcher, FlowDecisionHealthSnapshot,
+    FlowDecisionHealthStatus, FlowDecisionLedger, FlowDecisionRequest, FlowDecisionSink,
+    FlowDecisionStep, FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver,
+    MemoryFlowDecisionLedger, FLOW_GRAPH_SOURCE,
 };
 pub use harness_evidence::{
     HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,
@@ -292,7 +298,8 @@ pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
     ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
     Message, ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
-    ModelGenerationPermit, OpenAiClient, TokenUsage,
+    ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError,
+    ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{
@@ -310,11 +317,12 @@ pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlo
 pub use research::{
     ResearchArtifactKindV1, ResearchContractError, ResearchEventV1, ResearchEvidenceFactKindV1,
     ResearchEvidenceFactV1, ResearchProvenanceReceiptV1, ResearchReproducibilityV1,
-    ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
-    ResearchReviewSeverityV1, ResearchReviewStatusV1, ResearchRunStatusV1, ResearchRunV1,
-    RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1, RESEARCH_EVIDENCE_FACT_SCHEMA_V1,
-    RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
-    RESEARCH_RUN_SCHEMA_V1,
+    ResearchReviewBatchV1, ResearchReviewCategoryV1, ResearchReviewFindingV1,
+    ResearchReviewLocationV1, ResearchReviewSeverityV1, ResearchReviewStatusV1,
+    ResearchRunStatusV1, ResearchRunV1, RESEARCH_ARTIFACT_KINDS, RESEARCH_EVENT_SCHEMA_V1,
+    RESEARCH_EVIDENCE_FACT_SCHEMA_V1, RESEARCH_MAX_REVIEW_FINDINGS,
+    RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES, RESEARCH_PROVENANCE_RECEIPT_SCHEMA_V1,
+    RESEARCH_REVIEW_BATCH_SCHEMA_V1, RESEARCH_REVIEW_FINDING_SCHEMA_V1, RESEARCH_RUN_SCHEMA_V1,
 };
 pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
 pub use run::{
@@ -355,8 +363,11 @@ pub use subagent_task_tracker::{
     InMemorySubagentTaskTracker, SubagentProgressEntry, SubagentStatus, SubagentTaskSnapshot,
 };
 pub use task_scheduler::{
-    TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig, TaskSchedulerError,
-    TaskSchedulerStats,
+    TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
+    TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerQuota,
+    TaskSchedulerQuotaHealthSnapshot, TaskSchedulerQuotaSnapshot, TaskSchedulerStats,
+    TASK_SCHEDULER_MAX_QUOTAS, TASK_SCHEDULER_MAX_SCOPE_BYTES,
+    TASK_SCHEDULER_QUOTA_HEALTH_RETENTION,
 };
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,

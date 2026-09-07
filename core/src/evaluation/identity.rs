@@ -109,7 +109,7 @@ impl ExecutionFrameV1 {
             if branch.is_empty()
                 || branch.len() > MAX_BRANCH_BYTES
                 || branch.contains('\0')
-                || branch.lines().count() != 1
+                || branch.contains(['\r', '\n'])
             {
                 return Err(IdentityError::InvalidField("branch"));
             }
@@ -173,7 +173,7 @@ fn validate_id(field: &'static str, value: &str) -> Result<(), IdentityError> {
     if value.is_empty()
         || value.len() > EVALUATION_MAX_ID_BYTES
         || value.contains('\0')
-        || value.lines().count() != 1
+        || value.contains(['\r', '\n'])
     {
         return Err(IdentityError::InvalidField(field));
     }
@@ -213,5 +213,16 @@ mod tests {
             Err(IdentityError::InvalidField("parent"))
         ));
         assert_eq!(EventCursorV1::new(u64::MAX).next(), None);
+    }
+
+    #[test]
+    fn target_rejects_trailing_line_endings_in_identity_fields() {
+        for run_id in ["run-1\n", "run-1\r", "run-1\r\n"] {
+            let target = ExecutionTargetV1::new("session-1", run_id);
+            assert_eq!(
+                target.validate(),
+                Err(IdentityError::InvalidField("run_id"))
+            );
+        }
     }
 }

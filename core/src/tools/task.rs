@@ -161,6 +161,17 @@ mod parallel_execution;
 
 const MAX_PARALLEL_TASKS_PER_CALL: usize = 32;
 
+fn provider_quota_for_client(
+    client: &dyn LlmClient,
+) -> Option<crate::task_scheduler::TaskSchedulerQuota> {
+    let pool = client.model_generation_pool()?;
+    crate::task_scheduler::TaskSchedulerQuota::new(
+        pool.identity.clone(),
+        pool.max_concurrency().get(),
+    )
+    .ok()
+}
+
 /// Task executor for delegated child runs.
 #[derive(Clone)]
 pub struct TaskExecutor {
@@ -208,6 +219,17 @@ pub struct TaskExecutor {
     /// foreground steps must be admitted independently. Model-invoked task
     /// tools inherit the enclosing run's lease and leave this false.
     schedule_foreground: bool,
+    /// Transient run/host scope used to derive the owner quota. Only the
+    /// digest-derived identity crosses into the scheduler actor.
+    admission_scope: Option<String>,
+    /// Provider/model capacity projected into the same scheduler actor as
+    /// owner admission. This is metadata only; the scheduler remains the
+    /// single live reservation authority.
+    provider_quota: Option<crate::task_scheduler::TaskSchedulerQuota>,
+    /// Shared provider admission for foreground child runs. Background runs
+    /// already hold `provider_quota` on their outer scheduler lease and use a
+    /// local child gate to avoid recursively reserving that same dimension.
+    provider_admission: Option<crate::llm::ModelGenerationAdmission>,
 }
 
 impl TaskExecutor {
@@ -217,6 +239,7 @@ impl TaskExecutor {
         llm_client: Arc<dyn LlmClient>,
         workspace: String,
     ) -> Self {
+        let provider_quota = provider_quota_for_client(llm_client.as_ref());
         Self {
             registry,
             llm_client,
@@ -238,6 +261,9 @@ impl TaskExecutor {
             subagent_tracker: None,
             task_scheduler: None,
             schedule_foreground: false,
+            admission_scope: None,
+            provider_quota,
+            provider_admission: None,
         }
     }
 
@@ -258,6 +284,7 @@ impl TaskExecutor {
         workspace: String,
         mcp_managers: Vec<Arc<McpManager>>,
     ) -> Self {
+        let provider_quota = provider_quota_for_client(llm_client.as_ref());
         Self {
             registry,
             llm_client,
@@ -279,6 +306,9 @@ impl TaskExecutor {
             subagent_tracker: None,
             task_scheduler: None,
             schedule_foreground: false,
+            admission_scope: None,
+            provider_quota,
+            provider_admission: None,
         }
     }
 
@@ -316,6 +346,10 @@ impl TaskExecutor {
         scoped.search_retry_budget = Some(ctx.search_retry_budget());
         scoped.search_request_coalescer = Some(ctx.search_request_coalescer());
         scoped.capability_context = ctx.capability_context();
+        scoped.admission_scope = ctx
+            .run_id()
+            .map(|run_id| format!("run:{run_id}"))
+            .or_else(|| ctx.session_id.as_deref().map(|id| format!("session:{id}")));
         if ctx.has_run_governance() {
             scoped.parent_context = scoped.parent_context.take().map(|parent| {
                 parent.with_run_governance(
@@ -384,6 +418,30 @@ impl TaskExecutor {
         scheduler: Arc<crate::task_scheduler::TaskScheduler>,
         schedule_foreground: bool,
     ) -> Self {
+        self.provider_admission = self.provider_quota.clone().and_then(|quota| {
+            let admission = crate::llm::ModelGenerationAdmission::new(
+                self.llm_client.model_generation_concurrency(),
+            );
+            if let Some(pool) = self.llm_client.model_generation_pool() {
+                admission
+                    .with_model_generation_pool(
+                        Arc::clone(&scheduler),
+                        pool,
+                        crate::task_scheduler::TaskPriority::Foreground,
+                        "task-child-model-generation",
+                    )
+                    .ok()
+            } else {
+                admission
+                    .with_scheduler_quota(
+                        Arc::clone(&scheduler),
+                        quota,
+                        crate::task_scheduler::TaskPriority::Foreground,
+                        "task-child-model-generation",
+                    )
+                    .ok()
+            }
+        });
         self.task_scheduler = Some(scheduler);
         self.schedule_foreground = schedule_foreground;
         self
@@ -549,26 +607,100 @@ impl TaskExecutor {
                     .await;
             }
         }
+        let execution_identity =
+            if (params.background || self.schedule_foreground) && self.task_scheduler.is_some() {
+                let mut identity_spec = AgentStepSpec::new(
+                    task_id.clone(),
+                    params.agent.clone(),
+                    params.description.clone(),
+                    params.prompt.clone(),
+                );
+                if let Some(max_steps) = params.max_steps {
+                    identity_spec = identity_spec.with_max_steps(max_steps);
+                }
+                if let Some(output_schema) = params.output_schema.clone() {
+                    identity_spec = identity_spec.with_output_schema(output_schema);
+                }
+                if let Some(parent_session_id) = parent_session_id {
+                    identity_spec = identity_spec.with_parent_session_id(parent_session_id);
+                }
+                Some(
+                    crate::orchestration::workflow_step_execution_identity(
+                        parent_session_id.unwrap_or("host"),
+                        &identity_spec,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("derive delegated task execution identity: {error}")
+                    })?,
+                )
+            } else {
+                None
+            };
+        let admission_quota =
+            if (params.background || self.schedule_foreground) && self.task_scheduler.is_some() {
+                let scope = self.admission_scope.clone().unwrap_or_else(|| {
+                    parent_session_id
+                        .map(|session_id| format!("session:{session_id}"))
+                        .unwrap_or_else(|| "host".to_string())
+                });
+                Some(
+                    crate::task_scheduler::TaskSchedulerQuota::for_scope(
+                        &scope,
+                        self.max_parallel_tasks,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                )
+            } else {
+                None
+            };
         let _task_lease = if params.background || self.schedule_foreground {
             match &self.task_scheduler {
-                Some(scheduler) => Some(
-                    scheduler
-                        .acquire(
-                            if params.background {
-                                crate::task_scheduler::TaskPriority::Background
-                            } else {
-                                crate::task_scheduler::TaskPriority::Foreground
-                            },
-                            format!(
-                                "{}:subagent:{}",
-                                parent_session_id.unwrap_or("host"),
-                                task_id
-                            ),
-                            &cancel_token,
-                        )
-                        .await
-                        .map_err(|error| anyhow::anyhow!(error))?,
-                ),
+                Some(scheduler) => {
+                    let mut quotas = Vec::with_capacity(2);
+                    if let Some(quota) = admission_quota.as_ref() {
+                        quotas.push(quota.clone());
+                    }
+                    if let Some(quota) = self.provider_quota.as_ref() {
+                        if !quotas
+                            .iter()
+                            .any(|candidate| candidate.identity == quota.identity)
+                        {
+                            quotas.push(quota.clone());
+                        }
+                    }
+                    let priority = if params.background {
+                        crate::task_scheduler::TaskPriority::Background
+                    } else {
+                        crate::task_scheduler::TaskPriority::Foreground
+                    };
+                    let label = format!(
+                        "{}:subagent:{}",
+                        parent_session_id.unwrap_or("host"),
+                        task_id
+                    );
+                    Some(if quotas.is_empty() {
+                        scheduler
+                            .acquire_with_identity(
+                                priority,
+                                label,
+                                execution_identity.clone(),
+                                &cancel_token,
+                            )
+                            .await
+                            .map_err(|error| anyhow::anyhow!(error))?
+                    } else {
+                        scheduler
+                            .acquire_with_quotas(
+                                priority,
+                                label,
+                                &quotas,
+                                execution_identity.clone(),
+                                &cancel_token,
+                            )
+                            .await
+                            .map_err(|error| anyhow::anyhow!(error))?
+                    })
+                }
                 None => None,
             }
         } else {
@@ -728,6 +860,11 @@ impl TaskExecutor {
             tool_context,
             child_config,
         );
+        if !params.background && !self.schedule_foreground {
+            if let Some(admission) = &self.provider_admission {
+                agent_loop = agent_loop.with_model_generation_admission(admission.clone());
+            }
+        }
         if let Some(runtime) = capability_runtime {
             agent_loop = agent_loop.with_capability_runtime(runtime);
         }

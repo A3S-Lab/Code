@@ -11,6 +11,8 @@ pub enum ResearchContractError {
     InvalidDigest(&'static str),
     #[error("research contract digest for `{0}` does not match its contents")]
     DigestMismatch(&'static str),
+    #[error("research contract wire value exceeds its bounded encoding")]
+    Encoding,
     #[error("research contract transition from `{from}` to `{to}` is invalid")]
     InvalidTransition {
         from: &'static str,

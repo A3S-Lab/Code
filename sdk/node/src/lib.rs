@@ -94,6 +94,9 @@ use a3s_code_core::{
     InterruptRequest as RustInterruptRequest, SteerRequest as RustSteerRequest,
     PlanningMode as RustPlanningMode, SessionOptions as RustSessionOptions,
     TaskPriorityCounts as RustTaskPriorityCounts, TaskSchedulerStats as RustTaskSchedulerStats,
+    TaskSchedulerHealthSnapshot as RustTaskSchedulerHealthSnapshot,
+    ModelGenerationPoolHealthSnapshot as RustModelGenerationPoolHealthSnapshot,
+    TaskSchedulerQuotaHealthSnapshot as RustTaskSchedulerQuotaHealthSnapshot,
     SdkCapability as RustSdkCapability, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 use napi::Either;
@@ -232,7 +235,151 @@ impl From<RustTaskSchedulerStats> for TaskSchedulerStats {
     }
 }
 
+/// Bounded cumulative admission and fairness diagnostics for an Agent's
+/// shared priority scheduler.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskSchedulerHealthSnapshot {
+    pub max_active: i64,
+    pub active: i64,
+    pub pending: i64,
+    pub active_by_priority: TaskPriorityCounts,
+    pub pending_by_priority: TaskPriorityCounts,
+    pub admitted: i64,
+    pub released: i64,
+    pub cancelled: i64,
+    pub rejected: i64,
+    pub aging_promotions: i64,
+    pub peak_active: i64,
+    pub total_wait_micros: i64,
+    pub average_wait_micros: i64,
+    pub max_wait_micros: i64,
+    pub closed: bool,
+}
+
+impl From<RustTaskSchedulerHealthSnapshot> for TaskSchedulerHealthSnapshot {
+    fn from(value: RustTaskSchedulerHealthSnapshot) -> Self {
+        Self {
+            max_active: scheduler_count(value.max_active),
+            active: scheduler_count(value.active),
+            pending: scheduler_count(value.pending),
+            active_by_priority: value.active_by_priority.into(),
+            pending_by_priority: value.pending_by_priority.into(),
+            admitted: scheduler_counter(value.admitted),
+            released: scheduler_counter(value.released),
+            cancelled: scheduler_counter(value.cancelled),
+            rejected: scheduler_counter(value.rejected),
+            aging_promotions: scheduler_counter(value.aging_promotions),
+            peak_active: scheduler_count(value.peak_active),
+            total_wait_micros: scheduler_counter(value.total_wait_micros),
+            average_wait_micros: scheduler_counter(value.average_wait_micros),
+            max_wait_micros: scheduler_counter(value.max_wait_micros),
+            closed: value.closed,
+        }
+    }
+}
+
+/// Digest-only execution identity used by provider-pool diagnostics.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ExecutionIdentityV1 {
+    pub schema: String,
+    pub domain: String,
+    pub digest: String,
+}
+
+/// Provider/model capacity descriptor exposed to host diagnostics.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ModelGenerationPool {
+    pub identity: ExecutionIdentityV1,
+    pub max_concurrency: i64,
+}
+
+/// Bounded health for one digest-only provider quota.
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskSchedulerQuotaHealthSnapshot {
+    pub identity: ExecutionIdentityV1,
+    pub max_active: i64,
+    pub observed: bool,
+    pub live: bool,
+    pub active: i64,
+    pub pending: i64,
+    pub blocked: bool,
+    pub admitted: i64,
+    pub released: i64,
+    pub cancelled: i64,
+    pub rejected: i64,
+    pub peak_active: i64,
+    pub total_wait_micros: i64,
+    pub average_wait_micros: i64,
+    pub max_wait_micros: i64,
+}
+
+/// Secret-free local and shared provider-pool health for one session.
+#[napi(object)]
+#[derive(Clone)]
+pub struct ModelGenerationPoolHealthSnapshot {
+    pub pool: ModelGenerationPool,
+    pub local_max_concurrency: i64,
+    pub local_reserved: i64,
+    pub local_available: i64,
+    pub scheduler: Option<TaskSchedulerQuotaHealthSnapshot>,
+}
+
+impl From<a3s_code_core::execution_identity::ExecutionIdentityV1> for ExecutionIdentityV1 {
+    fn from(value: a3s_code_core::execution_identity::ExecutionIdentityV1) -> Self {
+        Self {
+            schema: value.schema,
+            domain: value.domain,
+            digest: value.digest,
+        }
+    }
+}
+
+impl From<RustTaskSchedulerQuotaHealthSnapshot> for TaskSchedulerQuotaHealthSnapshot {
+    fn from(value: RustTaskSchedulerQuotaHealthSnapshot) -> Self {
+        Self {
+            identity: value.identity.into(),
+            max_active: scheduler_count(value.max_active),
+            observed: value.observed,
+            live: value.live,
+            active: scheduler_count(value.active),
+            pending: scheduler_count(value.pending),
+            blocked: value.blocked,
+            admitted: scheduler_counter(value.admitted),
+            released: scheduler_counter(value.released),
+            cancelled: scheduler_counter(value.cancelled),
+            rejected: scheduler_counter(value.rejected),
+            peak_active: scheduler_count(value.peak_active),
+            total_wait_micros: scheduler_counter(value.total_wait_micros),
+            average_wait_micros: scheduler_counter(value.average_wait_micros),
+            max_wait_micros: scheduler_counter(value.max_wait_micros),
+        }
+    }
+}
+
+impl From<RustModelGenerationPoolHealthSnapshot> for ModelGenerationPoolHealthSnapshot {
+    fn from(value: RustModelGenerationPoolHealthSnapshot) -> Self {
+        Self {
+            pool: ModelGenerationPool {
+                identity: value.pool.identity.into(),
+                max_concurrency: scheduler_count(value.pool.max_concurrency.get()),
+            },
+            local_max_concurrency: scheduler_count(value.local_max_concurrency),
+            local_reserved: scheduler_count(value.local_reserved),
+            local_available: scheduler_count(value.local_available),
+            scheduler: value.scheduler.map(Into::into),
+        }
+    }
+}
+
 fn scheduler_count(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn scheduler_counter(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 

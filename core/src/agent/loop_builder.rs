@@ -17,6 +17,7 @@ impl AgentLoop {
         Self {
             llm_client,
             model_generation_admission,
+            shared_model_generation_admission: false,
             tool_executor,
             tool_context,
             config,
@@ -40,6 +41,7 @@ impl AgentLoop {
         admission: ModelGenerationAdmission,
     ) -> Self {
         self.model_generation_admission = admission;
+        self.shared_model_generation_admission = true;
         self
     }
 

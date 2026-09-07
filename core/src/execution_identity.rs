@@ -14,6 +14,39 @@ pub const EXECUTION_IDENTITY_SCHEMA_V1: &str = "a3s.code.execution-identity.v1";
 pub const MODEL_CALL_IDENTITY_DOMAIN_V1: &str = "a3s.code.model-call.identity.v1";
 pub const TOOL_INVOCATION_IDENTITY_DOMAIN_V1: &str = "a3s.code.tool-invocation.identity.v1";
 pub const FLOW_DECISION_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-decision.identity.v1";
+/// Identity domain for a dynamically admitted A3S Flow step.
+///
+/// Dynamic Flow steps are intentionally separate from delegated Agent steps:
+/// the former are identified by the Flow run/step/name and JSON input, while
+/// the latter are identified by an [`AgentStepSpec`](crate::orchestration::AgentStepSpec).
+pub const FLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.flow-step.identity.v1";
+/// Identity domain for a process-local scheduler admission scope.
+///
+/// Scope identities are derived from a run/host boundary and only their
+/// digest is retained by the scheduler. They are capacity keys, not durable
+/// workflow claims or result identities.
+pub const TASK_ADMISSION_SCOPE_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.task-admission-scope.identity.v1";
+/// Identity domain for a provider/model generation-capacity pool.
+///
+/// Pool identities deliberately bind only non-secret routing facts. API keys,
+/// session tokens, prompts, and request payloads must never influence or
+/// appear in a scheduler capacity key.
+pub const MODEL_GENERATION_POOL_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.model-generation-pool.identity.v1";
+/// Identity domain for the immutable input portion of a dynamic workflow.
+pub const DYNAMIC_WORKFLOW_INPUT_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.input.identity.v1";
+/// Identity domain for a dynamic workflow continuation reconstructed from its
+/// durable immutable facts.
+pub const DYNAMIC_WORKFLOW_CONTINUATION_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.continuation.identity.v1";
+/// Identity domain for the stable root claim that fences one dynamic
+/// workflow continuation while workers replay its evolving step history.
+pub const DYNAMIC_WORKFLOW_CLAIM_IDENTITY_DOMAIN_V1: &str =
+    "a3s.code.dynamic-workflow.claim.identity.v1";
+/// Identity domain for the immutable definition of a projected execution plan.
+pub const EXECUTION_PLAN_IDENTITY_DOMAIN_V1: &str = "a3s.code.execution-plan.identity.v1";
 pub const WORKFLOW_STEP_IDENTITY_DOMAIN_V1: &str = "a3s.code.workflow-step.identity.v1";
 pub const WORKFLOW_STEP_EVIDENCE_DOMAIN_V1: &str = "a3s.code.workflow-step.evidence.v1";
 pub const WORKFLOW_STEP_RESULT_DOMAIN_V1: &str = "a3s.code.workflow-step.result.v1";

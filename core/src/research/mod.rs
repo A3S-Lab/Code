@@ -10,6 +10,7 @@ mod event;
 mod evidence;
 mod provenance;
 mod review;
+mod review_batch;
 mod run;
 
 pub use error::ResearchContractError;
@@ -26,19 +27,46 @@ pub use review::{
     ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewLocationV1,
     ResearchReviewSeverityV1, ResearchReviewStatusV1, RESEARCH_REVIEW_FINDING_SCHEMA_V1,
 };
+pub use review_batch::{
+    ResearchReviewBatchV1, RESEARCH_MAX_REVIEW_FINDINGS, RESEARCH_REVIEW_BATCH_SCHEMA_V1,
+};
 pub use run::{
     ResearchReproducibilityV1, ResearchRunStatusV1, ResearchRunV1, RESEARCH_RUN_SCHEMA_V1,
 };
 
+/// Maximum JSON payload accepted by the explicit research wire helpers.
+pub const RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const RESEARCH_MAX_ID_BYTES: usize = 256;
 pub(crate) const RESEARCH_MAX_TEXT_BYTES: usize = 16 * 1024;
 pub(crate) const RESEARCH_MAX_DIGESTS: usize = 512;
+
+pub(crate) fn decode_json_slice<T>(bytes: &[u8]) -> Result<T, ResearchContractError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    if bytes.len() > RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES {
+        return Err(ResearchContractError::Encoding);
+    }
+    serde_json::from_slice(bytes)
+        .map_err(|error| ResearchContractError::Serialization(error.to_string()))
+}
+
+pub(crate) fn encode_json<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, ResearchContractError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| ResearchContractError::Serialization(error.to_string()))?;
+    if bytes.len() > RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES {
+        return Err(ResearchContractError::Encoding);
+    }
+    Ok(bytes)
+}
 
 pub(crate) fn validate_id(field: &'static str, value: &str) -> Result<(), ResearchContractError> {
     if value.is_empty()
         || value.len() > RESEARCH_MAX_ID_BYTES
         || value.contains('\0')
-        || value.lines().count() != 1
+        || value.contains(['\r', '\n'])
     {
         return Err(ResearchContractError::InvalidField(field));
     }
@@ -53,11 +81,36 @@ pub(crate) fn validate_text(
     if value.is_empty()
         || value.len() > max_bytes
         || value.contains('\0')
-        || value.lines().count() > 1
+        || value.contains(['\r', '\n'])
     {
         return Err(ResearchContractError::InvalidField(field));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_identifiers_reject_all_ascii_line_endings() {
+        for value in ["reviewer\n", "reviewer\r", "reviewer\r\n", "reviewer\nnext"] {
+            assert_eq!(
+                validate_id("id", value),
+                Err(ResearchContractError::InvalidField("id"))
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_text_rejects_all_ascii_line_endings() {
+        for value in ["finding\n", "finding\r", "finding\r\n", "finding\nnext"] {
+            assert_eq!(
+                validate_text("text", value, 128),
+                Err(ResearchContractError::InvalidField("text"))
+            );
+        }
+    }
 }
 
 pub(crate) fn validate_digest_field(

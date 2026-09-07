@@ -4,9 +4,10 @@
 //! shared capacity boundary across every session created by one [`Agent`](crate::Agent),
 //! using `a3s-lane`'s stable priority queue for exact priority/FIFO ordering.
 
-use a3s_lane::{Priority, PriorityQueue};
+use crate::execution_identity::ExecutionIdentityV1;
+use a3s_lane::{Priority, PriorityItem, PriorityQueue};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -22,6 +23,25 @@ const DEFAULT_AGING_INTERVAL_MS: u64 = 30_000;
 // control channel and therefore cannot be starved by admission traffic.
 const MAX_PENDING_ADMISSIONS: usize = 4_096;
 const ADMISSION_CHANNEL_CAPACITY: usize = 256;
+/// Maximum bytes accepted while deriving a scheduler owner scope.
+///
+/// The raw scope is never sent to the scheduler actor or included in a
+/// snapshot; the bound only prevents an untrusted host from forcing an
+/// unbounded identity-derivation allocation.
+pub const TASK_SCHEDULER_MAX_SCOPE_BYTES: usize = 512;
+/// Maximum number of independent quota dimensions accepted by one admission.
+///
+/// Keeping this bound small makes the scheduler actor's validation and live
+/// accounting predictable even when a host composes owner, provider, tenant,
+/// or other typed capacity descriptors.
+pub const TASK_SCHEDULER_MAX_QUOTAS: usize = 8;
+/// Maximum number of idle quota health epochs retained by one scheduler.
+///
+/// Live quotas are always observable. Once their final reservation and waiter
+/// settle, only this many most-recent digest-only records remain available for
+/// post-run diagnostics. The bound prevents ephemeral Run or provider
+/// identities from becoming an unbounded process history.
+pub const TASK_SCHEDULER_QUOTA_HEALTH_RETENTION: usize = 64;
 
 /// Relative importance of work admitted through an agent's shared scheduler.
 ///
@@ -111,6 +131,148 @@ impl TaskSchedulerConfig {
     }
 }
 
+/// Immutable capacity quota carried by one scheduler admission request.
+///
+/// The quota is deliberately a descriptor rather than a second queue or
+/// semaphore. The scheduler actor remains the only authority that decides
+/// whether work owns a global slot or a quota-only reservation; it additionally
+/// refuses to admit more than `max_active` requests for this digest-only
+/// capacity identity at once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSchedulerQuota {
+    /// Digest-only identity of the run/host/provider scope consuming capacity.
+    pub identity: ExecutionIdentityV1,
+    /// Maximum reservations this capacity identity may hold concurrently.
+    pub max_active: usize,
+}
+
+impl TaskSchedulerQuota {
+    /// Build and validate a capacity quota descriptor.
+    pub fn new(
+        identity: ExecutionIdentityV1,
+        max_active: usize,
+    ) -> Result<Self, TaskSchedulerError> {
+        let quota = Self {
+            identity,
+            max_active,
+        };
+        quota.validate()?;
+        Ok(quota)
+    }
+
+    /// Validate a quota received from a host or a deserialized boundary.
+    pub fn validate(&self) -> Result<(), TaskSchedulerError> {
+        self.identity.validate().map_err(|error| {
+            TaskSchedulerError::InvalidConfig(format!(
+                "scheduler quota identity is invalid: {error}"
+            ))
+        })?;
+        if self.max_active == 0 {
+            return Err(TaskSchedulerError::InvalidConfig(
+                "scheduler quota maxActive must be greater than zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Derive a digest-only quota identity from a bounded host/run scope.
+    ///
+    /// The scope is used only during derivation and is never retained or
+    /// emitted by scheduler diagnostics. Callers should use a stable run or
+    /// host identifier, not a prompt or tool payload.
+    pub fn for_scope(scope: &str, max_active: usize) -> Result<Self, TaskSchedulerError> {
+        if scope.is_empty()
+            || scope.len() > TASK_SCHEDULER_MAX_SCOPE_BYTES
+            || scope.chars().any(|character| {
+                character.is_control() || matches!(character, '\u{2028}' | '\u{2029}')
+            })
+        {
+            return Err(TaskSchedulerError::InvalidConfig(
+                format!(
+                    "scheduler quota scope must be one non-empty line of at most {TASK_SCHEDULER_MAX_SCOPE_BYTES} bytes"
+                ),
+            ));
+        }
+        let identity = ExecutionIdentityV1::derive(
+            crate::execution_identity::TASK_ADMISSION_SCOPE_IDENTITY_DOMAIN_V1,
+            &serde_json::json!({ "scope": scope }),
+        )
+        .map_err(|error| {
+            TaskSchedulerError::InvalidConfig(format!("derive scheduler quota identity: {error}"))
+        })?;
+        Self::new(identity, max_active)
+    }
+
+    /// Return the immutable owner identity.
+    pub fn identity(&self) -> &ExecutionIdentityV1 {
+        &self.identity
+    }
+}
+
+/// Live, digest-only occupancy projection for one scheduler quota.
+///
+/// Counters are intentionally point-in-time. Idle owner state is discarded by
+/// the scheduler actor, so an unbounded history of ephemeral run identities
+/// cannot accumulate in the process. Global cumulative admission/fairness
+/// counters remain available through [`TaskScheduler::health`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSchedulerQuotaSnapshot {
+    /// Digest-only owner identity requested by the caller.
+    pub identity: ExecutionIdentityV1,
+    /// Immutable owner limit used for this live projection.
+    pub max_active: usize,
+    /// Active reservations currently owned by this quota identity. This may
+    /// include quota-only leaf leases in addition to global scheduler slots.
+    pub active: usize,
+    /// Requests from this owner waiting in the global queue.
+    pub pending: usize,
+    /// Whether pending work is currently blocked by the owner quota.
+    pub blocked: bool,
+}
+
+/// Bounded live-or-recent health for one scheduler quota identity.
+///
+/// Unlike [`TaskSchedulerQuotaSnapshot`], this projection retains cumulative
+/// counters for a small bounded window after a quota becomes idle. It contains
+/// only the validated digest identity and numeric capacity data; scheduler
+/// labels, provider routing text, prompts, and payloads are never retained.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSchedulerQuotaHealthSnapshot {
+    /// Digest-only quota identity requested by the caller.
+    pub identity: ExecutionIdentityV1,
+    /// Immutable limit for this observed configuration epoch.
+    pub max_active: usize,
+    /// Whether this scheduler has observed the requested identity/limit epoch.
+    pub observed: bool,
+    /// Whether the quota currently has an active reservation or queued waiter.
+    pub live: bool,
+    /// Current active reservations for this identity.
+    pub active: usize,
+    /// Current queued requests for this identity.
+    pub pending: usize,
+    /// Whether pending work is currently blocked by this quota.
+    pub blocked: bool,
+    /// Successful admissions observed in the retained epoch.
+    pub admitted: u64,
+    /// Normally released reservations observed in the retained epoch.
+    pub released: u64,
+    /// Queued or active admissions cancelled by their caller.
+    pub cancelled: u64,
+    /// Pending admissions rejected while the scheduler was closing.
+    pub rejected: u64,
+    /// Highest simultaneous reservation count observed for this identity.
+    pub peak_active: usize,
+    /// Saturating sum of successful admission wait time in microseconds.
+    pub total_wait_micros: u64,
+    /// Mean successful admission wait time in microseconds.
+    pub average_wait_micros: u64,
+    /// Longest successful admission wait time in microseconds.
+    pub max_wait_micros: u64,
+}
+
 const fn default_max_active() -> usize {
     DEFAULT_MAX_ACTIVE
 }
@@ -167,6 +329,53 @@ pub struct TaskSchedulerStats {
     pub closed: bool,
 }
 
+/// Bounded cumulative admission and fairness diagnostics for one scheduler.
+///
+/// The counters are owned by the scheduler actor and never retain task labels,
+/// execution identities, or queue entries.  They therefore remain safe to
+/// expose to a host while still making starvation and lifecycle leaks
+/// measurable.  Occupancy fields are sampled at the same actor turn as the
+/// cumulative counters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSchedulerHealthSnapshot {
+    /// Configured global capacity.
+    pub max_active: usize,
+    /// Number of global scheduler slots currently held. Quota-only leaf
+    /// reservations are visible through their quota snapshots but do not
+    /// consume this global occupancy counter.
+    pub active: usize,
+    /// Number of requests waiting for a lease.
+    pub pending: usize,
+    /// Current occupancy grouped by base priority.
+    pub active_by_priority: TaskPriorityCounts,
+    /// Current pending work grouped by base priority.
+    pub pending_by_priority: TaskPriorityCounts,
+    /// Number of requests that acquired a lease since scheduler creation.
+    pub admitted: u64,
+    /// Number of admitted leases whose ownership was released.
+    pub released: u64,
+    /// Number of admission requests cancelled before normal release,
+    /// including queued requests and active leases cancelled by their caller.
+    pub cancelled: u64,
+    /// Number of requests rejected because the scheduler was closing.
+    pub rejected: u64,
+    /// Number of queued requests promoted by the aging policy.
+    pub aging_promotions: u64,
+    /// Highest number of simultaneously active leases observed.
+    pub peak_active: usize,
+    /// Sum of admission wait time in microseconds, saturating at `u64::MAX`.
+    /// This is useful for host-side rate calculations without retaining a
+    /// latency histogram in the execution kernel.
+    pub total_wait_micros: u64,
+    /// Mean admission wait time in microseconds (`total / admitted`).
+    pub average_wait_micros: u64,
+    /// Longest observed admission wait in microseconds.
+    pub max_wait_micros: u64,
+    /// Whether the scheduler is draining or has finished shutdown.
+    pub closed: bool,
+}
+
 /// Shared actor handle. One instance belongs to each `Agent`.
 #[derive(Debug)]
 pub struct TaskScheduler {
@@ -208,20 +417,173 @@ impl TaskScheduler {
         label: impl Into<String>,
         cancellation: &CancellationToken,
     ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_with_identity(priority, label, None, cancellation)
+            .await
+    }
+
+    /// Wait until this task owns one global execution slot and carry its
+    /// semantic execution identity through the admission boundary.
+    ///
+    /// The identity is optional for backwards compatibility with callers that
+    /// only need capacity. When present it is validated before anything is
+    /// queued, and the resulting lease retains it for tracing and downstream
+    /// adapters.
+    pub async fn acquire_with_identity(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        identity: Option<ExecutionIdentityV1>,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            Vec::new(),
+            identity,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait for one or more quota dimensions without consuming another
+    /// global execution slot.
+    ///
+    /// This is used at leaf resource boundaries (for example, one model
+    /// generation inside an already-admitted session run). The request still
+    /// enters the same priority queue and actor as global admissions, so a
+    /// provider limit cannot be bypassed with a local semaphore and a
+    /// max-active=1 session does not deadlock while a nested model call waits.
+    pub async fn acquire_quota(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quota: &TaskSchedulerQuota,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_quotas(priority, label, std::slice::from_ref(quota), cancellation)
+            .await
+    }
+
+    /// Multi-dimensional quota-only counterpart of [`Self::acquire_quota`].
+    pub async fn acquire_quotas(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quotas: &[TaskSchedulerQuota],
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            quotas.to_vec(),
+            None,
+            false,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait until this task owns a global execution slot subject to a capacity
+    /// quota. The quota reservation is made in the same scheduler actor as
+    /// global admission, so a caller cannot bypass it by creating a fresh local
+    /// semaphore or executor handle.
+    pub async fn acquire_with_quota(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quota: &TaskSchedulerQuota,
+        identity: Option<ExecutionIdentityV1>,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            vec![quota.clone()],
+            identity,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Wait until this task owns a global execution slot subject to multiple
+    /// immutable quota dimensions. All dimensions are evaluated by the same
+    /// scheduler actor, so a caller cannot bypass one limit by splitting the
+    /// request across independent local gates.
+    pub async fn acquire_with_quotas(
+        &self,
+        priority: TaskPriority,
+        label: impl Into<String>,
+        quotas: &[TaskSchedulerQuota],
+        identity: Option<ExecutionIdentityV1>,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
+        self.acquire_inner(
+            priority,
+            label.into(),
+            quotas.to_vec(),
+            identity,
+            true,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn acquire_inner(
+        &self,
+        priority: TaskPriority,
+        label: String,
+        quotas: Vec<TaskSchedulerQuota>,
+        identity: Option<ExecutionIdentityV1>,
+        global_slot: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<TaskLease, TaskSchedulerError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TaskSchedulerError::Closed);
         }
         if cancellation.is_cancelled() {
             return Err(TaskSchedulerError::Cancelled);
         }
+        if let Some(identity) = &identity {
+            identity.validate().map_err(|error| {
+                TaskSchedulerError::InvalidConfig(format!("execution identity is invalid: {error}"))
+            })?;
+        }
+        if quotas.len() > TASK_SCHEDULER_MAX_QUOTAS {
+            return Err(TaskSchedulerError::InvalidConfig(format!(
+                "task admission cannot contain more than {TASK_SCHEDULER_MAX_QUOTAS} quota dimensions"
+            )));
+        }
+        if !global_slot && quotas.is_empty() {
+            return Err(TaskSchedulerError::InvalidConfig(
+                "quota-only admission requires at least one quota dimension".to_string(),
+            ));
+        }
+        let mut quota_digests = HashSet::with_capacity(quotas.len());
+        for quota in &quotas {
+            quota.validate()?;
+            if !quota_digests.insert(quota.identity.digest.clone()) {
+                return Err(TaskSchedulerError::InvalidConfig(
+                    "task admission contains duplicate quota identities".to_string(),
+                ));
+            }
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let quota_identities = quotas
+            .iter()
+            .map(|quota| quota.identity.clone())
+            .collect::<Vec<_>>();
         let (ready_tx, ready_rx) = oneshot::channel();
         let mut lease = TaskLease {
             id,
             release_tx: self.release_tx.clone(),
             released: false,
             armed: false,
+            identity: identity.clone(),
+            quota_identities: quota_identities.clone(),
+            global_slot,
         };
 
         tokio::select! {
@@ -235,7 +597,11 @@ impl TaskScheduler {
             sent = self.tx.send(SchedulerMessage::Enqueue(QueuedAdmission {
                 id,
                 priority,
-                label: label.into(),
+                effective_priority: priority.lane_priority(),
+                label,
+                identity: identity.clone(),
+                quotas,
+                global_slot,
                 enqueued_at: Instant::now(),
                 ready: ready_tx,
             })) => {
@@ -256,11 +622,76 @@ impl TaskScheduler {
         }
     }
 
+    /// Return the live occupancy projection for one owner quota.
+    pub async fn quota_snapshot(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaSnapshot, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
+        quota.validate()?;
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::QuotaStats {
+                quota: quota.clone(),
+                reply: tx,
+            })
+            .await
+            .map_err(|_| TaskSchedulerError::Closed)?;
+        rx.await.map_err(|_| TaskSchedulerError::Closed)?
+    }
+
+    /// Return bounded cumulative health for one quota identity.
+    ///
+    /// The scheduler keeps a fixed number of recent idle quota epochs so a
+    /// host can inspect a completed provider generation without turning the
+    /// actor into an unbounded metrics store. A descriptor that has never been
+    /// admitted returns `observed = false` and zero counters.
+    pub async fn quota_health(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
+        quota.validate()?;
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::QuotaHealth {
+                quota: quota.clone(),
+                reply: tx,
+            })
+            .await
+            .map_err(|_| TaskSchedulerError::Closed)?;
+        rx.await.map_err(|_| TaskSchedulerError::Closed)?
+    }
+
     /// Return a consistent actor-owned occupancy snapshot.
     pub async fn stats(&self) -> Result<TaskSchedulerStats, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(SchedulerMessage::Stats(tx))
+            .await
+            .map_err(|_| TaskSchedulerError::Closed)?;
+        rx.await.map_err(|_| TaskSchedulerError::Closed)
+    }
+
+    /// Return occupancy plus bounded cumulative admission/fairness counters.
+    ///
+    /// This is intentionally a separate method from [`Self::stats`] so the
+    /// long-lived counters can be added without changing the established
+    /// occupancy wire shape consumed by older SDKs.
+    pub async fn health(&self) -> Result<TaskSchedulerHealthSnapshot, TaskSchedulerError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskSchedulerError::Closed);
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SchedulerMessage::Health(tx))
             .await
             .map_err(|_| TaskSchedulerError::Closed)?;
         rx.await.map_err(|_| TaskSchedulerError::Closed)
@@ -278,18 +709,51 @@ impl TaskScheduler {
     }
 }
 
-/// RAII ownership of one globally admitted execution slot.
+/// RAII ownership of one scheduler admission.
+///
+/// A normal lease consumes one global execution slot. A lease returned by
+/// [`TaskScheduler::acquire_quota`] reserves only its quota dimensions, which
+/// lets a leaf resource (such as a model generation) compose with an already
+/// held session slot without recursive scheduler deadlock.
+#[derive(Debug)]
 pub struct TaskLease {
     id: u64,
     release_tx: mpsc::UnboundedSender<u64>,
     released: bool,
     armed: bool,
+    identity: Option<ExecutionIdentityV1>,
+    quota_identities: Vec<ExecutionIdentityV1>,
+    global_slot: bool,
 }
 
 impl TaskLease {
     /// Stable admission identifier, useful for tracing.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Semantic identity carried by this admission, when one was supplied.
+    pub fn identity(&self) -> Option<&ExecutionIdentityV1> {
+        self.identity.as_ref()
+    }
+
+    /// Digest-only owner quota identity applied to this admission, when any.
+    pub fn quota_identity(&self) -> Option<&ExecutionIdentityV1> {
+        self.quota_identities.first()
+    }
+
+    /// All digest-only quota identities applied to this admission.
+    ///
+    /// The slice is empty for an unconstrained global admission. The first
+    /// identity is retained by [`Self::quota_identity`] for compatibility
+    /// with callers that only used the original single-quota API.
+    pub fn quota_identities(&self) -> &[ExecutionIdentityV1] {
+        &self.quota_identities
+    }
+
+    /// Whether this lease consumes one of the scheduler's global slots.
+    pub const fn consumes_global_slot(&self) -> bool {
+        self.global_slot
     }
 }
 
@@ -305,7 +769,11 @@ impl Drop for TaskLease {
 struct QueuedAdmission {
     id: u64,
     priority: TaskPriority,
+    effective_priority: Priority,
     label: String,
+    identity: Option<ExecutionIdentityV1>,
+    quotas: Vec<TaskSchedulerQuota>,
+    global_slot: bool,
     enqueued_at: Instant,
     ready: oneshot::Sender<Result<(), TaskSchedulerError>>,
 }
@@ -314,15 +782,103 @@ enum SchedulerMessage {
     Enqueue(QueuedAdmission),
     Release(u64),
     Stats(oneshot::Sender<TaskSchedulerStats>),
+    Health(oneshot::Sender<TaskSchedulerHealthSnapshot>),
+    QuotaStats {
+        quota: TaskSchedulerQuota,
+        reply: oneshot::Sender<Result<TaskSchedulerQuotaSnapshot, TaskSchedulerError>>,
+    },
+    QuotaHealth {
+        quota: TaskSchedulerQuota,
+        reply: oneshot::Sender<Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError>>,
+    },
     Shutdown(oneshot::Sender<()>),
+}
+
+#[derive(Default)]
+struct SchedulerCounters {
+    admitted: u64,
+    released: u64,
+    cancelled: u64,
+    rejected: u64,
+    aging_promotions: u64,
+    peak_active: usize,
+    total_wait_micros: u64,
+    max_wait_micros: u64,
 }
 
 struct SchedulerState {
     config: TaskSchedulerConfig,
     pending: PriorityQueue<QueuedAdmission>,
-    active: HashMap<u64, TaskPriority>,
+    active: HashMap<u64, ActiveAdmission>,
+    quotas: HashMap<String, QuotaState>,
+    /// Recently idle quota epochs, bounded by
+    /// [`TASK_SCHEDULER_QUOTA_HEALTH_RETENTION`].
+    retained_quota_health: HashMap<String, QuotaState>,
+    retained_quota_order: VecDeque<String>,
     closing: bool,
     shutdown_waiters: Vec<oneshot::Sender<()>>,
+    counters: SchedulerCounters,
+}
+
+struct ActiveAdmission {
+    priority: TaskPriority,
+    quota_identities: Vec<String>,
+    global_slot: bool,
+}
+
+struct QuotaState {
+    identity: ExecutionIdentityV1,
+    max_active: usize,
+    active: usize,
+    pending: usize,
+    admitted: u64,
+    released: u64,
+    cancelled: u64,
+    rejected: u64,
+    peak_active: usize,
+    total_wait_micros: u64,
+    max_wait_micros: u64,
+}
+
+impl QuotaState {
+    fn new(identity: ExecutionIdentityV1, max_active: usize) -> Self {
+        Self {
+            identity,
+            max_active,
+            active: 0,
+            pending: 0,
+            admitted: 0,
+            released: 0,
+            cancelled: 0,
+            rejected: 0,
+            peak_active: 0,
+            total_wait_micros: 0,
+            max_wait_micros: 0,
+        }
+    }
+
+    fn health_snapshot(&self, live: bool) -> TaskSchedulerQuotaHealthSnapshot {
+        TaskSchedulerQuotaHealthSnapshot {
+            identity: self.identity.clone(),
+            max_active: self.max_active,
+            observed: true,
+            live,
+            active: self.active,
+            pending: self.pending,
+            blocked: self.pending > 0 && self.active >= self.max_active,
+            admitted: self.admitted,
+            released: self.released,
+            cancelled: self.cancelled,
+            rejected: self.rejected,
+            peak_active: self.peak_active,
+            total_wait_micros: self.total_wait_micros,
+            average_wait_micros: self
+                .total_wait_micros
+                .checked_div(self.admitted)
+                .unwrap_or(0),
+            max_wait_micros: self.max_wait_micros,
+        }
+    }
 }
 
 async fn run_scheduler(
@@ -336,8 +892,12 @@ async fn run_scheduler(
         config,
         pending: PriorityQueue::new(),
         active: HashMap::new(),
+        retained_quota_health: HashMap::new(),
+        retained_quota_order: VecDeque::new(),
+        quotas: HashMap::new(),
         closing: false,
         shutdown_waiters: Vec::new(),
+        counters: SchedulerCounters::default(),
     };
 
     loop {
@@ -353,8 +913,13 @@ async fn run_scheduler(
                 state.enqueue(item);
             }
             SchedulerMessage::Release(id) => {
-                if state.active.remove(&id).is_none() {
-                    state.remove_pending(id);
+                if let Some(active) = state.active.remove(&id) {
+                    state.counters.released = state.counters.released.saturating_add(1);
+                    state.release_active_quotas(&active.quota_identities, false);
+                } else if let Some(item) = state.remove_pending(id) {
+                    // An armed lease dropped before admission releases its
+                    // queued reservation through the same control channel.
+                    state.cancel_pending(item);
                 }
                 state.dispatch();
                 state.finish_shutdown_if_idle();
@@ -362,11 +927,29 @@ async fn run_scheduler(
             SchedulerMessage::Stats(reply) => {
                 let _ = reply.send(state.snapshot());
             }
+            SchedulerMessage::Health(reply) => {
+                // A health read is also a scheduling observation point. Apply
+                // elapsed aging before taking the snapshot so operators see
+                // promotions that became eligible while capacity was full,
+                // even when no new admission or release arrived yet.
+                state.apply_aging();
+                let _ = reply.send(state.health_snapshot());
+            }
+            SchedulerMessage::QuotaStats { quota, reply } => {
+                let result = state.quota_snapshot(&quota);
+                let _ = reply.send(result);
+            }
+            SchedulerMessage::QuotaHealth { quota, reply } => {
+                let result = state.quota_health(&quota);
+                let _ = reply.send(result);
+            }
             SchedulerMessage::Shutdown(reply) => {
                 state.closing = true;
                 closed.store(true, Ordering::Release);
                 while let Some(item) = state.pending.pop() {
                     let item = item.into_value();
+                    state.counters.rejected = state.counters.rejected.saturating_add(1);
+                    state.reject_pending_quotas(&item.quotas);
                     let _ = item.ready.send(Err(TaskSchedulerError::Closed));
                 }
                 state.shutdown_waiters.push(reply);
@@ -390,21 +973,34 @@ impl SchedulerState {
             let _ = item.ready.send(Err(TaskSchedulerError::AtCapacity {
                 limit: MAX_PENDING_ADMISSIONS,
             }));
+        } else if let Err(error) = self.register_pending_quotas(&item.quotas) {
+            self.counters.rejected = self.counters.rejected.saturating_add(1);
+            let _ = item.ready.send(Err(error));
         } else {
-            self.pending.push(item.priority.lane_priority(), item);
+            for quota in &item.quotas {
+                if let Some(quota_state) = self.quotas.get_mut(&quota.identity.digest) {
+                    quota_state.pending = quota_state.pending.saturating_add(1);
+                }
+            }
+            self.pending.push(item.effective_priority, item);
             self.dispatch();
         }
     }
 
-    fn remove_pending(&mut self, id: u64) {
+    /// Remove one still-queued admission by id, preserving queue order.
+    ///
+    /// Returns the removed item so the caller can settle its quota pending
+    /// reservations through [`Self::cancel_pending`]; admission ids are never
+    /// reused, so an unmatched release cannot remove a future item.
+    fn remove_pending(&mut self, id: u64) -> Option<QueuedAdmission> {
         if self.pending.is_empty() {
-            return;
+            return None;
         }
         let mut retained = Vec::with_capacity(self.pending.len());
+        let mut removed = None;
         while let Some(item) = self.pending.pop() {
             if item.value().id == id {
-                let item = item.into_value();
-                let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
+                removed = Some(item.into_value());
             } else {
                 retained.push(item);
             }
@@ -412,6 +1008,192 @@ impl SchedulerState {
         for item in retained {
             self.pending.restore(item);
         }
+        removed
+    }
+
+    fn retain_quota_health(&mut self, key: String, state: QuotaState) {
+        self.retained_quota_health.remove(&key);
+        self.retained_quota_order
+            .retain(|candidate| candidate != &key);
+        self.retained_quota_health.insert(key.clone(), state);
+        self.retained_quota_order.push_back(key);
+        while self.retained_quota_order.len() > TASK_SCHEDULER_QUOTA_HEALTH_RETENTION {
+            let Some(evicted) = self.retained_quota_order.pop_front() else {
+                break;
+            };
+            self.retained_quota_health.remove(&evicted);
+        }
+    }
+
+    fn take_retained_quota_health(
+        &mut self,
+        key: &str,
+        identity: &ExecutionIdentityV1,
+        max_active: usize,
+    ) -> Option<QuotaState> {
+        let state = self.retained_quota_health.remove(key)?;
+        self.retained_quota_order
+            .retain(|candidate| candidate != key);
+        if state.identity == *identity && state.max_active == max_active {
+            Some(state)
+        } else {
+            None
+        }
+    }
+
+    fn register_pending_quotas(
+        &mut self,
+        quotas: &[TaskSchedulerQuota],
+    ) -> Result<(), TaskSchedulerError> {
+        // Validate every existing registration before inserting any new state;
+        // a later conflict must not leave a partially registered descriptor.
+        for quota in quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(existing) = self.quotas.get(key) {
+                if existing.identity != quota.identity || existing.max_active != quota.max_active {
+                    return Err(TaskSchedulerError::InvalidConfig(
+                        "scheduler quota identity is already registered with a different limit"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        for quota in quotas {
+            let key = quota.identity.digest.clone();
+            if self.quotas.contains_key(&key) {
+                continue;
+            }
+            let state = self
+                .take_retained_quota_health(&key, &quota.identity, quota.max_active)
+                .unwrap_or_else(|| QuotaState::new(quota.identity.clone(), quota.max_active));
+            self.quotas.insert(key, state);
+        }
+        Ok(())
+    }
+
+    fn reject_pending_quotas(&mut self, quotas: &[TaskSchedulerQuota]) {
+        for quota in quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.pending = state.pending.saturating_sub(1);
+                state.rejected = state.rejected.saturating_add(1);
+            }
+            self.prune_idle_quota(key);
+        }
+    }
+
+    fn cancel_pending(&mut self, item: QueuedAdmission) {
+        self.counters.cancelled = self.counters.cancelled.saturating_add(1);
+        for quota in &item.quotas {
+            let key = quota.identity.digest.as_str();
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.pending = state.pending.saturating_sub(1);
+                state.cancelled = state.cancelled.saturating_add(1);
+            }
+            self.prune_idle_quota(key);
+        }
+        let _ = item.ready.send(Err(TaskSchedulerError::Cancelled));
+    }
+
+    fn release_active_quotas(&mut self, keys: &[String], cancelled: bool) {
+        for key in keys {
+            if let Some(state) = self.quotas.get_mut(key) {
+                state.active = state.active.saturating_sub(1);
+                if cancelled {
+                    state.cancelled = state.cancelled.saturating_add(1);
+                } else {
+                    state.released = state.released.saturating_add(1);
+                }
+            }
+            self.prune_idle_quota(key);
+        }
+    }
+
+    fn prune_idle_quota(&mut self, key: &str) {
+        let remove = self
+            .quotas
+            .get(key)
+            .is_some_and(|state| state.active == 0 && state.pending == 0);
+        if remove {
+            if let Some(state) = self.quotas.remove(key) {
+                self.retain_quota_health(key.to_owned(), state);
+            }
+        }
+    }
+
+    fn quota_allows(&self, quotas: &[TaskSchedulerQuota]) -> bool {
+        quotas.iter().all(|quota| {
+            self.quotas
+                .get(&quota.identity.digest)
+                .is_some_and(|state| state.active < state.max_active)
+        })
+    }
+
+    fn quota_snapshot(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaSnapshot, TaskSchedulerError> {
+        quota.validate()?;
+        if let Some(state) = self.quotas.get(&quota.identity.digest) {
+            if state.identity != quota.identity || state.max_active != quota.max_active {
+                return Err(TaskSchedulerError::InvalidConfig(
+                    "scheduler quota identity is already registered with a different limit"
+                        .to_string(),
+                ));
+            }
+            return Ok(TaskSchedulerQuotaSnapshot {
+                identity: state.identity.clone(),
+                max_active: state.max_active,
+                active: state.active,
+                pending: state.pending,
+                blocked: state.pending > 0 && state.active >= state.max_active,
+            });
+        }
+        Ok(TaskSchedulerQuotaSnapshot {
+            identity: quota.identity.clone(),
+            max_active: quota.max_active,
+            active: 0,
+            pending: 0,
+            blocked: false,
+        })
+    }
+
+    fn quota_health(
+        &self,
+        quota: &TaskSchedulerQuota,
+    ) -> Result<TaskSchedulerQuotaHealthSnapshot, TaskSchedulerError> {
+        quota.validate()?;
+        if let Some(state) = self.quotas.get(&quota.identity.digest) {
+            if state.identity != quota.identity || state.max_active != quota.max_active {
+                return Err(TaskSchedulerError::InvalidConfig(
+                    "scheduler quota identity is already registered with a different limit"
+                        .to_string(),
+                ));
+            }
+            return Ok(state.health_snapshot(true));
+        }
+        if let Some(state) = self.retained_quota_health.get(&quota.identity.digest) {
+            if state.identity == quota.identity && state.max_active == quota.max_active {
+                return Ok(state.health_snapshot(false));
+            }
+        }
+        Ok(TaskSchedulerQuotaHealthSnapshot {
+            identity: quota.identity.clone(),
+            max_active: quota.max_active,
+            observed: false,
+            live: false,
+            active: 0,
+            pending: 0,
+            blocked: false,
+            admitted: 0,
+            released: 0,
+            cancelled: 0,
+            rejected: 0,
+            peak_active: 0,
+            total_wait_micros: 0,
+            average_wait_micros: 0,
+            max_wait_micros: 0,
+        })
     }
 
     fn dispatch(&mut self) {
@@ -419,21 +1201,93 @@ impl SchedulerState {
             return;
         }
         self.apply_aging();
-        while self.active.len() < self.config.max_active {
-            let Some(item) = self.pending.pop() else {
+        loop {
+            // Recompute after every admission: quota-only leases may continue
+            // while global capacity is full, but a second global lease must
+            // never slip past the configured max-active bound.
+            let global_capacity_available = self.global_active_count() < self.config.max_active;
+            let Some(item) = self.pop_admissible(global_capacity_available) else {
                 break;
             };
-            let item = item.into_value();
             let id = item.id;
             let priority = item.priority;
             let label = item.label;
-            self.active.insert(id, priority);
+            let identity = item.identity;
+            let quota_identities = item
+                .quotas
+                .iter()
+                .map(|quota| quota.identity.digest.clone())
+                .collect::<Vec<_>>();
+            for quota_key in &quota_identities {
+                if let Some(quota_state) = self.quotas.get_mut(quota_key) {
+                    quota_state.pending = quota_state.pending.saturating_sub(1);
+                    quota_state.active = quota_state.active.saturating_add(1);
+                }
+            }
+            let wait_micros = item
+                .enqueued_at
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            self.active.insert(
+                id,
+                ActiveAdmission {
+                    priority,
+                    quota_identities: quota_identities.clone(),
+                    global_slot: item.global_slot,
+                },
+            );
             if item.ready.send(Ok(())).is_err() {
                 self.active.remove(&id);
+                self.counters.cancelled = self.counters.cancelled.saturating_add(1);
+                self.release_active_quotas(&quota_identities, true);
                 continue;
             }
-            tracing::trace!(admission_id = id, ?priority, %label, "task admitted");
+            self.counters.admitted = self.counters.admitted.saturating_add(1);
+            self.counters.total_wait_micros =
+                self.counters.total_wait_micros.saturating_add(wait_micros);
+            self.counters.max_wait_micros = self.counters.max_wait_micros.max(wait_micros);
+            self.counters.peak_active = self.counters.peak_active.max(self.global_active_count());
+            for quota_key in &quota_identities {
+                if let Some(quota_state) = self.quotas.get_mut(quota_key) {
+                    quota_state.admitted = quota_state.admitted.saturating_add(1);
+                    quota_state.total_wait_micros =
+                        quota_state.total_wait_micros.saturating_add(wait_micros);
+                    quota_state.max_wait_micros = quota_state.max_wait_micros.max(wait_micros);
+                    quota_state.peak_active = quota_state.peak_active.max(quota_state.active);
+                }
+            }
+            tracing::trace!(
+                admission_id = id,
+                ?priority,
+                %label,
+                execution_identity = identity.as_ref().map(ExecutionIdentityV1::key).unwrap_or(""),
+                "task admitted"
+            );
         }
+    }
+
+    /// Claim the first queued item that is eligible under both global capacity
+    /// and all of its capacity quotas. Items blocked by one identity remain
+    /// queued while independent identities can make progress, preventing a
+    /// single fan-out from monopolizing the shared scheduler.
+    fn pop_admissible(&mut self, global_capacity_available: bool) -> Option<QueuedAdmission> {
+        let mut retained: Vec<PriorityItem<QueuedAdmission>> = Vec::new();
+        let mut selected = None;
+        while let Some(item) = self.pending.pop() {
+            if selected.is_none()
+                && (!item.value().global_slot || global_capacity_available)
+                && self.quota_allows(&item.value().quotas)
+            {
+                selected = Some(item.into_value());
+            } else {
+                retained.push(item);
+            }
+        }
+        for item in retained {
+            self.pending.restore(item);
+        }
+        selected
     }
 
     fn apply_aging(&mut self) {
@@ -457,14 +1311,21 @@ impl SchedulerState {
             } else {
                 (item.priority as u8).saturating_sub(levels).max(1) as Priority
             };
-            self.pending.push(effective, item);
+            if effective < item.effective_priority {
+                self.counters.aging_promotions = self.counters.aging_promotions.saturating_add(1);
+            }
+            let mut item = item;
+            item.effective_priority = effective;
+            self.pending.push(item.effective_priority, item);
         }
     }
 
     fn snapshot(&self) -> TaskSchedulerStats {
         let mut active_by_priority = TaskPriorityCounts::default();
-        for priority in self.active.values() {
-            active_by_priority.increment(*priority);
+        for active in self.active.values() {
+            if active.global_slot {
+                active_by_priority.increment(active.priority);
+            }
         }
         let mut pending_by_priority = TaskPriorityCounts::default();
         for item in self.pending.ordered() {
@@ -481,14 +1342,39 @@ impl SchedulerState {
                     TaskPriority::Maintenance => active_by_priority.maintenance,
                 })
                 .sum::<usize>(),
-            self.active.len()
+            self.global_active_count()
         );
         TaskSchedulerStats {
             max_active: self.config.max_active,
-            active: self.active.len(),
+            active: self.global_active_count(),
             pending: self.pending.len(),
             active_by_priority,
             pending_by_priority,
+            closed: self.closing,
+        }
+    }
+
+    fn health_snapshot(&self) -> TaskSchedulerHealthSnapshot {
+        let stats = self.snapshot();
+        TaskSchedulerHealthSnapshot {
+            max_active: stats.max_active,
+            active: stats.active,
+            pending: stats.pending,
+            active_by_priority: stats.active_by_priority,
+            pending_by_priority: stats.pending_by_priority,
+            admitted: self.counters.admitted,
+            released: self.counters.released,
+            cancelled: self.counters.cancelled,
+            rejected: self.counters.rejected,
+            aging_promotions: self.counters.aging_promotions,
+            peak_active: self.counters.peak_active,
+            total_wait_micros: self.counters.total_wait_micros,
+            average_wait_micros: self
+                .counters
+                .total_wait_micros
+                .checked_div(self.counters.admitted)
+                .unwrap_or(0),
+            max_wait_micros: self.counters.max_wait_micros,
             closed: self.closing,
         }
     }
@@ -500,393 +1386,14 @@ impl SchedulerState {
             }
         }
     }
+
+    fn global_active_count(&self) -> usize {
+        self.active
+            .values()
+            .filter(|active| active.global_slot)
+            .count()
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::future::{poll_fn, Future};
-    use std::pin::Pin;
-    use std::task::Poll;
-    use std::time::Duration;
-
-    fn scheduler(max_active: usize, aging_interval_ms: u64) -> TaskScheduler {
-        TaskScheduler::new(TaskSchedulerConfig {
-            max_active,
-            aging_interval_ms,
-        })
-        .unwrap()
-    }
-
-    #[test]
-    fn priority_names_are_stable_and_reject_unknown_values() {
-        assert_eq!("user".parse(), Ok(TaskPriority::Interactive));
-        assert_eq!("background".parse(), Ok(TaskPriority::Background));
-        assert!("eventually".parse::<TaskPriority>().is_err());
-    }
-
-    async fn wait_for_pending(scheduler: &TaskScheduler, expected: usize) {
-        for _ in 0..100 {
-            if scheduler.stats().await.unwrap().pending == expected {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("scheduler never reached {expected} pending tasks");
-    }
-
-    async fn poll_once_pending(mut future: Pin<&mut impl Future>) {
-        poll_fn(|cx| {
-            assert!(future.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn pending_admissions_have_an_explicit_memory_bound() {
-        let mut state = SchedulerState {
-            config: TaskSchedulerConfig::default(),
-            pending: PriorityQueue::new(),
-            active: HashMap::new(),
-            closing: false,
-            shutdown_waiters: Vec::new(),
-        };
-        let mut receivers = Vec::with_capacity(MAX_PENDING_ADMISSIONS + 1);
-        for id in 0..MAX_PENDING_ADMISSIONS {
-            let (ready, receiver) = oneshot::channel();
-            receivers.push(receiver);
-            state.pending.push(
-                TaskPriority::Background.lane_priority(),
-                QueuedAdmission {
-                    id: id as u64,
-                    priority: TaskPriority::Background,
-                    label: "bounded".to_string(),
-                    enqueued_at: Instant::now(),
-                    ready,
-                },
-            );
-        }
-        let (ready, receiver) = oneshot::channel();
-        state.enqueue(QueuedAdmission {
-            id: MAX_PENDING_ADMISSIONS as u64,
-            priority: TaskPriority::Background,
-            label: "rejected".to_string(),
-            enqueued_at: Instant::now(),
-            ready,
-        });
-        assert_eq!(state.pending.len(), MAX_PENDING_ADMISSIONS);
-        assert!(matches!(
-            receiver.await.unwrap(),
-            Err(TaskSchedulerError::AtCapacity {
-                limit: MAX_PENDING_ADMISSIONS
-            })
-        ));
-        drop(receivers);
-    }
-
-    #[tokio::test]
-    async fn dropped_acquire_releases_unclaimed_slot() {
-        let scheduler = scheduler(1, 60_000);
-        let cancellation = CancellationToken::new();
-        let mut admission =
-            Box::pin(scheduler.acquire(TaskPriority::Interactive, "unclaimed", &cancellation));
-        poll_once_pending(admission.as_mut()).await;
-        // The actor has sent readiness, but acquire has not consumed it yet.
-        assert_eq!(scheduler.stats().await.unwrap().active, 1);
-        drop(admission);
-        assert_eq!(scheduler.stats().await.unwrap().active, 0);
-        tokio::time::timeout(Duration::from_secs(1), scheduler.shutdown())
-            .await
-            .expect("an abandoned admission must not prevent shutdown");
-    }
-
-    #[tokio::test]
-    async fn dropped_acquire_removes_pending_without_free_capacity() {
-        let scheduler = scheduler(1, 60_000);
-        let cancellation = CancellationToken::new();
-        let blocker = scheduler
-            .acquire(TaskPriority::Interactive, "blocker", &cancellation)
-            .await
-            .unwrap();
-        let mut admission =
-            Box::pin(scheduler.acquire(TaskPriority::Background, "abandoned", &cancellation));
-        poll_once_pending(admission.as_mut()).await;
-        assert_eq!(scheduler.stats().await.unwrap().pending, 1);
-        drop(admission);
-        let stats = scheduler.stats().await.unwrap();
-        assert_eq!(stats.pending, 0);
-        assert_eq!(stats.active, 1);
-        drop(blocker);
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn cancellation_after_readiness_releases_unclaimed_slot() {
-        let scheduler = scheduler(1, 60_000);
-        let cancellation = CancellationToken::new();
-        let mut admission = Box::pin(scheduler.acquire(
-            TaskPriority::Interactive,
-            "cancelled-after-readiness",
-            &cancellation,
-        ));
-        poll_once_pending(admission.as_mut()).await;
-        assert_eq!(scheduler.stats().await.unwrap().active, 1);
-        cancellation.cancel();
-        assert!(matches!(
-            admission.await,
-            Err(TaskSchedulerError::Cancelled)
-        ));
-        assert_eq!(scheduler.stats().await.unwrap().active, 0);
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn cancellation_racing_enqueue_never_leaves_an_orphaned_request() {
-        let scheduler = scheduler(1, 60_000);
-        let cancellation = CancellationToken::new();
-        let mut admission = Box::pin(scheduler.acquire(
-            TaskPriority::Interactive,
-            "cancelled-during-enqueue",
-            &cancellation,
-        ));
-        poll_once_pending(admission.as_mut()).await;
-        cancellation.cancel();
-        assert!(matches!(
-            admission.await,
-            Err(TaskSchedulerError::Cancelled)
-        ));
-        let stats = scheduler.stats().await.unwrap();
-        assert_eq!(stats.active, 0);
-        assert_eq!(stats.pending, 0);
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn strict_priority_and_fifo_are_enforced_globally() {
-        let scheduler = Arc::new(scheduler(1, 60_000));
-        let blocker = scheduler
-            .acquire(
-                TaskPriority::Interactive,
-                "blocker",
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let (order_tx, mut order_rx) = mpsc::unbounded_channel();
-
-        for (name, priority) in [
-            ("background", TaskPriority::Background),
-            ("interactive-1", TaskPriority::Interactive),
-            ("foreground", TaskPriority::Foreground),
-            ("interactive-2", TaskPriority::Interactive),
-            ("urgent", TaskPriority::Urgent),
-        ] {
-            let expected = scheduler.stats().await.unwrap().pending + 1;
-            let task_scheduler = Arc::clone(&scheduler);
-            let order_tx = order_tx.clone();
-            tokio::spawn(async move {
-                let lease = task_scheduler
-                    .acquire(priority, name, &CancellationToken::new())
-                    .await
-                    .unwrap();
-                order_tx.send(name).unwrap();
-                drop(lease);
-            });
-            wait_for_pending(&scheduler, expected).await;
-        }
-
-        drop(blocker);
-        let mut actual = Vec::new();
-        for _ in 0..5 {
-            actual.push(order_rx.recv().await.unwrap());
-        }
-        assert_eq!(
-            actual,
-            [
-                "urgent",
-                "interactive-1",
-                "interactive-2",
-                "foreground",
-                "background"
-            ]
-        );
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn cancellation_does_not_consume_capacity() {
-        let scheduler = Arc::new(scheduler(1, 60_000));
-        let blocker = scheduler
-            .acquire(
-                TaskPriority::Interactive,
-                "blocker",
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let cancellation = CancellationToken::new();
-        let cancelled_task = {
-            let scheduler = Arc::clone(&scheduler);
-            let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                scheduler
-                    .acquire(TaskPriority::Urgent, "cancelled", &cancellation)
-                    .await
-            })
-        };
-        wait_for_pending(&scheduler, 1).await;
-        cancellation.cancel();
-        assert!(matches!(
-            cancelled_task.await.unwrap(),
-            Err(TaskSchedulerError::Cancelled)
-        ));
-
-        let next = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                scheduler
-                    .acquire(TaskPriority::Background, "next", &CancellationToken::new())
-                    .await
-            })
-        };
-        wait_for_pending(&scheduler, 1).await;
-        drop(blocker);
-        let lease = next.await.unwrap().unwrap();
-        assert_eq!(scheduler.stats().await.unwrap().active, 1);
-        drop(lease);
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn aging_prevents_background_starvation() {
-        let scheduler = Arc::new(scheduler(1, 2));
-        let blocker = scheduler
-            .acquire(
-                TaskPriority::Interactive,
-                "blocker",
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let (order_tx, mut order_rx) = mpsc::unbounded_channel();
-        let background = {
-            let scheduler = Arc::clone(&scheduler);
-            let order_tx = order_tx.clone();
-            tokio::spawn(async move {
-                let lease = scheduler
-                    .acquire(
-                        TaskPriority::Background,
-                        "old-background",
-                        &CancellationToken::new(),
-                    )
-                    .await
-                    .unwrap();
-                order_tx.send("background").unwrap();
-                drop(lease);
-            })
-        };
-        wait_for_pending(&scheduler, 1).await;
-        tokio::time::sleep(Duration::from_millis(8)).await;
-        let interactive = {
-            let scheduler = Arc::clone(&scheduler);
-            let order_tx = order_tx.clone();
-            tokio::spawn(async move {
-                let lease = scheduler
-                    .acquire(
-                        TaskPriority::Interactive,
-                        "new-interactive",
-                        &CancellationToken::new(),
-                    )
-                    .await
-                    .unwrap();
-                order_tx.send("interactive").unwrap();
-                drop(lease);
-            })
-        };
-        wait_for_pending(&scheduler, 2).await;
-        drop(blocker);
-
-        assert_eq!(order_rx.recv().await.unwrap(), "background");
-        assert_eq!(order_rx.recv().await.unwrap(), "interactive");
-        background.await.unwrap();
-        interactive.await.unwrap();
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn shutdown_rejects_pending_and_waits_for_active_lease() {
-        let scheduler = Arc::new(scheduler(1, 60_000));
-        let blocker = scheduler
-            .acquire(
-                TaskPriority::Interactive,
-                "blocker",
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let pending = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                scheduler
-                    .acquire(
-                        TaskPriority::Background,
-                        "pending",
-                        &CancellationToken::new(),
-                    )
-                    .await
-            })
-        };
-        wait_for_pending(&scheduler, 1).await;
-        let shutdown = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move { scheduler.shutdown().await })
-        };
-        assert!(matches!(
-            pending.await.unwrap(),
-            Err(TaskSchedulerError::Closed)
-        ));
-        assert!(!shutdown.is_finished());
-        drop(blocker);
-        shutdown.await.unwrap();
-        assert!(matches!(
-            scheduler
-                .acquire(TaskPriority::Urgent, "late", &CancellationToken::new())
-                .await,
-            Err(TaskSchedulerError::Closed)
-        ));
-    }
-
-    #[tokio::test]
-    async fn stats_report_base_priority_occupancy() {
-        let scheduler = Arc::new(scheduler(1, 60_000));
-        let blocker = scheduler
-            .acquire(
-                TaskPriority::Foreground,
-                "blocker",
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let waiting = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                scheduler
-                    .acquire(
-                        TaskPriority::Maintenance,
-                        "waiting",
-                        &CancellationToken::new(),
-                    )
-                    .await
-            })
-        };
-        wait_for_pending(&scheduler, 1).await;
-        let stats = scheduler.stats().await.unwrap();
-        assert_eq!(stats.max_active, 1);
-        assert_eq!(stats.active_by_priority.foreground, 1);
-        assert_eq!(stats.pending_by_priority.maintenance, 1);
-        drop(blocker);
-        drop(waiting.await.unwrap().unwrap());
-        scheduler.shutdown().await;
-    }
-}
+mod tests;

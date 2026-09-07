@@ -49,11 +49,16 @@ runtime mode. The cross-repository implementation plan is tracked in the
 | Gate | State | Code-owned outcome | Boundary |
 | --- | --- | --- | --- |
 | `CAR-01` | In progress | Conform the native Harness to Cloud `A1.2`/`A1.3` command, receipt, event-page, cancellation, recovery, fail-closed workspace/session admission, bounded change-set capture-state, balanced external-task lifecycle, and atomic/bounded legacy artifact persistence contracts | Cloud retains execution identity and sequencing authority |
-| `CAR-02` | Delivered | Tool-request/result evidence, per-call input/usage diagnostics, and the Rust-host immutable-content adapter retain every raw Tool result plus compacted change sides behind exact content-addressed references (the digest must be a complete URI path segment) | Cloud owns adapter authorization, provider selection, projections, and object lifecycle; Gateway usage remains the billed request ledger |
+| `CAR-02` | Delivered | Tool-request/result evidence, per-call input/usage diagnostics, and the Rust-host immutable-content adapter retain every raw Tool result plus compacted change sides behind exact content-addressed references (the digest must be a complete URI path segment; the local fallback exposes create-only replay with conflict fencing) | Cloud owns adapter authorization, provider selection, projections, and object lifecycle; Gateway usage remains the billed request ledger |
 | `CAR-03` | In progress | Deterministic Tool-result transforms, versioned source/result evidence, exact algorithm/policy digest bindings, replay-time policy validation, host-injected immutable original references, and one shared ToolRegistry observation pipeline are delivered; Cloud-managed profile admission and cross-repository conformance remain | Cloud pins policy; Code does not invent tenant policy or mutate past events |
 | `CAR-04` | In progress | Canonical `SessionCheckpointExportV1` payloads bind `SessionSnapshotV1`, optional between-tool-round logical resume evidence, and exact component/aggregate identities; a host-injected `SessionCheckpointExportSink` captures both components from one acknowledged live Run boundary after preceding events and capability-owned effects settle; every new logical checkpoint binds the source Run's exact Code catalog, authority ceiling, and optional Use cursor; recovery pins that complete historical generation before target-Run admission, and the Code Harness restores both components plus an optional exact host capability batch as one visible admission without split store prewrites; common Harness adoption and real provider/Box certification remain | Cloud `A1.6` owns checkpoint identity, immutable-object authorization, external revision fencing, retention, approval, and fork lineage |
 | `CAR-05` | Planned | Pass restart, exact replay, cancellation, hostile Tool output, bounded-content, Secret-redaction, checkpoint, and cleanup conformance through one Cloud-managed Box workload | No direct Code-to-node control path |
 | `WORKFLOW-RESULT1` | Delivered | Resumable workflow checkpoints and Flow decision claims share canonical execution identities and bounded digest-only result receipts; stale or unreadable state fails closed while legacy records remain loadable | Core checkpoint, Flow ledger, restart, takeover, and identity-fencing tests pass; host policy and business retention remain outside Code |
+| `WORKFLOW-SCHED1` | Delivered | Dynamic Flow history projects into the canonical `ExecutionPlan`; step admission shares cancellation and bounded per-workflow quotas, while standalone scheduler leases carry digest-only step identities and delegated tasks use the same identity boundary | Plan identity is stable across status changes; resumed projections retain prior steps; local and global admission tests cover priority, cancellation, serialization, and the max-active=1 nested-deadlock boundary |
+| `WORKFLOW-CONTROL1` | Delivered | A host-facing dynamic-workflow control handle coordinates bounded inspection, trusted history, Flow durable cancellation/terminal transitions, identity-bound worker leases, and cross-process local event-store locking | Independent-process qualification covers busy ownership, killed-worker lease expiry/takeover, cancellation settlement, digest-only projections, and optimistic event-conflict retry; Flow remains the only workflow authority |
+| `WORKFLOW-OBS1` | Delivered | Scheduler and dynamic-workflow control diagnostics expose bounded admission, fairness, lease, and takeover counters without retaining task or workflow payloads | Independent resumed workers prove aging prevents starvation; scheduler wait/occupancy counters and durable claim-takeover counters converge while Flow history and the lease remain authoritative |
+| `WORKFLOW-QUOTA1` | Delivered | The existing scheduler actor enforces typed digest-only owner quotas for standalone Flow steps and detached Task children, propagates run identity through governed Tool contexts, and exposes a live quota projection without adding a queue or store | Mixed-owner progress, quota-blocked priority work, cancellation, identity/limit conflicts, malformed scopes, idle-state pruning, dynamic diagnostics, and detached fan-out qualification pass |
+| `MODEL-ADMISSION1` | Delivered | Provider/model capacity is represented by a typed digest-only `ModelGenerationPool`; regular, streaming, and structured calls reserve that capacity through quota-only admissions in the existing scheduler, with propagation through sessions, direct Tools, delegated children, and dynamic workflows | Cross-session and mixed-provider progress, local-plus-shared quota composition, structured repair without recursive deadlock, stream/cancellation release, endpoint-credential redaction, bounded per-pool health/configuration evidence, and the full Core regression suite pass |
 
 Observation precedes mutation: `CAR-02` must provide useful read-only context
 diagnostics before `CAR-03` can reduce any Tool result. The first transform
@@ -249,9 +254,9 @@ decides how to search, review, approve, retain, and publish results.
 
 | Gate | State | Code-owned outcome | Exit criteria |
 | --- | --- | --- | --- |
-| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, and lifecycle validation | Eleven focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, and strict unknown-field rejection fail closed |
-| `RESEARCH-EXEC1` | Planned | Host adapter that drives a research run through source capture, evidence append, artifact publication, and evaluator dispatch while retaining one Code Run identity | Integration tests prove restart, cancellation, contiguous evidence, artifact immutability, and exact Code/Use binding across a real workspace |
-| `RESEARCH-REVIEW1` | Planned | Host-owned reviewer composition over the generic evaluation substrate, projecting bounded findings and human decisions without a Core rubric | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral |
+| `RESEARCH-CONTRACT1` | Delivered | Versioned `ResearchRunV1`, `ResearchEvidenceFactV1`, `ResearchProvenanceReceiptV1`, `ResearchReviewFindingV1`, and `ResearchEventV1` values with bounded fields, canonical digest identity, strict schemas, lifecycle validation, and bounded validated JSON helpers for every research value | Thirty focused unit tests pass; tampering, invalid transitions, metadata bounds, digest ordering, event naming, strict unknown-field rejection, and bounded wire recovery fail closed |
+| `RESEARCH-EXEC1` | Delivered | Host adapter qualification drives a research run through source capture, evidence append, create-only content-addressed artifact publication, and evaluator dispatch while retaining one Code Run identity; exact execution-target validation and explicit Run-aware Core-event projection are covered | `research_execution_qualification` passes restart/replay, cancellation terminality, contiguous evidence, artifact immutability, file-backed evaluator dispatch/result recovery, and exact Code/Use binding checks |
+| `RESEARCH-REVIEW1` | In progress | Host-owned reviewer composition over the generic evaluation substrate, with Code binding each finding and bounded finding batch to immutable evaluator and optional artifact-provenance records without introducing a Core rubric; strict Run-aware evaluator/provenance/batch validation fences project-namespace, project-revision, provider, seed, evaluator identity, and evaluator/batch-evidence drift, and finding locations enforce one-based line/column coordinates | Reviewer checks citations, calculations, figure/code links, and reproducibility through injected policy; Code remains policy-neutral and rejects evaluator, Run, project-namespace, project-revision, provider, seed, evaluator identity, evaluator-evidence, provenance, batch-evidence, duplicate-id, partial-batch drift, and malformed source locations |
 
 The delivered contract slice is documented in
 [Native Research Contracts](manual/RESEARCH_CONTRACTS.md). It is deliberately
@@ -292,6 +297,40 @@ TB-PROVIDER1 → TB-OUTPUT1 → TB-RETRY1 → TB-QUAL1`. The Harbor environment 
 timeouts, artifacts, and verification; Code owns only the session loop and
 its typed evidence record. A benchmark adapter must not add a second retry
 loop, tool executor, or success definition.
+The first reviewer-composition mechanism is now Code-owned: a
+`ResearchReviewFindingV1` can bind the exact immutable `EvaluationRecordV1`
+that produced it. The binding checks evaluator identity, parent Run identity,
+and inclusion of the evaluator's evidence snapshot digest, while preserving an
+`open` finding status until the host applies its rubric and an explicit human or
+policy resolution. Existing unbound v1 findings remain readable with their
+legacy digest identity; new bindings use a digest that includes the evaluator
+record, so result replacement cannot masquerade as the same finding.
+
+`ResearchReviewBatchV1` is the bounded publication boundary for one evaluator
+response. It requires one project/Run/evaluation-record/evidence identity for
+all findings, canonical finding ordering, and an updated batch digest after an
+explicit resolution or waiver. It remains a validation primitive: reviewer
+rubrics, severity thresholds, approval, retention, and publication stay with
+the host or Desktop.
+
+Review findings and batches expose bounded `from_slice`/`to_vec` helpers for
+process boundaries. These helpers reject oversized JSON and validate the full
+nested digest tree before a host can consume or publish a value; direct
+`serde` remains available for compatibility, but is not the admission path.
+
+Findings may additionally carry a provenance-receipt digest. The optional
+binding is backward compatible with legacy findings, but once present it is
+included in the finding digest and cannot be replaced without producing a new
+finding identity. This makes a reviewer observation address both the exact
+artifact and the reproducibility receipt used to produce it.
+
+When the admitted `ResearchRunV1` is available, hosts should use
+`bind_provenance_receipt_for_run`. In addition to the artifact, project, Run,
+and evidence checks, this verifies that the receipt's project revision,
+provider, and random seed are the values admitted for that Run. The
+compatibility method
+`bind_provenance_receipt` intentionally keeps its original object-only
+semantics for older integrations.
 
 ### 3.3.1 Workflow result convergence
 
@@ -305,6 +344,222 @@ the same identity-aware claim, renewal, completion, and release boundary and
 stores a digest-only receipt for an accepted decision. The result receipt is a
 mechanism for replay and fencing; source evidence, review policy, retention, and
 publication decisions remain host responsibilities.
+
+### 3.3.2 Scheduler and plan convergence
+
+Dynamic Flow is now an adapter over the same `ExecutionPlan` used by Code
+planning rather than a second progress model. A complete Flow history can be
+projected into that plan on every inspection and when a resumed observer is
+attached; duplicate lifecycle delivery preserves insertion order and cannot
+regress a terminal status. The plan's definition identity excludes mutable
+status, so retries and restarts retain one stable execution intent while the
+visible progress changes.
+
+Each Flow step crosses a cancellation-aware, bounded local admission gate. Its
+identity is domain-separated from delegated Agent steps and contains only the
+run/step/handler tuple plus the bounded input derivation; scheduler traces and
+leases never retain input or output plaintext. A standalone Flow adapter may
+layer the agent-wide priority/FIFO scheduler on direct script-backed steps.
+Normal Session calls keep the enclosing scheduler lease and let host `task`
+fan-out use its own child admission, which prevents a single-slot scheduler
+from deadlocking on a nested lease. Delegated tasks now pass their canonical
+step identity through that same global scheduler boundary.
+
+The follow-up mixed-generation continuation qualification is recorded in
+sections 3.3.3 and 3.3.4. Cloud/Use package ownership, fairness policy, and
+business-level retry decisions remain outside Code.
+
+### 3.3.3 Mixed-generation continuation qualification
+
+Dynamic workflow runs now pin a Code runtime build in the durable Flow
+`WorkflowSpec`. The default compatibility window accepts legacy unpinned runs
+while requiring the current build for new runs; hosts can provide an explicit
+`RuntimeBuildCompatibility` set when they retain an older worker. A continuation
+identity is reconstructed from the persisted Run/step definitions, source
+hash, initial-input digest, runtime build, and canonical plan identity. It
+excludes progress, retry events, sequence numbers, and outputs, so the same
+continuation identity survives a restart and a completed replay without a
+second journal.
+
+Before a resumed run reaches Flow execution, Code validates run ownership,
+sequence monotonicity, source/input equality, step identity consistency, and
+runtime-build syntax. Flow's own immutable start check and build compatibility
+gate then reject changed generations before any step body can run. The local
+qualification fixture proves a terminal retry replay does not repeat its
+side-effecting step and a worker on a different build cannot resume an active
+run. Legacy unpinned histories remain readable only inside the explicit
+migration window.
+
+### 3.3.4 Parent cancellation and worker takeover
+
+The non-terminal continuation boundary now carries a stable claim identity
+through worker admission. The identity is derived only from the run id, source
+hash, initial-input digest, and effective runtime build; evolving plan progress,
+retry counters, and outputs cannot create a second claim. Local workspaces use
+an atomic file-backed lease sidecar at `.a3s/workflow/leases`, remote hosts may
+inject any `FlowDecisionLedger`, and in-memory hosts retain one tool-scoped
+ledger. Neither path stores workflow source, input, output, or owner secrets.
+
+An admitted worker renews its lease during Flow replay and inline retry waits,
+and the runtime revalidates ownership immediately before each workflow or step
+body. A stale owner therefore cannot start new work or complete a claim after a
+takeover. Parent cancellation propagates to a child `ToolContext`; the worker
+waits a bounded settlement window, releases only after the execution future has
+stopped, and leaves an unsettled lease fenced until it expires. Completion uses
+the same identity/owner/lease checks as Flow decision dispatch. Qualification
+now covers cross-worker busy claims, expired-owner fencing, cancellation at a
+retry boundary, pre-admission lease loss, generated run ids, and digest-only
+sidecar records.
+
+The event-sourced Flow history remains the workflow authority. Exactly-once
+external effects still require the invoked Tool or host to provide its own
+idempotency/receipt contract; Code does not pretend that a lease can undo an
+effect that was committed outside the Flow journal. Cloud/Use ownership,
+retention, and business retry policy remain outside Code.
+
+### 3.3.5 Host control and cross-process recovery
+
+`DynamicWorkflowTool::control` is the single host-facing boundary for dynamic
+workflow inspection and mutation. It binds the caller's exact source, input,
+runtime policy, registry, and workspace store before any operation runs. The
+bounded `DynamicWorkflowControlSnapshot` exposes status, sequence, step
+counts, cancellation presence, continuation/plan identities, runtime build,
+and a redacted worker-lease state; it never exposes source, input, step
+arguments, outputs, or owner tokens. `history()` is separate and explicitly
+trusted because it returns those durable values.
+
+`drive`, `request_cancellation`, and `force_cancel` first claim the same
+identity-bound lease used by the model-visible Tool. A live worker is reported
+as busy instead of being interrupted through a second control plane. Once a
+claim is owned, Flow appends or replays the authoritative cancellation and
+terminal events, while a bounded heartbeat/settlement loop renews and then
+completes or releases the claim. An unsettled future remains fenced until
+lease expiry. Local JSONL history is wrapped by
+`CrossProcessFlowEventStore`, which serializes appends and reads across
+processes without projecting a second state machine. The qualification test
+spawns independent workers, kills an owner, waits for takeover, settles a
+cleanup-aware cancellation, and forces optimistic event conflicts so Flow's
+existing bounded retries are exercised. Remote or database-backed hosts can
+inject one typed `FlowEventStore` through `with_flow_event_store`; the same
+store is then shared by model-visible execution and the control handle, so a
+non-local host does not silently fall back to a fresh in-memory journal.
+
+### 3.3.6 Scheduler fairness and bounded control observability
+
+The agent-wide admission scheduler now has a separate health projection from
+its established occupancy API. The projection is actor-owned and bounded: it
+records admissions, releases, queued cancellations/rejections, aging
+promotions, peak occupancy, and aggregate wait time, while retaining no labels,
+execution identities, or queue payloads. Aging updates the effective queue key
+only when a request crosses a priority level, so repeated diagnostics cannot
+inflate promotion counts or alter FIFO order within an aged class.
+
+`DynamicWorkflowTool` shares a process-local, digest-free metrics block with
+its control handles. It counts claim attempts, live-claim contention,
+identity conflicts, lease renewals/loss, terminal settlement, and takeover
+attempts; the durable ledger still owns the per-run attempt number and fencing
+decision. `DynamicWorkflowControl::diagnostics` composes these counters with
+the optional scheduler health snapshot as a read-only host view. It never
+creates a scheduler, event journal, or workflow state store of its own.
+
+The qualification matrix includes a resumed background workflow competing with
+a stream of newer interactive admissions. After the configured aging bound,
+the resumed step is admitted before those newer requests, and all counters
+settle with zero in-flight work. The cross-language Agent/Session surfaces
+expose the scheduler health projection through the existing typed bridge
+operations; legacy occupancy calls retain their original wire shape.
+
+### 3.3.7 Per-run quota and admission identity qualification
+
+The shared scheduler now has one optional owner-quota projection layered inside
+its existing actor. `TaskSchedulerQuota` validates a bounded descriptor and can
+derive a domain-separated digest from a run/host scope; the scheduler retains
+only that identity plus active/pending counters. `acquire_with_quota` applies
+the owner limit while preserving the established global priority/FIFO and
+aging policy. A quota-blocked owner is skipped when another owner is eligible,
+so unused global capacity is not stranded behind one fan-out. Quota state is
+pruned after the last pending or active request, while `TaskScheduler::health`
+continues to provide the cumulative process view.
+
+Dynamic workflow runtimes use the stable continuation claim identity for direct
+globally admitted Flow steps. Detached background Task calls carry the exact
+invocation run identity through `ToolContext` and derive a separate
+run/session-scoped quota; this keeps nested child fan-out from reacquiring an
+outer Session lease and preserves the max-active=1 deadlock boundary. The
+workflow-local step gate and child-run quota remain explicit resource
+boundaries, and neither creates a second Flow event store, worker lease, or
+scheduler.
+
+Qualification covers two owners competing for global capacity while one is at
+its limit, queued-owner cancellation, immutable identity/limit conflicts,
+malformed and overlong scopes, idle-state pruning, dynamic-workflow diagnostic
+projection, and detached children sharing one run quota before using free
+capacity. No scope text, prompt, Tool payload, or workflow output is retained
+by the scheduler.
+
+### 3.3.8 Provider-aware model-generation admission
+
+Model generation is now a resource boundary rather than an incidental property
+of one `LlmClient` instance. A provider adapter may publish a
+`ModelGenerationPool` whose identity is derived from the provider, model,
+endpoint origin, and optional non-secret account scope. URL credentials,
+paths, queries, fragments, prompts, outputs, and transport headers are never
+retained in that identity. Built-in Anthropic, OpenAI-compatible, Zhipu, and
+Codex clients publish the descriptor; custom clients remain conservative and
+single-flight unless they opt into the typed contract.
+
+Session construction binds the pool descriptor to the existing agent scheduler
+as a second quota dimension. The session's normal Run/Tool admission still
+consumes one global slot, while each actual provider generation acquires a
+quota-only lease from the same actor and priority queue. This preserves one
+queue and one cancellation/release authority, lets independent providers use
+free capacity, and prevents a nested model call from deadlocking when the
+global scheduler is configured with `max_active = 1`. Local client capacity
+and the shared pool capacity are both enforced; a nested workflow gate copies
+the provider binding rather than bypassing it.
+
+The `LlmInvoker` boundary covers blocking, streaming, structured, and
+streaming-structured calls. A streaming lease is owned by its supervised proxy
+until EOF, terminal `Done`, cancellation, or receiver drop. Structured repair
+rounds release each call's lease before the next round, and an outer
+preadmitted permit is transferred to the first call exactly once. Foreground
+delegated children and Flow steps carry the provider quota into their own
+admission; background/global children retain the outer provider reservation
+and use a local gate to avoid recursive acquisition. Queue wait is reported in
+the existing structured-generation metadata without exposing labels or
+payloads.
+
+Qualification covers two sessions sharing one provider pool, independent
+provider progress under a full global budget, atomic multi-quota admission,
+quota-only cancellation and release, managed stream lifetime, nested tighter
+workflow limits, and the complete 3,205-test Core library suite. This slice
+does not add provider rate-limit policy, billing, or a second scheduler;
+Gateway and host policy remain the owners of those concerns.
+
+The admission-hardening follow-up landed in Code `386d75b1` and now adds
+cross-host consumption plus noisy-neighbor qualification. Node.js, Python, and
+Go sessions expose the same read-only `ModelGenerationPoolHealthSnapshot`; the
+versioned Go bridge advertises `session_model_generation_pool_health`, and the
+capability catalog carries the operation for discovery. A repeated eight-cycle
+qualification with twelve blocked waiters per cycle proves an independent
+provider pool continues to admit work under a full global budget while
+cancellation, release, and bounded retention counters settle. No provider
+label, endpoint credential, prompt, output, or task label is added to scheduler
+state.
+
+**P3/KRN-8 host qualification evidence is delivered.** The versioned
+`sdk/evaluation/model-generation-pool-health-v1.json` fixture is consumed by
+the public Node.js, Python, and Go Session surfaces. Each adapter checks the
+same digest-only identity, local reservation conservation, shared/local
+capacity bounds, bounded aggregate field set, and recursive redaction list;
+the Go adapter additionally exercises the real Rust JSONL bridge when
+`A3S_CODE_GO_BRIDGE_TEST_BINARY` is configured. The default fixture uses an
+unreachable endpoint and sentinel credential, so it makes no provider request
+and cannot turn a health read into a billing operation. Core's existing
+admission tests remain the authority for active, cancelled, released, and
+retained scheduler epochs. No second scheduler or metrics store was added;
+Flow remains the sole lease authority and Gateway/hosts own rate limits and
+billing.
 
 ### 3.4 Scoped capability program
 
@@ -902,6 +1157,7 @@ Current implementation status:
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
 | `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, zvec-rust FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
 | `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, cross-process publication/read/delete fencing, restart reopen, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
+| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, restart reopen with schema-v2 chunk-payload/identity integrity checks, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |

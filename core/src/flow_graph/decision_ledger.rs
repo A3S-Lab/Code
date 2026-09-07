@@ -18,6 +18,41 @@ pub enum FlowDecisionClaimOutcome {
     Conflict,
 }
 
+/// Redacted point-in-time state of one decision claim.
+///
+/// The owner identifier is intentionally omitted: it is an internal fencing
+/// token, not an operator-facing diagnostic. A pending record may already be
+/// expired; callers compare `lease_expires_at_ms` with their own clock before
+/// attempting takeover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowDecisionClaimState {
+    /// No claim record exists for the requested decision.
+    Missing,
+    /// A claim is pending (possibly expired and therefore reclaimable).
+    Pending {
+        lease_expires_at_ms: u64,
+        attempts: u32,
+    },
+    /// The claim has been completed and cannot be reclaimed.
+    Completed { completed_at_ms: Option<u64> },
+    /// The configured host ledger does not expose inspection.
+    Unavailable,
+}
+
+impl FlowDecisionClaimState {
+    /// Return whether a pending claim is still live at `now_ms`.
+    pub fn is_live_at(&self, now_ms: u64) -> bool {
+        matches!(
+            self,
+            Self::Pending {
+                lease_expires_at_ms,
+                ..
+            } if *lease_expires_at_ms > now_ms
+        )
+    }
+}
+
 #[async_trait]
 pub trait FlowDecisionLedger: Send + Sync {
     async fn claim(
@@ -59,6 +94,32 @@ pub trait FlowDecisionLedger: Send + Sync {
             .await
     }
 
+    /// Inspect a claim without revealing its owner token.
+    ///
+    /// Custom host ledgers remain source-compatible and report
+    /// [`FlowDecisionClaimState::Unavailable`] until they opt into the
+    /// inspection contract.
+    async fn inspect(
+        &self,
+        _decision_id: &str,
+        _request_hash: &str,
+    ) -> Result<FlowDecisionClaimState> {
+        Ok(FlowDecisionClaimState::Unavailable)
+    }
+
+    /// Inspect a claim while validating its canonical execution identity.
+    async fn inspect_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+    ) -> Result<FlowDecisionClaimState> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.inspect(decision_id, request_hash).await
+    }
+
     /// Renew only when both the legacy request key and canonical identity
     /// still belong to the admitted worker.
     async fn renew_with_identity(
@@ -84,6 +145,25 @@ pub trait FlowDecisionLedger: Send + Sync {
         owner_id: &str,
         completed_at_ms: u64,
     ) -> Result<()>;
+
+    /// Complete a pending claim only when its canonical execution identity
+    /// still matches the record that was admitted.  The default keeps custom
+    /// host ledgers source-compatible; built-in ledgers persist and fence the
+    /// identity together with the owner and lease checks.
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.complete(decision_id, request_hash, owner_id, completed_at_ms)
+            .await
+    }
 
     /// Complete with a bounded digest-only result receipt. The default keeps
     /// third-party ledgers source-compatible but cannot persist the receipt.
@@ -225,6 +305,28 @@ impl FlowDecisionLedger for MemoryFlowDecisionLedger {
         ))
     }
 
+    async fn inspect(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+    ) -> Result<FlowDecisionClaimState> {
+        let records = self.records.lock().await;
+        inspect_record(&records, decision_id, request_hash, None)
+    }
+
+    async fn inspect_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+    ) -> Result<FlowDecisionClaimState> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let records = self.records.lock().await;
+        inspect_record(&records, decision_id, request_hash, Some(identity))
+    }
+
     async fn complete(
         &self,
         decision_id: &str,
@@ -238,6 +340,29 @@ impl FlowDecisionLedger for MemoryFlowDecisionLedger {
             decision_id,
             request_hash,
             None,
+            owner_id,
+            None,
+            completed_at_ms,
+        )
+    }
+
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let mut records = self.records.lock().await;
+        complete_record(
+            &mut records,
+            decision_id,
+            request_hash,
+            Some(identity),
             owner_id,
             None,
             completed_at_ms,
@@ -454,6 +579,28 @@ impl FlowDecisionLedger for FileFlowDecisionLedger {
         .await
     }
 
+    async fn inspect(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+    ) -> Result<FlowDecisionClaimState> {
+        let records = read_records(&self.data_path()).await?;
+        inspect_record(&records, decision_id, request_hash, None)
+    }
+
+    async fn inspect_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+    ) -> Result<FlowDecisionClaimState> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let records = read_records(&self.data_path()).await?;
+        inspect_record(&records, decision_id, request_hash, Some(identity))
+    }
+
     async fn complete(
         &self,
         decision_id: &str,
@@ -467,6 +614,31 @@ impl FlowDecisionLedger for FileFlowDecisionLedger {
                 decision_id,
                 request_hash,
                 None,
+                owner_id,
+                None,
+                completed_at_ms,
+            )
+        })
+        .await
+    }
+
+    async fn complete_with_identity(
+        &self,
+        decision_id: &str,
+        request_hash: &str,
+        identity: &ExecutionIdentityV1,
+        owner_id: &str,
+        completed_at_ms: u64,
+    ) -> Result<()> {
+        identity
+            .validate()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        self.mutate(|records| {
+            complete_record(
+                records,
+                decision_id,
+                request_hash,
+                Some(identity),
                 owner_id,
                 None,
                 completed_at_ms,
@@ -756,6 +928,32 @@ fn identity_conflicts(
     )
 }
 
+fn inspect_record(
+    records: &BTreeMap<String, ClaimRecord>,
+    decision_id: &str,
+    request_hash: &str,
+    execution_identity: Option<&ExecutionIdentityV1>,
+) -> Result<FlowDecisionClaimState> {
+    let Some(record) = records.get(decision_id) else {
+        return Ok(FlowDecisionClaimState::Missing);
+    };
+    if record.request_hash != request_hash {
+        anyhow::bail!("decision `{decision_id}` request hash conflicts with its claim");
+    }
+    if identity_conflicts(record, execution_identity) {
+        anyhow::bail!("decision `{decision_id}` execution identity conflicts with its claim");
+    }
+    Ok(match record.status {
+        ClaimStatus::Pending => FlowDecisionClaimState::Pending {
+            lease_expires_at_ms: record.lease_expires_at_ms,
+            attempts: record.attempts,
+        },
+        ClaimStatus::Completed => FlowDecisionClaimState::Completed {
+            completed_at_ms: record.completed_at_ms,
+        },
+    })
+}
+
 fn validate_receipt(
     identity: &ExecutionIdentityV1,
     receipt: &ExecutionResultReceiptV1,
@@ -892,11 +1090,32 @@ mod tests {
         let other = identity("other");
         assert_eq!(
             ledger
+                .inspect_with_identity("decision", "hash", &first)
+                .await
+                .unwrap(),
+            FlowDecisionClaimState::Missing
+        );
+        assert_eq!(
+            ledger
                 .claim_with_identity("decision", "hash", &first, "owner", 100, 50)
                 .await
                 .unwrap(),
             FlowDecisionClaimOutcome::Claimed { attempt: 1 }
         );
+        assert_eq!(
+            ledger
+                .inspect_with_identity("decision", "hash", &first)
+                .await
+                .unwrap(),
+            FlowDecisionClaimState::Pending {
+                lease_expires_at_ms: 150,
+                attempts: 1,
+            }
+        );
+        assert!(ledger
+            .inspect_with_identity("decision", "hash", &other)
+            .await
+            .is_err());
         assert!(!ledger
             .renew_with_identity("decision", "hash", &other, "owner", 110, 50)
             .await
@@ -929,6 +1148,15 @@ mod tests {
         assert_eq!(
             ledger.completed_receipt("decision").await.unwrap(),
             Some(result_receipt)
+        );
+        assert_eq!(
+            ledger
+                .inspect_with_identity("decision", "hash", &first)
+                .await
+                .unwrap(),
+            FlowDecisionClaimState::Completed {
+                completed_at_ms: Some(121),
+            }
         );
         assert!(!ledger
             .renew_with_identity("decision", "hash", &first, "owner", 130, 50)
@@ -969,6 +1197,15 @@ mod tests {
                 .unwrap(),
             FlowDecisionClaimOutcome::Completed
         );
+        assert_eq!(
+            reopened
+                .inspect_with_identity("decision", "hash", &execution_identity)
+                .await
+                .unwrap(),
+            FlowDecisionClaimState::Completed {
+                completed_at_ms: Some(120),
+            }
+        );
     }
 
     #[tokio::test]
@@ -994,6 +1231,10 @@ mod tests {
             )
             .await
             .is_err());
+        assert!(ledger
+            .complete_with_identity("decision", "hash", &first, "other", 120)
+            .await
+            .is_err());
         assert_eq!(
             ledger
                 .claim_with_identity("decision", "hash", &second, "second-owner", 121, 20)
@@ -1013,6 +1254,10 @@ mod tests {
             .await
             .is_err());
         let second_receipt = receipt(second.clone());
+        ledger
+            .complete_with_identity("decision", "hash", &second, "second-owner", 123)
+            .await
+            .unwrap();
         ledger
             .complete_with_receipt(
                 "decision",

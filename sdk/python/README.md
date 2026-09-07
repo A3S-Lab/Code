@@ -325,7 +325,14 @@ task_scheduler {
 
 The returned dictionaries report `maxActive`, active and pending totals,
 per-priority counts, and shutdown state. They are point-in-time diagnostic
-snapshots, not capacity reservations.
+snapshots, not capacity reservations. `task_scheduler_health()` returns
+bounded cumulative admissions, releases, cancellations, aging promotions,
+peak occupancy, and wait-time aggregates without retaining task payloads.
+
+`session.model_generation_pool_health()` returns a secret-free local/shared
+provider-pool projection when the configured client publishes a typed pool. It
+includes bounded recent admission counters and local reserved/available
+permits; clients without a pool descriptor receive `None`.
 
 ## Memory maintenance health
 

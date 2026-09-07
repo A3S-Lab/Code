@@ -23,7 +23,8 @@ pub use decision::{
     FlowDecisionHealthStatus, FlowDecisionRequest, FlowDecisionSink, FlowDecisionStep,
 };
 pub use decision_ledger::{
-    FileFlowDecisionLedger, FlowDecisionClaimOutcome, FlowDecisionLedger, MemoryFlowDecisionLedger,
+    FileFlowDecisionLedger, FlowDecisionClaimOutcome, FlowDecisionClaimState, FlowDecisionLedger,
+    MemoryFlowDecisionLedger,
 };
 
 pub const FLOW_GRAPH_SOURCE: &str = "a3s-flow";

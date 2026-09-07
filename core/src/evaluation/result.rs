@@ -408,7 +408,7 @@ fn validate_text(
     if value.is_empty()
         || value.len() > max_bytes
         || value.contains('\0')
-        || value.lines().count() != 1
+        || value.contains(['\r', '\n'])
     {
         return Err(EvaluationStoreError::InvalidField(field));
     }
@@ -433,6 +433,23 @@ mod tests {
             super::super::identity::digest_bytes("evidence", b"fixture"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn evaluator_identity_fields_reject_trailing_line_endings() {
+        for evaluator_id in ["reviewer\n", "reviewer\r", "reviewer\r\n"] {
+            assert!(matches!(
+                EvaluationResultV1::new(
+                    evaluator_id,
+                    target(),
+                    "aux-1",
+                    "observed",
+                    serde_json::json!({"finding_count": 1}),
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+                Err(EvaluationStoreError::InvalidField("evaluator_id"))
+            ));
+        }
     }
 
     #[test]

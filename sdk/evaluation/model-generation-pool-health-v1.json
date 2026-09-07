@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "report_schema_version": 1,
+  "fixture_id": "model-generation-pool-health-v1",
+  "sample_limit": 8,
+  "max_concurrency": 64,
+  "required_snapshot_fields": [
+    "pool",
+    "localMaxConcurrency",
+    "localReserved",
+    "localAvailable"
+  ],
+  "required_identity_fields": [
+    "schema",
+    "domain",
+    "digest"
+  ],
+  "aggregate_fields": [
+    "sampleCount",
+    "maxLocalReserved",
+    "maxSchedulerActive",
+    "maxSchedulerPending",
+    "admitted",
+    "released",
+    "cancelled",
+    "rejected"
+  ],
+  "forbidden_fields": [
+    "provider",
+    "model",
+    "endpoint",
+    "url",
+    "api_key",
+    "apiKey",
+    "authorization",
+    "prompt",
+    "request",
+    "label",
+    "secret",
+    "token"
+  ]
+}

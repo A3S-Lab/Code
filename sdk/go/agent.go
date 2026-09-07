@@ -418,6 +418,19 @@ func (agent *Agent) TaskSchedulerStats(ctx context.Context) (TaskSchedulerStats,
 	return result, err
 }
 
+// TaskSchedulerHealth returns scheduler occupancy plus bounded cumulative
+// admission and fairness counters shared by every session created from this
+// Agent.
+func (agent *Agent) TaskSchedulerHealth(ctx context.Context) (TaskSchedulerHealthSnapshot, error) {
+	const op = "agent_task_scheduler_health"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return TaskSchedulerHealthSnapshot{}, err
+	}
+	var result TaskSchedulerHealthSnapshot
+	err := agent.runtime.Request(ctx, op, map[string]any{"agent_id": agent.id}, &result)
+	return result, err
+}
+
 func (agent *Agent) ListSessions(ctx context.Context) ([]string, error) {
 	const op = "agent_list_sessions"
 	if err := validateAgent(agent, ctx, op); err != nil {
