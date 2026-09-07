@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added run-deadline enforcement across LLM attempts and retry backoff. Each
+  provider attempt runs under a child cancellation scope with the configured
+  provider timeout clipped to the remaining run budget, so a provider that
+  ignores the optional generation-timeout hook can no longer hold the agent
+  loop; an expired deadline during retry backoff fails the turn instead of
+  sleeping past quota. Auto-compaction is now transactional: the pruned
+  transcript is prepared first and applied only after summary generation
+  succeeds, preserving tool evidence through compaction failures.
+  `SessionOptions::with_resilience_defaults` now also pins
+  `llm_api_timeout_ms` so resilient sessions get the enforced provider
+  timeout by default. This closes the `TB-RETRY1` gate.
+- Enabled MCP bootstrap connects servers with bounded four-way concurrency
+  after registering all definitions, so one slow or unreachable endpoint no
+  longer delays every other server and the first Desktop session.
 - Added a structured Terminal-Bench runner terminal report. Every invocation
   now persists an atomic `a3s.code.terminal-bench-result.v1` record with a
   single outcome, reason, counters, and bounded error detail, so Harbor can
