@@ -136,6 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work.
 - Made scheduler shutdown control-plane prioritized over admission backpressure,
   so a full queue cannot delay closure or drain of active leases.
+- Bounded file-backed multimodal attachments at 16 MiB and rechecked the opened
+  handle for concurrent growth before exposing bytes to an LLM provider.
 
 ## [8.2.0] - 2026-09-04
 

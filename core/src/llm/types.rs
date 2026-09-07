@@ -2,6 +2,10 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
+
+/// Maximum bytes loaded by [`Attachment::from_file`].
+pub const MAX_ATTACHMENT_BYTES: usize = 16 * 1024 * 1024;
 
 /// A string wrapper that redacts its value in Debug and Display output.
 /// Prevents API keys from leaking into logs and error messages.
@@ -101,7 +105,24 @@ impl Attachment {
     /// Read an image file and auto-detect media type from extension.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref();
-        let data = std::fs::read(path)?;
+        let file = std::fs::File::open(path)?;
+        if file.metadata()?.len() > MAX_ATTACHMENT_BYTES as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("attachment exceeds the {MAX_ATTACHMENT_BYTES}-byte limit"),
+            ));
+        }
+        // Use the opened handle and a +1 sentinel so concurrent file growth
+        // cannot bypass the bound after the metadata check.
+        let mut data = Vec::new();
+        file.take(MAX_ATTACHMENT_BYTES as u64 + 1)
+            .read_to_end(&mut data)?;
+        if data.len() > MAX_ATTACHMENT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("attachment exceeds the {MAX_ATTACHMENT_BYTES}-byte limit"),
+            ));
+        }
         let media_type = match path.extension().and_then(|e| e.to_str()) {
             Some("jpg" | "jpeg") => "image/jpeg",
             Some("png") => "image/png",

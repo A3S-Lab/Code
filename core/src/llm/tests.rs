@@ -3265,6 +3265,17 @@ mod multimodal_tests {
         assert_eq!(a.media_type, "application/octet-stream");
     }
 
+    #[test]
+    fn test_attachment_from_file_rejects_oversized_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len((MAX_ATTACHMENT_BYTES + 1) as u64).unwrap();
+
+        let error = Attachment::from_file(&path).expect_err("oversized input must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
     // --- ImageSource ---
 
     #[test]
