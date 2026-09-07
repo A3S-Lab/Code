@@ -9,8 +9,11 @@ use crate::agent::AgentConfig;
 use crate::config::CodeConfig;
 use crate::error::{CodeError, Result};
 use anyhow::Context;
+use futures::stream::{self, StreamExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const MCP_BOOTSTRAP_CONCURRENCY: usize = 4;
 
 pub(super) fn load_code_config(config_source: String) -> Result<CodeConfig> {
     let expanded = expand_home(&config_source);
@@ -132,19 +135,36 @@ async fn connect_global_mcp(
     }
 
     let manager = Arc::new(crate::mcp::manager::McpManager::new());
-    for server in &config.mcp_servers {
-        if !server.enabled {
-            continue;
-        }
+    let enabled_servers = config
+        .mcp_servers
+        .iter()
+        .filter(|server| server.enabled)
+        .cloned()
+        .collect::<Vec<_>>();
+    // Register all definitions before opening transports, then connect a
+    // bounded number in parallel. MCP startup is independent per server, and
+    // serial handshakes make a slow/unreachable endpoint delay every other
+    // server and the first Desktop session. The manager still records each
+    // failure independently, preserving the best-effort bootstrap contract.
+    for server in &enabled_servers {
         manager.register_server(server.clone()).await;
-        if let Err(e) = manager.connect(&server.name).await {
-            tracing::warn!(
-                server = %server.name,
-                error = %e,
-                "Failed to connect to MCP server - skipping"
-            );
-        }
     }
+    stream::iter(enabled_servers)
+        .map(|server| {
+            let manager = Arc::clone(&manager);
+            async move {
+                if let Err(error) = manager.connect(&server.name).await {
+                    tracing::warn!(
+                        server = %server.name,
+                        error = %error,
+                        "Failed to connect to MCP server - skipping"
+                    );
+                }
+            }
+        })
+        .buffer_unordered(MCP_BOOTSTRAP_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
 
     let tools = manager.get_all_tools().await;
     (Some(manager), tools)
