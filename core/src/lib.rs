@@ -89,6 +89,7 @@ pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
 pub mod context;
+pub mod core_event_log;
 pub mod core_identity;
 pub mod durable_memory;
 pub mod dynamic_workflow;
@@ -202,6 +203,11 @@ pub use cognitive_context::{
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
+};
+pub use core_event_log::{
+    CoreEventLog, CoreEventLogError, CoreLogAppendOutcomeV1, CoreLogEntryV1, CoreLogPageV1,
+    CoreLogVerificationV1, CORE_LOG_ENTRY_DIGEST_DOMAIN_V1, CORE_LOG_ENTRY_SCHEMA_V1,
+    CORE_LOG_GENESIS_PREVIOUS_DIGEST,
 };
 pub use core_identity::{
     ArtifactRef, CapabilityStamp, CoreEventIdentity, CoreIdentity, CoreIdentityError,
