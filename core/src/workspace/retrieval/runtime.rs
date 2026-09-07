@@ -24,6 +24,7 @@ const PERSISTENT_INDEX_RETRY_DELAYS: &[Duration] = &[
 /// bursts into one build of the newest snapshot instead of rebuilding every
 /// intermediate revision.
 struct PersistentIndexCoordinator {
+    index: Arc<super::persistent::WorkspacePersistentIndex>,
     updates: mpsc::UnboundedSender<Arc<super::catalog::ChunkCatalogSnapshot>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -35,14 +36,13 @@ impl PersistentIndexCoordinator {
     ) -> Arc<Self> {
         let (updates, mut pending_updates) =
             mpsc::unbounded_channel::<Arc<super::catalog::ChunkCatalogSnapshot>>();
+        let task_index = Arc::clone(&persistent);
         let task = tokio::spawn(async move {
             loop {
                 let mut pending = tokio::select! {
                     _ = lifetime.cancelled() => return,
                     next = pending_updates.recv() => match next {
                         Some(snapshot) => snapshot,
-                        // Sender dropped (shutdown) — leave without stranding
-                        // an in-flight catalog that already published.
                         None => return,
                     },
                 };
@@ -67,7 +67,7 @@ impl PersistentIndexCoordinator {
                 }
 
                 sync_snapshot_with_retry(
-                    Arc::clone(&persistent),
+                    Arc::clone(&task_index),
                     pending,
                     &lifetime,
                     &mut pending_updates,
@@ -76,6 +76,7 @@ impl PersistentIndexCoordinator {
             }
         });
         Arc::new(Self {
+            index: persistent,
             updates,
             task: Mutex::new(Some(task)),
         })
@@ -83,6 +84,40 @@ impl PersistentIndexCoordinator {
 
     fn submit(&self, snapshot: super::catalog::ChunkCatalogSnapshot) {
         let _ = self.updates.send(Arc::new(snapshot));
+    }
+
+    /// Queue a coalesced update and, when the durable projection is still
+    /// absent, publish this snapshot on a detached thread before returning.
+    ///
+    /// Windows serial CI observed catalog revision 1 with index phase Absent
+    /// for 60s: the background worker alone was not enough for first publish.
+    async fn publish(&self, snapshot: super::catalog::ChunkCatalogSnapshot) {
+        self.submit(snapshot.clone());
+        if self.index.is_ready() {
+            return;
+        }
+        let index = Arc::clone(&self.index);
+        let snapshot = Arc::new(snapshot);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if std::thread::Builder::new()
+            .name("a3s-persistent-publish".to_owned())
+            .spawn(move || {
+                let _ = tx.send(index.sync_snapshot(snapshot.as_ref()));
+            })
+            .is_err()
+        {
+            tracing::warn!("failed to spawn inline persistent publish worker");
+            return;
+        }
+        match rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "inline persistent publish failed");
+            }
+            Err(_) => {
+                tracing::warn!("inline persistent publish worker dropped its result");
+            }
+        }
     }
 
     fn shutdown(&self) {
@@ -650,7 +685,7 @@ async fn report_reconciliation(
             if let Some(persistent) = persistent {
                 match reconciler.catalog_snapshot() {
                     Ok(snapshot) => {
-                        persistent.submit(snapshot);
+                        persistent.publish(snapshot).await;
                     }
                     Err(error) => {
                         tracing::warn!(%error, "workspace persistent index snapshot failed")
