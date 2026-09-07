@@ -1029,9 +1029,7 @@ fn distinct_path_count(chunks: &[Arc<WorkspaceChunk>]) -> usize {
 
 #[cfg(all(test, feature = "zvec-rust-fts"))]
 mod tests {
-    use super::{
-        strip_windows_verbatim_prefix, WorkspacePersistentIndex, MANIFEST_FILE,
-    };
+    use super::{strip_windows_verbatim_prefix, WorkspacePersistentIndex, MANIFEST_FILE};
     use crate::workspace::retrieval::{
         ChunkCatalogLimits, ChunkingConfig, LexicalSearchRequest, WorkspaceChunkCatalog,
         WorkspaceLexicalEngine,
