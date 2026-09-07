@@ -506,6 +506,7 @@ impl ToolRegistry {
                 metadata: output.metadata,
                 images: output.images,
                 error_kind: output.error_kind,
+                trust: crate::tools::ToolResultTrustV1::WorkspaceData,
             }),
             None => Ok(ToolResult::error(name, format!("Unknown tool: {name}"))),
         };

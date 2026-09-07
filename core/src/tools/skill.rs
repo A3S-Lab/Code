@@ -194,6 +194,7 @@ Use this before invoking Skill when specialized instructions may help."
             success: true,
             metadata: Some(serde_json::json!({ "skills": metadata })),
             images: Vec::new(),
+            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
             error_kind: None,
         })
     }
@@ -452,6 +453,7 @@ The skill's allowed-tools are granted during execution and revoked after complet
                 "usage": result.usage,
             })),
             images: Vec::new(),
+            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
             error_kind: None,
         })
     }

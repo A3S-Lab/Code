@@ -113,10 +113,12 @@ pub(crate) async fn project_tool_result(
     metadata.insert("isError".to_string(), Value::Bool(result.is_error));
 
     let text = text_parts.join("\n");
+    // MCP content crossed an external server boundary; label it so
+    // downstream redaction/instruction checks apply at the value boundary.
     let output = if result.is_error {
         ToolOutput::error(text)
     } else {
-        ToolOutput::success(text)
+        ToolOutput::success_external(text)
     }
     .with_metadata(json!({ "mcp": Value::Object(metadata) }))
     .with_images(images);
@@ -522,6 +524,9 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(std::fs::read(path).unwrap(), png);
+        // MCP content crossed an external server boundary: the value is
+        // labeled external so redaction/instruction checks apply downstream.
+        assert_eq!(output.trust, crate::tools::ToolResultTrustV1::External);
     }
 
     #[tokio::test]

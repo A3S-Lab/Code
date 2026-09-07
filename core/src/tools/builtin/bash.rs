@@ -340,6 +340,7 @@ impl Tool for BashTool {
                     })),
                     images: vec![],
                     error_kind: None,
+                    trust: crate::tools::ToolResultTrustV1::WorkspaceData,
                 });
             }
         }
@@ -398,6 +399,7 @@ impl Tool for BashTool {
             })),
             images: vec![],
             error_kind: None,
+            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
         })
     }
 }

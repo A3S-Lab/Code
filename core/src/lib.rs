@@ -384,7 +384,7 @@ pub use tools::{
     IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1, TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
     TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
-pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind};
+pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind, ToolResultTrustV1};
 pub use use_runtime_tasks::{
     UsePlanScope, UsePlanScopeKind, UseProjectedLifecycleIdentity, UseRuntimeTaskDispatcher,
     UseRuntimeTaskError, UseRuntimeTaskExecutionV1, UseRuntimeTaskProjectionAdapter,

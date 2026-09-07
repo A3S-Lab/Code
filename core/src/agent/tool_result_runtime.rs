@@ -84,6 +84,7 @@ impl NormalizedToolResult {
             metadata: self.metadata,
             images: self.images,
             error_kind: self.error_kind,
+            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
         }
     }
 

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added typed tool result trust labels (KRN-5 slice).
+  `ToolResultTrustV1` marks every tool result and tool output as trusted,
+  workspace data, or external; web search, web fetch, download, and MCP
+  projection label their externally sourced outputs at construction. The
+  label crosses the `ToolOutput -> ToolResult` boundary and the wire
+  contract unchanged (absent fields decode as workspace data), and
+  `may_instruct()` / `requires_redaction_review()` let adapters apply
+  redaction and instruction-boundary checks from the value instead of
+  re-deriving trust from tool names.
 - Added the typed workspace source snapshot (KRN-4 slice).
   `WorkspaceSourceSnapshotV1` binds the manifest scan revision, an
   order-independent eligible-content digest, the eligibility, document,

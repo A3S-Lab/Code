@@ -434,7 +434,7 @@ async fn run_download(
     if let Some(sha256) = sha256 {
         metadata["sha256"] = serde_json::Value::String(sha256);
     }
-    Ok(ToolOutput::success(format!(
+    Ok(ToolOutput::success_external(format!(
         "Downloaded {bytes} bytes to {} using {strategy}",
         ctx.workspace_services
             .display_path(&destination.workspace_path)

@@ -286,6 +286,24 @@ committed regression.
 
 
 
+### 3.3.10 Tool result trust boundary
+
+The KRN-5 trust slice is delivered at the value boundary. `ToolResultTrustV1`
+labels every tool result and tool output as `trusted` (host-produced or
+host-verified content), `workspace_data` (local governed-tool output; the
+wire default for compatibility), or `external` (content that crossed a web,
+MCP, or download boundary — web search, web fetch, download, and MCP
+projection label their outputs at construction). The label travels with the
+value through `ToolOutput -> ToolResult` conversion and the SDK wire
+contract, and `may_instruct()` / `requires_redaction_review()` give adapters
+one predicate instead of re-deriving trust from tool names: only `trusted`
+content may occupy an instruction-adjacent position, and all non-trusted
+content requires redaction review before prompt use. The governed
+invocation state machine, admission quotas, and retry/deadline semantics
+delivered by the merged line complete the Tool side of KRN-5; routing every
+model call through one explicit middleware pipeline remains incremental
+work on top of the existing admission/budget/cancellation/evidence stages.
+
 ### 3.4 Terminal-Bench reliability track
 
 Terminal-Bench is a verifier-driven qualification boundary, not a second Code

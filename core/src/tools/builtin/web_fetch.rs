@@ -181,7 +181,7 @@ impl Tool for WebFetchTool {
             source_anchors.push(final_url);
         }
         Ok(
-            ToolOutput::success(range.content).with_metadata(serde_json::json!({
+            ToolOutput::success_external(range.content).with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
                 "document_kind": page.document_kind,
                 "content_type": page.content_type,

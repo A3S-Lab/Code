@@ -1039,7 +1039,7 @@ impl Tool for WebSearchTool {
                 query_str, notice_note, error_note
             );
             if requirements_met && errors.is_empty() {
-                return Ok(ToolOutput::success(message).with_metadata(metadata));
+                return Ok(ToolOutput::success_external(message).with_metadata(metadata));
             }
             let mut output = ToolOutput::error(message).with_metadata(metadata);
             if let Some(error_kind) =
@@ -1100,7 +1100,7 @@ impl Tool for WebSearchTool {
         };
 
         let tool_output = if requirements_met {
-            ToolOutput::success(output)
+            ToolOutput::success_external(output)
         } else {
             ToolOutput::error(output)
         };

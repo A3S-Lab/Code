@@ -1,5 +1,6 @@
 //! Core types for the extensible tool system
 
+use super::ToolResultTrustV1;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -894,6 +895,11 @@ pub struct ToolOutput {
     /// can react programmatically without parsing the `content` string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ToolErrorKind>,
+    /// Typed trust label carried from the tool implementation to the
+    /// value boundary. Defaults to workspace data; tools whose content
+    /// crossed an external boundary mark it explicitly.
+    #[serde(default)]
+    pub trust: ToolResultTrustV1,
 }
 
 impl ToolOutput {
@@ -904,7 +910,23 @@ impl ToolOutput {
             metadata: None,
             images: Vec::new(),
             error_kind: None,
+            trust: ToolResultTrustV1::WorkspaceData,
         }
+    }
+
+    /// Success whose content crossed an external boundary (web, MCP,
+    /// remote). Redaction review applies before prompt use.
+    pub fn success_external(content: impl Into<String>) -> Self {
+        Self {
+            trust: ToolResultTrustV1::External,
+            ..Self::success(content)
+        }
+    }
+
+    /// Mark this output's content as having crossed an external boundary.
+    pub fn with_external_trust(mut self) -> Self {
+        self.trust = ToolResultTrustV1::External;
+        self
     }
 
     pub fn error(message: impl Into<String>) -> Self {
@@ -914,6 +936,7 @@ impl ToolOutput {
             metadata: None,
             images: Vec::new(),
             error_kind: None,
+            trust: ToolResultTrustV1::WorkspaceData,
         }
     }
 

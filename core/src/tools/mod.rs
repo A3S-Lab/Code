@@ -398,6 +398,41 @@ fn signed_delta(value: usize, baseline: usize) -> i64 {
     }
 }
 
+/// Typed trust label for tool-result content at the value boundary (KRN-5).
+///
+/// The label decides which downstream checks apply, so redaction and
+/// instruction-boundary rules stop being re-derived from tool names in each
+/// adapter. Only [`ToolResultTrustV1::Trusted`] content may occupy an
+/// instruction-adjacent position; all other content is model-visible data,
+/// and content that crossed an external boundary additionally requires
+/// redaction review before prompt use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultTrustV1 {
+    /// Produced or cryptographically verified by the host runtime itself
+    /// (control-plane results, host-injected capability receipts).
+    Trusted,
+    /// Produced inside the governed workspace boundary by local tools.
+    /// Model-visible as data; never an instruction.
+    #[default]
+    WorkspaceData,
+    /// Crossed an external boundary (web search, MCP servers, remote
+    /// workspaces). Highest-caution channel for prompt use.
+    External,
+}
+
+impl ToolResultTrustV1 {
+    /// Whether this content may occupy an instruction-adjacent position.
+    pub const fn may_instruct(self) -> bool {
+        matches!(self, Self::Trusted)
+    }
+
+    /// Whether redaction/egress review must run before prompt use.
+    pub const fn requires_redaction_review(self) -> bool {
+        !matches!(self, Self::Trusted)
+    }
+}
+
 /// Tool execution result returned by direct tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -416,6 +451,11 @@ pub struct ToolResult {
     /// programmatically without parsing `output`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<types::ToolErrorKind>,
+    /// Typed trust label applied at the value boundary. Absent wire payloads
+    /// decode as [`ToolResultTrustV1::WorkspaceData`], matching the previous
+    /// implicit behavior for locally produced results.
+    #[serde(default)]
+    pub trust: ToolResultTrustV1,
 }
 
 impl ToolResult {
@@ -427,6 +467,24 @@ impl ToolResult {
             metadata: None,
             images: Vec::new(),
             error_kind: None,
+            trust: ToolResultTrustV1::WorkspaceData,
+        }
+    }
+
+    /// Host-trusted success: content produced by the runtime itself.
+    pub fn success_trusted(name: &str, output: String) -> Self {
+        Self {
+            trust: ToolResultTrustV1::Trusted,
+            ..Self::success(name, output)
+        }
+    }
+
+    /// Success whose content crossed an external boundary (web, MCP,
+    /// remote). Redaction review applies before prompt use.
+    pub fn success_external(name: &str, output: String) -> Self {
+        Self {
+            trust: ToolResultTrustV1::External,
+            ..Self::success(name, output)
         }
     }
 
@@ -438,6 +496,7 @@ impl ToolResult {
             metadata: None,
             images: Vec::new(),
             error_kind: None,
+            trust: ToolResultTrustV1::WorkspaceData,
         }
     }
 
@@ -457,6 +516,7 @@ impl From<ToolOutput> for ToolResult {
             metadata: output.metadata,
             images: output.images,
             error_kind: output.error_kind,
+            trust: output.trust,
         }
     }
 }

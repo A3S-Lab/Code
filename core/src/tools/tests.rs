@@ -602,6 +602,7 @@ fn test_tool_result_from_tool_output_success() {
         metadata: None,
         images: Vec::new(),
         error_kind: None,
+        trust: ToolResultTrustV1::WorkspaceData,
     };
     let result: ToolResult = output.into();
     assert_eq!(result.output, "success content");
@@ -617,6 +618,7 @@ fn test_tool_result_from_tool_output_failure() {
         metadata: Some(serde_json::json!({"error": "test"})),
         images: Vec::new(),
         error_kind: None,
+        trust: ToolResultTrustV1::WorkspaceData,
     };
     let result: ToolResult = output.into();
     assert_eq!(result.output, "failure content");
@@ -1214,4 +1216,43 @@ async fn test_execute_with_context_attaches_diff_metadata() {
     assert_eq!(meta["before"], "original\n");
     assert_eq!(meta["after"], "updated\n");
     assert_eq!(meta["file_path"], "ctx.txt");
+}
+
+#[test]
+fn tool_result_trust_labels_are_typed_at_the_value_boundary() {
+    use crate::tools::{ToolOutput, ToolResultTrustV1};
+
+    // Local tool output defaults to workspace data: model-visible, never an
+    // instruction, and subject to redaction review before prompt use.
+    let local = ToolOutput::success("local".to_owned());
+    assert_eq!(local.trust, ToolResultTrustV1::WorkspaceData);
+    assert!(!local.trust.may_instruct());
+    assert!(local.trust.requires_redaction_review());
+
+    // External content is labeled by the crossing tool, not re-derived from
+    // the tool name by each adapter.
+    let external = ToolOutput::success_external("remote".to_owned());
+    assert_eq!(external.trust, ToolResultTrustV1::External);
+    assert!(!external.trust.may_instruct());
+    assert!(external.trust.requires_redaction_review());
+
+    // Host-produced content may instruct.
+    let trusted: ToolResult = ToolResult::success_trusted("host", "receipt".to_owned());
+    assert!(trusted.trust.may_instruct());
+    assert!(!trusted.trust.requires_redaction_review());
+
+    // The label crosses the ToolOutput -> ToolResult boundary unchanged.
+    let projected: ToolResult = external.into();
+    assert_eq!(projected.trust, ToolResultTrustV1::External);
+
+    // Absent wire payloads decode as workspace data (back compatibility).
+    let legacy = r#"{"name":"read","output":"x","exit_code":0}"#;
+    let decoded: ToolResult = serde_json::from_str(legacy).unwrap();
+    assert_eq!(decoded.trust, ToolResultTrustV1::WorkspaceData);
+
+    // The label is part of the canonical wire contract.
+    let encoded = serde_json::to_string(&trusted).unwrap();
+    assert!(encoded.contains("\"trust\":\"trusted\""));
+    let unknown = encoded.replace("\"trust\":\"trusted\"", "\"trust\":\"bogus\"");
+    assert!(serde_json::from_str::<ToolResult>(&unknown).is_err());
 }

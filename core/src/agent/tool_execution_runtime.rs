@@ -356,6 +356,7 @@ impl AgentLoop {
                         metadata,
                         images,
                         error_kind,
+                        trust: crate::tools::ToolResultTrustV1::WorkspaceData,
                     });
                 }
                 Ok(Err(e)) => {
