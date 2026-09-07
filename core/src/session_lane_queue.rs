@@ -878,13 +878,13 @@ mod tests {
             )
             .await;
         let task_id = loop {
-            match tokio::time::timeout(Duration::from_secs(1), events.recv())
-                .await
-                .expect("pending event must arrive")
-                .expect("event channel must remain open")
+            if let AgentEvent::ExternalTaskPending { task_id, .. } =
+                tokio::time::timeout(Duration::from_secs(1), events.recv())
+                    .await
+                    .expect("pending event must arrive")
+                    .expect("event channel must remain open")
             {
-                AgentEvent::ExternalTaskPending { task_id, .. } => break task_id,
-                _ => {}
+                break task_id;
             }
         };
 
@@ -894,21 +894,18 @@ mod tests {
             .unwrap()
             .is_err());
         loop {
-            match tokio::time::timeout(Duration::from_secs(1), events.recv())
+            if let AgentEvent::ExternalTaskCompleted {
+                task_id: completed_id,
+                success,
+                ..
+            } = tokio::time::timeout(Duration::from_secs(1), events.recv())
                 .await
                 .expect("terminal event must arrive")
                 .expect("event channel must remain open")
             {
-                AgentEvent::ExternalTaskCompleted {
-                    task_id: completed_id,
-                    success,
-                    ..
-                } => {
-                    assert_eq!(completed_id, task_id);
-                    assert!(!success);
-                    break;
-                }
-                _ => {}
+                assert_eq!(completed_id, task_id);
+                assert!(!success);
+                break;
             }
         }
         assert!(q.pending_external_tasks().await.is_empty());

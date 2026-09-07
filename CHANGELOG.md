@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the end-to-end research reviewer qualification (`RESEARCH-REVIEW1`).
+  A host-owned reviewer now composes through the real evaluation substrate:
+  bounded run evidence feeds an auxiliary reviewer run, its evaluator result
+  is retained in the result store, and every finding plus the published
+  batch bind to that exact record and the admitted research Run. Evaluator,
+  Run, project-revision, evidence, and binding-completeness drift fail
+  closed; resolve/waive decisions are terminal and the batch wire round-trip
+  stays strict.
 - Added the append-only core event log (KRN-1 event fabric). One bounded,
   hash-chained `CoreEventLog` stream per operation over
   `CoreEventIdentity` values: admission fails closed on duplicate-content
