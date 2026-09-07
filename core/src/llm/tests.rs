@@ -35,6 +35,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_auth_file_rejects_oversized_input_before_json_decode() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file()
+            .set_len((crate::bounded_io::MAX_AUTH_FILE_BYTES + 1) as u64)
+            .unwrap();
+
+        let error = match CodexLoginClient::from_auth_file(file.path(), "model", "session", None) {
+            Ok(_) => panic!("oversized auth input must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("read Codex auth file"));
+    }
+
+    #[test]
     fn test_llm_config_debug_redacts_api_key() {
         let config = LlmConfig::new("openai", "gpt-4", "sk-super-secret");
         let debug = format!("{:?}", config);

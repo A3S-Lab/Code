@@ -147,6 +147,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeping manifest scans under the same process-output limit.
 - Bounded ordinary remote Git JSON and error responses at 4 MiB before decode,
   while retaining the endpoint-specific streaming limit for diffs.
+- Bounded local Codex auth-cache reads at 1 MiB before JSON parsing, keeping
+  oversized credential files outside the login client memory boundary.
 
 ## [8.2.0] - 2026-09-04
 

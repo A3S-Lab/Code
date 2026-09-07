@@ -5,6 +5,7 @@ use std::path::Path;
 
 pub(crate) const MAX_AGENT_DIRECTORY_FILE_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_CONFIG_FILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_AUTH_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_SKILL_FILE_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_SUBAGENT_FILE_BYTES: usize = 256 * 1024;
 

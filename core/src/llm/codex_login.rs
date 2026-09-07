@@ -51,8 +51,11 @@ impl CodexLoginClient {
         reasoning_effort: Option<String>,
     ) -> Result<Self> {
         let auth_path = auth_path.into();
-        let raw = std::fs::read_to_string(&auth_path)
-            .with_context(|| format!("read Codex auth file {}", auth_path.display()))?;
+        let raw = crate::bounded_io::read_utf8_file_bounded(
+            &auth_path,
+            crate::bounded_io::MAX_AUTH_FILE_BYTES,
+        )
+        .with_context(|| format!("read Codex auth file {}", auth_path.display()))?;
         let auth: Value = serde_json::from_str(&raw).context("parse Codex auth file")?;
 
         let access_token = auth
