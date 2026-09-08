@@ -1,0 +1,160 @@
+---
+title: 'Ripgrep Context Builder'
+description: 'Use grep and glob to gather code context before asking the agent.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Ripgrep Context Builder
+
+Fast code search with `session.grep` and `session.glob` lets you gather the
+relevant files and matching lines, then feed them into a prompt — a lightweight
+retrieval step before the agent reasons. Use this when you want to scope the
+agent to a specific slice of a large codebase instead of letting it explore from
+scratch.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder(".").build().await?;
+
+    let files = session.glob("src/**/*.rs").await?;
+    let hits = session.grep("create_session").await?;
+    let context = format!(
+        "Files in scope:\n{}\n\nMatches for \"create_session\":\n{}",
+        files.join("\n"),
+        hits
+    );
+    let answer = session
+        .send(
+            &format!(
+                "Using only this context, explain how create_session is wired up:\n\n{context}"
+            ),
+            None,
+        )
+        .await?;
+    println!("{}", answer.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('.');
+
+// 1. Find candidate files by glob pattern (returns a list of paths).
+const files = await session.glob('src/**/*.ts');
+
+// 2. Search the workspace for the symbol we care about (returns ripgrep text).
+const hits = await session.grep('createSession');
+
+// 3. Build a context string and feed it into a focused prompt.
+const context = [
+  `Files in scope:\n${files.join('\n')}`,
+  `Matches for "createSession":\n${hits}`,
+].join('\n\n');
+
+const answer = await session.run(
+  `Using only this context, explain how createSession is wired up:\n\n${context}`,
+);
+console.log(answer);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent
+
+agent = Agent.create("agent.acl")
+session = agent.session('.')
+
+# 1. Find candidate files by glob pattern (returns a list of paths).
+files = session.glob('src/**/*.ts')
+
+# 2. Search the workspace for the symbol we care about (returns ripgrep text).
+hits = session.grep('createSession')
+
+# 3. Build a context string and feed it into a focused prompt.
+context = '\n\n'.join([
+    'Files in scope:\n' + '\n'.join(files),
+    'Matches for "createSession":\n' + hits,
+])
+
+answer = session.run(
+    f'Using only this context, explain how createSession is wired up:\n\n{context}'
+)
+print(answer)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	files, err := session.Glob(ctx, "sdk/go/**/*.go")
+	if err != nil {
+		log.Fatal(err)
+	}
+	hits, err := session.Grep(ctx, "Session")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scope := "Files in scope:\n" + strings.Join(files, "\n") +
+		"\n\nMatches for \"Session\":\n" + hits
+	answer, err := session.Run(
+		ctx,
+		"Using only this context, explain how Session is wired up:\n\n"+scope,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+`glob` returns a list of matching file paths, while `grep` returns the raw
+ripgrep output as a single string. Both run locally and return quickly, so you
+can chain several searches to assemble context cheaply before spending a model
+turn. Pair them with `session.readFile` when you need the full body of a file
+rather than just the matching lines.
