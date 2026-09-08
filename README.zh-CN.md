@@ -17,10 +17,10 @@
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ccf91?style=flat-square"></a>
 </p>
 
-**A3S Code** 是用于构建受治理编码 Agent 的异步 Rust 运行时。库的默认配置是
-**变薄的编码 Harness**（`local-code`）：Agent 循环、工作区工具、策略、事件与
-捆绑词法检索。Advanced 评估、server 与无头搜索保持显式启用。副作用、证据与
-恢复都放在显式契约之后 — 可通过 Rust、Node.js、Python、Go，或 `a3s code` 使用。
+**A3S Code** 是做编码 Agent 的异步 Rust 运行时。默认是一套够用的小 harness
+（`local-code`）：Agent 循环、工作区工具、策略、事件，以及词法搜索。评估、
+server、无头搜索这些更重的能力需要显式打开。可用 Rust、Node.js、Python、Go，
+或直接跑 `a3s code`。
 
 <p align="center">
   <a href="#60-秒内起步">起步</a> ·
@@ -34,22 +34,20 @@
 
 ## 8.5 有什么新内容
 
-工作区搜索平面保持分离；会话存储重开在 flock 下恢复：
-
-- **`grep` 候选裁剪（CODE-G1）。** 默认 `local-code` 在
-  `.a3s-code/grep-trigram` 下构建进程内 trigram 过滤器，使字面量模式在精确
-  正则扫描前打开更少文件。非字面量与索引失败会失败开放。精确匹配仍由 Code
-  拥有 — 该路径不会打开持久 zvec FTS（排序检索仍用 `mode: "bm25"`）。
-- **会话存储 WAL flock（8.5.1）。** 并发写者在跨进程 flock 下重读持久最大
-  序号；可隔离损坏的 WAL，使宿主从持久快照继续。
+- **更快的 `grep`（CODE-G1）。** 字面量搜索时，`local-code` 会在
+  `.a3s-code/grep-trigram` 下建一个小的 trigram 缓存，先缩小文件范围再做精确
+  正则。缓存不可用或不是字面量时直接回退。精确匹配仍走 Code 自己的 `grep`，
+  不会碰持久 zvec FTS（排序检索继续用 `bm25`）。
+- **会话重开更稳（8.5.1）。** 写者先拿跨进程 flock，再读持久序号；坏掉的 WAL
+  可以隔离，避免并发写出冲突 ID。
 
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.1`）。
 
 ### 更早的版本线
 
-- **8.4** — 变薄的 `local-code` 默认、统一 `task` 扇出、仅 Active 的 Durable
+- **8.4** — 更小的 `local-code` 默认、统一用 `task` 做扇出、仅 Active 的 Durable
   Memory、`update_plan`、SDK capabilities v2。
-- **8.3** — 可协商会话存储耐久、类型化工具结果信任、工作区源快照、可失败 FFI
+- **8.3** — 会话存储耐久选项、类型化工具结果信任、工作区源快照、可失败 FFI
   init、宿主 checkpoint 钩子。
 - **8.0+** — Run 拥有的时空组合、generation-exact 能力、可移植检查点、收敛工作流。
   完整历史见 [CHANGELOG.md](CHANGELOG.md)。Go 模块路径：
@@ -69,9 +67,8 @@ cd /path/to/your/project
 a3s code
 ```
 
-终端产品流推理、工具活动、审批、任务
-进展和差异。使用 `a3s code resume` 恢复持续工作或
-`a3s code resume <session-id>`。
+终端里会流式显示推理、工具、审批、任务进度和 diff。恢复会话用
+`a3s code resume` 或 `a3s code resume <session-id>`。
 
 ### 嵌入运行时
 
