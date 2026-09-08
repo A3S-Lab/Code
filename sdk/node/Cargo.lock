@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "8.4.0"
+version = "8.5.0"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-node"
-version = "8.4.0"
+version = "8.5.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -178,9 +178,9 @@ dependencies = [
 
 [[package]]
 name = "a3s-sandbox"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d81534611bb41e3b6b65270842b6fbce0974c713df21fcfed8c4271ea76272"
+checksum = "9becc7d96a4c060c4ec3b0fa820f5508092db3cef44eb6400ef8d60f58c01197"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -569,11 +569,10 @@ impl ManifestWorkspaceBackend {
         }
         #[cfg(feature = "grep-trigram")]
         {
-            return self
-                .auto_grep_candidates
+            self.auto_grep_candidates
                 .lock()
                 .ok()
-                .and_then(|guard| guard.as_ref().map(|(_, index)| Arc::clone(index)));
+                .and_then(|guard| guard.as_ref().map(|(_, index)| Arc::clone(index)))
         }
         #[cfg(not(feature = "grep-trigram"))]
         {
@@ -604,7 +603,7 @@ impl ManifestWorkspaceBackend {
         }
         #[cfg(feature = "grep-trigram")]
         {
-            return self.ensure_auto_trigram_candidate_index(search_snapshot);
+            self.ensure_auto_trigram_candidate_index(search_snapshot)
         }
         #[cfg(not(feature = "grep-trigram"))]
         {

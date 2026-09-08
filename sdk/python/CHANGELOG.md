@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.0] - 2026-09-08
+
+### Added
+
+- Bundled Core 8.5.0: default `local-code` in-tree trigram pruning for workspace
+  `grep` candidates (`CODE-G1`), without opening durable zvec FTS.
+
 ## [8.4.0] - 2026-09-08
 
 ### Added
