@@ -3,6 +3,12 @@
 </p>
 
 <p align="center">
+  <strong>Language / 语言:</strong>
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/A3S-Lab/Code/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/A3S-Lab/Code?style=flat-square&color=6ca3ff"></a>
   <a href="https://github.com/A3S-Lab/Code/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Code/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <a href="https://crates.io/crates/a3s-code-core"><img alt="Crates.io" src="https://img.shields.io/crates/v/a3s-code-core?style=flat-square&color=f0b44d"></a>
