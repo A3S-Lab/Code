@@ -45,8 +45,8 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
-    "build:debug": "napi build --platform --js index.js --dts generated.d.ts && node scripts/patch-loader.mjs",
+    "build": "napi build --platform --release --js index.js --dts generated.d.ts --cargo-flags=--features=advanced-harness,server && node scripts/patch-loader.mjs",
+    "build:debug": "napi build --platform --js index.js --dts generated.d.ts --cargo-flags=--features=advanced-harness,server && node scripts/patch-loader.mjs",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "npm run test:release-manifest && npm run test:evaluation-protocol && npm run test:research-protocol && npm run test:runtime && npm run test:fixtures",
     "test:release-manifest": "node --test scripts/release-manifest.test.mjs scripts/patch-loader.test.mjs",

@@ -160,12 +160,19 @@ AgentEvent / EventEnvelopeV1
 
 ## 能力地图
 
-Core crate 默认启用惰性 Moli 支持的搜索
-`a3s-search` v3.1.0。 Moli是从打包的sidecar中解析出来的，经过验证
-每用户缓存，或固定的 HTTPS 下载，并由所有本地代码共享
-流程。最小嵌入可以使用`default-features = false`；铬合金和
-Lightpanda 仍然是显式后端，而云后端、服务和
-遥测仍然处于选择加入状态。
+**推荐嵌入：** 依赖 `a3s-code-core`，使用
+`default-features = false` 与 `features = ["local-code"]`（捆绑 zvec FTS）。
+该配置即编码 Agent Harness：Agent 循环、工作区工具、策略、事件与词法检索 —
+不含 Advanced 评估/研究/工作流、S3/serve 或浏览器搜索。
+
+Core 库的 `default` 即为变薄的编码 Harness（`local-code`：捆绑 zvec FTS）。
+显式启用 `advanced-harness`、`headless-search`、`server`、`scientific` 或
+`full` 以获得 Advanced 评估/研究/工作流、浏览器搜索或 S3/serve。开启
+`headless-search` 时，Moli 支持的搜索从打包 sidecar、经校验的每用户缓存或
+固定 HTTPS 下载解析，并由本地 Code 进程共享。Chrome 与 Lightpanda 仍为显式后端。
+
+Harness 收口（打包、双轨移除、外部证明门）：
+[`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md)。
 
 |面积 |有什么可用 |激活|
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

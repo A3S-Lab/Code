@@ -151,7 +151,7 @@ jobs:
           args: >-
             --release --out dist --manifest-path sdk/python/Cargo.toml
             --no-default-features
-            --features extension-module${{ matrix.settings.zvec && ',zvec-rust-fts-bundled' || '' }}
+            --features extension-module${{ matrix.settings.zvec && ',zvec-rust-fts-bundled,advanced-harness,server' || '' }}
             -i python${{ matrix.settings.python_version || '3.10' }}
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
           container: ${{ matrix.settings.container || '' }}

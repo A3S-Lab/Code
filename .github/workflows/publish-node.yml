@@ -154,6 +154,10 @@ jobs:
             # Clipanion treats a following `--no-default-features` token as a
             # new flag unless it is attached with `=`.
             NAPI_ARGS+=(--cargo-flags=--no-default-features)
+          else
+            # Product wheels include Advanced + serve surfaces so published
+            # types/runtime match sdk-runtime CI (`build:debug` / `npm test`).
+            NAPI_ARGS+=(--cargo-flags=--features=advanced-harness,server)
           fi
           npx napi build "${NAPI_ARGS[@]}"
           node scripts/patch-loader.mjs

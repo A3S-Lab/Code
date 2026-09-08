@@ -151,6 +151,7 @@ jobs:
       - name: Qualify Flow projection and State Graph replay
         run: >-
           cargo run --locked --release -p a3s-code-core
+          --features advanced-harness
           --example flow_graph_benchmark
           | tee performance-results/flow-state-graph.json
 
@@ -185,6 +186,7 @@ jobs:
       - name: Qualify evaluation substrate persistence and wire boundaries
         run: >-
           cargo run --locked --release -p a3s-code-core
+          --features advanced-harness
           --example evaluation_substrate_benchmark
           | tee performance-results/evaluation-substrate.json
 

@@ -84,10 +84,10 @@ impl AgentSession {
     pub(crate) fn runtime_agent_style_override(
         &self,
     ) -> Option<Option<crate::prompts::AgentStyle>> {
-        self.runtime_agent_style
+        *self
+            .runtime_agent_style
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
     }
 
     /// Runtime reply-language override. Outer `None` means unset; inner value

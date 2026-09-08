@@ -27,6 +27,14 @@ required-features = ["zvec-rust-fts"]
 name = "workspace_persistent_index_production"
 required-features = ["zvec-rust-fts"]
 
+[[example]]
+name = "flow_graph_benchmark"
+required-features = ["advanced-harness"]
+
+[[example]]
+name = "evaluation_substrate_benchmark"
+required-features = ["advanced-harness"]
+
 [[test]]
 name = "test_extensibility_real_llm"
 path = "tests/test_extensibility_real_llm.rs"
