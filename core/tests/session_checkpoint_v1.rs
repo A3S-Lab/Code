@@ -347,14 +347,12 @@ fn portable_checkpoint_rejects_invalid_durable_memory_binding() {
     .binding();
     let mut encoded = serde_json::to_value(binding).unwrap();
     encoded["mode"] = serde_json::json!("shadow_candidates");
-    let invalid: DurableMemoryBindingV1 = serde_json::from_value(encoded).unwrap();
-    let mut invalid_snapshot = snapshot(false);
-    invalid_snapshot.session.durable_memory_binding = Some(invalid);
-
-    let error = SessionCheckpointExportV1::new(invalid_snapshot, None)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("recall policy"), "{error}");
+    // HARNESS-CONV4 / CAP-GA1: shadow mode is removed; fail closed at decode
+    // rather than accepting a binding that later fails export validation.
+    assert!(
+        serde_json::from_value::<DurableMemoryBindingV1>(encoded).is_err(),
+        "shadow_candidates mode must fail closed at decode"
+    );
 
     let namespace = MemoryNamespace::try_new("tenant", "principal", "workspace").unwrap();
     let binding = DurableMemorySession::active_recall(
