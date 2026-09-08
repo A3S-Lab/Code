@@ -4,7 +4,7 @@ export const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 8.4 是变薄的受治理编码 Harness：默认 local-code、统一 task 扇出、Active-only 记忆、可协商耐久与信任边界、异步工作区检索与事件恢复。可直接运行 a3s code，或通过 Rust / Node.js / Python / Go SDK 嵌入产品。',
+      'A3S Code 8.5 是变薄的受治理编码 Harness：默认 local-code、统一 task 扇出、Active-only 记忆、可协商耐久与信任边界、精确 grep 与排序检索分离（可选 trigram 裁剪）、异步工作区检索与事件恢复。可直接运行 a3s code，或通过 Rust / Node.js / Python / Go SDK 嵌入产品。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -116,7 +116,7 @@ export const copy = {
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code 8.4 is a thin governed coding harness: local-code defaults, unified task fan-out, Active-only memory, negotiable durability and trust boundaries, asynchronous workspace retrieval, and recoverable events. Run a3s code or embed the Rust, Node.js, Python, or Go SDK.',
+      'A3S Code 8.5 is a thin governed coding harness: local-code defaults, unified task fan-out, Active-only memory, negotiable durability and trust boundaries, exact grep separated from ranked retrieval (optional trigram pruning), asynchronous workspace retrieval, and recoverable events. Run a3s code or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
