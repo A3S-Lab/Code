@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before minting, and rejects Intent→Committed pairs that reuse a sequence
   across different session ids. Hosts can call
   `FileSessionStore::new_recovering_corrupt_wal` to quarantine a corrupt WAL
-  and continue from durable session snapshots.
+  and continue from durable session snapshots. Persistence qualification
+  treats the WAL flock file as an allowed auxiliary artifact.
 
 ## [8.5.0] - 2026-09-08
 

@@ -291,9 +291,11 @@ fn classify_store_files(root: &Path) -> anyhow::Result<StoreFileStats> {
 }
 
 fn is_session_store_wal_path(root: &Path, path: &Path) -> bool {
-    path.strip_prefix(root)
-        .ok()
-        .is_some_and(|relative| relative == Path::new("v1/wal/session-store.ndjson"))
+    path.strip_prefix(root).ok().is_some_and(|relative| {
+        relative == Path::new("v1/wal/session-store.ndjson")
+            // Exclusive flock companion; may remain after delete like the WAL.
+            || relative == Path::new("v1/wal/session-store.lock")
+    })
 }
 
 #[derive(Default)]
