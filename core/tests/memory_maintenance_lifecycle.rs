@@ -5,8 +5,9 @@ use a3s_code_core::memory::{
     MemoryMaintenancePhase, MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
 };
 use a3s_code_core::{
-    Agent, CodeConfig, CodeError, DurableMemoryActivation, DurableMemorySession, ModelConfig,
-    ModelModalities, ProviderConfig, SessionBuildResource, SessionOptions,
+    Agent, CodeConfig, CodeError, DurableMemoryActivation, DurableMemoryRecallPolicy,
+    DurableMemorySession, ModelConfig, ModelModalities, ProviderConfig, SessionBuildResource,
+    SessionOptions,
 };
 use a3s_memory::repository::{
     DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,

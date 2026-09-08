@@ -47,12 +47,27 @@ impl BlockingPreAnalysisClient {
 impl LlmClient for BlockingPreAnalysisClient {
     async fn complete(
         &self,
-        _messages: &[Message],
+        messages: &[Message],
         system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
+        let prompt_text = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+        if super::tests::is_pre_analysis_llm_request(system, &prompt_text, tools)
+            || system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
+            || prompt_text.contains("compact pre-analysis object")
+        {
             self.pre_analysis_started.notify_one();
             return std::future::pending().await;
         }
@@ -532,7 +547,21 @@ impl LlmClient for PlanDelegationChildClient {
         system: Option<&str>,
         _tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+        let prompt_text = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
+            || prompt_text.contains("compact pre-analysis object")
+        {
             return Ok(Self::pre_analysis_response(messages));
         }
         Ok(Self::routed_response(messages))

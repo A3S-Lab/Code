@@ -497,6 +497,7 @@ struct HangingCompactionLlmClient {
 fn pre_analysis_user_request(prompt_text: &str) -> String {
     let request = prompt_text
         .split_once("User request:\n")
+        .or_else(|| prompt_text.split_once("User request:\r\n"))
         .map(|(_, request)| request)
         .unwrap_or(prompt_text);
     request
@@ -505,6 +506,65 @@ fn pre_analysis_user_request(prompt_text: &str) -> String {
         .unwrap_or(request)
         .trim()
         .to_string()
+}
+
+/// Detect structured pre-analysis calls without relying on exact system-prompt
+/// bytes. Windows CI can normalize newlines between `include_str!` constants and
+/// assembled prompts, which breaks a raw `contains(PRE_ANALYSIS_SYSTEM)` check
+/// and then drains short mock queues.
+pub(crate) fn is_pre_analysis_llm_request(
+    system: Option<&str>,
+    prompt_text: &str,
+    tools: &[ToolDefinition],
+) -> bool {
+    if tools
+        .iter()
+        .any(|tool| tool.name == "emit_pre_analysis" || tool.name.starts_with("emit_pre_analysis"))
+    {
+        return true;
+    }
+    if prompt_text.contains("compact pre-analysis object")
+        || prompt_text.contains("pre-analysis object")
+    {
+        return true;
+    }
+    let Some(system) = system else {
+        return false;
+    };
+    if system.contains(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+        return true;
+    }
+    // Tolerate CRLF/LF drift between the compiled prompt constant and the
+    // assembled system string observed by the mock client.
+    let normalized_system = system.replace("\r\n", "\n");
+    let normalized_constant = crate::prompts::PRE_ANALYSIS_SYSTEM.replace("\r\n", "\n");
+    normalized_system.contains(&normalized_constant)
+}
+
+fn pre_analysis_mock_response(prompt_text: &str) -> LlmResponse {
+    let prompt = pre_analysis_user_request(prompt_text);
+    let response = serde_json::json!({
+        "intent": "GeneralPurpose",
+        "requires_planning": false,
+        "goal": {
+            "description": prompt,
+            "success_criteria": []
+        },
+        "execution_plan": {
+            "complexity": "Simple",
+            "steps": [
+                {
+                    "id": "step-1",
+                    "description": prompt,
+                    "dependencies": [],
+                    "success_criteria": "Complete the request"
+                }
+            ],
+            "required_tools": []
+        },
+        "optimized_input": prompt
+    });
+    MockLlmClient::text_response(&response.to_string())
 }
 
 impl BlockingExtractionLlmClient {
@@ -560,7 +620,9 @@ impl LlmClient for BlockingExtractionLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
+            || prompt_text.contains("compact pre-analysis object")
+        {
             let prompt = pre_analysis_user_request(&prompt_text);
             let response = serde_json::json!({
                 "intent": "GeneralPurpose",
@@ -743,30 +805,8 @@ impl LlmClient for MockLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
-            let prompt = pre_analysis_user_request(&prompt_text);
-            let response = serde_json::json!({
-                "intent": "GeneralPurpose",
-                "requires_planning": false,
-                "goal": {
-                    "description": prompt,
-                    "success_criteria": []
-                },
-                "execution_plan": {
-                    "complexity": "Simple",
-                    "steps": [
-                        {
-                            "id": "step-1",
-                            "description": prompt,
-                            "dependencies": [],
-                            "success_criteria": "Complete the request"
-                        }
-                    ],
-                    "required_tools": []
-                },
-                "optimized_input": prompt
-            });
-            return Ok(MockLlmClient::text_response(&response.to_string()));
+        if is_pre_analysis_llm_request(system, &prompt_text, tools) {
+            return Ok(pre_analysis_mock_response(&prompt_text));
         }
         self.request_systems
             .lock()
@@ -810,53 +850,30 @@ impl LlmClient for MockLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let response =
-            if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
-                let prompt = pre_analysis_user_request(&prompt_text);
-                let payload = serde_json::json!({
-                    "intent": "GeneralPurpose",
-                    "requires_planning": false,
-                    "goal": {
-                        "description": prompt,
-                        "success_criteria": []
-                    },
-                    "execution_plan": {
-                        "complexity": "Simple",
-                        "steps": [
-                            {
-                                "id": "step-1",
-                                "description": prompt,
-                                "dependencies": [],
-                                "success_criteria": "Complete the request"
-                            }
-                        ],
-                        "required_tools": []
-                    },
-                    "optimized_input": prompt
-                });
-                MockLlmClient::text_response(&payload.to_string())
-            } else {
-                self.request_texts
-                    .lock()
-                    .unwrap()
-                    .push("<streaming>".to_string());
-                self.request_tools.lock().unwrap().push(
-                    tools
-                        .iter()
-                        .map(|tool| tool.name.clone())
-                        .collect::<Vec<_>>(),
-                );
-                self.request_tool_definitions
-                    .lock()
-                    .unwrap()
-                    .push(tools.to_vec());
-                self.call_count.fetch_add(1, Ordering::SeqCst);
-                let mut responses = self.responses.lock().unwrap();
-                if responses.is_empty() {
-                    anyhow::bail!("No more mock responses available");
-                }
-                responses.remove(0)
-            };
+        let response = if is_pre_analysis_llm_request(system, &prompt_text, tools) {
+            pre_analysis_mock_response(&prompt_text)
+        } else {
+            self.request_texts
+                .lock()
+                .unwrap()
+                .push("<streaming>".to_string());
+            self.request_tools.lock().unwrap().push(
+                tools
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect::<Vec<_>>(),
+            );
+            self.request_tool_definitions
+                .lock()
+                .unwrap()
+                .push(tools.to_vec());
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                anyhow::bail!("No more mock responses available");
+            }
+            responses.remove(0)
+        };
 
         let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {
