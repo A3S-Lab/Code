@@ -1789,4 +1789,71 @@ async fn file_store_wal_rejects_duplicate_intent_sequences_on_reopen() {
         err.to_string().contains("conflicts"),
         "unexpected error: {err}"
     );
+    assert!(FileSessionStoreWal::is_sequence_conflict(&err));
+}
+
+#[tokio::test]
+async fn file_store_recovering_open_quarantines_corrupt_wal() {
+    let dir = tempdir().unwrap();
+    let store = FileSessionStore::new(dir.path()).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+    drop(store);
+
+    let wal = FileSessionStoreWal::new(dir.path());
+    let digest = snapshot_content_digest(&snapshot).unwrap();
+    let duplicate = SessionStoreWalEntryV1::new(
+        1,
+        "other-session",
+        digest,
+        SessionStoreWalPhaseV1::Intent,
+        99,
+    )
+    .unwrap();
+    wal.append(&duplicate).await.unwrap();
+
+    assert!(
+        FileSessionStore::new(dir.path()).await.is_err(),
+        "strict open must still fail closed"
+    );
+
+    let recovered = FileSessionStore::new_recovering_corrupt_wal(dir.path())
+        .await
+        .expect("recovering open quarantines and reopens");
+    let loaded = recovered
+        .load_snapshot(&snapshot.session.id)
+        .await
+        .unwrap()
+        .expect("durable snapshot survives WAL quarantine");
+    assert_eq!(loaded.session.id, snapshot.session.id);
+    assert!(
+        !wal.path().exists(),
+        "corrupt WAL must be moved aside on recovery"
+    );
+}
+
+#[tokio::test]
+async fn file_store_wal_rejects_intent_then_committed_for_different_session() {
+    let dir = tempdir().unwrap();
+    let wal = FileSessionStoreWal::new(dir.path());
+    let snapshot = create_test_snapshot().await;
+    let digest = snapshot_content_digest(&snapshot).unwrap();
+    let intent = SessionStoreWalEntryV1::new(
+        1,
+        "session-a",
+        digest.clone(),
+        SessionStoreWalPhaseV1::Intent,
+        1,
+    )
+    .unwrap();
+    let committed =
+        SessionStoreWalEntryV1::new(1, "session-b", digest, SessionStoreWalPhaseV1::Committed, 2)
+            .unwrap();
+    wal.append(&intent).await.unwrap();
+    wal.append(&committed).await.unwrap();
+    let err = wal
+        .load_entries()
+        .await
+        .expect_err("cross-session Intent→Committed must fail");
+    assert!(err.to_string().contains("conflicts"));
 }

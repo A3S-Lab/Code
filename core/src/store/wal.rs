@@ -12,6 +12,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -151,7 +152,9 @@ impl FileSessionStoreWal {
         })?;
         let mut lines = BufReader::new(file).lines();
         let mut entries = Vec::new();
-        let mut seen_sequences = BTreeMap::new();
+        // Sequence may appear twice only as Intent → Committed for the *same*
+        // session. Cross-session reuse (concurrent writers) fails closed.
+        let mut seen_sequences: BTreeMap<u64, (SessionStoreWalPhaseV1, String)> = BTreeMap::new();
         while let Some(line) = lines.next_line().await? {
             if line.trim().is_empty() {
                 continue;
@@ -163,11 +166,12 @@ impl FileSessionStoreWal {
                 )
             })?;
             entry.validate()?;
-            if let Some(previous) = seen_sequences.insert(entry.sequence, entry.phase) {
-                // Intent then Committed for the same sequence is the only
-                // allowed reuse; any other collision fails closed.
-                let allowed = matches!(previous, SessionStoreWalPhaseV1::Intent)
-                    && matches!(entry.phase, SessionStoreWalPhaseV1::Committed);
+            if let Some((previous_phase, previous_session)) =
+                seen_sequences.insert(entry.sequence, (entry.phase, entry.session_id.clone()))
+            {
+                let allowed = matches!(previous_phase, SessionStoreWalPhaseV1::Intent)
+                    && matches!(entry.phase, SessionStoreWalPhaseV1::Committed)
+                    && previous_session == entry.session_id;
                 if !allowed {
                     bail!(
                         "session store WAL sequence {} conflicts with a retained entry",
@@ -184,6 +188,41 @@ impl FileSessionStoreWal {
             .map(|max| max + 1)
             .unwrap_or(1);
         Ok((entries, next))
+    }
+
+    /// Whether an open/load error is the fail-closed duplicate-sequence case.
+    pub fn is_sequence_conflict(error: &anyhow::Error) -> bool {
+        error.chain().any(|cause| {
+            cause
+                .to_string()
+                .contains("conflicts with a retained entry")
+        })
+    }
+
+    /// Rename a corrupt WAL aside so a fresh log can be opened. Session
+    /// snapshots under `v1/sessions/` are left untouched.
+    pub async fn quarantine_corrupt(&self) -> Result<PathBuf> {
+        if !self.path.exists() {
+            bail!(
+                "session store WAL does not exist at {} so nothing to quarantine",
+                self.path.display()
+            );
+        }
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let dest = self
+            .path
+            .with_file_name(format!("session-store.ndjson.corrupt.{stamp}"));
+        fs::rename(&self.path, &dest).await.with_context(|| {
+            format!(
+                "Failed to quarantine session store WAL {} -> {}",
+                self.path.display(),
+                dest.display()
+            )
+        })?;
+        Ok(dest)
     }
 
     /// Append one validated entry with a data sync so reopen can observe it.

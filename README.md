@@ -564,7 +564,14 @@ evidence enters the context:
 | `summary`            | Full-scan line and file totals without rendered matches  |
 
 The non-content modes ask built-in workspace backends to count matches without
-constructing discarded match text. In `mode: "glob"`, `search` retains a
+constructing discarded match text. Exact `grep` still owns match authority; with
+the default `local-code` profile, manifest-backed workspaces also build a lazy
+in-tree trigram candidate cache under `.a3s-code/grep-trigram` so literal needles
+open fewer files before the regex scan. Non-literal patterns and index failures
+fail open to today's full scan. This path never opens durable zvec FTS (use
+`mode: "bm25"` for ranked retrieval). Hosts may replace the auto index with
+`ManifestWorkspaceBackend::configure_grep_candidate_index`. In `mode: "glob"`,
+`search` retains a
 backend's recency or relevance order by default; request `sort: "path"` when
 cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
 zvec-rust FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled

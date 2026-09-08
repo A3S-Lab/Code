@@ -23,6 +23,8 @@ sed -i.bak \
   -e 's|a3s-flow = { version = "0.4.3", path = "../../flow" }|a3s-flow = "0.4.3"|' \
   -e 's|a3s-flow = { version = "0.4.2", path = "../../flow" }|a3s-flow = "0.4.2"|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
+  -e 's|a3s-sandbox = { version = "=0.1.2", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.2" }|' \
+  -e 's|a3s-sandbox = { version = "0.1.2", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.2" }|' \
   -e 's|a3s-sandbox = { version = "=0.1.1", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.1" }|' \
   -e 's|a3s-sandbox = { version = "0.1.1", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.1" }|' \
   core/Cargo.toml

@@ -31,7 +31,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, OnceLock, RwLock,
+    Arc, Mutex, OnceLock, RwLock,
 };
 #[cfg(test)]
 use std::time::Duration;
@@ -461,6 +461,12 @@ pub struct ManifestWorkspaceBackend {
     manifest: Arc<LocalWorkspaceManifest>,
     catalog_runtime: OnceLock<Arc<LocalWorkspaceCatalogRuntime>>,
     persistent_index: OnceLock<Arc<WorkspacePersistentIndex>>,
+    /// Optional host-configured content-level grep candidate pruner.
+    grep_candidates: OnceLock<crate::workspace::SharedGrepCandidateIndex>,
+    /// Auto-built tgrep index keyed by manifest snapshot version. Present only
+    /// when the `grep-trigram` feature is enabled and no host override is set.
+    #[cfg(feature = "grep-trigram")]
+    auto_grep_candidates: Mutex<Option<(u64, crate::workspace::SharedGrepCandidateIndex)>>,
     owns_manifest: bool,
 }
 
@@ -515,6 +521,9 @@ impl ManifestWorkspaceBackend {
             manifest,
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
+            grep_candidates: OnceLock::new(),
+            #[cfg(feature = "grep-trigram")]
+            auto_grep_candidates: Mutex::new(None),
             owns_manifest: true,
         })
     }
@@ -532,8 +541,116 @@ impl ManifestWorkspaceBackend {
             manifest,
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
+            grep_candidates: OnceLock::new(),
+            #[cfg(feature = "grep-trigram")]
+            auto_grep_candidates: Mutex::new(None),
             owns_manifest: false,
         })
+    }
+
+    /// Attach an optional content-level grep candidate index.
+    ///
+    /// The index only prunes which files the exact regex scanner opens. Hosts
+    /// that omit this keep today's full-scan-within-manifest behavior, or the
+    /// automatic trigram index when the `grep-trigram` feature is enabled.
+    pub fn configure_grep_candidate_index(
+        &self,
+        index: crate::workspace::SharedGrepCandidateIndex,
+    ) -> Result<(), String> {
+        self.grep_candidates.set(index).map_err(|_| {
+            "grep candidate index is already configured for this workspace backend".to_owned()
+        })?;
+        Ok(())
+    }
+
+    pub fn grep_candidate_index(&self) -> Option<crate::workspace::SharedGrepCandidateIndex> {
+        if let Some(index) = self.grep_candidates.get() {
+            return Some(index.clone());
+        }
+        #[cfg(feature = "grep-trigram")]
+        {
+            self.auto_grep_candidates
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|(_, index)| Arc::clone(index)))
+        }
+        #[cfg(not(feature = "grep-trigram"))]
+        {
+            None
+        }
+    }
+
+    fn grep_content_candidate_paths(
+        &self,
+        pattern: &str,
+        case_insensitive: bool,
+        search_snapshot: &ManifestSearchSnapshot,
+    ) -> Option<std::collections::BTreeSet<String>> {
+        let index = self.resolve_grep_candidate_index(search_snapshot)?;
+        match index.select_paths(pattern, case_insensitive) {
+            crate::workspace::GrepCandidateSelection::Paths(paths) => Some(paths),
+            crate::workspace::GrepCandidateSelection::Unconstrained
+            | crate::workspace::GrepCandidateSelection::Unavailable => None,
+        }
+    }
+
+    fn resolve_grep_candidate_index(
+        &self,
+        search_snapshot: &ManifestSearchSnapshot,
+    ) -> Option<crate::workspace::SharedGrepCandidateIndex> {
+        if let Some(index) = self.grep_candidates.get() {
+            return Some(Arc::clone(index));
+        }
+        #[cfg(feature = "grep-trigram")]
+        {
+            self.ensure_auto_trigram_candidate_index(search_snapshot)
+        }
+        #[cfg(not(feature = "grep-trigram"))]
+        {
+            let _ = search_snapshot;
+            None
+        }
+    }
+
+    #[cfg(feature = "grep-trigram")]
+    fn ensure_auto_trigram_candidate_index(
+        &self,
+        search_snapshot: &ManifestSearchSnapshot,
+    ) -> Option<crate::workspace::SharedGrepCandidateIndex> {
+        use crate::workspace::TrigramGrepCandidateIndex;
+
+        let version = search_snapshot.snapshot.version;
+        let mut guard = self.auto_grep_candidates.lock().ok()?;
+        if let Some((cached_version, index)) = guard.as_ref() {
+            if *cached_version == version {
+                return Some(Arc::clone(index));
+            }
+        }
+
+        let relative_paths: Vec<String> = search_snapshot
+            .snapshot
+            .files
+            .iter()
+            .filter(|file| !file.binary)
+            .map(|file| file.path.clone())
+            .collect();
+        if relative_paths.is_empty() {
+            return None;
+        }
+
+        let root = self.local.root.clone();
+        let index_dir = TrigramGrepCandidateIndex::default_index_dir(&root);
+        // Drop the previous generation before rewriting the stamp directory.
+        *guard = None;
+        let built = TrigramGrepCandidateIndex::build_from_relative_paths(
+            &root,
+            &index_dir,
+            &relative_paths,
+        )
+        .ok()?;
+        let index: crate::workspace::SharedGrepCandidateIndex = Arc::new(built);
+        *guard = Some((version, Arc::clone(&index)));
+        Some(index)
     }
 
     pub fn manifest(&self) -> Arc<LocalWorkspaceManifest> {
@@ -549,9 +666,10 @@ impl ManifestWorkspaceBackend {
     ///
     /// First principles: enabling the catalog must not open durable native FTS.
     /// Wire that projection with [`Self::configure_persistent_index`] before
-    /// the catalog starts, or open it on Grep/BM25 demand via
-    /// [`Self::ensure_persistent_index`]. Missing durable cache degrades to the
-    /// portable in-memory catalog without failing the workspace.
+    /// the catalog starts, or open it on BM25 demand via
+    /// [`Self::ensure_persistent_index`]. Grep never opens durable zvec. Missing
+    /// durable cache degrades to the portable in-memory catalog without failing
+    /// the workspace.
     pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
         self.catalog_runtime
             .get_or_init(|| {
@@ -609,12 +727,13 @@ impl ManifestWorkspaceBackend {
         self.persistent_index.get().cloned()
     }
 
-    /// Open the workspace durable zvec FTS projection on demand (Grep/BM25).
+    /// Open the workspace durable zvec FTS projection on BM25 demand.
     ///
-    /// Safe after the chunk catalog has already started. When the catalog was
-    /// started without a wired coordinator, Grep may still read a warm on-disk
-    /// generation while the portable catalog remains the live admission
-    /// authority and update path.
+    /// Grep must not call this — it stays on the filesystem / manifest /
+    /// optional trigram plane. Safe after the chunk catalog has already
+    /// started. When the catalog was started without a wired coordinator, BM25
+    /// may still read a warm on-disk generation while the portable catalog
+    /// remains the live admission authority and update path.
     pub fn ensure_persistent_index(&self) -> Option<Arc<WorkspacePersistentIndex>> {
         if let Some(index) = self.persistent_index.get() {
             return Some(Arc::clone(index));
@@ -898,6 +1017,11 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             .map(|glob| candidate_indices_for_glob(&search_snapshot.index, &request.base, glob))
             .unwrap_or_else(|| CandidateIndices::Indexed(&search_snapshot.index.all));
         let recent_ranks = self.recent_path_ranks(&search_snapshot.index);
+        let content_filter = self.grep_content_candidate_paths(
+            &request.pattern,
+            request.case_insensitive,
+            &search_snapshot,
+        );
 
         for file_index in
             recent_first_candidate_indices(&candidates, &search_snapshot.index, &recent_ranks)
@@ -907,6 +1031,11 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             };
             if file.binary {
                 continue;
+            }
+            if let Some(ref allowed) = content_filter {
+                if !allowed.contains(&file.path) {
+                    continue;
+                }
             }
             let Some(relative_to_base) = relative_to_base(&file.path, &request.base) else {
                 continue;

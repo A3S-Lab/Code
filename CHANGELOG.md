@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.1] - 2026-09-08
+
+### Fixed
+
+- Session-store WAL reopen no longer fails closed forever on duplicate
+  sequence allocation from concurrent writers. `FileSessionStore` takes a
+  cross-process flock, re-reads the durable max sequence under that lock
+  before minting, and rejects Intent→Committed pairs that reuse a sequence
+  across different session ids. Hosts can call
+  `FileSessionStore::new_recovering_corrupt_wal` to quarantine a corrupt WAL
+  and continue from durable session snapshots. Persistence qualification
+  treats the WAL flock file as an allowed auxiliary artifact.
+
+## [8.5.0] - 2026-09-08
+
+### Added
+
+- `grep-trigram` (on by default via `local-code`): in-tree trigram pruning for
+  workspace `grep` candidates (tgrep-style fail-open filter; no unpublished
+  `tgrep-core` git dep). Hosts may call
+  `ManifestWorkspaceBackend::configure_grep_candidate_index`, or leave it unset
+  so the first grep auto-builds `.a3s-code/grep-trigram` from the current
+  manifest (rebuilds when the manifest version changes; skips above 100k
+  non-binary files). Exact regex matching, credentials, truncation, and tool
+  contracts stay in Code; non-literal patterns fail open to today's full scan.
+  Does not open durable zvec FTS.
+
 ## [8.4.0] - 2026-09-08
 
 ### Added

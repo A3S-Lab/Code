@@ -67,6 +67,33 @@ impl FileSessionStore {
         Self::new_with_encryption(dir, None).await
     }
 
+    /// Open like [`Self::new`], but if the WAL has a duplicate sequence
+    /// conflict (typically from concurrent writers without a shared lock),
+    /// quarantine the corrupt log and reopen from durable session snapshots.
+    ///
+    /// Fail-closed [`Self::new`] remains the integrity default for tests and
+    /// strict callers; Host TUI / CLI resume paths use this recovery entry.
+    pub async fn new_recovering_corrupt_wal<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let dir = dir.as_ref();
+        match Self::new(dir).await {
+            Ok(store) => Ok(store),
+            Err(error) if FileSessionStoreWal::is_sequence_conflict(&error) => {
+                let quarantined = FileSessionStoreWal::new(dir).quarantine_corrupt().await?;
+                tracing::warn!(
+                    wal = %quarantined.display(),
+                    "quarantined corrupt session store WAL; continuing from durable session snapshots"
+                );
+                Self::new(dir).await.with_context(|| {
+                    format!(
+                        "failed to reopen session store after quarantining corrupt WAL {}",
+                        quarantined.display()
+                    )
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Create a file session store that encrypts durable documents at rest
     /// (STORE-ENCRYPT1). The digest-only WAL remains unencrypted.
     pub async fn with_encryption_key<P: AsRef<Path>>(dir: P, key: &[u8; 32]) -> Result<Self> {
@@ -94,9 +121,50 @@ impl FileSessionStore {
             commit_watch,
             encryption,
         };
+        // Cross-process lock so two `new()` + commit races cannot mint the
+        // same WAL sequence (in-process AtomicU64 alone is not enough).
+        let _wal_lock = store.acquire_wal_file_lock().await?;
         let next = store.recover_wal().await?;
         store.next_wal_sequence.store(next, Ordering::SeqCst);
         Ok(store)
+    }
+
+    fn wal_lock_path(&self) -> PathBuf {
+        self.dir.join("v1").join("wal").join("session-store.lock")
+    }
+
+    /// Exclusive cross-process lock covering WAL recover and sequence minting.
+    async fn acquire_wal_file_lock(&self) -> Result<std::fs::File> {
+        let path = self.wal_lock_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create session store WAL lock directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        tokio::task::spawn_blocking(move || {
+            use fs2::FileExt;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .with_context(|| {
+                    format!("Failed to open session store WAL lock {}", path.display())
+                })?;
+            file.lock_exclusive().with_context(|| {
+                format!(
+                    "Failed to lock session store WAL exclusively at {}",
+                    path.display()
+                )
+            })?;
+            Ok(file)
+        })
+        .await
+        .context("session store WAL lock task failed")?
     }
 
     fn now_ms() -> u64 {
@@ -190,9 +258,15 @@ impl FileSessionStore {
     }
 
     async fn commit_snapshot_under_lock(&self, snapshot: &SessionSnapshotV1) -> Result<()> {
+        // Held after `write_lock` so lock order is always process-mutex → flock.
+        let _wal_lock = self.acquire_wal_file_lock().await?;
         self.ensure_writer_lease_allows_commit_unlocked().await?;
         snapshot.ensure_loadable()?;
         let snapshot_digest = snapshot_content_digest(snapshot)?;
+        // Re-read durable max under the flock so a second process that committed
+        // while this handle was idle cannot cause a duplicate sequence mint.
+        let (_, next) = self.wal.load_entries().await?;
+        self.next_wal_sequence.store(next, Ordering::SeqCst);
         let sequence = self.next_wal_sequence.fetch_add(1, Ordering::SeqCst);
         let recorded_at_ms = Self::now_ms();
         let intent = SessionStoreWalEntryV1::new(

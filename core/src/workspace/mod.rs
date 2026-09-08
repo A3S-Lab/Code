@@ -10,6 +10,7 @@
 #[cfg(test)]
 pub(crate) mod conformance;
 mod error;
+mod grep_candidates;
 mod local;
 mod local_access;
 mod manifest;
@@ -23,6 +24,15 @@ mod source_egress;
 pub mod source_snapshot;
 
 pub use error::{WorkspaceError, WorkspaceResult};
+pub use grep_candidates::{
+    GrepCandidateIndex, GrepCandidateSelection, SharedGrepCandidateIndex,
+    UnconstrainedGrepCandidateIndex,
+};
+#[cfg(feature = "grep-trigram")]
+pub use grep_candidates::{
+    TrigramGrepCandidateIndex, TrigramGrepCandidateIndexError, AUTO_GREP_TRIGRAM_MAX_FILES,
+    GREP_TRIGRAM_INDEX_RELATIVE_DIR,
+};
 pub use local::LocalWorkspaceBackend;
 pub use local_access::LocalWorkspaceAccessPolicy;
 pub use manifest::{

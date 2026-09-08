@@ -907,4 +907,58 @@ mod tests {
             serde_json::json!(["content", "files_with_matches", "count", "summary"])
         );
     }
+
+    #[tokio::test]
+    async fn grep_does_not_open_durable_zvec() {
+        use crate::workspace::{
+            ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend,
+            WorkspaceChunkingStrategy, WorkspaceServices,
+        };
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "needle here\n").unwrap();
+        let backend = ManifestWorkspaceBackend::new(temp.path());
+        backend
+            .configure_chunk_catalog(
+                WorkspaceChunkingStrategy::Lines,
+                ChunkingConfig::default(),
+                ChunkCatalogLimits::default(),
+            )
+            .unwrap();
+        let mut rx = backend.manifest().subscribe();
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let services = WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+
+        let result = GrepTool
+            .execute(&serde_json::json!({"pattern": "needle"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert!(
+            backend.persistent_index().is_none(),
+            "grep must not attach durable FTS"
+        );
+        assert!(
+            !temp.path().join(".a3s-code").join("index").exists(),
+            "grep must not create the durable index directory"
+        );
+        #[cfg(feature = "grep-trigram")]
+        {
+            assert!(
+                backend.grep_candidate_index().is_some(),
+                "default local-code grep may auto-attach the trigram candidate filter"
+            );
+            assert!(
+                temp.path().join(".a3s-code").join("grep-trigram").exists(),
+                "trigram stamp must stay under .a3s-code/grep-trigram, not durable FTS"
+            );
+        }
+    }
 }

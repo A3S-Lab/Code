@@ -374,7 +374,8 @@ impl WorkspaceServices {
         // Demand-driven durable FTS must open before the lazy catalog starts.
         // `chunk_catalog()` wires the coordinator only when a persistent handle
         // already exists; opening afterward leaves an orphan generation that
-        // never becomes ready (Grep/BM25 would stick on the portable catalog).
+        // never becomes ready (BM25 would stick on the portable catalog). Grep
+        // never opens this path.
         if let Some(index) = self
             .lazy_lexical_backend
             .as_ref()
