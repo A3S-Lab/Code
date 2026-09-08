@@ -793,31 +793,70 @@ impl LlmClient for MockLlmClient {
 
     async fn complete_streaming(
         &self,
-        _messages: &[Message],
-        _system: Option<&str>,
+        messages: &[Message],
+        system: Option<&str>,
         tools: &[ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        self.request_texts
-            .lock()
-            .unwrap()
-            .push("<streaming>".to_string());
-        self.request_tools.lock().unwrap().push(
-            tools
-                .iter()
-                .map(|tool| tool.name.clone())
-                .collect::<Vec<_>>(),
-        );
-        self.request_tool_definitions
-            .lock()
-            .unwrap()
-            .push(tools.to_vec());
-        self.call_count.fetch_add(1, Ordering::SeqCst);
-        let mut responses = self.responses.lock().unwrap();
-        if responses.is_empty() {
-            anyhow::bail!("No more mock responses available");
-        }
-        let response = responses.remove(0);
+        let prompt_text = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let response =
+            if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM)) {
+                let prompt = pre_analysis_user_request(&prompt_text);
+                let payload = serde_json::json!({
+                    "intent": "GeneralPurpose",
+                    "requires_planning": false,
+                    "goal": {
+                        "description": prompt,
+                        "success_criteria": []
+                    },
+                    "execution_plan": {
+                        "complexity": "Simple",
+                        "steps": [
+                            {
+                                "id": "step-1",
+                                "description": prompt,
+                                "dependencies": [],
+                                "success_criteria": "Complete the request"
+                            }
+                        ],
+                        "required_tools": []
+                    },
+                    "optimized_input": prompt
+                });
+                MockLlmClient::text_response(&payload.to_string())
+            } else {
+                self.request_texts
+                    .lock()
+                    .unwrap()
+                    .push("<streaming>".to_string());
+                self.request_tools.lock().unwrap().push(
+                    tools
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect::<Vec<_>>(),
+                );
+                self.request_tool_definitions
+                    .lock()
+                    .unwrap()
+                    .push(tools.to_vec());
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                let mut responses = self.responses.lock().unwrap();
+                if responses.is_empty() {
+                    anyhow::bail!("No more mock responses available");
+                }
+                responses.remove(0)
+            };
 
         let (tx, rx) = mpsc::channel(10);
         tokio::spawn(async move {

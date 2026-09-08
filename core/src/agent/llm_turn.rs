@@ -338,11 +338,11 @@ impl AgentLoop {
                         )
                     } else if attempt > 1 {
                         format!(
-                            "LLM circuit breaker triggered: failed after {} attempt(s): {}",
+                            "LLM circuit breaker triggered: failed after {} attempt(s): {:#}",
                             attempt, error
                         )
                     } else {
-                        format!("LLM call failed: {}", error)
+                        format!("LLM call failed: {:#}", error)
                     };
                     tracing::error!(turn = request.turn, attempt = attempt, "{}", msg);
                     self.fire_on_error(
@@ -743,7 +743,7 @@ impl AgentLoop {
                         .await
                         .with_context(|| {
                             format!(
-                                "LLM streaming call failed ({stream_error}); non-streaming fallback also failed"
+                                "LLM streaming call failed ({stream_error:#}); non-streaming fallback also failed"
                             )
                         });
                 }

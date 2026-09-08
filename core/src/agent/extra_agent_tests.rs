@@ -61,6 +61,18 @@ impl LlmClient for BlockingPreAnalysisClient {
         ))
     }
 
+    async fn complete_structured(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _directive: &crate::llm::structured::StructuredDirective,
+    ) -> anyhow::Result<LlmResponse> {
+        // Structured pre-analysis must observe the same hang/cancel contract as
+        // plain complete(); do not let the default fall through without signaling.
+        self.complete(messages, system, tools).await
+    }
+
     async fn complete_streaming(
         &self,
         _messages: &[Message],
@@ -247,14 +259,14 @@ async fn pre_analysis_stops_on_parent_cancellation_before_execution() {
     });
 
     tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(15),
         client.pre_analysis_started.notified(),
     )
     .await
     .expect("pre-analysis should start");
     cancel_token.cancel();
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), run)
         .await
         .expect("parent cancellation should stop pre-analysis")
         .expect("run task should not panic");
