@@ -107,7 +107,8 @@ jobs:
         run: cargo doc --locked --workspace --all-features --no-deps
 
       - name: Clippy
-        run: cargo clippy --workspace --lib --bins -- -D warnings
+        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
+        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
 
       - name: Validate release tag and version alignment
         shell: bash
@@ -189,7 +190,8 @@ jobs:
           echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
 
       - name: Clippy (Windows)
-        run: cargo clippy --workspace --lib --bins -- -D warnings
+        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
+        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
 
       - name: Tests (Windows)
         # a3s-sandbox's AppContainer backend temporarily reserves DOS drive

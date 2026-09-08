@@ -392,9 +392,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     catalog
         .replace_file(&workspace_path, Some("rust"), next_revision, replacement)
         .unwrap();
-    index
-        .sync_snapshot(&catalog.snapshot().unwrap())
-        .unwrap();
+    index.sync_snapshot(&catalog.snapshot().unwrap()).unwrap();
 
     tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {

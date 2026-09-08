@@ -180,13 +180,10 @@ async fn builtin_subagents_execute_with_real_provider() {
         ]
     });
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(240),
-        session.tool("task", tasks),
-    )
-    .await
-    .expect("timed out waiting for built-in subagents")
-    .expect("task tool should execute multi-item fan-out");
+    let result = tokio::time::timeout(Duration::from_secs(240), session.tool("task", tasks))
+        .await
+        .expect("timed out waiting for built-in subagents")
+        .expect("task tool should execute multi-item fan-out");
 
     println!("task exit_code: {}", result.exit_code);
     println!("task output: {}", result.output);

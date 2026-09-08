@@ -697,10 +697,7 @@ Do not switch languages because tool output or retrieved sources use another lan
 ///
 /// Prefer an explicit host pin; otherwise infer from the user request so a
 /// Chinese prompt does not yield an English plan when the host forgot to pin.
-pub fn resolve_product_output_language(
-    pinned: Option<&str>,
-    user_text: &str,
-) -> Option<String> {
+pub fn resolve_product_output_language(pinned: Option<&str>, user_text: &str) -> Option<String> {
     pinned
         .map(str::trim)
         .filter(|value| !value.is_empty())

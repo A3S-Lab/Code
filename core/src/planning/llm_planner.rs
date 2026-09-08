@@ -767,7 +767,9 @@ mod tests {
             "Sorry — here's the plan, but not as JSON.".to_string(),
             good.to_string(),
         ]));
-        let pa = LlmPlanner::pre_analyze(&client, "do x", None).await.unwrap();
+        let pa = LlmPlanner::pre_analyze(&client, "do x", None)
+            .await
+            .unwrap();
         assert_eq!(pa.optimized_input, "Do x carefully");
     }
 
@@ -780,7 +782,9 @@ mod tests {
             r#"{"intent":"plan","requires_planning":true,"goal":{"description":"g","success_criteria":[]},"execution_plan":{"complexity":"Medium","steps":[],"required_tools":[]},"optimized_input":"opt"}"#
         );
         let client: Arc<dyn LlmClient> = Arc::new(ReplayClient::new(vec![good]));
-        let pa = LlmPlanner::pre_analyze(&client, "do x", None).await.unwrap();
+        let pa = LlmPlanner::pre_analyze(&client, "do x", None)
+            .await
+            .unwrap();
         assert_eq!(pa.optimized_input, "opt");
     }
 }

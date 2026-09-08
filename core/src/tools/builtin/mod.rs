@@ -76,8 +76,7 @@ pub fn register_builtins(
     let semantic_enabled = capabilities.read && workspace_services.workspace_retrieval().is_some();
     // Prefer durable FTS at call time when this workspace can host one. Do not
     // open native indexes during tool registration (Loading / session build).
-    let persistent_backend_enabled =
-        capabilities.read && workspace_services.local_root().is_some();
+    let persistent_backend_enabled = capabilities.read && workspace_services.local_root().is_some();
     if capabilities.search || semantic_enabled || persistent_backend_enabled {
         let search = search::SearchTool::new(capabilities.read)
             .with_backend_search(capabilities.search)
@@ -331,8 +330,8 @@ pub fn register_generate_object(
 
 #[cfg(test)]
 mod tests {
-    use super::safe_http_source_url;
     use super::register_builtins;
+    use super::safe_http_source_url;
     use crate::tools::registry::ToolRegistry;
     use crate::workspace::{
         ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend, WorkspaceChunkingStrategy,

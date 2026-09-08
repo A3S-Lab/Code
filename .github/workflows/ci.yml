@@ -106,7 +106,8 @@ jobs:
           cargo test -p a3s-code-core --no-default-features --features local-code --lib
 
       - name: Clippy
-        run: cargo clippy --workspace --lib --bins -- -D warnings
+        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
+        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
 
       - name: Check public API compatibility with v5.3.5
         run: |
@@ -206,7 +207,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --workspace --lib --bins -- -D warnings
+        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
+        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
 
       - name: Library tests
         # a3s-sandbox's AppContainer backend temporarily reserves DOS drive
