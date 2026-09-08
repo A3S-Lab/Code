@@ -16,6 +16,16 @@ Runner 或服务端。它负责 Agent Loop、上下文、工具调用、权限�
 headless 表面显式启用，以及宿主侧回复语言控制。8.3 的持久 BM25 与耐久/信任内核
 仍保持发布资格。
 
+## 设计规则
+
+| 规则             | 含义                                                                       |
+| ---------------- | -------------------------------------------------------------------------- |
+| 默认变薄         | Core `default` = `local-code`。Advanced 评估、server、无头搜索需显式开启。 |
+| 单一委派路径     | 多条目扇出使用 `task` / `session.tasks`。不要恢复 `parallel_task`。        |
+| 仅 Active 记忆   | Durable 服务路径为 `active_recall`。拒绝 Candidate shadow。                |
+| Gate 先要证据    | 证据不完整或存在 retention 缺口时，Gate 不可宣称已完成评估。               |
+| 宿主拥有产品策略 | 评审 rubric、Cloud 审计与 UI 确认留在 Core 之外。                          |
+
 想直接在终端里使用，安装 [`a3s` CLI](https://github.com/A3S-Lab/a3s)。
 想构建自己的产品，使用 Rust crate、Node.js 包、Python 包，或配合原生桥接程序
 使用 Go module。它们输出同一套事件，因此不同界面不需要各写一套 Agent Loop。

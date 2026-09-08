@@ -17,17 +17,16 @@
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ccf91?style=flat-square"></a>
 </p>
 
-**A3S Code** is an async Rust runtime for building governed coding agents. It
-keeps the agent loop, workspace tools, model adapters, policy decisions,
-versioned events, workspace retrieval, and durable evidence behind
-explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
-`a3s code` terminal application.
+**A3S Code** is an async Rust runtime for building governed coding agents. The
+library default is a **thin coding harness** (`local-code`): agent loop,
+workspace tools, policy, events, and bundled lexical retrieval. Advanced
+evaluation, server, and headless search stay opt-in. Side effects, evidence,
+and recovery sit behind explicit contracts — from Rust, Node.js, Python, Go, or
+`a3s code`.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
   <a href="#whats-new-in-84">v8.4</a> ·
-  <a href="#whats-new-in-83">v8.3</a> ·
-  <a href="#whats-new-in-80">v8.0</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
@@ -36,6 +35,8 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
 </p>
 
 ## What's new in 8.4
+
+Harness convergence (one baseline path, refuse dual surfaces):
 
 - **Thin library defaults.** `a3s-code-core` defaults to `local-code`; SDK
   crates default to bundled zvec FTS. Enable `advanced-harness`, `server`,
@@ -50,76 +51,17 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   evaluation fail-closes on incomplete evidence.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.4.0`).
+Wrap-up: [manual/HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md) ·
+[manual/FIRST_PRINCIPLES_E2E.md](manual/FIRST_PRINCIPLES_E2E.md).
 
-## What's new in 8.3
+### Earlier lines
 
-- **Negotiable session-store durability (KRN-6).** Aggregate CAS, append-only
-  WAL, writer lease fencing, optional AES-256-GCM encryption at rest, commit
-  watch, and reference-aware artifact GC are advertised only when proven.
-- **Typed tool-result trust (KRN-5).** Trusted / workspace / external labels
-  cross the tool→model boundary; run-bound calls admit prompt trust before
-  later middleware; `model_middleware_health` is secret-free on all SDKs.
-- **Workspace source snapshots (KRN-4)** bind retrieval results to a
-  tamper-evident identity that survives derived-index rebuilds.
-- **Fallible FFI runtime init (KRN-9)** for Node.js and Python, plus host-owned
-  immutable-content adapters, checkpoint export sinks, and Skill capability
-  batches on Node.js / Python / Go.
-- **Linux arm64 Python wheels** ship as `manylinux_2_39_aarch64` (glibc 2.39+)
-  to match the bundled zvec runtime.
-
-## What's new in 8.0
-
-- **Run-owned spacetime composition.** Session, Run, Turn, and Subtask scopes
-  now form one downward-only authority and cancellation tree with bounded,
-  reverse-order effect settlement.
-- **Generation-exact capability projection.** Tools, Skills, Agents, Commands,
-  Hooks, MCP, Context, Flow, Knowledge, and UI values publish atomically and
-  remain pinned for the lifetime of every admitted Run.
-- **Exact temporal recovery.** Run and logical-checkpoint evidence binds the
-  Code catalog, complete authority ceiling, and optional A3S Use cursor. An N
-  checkpoint cannot silently resume through N+1.
-- **Portable checkpoint artifacts.** Canonical semantic and logical state is
-  content-addressed as one host-storable payload, with fail-closed drift checks
-  and a fresh-Session exact historical bootstrap path.
-- **Bounded model evidence.** Tool requests, deterministic result transforms,
-  immutable original-content references, model inputs, and capability surfaces
-  are digest-bound without retaining credentials or prompt plaintext.
-- **Convergent workflow results.** Resumable workflow checkpoints and Flow
-  decision claims carry bounded, digest-only result receipts tied to canonical
-  execution identities; stale or unreadable state fails closed, while legacy
-  records remain loadable.
-- **Convergent workflow admission.** Dynamic Flow steps project into the same
-  `ExecutionPlan` used by Code planning, rebuild that plan from complete
-  history on resume, and use a cancellable per-workflow concurrency gate.
-  Standalone Flow adapters can additionally use the agent-wide priority
-  scheduler with a digest-only step identity and an owner quota; session-bound
-  calls retain one outer scheduler lease to avoid nested single-slot
-  deadlocks. Detached children inherit a run/session admission scope.
-- **Provider-aware generation admission.** Regular, streaming, and structured
-  model calls share one typed provider/model capacity identity across sessions,
-  delegated children, direct tools, and dynamic workflows. Leaf generations
-  reserve that capacity through the existing scheduler actor without creating a
-  second queue; cancellation and dropped streams release both local and shared
-  reservations automatically. Rust hosts can inspect a secret-free
-  `ModelGenerationPoolHealthSnapshot`; the scheduler retains only a bounded
-  recent health window for completed pool epochs.
-- **Generation-fenced workflow replay.** New dynamic workflow runs pin the
-  Code runtime build and expose a digest-only continuation identity derived
-  from durable immutable facts. Changed source/input, conflicting step
-  definitions, and unsupported runtime generations are rejected before step
-  execution, while legacy unpinned histories remain readable during
-  migration. A stable claim identity now gates each worker with a local
-  file-backed (or host-injected) lease, heartbeats keep live owners fenced,
-  stale workers are rejected before workflow/step admission, and parent
-  cancellation settles or leaves the lease fenced rather than releasing an
-  in-flight worker. Hosts can bind one `DynamicWorkflowControl` handle to
-  inspect a bounded digest-only snapshot, read trusted history, drive a run,
-  or request/force durable cancellation; local journals use a cross-process
-  lock while Flow remains the sole event authority.
-
-Go consumers must update the module path to
-`github.com/A3S-Lab/Code/sdk/go/v8`. See [CHANGELOG.md](CHANGELOG.md) for the
-complete compatibility and release record.
+- **8.3** — negotiable session-store durability, typed tool-result trust,
+  workspace source snapshots, fallible FFI init, host checkpoint hooks.
+- **8.0+** — run-owned spacetime, generation-exact capabilities, portable
+  checkpoints, convergent workflows. Full history:
+  [CHANGELOG.md](CHANGELOG.md). Go module path:
+  `github.com/A3S-Lab/Code/sdk/go/v8`.
 
 ## Start in 60 seconds
 
@@ -187,11 +129,14 @@ Turn is validated, then remain supervised by the Run until bounded close.
 
 | Requirement                             | Runtime mechanism                                                                                                                                                                 |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ship a thin default, opt into product** | Library `default` is `local-code`. Advanced evaluation, server, and headless search compile only when the host enables them — no silent dual stacks. |
+| **One delegation surface**              | Model-visible multi-item work uses `task`; `parallel_task` is gone. Host APIs use `session.task` / `session.tasks`.                                                                |
+| **Serve only activated memory**         | Durable V2 recall is Active-only. Candidates may be written for evidence, but shadow serving is refused.                                                                          |
 | **Govern every side effect**            | JSON argument validation, typed tool capabilities, permission policy, human confirmation, hooks, budgets, security providers, and cancellation share one invocation path.         |
 | **Keep context bounded**                | Reads, searches, command output, Git results, and fetched pages expose ranges or cursors. Large evidence moves into bounded artifacts with previews, sizes, and hashes.           |
 | **Own the UI without forking the loop** | Core emits `AgentEvent`; SDK streams and persisted runs use the lossless `EventEnvelopeV1` protocol. The host chooses presentation, identity, credentials, and deployment policy. |
 | **Change model shape without authority drift** | A closed Tool-presentation Profile runs after permission visibility and before the model request; execution keeps the same pinned Tool values and governance. |
-| **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation.                                 |
+| **Resume from evidence, not guesswork** | `SessionSnapshotV1` can atomically commit session state, runs, artifacts, traces, verification reports, and child-task records as one generation. Gate evaluation fail-closes on incomplete evidence. |
 
 One turn follows a visible chain of responsibility:
 
@@ -1617,6 +1562,8 @@ the v1 schema or claiming external Runtime certification.
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md)                                              | Installation, configuration, sessions, tools, and common workflows                                                                                            |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration                                                                                          |
 | [SDK API Design](manual/SDK_API_DESIGN.md)                                                                           | Cross-language API conventions and alignment                                                                                                                  |
+| [Harness Convergence](manual/HARNESS_CONVERGENCE.md)                                                               | Thin-default wrap-up, refuse list, and local verification for `HARNESS-CONV4`–`CONV7`                                                                          |
+| [First-Principles E2E](manual/FIRST_PRINCIPLES_E2E.md)                                                             | Layer A–D verification matrix for harness, live ACL, and external TB/DM/CAR gates                                                                              |
 | [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, evidence-gap closure, and performance policy                             |
 | [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)                                           | A3S Use ownership, typed scopes, immutable generations, reversible effects, migration gates, and verification invariants                                      |
 | [Performance Qualification](manual/PERFORMANCE_QUALIFICATION.md)                                                     | Release-profile workloads, inclusion rules, p50/p95/max results, resource ceilings, hermetic integrations, run links, and artifact digests                    |
@@ -1644,6 +1591,7 @@ Run checks from the A3S Code repository directory:
 ```bash
 python3 scripts/check_scoped_capability_architecture.py
 python3 scripts/check_capability_verification.py
+just harness-convergence-check
 cargo fmt --all -- --check
 cargo test -p a3s-code-core
 cargo test -p a3s-code-core --all-features

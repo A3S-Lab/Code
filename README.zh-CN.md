@@ -17,16 +17,14 @@
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ccf91?style=flat-square"></a>
 </p>
 
-**A3S Code** 是用于构建受治理编码 Agent 的异步 Rust 运行时。它将
-Agent 循环、工作区工具、模型适配器、策略决策、版本化事件、
-工作区检索与持久证据都放在显式契约之后。可通过 Rust、
-Node.js、Python、Go，或通过 `a3s code` 终端应用使用。
-
+**A3S Code** 是用于构建受治理编码 Agent 的异步 Rust 运行时。库的默认配置是
+**变薄的编码 Harness**（`local-code`）：Agent 循环、工作区工具、策略、事件与
+捆绑词法检索。Advanced 评估、server 与无头搜索保持显式启用。副作用、证据与
+恢复都放在显式契约之后 — 可通过 Rust、Node.js、Python、Go，或 `a3s code` 使用。
 
 <p align="center">
   <a href="#60-秒内起步">起步</a> ·
-  <a href="#83-有什么新内容">v8.3</a> ·
-  <a href="#80-有什么新内容">v8.0</a> ·
+  <a href="#84-有什么新内容">v8.4</a> ·
   <a href="#为何选择-a3s-code">为何选择 Code</a> ·
   <a href="#能力地图">能力</a> ·
   <a href="#配置运行时">配置</a> ·
@@ -34,66 +32,33 @@ Node.js、Python、Go，或通过 `a3s code` 终端应用使用。
   <a href="#文档">文档</a>
 </p>
 
-## 8.3 有什么新内容
+## 8.4 有什么新内容
 
-- **可协商的会话存储持久性（KRN-6）。** 聚合 CAS、仅追加 WAL、writer lease
-  fencing、可选 AES-256-GCM 静态加密（at rest）、commit watch，以及引用感知的
-  artifact GC，仅在已证明可用时才对外声明。
-- **类型化工具结果信任（KRN-5）。** Trusted / workspace / external 标签穿越
-  tool→model 边界；run-bound 调用在后续中间件之前接纳 prompt 信任；
-  各 SDK 上的 `model_middleware_health` 均不含密钥。
-- **工作区源快照（KRN-4）** 将检索结果绑定到可在派生索引重建后仍保留的
-  防篡改身份。
-- **可失败的 FFI 运行时 init（KRN-9）** 面向 Node.js 与 Python；以及宿主拥有的
-  不可变内容适配器、检查点导出 sink，以及 Node.js / Python / Go 上的
-  Skill 能力批处理。
-- **Linux arm64 Python wheel** 以 `manylinux_2_39_aarch64`（glibc 2.39+）发布，
-  以匹配捆绑的 zvec 运行时。
+Harness 收敛（单一基线路径，拒绝双轨表面）：
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.3.0`）。
+- **库默认变薄。** `a3s-code-core` 默认 `local-code`；SDK crate 默认捆绑
+  zvec FTS。产品嵌入需显式启用 `advanced-harness`、`server` 和/或
+  `headless-search`。
+- **统一 `task` 扇出。** 模型可见的 `parallel_task` 与对应 SDK 辅助 API 已移除；
+  多条目委派使用 `task` / `session.tasks`。
+- **仅 Active 的 Durable Memory。** 服务路径仅为 `active_recall`；Candidate
+  shadow 模式已移除。
+- **`update_plan` + 回复语言。** 内置清单工具；宿主可在 Rust 与各 SDK 上使用
+  `set_output_language` / `outputLanguage`。
+- **SDK capabilities v2**，带 `tier: baseline | advanced`。Gate 模式在证据
+  不完整时 fail-close。
 
-## 8.0 有什么新内容
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.4.0`）。
+收口：[manual/HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md) ·
+[manual/FIRST_PRINCIPLES_E2E.md](manual/FIRST_PRINCIPLES_E2E.md)。
 
-- **Run 拥有的时空组合。** Session、Run、Turn 与 Subtask 作用域现在构成
-  一棵仅向下的权威与取消树，并带有有界的、逆序的效果结算。
-- **Generation-exact 的能力投影。** Tool、Skill、Agent、Command、Hook、MCP、
-  Context、Flow、Knowledge 与 UI 值以原子方式发布，并在每个已接纳 Run
-  的生命周期内保持钉住。
-- **精确的时间恢复。** Run 与逻辑检查点证据绑定 Code catalog、完整
-  authority ceiling，以及可选的 A3S Use cursor。一个 N 检查点不能静默地
-  通过 N+1 恢复。
-- **可移植检查点 artifact。** 规范语义与逻辑状态作为单一可宿主存储的
-  payload 做内容寻址，带有失败即关闭的漂移检查，以及在全新 Session 上的
-  精确历史引导路径。
-- **有界模型证据。** 工具请求、确定性结果变换、不可变原始内容引用、
-  模型输入与能力面都以 digest 绑定，且不保留凭据或 prompt 明文。
-- **收敛工作流结果。** 可恢复的工作流检查点与 Flow 决策声明携带有界、
-  仅 digest 的结果收据，并绑定到规范执行身份；陈旧或不可读状态失败即关闭，
-  而遗留记录仍可加载。
-- **收敛工作流准入。** 动态 Flow 步骤投影到 Code 规划所用的同一
-  `ExecutionPlan`，在恢复时从完整历史重建该计划，并使用可取消的
-  每工作流并发门。独立 Flow 适配器还可使用 Agent 范围的优先级调度器，
-  配合仅 digest 的步骤身份与所有者配额；会话绑定调用保留一个外层
-  调度器租约，以避免嵌套单槽死锁。分离的子级继承 run/session 准入范围。
-- **Provider-aware 的 generation 准入。** 常规、流式与结构化模型调用在
-  会话、委派子项、直接工具与动态工作流之间共享同一类型化
-  provider/model 容量身份。叶子 generation 通过既有调度器 actor 预留该容量，
-  而不创建第二个队列；取消与丢弃的流会自动释放本地与共享预留。
-  Rust 宿主可检查不含密钥的 `ModelGenerationPoolHealthSnapshot`；调度器
-  仅为已完成的池周期保留有界的近期健康窗口。
-- **Generation-fenced 的工作流重放。** 新的动态工作流运行钉住 Code 运行时
-  构建，并暴露由持久不可变事实派生的仅 digest 延续身份。变更的源/输入、
-  冲突的步骤定义，以及不受支持的运行时 generation 会在步骤执行前被拒绝；
-  遗留的未钉住历史在迁移期间仍可读。稳定的 claim 身份现在以本地文件支持
-  （或宿主注入）的租约门控每个 worker；心跳保持存活所有者被围栏；
-  过期 worker 在工作流/步骤准入前被拒绝；父级取消会结算或保持租约围栏，
-  而不是释放飞行中的 worker。宿主可绑定一个 `DynamicWorkflowControl` 句柄，
-  以检查有界仅 digest 快照、读取可信历史、驱动运行，或请求/强制持久取消；
-  本地 journal 使用跨进程锁，而 Flow 仍是唯一的事件权威。
+### 更早的版本线
 
-Go 消费者必须将模块路径更新为
-`github.com/A3S-Lab/Code/sdk/go/v8`。完整兼容性与发布记录见
-[CHANGELOG.md](CHANGELOG.md)。
+- **8.3** — 可协商会话存储耐久、类型化工具结果信任、工作区源快照、可失败 FFI
+  init、宿主 checkpoint 钩子。
+- **8.0+** — Run 拥有的时空组合、generation-exact 能力、可移植检查点、收敛工作流。
+  完整历史见 [CHANGELOG.md](CHANGELOG.md)。Go 模块路径：
+  `github.com/A3S-Lab/Code/sdk/go/v8`。
 
 ## 60 秒内起步
 
@@ -161,11 +126,14 @@ async fn main() -> a3s_code_core::Result<()> {
 
 |要求 |运行时机制 |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **默认变薄，产品显式选择加入** | 库 `default` 为 `local-code`。Advanced 评估、server、无头搜索仅在宿主启用时编译 — 无静默双轨。 |
+| **单一委派表面** | 模型可见的多条目工作使用 `task`；`parallel_task` 已移除。宿主 API 使用 `session.task` / `session.tasks`。 |
+| **只服务已激活的记忆** | Durable V2 召回仅为 Active。Candidate 仍可写入证据，但拒绝 shadow 服务。 |
 | **控制所有副作用** | JSON 参数验证、类型化工具功能、权限策略、人工确认、挂钩、预算、安全提供程序和取消共享一个调用路径。         |
 | **保持上下文有界** |读取、搜索、命令输出、Git 结果和获取的页面公开范围或游标。大量证据转移到具有预览、大小和哈希值的有限工件中。           |
 | **拥有 UI，无需分叉循环** |核心发出`AgentEvent`； SDK 流和持久运行使用无损 `EventEnvelopeV1` 协议。主机选择表示、身份、凭证和部署策略。 |
 | **无需权限漂移即可更改模型形状** |封闭的工具呈现配置文件在权限可见性之后和模型请求之前运行；执行保持相同的固定工具值和治理。 |
-| **从证据中恢复，而不是猜测** | `SessionSnapshotV1` 可以以原子方式提交会话状态、运行、工件、跟踪、验证报告和子任务记录作为一代。                                 |
+| **从证据中恢复，而不是猜测** | `SessionSnapshotV1` 可以以原子方式提交会话状态、运行、工件、跟踪、验证报告和子任务记录作为一代。Gate 评估在证据不完整时 fail-close。 |
 
 一轮轮遵循可见的责任链：
 
@@ -1581,6 +1549,8 @@ v1 架构或声明外部运行时认证。
 | [User Guide](manual/USER_GUIDE.md) · [Chinese](manual/USER_GUIDE_CN.md) |安装、配置、会话、工具和常见工作流程 |
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) |扩展契约、安全性、生命周期和生产集成 |
 | [SDK API Design](manual/SDK_API_DESIGN.md) |跨语言 API 约定和对齐 |
+| [Harness Convergence](manual/HARNESS_CONVERGENCE.md) | 变薄默认收口、拒绝列表与 `HARNESS-CONV4`–`CONV7` 本地验证 |
+| [First-Principles E2E](manual/FIRST_PRINCIPLES_E2E.md) | Harness / 在线 ACL / 外部 TB·DM·CAR 的 A–D 层验证矩阵 |
 | [Capability Verification](manual/CAPABILITY_VERIFICATION.md) |每个宣传功能的第一原则证据分类账、SDK 运行时门、证据差距闭合和性能政策 |
 | [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md) | A3S Use所有权、类型化范围、不可变生成、可逆效应、迁移门和验证不变量 |
 | [Performance Qualification](manual/PERFORMANCE_QUALIFICATION.md) |发布配置文件工作负载、包含规则、p50/p95/max 结果、资源上限、密封集成、运行链接和工件摘要 |
@@ -1608,6 +1578,7 @@ v1 架构或声明外部运行时认证。
 ```bash
 python3 scripts/check_scoped_capability_architecture.py
 python3 scripts/check_capability_verification.py
+just harness-convergence-check
 cargo fmt --all -- --check
 cargo test -p a3s-code-core
 cargo test -p a3s-code-core --all-features

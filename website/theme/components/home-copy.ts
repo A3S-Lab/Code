@@ -4,7 +4,7 @@ export const copy = {
     titleLead: '把 A3S Code',
     titleAccent: '接进现有产品',
     subtitle:
-      'A3S Code 8.3 提供受治理的 Agent 会话、可协商的耐久存储、工具结果信任标签、异步工作区检索、Moli 无头搜索、模型边界证据、事件流和任务恢复。可以直接运行 a3s code，也可以通过 Rust、Node.js、Python 或 Go SDK 嵌入现有应用。',
+      'A3S Code 8.4 是变薄的受治理编码 Harness：默认 local-code、统一 task 扇出、Active-only 记忆、可协商耐久与信任边界、异步工作区检索与事件恢复。可直接运行 a3s code，或通过 Rust / Node.js / Python / Go SDK 嵌入产品。',
     docs: '开始使用',
     github: '查看 GitHub',
     copy: '复制',
@@ -33,7 +33,7 @@ export const copy = {
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Runtime 提供的五类能力',
     capabilitiesBody:
-      '工具、模型、任务记录、扩展接口和 Workspace 检索各自独立。语义检索由宿主主动开启；基础搜索不依赖 Embedding、Rerank 模型或向量数据库。',
+      '基线 Harness 默认不含 Advanced 评估、server 与无头搜索；语义检索由宿主主动开启。基础搜索不依赖 Embedding、Rerank 或向量数据库。',
     surfacesEyebrow: 'USE IT YOUR WAY',
     surfacesTitle: '直接运行 CLI，或使用四种 SDK',
     surfacesBody:
@@ -116,7 +116,7 @@ export const copy = {
     titleLead: 'Add A3S Code',
     titleAccent: 'to an existing product',
     subtitle:
-      'A3S Code 8.3 provides governed agent sessions, negotiable durable stores, typed tool-result trust, asynchronous workspace retrieval, Moli-powered headless search, model-bound evidence, event streaming, and task recovery. Run a3s code directly or embed the Rust, Node.js, Python, or Go SDK.',
+      'A3S Code 8.4 is a thin governed coding harness: local-code defaults, unified task fan-out, Active-only memory, negotiable durability and trust boundaries, asynchronous workspace retrieval, and recoverable events. Run a3s code or embed the Rust, Node.js, Python, or Go SDK.',
     docs: 'Get started',
     github: 'View on GitHub',
     copy: 'Copy',
@@ -145,7 +145,7 @@ export const copy = {
     capabilitiesEyebrow: 'WHAT YOU GET',
     capabilitiesTitle: 'Five parts of the runtime',
     capabilitiesBody:
-      'Tools, models, run data, extensions, and workspace retrieval are configured separately. The host opts into semantics; baseline search needs no embedding model, reranker model, or vector database.',
+      'The baseline harness omits Advanced evaluation, server, and headless search by default. The host opts into semantics; baseline search needs no embedding model, reranker, or vector database.',
     surfacesEyebrow: 'USE IT YOUR WAY',
     surfacesTitle: 'Run the CLI or use one of four SDKs',
     surfacesBody:

@@ -18,6 +18,16 @@ Active-only durable memory, unified `task` fan-out (no model-visible
 reply-language control. Persistent BM25 retrieval and the durability/trust
 kernel from 8.3 remain release-qualified.
 
+## Design rules
+
+| Rule                        | Meaning                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Thin default                | Core `default` = `local-code`. Advanced evaluation, server, and headless search are explicit features. |
+| One delegation path         | Multi-item fan-out uses `task` / `session.tasks`. Do not restore `parallel_task`.                      |
+| Active-only memory          | Durable serving is `active_recall`. Candidate shadow mode is refused.                                  |
+| Evidence before Gate claims | Incomplete or retention-gapped evidence cannot satisfy Gate evaluation.                                |
+| Host owns product policy    | Reviewer rubrics, Cloud audit, and UI approvals stay outside Core.                                     |
+
 Install the [`a3s` CLI](https://github.com/A3S-Lab/a3s) when you want to work in
 a terminal. When building a product, use the Rust crate, Node.js package,
 Python package, or Go module with its matching native bridge. They emit the
