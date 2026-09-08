@@ -7,20 +7,19 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 # A3S Code
 
-A3S Code 是 `a3s code` 终端应用背后的 Rust Runtime，也可以单独接入 IDE、
-Runner 或服务端。它负责 Agent Loop、上下文、工具调用、权限检查、子任务、
-异步 Workspace 检索、持久证据，以及任务的保存和恢复。
+A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、服务端或
+桌面应用，复用同一套 Agent 循环：工具、权限、子任务、工作区搜索，以及会话的
+保存和恢复。
 
-8.5.1 保持变薄的 `local-code` Harness，并分离工作区搜索平面：精确 `grep`
-（可选进程内 trigram 候选裁剪）不会打开持久 zvec FTS，而 `bm25` 仍是排序词法
-路径。会话存储在跨进程 flock 下恢复损坏的 WAL，避免并发写者铸造冲突序号。
+8.5.1 里，字面量 `grep` 可以先用小的 trigram 缓存缩小文件范围；排序检索仍走
+`bm25` / zvec。会话存储重开时会拿 flock，坏 WAL 不会再写出冲突序号。
 
 ## 设计规则
 
 | 规则             | 含义                                                                       |
 | ---------------- | -------------------------------------------------------------------------- |
 | 默认变薄         | Core `default` = `local-code`。Advanced 评估、server、无头搜索需显式开启。 |
-| Grep ≠ zvec      | 精确 `grep` 是匹配权威；trigram 裁剪仅失败开放。排序检索使用 `bm25`。      |
+| Grep ≠ zvec      | 精确 `grep` 负责匹配；trigram 只缩小候选，失败就回退。排序检索用 `bm25`。  |
 | 单一委派路径     | 多条目扇出使用 `task` / `session.tasks`。不要恢复 `parallel_task`。        |
 | 仅 Active 记忆   | Durable 服务路径为 `active_recall`。拒绝 Candidate shadow。                |
 | Gate 先要证据    | 证据不完整或存在 retention 缺口时，Gate 不可宣称已完成评估。               |
@@ -61,13 +60,11 @@ Runner 或服务端。它负责 Agent Loop、上下文、工具调用、权限�
 
 ## v8.5.1 新增内容
 
-- 默认 `local-code` 的 **`grep` trigram 裁剪**（`CODE-G1`）：字面量模式在
-  `.a3s-code/grep-trigram` 下构建失败开放的候选缓存，且不会打开持久 zvec FTS。
-  精确正则匹配仍由 Code 拥有。
-- **会话存储 WAL flock 恢复**：并发写者在跨进程 flock 下重读持久最大序号；宿主
-  可隔离损坏的 WAL，并从持久快照继续。
-- 延续 8.4 变薄 Harness（仅 Active 记忆、统一 `task`、`update_plan`、SDK
-  capabilities v2）以及 8.3 耐久/信任内核。
+- **更快的字面量 `grep`（`CODE-G1`）。** 在 `.a3s-code/grep-trigram` 下建失败可
+  回退的 trigram 缓存。精确正则仍在 Code 里跑，这条路径不打开持久 zvec FTS。
+- **会话存储 WAL flock。** 并发写者在 flock 下重读持久最大序号；坏 WAL 可以隔离，
+  宿主从快照继续。
+- 仍包含 8.4 的小 harness 默认，以及 8.3 的耐久 / 信任改动。
 
 ## 早期 v8.4.0 新增内容
 

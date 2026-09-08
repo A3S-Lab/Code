@@ -7,23 +7,20 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 # A3S Code
 
-A3S Code is the Rust runtime behind the `a3s code` terminal application. You can
-also embed it in an IDE, runner, service, or desktop application. It handles the
-agent loop, context, tool calls, permission checks, child tasks, asynchronous
-Workspace retrieval, durable evidence, and session recovery.
+A3S Code is the Rust runtime behind `a3s code`. Embed it in an IDE, runner,
+service, or desktop app when you need the same loop outside the terminal: tools,
+permissions, child tasks, workspace search, and session save/resume.
 
-Version 8.5.1 keeps the thin `local-code` harness and separates workspace search
-planes: exact `grep` (with optional in-tree trigram candidate pruning) never
-opens durable zvec FTS, while `bm25` remains the ranked lexical path. Session
-stores recover corrupt WALs under a cross-process flock so concurrent writers
-cannot mint colliding sequences.
+In 8.5.1, literal `grep` can use a small trigram cache so it opens fewer files
+first; ranked search still goes through `bm25` / zvec. Session stores take a
+flock on reopen so a bad WAL does not mint colliding sequence numbers.
 
 ## Design rules
 
 | Rule                        | Meaning                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Thin default                | Core `default` = `local-code`. Advanced evaluation, server, and headless search are explicit features. |
-| Grep ≠ zvec                 | Exact `grep` is match authority; trigram pruning is fail-open only. Ranked retrieval uses `bm25`.      |
+| Grep ≠ zvec                 | Exact `grep` owns matches; trigram pruning only narrows candidates and fails open. Use `bm25` to rank. |
 | One delegation path         | Multi-item fan-out uses `task` / `session.tasks`. Do not restore `parallel_task`.                      |
 | Active-only memory          | Durable serving is `active_recall`. Candidate shadow mode is refused.                                  |
 | Evidence before Gate claims | Incomplete or retention-gapped evidence cannot satisfy Gate evaluation.                                |
@@ -65,14 +62,13 @@ same events, so every UI does not need its own agent loop.
 
 ## What is new in v8.5.1
 
-- Default `local-code` **trigram pruning for `grep`** (`CODE-G1`): literal
-  needles build a fail-open candidate cache under `.a3s-code/grep-trigram`
-  without opening durable zvec FTS. Exact regex matching stays in Code.
-- **Session-store WAL flock recovery**: concurrent writers re-read the durable
-  max sequence under a cross-process flock; hosts can quarantine a corrupt WAL
-  and continue from durable snapshots.
-- Carries forward the 8.4 thin harness (Active-only memory, unified `task`,
-  `update_plan`, SDK capabilities v2) and the 8.3 durability/trust kernel.
+- **Faster literal `grep` (`CODE-G1`).** Builds a fail-open trigram cache under
+  `.a3s-code/grep-trigram`. Exact regex still runs in Code; durable zvec FTS is
+  not opened on this path.
+- **Session-store WAL flock.** Concurrent writers re-read the durable max
+  sequence under flock; a corrupt WAL can be quarantined so the host keeps
+  going from snapshots.
+- Still includes the 8.4 smaller harness and the 8.3 durability/trust work.
 
 ## Earlier v8.4.0 additions
 

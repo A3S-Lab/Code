@@ -17,12 +17,10 @@
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ccf91?style=flat-square"></a>
 </p>
 
-**A3S Code** is an async Rust runtime for building governed coding agents. The
-library default is a **thin coding harness** (`local-code`): agent loop,
-workspace tools, policy, events, and bundled lexical retrieval. Advanced
-evaluation, server, and headless search stay opt-in. Side effects, evidence,
-and recovery sit behind explicit contracts — from Rust, Node.js, Python, Go, or
-`a3s code`.
+**A3S Code** is an async Rust runtime for coding agents. By default it ships a
+small harness (`local-code`): the agent loop, workspace tools, policy, events,
+and lexical search. Heavier pieces (evaluation, server, headless search) stay
+opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
@@ -36,24 +34,22 @@ and recovery sit behind explicit contracts — from Rust, Node.js, Python, Go, o
 
 ## What's new in 8.5
 
-Workspace search planes stay separate; session-store reopen recovers under flock:
-
-- **`grep` candidate pruning (CODE-G1).** Default `local-code` builds an
-  in-tree trigram filter under `.a3s-code/grep-trigram` so literal needles open
-  fewer files before the exact regex scan. Non-literals and index failures fail
-  open. Exact matches remain owned by Code — this path never opens durable zvec
-  FTS (`mode: "bm25"` stays the ranked plane).
-- **Session-store WAL flock (8.5.1).** Concurrent writers re-read the durable
-  max sequence under a cross-process flock; corrupt WALs can be quarantined so
-  hosts continue from durable snapshots.
+- **Faster `grep` (CODE-G1).** For literal searches, `local-code` builds a small
+  trigram cache under `.a3s-code/grep-trigram` so fewer files need a full regex
+  pass. If the cache misses or the pattern is not literal, it just falls back.
+  Exact match still comes from Code's own `grep` — this never opens the durable
+  zvec FTS index (`bm25` stays for ranked search).
+- **Safer session reopen (8.5.1).** Writers take a cross-process flock, re-read
+  the durable sequence, and can quarantine a bad WAL instead of minting
+  colliding IDs.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.1`).
 
 ### Earlier lines
 
-- **8.4** — thin `local-code` defaults, unified `task` fan-out, Active-only
-  durable memory, `update_plan`, SDK capabilities v2.
-- **8.3** — negotiable session-store durability, typed tool-result trust,
+- **8.4** — smaller `local-code` defaults, one `task` path for fan-out,
+  Active-only durable memory, `update_plan`, SDK capabilities v2.
+- **8.3** — session-store durability options, typed tool-result trust,
   workspace source snapshots, fallible FFI init, host checkpoint hooks.
 - **8.0+** — run-owned spacetime, generation-exact capabilities, portable
   checkpoints, convergent workflows. Full history:
