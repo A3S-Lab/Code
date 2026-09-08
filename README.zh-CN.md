@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="#60-秒内起步">起步</a> ·
-  <a href="#84-有什么新内容">v8.4</a> ·
+  <a href="#85-有什么新内容">v8.5</a> ·
   <a href="#为何选择-a3s-code">为何选择 Code</a> ·
   <a href="#能力地图">能力</a> ·
   <a href="#配置运行时">配置</a> ·
@@ -32,28 +32,23 @@
   <a href="#文档">文档</a>
 </p>
 
-## 8.4 有什么新内容
+## 8.5 有什么新内容
 
-Harness 收敛（单一基线路径，拒绝双轨表面）：
+工作区搜索平面保持分离；会话存储重开在 flock 下恢复：
 
-- **库默认变薄。** `a3s-code-core` 默认 `local-code`；SDK crate 默认捆绑
-  zvec FTS。产品嵌入需显式启用 `advanced-harness`、`server` 和/或
-  `headless-search`。
-- **统一 `task` 扇出。** 模型可见的 `parallel_task` 与对应 SDK 辅助 API 已移除；
-  多条目委派使用 `task` / `session.tasks`。
-- **仅 Active 的 Durable Memory。** 服务路径仅为 `active_recall`；Candidate
-  shadow 模式已移除。
-- **`update_plan` + 回复语言。** 内置清单工具；宿主可在 Rust 与各 SDK 上使用
-  `set_output_language` / `outputLanguage`。
-- **SDK capabilities v2**，带 `tier: baseline | advanced`。Gate 模式在证据
-  不完整时 fail-close。
+- **`grep` 候选裁剪（CODE-G1）。** 默认 `local-code` 在
+  `.a3s-code/grep-trigram` 下构建进程内 trigram 过滤器，使字面量模式在精确
+  正则扫描前打开更少文件。非字面量与索引失败会失败开放。精确匹配仍由 Code
+  拥有 — 该路径不会打开持久 zvec FTS（排序检索仍用 `mode: "bm25"`）。
+- **会话存储 WAL flock（8.5.1）。** 并发写者在跨进程 flock 下重读持久最大
+  序号；可隔离损坏的 WAL，使宿主从持久快照继续。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.4.0`）。
-收口：[manual/HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md) ·
-[manual/FIRST_PRINCIPLES_E2E.md](manual/FIRST_PRINCIPLES_E2E.md)。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.1`）。
 
 ### 更早的版本线
 
+- **8.4** — 变薄的 `local-code` 默认、统一 `task` 扇出、仅 Active 的 Durable
+  Memory、`update_plan`、SDK capabilities v2。
 - **8.3** — 可协商会话存储耐久、类型化工具结果信任、工作区源快照、可失败 FFI
   init、宿主 checkpoint 钩子。
 - **8.0+** — Run 拥有的时空组合、generation-exact 能力、可移植检查点、收敛工作流。

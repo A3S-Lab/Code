@@ -26,7 +26,7 @@ and recovery sit behind explicit contracts — from Rust, Node.js, Python, Go, o
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
-  <a href="#whats-new-in-84">v8.4</a> ·
+  <a href="#whats-new-in-85">v8.5</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
@@ -34,28 +34,25 @@ and recovery sit behind explicit contracts — from Rust, Node.js, Python, Go, o
   <a href="#documentation">Documentation</a>
 </p>
 
-## What's new in 8.4
+## What's new in 8.5
 
-Harness convergence (one baseline path, refuse dual surfaces):
+Workspace search planes stay separate; session-store reopen recovers under flock:
 
-- **Thin library defaults.** `a3s-code-core` defaults to `local-code`; SDK
-  crates default to bundled zvec FTS. Enable `advanced-harness`, `server`,
-  and/or `headless-search` explicitly for product embeds.
-- **Unified `task` fan-out.** Model-visible `parallel_task` and matching SDK
-  helpers are removed; multi-item delegation uses `task` / `session.tasks`.
-- **Active-only durable memory.** Serving is `active_recall` only; Candidate
-  shadow mode is gone.
-- **`update_plan` + reply language.** Built-in checklist tool and host
-  `set_output_language` / `outputLanguage` on Rust and all SDKs.
-- **SDK capabilities v2** with `tier: baseline | advanced`. Gate-mode
-  evaluation fail-closes on incomplete evidence.
+- **`grep` candidate pruning (CODE-G1).** Default `local-code` builds an
+  in-tree trigram filter under `.a3s-code/grep-trigram` so literal needles open
+  fewer files before the exact regex scan. Non-literals and index failures fail
+  open. Exact matches remain owned by Code — this path never opens durable zvec
+  FTS (`mode: "bm25"` stays the ranked plane).
+- **Session-store WAL flock (8.5.1).** Concurrent writers re-read the durable
+  max sequence under a cross-process flock; corrupt WALs can be quarantined so
+  hosts continue from durable snapshots.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.4.0`).
-Wrap-up: [manual/HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md) ·
-[manual/FIRST_PRINCIPLES_E2E.md](manual/FIRST_PRINCIPLES_E2E.md).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.1`).
 
 ### Earlier lines
 
+- **8.4** — thin `local-code` defaults, unified `task` fan-out, Active-only
+  durable memory, `update_plan`, SDK capabilities v2.
 - **8.3** — negotiable session-store durability, typed tool-result trust,
   workspace source snapshots, fallible FFI init, host checkpoint hooks.
 - **8.0+** — run-owned spacetime, generation-exact capabilities, portable
