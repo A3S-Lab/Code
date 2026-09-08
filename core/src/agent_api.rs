@@ -587,6 +587,11 @@ pub struct AgentSession {
     /// guard after `session()` has returned without ever putting a
     /// JS callable into `SessionOptions`.
     runtime_budget_guard: std::sync::Mutex<Option<Arc<dyn crate::budget::BudgetGuard>>>,
+    /// Runtime override for specialty [`crate::prompts::AgentStyle`]. `None`
+    /// means "no override" (use session-built `prompt_slots.style`). `Some(style)`
+    /// replaces the style for the next agent-loop build so hosts can hot-switch
+    /// Plan/GeneralPurpose without rebuilding the session.
+    runtime_agent_style: std::sync::Mutex<Option<Option<crate::prompts::AgentStyle>>>,
     /// Multi-tenant label. Framework only carries the string; semantics
     /// belong to the host.
     pub(crate) tenant_id: Option<String>,

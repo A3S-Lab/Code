@@ -567,6 +567,9 @@ fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     if let Some(runtime_guard) = session.budget_guard() {
         config.budget_guard = Some(runtime_guard);
     }
+    if let Some(style) = session.runtime_agent_style_override() {
+        config.prompt_slots.style = style;
+    }
     config
 }
 

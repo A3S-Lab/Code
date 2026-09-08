@@ -39,6 +39,35 @@ impl AgentSession {
             .clone()
     }
 
+    /// Override specialty prompt style for subsequent turns without rebuilding
+    /// the session. Pass `Some(AgentStyle::Plan)` for Plan; pass `None` to clear
+    /// specialty style back to GeneralPurpose. Takes effect on the next
+    /// `send` / `stream` via agent-loop build (`PROMPT-ALIGN1` hot path).
+    pub fn set_agent_style(
+        &self,
+        style: Option<crate::prompts::AgentStyle>,
+    ) -> crate::error::Result<()> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_agent_style
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *slot = Some(style);
+            Ok(())
+        })?
+    }
+
+    /// Runtime agent-style override. Outer `None` means unset; inner value is
+    /// the style (or cleared specialty when `Some(None)`).
+    pub(crate) fn runtime_agent_style_override(
+        &self,
+    ) -> Option<Option<crate::prompts::AgentStyle>> {
+        self.runtime_agent_style
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Install or clear the host-owned live checkpoint export sink (SDK-CP1).
     ///
     /// Takes effect on the next `send` / `stream` that opens a checkpoint

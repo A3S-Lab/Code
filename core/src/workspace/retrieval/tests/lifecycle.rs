@@ -41,6 +41,23 @@ async fn plain_manifest_services_do_not_enable_the_chunk_catalog() {
 }
 
 #[tokio::test]
+async fn retrieval_services_lazily_attach_lexical_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
+    let services =
+        crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+    assert!(
+        !backend.catalog_is_configured(),
+        "session construction must not open the lexical catalog"
+    );
+    assert!(services.chunk_catalog().is_some());
+    assert!(
+        backend.catalog_is_configured(),
+        "first catalog access attaches lexical infrastructure"
+    );
+}
+
+#[tokio::test]
 async fn lifecycle_fixture_drives_incremental_and_lag_reconciliation() {
     let fixture: LifecycleFixture = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

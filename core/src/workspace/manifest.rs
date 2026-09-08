@@ -606,6 +606,12 @@ impl ManifestWorkspaceBackend {
         self.persistent_index.get().cloned()
     }
 
+    /// True after [`Self::configure_chunk_catalog`] or the first
+    /// [`Self::chunk_catalog`] call has started the shared catalog runtime.
+    pub(crate) fn catalog_is_configured(&self) -> bool {
+        self.catalog_runtime.get().is_some()
+    }
+
     /// Configure and enable the catalog owned by this shared manifest backend.
     ///
     /// Hosts that supply [`super::WorkspaceServices`] to a session must call

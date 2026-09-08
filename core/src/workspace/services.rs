@@ -12,7 +12,13 @@ use super::{
 use crate::code_intelligence::{LocalCodeIntelligence, WorkspaceCodeIntelligence};
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Lazy lexical handles attached on first catalog/index access.
+type LazyLexicalHandles = (
+    Arc<WorkspaceChunkCatalog>,
+    Option<Arc<WorkspacePersistentIndex>>,
+);
 
 /// The host-provided workspace capability bundle used by tool execution.
 pub struct WorkspaceServices {
@@ -27,6 +33,11 @@ pub struct WorkspaceServices {
     code_intelligence: Option<Arc<dyn WorkspaceCodeIntelligence>>,
     chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
     persistent_index: Option<Arc<WorkspacePersistentIndex>>,
+    /// When set, first [`Self::chunk_catalog`] / [`Self::persistent_index`] call
+    /// attaches the default lexical catalog and best-effort persistent zvec FTS
+    /// without paying that cost at session construction.
+    lazy_lexical_backend: Option<Arc<ManifestWorkspaceBackend>>,
+    lazy_lexical: Arc<OnceLock<LazyLexicalHandles>>,
     workspace_retrieval: Option<Arc<WorkspaceRetrievalRuntime>>,
     git: Option<Arc<dyn WorkspaceGit>>,
     git_stash: Option<Arc<dyn WorkspaceGitStashProvider>>,
@@ -91,6 +102,8 @@ impl WorkspaceServices {
             code_intelligence: None,
             chunk_catalog: None,
             persistent_index: None,
+            lazy_lexical_backend: None,
+            lazy_lexical: Arc::new(OnceLock::new()),
             workspace_retrieval: None,
             git,
             git_stash: None,
@@ -133,6 +146,8 @@ impl WorkspaceServices {
             code_intelligence: None,
             chunk_catalog: None,
             persistent_index: None,
+            lazy_lexical_backend: None,
+            lazy_lexical: Arc::new(OnceLock::new()),
             workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
@@ -211,14 +226,24 @@ impl WorkspaceServices {
     /// Build local workspace services from a shared manifest backend. Hosts
     /// can keep the same manifest for UI file pickers and agent tools.
     pub fn local_with_manifest_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
-        Self::local_with_manifest_backend_and_catalog(backend, None, None)
+        Self::local_with_manifest_backend_and_catalog(backend, None, None, None)
     }
 
     /// Enable retrieval on a shared manifest backend.
+    ///
+    /// Lexical catalog and best-effort persistent zvec FTS attach on first
+    /// [`Self::chunk_catalog`] / [`Self::persistent_index`] access so hosts can
+    /// construct sessions without opening native index files on the critical
+    /// path. When the host already configured the catalog (eager strategy),
+    /// handles are attached immediately.
     pub fn local_with_retrieval_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
-        let catalog = backend.chunk_catalog();
-        let persistent = backend.persistent_index();
-        Self::local_with_manifest_backend_and_catalog(backend, Some(catalog), persistent)
+        if backend.catalog_is_configured() {
+            let catalog = backend.chunk_catalog();
+            let persistent = backend.persistent_index();
+            Self::local_with_manifest_backend_and_catalog(backend, Some(catalog), persistent, None)
+        } else {
+            Self::local_with_manifest_backend_and_catalog(backend.clone(), None, None, Some(backend))
+        }
     }
 
     /// Build local manifest-backed services with the workspace-owned persistent
@@ -235,6 +260,7 @@ impl WorkspaceServices {
             backend,
             Some(catalog),
             Some(persistent),
+            None,
         ))
     }
 
@@ -242,6 +268,7 @@ impl WorkspaceServices {
         backend: Arc<ManifestWorkspaceBackend>,
         chunk_catalog: Option<Arc<WorkspaceChunkCatalog>>,
         persistent_index: Option<Arc<WorkspacePersistentIndex>>,
+        lazy_lexical_backend: Option<Arc<ManifestWorkspaceBackend>>,
     ) -> Arc<Self> {
         let workspace_ref = WorkspaceRef::new(
             backend.local_root().display().to_string(),
@@ -267,6 +294,8 @@ impl WorkspaceServices {
             code_intelligence: None,
             chunk_catalog,
             persistent_index,
+            lazy_lexical_backend,
+            lazy_lexical: Arc::new(OnceLock::new()),
             workspace_retrieval: None,
             git: Some(git),
             git_stash: Some(git_stash),
@@ -321,11 +350,28 @@ impl WorkspaceServices {
 
     /// Optional session-local catalog shared by lexical and semantic retrieval.
     pub fn chunk_catalog(&self) -> Option<Arc<WorkspaceChunkCatalog>> {
-        self.chunk_catalog.clone()
+        if let Some(catalog) = &self.chunk_catalog {
+            return Some(Arc::clone(catalog));
+        }
+        self.ensure_lazy_lexical()
+            .map(|(catalog, _)| Arc::clone(catalog))
     }
 
     pub fn persistent_index(&self) -> Option<Arc<WorkspacePersistentIndex>> {
-        self.persistent_index.clone()
+        if let Some(index) = &self.persistent_index {
+            return Some(Arc::clone(index));
+        }
+        self.ensure_lazy_lexical()
+            .and_then(|(_, index)| index.clone())
+    }
+
+    fn ensure_lazy_lexical(&self) -> Option<&LazyLexicalHandles> {
+        let backend = self.lazy_lexical_backend.as_ref()?;
+        Some(self.lazy_lexical.get_or_init(|| {
+            let catalog = backend.chunk_catalog();
+            let persistent = backend.persistent_index();
+            (catalog, persistent)
+        }))
     }
 
     /// Optional semantic retrieval runtime bound to this workspace session.
@@ -427,6 +473,8 @@ impl WorkspaceServices {
             code_intelligence: self.code_intelligence.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
             persistent_index: self.persistent_index.clone(),
+            lazy_lexical_backend: self.lazy_lexical_backend.clone(),
+            lazy_lexical: Arc::clone(&self.lazy_lexical),
             workspace_retrieval: Some(runtime),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
@@ -456,6 +504,8 @@ impl WorkspaceServices {
             code_intelligence: Some(provider),
             chunk_catalog: self.chunk_catalog.clone(),
             persistent_index: self.persistent_index.clone(),
+            lazy_lexical_backend: self.lazy_lexical_backend.clone(),
+            lazy_lexical: Arc::clone(&self.lazy_lexical),
             workspace_retrieval: self.workspace_retrieval.clone(),
             git: self.git.clone(),
             git_stash: self.git_stash.clone(),
@@ -512,6 +562,8 @@ impl WorkspaceServices {
             code_intelligence: self.code_intelligence.clone(),
             chunk_catalog: self.chunk_catalog.clone(),
             persistent_index: self.persistent_index.clone(),
+            lazy_lexical_backend: self.lazy_lexical_backend.clone(),
+            lazy_lexical: Arc::clone(&self.lazy_lexical),
             workspace_retrieval: self.workspace_retrieval.clone(),
             git: Some(git),
             git_stash,

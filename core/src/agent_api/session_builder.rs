@@ -455,6 +455,7 @@ fn finish_agent_session(
         agent_template_id: opts.agent_template_id.clone(),
         correlation_id: opts.correlation_id.clone(),
         runtime_budget_guard: std::sync::Mutex::new(None),
+        runtime_agent_style: std::sync::Mutex::new(None),
     };
     session.refresh_task_delegation_tools();
     Ok(session)

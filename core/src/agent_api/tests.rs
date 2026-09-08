@@ -2715,6 +2715,33 @@ async fn test_custom_host_env_yields_deterministic_session_and_run_ids() {
 }
 
 #[tokio::test]
+async fn test_runtime_agent_style_overrides_session_prompt_slots() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("runtime-agent-style");
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-agent-style".into(),
+            Arc::new(StaticStreamingClient::new("ok")),
+            &opts,
+        )
+        .unwrap();
+    assert!(session
+        .runtime_agent_style_override()
+        .is_none());
+    session
+        .set_agent_style(Some(crate::prompts::AgentStyle::Plan))
+        .expect("set Plan style");
+    assert_eq!(
+        session.runtime_agent_style_override(),
+        Some(Some(crate::prompts::AgentStyle::Plan))
+    );
+    session
+        .set_agent_style(None)
+        .expect("clear specialty style");
+    assert_eq!(session.runtime_agent_style_override(), Some(None));
+}
+
+#[tokio::test]
 async fn test_runtime_budget_guard_overrides_session_options_value() {
     // A guard installed via set_budget_guard() *after* construction
     // must take effect on the next send/stream — that's the entry
