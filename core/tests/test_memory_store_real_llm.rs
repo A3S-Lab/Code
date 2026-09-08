@@ -222,9 +222,7 @@ async fn real_model_memory_extract_survives_reopen_or_soft_skips() {
     let (final_text, tokens) = match run_text_turn(&session, &prompt).await {
         Ok(outcome) => outcome,
         Err(message) if is_transient_provider_block(&message) => {
-            eprintln!(
-                "memory-extract-real-llm soft-skip: provider unavailable ({message})"
-            );
+            eprintln!("memory-extract-real-llm soft-skip: provider unavailable ({message})");
             session.close().await;
             return;
         }

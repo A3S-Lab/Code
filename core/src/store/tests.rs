@@ -1846,14 +1846,9 @@ async fn file_store_wal_rejects_intent_then_committed_for_different_session() {
         1,
     )
     .unwrap();
-    let committed = SessionStoreWalEntryV1::new(
-        1,
-        "session-b",
-        digest,
-        SessionStoreWalPhaseV1::Committed,
-        2,
-    )
-    .unwrap();
+    let committed =
+        SessionStoreWalEntryV1::new(1, "session-b", digest, SessionStoreWalPhaseV1::Committed, 2)
+            .unwrap();
     wal.append(&intent).await.unwrap();
     wal.append(&committed).await.unwrap();
     let err = wal

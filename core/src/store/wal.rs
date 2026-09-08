@@ -166,8 +166,8 @@ impl FileSessionStoreWal {
                 )
             })?;
             entry.validate()?;
-            if let Some((previous_phase, previous_session)) = seen_sequences
-                .insert(entry.sequence, (entry.phase, entry.session_id.clone()))
+            if let Some((previous_phase, previous_session)) =
+                seen_sequences.insert(entry.sequence, (entry.phase, entry.session_id.clone()))
             {
                 let allowed = matches!(previous_phase, SessionStoreWalPhaseV1::Intent)
                     && matches!(entry.phase, SessionStoreWalPhaseV1::Committed)
