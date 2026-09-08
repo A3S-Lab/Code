@@ -666,9 +666,10 @@ impl ManifestWorkspaceBackend {
     ///
     /// First principles: enabling the catalog must not open durable native FTS.
     /// Wire that projection with [`Self::configure_persistent_index`] before
-    /// the catalog starts, or open it on Grep/BM25 demand via
-    /// [`Self::ensure_persistent_index`]. Missing durable cache degrades to the
-    /// portable in-memory catalog without failing the workspace.
+    /// the catalog starts, or open it on BM25 demand via
+    /// [`Self::ensure_persistent_index`]. Grep never opens durable zvec. Missing
+    /// durable cache degrades to the portable in-memory catalog without failing
+    /// the workspace.
     pub fn chunk_catalog(&self) -> Arc<WorkspaceChunkCatalog> {
         self.catalog_runtime
             .get_or_init(|| {
@@ -726,12 +727,13 @@ impl ManifestWorkspaceBackend {
         self.persistent_index.get().cloned()
     }
 
-    /// Open the workspace durable zvec FTS projection on demand (Grep/BM25).
+    /// Open the workspace durable zvec FTS projection on BM25 demand.
     ///
-    /// Safe after the chunk catalog has already started. When the catalog was
-    /// started without a wired coordinator, Grep may still read a warm on-disk
-    /// generation while the portable catalog remains the live admission
-    /// authority and update path.
+    /// Grep must not call this — it stays on the filesystem / manifest /
+    /// optional trigram plane. Safe after the chunk catalog has already
+    /// started. When the catalog was started without a wired coordinator, BM25
+    /// may still read a warm on-disk generation while the portable catalog
+    /// remains the live admission authority and update path.
     pub fn ensure_persistent_index(&self) -> Option<Arc<WorkspacePersistentIndex>> {
         if let Some(index) = self.persistent_index.get() {
             return Some(Arc::clone(index));

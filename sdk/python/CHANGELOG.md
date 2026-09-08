@@ -4,6 +4,10 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.1] - 2026-09-08
+
+- Bundled Core 8.5.1: session-store WAL flock / corrupt-WAL recovery.
+
 ## [8.5.0] - 2026-09-08
 
 ### Added

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.1] - 2026-09-08
+
+### Fixed
+
+- Session-store WAL reopen no longer fails closed forever on duplicate
+  sequence allocation from concurrent writers. `FileSessionStore` takes a
+  cross-process flock, re-reads the durable max sequence under that lock
+  before minting, and rejects Intent→Committed pairs that reuse a sequence
+  across different session ids. Hosts can call
+  `FileSessionStore::new_recovering_corrupt_wal` to quarantine a corrupt WAL
+  and continue from durable session snapshots.
+
 ## [8.5.0] - 2026-09-08
 
 ### Added
