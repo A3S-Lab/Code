@@ -100,18 +100,6 @@ func (session *Session) Tasks(
 	return session.Tool(ctx, "task", map[string]any{"tasks": tasks})
 }
 
-// ParallelTask invokes the legacy hidden parallel_task compatibility tool.
-// Prefer Tasks for new code.
-func (session *Session) ParallelTask(
-	ctx context.Context,
-	tasks []DelegateTaskOptions,
-) (*ToolCallResult, error) {
-	if len(tasks) == 0 {
-		return nil, invalid("parallel_task", "at least one task is required")
-	}
-	return session.Tool(ctx, "parallel_task", map[string]any{"tasks": tasks})
-}
-
 func (session *Session) WebSearch(
 	ctx context.Context,
 	options WebSearchOptions,

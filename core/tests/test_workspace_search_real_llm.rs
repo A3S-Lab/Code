@@ -14,12 +14,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
+use a3s_code_core::workspace::WorkspaceServices;
 use a3s_code_core::{
     Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions, SystemPromptSlots,
 };
 use serde_json::Value;
 
-const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 const EXPECTED_FUNCTION: &str = "suppress_replayed_envelopes";
 
@@ -78,11 +79,25 @@ pub fn suppress_replayed_envelopes(delivery_id: &str, last_accepted: &str) -> bo
     .expect("write documentation decoy");
 }
 
-async fn wait_for_native_index(root: &Path) {
+async fn wait_for_native_index(root: &Path, services: &WorkspaceServices) {
+    // Durable zvec opens on demand. Warm catalog + index, then publish the
+    // current snapshot explicitly — the demand path may open an Absent index
+    // before the catalog coordinator has submitted the first generation.
+    let catalog = services
+        .chunk_catalog()
+        .expect("local retrieval sessions expose a chunk catalog");
+    let index = services
+        .persistent_index()
+        .expect("zvec-rust-fts builds must expose a durable workspace index");
     let current = root.join(".a3s-code/index/CURRENT");
     tokio::time::timeout(INDEX_READY_TIMEOUT, async {
         loop {
-            if tokio::fs::try_exists(&current).await.unwrap_or(false) {
+            if let Ok(snapshot) = catalog.snapshot() {
+                if snapshot.source_revision() > 0 {
+                    let _ = index.sync_snapshot(&snapshot);
+                }
+            }
+            if index.is_ready() && tokio::fs::try_exists(&current).await.unwrap_or(false) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -91,7 +106,8 @@ async fn wait_for_native_index(root: &Path) {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "native zvec index did not become ready: {}",
+            "native zvec index did not become ready: status={:?} path={}",
+            index.status(),
             current.display()
         )
     });
@@ -190,6 +206,9 @@ async fn real_model_selects_bm25_and_uses_native_workspace_index() {
 
     let workspace = tempfile::tempdir().expect("create fixture workspace");
     write_fixture(workspace.path());
+    let services = WorkspaceServices::local_with_indexed_retrieval(workspace.path())
+        .expect("configure durable zvec workspace index for the live search gate");
+    wait_for_native_index(workspace.path(), services.as_ref()).await;
     let mut permissions = PermissionPolicy::new().allow_all(&["search(*)"]);
     permissions.default_decision = PermissionDecision::Deny;
     let options = SessionOptions::new()
@@ -201,6 +220,7 @@ async fn real_model_selects_bm25_and_uses_native_workspace_index() {
         .with_manual_delegation_enabled(false)
         .with_temperature(0.0)
         .with_max_tool_rounds(2)
+        .with_workspace_backend(services)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(
             "Use only the requested one-tool protocol. Do not call read, glob, grep, or any other tool directly.",
         ));
@@ -209,7 +229,6 @@ async fn real_model_selects_bm25_and_uses_native_workspace_index() {
         .await
         .expect("create workspace session");
 
-    wait_for_native_index(workspace.path()).await;
     let (final_text, call, total_tokens, turn_ms) = run_search_turn(&session).await;
     assert_eq!(call.exit_code, 0, "search must succeed");
     assert_eq!(

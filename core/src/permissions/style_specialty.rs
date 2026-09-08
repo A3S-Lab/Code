@@ -18,7 +18,14 @@ pub fn specialty_permission_policy(style: AgentStyle) -> Option<PermissionPolicy
 
 fn explore_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls", "web_fetch", "web_search"])
+        .allow_all(&[
+            "read",
+            "search",
+            "ls",
+            "web_fetch",
+            "web_search",
+            "update_plan",
+        ])
         .deny_all(&["write", "edit", "download", "task", "parallel_task"])
         .allow("Bash(ls:*)")
         .allow("Bash(cat:*)")
@@ -35,7 +42,7 @@ fn explore_permissions() -> PermissionPolicy {
 
 fn plan_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls"])
+        .allow_all(&["read", "search", "ls", "update_plan"])
         .deny_all(&["write", "edit", "download", "bash", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -43,7 +50,15 @@ fn plan_permissions() -> PermissionPolicy {
 
 fn verification_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
-        .allow_all(&["read", "search", "ls", "bash", "web_fetch", "web_search"])
+        .allow_all(&[
+            "read",
+            "search",
+            "ls",
+            "bash",
+            "web_fetch",
+            "web_search",
+            "update_plan",
+        ])
         .deny_all(&["write", "edit", "download", "task", "parallel_task"]);
     policy.default_decision = PermissionDecision::Deny;
     policy
@@ -59,11 +74,19 @@ mod tests {
     fn explore_keeps_read_visible_and_denies_write() {
         let policy = specialty_permission_policy(AgentStyle::Explore).expect("explore policy");
         assert!(policy.expose_to_model("read"));
+        assert!(policy.expose_to_model("update_plan"));
         assert!(!policy.expose_to_model("write"));
         assert_eq!(
             policy.check("write", &json!({"file_path": "x", "content": "y"})),
             PermissionDecision::Deny
         );
+    }
+
+    #[test]
+    fn plan_style_exposes_update_plan() {
+        let policy = specialty_permission_policy(AgentStyle::Plan).expect("plan policy");
+        assert!(policy.expose_to_model("update_plan"));
+        assert!(!policy.expose_to_model("write"));
     }
 
     #[test]

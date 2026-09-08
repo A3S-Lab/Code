@@ -1,0 +1,75 @@
+---
+title: 'agents/ Role Directory'
+description: 'Define worker agents for task and automatic delegation'
+---
+
+# agents/ Role Directory
+
+`agents/` stores worker/subagent definitions. Prefer `.a3s/agents/` for new A3S projects. Migration projects may still read `.claude/agents/`, but new docs and projects should use `.a3s/agents/`.
+
+```text
+repo/
+└── .a3s/
+    └── agents/
+        ├── explorer.md
+        ├── security-reviewer.md
+        └── verification-runner.md
+```
+
+These files are not the main AgentDir. They are invoked by the model-visible
+`task` tool, the `session.task(...)` and `session.tasks(...)` host helpers, or
+`autoDelegation`. The parent session still owns final synthesis, verification,
+and permission boundaries.
+
+## Agent File
+
+```md
+---
+name: security-reviewer
+description: Use for permission, secret, and external side-effect review
+tools: Read, Search, Bash(rg *)
+disallowedTools:
+  - Write
+  - Bash(git push *)
+---
+
+Review security risks first. Return blockers, evidence paths, and required verification.
+```
+
+`name` is the call name. `description` drives automatic routing. The body describes the worker role. Tool fields narrow visible capabilities; do not rely on the worker merely promising not to do risky things.
+
+## Manual Delegation
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  maxParallelTasks: 4,
+});
+
+await session.task({
+  agent: 'security-reviewer',
+  description: 'Review release side effects',
+  prompt: 'Check changed auth, permission, and external API paths.',
+});
+```
+
+Fixed flows are better as manual delegation or programmable orchestration. Automatic delegation fits goals where the parent agent should choose specialists.
+
+## Automatic Delegation
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+});
+```
+
+Automatic delegation depends on descriptions and confidence scoring. Write descriptions that say when to use the agent, not just what the role is called.
+
+## Practices
+
+- Keep one role per file.
+- Make descriptions useful for routing and bodies useful for execution.
+- Ask workers to return evidence, risks, and next steps.
+- Keep publish, delete, push, and other high-risk permissions out of default workers.
+- Use `workerAgents` or `registerWorkerAgent()` for dynamic one-off workers.

@@ -15,6 +15,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMemorySessionStore>()?;
     m.add_class::<PyDefaultSecurityProvider>()?;
     m.add_class::<PyLocalWorkspaceBackend>()?;
+    #[cfg(feature = "s3")]
     m.add_class::<PyS3WorkspaceBackend>()?;
     m.add_class::<PyRemoteGitBackendConfig>()?;
     m.add_class::<PyHostEnvConfig>()?;
@@ -34,6 +35,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRecursiveWorkspaceChunkingStrategy>()?;
     m.add_class::<PyWorkspaceLexicalEngineOption>()?;
     m.add_class::<PyWorkspaceRetrievalOptions>()?;
+    #[cfg(feature = "serve")]
     m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
@@ -41,6 +43,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySearchHealthConfig>()?;
     m.add_class::<PyBrowserBackend>()?;
     m.add_class::<PyHeadlessConfig>()?;
+    #[cfg(feature = "advanced-harness")]
     m.add_class::<PyStateGraphRuntime>()?;
     m.add_function(wrap_pyfunction!(format_verification_summary, m)?)?;
     m.add_function(wrap_pyfunction!(agent_event_types_v1, m)?)?;
@@ -48,8 +51,11 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_builtin_skills, m)?)?;
     m.add_function(wrap_pyfunction!(py_sdk_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(py_sdk_capabilities_schema, m)?)?;
+    #[cfg(feature = "headless-search")]
     m.add_function(wrap_pyfunction!(py_moli_runtime_info, m)?)?;
+    #[cfg(feature = "headless-search")]
     m.add_function(wrap_pyfunction!(py_ensure_moli, m)?)?;
+    #[cfg(feature = "headless-search")]
     m.add_function(wrap_pyfunction!(py_moli_default_version, m)?)?;
     Ok(())
 }

@@ -25,6 +25,7 @@ pub mod skill;
 pub mod task;
 mod types;
 
+#[cfg(feature = "dynamic-workflow")]
 pub use crate::dynamic_workflow::{
     register_dynamic_workflow, register_dynamic_workflow_with_event_store,
     register_dynamic_workflow_with_scheduler,

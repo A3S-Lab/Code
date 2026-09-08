@@ -91,6 +91,7 @@ impl PyAgent {
     ///     options: Optional SessionOptions merged into every schedule session
     ///         (model, llm_client, session_store, …)
     #[pyo3(signature = (dir, workspace, options=None))]
+    #[cfg(feature = "serve")]
     fn serve_agent_dir(
         &self,
         py: Python<'_>,

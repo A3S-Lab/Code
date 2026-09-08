@@ -36,7 +36,7 @@ from the first release produced with the Intel build matrix.
 For an Intel Mac on macOS 12 or later, replace the platform suffix with
 `macosx_12_0_x86_64`.
 
-The v8.3.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
+The v8.4.0 release publishes one CPython 3.10 stable-ABI (`cp310-abi3`) wheel
 per supported platform. It supports CPython 3.10–3.14 on Apple Silicon
 (macOS 11+), Intel (`x86_64`, macOS 12+), Linux x86_64 (glibc 2.28+), Linux
 arm64 (glibc 2.39+ / `manylinux_2_39_aarch64`), and Windows (`x86_64` and
@@ -843,8 +843,8 @@ by the host.
 Routine multi-agent work uses the model-visible `task` tool. Use
 `session.task(...)` for one `tasks` item and `session.tasks(...)` for concurrent
 fan-out, or `session.tool("task", {"tasks": [...]})` when you need raw access.
-`session.parallel_task(...)` remains an explicit compatibility helper for the
-hidden legacy alias.
+The legacy `parallel_task` helper and registry entry are removed
+(`HARNESS-CONV4`).
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 

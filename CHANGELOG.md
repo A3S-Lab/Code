@@ -5,7 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Unreleased
+
+## [8.4.0] - 2026-09-08
+
+### Added
+
+- Built-in `update_plan` tool (Codex-compatible `{ plan: [{ step, status, id? }] }`)
+  so Default-mode agents can drive the host-pinned checklist; emits
+  `AgentEvent::TaskUpdated` for persistence and TUI projection. Specialty
+  Explore/Plan/Verification policies allow the tool. Live e2e:
+  `test_update_plan_live_e2e` against `.a3s/config.acl`
+  (`deepseek/deepseek-v4-pro`). Runtime event bridging now forwards
+  `TaskUpdated` from tools onto the host stream.
+- `infer_user_reply_language` plus `AgentSession::set_output_language` so hosts
+  can pin user-facing reply language per turn without rebuilding the session.
+  Default system prompt requires one reply language (no mixed prose).
+  Node/Python/Go SDKs expose matching `outputLanguage` /
+  `setOutputLanguage` / `SetOutputLanguage` surfaces.
+- First-principles E2E matrix and harness wrap-up runbooks under
+  `manual/FIRST_PRINCIPLES_E2E.md` and `manual/HARNESS_CONVERGENCE.md`, plus
+  `just harness-convergence-check` for the thin `local-code` gate.
+
+### Breaking
+
+- Library `a3s-code-core` `default` features are now `local-code` only
+  (bundled zvec FTS). `advanced-harness`, `headless-search`, and `server`
+  surfaces are opt-in (`HARNESS-CONV5`). Use `scientific` or `full` for the
+  previous product-local matrix. The `a3s` CLI pins
+  `default-features = false, features = ["scientific"]`.
+- Node/Python/Go SDK crate `default` features are now `zvec-rust-fts-bundled`
+  only. Enable `advanced-harness`, `server`, and/or `headless-search`
+  explicitly for product embeds. Moli runtime helpers compile only behind
+  `headless-search`.
+- Model-visible `parallel_task` is no longer registered; use `task` multi-item
+  fan-out (`HARNESS-CONV4`). Node/Python/Go SDK `parallelTask` /
+  `parallel_task` / `ParallelTask` helpers are removed.
+- Durable-memory `DurableMemorySession::shadow` and `ShadowCandidates` mode are
+  removed; use `active_recall` only (`CAP-GA1` / `HARNESS-CONV4`).
+
+### Changed
+
+- SDK capability inventory is now `a3s-code/sdk-capabilities/v2` with a `tier`
+  field (`baseline` | `advanced`). Baseline covers the governed coding-agent
+  harness; advanced covers evaluation, state graphs, programmable workflows,
+  S3, serve, OTel, and related host surfaces.
+- Gate-mode auxiliary admission fail-closes on incomplete or retention-gapped
+  evidence (`AuxiliaryRunError::EvidenceIncomplete`). Advisory/Detached modes
+  may still inspect incomplete evidence; Gate cannot claim an evidence-backed
+  decision over a known-partial snapshot (`EVAL-AUX1` strengthening).
+- `EvaluationSupervisor` maps Gate `EvidenceIncomplete` to
+  `EvaluationDispatchOutcome::Suppressed` (not `SupervisorError`), releasing
+  the reservation so the same fact can retry once evidence is complete.
+- Prompt ownership docs (`HARNESS-CONV6`): Core owns style→permission wiring;
+  specialty markdown remains a replaceable default pack.
+
+### Fixed
+
+- Demand-driven durable FTS now opens before the lazy chunk catalog starts, so
+  default local Agent sessions can publish `persistent_zvec_fts` for `search`
+  mode `bm25` instead of staying on the portable catalog forever.
+- Goal-extraction fallback no longer expects invented English success criteria
+  when the model returns non-JSON (aligned with language-pin-safe
+  `fallback_goal`).
+
+### Notes
+
+- Recommended embed: `a3s-code-core` with default features (now `local-code`)
+  or explicit `features = ["local-code"]`. CI requires a green
+  `--no-default-features --features local-code` Core check.
+- Advanced harness modules compile behind `advanced-harness`
+  (`HARNESS-CONV3`). Shared `content_digest` helpers keep store WAL and other
+  baseline paths free of the evaluation module graph.
+- See `HARNESS-CONV4`–`CONV7`, the refuse list in `ROADMAP.md`, and the wrap-up
+  index in `manual/HARNESS_CONVERGENCE.md`.
 
 ## [8.3.0] - 2026-09-07
 

@@ -38,7 +38,7 @@ const currentPageMarkers = new Map([
   [
     'api/index.mdx',
     [
-      'a3s-code/sdk-capabilities/v1',
+      'a3s-code/sdk-capabilities/v2',
       'Moli',
       'aarch64-unknown-linux-gnu',
       'aarch64-pc-windows-msvc',

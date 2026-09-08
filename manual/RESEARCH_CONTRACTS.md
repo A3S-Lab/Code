@@ -145,7 +145,7 @@ bound to the same Run. Run it with:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/a3s-code-target \
-  cargo test --locked --no-default-features --test research_execution_qualification
+  cargo test --locked --features advanced-harness --test research_execution_qualification
 ```
 
 Focused contract tests live beside the implementations in
@@ -153,5 +153,5 @@ Focused contract tests live beside the implementations in
 
 ```bash
 CARGO_TARGET_DIR=/tmp/a3s-code-target \
-  cargo test --locked --no-default-features -p a3s-code-core research:: --lib
+  cargo test --locked --features advanced-harness -p a3s-code-core research:: --lib
 ```

@@ -456,12 +456,12 @@ fn decision_result_receipt(
 ) -> Result<ExecutionResultReceiptV1, FlowDecisionDispatchError> {
     let result = serde_json::to_vec(&request.decision)
         .map_err(|error| FlowDecisionDispatchError::Ledger(error.to_string()))?;
-    let evidence_digest = crate::evaluation::digest_bytes(
+    let evidence_digest = crate::content_digest::digest_bytes(
         "a3s.code.flow-decision.evidence.v1",
         request.causation_event_id.as_bytes(),
     );
     let result_digest =
-        crate::evaluation::digest_bytes("a3s.code.flow-decision.result.v1", &result);
+        crate::content_digest::digest_bytes("a3s.code.flow-decision.result.v1", &result);
     let result_bytes = u64::try_from(result.len())
         .map_err(|_| FlowDecisionDispatchError::Ledger("decision result is too large".into()))?;
     claim

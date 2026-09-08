@@ -580,8 +580,7 @@ await session.tasks([
 
 For automatic subagent delegation, `autoParallel: false` disables automatic
 parallel fan-out while keeping manual `task` / `session.tasks(...)` calls
-available. `session.parallelTask(...)` remains an explicit compatibility helper
-for persisted integrations that still call the hidden `parallel_task` alias:
+available:
 
 ```js
 const session = agent.session('/my-project', {
@@ -592,8 +591,8 @@ const session = agent.session('/my-project', {
 ```
 
 Use `session.toolNames()` for model-visible names and `session.toolDefinitions()`
-when a UI needs the full schemas. Hidden compatibility aliases are executable
-by explicit name but omitted from both introspection methods.
+when a UI needs the full schemas. The removed `parallel_task` alias is neither
+registered nor exposed on the SDK session helpers (`HARNESS-CONV4`).
 
 Dynamic workflow is opt-in for SDK sessions. Register it when the host wants the
 A3S Flow-backed `dynamic_workflow` tool to join the normal tool registry:

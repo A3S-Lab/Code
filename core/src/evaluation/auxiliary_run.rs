@@ -464,6 +464,8 @@ pub enum AuxiliaryRunError {
     InvalidField(&'static str),
     #[error("auxiliary run evidence does not match the spec")]
     EvidenceMismatch,
+    #[error("gate-mode auxiliary run requires complete evidence without retention gaps")]
+    EvidenceIncomplete,
     #[error("auxiliary run parent target does not match its evidence target")]
     TargetMismatch,
     #[error("auxiliary run would exceed its parent capability ceiling")]
@@ -753,6 +755,14 @@ impl AuxiliaryRunService for InMemoryAuxiliaryRunService {
         evidence
             .validate()
             .map_err(|_| AuxiliaryRunError::EvidenceMismatch)?;
+        if matches!(spec.mode, AuxiliaryModeV1::Gate)
+            && (!evidence.complete || evidence.retention_gap)
+        {
+            // Gate mode claims an evidence-backed decision. Incomplete or
+            // retention-gapped snapshots must fail closed at admission rather
+            // than leaving the host to notice after the fact (EVAL docs).
+            return Err(AuxiliaryRunError::EvidenceIncomplete);
+        }
         if spec.parent.target != evidence.target {
             return Err(AuxiliaryRunError::TargetMismatch);
         }

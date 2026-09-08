@@ -241,6 +241,61 @@ async fn service_rejects_cross_target_evidence() {
 }
 
 #[tokio::test]
+async fn gate_mode_rejects_incomplete_evidence_while_advisory_may_proceed() {
+    use crate::agent::AgentEvent;
+    use crate::evaluation::evidence::EvidenceContentModeV1;
+
+    let runs = Arc::new(InMemoryRunStore::new());
+    let run = runs
+        .create_run_with_id("run-incomplete".into(), "session-1", "prompt")
+        .await;
+    runs.record_event(
+        &run.id,
+        AgentEvent::TextDelta {
+            text: "oversized evidence payload".into(),
+        },
+    )
+    .await;
+    let mut request = EvidenceReadRequestV1::new(ExecutionTargetV1::new("session-1", &run.id));
+    request.content_mode = EvidenceContentModeV1::BoundedPayload;
+    request.limits.max_event_bytes = 1;
+    let incomplete = RunEvidenceReader::new(runs).read(request).await.unwrap();
+    incomplete.validate().unwrap();
+    assert!(!incomplete.complete);
+
+    let service = InMemoryAuxiliaryRunService::new(Arc::new(FixtureExecutor {
+        calls: AtomicUsize::new(0),
+        value: serde_json::json!({"decision": "ok"}),
+    }));
+    let gate = AuxiliaryRunSpecV1::new(
+        ExecutionFrameV1::root(incomplete.target.clone()),
+        "gate-incomplete",
+        "must fail closed",
+        incomplete.snapshot_digest.clone(),
+    )
+    .with_id("aux-gate-incomplete")
+    .with_mode(AuxiliaryModeV1::Gate);
+    assert!(matches!(
+        service.spawn(gate, incomplete.clone(), None).await,
+        Err(AuxiliaryRunError::EvidenceIncomplete)
+    ));
+
+    let advisory = AuxiliaryRunSpecV1::new(
+        ExecutionFrameV1::root(incomplete.target.clone()),
+        "advisory-incomplete",
+        "host may inspect incomplete evidence",
+        incomplete.snapshot_digest.clone(),
+    )
+    .with_id("aux-advisory-incomplete")
+    .with_mode(AuxiliaryModeV1::Advisory);
+    let handle = service.spawn(advisory, incomplete, None).await.unwrap();
+    assert_eq!(
+        handle.wait().await.unwrap().value["decision"],
+        serde_json::json!("ok")
+    );
+}
+
+#[tokio::test]
 async fn executor_panics_and_output_overflow_become_terminal_failures() {
     struct PanicExecutor;
     #[async_trait]

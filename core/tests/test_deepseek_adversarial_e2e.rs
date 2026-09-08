@@ -523,10 +523,17 @@ async fn deepseek_stream_cancellation_settles_the_run_and_tool_state() {
 fn assert_workspace_contains_only(workspace: &Path, expected: &[&str]) {
     let mut entries = std::fs::read_dir(workspace)
         .expect("read cancellation workspace")
-        .map(|entry| {
-            entry
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .expect("read cancellation workspace entry")
+        .filter_map(|entry| {
+            let entry = entry.expect("read cancellation workspace entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Code-private harness state under `.a3s-code/` is created by
+            // workspace services / default security and is not a shell side
+            // effect. The cancellation gate only cares about user-visible
+            // artifacts from the cancellable command.
+            if name == ".a3s-code" {
+                return None;
+            }
+            Some(name)
         })
         .collect::<Vec<_>>();
     entries.sort();

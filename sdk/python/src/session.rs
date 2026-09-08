@@ -1226,6 +1226,18 @@ impl PySession {
             .map_err(py_code_error)
     }
 
+    /// Pin or clear the user-facing reply language for subsequent turns.
+    ///
+    /// Pass a BCP-47 tag such as ``zh-CN`` to pin; pass ``None`` to clear the
+    /// runtime override so session ``output_language`` / prompt slots apply
+    /// again. Takes effect on the next ``send`` / ``stream``.
+    #[pyo3(signature = (language=None))]
+    fn set_output_language(&self, language: Option<String>) -> PyResult<()> {
+        self.inner
+            .set_output_language(language)
+            .map_err(py_code_error)
+    }
+
     /// Install or clear a host-owned live checkpoint export sink (SDK-CP1).
     ///
     /// ``handler`` receives one dict with ``descriptor`` and ``contentBase64``.

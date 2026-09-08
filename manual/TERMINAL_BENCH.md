@@ -44,6 +44,35 @@ harbor run -d terminal-bench/terminal-bench@4.0.0 \
   -n 100 -k 5 -y
 ```
 
+## TB-QUAL1 qualification gate (`HARNESS-CONV7`)
+
+See also the wrap-up index and evidence templates in
+[HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md).
+
+`TB-QUAL1` is In progress until a Harbor job retains the native verifier result
+for every trial on the complete tagged dataset.
+
+| Step | Requirement |
+| --- | --- |
+| 1. Diagnostic matrix | Run a small `-t` / limited `-n` matrix first; treat results as diagnostic only |
+| 2. Full tagged dataset | Harbor `terminal-bench@4.0.0` complete tag; GPU sandbox if required by TB |
+| 3. Attempts | Leaderboard-compatible `-k` (typically 5) |
+| 4. Evidence | Keep the Harbor job directory; each trial must retain Harbor's native `verifier_result` |
+| 5. Fail closed | Timeout, runner error, missing verifier result, or local-only aggregate is **not** a pass |
+| 6. Publish | Link the Harbor job / artifact digest from ROADMAP `TB-QUAL1` when Delivered |
+
+Optional Code live gates (not a TB substitute):
+
+```bash
+A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_deepseek_adversarial_e2e -- \
+  --ignored --test-threads=1 --nocapture
+
+A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
+  cargo test -p a3s-code-core --test test_prompt_capability_real_llm -- \
+  --ignored --test-threads=1 --nocapture
+```
+
 The exact `-n` value depends on the provider and available quota. A local
 Docker run without GPU resources or a single `-t` task is a diagnostic result,
 not a leaderboard score. Report the Harbor aggregate and each trial's native

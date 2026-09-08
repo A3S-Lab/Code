@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 use a3s_code_core::capability::{
     CapabilityCeiling, CapabilityContribution, CapabilityDescriptor, CapabilityExecutionCeiling,
     CapabilityKind, CapabilitySet, CapabilitySource, CodeCatalogGeneration,

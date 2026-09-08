@@ -221,7 +221,6 @@ impl DurableMemoryBindingV1 {
             (false, None) => {}
         }
         match (self.mode, self.recall_policy) {
-            (DurableMemoryMode::ShadowCandidates, None) => Ok(()),
             (DurableMemoryMode::ActiveRecall, Some(policy)) => {
                 DurableMemoryRecallPolicy::try_new(
                     policy.max_results(),
@@ -230,10 +229,6 @@ impl DurableMemoryBindingV1 {
                 .try_with_related_lookups(policy.max_related_lookups())?;
                 Ok(())
             }
-            (DurableMemoryMode::ShadowCandidates, Some(_)) => Err(invalid(
-                "durableMemoryBinding.recallPolicy",
-                "shadow candidate mode must not carry a recall policy",
-            )),
             (DurableMemoryMode::ActiveRecall, None) => Err(invalid(
                 "durableMemoryBinding.recallPolicy",
                 "active recall mode requires a recall policy",
@@ -324,8 +319,10 @@ mod tests {
 
         let mut shadow = encoded.clone();
         shadow["mode"] = serde_json::json!("shadow_candidates");
-        let shadow: DurableMemoryBindingV1 = serde_json::from_value(shadow).unwrap();
-        assert!(shadow.validate().is_err());
+        assert!(
+            serde_json::from_value::<DurableMemoryBindingV1>(shadow).is_err(),
+            "shadow_candidates mode must fail closed at decode after HARNESS-CONV4"
+        );
 
         let mut unsupported_fusion = encoded;
         unsupported_fusion["semanticRecall"]["fusionProfile"] =

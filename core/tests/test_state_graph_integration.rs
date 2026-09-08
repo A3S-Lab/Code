@@ -1,3 +1,4 @@
+#![cfg(feature = "state-graph")]
 use a3s_code_core::{
     EventFilter, FnBehavior, GraphEvent, GraphEventStore, GraphPatch, GraphRuntime,
     MemoryGraphEventStore, PatchOperation,

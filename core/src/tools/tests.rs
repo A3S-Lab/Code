@@ -399,9 +399,9 @@ impl WorkspaceCommandRunner for MockCommandRunner {
 #[tokio::test]
 async fn test_tool_executor_creation() {
     let executor = ToolExecutor::new("/tmp".to_string());
-    // Baseline tools on a raw local ToolExecutor: 13. Workspace search is one
-    // model-facing tool with three internal modes.
-    assert_eq!(executor.registry.len(), 13);
+    // Baseline tools on a raw local ToolExecutor: 14 (includes update_plan).
+    // Workspace search is one model-facing tool with three internal modes.
+    assert_eq!(executor.registry.len(), 14);
 }
 
 #[tokio::test]
@@ -432,6 +432,7 @@ async fn test_builtin_tools_registered() {
     assert!(definitions.iter().any(|t| t.name == "patch"));
     assert!(definitions.iter().any(|t| t.name == "web_fetch"));
     assert!(definitions.iter().any(|t| t.name == "web_search"));
+    assert!(definitions.iter().any(|t| t.name == "update_plan"));
     assert!(definitions.iter().any(|t| t.name == "download"));
     assert!(definitions.iter().any(|t| t.name == "batch"));
 }
@@ -647,8 +648,8 @@ fn test_tool_executor_workspace() {
 fn test_tool_executor_registry() {
     let executor = ToolExecutor::new("/tmp".to_string());
     let registry = executor.registry();
-    // Baseline tools on a raw local ToolExecutor: 13.
-    assert_eq!(registry.len(), 13);
+    // Baseline tools on a raw local ToolExecutor: 14 (includes update_plan).
+    assert_eq!(registry.len(), 14);
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 // Autonomous ultracode validation: give the model the REAL (strengthened)
 // ULTRACODE_GUIDELINES via guidelines:string + a natural multi-part task, and
-// verify it GENERATES a `program` workflow script that calls parallel_task and
+// verify it GENERATES a `program` workflow script that calls `task` fan-out and
 // fans out — no hand-fed script. Live-logged to ./ultracode_test.log.
 import { createRequire } from 'node:module';
 import { appendFileSync } from 'node:fs';
@@ -12,19 +12,19 @@ const LOG = new URL('./ultracode_test.log', import.meta.url).pathname;
 const ITERS = Number(process.argv[2] || 3);
 const log = (s) => { appendFileSync(LOG, s + '\n'); console.log(s); };
 
-// EXACT text from crates/cli/src/tui/panels/model.rs ULTRACODE_GUIDELINES.
-const GUIDELINES = `[ultracode] Dynamic-workflow mode. Express ALL of your work as ONE generated, executable workflow SCRIPT. Do NOT call \`parallel_task\` or \`task\` directly at the top level — the script IS the workflow.
+// Guideline text aligned with HARNESS-CONV4: fan-out via `task` multi-item only.
+const GUIDELINES = `[ultracode] Dynamic-workflow mode. Express ALL of your work as ONE generated, executable workflow SCRIPT. Do NOT call \`task\` directly at the top level — the script IS the workflow.
 1. PLAN. Decompose the task into numbered steps; mark independent (concurrent) vs dependent (sequential).
 2. WRITE + RUN THE SCRIPT by calling the \`program\` tool with a JavaScript \`source\` of this shape:
      async function run(ctx, inputs) {
-       const results = await ctx.tool("parallel_task", { tasks: [
+       const results = await ctx.tool("task", { tasks: [
          { description: "step A", prompt: "..." },
          { description: "step B", prompt: "..." }
        ] });
        return results;
      }
-   Put EVERY task/parallel_task call INSIDE the script; add further ctx.tool(...) calls for dependent steps and aggregate their outputs.
-3. parallel_task inside the script fans out concurrent subagents on the multi-threaded runtime. After it returns, synthesize the results into your final answer.
+   Put EVERY task call INSIDE the script; add further ctx.tool(...) calls for dependent steps and aggregate their outputs.
+3. \`task\` with multiple \`tasks[]\` items fans out concurrent subagents on the multi-threaded runtime. After it returns, synthesize the results into your final answer.
 4. Be exhaustive: pursue every thread to completion.`;
 
 // Final validation: a GENERAL task + the EXACT per-turn nudge the cli's
@@ -34,8 +34,8 @@ const GUIDELINES = `[ultracode] Dynamic-workflow mode. Express ALL of your work 
 const NUDGE =
   '\n\n[ultracode] Tackle this as a dynamic workflow. For the independent parts, ' +
   'call the `program` tool with a JavaScript script whose `async function ' +
-  'run(ctx, inputs)` fans them out via `ctx.tool("parallel_task", { tasks: [...] })`, ' +
-  'keeps all task/parallel_task delegation INSIDE the script, then aggregates and ' +
+  'run(ctx, inputs)` fans them out via `ctx.tool("task", { tasks: [...] })`, ' +
+  'keeps all task delegation INSIDE the script, then aggregates and ' +
   'returns. After it runs, synthesize the results.';
 const TASK =
   'Write about 50 words on each of these four independent topics: TCP slow-start, ' +
@@ -51,7 +51,7 @@ async function once(i) {
     maxParallelTasks: 8,
     confirmationPolicy: { enabled: true, yoloLanes: ['control', 'query', 'execute', 'generate'], timeoutAction: 'auto_approve' },
   });
-  let inProgram = false, progArgs = '', scriptForm = false, directParallel = false, programOk = false, errorSeen = null;
+  let inProgram = false, progArgs = '', scriptForm = false, directTask = false, programOk = false, errorSeen = null;
   const t0 = Date.now();
   const stream = await session.stream(TASK);
   while (true) {
@@ -60,22 +60,22 @@ async function once(i) {
     if (!ev) continue;
     const ty = ev.type || '';
     if (ty === 'tool_start' && ev.toolName === 'program') inProgram = true;
-    if (ty === 'tool_start' && ev.toolName === 'parallel_task') directParallel = true;
+    if (ty === 'tool_start' && ev.toolName === 'task') directTask = true;
     if (ty === 'tool_input_delta' && inProgram) progArgs += (ev.text || '');
     if (ty === 'tool_end' && ev.toolName === 'program') {
       inProgram = false;
-      scriptForm = /parallel_task/.test(progArgs);
-      programOk = /exit_code=0/.test(String(ev.toolOutput || '')) && /parallel_task \(ok/.test(String(ev.toolOutput || ''));
+      scriptForm = /"task"|'task'|tool\("task"/.test(progArgs);
+      programOk = /exit_code=0/.test(String(ev.toolOutput || '')) && /task \(ok/.test(String(ev.toolOutput || ''));
     }
     if (ty === 'permission_denied') errorSeen = 'permission_denied:' + (ev.toolName || '');
   }
-  log(`#${i} ${Date.now() - t0}ms scriptForm=${scriptForm} programOk=${programOk} directParallel=${directParallel} err=${errorSeen || 'no'}`);
+  log(`#${i} ${Date.now() - t0}ms scriptForm=${scriptForm} programOk=${programOk} directTask=${directTask} err=${errorSeen || 'no'}`);
   if (scriptForm && i === 0) {
     // Show the actual generated workflow script once, as evidence.
     const m = progArgs.match(/"source"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     if (m) log('  --- generated workflow script ---\n' + JSON.parse('"' + m[1] + '"').split('\n').map((l) => '  | ' + l).join('\n'));
   }
-  return { i, scriptForm, programOk, directParallel, errorSeen };
+  return { i, scriptForm, programOk, directTask, errorSeen };
 }
 
 log(`\n=== autonomous ultracode test (strengthened guideline, ${ITERS} iters) ===`);
@@ -85,7 +85,7 @@ for (let i = 0; i < ITERS; i++) {
   catch (e) { const m = String(e).slice(0, 160); rows.push({ throw: m }); log(`#${i} THREW ${m}`); }
 }
 const scriptAndRan = rows.filter((r) => r.scriptForm && r.programOk).length;
-const anyFanout = rows.filter((r) => (r.scriptForm && r.programOk) || r.directParallel).length;
+const anyFanout = rows.filter((r) => (r.scriptForm && r.programOk) || r.directTask).length;
 const errs = rows.filter((r) => r.throw || r.errorSeen).length;
 log(`\nSUMMARY`);
 log(`  generated a program WORKFLOW SCRIPT that fanned out (programOk): ${scriptAndRan}/${ITERS}`);

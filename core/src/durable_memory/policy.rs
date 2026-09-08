@@ -7,9 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DurableMemoryMode {
-    /// Mirror successful V1 extractions as evidence-backed V2 candidates.
-    ShadowCandidates,
     /// Mirror candidates and recall only explicitly activated V2 nodes.
+    /// Production durable-memory path for coding and scientific hosts.
     ActiveRecall,
 }
 

@@ -263,7 +263,7 @@ async fn codex_login_parallel_children_use_independent_provider_sessions() {
     let options = SessionOptions::new()
         .with_session_id("codex-agent-parallel-sessions")
         .with_llm_client(codex_client("codex-agent-parallel-sessions"))
-        .with_permission_policy(PermissionPolicy::new().allow("parallel_task(*)"))
+        .with_permission_policy(PermissionPolicy::new().allow("task(*)"))
         .with_confirmation_manager(Arc::new(AutoApproveConfirmation))
         .with_planning_mode(PlanningMode::Disabled)
         .with_manual_delegation_enabled(true)
@@ -277,7 +277,7 @@ async fn codex_login_parallel_children_use_independent_provider_sessions() {
     let result = tokio::time::timeout(
         CALL_TIMEOUT,
         session.tool(
-            "parallel_task",
+            "task",
             serde_json::json!({
                 "timeout_ms": 60_000,
                 "tasks": [
@@ -305,11 +305,11 @@ async fn codex_login_parallel_children_use_independent_provider_sessions() {
     )
     .await
     .expect("Codex parallel children exceeded 180 seconds")
-    .expect("parallel_task call");
+    .expect("task fan-out call");
 
     assert_eq!(
         result.exit_code, 0,
-        "parallel_task failed: {}",
+        "task fan-out failed: {}",
         result.output
     );
     for token in ["ALPHA", "BRAVO", "CHARLIE"] {

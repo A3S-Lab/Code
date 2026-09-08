@@ -26,6 +26,9 @@ type ProductCapability struct {
 	Description string   `json:"description"`
 	Operations  []string `json:"operations"`
 	HostOwned   bool     `json:"host_owned"`
+	// Tier is "baseline" for the coding-agent harness or "advanced" for
+	// optional surfaces such as serve, S3, evaluation, and state graphs.
+	Tier string `json:"tier"`
 }
 
 // MoliRuntimeStatus is the secret-free result of a Moli runtime discovery
@@ -50,10 +53,11 @@ const (
 )
 
 type PromptSlots struct {
-	Role          string `json:"role,omitempty"`
-	Guidelines    string `json:"guidelines,omitempty"`
-	ResponseStyle string `json:"response_style,omitempty"`
-	Extra         string `json:"extra,omitempty"`
+	Role           string `json:"role,omitempty"`
+	Guidelines     string `json:"guidelines,omitempty"`
+	ResponseStyle  string `json:"response_style,omitempty"`
+	OutputLanguage string `json:"output_language,omitempty"`
+	Extra          string `json:"extra,omitempty"`
 }
 
 // HostEnvConfig makes framework-generated IDs and timestamps reproducible.

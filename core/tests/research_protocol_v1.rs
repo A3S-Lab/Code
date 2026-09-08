@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 use a3s_code_core::research::{
     ResearchEventV1, ResearchProtocolError, ResearchWireEnvelopeV1, ResearchWireKindV1,
     RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES, RESEARCH_PROTOCOL_SCHEMA_V1, RESEARCH_PROTOCOL_VERSION_V1,

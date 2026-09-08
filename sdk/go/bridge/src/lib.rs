@@ -7,6 +7,7 @@
 
 #![recursion_limit = "256"]
 
+#[cfg(feature = "serve")]
 use a3s_code_core::serve::{spawn_agent_dir_daemon, ServeDaemonHandle};
 use a3s_code_core::{
     execute_steps_parallel_resumable, run_event_envelope_v1, Agent, AgentResult, AgentSession,
@@ -26,6 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 mod immutable_content;
+#[cfg(feature = "serve")]
 mod serve;
 mod workspace_retrieval;
 use immutable_content::*;
@@ -171,6 +173,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_unregister_hook",
     "session_hook_count",
     "session_set_budget_guard",
+    "session_set_output_language",
     "session_set_session_checkpoint_export_sink",
     "session_register_command",
     "session_list_commands",
@@ -318,18 +321,21 @@ impl From<TaskSchedulerError> for BridgeFailure {
     }
 }
 
+#[cfg(feature = "advanced-harness")]
 impl From<a3s_code_core::GraphRuntimeError> for BridgeFailure {
     fn from(error: a3s_code_core::GraphRuntimeError) -> Self {
         Self::new("STATE_GRAPH_ERROR", error.to_string())
     }
 }
 
+#[cfg(feature = "advanced-harness")]
 impl From<a3s_code_core::ReplayError> for BridgeFailure {
     fn from(error: a3s_code_core::ReplayError) -> Self {
         Self::new("STATE_GRAPH_REPLAY_ERROR", error.to_string())
     }
 }
 
+#[cfg(feature = "serve")]
 fn serve_failure(handle: &ServeDaemonHandle, error: CodeError) -> BridgeFailure {
     BridgeFailure::new(
         handle.failure_code().unwrap_or(error.code()),
@@ -352,7 +358,9 @@ pub struct BridgeState {
     next_handle: AtomicU64,
     agents: RwLock<HashMap<String, Arc<Agent>>>,
     sessions: RwLock<HashMap<String, SessionEntry>>,
+    #[cfg(feature = "advanced-harness")]
     graphs: RwLock<HashMap<String, Arc<StdMutex<a3s_code_core::GraphRuntime>>>>,
+    #[cfg(feature = "serve")]
     serve_handles: RwLock<HashMap<String, ServeDaemonHandle>>,
     callbacks: RwLock<Option<Arc<CallbackClient>>>,
 }
@@ -363,7 +371,9 @@ impl Default for BridgeState {
             next_handle: AtomicU64::new(1),
             agents: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            #[cfg(feature = "advanced-harness")]
             graphs: RwLock::new(HashMap::new()),
+            #[cfg(feature = "serve")]
             serve_handles: RwLock::new(HashMap::new()),
             callbacks: RwLock::new(None),
         }
@@ -434,6 +444,7 @@ impl BridgeState {
             .ok_or_else(|| BridgeFailure::new("NOT_FOUND", format!("session {id:?} was not found")))
     }
 
+    #[cfg(feature = "advanced-harness")]
     async fn graph(
         &self,
         id: &str,
@@ -446,6 +457,7 @@ impl BridgeState {
             .ok_or_else(|| BridgeFailure::new("NOT_FOUND", format!("graph {id:?} was not found")))
     }
 
+    #[cfg(feature = "advanced-harness")]
     fn lock_graph<'a>(
         graph: &'a StdMutex<a3s_code_core::GraphRuntime>,
     ) -> Result<StdMutexGuard<'a, a3s_code_core::GraphRuntime>, BridgeFailure> {
@@ -489,11 +501,13 @@ impl BridgeState {
                 "schema": a3s_code_core::SDK_CAPABILITIES_SCHEMA_V1,
                 "capabilities": a3s_code_core::sdk_capabilities(),
             })),
+            #[cfg(feature = "headless-search")]
             "moli_runtime_info" => {
                 let config =
                     optional::<a3s_code_core::config::HeadlessConfig>(&request.params, "config")?;
                 encode(a3s_code_core::moli_runtime_info(config.as_ref()))
             }
+            #[cfg(feature = "headless-search")]
             "moli_ensure" => {
                 let config =
                     optional::<a3s_code_core::config::HeadlessConfig>(&request.params, "config")?
@@ -510,6 +524,12 @@ impl BridgeState {
                 })?;
                 Ok(json!({ "path": path }))
             }
+            #[cfg(not(feature = "headless-search"))]
+            "moli_runtime_info" | "moli_ensure" => Err(BridgeFailure::new(
+                "FEATURE_REQUIRED",
+                "Moli runtime requires the bridge `headless-search` Cargo feature",
+            )),
+            #[cfg(feature = "advanced-harness")]
             "state_graph_create" => {
                 let correlation_id = optional::<String>(&request.params, "correlation_id")?;
                 let max_events = optional::<usize>(&request.params, "max_events")?;
@@ -543,6 +563,7 @@ impl BridgeState {
                     .insert(graph_id.clone(), Arc::new(StdMutex::new(runtime)));
                 Ok(json!({ "graph_handle": graph_id }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_check_external" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let event: a3s_code_core::ExternalEvent = required(&request.params, "event")?;
@@ -555,6 +576,7 @@ impl BridgeState {
                     })
                 }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_project_external" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let event: a3s_code_core::ExternalEvent = required(&request.params, "event")?;
@@ -568,11 +590,13 @@ impl BridgeState {
                     }
                 }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_strict_replay" => {
                 let events = graph_events(&request.params)?;
                 let graph = a3s_code_core::GraphRuntime::strict_replay(&events)?;
                 encode(graph)
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_restore" => {
                 let events = graph_events(&request.params)?;
                 let runtime = a3s_code_core::GraphRuntime::restore(events)
@@ -584,6 +608,7 @@ impl BridgeState {
                     .insert(graph_id.clone(), Arc::new(StdMutex::new(runtime)));
                 Ok(json!({ "graph_handle": graph_id }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_info" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let graph = self.graph(&graph_id).await?;
@@ -594,6 +619,7 @@ impl BridgeState {
                     "event_count": guard.events().len(),
                 }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_propose_patch" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let patch: a3s_code_core::GraphPatch = required(&request.params, "patch")?;
@@ -602,6 +628,7 @@ impl BridgeState {
                 let applied = Self::lock_graph(&graph)?.propose_patch(patch, causation_id)?;
                 Ok(json!({ "applied": applied }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_run_goal" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let goal: String = required(&request.params, "goal")?;
@@ -615,6 +642,7 @@ impl BridgeState {
                 let event = Self::lock_graph(&graph)?.run_goal(goal)?;
                 encode(event)
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_emit_custom" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let name: String = required(&request.params, "name")?;
@@ -634,18 +662,21 @@ impl BridgeState {
                     .emit(a3s_code_core::GraphEvent::Custom { name, payload })?;
                 encode(event)
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_graph" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let graph = self.graph(&graph_id).await?;
                 let guard = Self::lock_graph(&graph)?;
                 encode(guard.graph())
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_events" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let graph = self.graph(&graph_id).await?;
                 let guard = Self::lock_graph(&graph)?;
                 encode(guard.events())
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_fork" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let sequence_exclusive: u64 = required(&request.params, "sequence_exclusive")?;
@@ -658,6 +689,7 @@ impl BridgeState {
                     .insert(fork_id.clone(), Arc::new(StdMutex::new(fork)));
                 Ok(json!({ "graph_handle": fork_id }))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_diff" => {
                 let left_id: String = required(&request.params, "left_graph_handle")?;
                 let right_id: String = required(&request.params, "right_graph_handle")?;
@@ -669,6 +701,7 @@ impl BridgeState {
                 let right_guard = Self::lock_graph(&right)?;
                 encode(left_state.diff(right_guard.graph()))
             }
+            #[cfg(feature = "advanced-harness")]
             "state_graph_close" => {
                 let graph_id: String = required(&request.params, "graph_handle")?;
                 let closed = self.graphs.write().await.remove(&graph_id).is_some();
@@ -817,8 +850,11 @@ impl BridgeState {
                     .await;
                 Ok(json!({ "names": disconnected }))
             }
+            #[cfg(feature = "serve")]
             "agent_serve_agent_dir" => serve::start(self, &request.params).await,
+            #[cfg(feature = "serve")]
             "agent_serve_status" => serve::status(self, &request.params).await,
+            #[cfg(feature = "serve")]
             "agent_stop_serve" => serve::stop(self, &request.params).await,
             "agent_is_closed" => {
                 let closed = self
@@ -1570,6 +1606,7 @@ impl BridgeState {
                 let names = self.request_session(&request.params).await?.skill_names();
                 Ok(json!({ "names": names }))
             }
+            #[cfg(feature = "advanced-harness")]
             "session_register_dynamic_workflow" => {
                 self.request_session(&request.params)
                     .await?
@@ -1813,6 +1850,13 @@ impl BridgeState {
                 }
                 Ok(json!({ "configured": true }))
             }
+            "session_set_output_language" => {
+                let language = optional::<String>(&request.params, "language")?;
+                self.request_session(&request.params)
+                    .await?
+                    .set_output_language(language)?;
+                Ok(json!({ "configured": true }))
+            }
             "session_set_session_checkpoint_export_sink" => {
                 let handler_id = optional::<String>(&request.params, "handler_id")?;
                 let session = self.request_session(&request.params).await?;
@@ -1955,20 +1999,23 @@ impl BridgeState {
     }
 
     pub async fn close_all(&self) {
-        let handles = self
-            .serve_handles
-            .write()
-            .await
-            .drain()
-            .map(|(_, handle)| handle)
-            .collect::<Vec<_>>();
-        let mut stops = tokio::task::JoinSet::new();
-        for handle in handles {
-            stops.spawn(async move {
-                let _ = handle.stop().await;
-            });
+        #[cfg(feature = "serve")]
+        {
+            let handles = self
+                .serve_handles
+                .write()
+                .await
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>();
+            let mut stops = tokio::task::JoinSet::new();
+            for handle in handles {
+                stops.spawn(async move {
+                    let _ = handle.stop().await;
+                });
+            }
+            while stops.join_next().await.is_some() {}
         }
-        while stops.join_next().await.is_some() {}
         let sessions = self
             .sessions
             .write()
@@ -1989,6 +2036,7 @@ impl BridgeState {
         for agent in agents {
             agent.close().await;
         }
+        #[cfg(feature = "advanced-harness")]
         self.graphs.write().await.clear();
         *self.callbacks.write().await = None;
     }
@@ -2910,6 +2958,7 @@ struct BridgeS3Config {
     search_concurrency: Option<usize>,
 }
 
+#[cfg(feature = "s3")]
 impl BridgeS3Config {
     fn into_core(self) -> a3s_code_core::S3BackendConfig {
         let mut config = a3s_code_core::S3BackendConfig::new(
@@ -3060,6 +3109,7 @@ struct BridgePromptSlots {
     role: Option<String>,
     guidelines: Option<String>,
     response_style: Option<String>,
+    output_language: Option<String>,
     extra: Option<String>,
 }
 
@@ -3138,13 +3188,23 @@ impl BridgeSessionOptions {
                     a3s_code_core::WorkspaceServices::local(root)
                 }
                 "s3" => {
-                    let config = value.s3.ok_or_else(|| {
-                        BridgeFailure::new(
-                            "INVALID_REQUEST",
-                            "S3 workspace backend requires s3 configuration",
-                        )
-                    })?;
-                    a3s_code_core::WorkspaceServices::s3(config.into_core())
+                    #[cfg(feature = "s3")]
+                    {
+                        let config = value.s3.ok_or_else(|| {
+                            BridgeFailure::new(
+                                "INVALID_REQUEST",
+                                "S3 workspace backend requires s3 configuration",
+                            )
+                        })?;
+                        a3s_code_core::WorkspaceServices::s3(config.into_core())
+                    }
+                    #[cfg(not(feature = "s3"))]
+                    {
+                        return Err(BridgeFailure::new(
+                            "FEATURE_DISABLED",
+                            "S3 workspace backend requires the bridge `s3` (or `server`) Cargo feature",
+                        ));
+                    }
                 }
                 other => {
                     return Err(BridgeFailure::new(
@@ -3342,6 +3402,7 @@ impl BridgeSessionOptions {
                 role: value.role,
                 guidelines: value.guidelines,
                 response_style: value.response_style,
+                output_language: value.output_language,
                 extra: value.extra,
             });
         }
@@ -3358,6 +3419,7 @@ fn required<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, BridgeF
     })
 }
 
+#[cfg(feature = "advanced-harness")]
 fn graph_events(params: &Value) -> Result<Vec<a3s_code_core::GraphEventRecord>, BridgeFailure> {
     if let Some(value) = params.get("events_json") {
         let encoded: String = serde_json::from_value(value.clone()).map_err(|error| {
@@ -3577,6 +3639,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "advanced-harness")]
     async fn state_graph_operations_round_trip_through_bridge() {
         let state = BridgeState::new();
         let created = dispatch_boxed(
@@ -3674,6 +3737,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn serve_lifecycle_is_ready_before_return_and_stop_is_joined() {
         let agent_dir = tempfile::tempdir().unwrap();
@@ -3728,6 +3792,7 @@ mod tests {
         assert!(state.serve_handles.read().await.is_empty());
     }
 
+    #[cfg(feature = "serve")]
     #[tokio::test]
     async fn invalid_schedule_fails_before_bridge_activation() {
         let agent_dir = tempfile::tempdir().unwrap();

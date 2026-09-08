@@ -4,7 +4,7 @@ use crate::evaluation::auxiliary_run::{
     AuxiliaryExecutor, AuxiliaryRunContextV1, InMemoryAuxiliaryRunService,
 };
 use crate::evaluation::evidence::RunEvidenceReader;
-use crate::evaluation::evidence::{EvidenceError, EvidenceReadRequestV1};
+use crate::evaluation::evidence::{EvidenceContentModeV1, EvidenceError, EvidenceReadRequestV1};
 use crate::evaluation::identity::ExecutionTargetV1;
 use crate::evaluation::journal::InMemoryExecutionFactJournal;
 use crate::evaluation::{EvaluationDispatchLedger, InMemoryEvaluationDispatchLedger};
@@ -422,4 +422,81 @@ async fn cancelled_evidence_admission_releases_reservation_synchronously() {
         .unwrap();
     assert_eq!(retry.outcome, EvaluationDispatchOutcome::Dispatched);
     retry.handle.unwrap().wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn gate_incomplete_evidence_suppresses_and_remains_retryable() {
+    struct IncompleteThenCompleteReader {
+        calls: AtomicUsize,
+        inner: RunEvidenceReader,
+    }
+
+    #[async_trait]
+    impl EvidenceReader for IncompleteThenCompleteReader {
+        async fn read(
+            &self,
+            mut request: EvidenceReadRequestV1,
+        ) -> Result<super::super::evidence::EvidenceSnapshotV1, EvidenceError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Force a known-partial bounded window so Gate admission fails
+                // closed without treating the parent observation as an error.
+                request.content_mode = EvidenceContentModeV1::BoundedPayload;
+                request.limits.max_event_bytes = 1;
+            }
+            self.inner.read(request).await
+        }
+    }
+
+    struct GateEveryEvent;
+    impl EvaluationPolicy for GateEveryEvent {
+        fn plan(&self, _fact: &ExecutionFactV1) -> Option<EvaluationPlanV1> {
+            let mut plan = EvaluationPlanV1::new(
+                EvaluationBoundaryV1::EveryEvent,
+                "gate-retry",
+                "must wait for complete evidence",
+            );
+            plan.mode = AuxiliaryModeV1::Gate;
+            Some(plan)
+        }
+    }
+
+    let runs = Arc::new(InMemoryRunStore::new());
+    let run = runs
+        .create_run_with_id("gate-incomplete-run".into(), "gate-session", "prompt")
+        .await;
+    let target = ExecutionTargetV1::new("gate-session", &run.id);
+    let record = RunEventRecord {
+        sequence: 0,
+        timestamp_ms: 1,
+        event: AgentEvent::TextDelta {
+            text: "oversized evidence payload for gate admission".into(),
+        },
+    };
+    runs.record_event(&run.id, record.event.clone()).await;
+    let supervisor = EvaluationSupervisor::new(
+        Arc::new(InMemoryExecutionFactJournal::new()),
+        Arc::new(IncompleteThenCompleteReader {
+            calls: AtomicUsize::new(0),
+            inner: RunEvidenceReader::new(Arc::clone(&runs)),
+        }),
+        Arc::new(InMemoryAuxiliaryRunService::new(Arc::new(
+            RecordingExecutor,
+        ))),
+        Arc::new(GateEveryEvent),
+    );
+
+    let suppressed = supervisor
+        .observe_event(ExecutionFrameV1::root(target.clone()), &record)
+        .await
+        .unwrap();
+    assert_eq!(suppressed.outcome, EvaluationDispatchOutcome::Suppressed);
+    assert!(suppressed.handle.is_none());
+    assert_eq!(supervisor.pending_count().await, 0);
+
+    let dispatched = supervisor
+        .observe_event(ExecutionFrameV1::root(target), &record)
+        .await
+        .unwrap();
+    assert_eq!(dispatched.outcome, EvaluationDispatchOutcome::Dispatched);
+    dispatched.handle.unwrap().wait().await.unwrap();
 }

@@ -12,8 +12,13 @@ use anyhow::Context;
 use futures::stream::{self, StreamExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 const MCP_BOOTSTRAP_CONCURRENCY: usize = 4;
+/// Cap each global MCP handshake so one slow/unreachable server cannot stall
+/// Desktop's first-message Agent bootstrap. Failed servers stay best-effort.
+const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) fn load_code_config(config_source: String) -> Result<CodeConfig> {
     let expanded = expand_home(&config_source);
@@ -153,12 +158,22 @@ async fn connect_global_mcp(
         .map(|server| {
             let manager = Arc::clone(&manager);
             async move {
-                if let Err(error) = manager.connect(&server.name).await {
-                    tracing::warn!(
-                        server = %server.name,
-                        error = %error,
-                        "Failed to connect to MCP server - skipping"
-                    );
+                match timeout(MCP_CONNECT_TIMEOUT, manager.connect(&server.name)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(
+                            server = %server.name,
+                            error = %error,
+                            "Failed to connect to MCP server - skipping"
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            server = %server.name,
+                            timeout_secs = MCP_CONNECT_TIMEOUT.as_secs(),
+                            "MCP server connect timed out during agent bootstrap - skipping"
+                        );
+                    }
                 }
             }
         })

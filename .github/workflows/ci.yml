@@ -90,10 +90,20 @@ jobs:
             echo "minimal Core must not compile the browser/CDP dependency stack" >&2
             exit 1
           fi
-          default_tree="$(cargo tree -p a3s-code-core -e normal)"
-          grep -q 'chromiumoxide' <<<"$default_tree"
+          local_code_tree="$(cargo tree -p a3s-code-core --no-default-features --features local-code -e normal)"
+          if grep -q 'chromiumoxide' <<<"$local_code_tree"; then
+            echo "local-code Core must not compile the browser/CDP dependency stack" >&2
+            exit 1
+          fi
           headless_tree="$(cargo tree -p a3s-code-core --no-default-features --features headless-search -e normal)"
           grep -q 'chromiumoxide' <<<"$headless_tree"
+
+      - name: Local-code harness gate
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: |
+          cargo check -p a3s-code-core --no-default-features --features local-code
+          cargo test -p a3s-code-core --no-default-features --features local-code --lib
 
       - name: Clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings

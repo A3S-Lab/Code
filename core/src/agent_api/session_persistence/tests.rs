@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use super::*;
 use crate::agent::AgentEvent;
 use crate::run::{RunEventRecord, RunRecord, RunSnapshot, RunStatus};
@@ -60,7 +62,11 @@ fn durable_memory_shadow_session(scope: &str) -> crate::durable_memory::DurableM
     let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
     let namespace =
         a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", scope).unwrap();
-    crate::durable_memory::DurableMemorySession::shadow(repository, namespace)
+    crate::durable_memory::DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        crate::durable_memory::DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    )
 }
 
 #[derive(Default)]

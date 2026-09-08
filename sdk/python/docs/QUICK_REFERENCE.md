@@ -160,7 +160,7 @@ Use the model-visible `task` tool for ordinary delegation. Pass one `tasks` item
 for a focused child or several independent items for concurrent fan-out.
 For automatic subagent delegation, set `opts.auto_parallel = False` to disable
 automatic parallel fan-out while keeping manual `task` fan-out available. The
-explicit `session.parallel_task(...)` helper is retained for legacy compatibility.
+legacy `parallel_task` helper is removed (`HARNESS-CONV4`).
 
 ## MCP
 

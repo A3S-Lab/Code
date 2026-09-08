@@ -48,6 +48,8 @@ pub(super) struct PySessionOptions {
     pub(super) guidelines: Option<String>,
     /// Custom response style (replaces default)
     pub(super) response_style: Option<String>,
+    /// Pin user-facing replies to a BCP-47 tag (for example ``zh-CN``).
+    pub(super) output_language: Option<String>,
     /// Freeform extra instructions
     pub(super) extra: Option<String>,
     /// Inline skills registered programmatically: (name, kind, content).
@@ -61,11 +63,9 @@ pub(super) struct PySessionOptions {
     pub(super) auto_delegation: Option<PyAutoDelegationConfig>,
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual ``task`` fan-out and legacy ``parallel_task`` calls remain
-    /// available when this is false.
+    /// Manual ``task`` fan-out remains available when this is false.
     pub(super) auto_parallel: Option<bool>,
-    /// Session-level switch for the model-visible ``task`` tool and hidden
-    /// ``parallel_task`` compatibility alias.
+    /// Session-level switch for the model-visible ``task`` tool.
     pub(super) manual_delegation_enabled: Option<bool>,
     /// Explicit planning mode: "auto", "enabled", or "disabled".
     ///
@@ -216,6 +216,7 @@ impl Clone for PySessionOptions {
             role: self.role.clone(),
             guidelines: self.guidelines.clone(),
             response_style: self.response_style.clone(),
+            output_language: self.output_language.clone(),
             extra: self.extra.clone(),
             inline_skills: self.inline_skills.clone(),
             max_tool_rounds: self.max_tool_rounds,
@@ -296,6 +297,7 @@ impl PySessionOptions {
             role: None,
             guidelines: None,
             response_style: None,
+            output_language: None,
             extra: None,
             inline_skills: vec![],
             max_tool_rounds: None,
@@ -680,6 +682,17 @@ impl PySessionOptions {
         self.response_style = value;
     }
 
+    /// Pin user-facing replies to a BCP-47 tag (for example ``zh-CN``).
+    #[getter]
+    fn get_output_language(&self) -> Option<String> {
+        self.output_language.clone()
+    }
+
+    #[setter]
+    fn set_output_language(&mut self, value: Option<String>) {
+        self.output_language = value;
+    }
+
     /// Freeform extra instructions appended at the end.
     #[getter]
     fn get_extra(&self) -> Option<String> {
@@ -726,8 +739,7 @@ impl PySessionOptions {
 
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual ``task`` fan-out and legacy ``parallel_task`` calls remain
-    /// available when this is false.
+    /// Manual ``task`` fan-out remains available when this is false.
     #[getter]
     fn get_auto_parallel(&self) -> Option<bool> {
         self.auto_parallel
@@ -738,8 +750,7 @@ impl PySessionOptions {
         self.auto_parallel = value;
     }
 
-    /// Session-level switch for the model-visible ``task`` tool and hidden
-    /// ``parallel_task`` compatibility alias.
+    /// Session-level switch for the model-visible ``task`` tool.
     #[getter]
     fn get_manual_delegation_enabled(&self) -> Option<bool> {
         self.manual_delegation_enabled

@@ -18,6 +18,10 @@ const INTENTIONAL_AGENT_OMISSIONS = new Map([
 ]);
 
 const INTENTIONAL_SESSION_OMISSIONS = new Map([
+  [
+    'set_agent_style',
+    'New Core hot-path style override; SDKs will expose typed AgentStyle in a follow-up binding pass.',
+  ],
   ['command_registry', 'Rust MutexGuard; SDKs expose list_commands/register_command instead.'],
   ['session_cancel_token', 'Tokio CancellationToken; SDKs expose cancel/close instead.'],
   [
@@ -154,7 +158,6 @@ const SDK_SESSION_EXTRAS = [
   'task',
   'delegate_task',
   'tasks',
-  'parallel_task',
   'program',
   'web_search',
   'git',
@@ -178,6 +181,7 @@ const SDK_SESSION_OPTION_EXTRAS = [
   'role',
   'guidelines',
   'response_style',
+  'output_language',
   'extra',
   'auto_parallel',
   'planning',
@@ -491,6 +495,10 @@ assert.equal(
 assert.match(node, /fn\s+sdk_capabilities\s*\(/, 'Node must expose the Core SDK capability inventory');
 assert.match(node, /fn\s+sdk_capabilities_schema\s*\(/, 'Node must expose the SDK capability schema');
 assert.match(nodeTypes, /interface SdkCapability\s*\{/, 'Node types must declare SdkCapability');
+assert.match(nodeTypes, /tier:\s*string/, 'Node SdkCapability must declare tier');
+assert.match(sdkCapabilitySource, /SDK_CAPABILITIES_SCHEMA_V2/, 'Core must define sdk-capabilities v2 schema');
+assert.match(sdkCapabilitySource, /pub enum CapabilityTier/, 'Core must define CapabilityTier');
+assert.ok(!/id:\s*\"planning_delegation\"[\s\S]{0,800}session\.parallel_task/.test(sdkCapabilitySource), 'planning_delegation must omit session.parallel_task');
 assert.match(nodeTypes, /sdkCapabilities\(\): Array<SdkCapability>/, 'Node types must declare sdkCapabilities');
 assert.match(python, /fn\s+py_sdk_capabilities\s*\(/, 'Python must expose the Core SDK capability inventory');
 assert.match(python, /fn\s+py_sdk_capabilities_schema\s*\(/, 'Python must expose the SDK capability schema');
@@ -562,6 +570,12 @@ assertContainsAll('Node Agent', nodeAgent, requiredAgent);
 assertContainsAll('Python Agent', pythonAgent, requiredAgent);
 assertContainsAll('Node Session', nodeSession, requiredSession);
 assertContainsAll('Python Session', pythonSession, requiredPythonSession);
+assert.ok(!nodeSession.includes('parallel_task'), 'Node Session must not expose parallel_task (HARNESS-CONV4)');
+assert.ok(!pythonSession.includes('parallel_task'), 'Python Session must not expose parallel_task (HARNESS-CONV4)');
+assert.ok(
+  !nodeTypeSession.includes('parallelTask'),
+  'Node generated.d.ts Session must not expose parallelTask (HARNESS-CONV4)',
+);
 assertContainsAll('Node SessionOptions', nodeSessionOptions, requiredSessionOptions);
 assertContainsAll('Python SessionOptions', pythonSessionOptions, requiredSessionOptions);
 assertContainsAll('Node generated.d.ts Agent', nodeTypeAgent, requiredAgent.map(toLowerCamel));
@@ -600,7 +614,6 @@ assertContainsAll('Go Session', goSession, [
   'Task',
   'DelegateTask',
   'Tasks',
-  'ParallelTask',
   'Program',
   'WebSearch',
   'Git',
@@ -640,8 +653,11 @@ assertContainsAll('Go Session', goSession, [
   'EnsureRecoveryCapabilityBinding',
   'DrainCapabilityCleanup',
   'ApplyCapabilityBatch',
+  'SetBudgetGuard',
+  'SetOutputLanguage',
   'SetSessionCheckpointExportSink',
 ]);
+assert.ok(!goSession.includes('ParallelTask'), 'Go Session must not expose ParallelTask (HARNESS-CONV4)');
 assertContainsAll('Go SessionOptions', goSessionOptions, [
   'Model',
   'AgentDirs',

@@ -593,6 +593,17 @@ impl EvaluationSupervisor {
                     self.release_dispatch_claim(&claim).await;
                 }
                 reservation.release();
+                // Gate-on-incomplete is an expected transient denial while the
+                // evidence window is still growing or still truncated. Treat it
+                // like capacity/lease suppression so the already-recorded fact
+                // remains retryable without failing the parent observation.
+                if matches!(error, AuxiliaryRunError::EvidenceIncomplete) {
+                    return Ok(EvaluationDispatch {
+                        outcome: EvaluationDispatchOutcome::Suppressed,
+                        fact,
+                        handle: None,
+                    });
+                }
                 return Err(error.into());
             }
         };

@@ -20,6 +20,7 @@ mod read;
 mod safe_http;
 mod search;
 mod semantic_search;
+mod update_plan;
 mod web_fetch;
 mod web_search;
 mod write;
@@ -73,8 +74,10 @@ pub fn register_builtins(
         registry.register_builtin(Arc::new(bash::BashTool));
     }
     let semantic_enabled = capabilities.read && workspace_services.workspace_retrieval().is_some();
+    // Prefer durable FTS at call time when this workspace can host one. Do not
+    // open native indexes during tool registration (Loading / session build).
     let persistent_backend_enabled =
-        capabilities.read && workspace_services.persistent_index().is_some();
+        capabilities.read && workspace_services.local_root().is_some();
     if capabilities.search || semantic_enabled || persistent_backend_enabled {
         let search = search::SearchTool::new(capabilities.read)
             .with_backend_search(capabilities.search)
@@ -90,6 +93,8 @@ pub fn register_builtins(
     }
     registry.register_builtin(Arc::new(web_fetch::WebFetchTool));
     registry.register_builtin(Arc::new(web_search::WebSearchTool::new()));
+    // Session checklist updates (no workspace capability gate).
+    registry.register_builtin(Arc::new(update_plan::UpdatePlanTool));
 }
 
 #[cfg(test)]
@@ -131,8 +136,9 @@ pub fn register_program_with_catalog(
     ));
 }
 
-/// Register the canonical `task` tool and hidden `parallel_task` compatibility alias.
+/// Register the canonical `task` tool (multi-item fan-out included).
 ///
+/// Model-visible `parallel_task` is not registered (`HARNESS-CONV4`).
 /// Must be called after the registry is wrapped in Arc. Requires an LLM client
 /// and the workspace path so child agent loops can be spawned inline.
 /// Optionally accepts an MCP manager so child sessions inherit MCP tools.
@@ -270,7 +276,7 @@ fn register_task_internal(
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
     task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
 ) {
-    use crate::tools::task::{ParallelTaskTool, TaskExecutor, TaskTool};
+    use crate::tools::task::{TaskExecutor, TaskTool};
     let mut executor =
         TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers)
             .with_projected_mcp_bindings(mcp_bindings);
@@ -287,7 +293,9 @@ fn register_task_internal(
     }
     let executor = Arc::new(executor);
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
-    registry.register_builtin(Arc::new(ParallelTaskTool::new(Arc::clone(&executor))));
+    // `parallel_task` is removed from the model-visible registry (`HARNESS-CONV4`).
+    // Fan-out uses the unified `task` tool; ParallelTaskTool remains available for
+    // focused unit tests that construct it directly.
 }
 
 /// Register the Skill tool for skill-based tool access control.
@@ -324,6 +332,13 @@ pub fn register_generate_object(
 #[cfg(test)]
 mod tests {
     use super::safe_http_source_url;
+    use super::register_builtins;
+    use crate::tools::registry::ToolRegistry;
+    use crate::workspace::{
+        ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend, WorkspaceChunkingStrategy,
+        WorkspaceServices,
+    };
+    use std::sync::Arc;
 
     #[test]
     fn safe_source_url_removes_credentials_query_and_fragment() {
@@ -335,5 +350,33 @@ mod tests {
             Some("https://example.com/report")
         );
         assert!(safe_http_source_url("file:///tmp/source").is_none());
+    }
+
+    #[tokio::test]
+    async fn register_builtins_does_not_open_durable_zvec() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = ManifestWorkspaceBackend::new(temp.path());
+        backend
+            .configure_chunk_catalog(
+                WorkspaceChunkingStrategy::Lines,
+                ChunkingConfig::default(),
+                ChunkCatalogLimits::default(),
+            )
+            .unwrap();
+        let services = WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+        let registry = ToolRegistry::new(temp.path().to_path_buf());
+        register_builtins(&registry, &services);
+        assert!(
+            backend.persistent_index().is_none(),
+            "tool registration must not attach durable FTS"
+        );
+        assert!(
+            !temp.path().join(".a3s-code").join("index").exists(),
+            "tool registration must not create the durable index directory"
+        );
+        assert!(
+            registry.get("search").is_some(),
+            "local workspaces still register search for demand-driven durable FTS"
+        );
     }
 }

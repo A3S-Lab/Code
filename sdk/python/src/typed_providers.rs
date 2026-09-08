@@ -169,6 +169,7 @@ impl PyLocalWorkspaceBackend {
 ///         force_path_style=True,
 ///     )
 ///     session = agent.session("s3://workspace/users/u1/sessions/s1", opts)
+#[cfg(feature = "s3")]
 #[pyclass(name = "S3WorkspaceBackend")]
 #[derive(Clone)]
 pub(super) struct PyS3WorkspaceBackend {
@@ -211,6 +212,7 @@ pub(super) struct PyS3WorkspaceBackend {
     pub(super) search_concurrency: Option<u64>,
 }
 
+#[cfg(feature = "s3")]
 #[pymethods]
 impl PyS3WorkspaceBackend {
     #[new]
@@ -270,6 +272,7 @@ impl PyS3WorkspaceBackend {
     }
 }
 
+#[cfg(feature = "s3")]
 impl PyS3WorkspaceBackend {
     pub(super) fn to_core(&self) -> a3s_code_core::S3BackendConfig {
         let mut cfg = a3s_code_core::S3BackendConfig::new(

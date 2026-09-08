@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Persisted-schema round-trip fuzz + cross-version compatibility (#31).
 //!
 //! Everything the framework writes through a [`SessionStore`] is JSON via
@@ -550,9 +551,6 @@ fn gen_durable_memory_binding(rng: &mut Rng) -> Option<a3s_code_core::DurableMem
     )
     .unwrap();
     let repository = Arc::new(InMemoryRepository::new());
-    if rng.boolean() {
-        return Some(DurableMemorySession::shadow(repository, namespace).binding());
-    }
     let lexical_scores = [0.0, 0.2, 0.5, 1.0];
     let policy = DurableMemoryRecallPolicy::try_new(
         1 + rng.below(8) as usize,
@@ -852,9 +850,10 @@ fn backward_compat_session_data_without_identity_or_memory_binding_loads() {
     sd.agent_template_id = Some("planner-v3".to_string());
     sd.correlation_id = Some("corr-1".to_string());
     sd.durable_memory_binding = Some(
-        DurableMemorySession::shadow(
+        DurableMemorySession::active_recall(
             Arc::new(InMemoryRepository::new()),
             MemoryNamespace::try_new("tenant", "principal", "scope").unwrap(),
+            DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
         )
         .binding(),
     );

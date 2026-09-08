@@ -393,6 +393,28 @@ async fn host_can_configure_the_manifest_catalog_exactly_once_before_services_at
 }
 
 #[tokio::test]
+async fn configuring_chunk_catalog_does_not_open_durable_zvec() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = ManifestWorkspaceBackend::new(temp.path());
+    backend
+        .configure_chunk_catalog(
+            WorkspaceChunkingStrategy::Lines,
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+        )
+        .unwrap();
+    let _ = backend.chunk_catalog();
+    assert!(
+        backend.persistent_index().is_none(),
+        "catalog enable must not attach durable FTS"
+    );
+    assert!(
+        !temp.path().join(".a3s-code").join("index").exists(),
+        "catalog enable must not create the durable index directory"
+    );
+}
+
+#[tokio::test]
 async fn manifest_backend_read_write_touch_recent_files() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();

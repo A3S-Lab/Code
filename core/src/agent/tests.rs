@@ -298,7 +298,7 @@ fn test_plan_step_delegation_detection() {
         &Task::new("s1", "Find relevant files").with_tool("task")
     ));
     assert!(AgentLoop::should_delegate_plan_step(
-        &Task::new("s2", "Check independent areas").with_tool("parallel_task")
+        &Task::new("s2", "Check independent areas").with_tool("task")
     ));
     assert!(!AgentLoop::should_delegate_plan_step(&Task::new(
         "s3",
@@ -394,7 +394,11 @@ fn test_preserve_plan_goal_context_keeps_original_request_visible() {
 
     assert!(preserved.goal.contains("/workspace/app"));
     assert!(preserved.goal.contains("do not change API"));
-    assert!(preserved.goal.contains("Planner goal"));
+    assert!(preserved.goal.contains("Fix planning mode"));
+    assert!(
+        !preserved.goal.contains("Planner goal"),
+        "plan goal chrome must not inject English UI labels"
+    );
 }
 
 #[test]
@@ -3002,8 +3006,12 @@ async fn llm_extraction_shadows_evidence_backed_v2_candidate_without_recall() {
     let repository = Arc::new(a3s_memory::repository::InMemoryRepository::new());
     let namespace =
         a3s_memory::repository::MemoryNamespace::try_new("tenant", "principal", "repo").unwrap();
-    let binding =
-        crate::durable_memory::DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    #[allow(deprecated)]
+    let binding = crate::durable_memory::DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        crate::durable_memory::DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
     let memory = crate::memory::AgentMemory::with_config_observers_and_durable(
         Arc::new(a3s_memory::InMemoryStore::new()),
         crate::memory::MemoryConfig::default(),
@@ -5112,7 +5120,7 @@ mod nested_tool_governance_tests {
     #[async_trait]
     impl Tool for ParallelSideEffectTool {
         fn name(&self) -> &str {
-            "parallel_task"
+            "parallel_side_effect"
         }
 
         fn description(&self) -> &str {
@@ -5571,6 +5579,7 @@ mod nested_tool_governance_tests {
         )));
     }
 
+    #[cfg(feature = "dynamic-workflow")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_parallel_step_obeys_permission_without_side_effects() {
         let dir = tempfile::tempdir().unwrap();
@@ -5588,7 +5597,7 @@ async function run(ctx, inputs) {
     return {
       type: "schedule_step",
       step_id: "fanout",
-      step_name: "parallel_task",
+      step_name: "task",
       input: { tasks: [{ prompt: "must not run" }] },
       retry: { max_attempts: 1, delay_ms: 0 },
     };
@@ -5614,7 +5623,7 @@ async function run(ctx, inputs) {
             ToolContext::new(dir.path().to_path_buf()),
             AgentConfig {
                 permission_checker: Some(Arc::new(TargetPermission {
-                    target: "parallel_task",
+                    target: "task",
                     decision: PermissionDecision::Deny,
                 })),
                 ..Default::default()
@@ -5629,6 +5638,7 @@ async function run(ctx, inputs) {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(feature = "dynamic-workflow")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_internal_program_avoids_duplicate_permission_but_keeps_governance() {
         let dir = tempfile::tempdir().unwrap();
@@ -5709,6 +5719,7 @@ async function run(_ctx, inputs) {
         )));
     }
 
+    #[cfg(feature = "dynamic-workflow")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_internal_program_still_obeys_budget() {
         let dir = tempfile::tempdir().unwrap();
@@ -5759,6 +5770,7 @@ async function run(_ctx, _inputs) {
         assert!(!result.output.contains("must-not-complete"));
     }
 
+    #[cfg(feature = "dynamic-workflow")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_script_step_obeys_budget_without_side_effects() {
         let dir = tempfile::tempdir().unwrap();
@@ -5821,6 +5833,7 @@ async function run(ctx, inputs) {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(feature = "dynamic-workflow")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dynamic_workflow_nested_cancellation_prevents_side_effects() {
         let dir = tempfile::tempdir().unwrap();

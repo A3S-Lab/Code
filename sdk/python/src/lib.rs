@@ -141,7 +141,9 @@ fn inline_skill_to_rust(name: String, content: String, kind: &str) -> PyResult<A
     }))
 }
 
+#[cfg(feature = "serve")]
 use a3s_code_core::config::AgentDir as RustAgentDir;
+#[cfg(feature = "serve")]
 use a3s_code_core::serve::{
     spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
     ServeDaemonHandle as RustServeDaemonHandle,
@@ -271,7 +273,9 @@ mod event_stream;
 #[cfg(test)]
 use event_stream::recv_stream_event;
 use event_stream::{agent_event_types_v1, event_envelope_v1_version, PyAgentEvent, PyEventStream};
+#[cfg(feature = "advanced-harness")]
 mod state_graph;
+#[cfg(feature = "advanced-harness")]
 use state_graph::PyStateGraphRuntime;
 
 #[cfg(test)]
@@ -419,10 +423,14 @@ mod search_config;
 use async_bridge::*;
 use search_config::*;
 
+#[cfg(feature = "headless-search")]
 mod moli_runtime;
+#[cfg(feature = "headless-search")]
 use moli_runtime::{py_ensure_moli, py_moli_default_version, py_moli_runtime_info};
 
+#[cfg(feature = "serve")]
 mod serve_handle;
+#[cfg(feature = "serve")]
 use serve_handle::PyServeHandle;
 
 mod agent;
@@ -996,6 +1004,9 @@ struct PySdkCapability {
     operations: Vec<String>,
     #[pyo3(get)]
     host_owned: bool,
+    /// ``baseline`` for the coding-agent harness; ``advanced`` for optional surfaces.
+    #[pyo3(get)]
+    tier: String,
 }
 
 impl From<RustSdkCapability> for PySdkCapability {
@@ -1006,6 +1017,10 @@ impl From<RustSdkCapability> for PySdkCapability {
             description: value.description,
             operations: value.operations,
             host_owned: value.host_owned,
+            tier: match value.tier {
+                a3s_code_core::CapabilityTier::Baseline => "baseline".to_owned(),
+                a3s_code_core::CapabilityTier::Advanced => "advanced".to_owned(),
+            },
         }
     }
 }

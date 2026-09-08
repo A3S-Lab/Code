@@ -89,24 +89,6 @@ impl Session {
         Ok(tool_result_from_core(result))
     }
 
-    /// Compatibility helper for the legacy hidden `parallel_task` host tool.
-    /// Prefer `tasks()` for new code.
-    #[napi(
-        js_name = "parallelTask",
-        ts_args_type = "tasks: DelegateTaskOptions[]"
-    )]
-    pub async fn parallel_task(&self, tasks: Vec<DelegateTaskOptions>) -> napi::Result<ToolResult> {
-        let args = delegated_tasks_options_to_args(tasks);
-
-        let session = self.inner.clone();
-        let result = get_runtime()
-            .spawn(async move { session.tool("parallel_task", args).await })?
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
-            .map_err(node_code_error)?;
-        Ok(tool_result_from_core(result))
-    }
-
     /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
     #[napi(ts_args_type = "options: ProgramScriptOptions")]
     pub async fn program(&self, options: serde_json::Value) -> napi::Result<ToolResult> {

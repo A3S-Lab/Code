@@ -243,6 +243,7 @@ fn build_rust_session_options_inner(
         // box it to avoid a `clippy::large_enum_variant` warning.
         enum BackendKind {
             Local(String),
+            #[cfg(feature = "s3")]
             S3(Box<a3s_code_core::S3BackendConfig>),
             Unknown,
         }
@@ -250,6 +251,7 @@ fn build_rust_session_options_inner(
             if let Ok(local) = backend.extract::<pyo3::PyRef<PyLocalWorkspaceBackend>>(py) {
                 return BackendKind::Local(local.root.clone());
             }
+            #[cfg(feature = "s3")]
             if let Ok(s3) = backend.extract::<pyo3::PyRef<PyS3WorkspaceBackend>>(py) {
                 return BackendKind::S3(Box::new(s3.to_core()));
             }
@@ -257,6 +259,7 @@ fn build_rust_session_options_inner(
         });
         let services = match resolved {
             BackendKind::Local(root) => a3s_code_core::WorkspaceServices::local(root),
+            #[cfg(feature = "s3")]
             BackendKind::S3(cfg) => a3s_code_core::WorkspaceServices::s3(*cfg),
             BackendKind::Unknown => {
                 return Err(PyTypeError::new_err(
@@ -291,6 +294,7 @@ fn build_rust_session_options_inner(
     if so.role.is_some()
         || so.guidelines.is_some()
         || so.response_style.is_some()
+        || so.output_language.is_some()
         || so.extra.is_some()
     {
         let slots = a3s_code_core::SystemPromptSlots {
@@ -298,6 +302,7 @@ fn build_rust_session_options_inner(
             role: so.role,
             guidelines: so.guidelines,
             response_style: so.response_style,
+            output_language: so.output_language,
             extra: so.extra,
         };
         o = o.with_prompt_slots(slots);

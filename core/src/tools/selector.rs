@@ -323,7 +323,6 @@ mod tests {
                 "batch",
                 "program",
                 "task",
-                "parallel_task",
                 "Skill",
                 "search_skills",
                 "mcp__github__create_issue",

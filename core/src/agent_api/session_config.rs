@@ -927,9 +927,10 @@ mod tests {
     #[test]
     fn durable_memory_binding_requires_exact_session_identity() {
         let namespace = MemoryNamespace::try_new("tenant-a", "principal-a", "scope-a").unwrap();
-        let binding = crate::durable_memory::DurableMemorySession::shadow(
+        let binding = crate::durable_memory::DurableMemorySession::active_recall(
             Arc::new(InMemoryRepository::new()),
             namespace,
+            crate::durable_memory::DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
         );
 
         let matching = SessionOptions::new()

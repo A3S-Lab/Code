@@ -65,12 +65,10 @@ pub struct AutoDelegationConfig {
     pub enabled: bool,
     /// Allow automatic delegation to launch multiple child agents in parallel.
     ///
-    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
-    /// when this is false.
+    /// Manual `task` fan-out remains available when this is false.
     #[serde(alias = "auto_parallel")]
     pub auto_parallel: bool,
-    /// Allow the model-visible `task` tool and hidden `parallel_task`
-    /// compatibility alias.
+    /// Allow the model-visible `task` tool (including multi-item fan-out).
     ///
     /// Set this to false for cost control or debugging when child-agent tools
     /// should be absent from the session tool surface. This is not a security

@@ -93,10 +93,14 @@ Construct an `AuxiliaryRunSpecV1` with:
 `InMemoryAuxiliaryRunService` validates the evidence digest and target before
 admission, derives a child cancellation token, catches executor panics,
 settles timeout/cancellation as terminal states, validates bounded output, and
-returns the same handle for an exact duplicate id. The executor is host-owned:
-the profile is an admission/ceiling contract, while a host that exposes real
-workspace or tool operations must enforce those flags through its own scoped
-capability dispatcher. Core never grants ambient tools to an auxiliary run.
+returns the same handle for an exact duplicate id. **Gate mode additionally
+rejects incomplete or retention-gapped evidence at admission** so a gate cannot
+claim an evidence-backed decision over a known-partial snapshot; Advisory and
+Detached modes may still inspect incomplete evidence when the host chooses.
+The executor is host-owned: the profile is an admission/ceiling contract, while
+a host that exposes real workspace or tool operations must enforce those flags
+through its own scoped capability dispatcher. Core never grants ambient tools
+to an auxiliary run.
 
 `StructuredAuxiliaryExecutor` is a convenience adapter over Code's existing
 schema-validated LLM engine. Its request factory remains host-owned, so Core
@@ -116,8 +120,14 @@ does not prescribe a reviewer prompt, rubric, or decision token.
 
 Replayed facts do not dispatch a second evaluator after a successful admission.
 Failed evidence or auxiliary admission releases the reservation so a host may
-retry the same fact. Cancellation propagates through the supervisor token and
-never turns an auxiliary result into an implicit parent-run decision.
+retry the same fact. **Gate-mode incomplete or retention-gapped evidence is
+suppressed (not an observation error)**: the fact stays recorded, the pending
+slot and any dispatch claim are released, and a later observation may admit
+once the evidence window is complete. Capacity, cooldown, and busy-lease
+denials already use the same `Suppressed` outcome. Hard auxiliary failures
+(conflict, digest mismatch, executor setup) still surface as
+`SupervisorError::Auxiliary`. Cancellation propagates through the supervisor
+token and never turns an auxiliary result into an implicit parent-run decision.
 
 For restart-safe operation, construct the supervisor with a
 `FileEvaluationDispatchLedger` (or a host implementation of the same trait).
@@ -246,11 +256,12 @@ are easy to miss in a reviewer host: auxiliary waiters register their
 notification before checking output, terminal snapshots are consistent with
 their output or error, dispatch leases fence zero-time and stale-worker
 completions, evidence binds event metadata and fact/event payloads to the same
-cursor, artifact selection is canonical before limits are applied, and the
-fact journal retains frame identity after FIFO trimming. These checks are
-provider-free and belong in every implementation's pre-release gate; live
-provider, network, Cloud, and host-artifact authenticity checks remain separate
-host-owned gates.
+cursor, artifact selection is canonical before limits are applied, the fact
+journal retains frame identity after FIFO trimming, Gate mode rejects incomplete
+evidence at spawn, and the supervisor suppresses (rather than errors) Gate-on-
+incomplete so the same fact stays retryable. These checks are provider-free and
+belong in every implementation's pre-release gate; live provider, network,
+Cloud, and host-artifact authenticity checks remain separate host-owned gates.
 
 Release qualification additionally requires the normal workspace feature
 matrix, the automated `RUSTDOCFLAGS=-D warnings` rustdoc gate, protocol/SDK

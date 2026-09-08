@@ -94,12 +94,16 @@ struct PreAnalysisPlan {
 
 impl LlmPlanner {
     /// Generate an execution plan from a prompt using LLM
-    pub async fn create_plan(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<ExecutionPlan> {
-        let system = crate::prompts::LLM_PLAN_SYSTEM;
+    pub async fn create_plan(
+        llm: &Arc<dyn LlmClient>,
+        prompt: &str,
+        language: Option<&str>,
+    ) -> Result<ExecutionPlan> {
+        let system = planning_system_prompt(crate::prompts::LLM_PLAN_SYSTEM, language);
 
         let messages = vec![Message::user(prompt)];
         let response = llm
-            .complete(&messages, Some(system), &[])
+            .complete(&messages, Some(system.as_str()), &[])
             .await
             .context("LLM call failed during plan creation")?;
 
@@ -108,12 +112,16 @@ impl LlmPlanner {
     }
 
     /// Extract a goal with success criteria from a prompt using LLM
-    pub async fn extract_goal(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<AgentGoal> {
-        let system = crate::prompts::LLM_GOAL_EXTRACT_SYSTEM;
+    pub async fn extract_goal(
+        llm: &Arc<dyn LlmClient>,
+        prompt: &str,
+        language: Option<&str>,
+    ) -> Result<AgentGoal> {
+        let system = planning_system_prompt(crate::prompts::LLM_GOAL_EXTRACT_SYSTEM, language);
 
         let messages = vec![Message::user(prompt)];
         let response = llm
-            .complete(&messages, Some(system), &[])
+            .complete(&messages, Some(system.as_str()), &[])
             .await
             .context("LLM call failed during goal extraction")?;
 
@@ -168,12 +176,12 @@ impl LlmPlanner {
         plan
     }
 
-    /// Create a fallback goal using heuristic logic (no LLM required)
+    /// Create a fallback goal using heuristic logic (no LLM required).
+    ///
+    /// Do not invent English success criteria — they surface in product UI and
+    /// fight the host language pin. The request text is the only honest goal.
     pub fn fallback_goal(prompt: &str) -> AgentGoal {
-        AgentGoal::new(prompt).with_criteria(vec![
-            "Task is completed successfully".to_string(),
-            "All requirements are met".to_string(),
-        ])
+        AgentGoal::new(prompt)
     }
 
     /// Create a fail-closed fallback achievement result (no LLM required).
@@ -196,13 +204,18 @@ impl LlmPlanner {
 
     /// Perform pre-analysis in a single LLM call: intent classification, goal extraction,
     /// execution plan, and input optimization. Falls back to heuristics on failure.
-    pub async fn pre_analyze(llm: &Arc<dyn LlmClient>, prompt: &str) -> Result<PreAnalysis> {
+    pub async fn pre_analyze(
+        llm: &Arc<dyn LlmClient>,
+        prompt: &str,
+        language: Option<&str>,
+    ) -> Result<PreAnalysis> {
+        let system = planning_system_prompt(crate::prompts::PRE_ANALYSIS_SYSTEM, language);
         let req = StructuredRequest {
             prompt: format!(
                 "Analyze this user request and return a compact pre-analysis object. \
                  Use at most 5 execution steps.\n\nUser request:\n{prompt}"
             ),
-            system: Some(crate::prompts::PRE_ANALYSIS_SYSTEM.to_string()),
+            system: Some(system),
             schema: Self::pre_analysis_schema(),
             schema_name: "pre_analysis".to_string(),
             schema_description: Some(
@@ -435,6 +448,17 @@ impl LlmPlanner {
     }
 }
 
+fn planning_system_prompt(base: &str, language: Option<&str>) -> String {
+    match language.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(language) => format!(
+            "{}\n\n{}",
+            base.trim_end(),
+            crate::prompts::output_language_contract(language)
+        ),
+        None => base.to_owned(),
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -442,6 +466,18 @@ impl LlmPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planning_system_prompt_appends_shared_language_contract() {
+        let prompt = planning_system_prompt("Base planner.", Some("zh-CN"));
+        assert!(prompt.starts_with("Base planner."));
+        assert!(prompt.contains("## Output Language"));
+        assert!(prompt.contains("zh-CN"));
+        assert_eq!(
+            planning_system_prompt("Base planner.", None),
+            "Base planner."
+        );
+    }
 
     #[test]
     fn test_parse_plan_response() {
@@ -583,8 +619,10 @@ mod tests {
     fn test_fallback_goal() {
         let goal = LlmPlanner::fallback_goal("Fix the login bug");
         assert_eq!(goal.description, "Fix the login bug");
-        assert_eq!(goal.success_criteria.len(), 2);
-        assert_eq!(goal.success_criteria[0], "Task is completed successfully");
+        assert!(
+            goal.success_criteria.is_empty(),
+            "fallback goals must not invent English success criteria"
+        );
     }
 
     #[test]
@@ -729,7 +767,7 @@ mod tests {
             "Sorry — here's the plan, but not as JSON.".to_string(),
             good.to_string(),
         ]));
-        let pa = LlmPlanner::pre_analyze(&client, "do x").await.unwrap();
+        let pa = LlmPlanner::pre_analyze(&client, "do x", None).await.unwrap();
         assert_eq!(pa.optimized_input, "Do x carefully");
     }
 
@@ -742,7 +780,7 @@ mod tests {
             r#"{"intent":"plan","requires_planning":true,"goal":{"description":"g","success_criteria":[]},"execution_plan":{"complexity":"Medium","steps":[],"required_tools":[]},"optimized_input":"opt"}"#
         );
         let client: Arc<dyn LlmClient> = Arc::new(ReplayClient::new(vec![good]));
-        let pa = LlmPlanner::pre_analyze(&client, "do x").await.unwrap();
+        let pa = LlmPlanner::pre_analyze(&client, "do x", None).await.unwrap();
         assert_eq!(pa.optimized_input, "opt");
     }
 }

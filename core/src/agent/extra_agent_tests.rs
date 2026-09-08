@@ -1693,10 +1693,10 @@ async fn test_extract_goal_fallback_on_non_json() {
         .extract_goal("Do something", &tokio_util::sync::CancellationToken::new())
         .await
         .unwrap();
-    // Fallback uses the original prompt as description
+    // Fallback uses the original prompt as description and does not invent
+    // English success criteria (they fight the host language pin).
     assert_eq!(goal.description, "Do something");
-    // Fallback adds 2 generic criteria
-    assert_eq!(goal.success_criteria.len(), 2);
+    assert!(goal.success_criteria.is_empty());
 }
 
 #[tokio::test]

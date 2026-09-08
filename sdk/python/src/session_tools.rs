@@ -144,23 +144,6 @@ impl PySession {
         Ok(PyToolResult::from(result))
     }
 
-    /// Compatibility helper for the legacy hidden ``parallel_task`` host tool.
-    /// Prefer ``tasks()`` for new code.
-    fn parallel_task(&self, py: Python<'_>, tasks: &Bound<'_, PyAny>) -> PyResult<PyToolResult> {
-        let json_mod = py.import("json")?;
-        let json_str: String = json_mod.call_method1("dumps", (tasks,))?.extract()?;
-        let task_values: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| PyValueError::new_err(format!("Invalid task list: {e}")))?;
-        let args = delegated_tasks_args(task_values)?;
-
-        let session = self.inner.clone();
-        let result = py
-            .allow_threads(move || get_runtime().block_on(session.tool("parallel_task", args)))
-            .map_err(py_code_error)?;
-
-        Ok(PyToolResult::from(result))
-    }
-
     /// Run a bounded JavaScript script through the embedded QuickJS `program` tool.
     fn program(
         &self,

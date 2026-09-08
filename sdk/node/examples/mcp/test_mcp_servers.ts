@@ -4,7 +4,7 @@
  *
  * Tests all recently added/fixed features against the real kimi endpoint:
  *   1. task tool (delegate to the general agent, wait for result)
- *   2. parallel_task (fan-out to multiple delegated child runs concurrently)
+ *   2. task multi-item fan-out (concurrent delegated child runs)
  *   3. toolNames() initial state on a fresh session
  *   4. mcps error field populated on failed connect
  *   5. MCP injection: add -> status -> LLM use -> toolNames -> remove
@@ -70,13 +70,13 @@ class McpServersTest {
     McpServersTest.pass("task tool delegated and returned TASK_OK");
   }
 
-  // -- Test 2: parallel_task --------------------------------------------------------
+  // -- Test 2: task multi-item fan-out ---------------------------------------------
 
-  async testParallelTask(tmpdir: string): Promise<void> {
-    console.log("\n-- Test 2: parallel_task (concurrent fan-out) --");
+  async testTaskFanOut(tmpdir: string): Promise<void> {
+    console.log("\n-- Test 2: task multi-item fan-out --");
     const session: Session = this.agent.session(tmpdir, { permissionPolicy: { defaultDecision: 'allow' } });
     const result: AgentResult = await session.send(
-      "Use the parallel_task tool to run these three tasks concurrently " +
+      "Use the task tool with multiple tasks[] items to run these three jobs concurrently " +
       "using the 'general' agent, then list their outputs:\n" +
       "1. Reply with exactly: PARALLEL_A\n" +
       "2. Reply with exactly: PARALLEL_B\n" +
@@ -87,7 +87,7 @@ class McpServersTest {
         throw new Error(`expected ${token} in result, got: ${result.text}`);
       }
     }
-    McpServersTest.pass("parallel_task ran 3 delegated child runs concurrently, all results returned");
+    McpServersTest.pass("task fan-out ran 3 delegated child runs concurrently, all results returned");
   }
 
   // -- Test 3: toolNames initial state ----------------------------------------------
@@ -238,7 +238,7 @@ class McpServersTest {
     try {
       const tests: Array<() => Promise<void>> = [
         () => this.testTaskTool(tmpdir),
-        () => this.testParallelTask(tmpdir),
+        () => this.testTaskFanOut(tmpdir),
         () => this.testToolNames(tmpdir),
         () => this.testMcpStatusError(tmpdir),
         () => this.testMcpInjection(tmpdir),

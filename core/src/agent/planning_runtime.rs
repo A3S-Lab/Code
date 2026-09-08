@@ -17,10 +17,17 @@ impl AgentLoop {
             return plan;
         }
 
-        plan.goal = format!(
-            "Original user request and planning context:\n{context}\n\nPlanner goal:\n{goal}"
-        );
+        // Keep both texts without English chrome labels — product UI shows this
+        // string under the host locale, and English headers cause mixed language.
+        plan.goal = format!("{context}\n\n{goal}");
         plan
+    }
+
+    fn product_output_language(&self, user_text: &str) -> Option<String> {
+        crate::prompts::resolve_product_output_language(
+            self.config.prompt_slots.output_language.as_deref(),
+            user_text,
+        )
     }
 
     pub(super) async fn emit_task_updated(
@@ -50,7 +57,8 @@ impl AgentLoop {
             self.begin_capability_operation(0, cancel_token, "plan creation orchestration")?;
         let llm_client =
             self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
-        let result = LlmPlanner::create_plan(&llm_client, prompt).await;
+        let language = self.product_output_language(prompt);
+        let result = LlmPlanner::create_plan(&llm_client, prompt, language.as_deref()).await;
         operation.close().await?;
         match result {
             Ok(plan) => Ok(plan),
@@ -254,7 +262,8 @@ impl AgentLoop {
             self.begin_capability_operation(0, cancel_token, "goal extraction orchestration")?;
         let llm_client =
             self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
-        let result = LlmPlanner::extract_goal(&llm_client, prompt).await;
+        let language = self.product_output_language(prompt);
+        let result = LlmPlanner::extract_goal(&llm_client, prompt, language.as_deref()).await;
         operation.close().await?;
         match result {
             Ok(goal) => Ok(goal),

@@ -145,6 +145,7 @@ var RequiredOperations = []string{
 	"session_unregister_hook",
 	"session_hook_count",
 	"session_set_budget_guard",
+	"session_set_output_language",
 	"session_set_session_checkpoint_export_sink",
 	"session_register_command",
 	"session_list_commands",

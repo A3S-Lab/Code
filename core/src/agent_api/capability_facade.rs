@@ -103,7 +103,7 @@ impl AgentSession {
     /// Register a disposable worker agent with the live session.
     ///
     /// The returned definition enters the `task` lookup and the model-facing
-    /// `task` and `parallel_task` definitions on the next admitted Run. Callers
+    /// `task` definitions on the next admitted Run. Callers
     /// can create discoverable reproducible workers without writing temporary
     /// agent files or restarting the Session, while an active Run remains
     /// generation-stable.
@@ -219,6 +219,7 @@ impl AgentSession {
     /// PTC workflow script and executes it through
     /// [`crate::DynamicWorkflowRuntime`], so A3S Flow owns workflow replay while
     /// the script can still call A3S Code tools.
+    #[cfg(feature = "dynamic-workflow")]
     pub fn register_dynamic_workflow_runtime(&self) -> crate::error::Result<()> {
         self.close_handle.mutate_immediate(|| {
             self.ensure_compatibility_name_available(
@@ -227,6 +228,17 @@ impl AgentSession {
             )?;
             crate::tools::register_dynamic_workflow(self.tool_executor.registry());
             Ok(())
+        })?
+    }
+
+    /// Coding-only builds omit the dynamic workflow module; keep the method so
+    /// hosts fail closed instead of losing the API surface at compile time.
+    #[cfg(not(feature = "dynamic-workflow"))]
+    pub fn register_dynamic_workflow_runtime(&self) -> crate::error::Result<()> {
+        self.close_handle.mutate_immediate(|| {
+            Err(crate::error::CodeError::Config(
+                "dynamic_workflow requires the advanced-harness / dynamic-workflow feature".into(),
+            ))
         })?
     }
 

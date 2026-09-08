@@ -58,6 +58,66 @@ async fn retrieval_services_lazily_attach_lexical_catalog() {
 }
 
 #[tokio::test]
+async fn catalog_attach_does_not_open_durable_zvec() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
+    let services =
+        crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+    assert!(services.chunk_catalog().is_some());
+    assert!(
+        backend.persistent_index().is_none(),
+        "catalog attach must leave durable FTS unattached"
+    );
+    assert!(
+        !temp.path().join(".a3s-code").join("index").exists(),
+        "catalog attach must not create the durable index directory"
+    );
+}
+
+#[tokio::test]
+async fn host_configured_catalog_still_defers_durable_zvec() {
+    use crate::workspace::{
+        ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceServices,
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
+    backend
+        .configure_chunk_catalog(
+            WorkspaceChunkingStrategy::Lines,
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+        )
+        .unwrap();
+    let services = WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+    assert!(services.chunk_catalog().is_some());
+    assert!(backend.persistent_index().is_none());
+    assert!(!temp.path().join(".a3s-code").join("index").exists());
+}
+
+#[tokio::test]
+#[cfg(feature = "zvec-rust-fts")]
+async fn durable_zvec_opens_only_on_persistent_index_demand() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
+    let services =
+        crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+    assert!(services.chunk_catalog().is_some());
+    assert!(
+        !temp.path().join(".a3s-code").join("index").exists(),
+        "catalog path must not create durable index"
+    );
+    assert!(
+        services.persistent_index().is_some(),
+        "demand path must attach best-effort durable FTS"
+    );
+    assert!(
+        temp.path().join(".a3s-code").join("index").exists(),
+        "first persistent_index demand creates the durable index root"
+    );
+}
+
+#[tokio::test]
 async fn lifecycle_fixture_drives_incremental_and_lag_reconciliation() {
     let fixture: LifecycleFixture = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

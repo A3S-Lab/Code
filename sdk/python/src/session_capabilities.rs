@@ -201,9 +201,19 @@ impl PySession {
     /// through the ordinary ``tool("dynamic_workflow", ...)`` direct-call path or
     /// selected by the model on subsequent runs.
     fn register_dynamic_workflow_runtime(&self) -> PyResult<()> {
-        self.inner
-            .register_dynamic_workflow_runtime()
-            .map_err(py_code_error)
+        #[cfg(feature = "advanced-harness")]
+        {
+            return self
+                .inner
+                .register_dynamic_workflow_runtime()
+                .map_err(py_code_error);
+        }
+        #[cfg(not(feature = "advanced-harness"))]
+        {
+            Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "dynamic_workflow requires the advanced-harness feature",
+            ))
+        }
     }
 
     /// Remove a previously registered dynamic tool from this live session.

@@ -25,6 +25,7 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
+  <a href="#whats-new-in-84">v8.4</a> ·
   <a href="#whats-new-in-83">v8.3</a> ·
   <a href="#whats-new-in-80">v8.0</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
@@ -33,6 +34,22 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   <a href="#architecture">Architecture</a> ·
   <a href="#documentation">Documentation</a>
 </p>
+
+## What's new in 8.4
+
+- **Thin library defaults.** `a3s-code-core` defaults to `local-code`; SDK
+  crates default to bundled zvec FTS. Enable `advanced-harness`, `server`,
+  and/or `headless-search` explicitly for product embeds.
+- **Unified `task` fan-out.** Model-visible `parallel_task` and matching SDK
+  helpers are removed; multi-item delegation uses `task` / `session.tasks`.
+- **Active-only durable memory.** Serving is `active_recall` only; Candidate
+  shadow mode is gone.
+- **`update_plan` + reply language.** Built-in checklist tool and host
+  `set_output_language` / `outputLanguage` on Rust and all SDKs.
+- **SDK capabilities v2** with `tier: baseline | advanced`. Gate-mode
+  evaluation fail-closes on incomplete evidence.
+
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.4.0`).
 
 ## What's new in 8.3
 
@@ -49,8 +66,6 @@ explicit contracts. Use it from Rust, Node.js, Python, Go, or through the
   batches on Node.js / Python / Go.
 - **Linux arm64 Python wheels** ship as `manylinux_2_39_aarch64` (glibc 2.39+)
   to match the bundled zvec runtime.
-
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.3.0`).
 
 ## What's new in 8.0
 
@@ -203,22 +218,32 @@ background service share the same execution semantics without sharing a UI.
 
 ## Capability map
 
-The Core crate enables lazy Moli-backed search by default through
-`a3s-search` v3.1.0. Moli is resolved from a packaged sidecar, the verified
-per-user cache, or a pinned HTTPS download and is shared by all local Code
-processes. Minimal embeddings can use `default-features = false`; Chrome and
-Lightpanda remain explicit backends, while cloud backends, serving, and
-telemetry remain opt-in.
+**Recommended embed:** depend on `a3s-code-core` with
+`default-features = false` and `features = ["local-code"]` (bundled zvec FTS).
+That profile is the coding-agent harness: agent loop, workspace tools, policy,
+events, and lexical retrieval — without Advanced evaluation/research/workflows,
+S3/serve, or browser search.
+
+The Core crate's library `default` is the thin coding harness (`local-code`:
+bundled zvec FTS). Enable `advanced-harness`, `headless-search`, `server`,
+`scientific`, or `full` explicitly for Advanced evaluation/research/workflows,
+browser search, or S3/serve. Moli-backed search (when `headless-search` is on)
+resolves from a packaged sidecar, the verified per-user cache, or a pinned
+HTTPS download and is shared by all local Code processes. Chrome and Lightpanda
+remain explicit backends.
+
+Harness convergence wrap-up (packaging, dual-path removal, external proof
+gates): [`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md).
 
 | Area                    | What is available                                                                                                                                                                                                                       | Activation                                                                                                                                                                |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent runtime           | Async `Agent`, workspace-bound `AgentSession`, send, stream, resume, replace, cancel, close, replay, and safe-point `steer`/`interrupt` run control                                                                                                                                          | Baseline                                                                                                                                                                  |
 | Governed tools          | Files, search, shell, Git, web, structured generation, batch, program, Skills, MCP, delegation, deterministic result projection, and evidence                                                                                           | Exposed only when workspace and policy allow                                                                                                                              |
-| Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
-| Native research contracts | Versioned digest-bound research runs, evidence facts, claims, citations, evidence graphs with publication completeness, workflow plans with result-receipt binding, finding-triggered re-run lineage, reproducibility manifests, provenance receipts, review findings, project events, and a versioned research wire envelope with generated Node/Python/Go projections, with bounded fields and fail-closed lifecycle transitions | Hosts bind exact source/evidence snapshots and `RunCapabilityBindingV1`; A3S Use supplies package/environment identity and Desktop/Cloud own scientific policy, review decisions, retention, and publication |
+| Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Cargo feature `advanced-harness` (opt-in); inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
+| Native research contracts | Versioned digest-bound research runs, evidence facts, claims, citations, evidence graphs with publication completeness, workflow plans with result-receipt binding, finding-triggered re-run lineage, reproducibility manifests, provenance receipts, review findings, project events, and a versioned research wire envelope with generated Node/Python/Go projections, with bounded fields and fail-closed lifecycle transitions | Cargo feature `advanced-harness` (opt-in); hosts bind exact source/evidence snapshots and `RunCapabilityBindingV1`; A3S Use supplies package/environment identity and Desktop/Cloud own scientific policy, review decisions, retention, and publication |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
 | Workspace retrieval     | Asynchronous session-owned chunk catalog, official zvec-rust FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; native zvec builds require an attested platform library |
-| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 candidate shadowing, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
+| Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 Candidate extraction before Active activation, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
 | Model adapters          | Anthropic, Zhipu, OpenAI-compatible APIs, and custom `LlmClient` implementations; every run-bound call passes one explicit middleware pipeline (trust → budget → evidence → generation → provider → usage)                                                                                                                                                        | Configuration or host injection; external tool results require redaction review before prompt use                                                                              |
@@ -227,15 +252,15 @@ telemetry remain opt-in.
 | Planning and delegation | Optional plans and goals, foreground/background workers, bounded parallel tasks, progress, and targeted cancellation                                                                                                                    | Manual tools independently configurable; automation opt-in                                                                                                                |
 | Priority scheduling     | Agent-wide `a3s-lane` priority/FIFO admission across sessions, direct tools, detached background children, and host workflows, with cancellation, starvation-safe aging, digest-only owner/provider quotas, quota-only leaf reservations, occupancy snapshots, and bounded cumulative health counters | Baseline; tune `task_scheduler`, select per-session `TaskPriority`, inspect `task_scheduler_stats()` or `task_scheduler_health()`; hosts can use `TaskSchedulerQuota` for a scoped limit, `model_generation_pool_health()` for a session's provider pool, and `model_middleware_health()` / SDK equivalents for secret-free middleware stage counters |
 | Safe-point run control  | Typed, idempotent `steer` and cooperative `interrupt` requests with immutable Run identity, optimistic turn guards, bounded receipts, lifecycle Hooks, and durable event evidence                                                                 | Host invokes the Session control surface; requests never create a concurrent transcript operation and never change model, permissions, sandbox, or budget                    |
-| Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime explicitly registered                                                                                                                 |
+| Programmable workflows  | Bounded QuickJS `program` calls, replayable A3S Flow-backed dynamic workflows, resumable step checkpoints, and digest-bound result receipts                                                                                              | `program` baseline; dynamic runtime requires `advanced-harness` and explicit registration                                                                                 |
 | Persistence             | Atomic snapshots with file-store Intent/Committed WAL recovery, aggregate CAS (`save_snapshot_cas`), writer lease fencing (`acquire_writer_lease`), commit watch (`watch_commits`), optional AES-GCM at-rest encryption (`with_encryption_key`), reference-aware artifact retention round-tripped through SessionStore (`reference_aware_artifact_gc`), run events, traces, artifacts, verification, identity-bound workflow/Flow receipts, checkpoints, and optional RL trajectories | Configured store and host policy; negotiate `SessionStoreCapabilities` before relying on append-only WAL, aggregate CAS, lease fencing, watch, encryption at rest, reference-aware GC, or other KRN-6 guarantees; pin artifact URIs before GC |
-| State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Explicit application use                                                                                                                                                  |
+| State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Cargo feature `advanced-harness` (opt-in); explicit application use                                                                                              |
 | Agent release contract  | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks                                                                                                                                    | Baseline admission API                                                                                                                                                    |
 | Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, atomically observed bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                   | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
-| Headless web search     | `a3s-search` v3.1.0 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable                                                                 | Default Cargo feature `headless-search`; disable with `default-features = false`                                                                                          |
+| Headless web search     | `a3s-search` v3.1.0 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable                                                                 | Cargo feature `headless-search` (also via `scientific` / `full`)                                                                                          |
 | SDK capability contract | Ordered product capability inventory, schema discovery, Moli diagnostics/provisioning, and state-graph APIs are exposed by Rust, Node.js, Python, and Go                                                                                 | Call each SDK's capability discovery function before optional integrations                                                                                                 |
-| S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3`                                                                                                                                                        |
-| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve`                                                                                                                                                     |
+| S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3` (also via SDK `server`)                                                                                                                                |
+| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve` (also via SDK `server`)                                                                                                                             |
 | OpenTelemetry           | OTLP export in addition to baseline `tracing`                                                                                                                                                                                           | Cargo feature `telemetry`                                                                                                                                                 |
 
 Availability never bypasses policy. Auto-save, automatic compaction, goals,
@@ -257,9 +282,11 @@ workflow. See
 
 The default system prompt is assembled in layers: a compact agent loop, the
 runtime authority/run-control contract, the canonical repository-tool schema,
-and shared safety boundaries. The host runtime remains authoritative for every
-permission, approval, budget, cancellation, and sandbox decision; prompt text
-does not grant a capability that the current session has not exposed.
+and shared safety boundaries. Specialty markdown under Core is a replaceable
+default pack (`HARNESS-CONV6`); the host runtime remains authoritative for every
+permission, approval, budget, cancellation, and sandbox decision. Prompt text
+does not grant a capability that the current session has not exposed, and Core
+does not own reviewer rubrics or product-specific system prompts.
 
 Scientific workflows use the same boundary. `a3s-code-core::research` binds a
 run to exact project, source, evidence, and Code/Use capability identities;
@@ -474,7 +501,7 @@ the model.
 | Code intelligence           | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools                                                                                |
 | Web evidence                | Quality-gated headless → HTTP/RSS → API `web_search` with shared admission, session circuits, and request coalescing; plus bounded `web_fetch`, source normalization, and SSRF protections |
 | Downloads                   | Workspace-confined binary `download` with strict range validation, bounded parallelism, retries, checksums, and atomic publication                                                         |
-| Composition                 | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, and unified `task` delegation; the hidden `parallel_task` alias remains host-compatible                           |
+| Composition                 | Safe `batch`, sandboxed QuickJS `program`, structured `generate_object`, and unified `task` delegation (multi-item fan-out)                          |
 | Extensibility               | `Skill`, `search_skills`, namespaced `mcp__<server>__<tool>`, and explicit `dynamic_workflow`                                                                                              |
 
 Every invocation declares `ToolCapabilities`, including read-only,
@@ -879,12 +906,10 @@ result or conversation turn. Supersession preserves the old V1 item for audit
 but excludes it from recall.
 
 Hosts can additionally install a typed `DurableMemorySession` bound to one
-exact A3S Memory V2 tenant, principal, and scope. The current
-`ShadowCandidates` mode mirrors only successful V1 extraction writes as
-content-addressed, evidence-backed `Candidate` nodes. It never activates or
-recalls V2 nodes, so migration can be measured without changing model context.
-The opt-in `ActiveRecall` mode additionally queries only explicitly activated
-nodes under a bounded lexical policy. Hosts may opt into a bounded, one-hop
+exact A3S Memory V2 tenant, principal, and scope. Bindings use
+`ActiveRecall` only: extraction may still write evidence-backed `Candidate`
+nodes, and recall queries only explicitly activated nodes under a bounded
+lexical policy. Hosts may opt into a bounded, one-hop
 expansion over explicit `RelatedTo` edges; Code never follows conflict edges,
 recurses through the graph, or widens the exact namespace. The public
 `preview_recall` diagnostic is pure and cannot authorize prompt injection.
@@ -1249,7 +1274,7 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v8
 ```
 
-The Python release workflow in v8.3.0 uses the stable `cp310-abi3` interface,
+The Python release workflow in v8.4.0 uses the stable `cp310-abi3` interface,
 with Apple Silicon targeting macOS 11+, Intel targeting macOS 12+, Linux x86_64
 on glibc 2.28+, and Linux arm64 on glibc 2.39+ (`manylinux_2_39_aarch64`).
 Windows x86_64 and arm64 wheels are also published. Each native wheel carries
@@ -1388,8 +1413,8 @@ converted into a model-visible Tool.
 Delivered `HOST-AGENT1` extends that batch to typed Agent definitions without
 moving package authority into Code. Every Run merges compatibility and
 projected Agents into an independent `AgentRegistry` name map while sharing
-their exact immutable `Arc<AgentDefinition>` values; automatic selection,
-`task`, and `parallel_task` bind to that same registry. Canonical aliases
+their exact immutable `Arc<AgentDefinition>` values; automatic selection and
+`task` bind to that same registry. Canonical aliases
 cannot shadow each other across the compatibility boundary, and later worker
 or agent-directory registration cannot replace a published Agent. An admitted
 N Run continues to delegate through N after N+1 publication and retains N's

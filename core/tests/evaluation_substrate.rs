@@ -1,3 +1,4 @@
+#![cfg(feature = "evaluation")]
 use a3s_code_core::evaluation::{
     digest_bytes, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1,
     AuxiliaryRunError, AuxiliaryRunService, AuxiliaryRunSpecV1, AuxiliaryRunStateV1,

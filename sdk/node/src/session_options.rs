@@ -107,8 +107,7 @@ pub struct AutoDelegationOptions {
     pub enabled: Option<bool>,
     /// Allow automatic delegation to launch multiple child agents in parallel.
     ///
-    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
-    /// when this is false.
+    /// Manual `task` fan-out remains available when this is false.
     pub auto_parallel: Option<bool>,
     /// Minimum local confidence required to auto-delegate a child task.
     pub min_confidence: Option<f64>,
@@ -270,6 +269,8 @@ pub struct SessionOptions {
     pub guidelines: Option<String>,
     /// Custom response style (replaces default Response Format section).
     pub response_style: Option<String>,
+    /// Pin user-facing replies to a BCP-47 tag (for example `zh-CN` or `en-US`).
+    pub output_language: Option<String>,
     /// Freeform extra instructions appended at the end.
     pub extra: Option<String>,
     /// Inline skills registered programmatically without needing skill files on disk.
@@ -283,11 +284,9 @@ pub struct SessionOptions {
     pub auto_delegation: Option<AutoDelegationOptions>,
     /// Global session-level kill switch for automatic parallel child-agent fan-out.
     ///
-    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
-    /// when this is false.
+    /// Manual `task` fan-out remains available when this is false.
     pub auto_parallel: Option<bool>,
-    /// Session-level switch for the model-visible `task` tool and hidden
-    /// `parallel_task` compatibility alias.
+    /// Session-level switch for the model-visible `task` tool.
     pub manual_delegation_enabled: Option<bool>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     /// Only applied when `model` is also set.
@@ -797,12 +796,21 @@ pub(super) fn js_session_options_to_rust(
                 a3s_code_core::WorkspaceServices::local(root.clone())
             }
             "s3" => {
-                let s3_config = backend.s3.as_ref().ok_or_else(|| {
-                    napi::Error::from_reason(
-                        "S3WorkspaceBackend requires the `s3` configuration field",
-                    )
-                })?;
-                a3s_code_core::WorkspaceServices::s3(s3_config_to_core(s3_config))
+                #[cfg(feature = "s3")]
+                {
+                    let s3_config = backend.s3.as_ref().ok_or_else(|| {
+                        napi::Error::from_reason(
+                            "S3WorkspaceBackend requires the `s3` configuration field",
+                        )
+                    })?;
+                    a3s_code_core::WorkspaceServices::s3(crate::s3_backend::s3_config_to_core(s3_config))
+                }
+                #[cfg(not(feature = "s3"))]
+                {
+                    return Err(napi::Error::from_reason(
+                        "S3 workspace backend requires the SDK `s3` (or `server`) Cargo feature",
+                    ));
+                }
             }
             other => {
                 return Err(napi::Error::from_reason(format!(
@@ -834,13 +842,18 @@ pub(super) fn js_session_options_to_rust(
         opts = opts.with_immutable_content_adapter(js_immutable_content_to_rust(immutable)?);
     }
     // Build prompt slots if any slot is set
-    if o.role.is_some() || o.guidelines.is_some() || o.response_style.is_some() || o.extra.is_some()
+    if o.role.is_some()
+        || o.guidelines.is_some()
+        || o.response_style.is_some()
+        || o.output_language.is_some()
+        || o.extra.is_some()
     {
         let slots = a3s_code_core::SystemPromptSlots {
             style: None,
             role: o.role,
             guidelines: o.guidelines,
             response_style: o.response_style,
+            output_language: o.output_language,
             extra: o.extra,
         };
         opts = opts.with_prompt_slots(slots);

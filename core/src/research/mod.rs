@@ -117,7 +117,7 @@ pub(crate) fn validate_digest_field(
     field: &'static str,
     value: &str,
 ) -> Result<(), ResearchContractError> {
-    crate::evaluation::validate_digest(value)
+    crate::content_digest::validate_digest(value)
         .map_err(|_| ResearchContractError::InvalidDigest(field))
 }
 
@@ -125,7 +125,7 @@ pub(crate) fn digest<T: serde::Serialize>(
     domain: &'static str,
     value: &T,
 ) -> Result<String, ResearchContractError> {
-    crate::evaluation::digest_json(domain, value)
+    crate::content_digest::digest_json(domain, value)
         .map_err(|error| ResearchContractError::Serialization(error.to_string()))
 }
 

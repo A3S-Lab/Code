@@ -525,6 +525,7 @@ async fn real_pre_analyze_parses() {
         LlmPlanner::pre_analyze(
             &client,
             "Refactor the auth module in src/auth.rs to use async/await, and keep the public API stable.",
+            None,
         ),
     )
     .await

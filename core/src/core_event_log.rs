@@ -852,6 +852,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "research")]
     #[test]
     fn projections_share_one_identity_through_the_log() {
         use crate::research::ResearchEventV1;

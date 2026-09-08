@@ -51,6 +51,10 @@ continuations.
   or overwrite changes without explicit authorization. For paginated log,
   branch, stash, remote, worktree, or diff output, continue with the exact
   returned `cursor` or `byte_offset`.
+- `update_plan`: pass the full `plan` array of `{ step, status, id? }` objects.
+  Each call replaces the previous checklist. Use `pending`, `in_progress`, and
+  `completed` (and other schema statuses when needed). Prefer exactly one
+  `in_progress` while work is underway.
 
 Prefer dedicated repository tools when they are exposed for reading, searching,
 and editing. If one is unavailable, use an available governed tool only when

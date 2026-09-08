@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! End-to-end RESEARCH-REVIEW1 qualification.
 //!
 //! One reviewer composition runs through the real evaluation substrate: a
@@ -14,11 +15,12 @@ use a3s_code_core::capability::{
     UsePackageGeneration, WorkspaceCapabilityCeiling,
 };
 use a3s_code_core::evaluation::{
-    digest_bytes, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1,
-    AuxiliaryRunError, AuxiliaryRunService, AuxiliaryRunSpecV1, EvaluationRecordV1,
-    EvaluationResultSink, EvaluationResultV1, EvidenceReadRequestV1, ExecutionFactRecorder,
-    ExecutionFrameV1, ExecutionTargetV1, InMemoryAuxiliaryRunService,
-    InMemoryEvaluationResultStore, InMemoryExecutionFactJournal, RunEvidenceReader,
+    digest_bytes, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryModeV1,
+    AuxiliaryRunContextV1, AuxiliaryRunError, AuxiliaryRunService, AuxiliaryRunSpecV1,
+    EvaluationRecordV1, EvaluationResultSink, EvaluationResultV1, EvidenceContentModeV1,
+    EvidenceReadRequestV1, ExecutionFactRecorder, ExecutionFrameV1, ExecutionTargetV1,
+    InMemoryAuxiliaryRunService, InMemoryEvaluationResultStore, InMemoryExecutionFactJournal,
+    RunEvidenceReader,
 };
 use a3s_code_core::{
     AgentEvent, InMemoryRunStore, ResearchArtifactKindV1, ResearchProvenanceReceiptV1,
@@ -152,7 +154,12 @@ async fn reviewed_run() -> Fixture {
         evidence_digest.clone(),
     )
     .with_id("aux-review-1")
+    .with_mode(AuxiliaryModeV1::Gate)
     .with_capabilities(AuxiliaryCapabilityProfileV1::tool_free());
+    assert!(
+        evidence.complete,
+        "Gate-mode research review requires a complete evidence snapshot"
+    );
     let output = service
         .spawn(spec, evidence, None)
         .await
@@ -391,4 +398,42 @@ async fn evaluator_run_and_project_drift_fail_closed() {
         vec![unbound],
     )
     .is_err());
+}
+
+#[tokio::test]
+async fn gate_mode_research_reviewer_cannot_admit_on_incomplete_evidence() {
+    let runs = Arc::new(InMemoryRunStore::new());
+    let run = runs
+        .create_run_with_id("run-incomplete-gate".into(), "session-review", "prompt")
+        .await;
+    runs.record_event(
+        &run.id,
+        AgentEvent::TextDelta {
+            text: "analysis that exceeds the bounded evidence budget".into(),
+        },
+    )
+    .await;
+    let target = ExecutionTargetV1::new("session-review", &run.id);
+    let mut request = EvidenceReadRequestV1::new(target.clone());
+    request.content_mode = EvidenceContentModeV1::BoundedPayload;
+    request.limits.max_event_bytes = 1;
+    let incomplete = RunEvidenceReader::new(runs).read(request).await.unwrap();
+    assert!(!incomplete.complete);
+
+    let service = InMemoryAuxiliaryRunService::new(Arc::new(ReviewerExecutor {
+        expected_run: run.id.clone(),
+    }));
+    let spec = AuxiliaryRunSpecV1::new(
+        ExecutionFrameV1::root(target),
+        "research-review",
+        "must not gate on incomplete evidence",
+        incomplete.snapshot_digest.clone(),
+    )
+    .with_id("aux-review-incomplete")
+    .with_mode(AuxiliaryModeV1::Gate)
+    .with_capabilities(AuxiliaryCapabilityProfileV1::tool_free());
+    assert!(matches!(
+        service.spawn(spec, incomplete, None).await,
+        Err(AuxiliaryRunError::EvidenceIncomplete)
+    ));
 }

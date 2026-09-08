@@ -210,7 +210,11 @@ impl AgentLoop {
             self.begin_capability_operation(0, cancel_token, "pre-analysis orchestration")?;
         let llm_client =
             self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
-        let result = LlmPlanner::pre_analyze(&llm_client, prompt).await;
+        let language = crate::prompts::resolve_product_output_language(
+            self.config.prompt_slots.output_language.as_deref(),
+            prompt,
+        );
+        let result = LlmPlanner::pre_analyze(&llm_client, prompt, language.as_deref()).await;
         operation.close().await?;
 
         match result {

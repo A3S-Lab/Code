@@ -1,0 +1,214 @@
+---
+title: 'Lane Queue'
+description: 'Route a lane to an external worker and drain its pending tasks explicitly.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lane Queue
+
+By default A3S Code runs every task in-process, with no queue. The lane queue is **optional infrastructure**: register an external handler for a lane and the tools routed to that lane are queued for an outside worker instead of being executed by the agent. You then drain the pending tasks, run them however you like, and report results back. Reach for this only when an external worker is genuinely part of your architecture.
+
+The four lanes are `control`, `query`, `execute`, and `generate`. Each handler has a `mode` of `internal` (the default), `external`, or `hybrid`.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+    println!("queue active: {}", session.has_queue());
+
+    for task in session.pending_external_tasks().await {
+        println!(
+            "pending: {} {:?} {}",
+            task.task_id, task.lane, task.command_type
+        );
+        session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({ "note": "done by external worker" }),
+                    error: None,
+                },
+            )
+            .await;
+    }
+
+    println!("lane queue drained");
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('./agent.acl');
+const session = agent.session(process.cwd(), { queueConfig: {} });
+
+// Route the "execute" lane to an external worker.
+// Tools on this lane are NOT run by the agent; they are queued for
+// an outside worker to pick up and complete.
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// hasQueue() is true because this session was created with queueConfig.
+console.log('queue active:', session.hasQueue());
+
+// Drain whatever is waiting for an external worker.
+const pending = await session.pendingExternalTasks();
+for (const task of pending) {
+  console.log('pending:', task.task_id, task.lane, task.command_type);
+
+  // ... hand off to your worker, run it, then report the outcome back:
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { note: 'done by external worker' },
+  });
+}
+
+console.log('lane queue drained');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(".", opts)
+
+# Route the "execute" lane to an external worker.
+# Tools on this lane are NOT run by the agent; they are queued for
+# an outside worker to pick up and complete.
+session.set_lane_handler("execute", "external", 300000)
+
+# has_queue() is True because this session was created with queue_config.
+print("queue active:", session.has_queue())
+
+# Drain whatever is waiting for an external worker.
+pending = session.pending_external_tasks()
+for task in pending:
+    print("pending:", task["task_id"], task["lane"], task["command_type"])
+
+    # ... hand off to your worker, run it, then report the outcome back:
+    session.complete_external_task(
+        task["task_id"],
+        success=True,
+        result={"note": "done by external worker"},
+    )
+
+print("lane queue drained")
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	active, err := session.HasQueue(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("queue active:", active)
+
+	pending, err := session.PendingExternalTasks(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, task := range pending {
+		fmt.Println("pending:", task.TaskID, task.Lane, task.CommandType)
+		_, err = session.CompleteExternalTask(ctx, task.TaskID, code.ExternalTaskResult{
+			Success: true,
+			Result:  json.RawMessage(`{"note":"done by external worker"}`),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- **The default path is queue-free.** `hasQueue()` / `has_queue()` / `HasQueue()` returns `true` only when the session was created with `queueConfig` / `queue_config` / `QueueConfig`. Without that option, setting a lane handler has no queue to mutate.
+- Each pending task carries `task_id`, `session_id`, `lane`, `command_type`, `payload`, and `timeout_ms`. Pass the `task_id` back to `completeExternalTask` / `complete_external_task` / `CompleteExternalTask` once the work is done.
+- The result shape is `{ success, result?, error? }` — `result` holds any JSON-serializable payload, and `error` is an optional message for failures. `completeExternalTask` / `complete_external_task` returns `true` if the task was found and completed, `false` otherwise.
+- In Python these queue methods are synchronous; in Node `setLaneHandler`, `pendingExternalTasks`, and `completeExternalTask` return promises, while `hasQueue` is synchronous.
+- Go queue calls accept a `context.Context`; Node returns promises; Python uses
+  synchronous methods.

@@ -151,18 +151,10 @@ pub struct DurableMemorySession {
 }
 
 impl DurableMemorySession {
-    /// Create a candidate-only binding. V2 recall remains disabled.
-    pub fn shadow(repository: Arc<dyn MemoryRepository>, namespace: MemoryNamespace) -> Self {
-        Self {
-            repository,
-            namespace,
-            mode: DurableMemoryMode::ShadowCandidates,
-            recall_policy: None,
-            semantic_recall: None,
-        }
-    }
-
     /// Create an opt-in binding that recalls only explicitly activated nodes.
+    ///
+    /// Extraction may still write evidence-backed V2 candidates into the same
+    /// namespace; only explicitly activated nodes are eligible for Active recall.
     pub fn active_recall(
         repository: Arc<dyn MemoryRepository>,
         namespace: MemoryNamespace,

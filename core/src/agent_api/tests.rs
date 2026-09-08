@@ -1682,6 +1682,7 @@ async fn test_session_for_agent_preserves_existing_prompt_slots_when_injecting_d
         role: Some("Custom role".to_string()),
         guidelines: None,
         response_style: None,
+        output_language: None,
         extra: None,
     });
 
@@ -1908,7 +1909,7 @@ async fn test_stream_bridges_subagent_lifecycle_events() {
     let client = Arc::new(ScriptedStreamingClient::new(vec![
         scripted_tool_call_response(
             "call-parallel",
-            "parallel_task",
+            "task",
             serde_json::json!({
                 "tasks": [
                     {
@@ -1964,7 +1965,7 @@ async fn test_stream_bridges_subagent_lifecycle_events() {
     assert_eq!(subagent_ends, 2);
     assert!(
         last_subagent_end.expect("foreground tasks must emit SubagentEnd")
-            < parent_tool_end.expect("parallel_task must emit ToolEnd"),
+            < parent_tool_end.expect("task fan-out must emit ToolEnd"),
         "all foreground SubagentEnd events must precede the parent ToolEnd"
     );
 
@@ -2725,9 +2726,7 @@ async fn test_runtime_agent_style_overrides_session_prompt_slots() {
             &opts,
         )
         .unwrap();
-    assert!(session
-        .runtime_agent_style_override()
-        .is_none());
+    assert!(session.runtime_agent_style_override().is_none());
     session
         .set_agent_style(Some(crate::prompts::AgentStyle::Plan))
         .expect("set Plan style");
@@ -2739,6 +2738,31 @@ async fn test_runtime_agent_style_overrides_session_prompt_slots() {
         .set_agent_style(None)
         .expect("clear specialty style");
     assert_eq!(session.runtime_agent_style_override(), Some(None));
+}
+
+#[tokio::test]
+async fn test_runtime_output_language_overrides_session_prompt_slots() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new().with_session_id("runtime-output-language");
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-output-language".into(),
+            Arc::new(StaticStreamingClient::new("ok")),
+            &opts,
+        )
+        .unwrap();
+    assert!(session.runtime_output_language_override().is_none());
+    session
+        .set_output_language(Some("zh-CN"))
+        .expect("pin zh-CN");
+    assert_eq!(
+        session.runtime_output_language_override(),
+        Some(Some("zh-CN".to_string()))
+    );
+    session
+        .set_output_language(None::<String>)
+        .expect("clear language pin");
+    assert_eq!(session.runtime_output_language_override(), Some(None));
 }
 
 #[tokio::test]
@@ -3818,7 +3842,10 @@ async fn test_session_uses_single_delegation_tool_surface() {
 
     assert!(names.contains(&"task".to_string()));
     assert!(!names.contains(&"parallel_task".to_string()));
-    assert!(session.tool_executor.registry().contains("parallel_task"));
+    assert!(
+        !session.tool_executor.registry().contains("parallel_task"),
+        "HARNESS-CONV4 removes model-visible parallel_task from the registry"
+    );
     assert!(!names.contains(&"run_team".to_string()));
 }
 
@@ -6368,7 +6395,7 @@ async fn delegated_child_run_publishes_events_to_the_parent_hook_executor() {
 }
 
 #[tokio::test]
-async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
+async fn test_registered_task_fanout_inherits_final_confirmation_manager() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("note.txt"), "hello from parent context").unwrap();
 
@@ -6399,7 +6426,7 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
         .unwrap();
 
     let (_rx, join) = session.tool_with_events(
-        "parallel_task",
+        "task",
         serde_json::json!({
             "tasks": [
                 {
@@ -6445,13 +6472,14 @@ async fn test_registered_parallel_task_inherits_final_confirmation_manager() {
         .unwrap();
     assert_eq!(
         result.exit_code, 0,
-        "parallel_task output: {}",
+        "task fan-out output: {}",
         result.output
     );
     assert!(!result.output.contains("requires confirmation but no HITL"));
     assert!(!result.output.contains("Permission denied"));
 }
 
+#[cfg(feature = "dynamic-workflow")]
 #[tokio::test]
 async fn test_dynamic_workflow_parallel_explore_can_use_readonly_web_tools() {
     let dir = tempfile::tempdir().unwrap();
@@ -6485,7 +6513,7 @@ async function run(ctx, inputs) {
     return {
       type: "schedule_step",
       step_id: "web_research",
-      step_name: "parallel_task",
+      step_name: "task",
       input: {
         tasks: [
           {
@@ -6506,7 +6534,7 @@ async function run(ctx, inputs) {
     };
   }
 
-  return { error: "parallel_task should run as a host step" };
+  return { error: "task should run as a host step" };
 }
 "#;
 
@@ -6542,6 +6570,7 @@ async function run(ctx, inputs) {
     );
 }
 
+#[cfg(feature = "dynamic-workflow")]
 #[tokio::test]
 async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_permissions() {
     let dir = tempfile::tempdir().unwrap();
@@ -6591,7 +6620,7 @@ async function run(ctx, inputs) {
     return {
       type: "schedule_step",
       step_id: "deep_research",
-      step_name: "parallel_task",
+      step_name: "task",
       input: {
         tasks: [
           {
@@ -6612,7 +6641,7 @@ async function run(ctx, inputs) {
     };
   }
 
-  return { error: "parallel_task should run as a host step" };
+  return { error: "task should run as a host step" };
 }
 "#;
 
@@ -6658,6 +6687,7 @@ async function run(ctx, inputs) {
     );
 }
 
+#[cfg(feature = "dynamic-workflow")]
 #[tokio::test]
 async fn test_dynamic_workflow_parallel_deep_research_inherits_parent_write_permissions() {
     let dir = tempfile::tempdir().unwrap();
@@ -6697,7 +6727,7 @@ async function run(ctx, inputs) {
     return {
       type: "schedule_step",
       step_id: "deep_research",
-      step_name: "parallel_task",
+      step_name: "task",
       input: {
         tasks: [
           {
@@ -6718,7 +6748,7 @@ async function run(ctx, inputs) {
     };
   }
 
-  return { error: "parallel_task should run as a host step" };
+  return { error: "task should run as a host step" };
 }
 "#;
 

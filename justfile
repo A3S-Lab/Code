@@ -536,3 +536,22 @@ bump-version VERSION:
 
     echo ""
     just check-versions
+
+# ============================================================================
+# Harness convergence wrap-up
+# ============================================================================
+
+# Thin default + local-code CI matrix used by HARNESS-CONV5/CONV7 wrap-up
+harness-convergence-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo check -p a3s-code-core
+    if cargo tree -p a3s-code-core -e normal | rg -i 'evaluation|research|chromiumoxide|aws-sdk-s3'; then
+      echo "default Core tree must not pull Advanced/server stacks" >&2
+      exit 1
+    fi
+    cargo check -p a3s-code-core --no-default-features --features local-code
+    cargo test -p a3s-code-core --no-default-features --features local-code --lib
+    cargo test -p a3s-code-core --lib parallel_task -- --nocapture
+    cargo test -p a3s-code-core --lib candidate_write_stays_inactive -- --nocapture
+    node scripts/sdk_api_alignment_check.mjs

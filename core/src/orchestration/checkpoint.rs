@@ -7,7 +7,7 @@
 //! which checkpoints at tool-round boundaries one level down.
 
 use super::executor::{AgentStepSpec, StepOutcome};
-use crate::evaluation::{digest_bytes, digest_json};
+use crate::content_digest::{digest_bytes, digest_json};
 use crate::execution_identity::{
     ExecutionIdentityV1, ExecutionResultOutcomeV1, ExecutionResultReceiptV1,
     WORKFLOW_STEP_EVIDENCE_DOMAIN_V1, WORKFLOW_STEP_IDENTITY_DOMAIN_V1,

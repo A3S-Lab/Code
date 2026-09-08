@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-go-bridge"
-version = "8.3.0"
+version = "8.4.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -17,7 +17,7 @@ name = "a3s-code-go-bridge"
 path = "src/main.rs"
 
 [dependencies]
-a3s-code-core = { version = "8.3.0", path = "../../../core", default-features = false, features = ["headless-search", "s3", "serve"] }
+a3s-code-core = { version = "8.4.0", path = "../../../core", default-features = false }
 async-trait = "0.1"
 anyhow = "1.0"
 base64 = "0.22"
@@ -37,7 +37,17 @@ tokio-util = "0.7"
 tempfile = "3.10"
 
 [features]
+# Thin coding-harness default (`HARNESS-CONV5`). Enable `advanced-harness`,
+# `server`, and/or `headless-search` explicitly for product surfaces.
 default = ["zvec-rust-fts-bundled"]
+# Coding-only: `--no-default-features --features zvec-rust-fts-bundled`
+headless-search = ["a3s-code-core/headless-search"]
+# Optional server surfaces.
+s3 = ["a3s-code-core/s3"]
+serve = ["a3s-code-core/serve"]
+server = ["s3", "serve"]
+# Advanced harness (evaluation/research/state-graph/dynamic-workflow).
+advanced-harness = ["a3s-code-core/advanced-harness"]
 # Compile the native adapter against a staged, target-specific zvec library.
 zvec-rust-fts = ["a3s-code-core/zvec-rust-fts"]
 zvec-rust-fts-bundled = ["zvec-rust-fts", "a3s-code-core/zvec-rust-fts-bundled"]

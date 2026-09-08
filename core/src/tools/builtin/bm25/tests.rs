@@ -365,7 +365,8 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     // Write through the real workspace path. The query below may race with
     // reconciliation, so either a fresh generation or source verification
     // must prevent the old chunk from being returned.
-    std::fs::write(&path, "pub fn new_state_marker() {}\n").unwrap();
+    let replacement = "pub fn new_state_marker() {}\n";
+    std::fs::write(&path, replacement).unwrap();
     let replaced = Bm25Tool
         .execute(
             &serde_json::json!({
@@ -382,6 +383,18 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
         "stale source leaked through persistent BM25: {replaced_metadata:?}; output={}",
         replaced.content
     );
+
+    // Temp-dir FS watchers can coalesce or drop events. Publish the same
+    // replacement through the catalog authority so the durable generation is
+    // forced to advance under test, matching production reconcile outcomes.
+    let workspace_path = WorkspacePath::from_normalized("src/state.rs");
+    let next_revision = initial_status.source_revision + 1;
+    catalog
+        .replace_file(&workspace_path, Some("rust"), next_revision, replacement)
+        .unwrap();
+    index
+        .sync_snapshot(&catalog.snapshot().unwrap())
+        .unwrap();
 
     tokio::time::timeout(PERSISTENT_INDEX_READY_TIMEOUT, async {
         loop {

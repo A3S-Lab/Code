@@ -19,10 +19,14 @@ fn evidence(name: &str, kind: EvidenceKind, offset_seconds: i64) -> EvidenceRef 
 }
 
 #[tokio::test]
-async fn shadow_write_is_evidence_backed_candidate_and_never_active() {
+async fn candidate_write_stays_inactive_until_explicit_activation() {
     let repository = Arc::new(InMemoryRepository::new());
     let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
-    let binding = DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    let binding = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
     let occurred_at = DateTime::from_timestamp_millis(1_777_000_000_000).unwrap();
     let turn_evidence = DurableTurnEvidence::try_new(
         "session/one",
@@ -70,6 +74,15 @@ async fn shadow_write_is_evidence_backed_candidate_and_never_active() {
             .len(),
         1
     );
+    assert!(
+        binding
+            .query_active_context("focused crate")
+            .await
+            .unwrap()
+            .result
+            .is_empty(),
+        "candidates must not enter Active recall before activation"
+    );
 
     let replay = binding
         .store_shadow_candidate(&item, &turn_evidence)
@@ -112,12 +125,15 @@ async fn shadow_write_is_evidence_backed_candidate_and_never_active() {
             .len(),
         1
     );
-    assert!(binding
-        .query_active_context("focused crate")
-        .await
-        .unwrap()
-        .result
-        .is_empty());
+    assert!(
+        !binding
+            .query_active_context("focused crate")
+            .await
+            .unwrap()
+            .result
+            .is_empty(),
+        "activated nodes must be eligible for Active recall"
+    );
 }
 
 #[tokio::test]

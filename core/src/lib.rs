@@ -88,16 +88,20 @@ pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
 pub mod config;
+pub mod content_digest;
 pub mod context;
 pub mod core_event_log;
 pub mod core_identity;
 pub mod durable_memory;
+#[cfg(feature = "dynamic-workflow")]
 pub mod dynamic_workflow;
 pub mod embedding;
 pub mod error;
+#[cfg(feature = "evaluation")]
 pub mod evaluation;
 pub mod event_protocol;
 pub mod execution_identity;
+#[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;
 pub mod harness_evidence;
@@ -119,6 +123,7 @@ pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
 pub mod release;
+#[cfg(feature = "research")]
 pub mod research;
 pub mod retention;
 pub(crate) mod retry;
@@ -137,6 +142,7 @@ pub mod session_checkpoint;
 pub(crate) mod session_lane_queue;
 pub mod skills;
 pub(crate) mod sse;
+#[cfg(feature = "state-graph")]
 pub mod state_graph;
 pub mod store;
 pub mod subagent;
@@ -204,6 +210,7 @@ pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
 };
+pub use content_digest::{digest_bytes, digest_json, validate_digest};
 pub use core_event_log::{
     CoreEventLog, CoreEventLogError, CoreLogAppendOutcomeV1, CoreLogEntryV1, CoreLogPageV1,
     CoreLogVerificationV1, CORE_LOG_ENTRY_DIGEST_DOMAIN_V1, CORE_LOG_ENTRY_SCHEMA_V1,
@@ -230,6 +237,7 @@ pub use durable_memory::{
     DURABLE_MEMORY_SEMANTIC_REFRESH_CHECKPOINT_SCHEMA_V1,
     DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
+#[cfg(feature = "dynamic-workflow")]
 pub use dynamic_workflow::{
     dynamic_workflow_claim_identity, dynamic_workflow_continuation_identity,
     dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
@@ -248,21 +256,22 @@ pub use embedding::{
 };
 pub use error::SessionBuildResource;
 pub use error::{CodeError, Result};
+#[cfg(feature = "evaluation")]
 pub use evaluation::{
-    digest_bytes, digest_json, validate_digest, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor,
-    AuxiliaryModeV1, AuxiliaryRunContextV1, AuxiliaryRunError, AuxiliaryRunHandle,
-    AuxiliaryRunOutputV1, AuxiliaryRunService, AuxiliaryRunSnapshotV1, AuxiliaryRunSpecV1,
-    AuxiliaryRunStateV1, EvaluationBoundaryV1, EvaluationDispatch, EvaluationDispatchClaimOutcome,
-    EvaluationDispatchLedger, EvaluationDispatchLedgerError, EvaluationDispatchOutcome,
-    EvaluationPlanV1, EvaluationPolicy, EvaluationProtocolError, EvaluationRecordV1,
-    EvaluationResultSink, EvaluationResultV1, EvaluationStoreError, EvaluationSupervisor,
-    EvaluationWireEnvelopeV1, EvaluationWireKindDescriptorV1, EvaluationWireKindV1,
-    EvaluationWireTypeV1, EvaluationWriteOutcomeV1, EventCursorV1, EvidenceArtifactV1,
-    EvidenceContentModeV1, EvidenceError, EvidenceEventV1, EvidenceLimitsV1, EvidenceReadRequestV1,
-    EvidenceReader, EvidenceRunStateV1, EvidenceSnapshotV1, ExecutionFactInputV1,
-    ExecutionFactJournal, ExecutionFactKindV1, ExecutionFactPageV1, ExecutionFactRecorder,
-    ExecutionFactSnapshotV1, ExecutionFactV1, ExecutionFrameV1, ExecutionTargetV1,
-    FactAppendOutcomeV1, FileEvaluationDispatchLedger, FileEvaluationResultStore, IdentityError,
+    AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryModeV1, AuxiliaryRunContextV1,
+    AuxiliaryRunError, AuxiliaryRunHandle, AuxiliaryRunOutputV1, AuxiliaryRunService,
+    AuxiliaryRunSnapshotV1, AuxiliaryRunSpecV1, AuxiliaryRunStateV1, EvaluationBoundaryV1,
+    EvaluationDispatch, EvaluationDispatchClaimOutcome, EvaluationDispatchLedger,
+    EvaluationDispatchLedgerError, EvaluationDispatchOutcome, EvaluationPlanV1, EvaluationPolicy,
+    EvaluationProtocolError, EvaluationRecordV1, EvaluationResultSink, EvaluationResultV1,
+    EvaluationStoreError, EvaluationSupervisor, EvaluationWireEnvelopeV1,
+    EvaluationWireKindDescriptorV1, EvaluationWireKindV1, EvaluationWireTypeV1,
+    EvaluationWriteOutcomeV1, EventCursorV1, EvidenceArtifactV1, EvidenceContentModeV1,
+    EvidenceError, EvidenceEventV1, EvidenceLimitsV1, EvidenceReadRequestV1, EvidenceReader,
+    EvidenceRunStateV1, EvidenceSnapshotV1, ExecutionFactInputV1, ExecutionFactJournal,
+    ExecutionFactKindV1, ExecutionFactPageV1, ExecutionFactRecorder, ExecutionFactSnapshotV1,
+    ExecutionFactV1, ExecutionFrameV1, ExecutionTargetV1, FactAppendOutcomeV1,
+    FileEvaluationDispatchLedger, FileEvaluationResultStore, IdentityError,
     InMemoryAuxiliaryRunService, InMemoryEvaluationDispatchLedger, InMemoryEvaluationResultStore,
     InMemoryExecutionFactJournal, JournalError, RunEvidenceReader, StructuredAuxiliaryExecutor,
     SupervisorError, AUXILIARY_MAX_OUTPUT_BYTES, AUXILIARY_MAX_STEPS, AUXILIARY_OUTPUT_SCHEMA_V1,
@@ -283,6 +292,7 @@ pub use event_protocol::{
     run_event_envelope_v1, AgentEventProjectionV1, AgentEventTypeV1, EventEnvelopeV1,
     EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
+#[cfg(feature = "dynamic-workflow")]
 pub use flow_graph::{
     run_object_id as flow_run_object_id, step_object_id as flow_step_object_id,
     FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionClaimState,
@@ -319,7 +329,11 @@ pub use orchestration::{
     WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent, WorkflowStepRecord,
     WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
-pub use prompts::{AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots};
+pub use prompts::{
+    infer_user_reply_language, output_language_contract, resolve_product_output_language,
+    AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots,
+};
+#[cfg(feature = "research")]
 pub use research::{
     ResearchArtifactKindV1, ResearchCitationV1, ResearchClaimStatusV1, ResearchClaimV1,
     ResearchContractError, ResearchEventV1, ResearchEvidenceCompletenessV1,
@@ -353,7 +367,8 @@ pub use run_control::{
     RUN_CONTROL_REQUEST_SCHEMA_V1,
 };
 pub use sdk_capabilities::{
-    sdk_capabilities, sdk_capabilities_schema, SdkCapability, SDK_CAPABILITIES_SCHEMA_V1,
+    sdk_baseline_capabilities, sdk_capabilities, sdk_capabilities_schema, CapabilityTier,
+    SdkCapability, SDK_CAPABILITIES_SCHEMA_V1, SDK_CAPABILITIES_SCHEMA_V2,
 };
 pub use session_checkpoint::{
     SdkSessionCheckpointExportV1, SessionCheckpointDescriptorV1, SessionCheckpointError,
@@ -365,6 +380,7 @@ pub use session_checkpoint::{
     SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1, SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1,
     SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
 };
+#[cfg(feature = "state-graph")]
 pub use state_graph::{
     graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
     ExternalProjectionOutcome, FileGraphEventStore, FnBehavior, GraphDiff, GraphEvent,

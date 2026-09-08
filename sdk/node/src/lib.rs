@@ -40,12 +40,15 @@ extern crate napi_derive;
 
 mod js_callback_bridge;
 mod js_slash_command;
+#[cfg(feature = "advanced-harness")]
 mod state_graph;
 use js_callback_bridge::{decode_callback_outcome, wrap_sync_callback, JsCallbackOutcome};
 use js_slash_command::{js_command_context_to_object, JsSlashCommand};
+#[cfg(feature = "advanced-harness")]
 pub use state_graph::{strict_replay, JsStateGraphRuntime, StateGraphOptions};
 
 use a3s_code_core::commands::CommandContext as RustCommandContext;
+#[cfg(feature = "serve")]
 use a3s_code_core::config::AgentDir as RustAgentDir;
 use a3s_code_core::hitl::{
     ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
@@ -70,6 +73,7 @@ use a3s_code_core::queue::{
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
 };
+#[cfg(feature = "serve")]
 use a3s_code_core::serve::{
     spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
     ServeDaemonHandle as RustServeDaemonHandle,
@@ -121,6 +125,7 @@ fn node_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> napi::
     napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
 }
 
+#[cfg(feature = "serve")]
 fn node_serve_error(
     handle: &RustServeDaemonHandle,
     error: a3s_code_core::CodeError,
@@ -128,6 +133,7 @@ fn node_serve_error(
     node_serve_error_code(handle.failure_code(), error)
 }
 
+#[cfg(feature = "serve")]
 fn node_serve_error_code(
     failure_code: Option<&'static str>,
     error: a3s_code_core::CodeError,
@@ -991,13 +997,17 @@ fn inline_skill_to_rust(skill: InlineSkill) -> napi::Result<Arc<RustSkill>> {
 }
 
 mod typed_providers;
+#[cfg(feature = "s3")]
+mod s3_backend;
 use typed_providers::*;
 
 mod session_options;
 use session_options::*;
 
+#[cfg(feature = "headless-search")]
 mod moli_runtime;
 mod search_config;
+#[cfg(feature = "headless-search")]
 pub use moli_runtime::{ensure_moli, moli_default_version, moli_runtime_info};
 
 // ============================================================================
@@ -1098,7 +1108,9 @@ mod session_capabilities;
 
 mod agent;
 
+#[cfg(feature = "serve")]
 mod serve_handle;
+#[cfg(feature = "serve")]
 pub use serve_handle::ServeHandle;
 
 mod event_protocol;
@@ -1219,6 +1231,8 @@ pub struct SdkCapability {
     pub description: String,
     pub operations: Vec<String>,
     pub host_owned: bool,
+    /// `baseline` for the coding-agent harness; `advanced` for optional surfaces.
+    pub tier: String,
 }
 
 impl From<RustSdkCapability> for SdkCapability {
@@ -1229,6 +1243,10 @@ impl From<RustSdkCapability> for SdkCapability {
             description: value.description,
             operations: value.operations,
             host_owned: value.host_owned,
+            tier: match value.tier {
+                a3s_code_core::CapabilityTier::Baseline => "baseline".to_owned(),
+                a3s_code_core::CapabilityTier::Advanced => "advanced".to_owned(),
+            },
         }
     }
 }

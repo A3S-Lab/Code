@@ -265,8 +265,8 @@ runs a focused child; several independent items fan out concurrently. Automatic
 subagent delegation can be enabled with
 `opts.auto_delegation = AutoDelegationConfig(enabled=True)`. Set
 `opts.auto_parallel = False` to globally disable only automatic parallel
-fan-out; manual `task` / `session.tasks(...)` stays available. The explicit
-`session.parallel_task(...)` helper remains only for legacy compatibility.
+fan-out; manual `task` / `session.tasks(...)` stays available. The legacy
+`parallel_task` helper is removed (`HARNESS-CONV4`).
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 

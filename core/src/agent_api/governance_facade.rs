@@ -57,12 +57,43 @@ impl AgentSession {
         })?
     }
 
+    /// Pin or clear the user-facing reply language for subsequent turns without
+    /// rebuilding the session. Pass `Some("zh-CN")` to pin; pass `None` to clear
+    /// the runtime override so `prompt_slots.output_language` applies again.
+    /// Takes effect on the next `send` / `stream`.
+    pub fn set_output_language(
+        &self,
+        language: Option<impl Into<String>>,
+    ) -> crate::error::Result<()> {
+        let language = language.map(Into::into).and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_output_language
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *slot = Some(language);
+            Ok(())
+        })?
+    }
+
     /// Runtime agent-style override. Outer `None` means unset; inner value is
     /// the style (or cleared specialty when `Some(None)`).
     pub(crate) fn runtime_agent_style_override(
         &self,
     ) -> Option<Option<crate::prompts::AgentStyle>> {
         self.runtime_agent_style
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Runtime reply-language override. Outer `None` means unset; inner value
+    /// is the BCP-47 tag (or cleared pin when `Some(None)`).
+    pub(crate) fn runtime_output_language_override(&self) -> Option<Option<String>> {
+        self.runtime_output_language
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()

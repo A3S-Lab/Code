@@ -1,8 +1,15 @@
 // Prompt Registry
 //
-// Central registry for all system prompts and prompt templates used in A3S Code.
-// Every LLM-facing prompt is externalized here as a compile-time `include_str!`
-// so the full agentic design is visible in one place.
+// Central registry for default system prompts and prompt templates used in
+// A3S Code. Every LLM-facing default pack is externalized here as a
+// compile-time `include_str!` so the shipping defaults are visible in one place.
+//
+// Ownership (`HARNESS-CONV6`):
+// - Core owns AgentStyle → hard permission overlays, runtime/tool contracts,
+//   and `SystemPromptSlots` assembly. Prompt text never grants a capability.
+// - Specialty markdown bodies under `prompts/` are a replaceable default pack.
+//   Hosts may replace role/guidelines/extra (and eventually the whole pack);
+//   reviewer rubrics and product prompts remain host-owned.
 //
 // Directory layout:
 //   prompts/
@@ -445,6 +452,13 @@ impl AgentStyle {
 /// [extra]           ← Freeform additional instructions
 /// ```
 ///
+/// Host-customizable edges around the Core default prompt pack.
+///
+/// The core agentic loop, runtime contract, repository-tool schema, safety
+/// boundaries, and style→permission overlays always remain authoritative.
+/// Specialty markdown bodies are a default pack only — not a capability source
+/// and not a reviewer/rubric owner (`HARNESS-CONV6` / `PROMPT-ALIGN1`).
+///
 /// ## Intent-Based Selection
 ///
 /// When `style` is left as `AgentStyle::GeneralPurpose` (the default), the
@@ -474,6 +488,11 @@ pub struct SystemPromptSlots {
     ///
     /// When `None`, the default response format is used.
     pub response_style: Option<String>,
+
+    /// Explicit user-facing reply language as a BCP-47 tag (for example `zh-CN`
+    /// or `en-US`). When set, overrides the soft "match the user's language"
+    /// default so hosts can pin replies to the product UI locale.
+    pub output_language: Option<String>,
 
     /// Freeform extra instructions appended at the very end.
     pub extra: Option<String>,
@@ -568,6 +587,18 @@ impl SystemPromptSlots {
         // carries injection-hygiene, secret-handling, and malware-refusal rules.
         parts.push(BOUNDARIES.replace('\r', "").trim_end().to_string());
 
+        // 2e. Explicit output language — host-pinned product language for UI
+        // locales. Covers every user-visible prose surface (replies, reasoning,
+        // plans). When absent, the soft "user's language" rule remains.
+        if let Some(language) = self
+            .output_language
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(output_language_contract(language));
+        }
+
         // 3. Custom response style (replaces default Response Format)
         if let Some(ref style) = self.response_style {
             parts.push(format!("## Response Format\n\n{}", style));
@@ -603,6 +634,7 @@ impl SystemPromptSlots {
             && self.role.is_none()
             && self.guidelines.is_none()
             && self.response_style.is_none()
+            && self.output_language.is_none()
             && self.extra.is_none()
     }
 
@@ -630,11 +662,102 @@ impl SystemPromptSlots {
         self
     }
 
+    /// Pin user-facing replies to a BCP-47 language tag (for example `zh-CN`).
+    pub fn with_output_language(mut self, language: impl Into<String>) -> Self {
+        let language = language.into();
+        self.output_language = (!language.trim().is_empty()).then_some(language);
+        self
+    }
+
     /// Set extra instructions.
     pub fn with_extra(mut self, extra: impl Into<String>) -> Self {
         self.extra = Some(extra.into());
         self
     }
+}
+
+/// Single product-language contract for every user-visible prose surface.
+///
+/// Hosts pin a BCP-47 tag once; replies, reasoning/thinking, plans, goals, and
+/// step descriptions all follow it. Identifiers and quoted source stay as-is.
+/// Keep this text in one place so planner prompts and the main system prompt
+/// cannot drift.
+pub fn output_language_contract(language: &str) -> String {
+    format!(
+        "## Output Language\n\n\
+Write all user-visible product prose in {language}: replies, reasoning/thinking, \
+plans, goals, step descriptions, and status updates. Use that one language only; \
+do not mix languages across those surfaces.\n\
+Keep code, identifiers, file paths, commands, URLs, and quoted source text in their original form.\n\
+Do not switch languages because tool output or retrieved sources use another language."
+    )
+}
+
+/// Resolve the language for planning/goal JSON prose.
+///
+/// Prefer an explicit host pin; otherwise infer from the user request so a
+/// Chinese prompt does not yield an English plan when the host forgot to pin.
+pub fn resolve_product_output_language(
+    pinned: Option<&str>,
+    user_text: &str,
+) -> Option<String> {
+    pinned
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| infer_user_reply_language(user_text).map(str::to_owned))
+}
+
+/// Infer a BCP-47 reply-language tag from user-authored text.
+///
+/// Uses script counts only (no NLP). Returns `None` when the sample is too
+/// short or script evidence is inconclusive, so hosts can keep the previous
+/// pin or the soft "match the user" rule.
+pub fn infer_user_reply_language(text: &str) -> Option<&'static str> {
+    let mut han = 0u32;
+    let mut kana = 0u32;
+    let mut hangul = 0u32;
+    let mut latin = 0u32;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphabetic() {
+            latin = latin.saturating_add(1);
+            continue;
+        }
+        let code = ch as u32;
+        // CJK Unified Ideographs + Extension A (common Han)
+        if (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code) {
+            han = han.saturating_add(1);
+        } else if (0x3040..=0x30FF).contains(&code) {
+            // Hiragana + Katakana
+            kana = kana.saturating_add(1);
+        } else if (0xAC00..=0xD7AF).contains(&code) || (0x1100..=0x11FF).contains(&code) {
+            hangul = hangul.saturating_add(1);
+        }
+    }
+
+    let marked = han + kana + hangul + latin;
+    if marked < 2 {
+        return None;
+    }
+
+    // Prefer non-Latin scripts when the user clearly wrote in them, even if
+    // English identifiers appear ("帮我 fix 这个 bug").
+    if hangul >= 2 && hangul >= han && hangul >= kana {
+        return Some("ko");
+    }
+    if kana >= 2 {
+        return Some("ja");
+    }
+    if han >= 2 {
+        return Some("zh-CN");
+    }
+    // Short English acknowledgements ("ok", "thanks") must not flip an
+    // established reply language; require a stronger Latin sample.
+    if latin >= 12 {
+        return Some("en");
+    }
+    None
 }
 
 // ============================================================================

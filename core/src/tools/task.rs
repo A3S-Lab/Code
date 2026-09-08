@@ -45,7 +45,7 @@ const MAX_TASK_SOURCE_TOOL_BYTES: usize = 64;
 const MAX_TASK_SOURCE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PARALLEL_TASK_SOURCE_ANCHORS: usize = MAX_TASK_SOURCE_ANCHORS;
 const TASK_TOOL_DESCRIPTION: &str = "Delegate one or more bounded tasks to specialized child runs. Pass one item for a focused child run or multiple INDEPENDENT items for concurrent fan-out. A single item may run in the background; multi-item calls are collected by the parent. By default any failed child makes a multi-item call fail; evidence-gathering callers may set allow_partial_failure=true. Choose canonical worker names from the live agent catalog. Custom agents from agent_dirs and .a3s/agents are supported; .claude/agents is read for compatibility.";
-const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "Fan out 2 or more INDEPENDENT subtasks as delegated child runs that execute concurrently; results are returned when all complete. By default any failed child makes the tool fail; evidence-gathering callers may set allow_partial_failure=true to continue when at least one child succeeds. Child output never authorizes branch replay; provider and child runtimes own any typed retry policy below this boundary. Use this only when the work genuinely splits into branches that can be investigated or implemented separately. Do not use it for trivial, conversational, single-step, or dependent work. Choose canonical worker names from the live agent catalog.";
+const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "REMOVED from the model-visible registry (`HARNESS-CONV4`). Prefer `task` with multiple `tasks[]` items. This type remains for focused unit tests that construct ParallelTaskTool directly.";
 
 /// Task tool parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -377,6 +377,7 @@ fn assert_no_forbidden_python_keys(
     }
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn moli_diagnostics_are_projected_without_installing() {
     pyo3::prepare_freethreaded_python();

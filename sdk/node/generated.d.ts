@@ -437,8 +437,7 @@ export interface AutoDelegationOptions {
   /**
    * Allow automatic delegation to launch multiple child agents in parallel.
    *
-   * Manual `task` fan-out and legacy `parallel_task` calls remain available
-   * when this is false.
+   * Manual `task` fan-out remains available when this is false.
    */
   autoParallel?: boolean
   /** Minimum local confidence required to auto-delegate a child task. */
@@ -625,6 +624,11 @@ export interface SessionOptions {
   guidelines?: string
   /** Custom response style (replaces default Response Format section). */
   responseStyle?: string
+  /**
+   * Pin user-facing replies to a BCP-47 language tag (for example `zh-CN`).
+   * Prefer `session.setOutputLanguage` for per-turn overrides after create.
+   */
+  outputLanguage?: string
   /** Freeform extra instructions appended at the end. */
   extra?: string
   /**
@@ -641,13 +645,11 @@ export interface SessionOptions {
   /**
    * Global session-level kill switch for automatic parallel child-agent fan-out.
    *
-   * Manual `task` fan-out and legacy `parallel_task` calls remain available
-   * when this is false.
+   * Manual `task` fan-out remains available when this is false.
    */
   autoParallel?: boolean
   /**
-   * Session-level switch for the model-visible `task` tool and hidden
-   * `parallel_task` compatibility alias.
+   * Session-level switch for the model-visible `task` tool.
    */
   manualDelegationEnabled?: boolean
   /**
@@ -1337,6 +1339,8 @@ export interface SdkCapability {
   description: string
   operations: Array<string>
   hostOwned: boolean
+  /** `baseline` for the coding-agent harness; `advanced` for optional surfaces. */
+  tier: string
 }
 /** Return the complete Core capability inventory exposed by this binding. */
 export declare function sdkCapabilities(): Array<SdkCapability>
@@ -1829,6 +1833,14 @@ export declare class Session {
    */
   setBudgetGuard(handlers: { checkBeforeLlm?: ((ctx: { sessionId: string; estimatedTokens: number }) => any) | null; recordAfterLlm?: ((ctx: { sessionId: string; usage: any }) => void) | null; checkBeforeTool?: ((ctx: { sessionId: string; toolName: string }) => any) | null; timeoutMs?: number | null } | null): void
   /**
+   * Pin or clear the user-facing reply language for subsequent turns.
+   *
+   * Pass a BCP-47 tag such as `zh-CN` to pin; pass `null`/`undefined` to clear
+   * the runtime override so session `outputLanguage` / prompt slots apply again.
+   * Takes effect on the next `send` / `stream`.
+   */
+  setOutputLanguage(language?: string | null): void
+  /**
    * Install a host-owned live checkpoint export sink (SDK-CP1).
    *
    * The callback receives one JSON object:
@@ -1930,11 +1942,6 @@ export declare class Session {
   delegateTask(options: DelegateTaskOptions): Promise<ToolResult>
   /** Execute several delegated child-agent tasks concurrently through `task`. */
   tasks(tasks: DelegateTaskOptions[]): Promise<ToolResult>
-  /**
-   * Compatibility helper for the legacy hidden `parallel_task` host tool.
-   * Prefer `tasks()` for new code.
-   */
-  parallelTask(tasks: DelegateTaskOptions[]): Promise<ToolResult>
   /** Run a bounded JavaScript script through the embedded QuickJS `program` tool. */
   program(options: ProgramScriptOptions): Promise<ToolResult>
   /** Read a file from the workspace. */

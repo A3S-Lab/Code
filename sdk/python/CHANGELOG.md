@@ -4,6 +4,21 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.4.0] - 2026-09-08
+
+### Added
+
+- Exposed `set_output_language` / `outputLanguage` for host-pinned reply
+  language without rebuilding the session.
+- Bundled Core 8.4.0 harness convergence: thin defaults, Active-only durable
+  memory, unified `task` fan-out, `update_plan`, and sdk-capabilities v2.
+
+### Breaking
+
+- Default crate features are now `zvec-rust-fts-bundled` only; enable
+  `advanced-harness`, `server`, and/or `headless-search` explicitly.
+- Removed `parallel_task` helper; use multi-item `task` / `tasks`.
+
 ## [8.3.0] - 2026-09-07
 
 ### Added

@@ -9,6 +9,9 @@ import (
 // capability inventory returned by Core and all official SDKs.
 const SDKCapabilitiesSchemaV1 = "a3s-code/sdk-capabilities/v1"
 
+// SDKCapabilitiesSchemaV2 is the tiered product capability inventory schema.
+const SDKCapabilitiesSchemaV2 = "a3s-code/sdk-capabilities/v2"
+
 // GetSDKCapabilities performs a bridge handshake and returns both the
 // transport operations and the product-level capability descriptors. It is
 // useful for hosts that want feature discovery without creating an Agent.
@@ -48,5 +51,5 @@ func SDKCapabilities(
 
 // SDKCapabilitiesSchema returns the stable capability inventory schema ID.
 func SDKCapabilitiesSchema() string {
-	return SDKCapabilitiesSchemaV1
+	return SDKCapabilitiesSchemaV2
 }

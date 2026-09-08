@@ -394,6 +394,7 @@ fn assert_no_forbidden_node_keys(
     }
 }
 
+#[cfg(feature = "headless-search")]
 #[test]
 fn moli_diagnostics_are_projected_without_installing() {
     let info = crate::moli_runtime::moli_runtime_info(None);

@@ -117,6 +117,24 @@ fn require_env(name: &str) {
     );
 }
 
+#[allow(dead_code)] // kept for MiniMax/OpenAI-alias live labs that still inject env keys
+fn require_openai_env_aliases() {
+    require_env("A3S_OPENAI_API_KEY");
+    require_env("A3S_OPENAI_BASE_URL");
+}
+
+/// Live gates that load the developer ACL must accept any configured provider.
+/// Do not hard-require MiniMax/OpenAI env aliases when `default_llm_config`
+/// already resolves from the selected `A3S_CONFIG_FILE` / `.a3s/config.acl`.
+fn require_configured_default_llm(config: &CodeConfig) -> a3s_code_core::llm::LlmConfig {
+    config.default_llm_config().unwrap_or_else(|| {
+        panic!(
+            "default_model must resolve to a usable LLM config in {}",
+            repo_config_path().display()
+        )
+    })
+}
+
 fn env_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -233,8 +251,6 @@ fn test_config_acl_minimax_aliases_resolve_without_network() {
 async fn test_config_acl_env_default_llm_completion() {
     let _guard = env_lock().lock().await;
     inject_minimax_aliases();
-    require_env("A3S_OPENAI_API_KEY");
-    require_env("A3S_OPENAI_BASE_URL");
 
     let config_path = repo_config_path();
     let config = CodeConfig::from_file(&config_path)
@@ -248,9 +264,7 @@ async fn test_config_acl_env_default_llm_completion() {
         .split_once('/')
         .expect("default_model should be provider/model");
 
-    let llm_config = config
-        .default_llm_config()
-        .expect("default llm config should resolve through env() values");
+    let llm_config = require_configured_default_llm(&config);
     assert_eq!(llm_config.provider, expected_provider);
     assert_eq!(llm_config.model, expected_model);
 
@@ -281,13 +295,15 @@ async fn test_config_acl_env_default_llm_completion() {
 async fn test_agent_create_uses_config_acl_env_injection() {
     let _guard = env_lock().lock().await;
     inject_minimax_aliases();
-    require_env("A3S_OPENAI_API_KEY");
-    require_env("A3S_OPENAI_BASE_URL");
 
     let config_path = repo_config_path();
+    let config = CodeConfig::from_file(&config_path)
+        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
+    let _ = require_configured_default_llm(&config);
+
     let agent = Agent::create(config_path.to_string_lossy().to_string())
         .await
-        .expect("agent should be created from .a3s/config.acl with injected env values");
+        .expect("agent should be created from .a3s/config.acl with resolvable credentials");
 
     let workspace = tempfile::tempdir().expect("temp workspace");
     let session = agent
@@ -318,13 +334,15 @@ async fn test_agent_create_uses_config_acl_env_injection() {
 async fn test_env_config_real_llm_planning_records_run_and_task_events() {
     let _guard = env_lock().lock().await;
     inject_minimax_aliases();
-    require_env("A3S_OPENAI_API_KEY");
-    require_env("A3S_OPENAI_BASE_URL");
 
     let config_path = repo_config_path();
+    let config = CodeConfig::from_file(&config_path)
+        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
+    let _ = require_configured_default_llm(&config);
+
     let agent = Agent::create(config_path.to_string_lossy().to_string())
         .await
-        .expect("agent should be created from env-injected ACL config");
+        .expect("agent should be created from resolvable ACL config");
 
     let workspace = tempfile::tempdir().expect("temp workspace");
     let opts = SessionOptions::new()

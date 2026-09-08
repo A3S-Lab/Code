@@ -253,11 +253,11 @@ pub struct SessionOptions {
     pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Optional exact V2 durable-memory binding.
     ///
-    /// Shadow mode never recalls V2 nodes. Active recall additionally requires
-    /// explicit evidence-backed activation and records final context admission.
-    /// The live repository remains runtime-only; its secret-free namespace,
-    /// mode, recall policy, and retrieval profile are persisted for exact
-    /// resume validation.
+    /// Active recall requires explicit evidence-backed activation and records
+    /// final context admission. Extraction may still write Candidate nodes;
+    /// only activated nodes are eligible for recall. The live repository
+    /// remains runtime-only; its secret-free namespace, mode, recall policy,
+    /// and retrieval profile are persisted for exact resume validation.
     pub durable_memory: Option<crate::durable_memory::DurableMemorySession>,
     /// Host observers notified after successful durable memory writes.
     pub memory_observers: Vec<Arc<dyn crate::memory::MemoryObserver>>,
@@ -427,16 +427,16 @@ pub struct SessionOptions {
     pub max_tool_rounds: Option<usize>,
     /// Per-session parallel fan-out limit override.
     ///
-    /// Applies to delegated `task` fan-out, the legacy `parallel_task` alias,
-    /// plan wave execution, and safe parallel write batches.
+    /// Applies to delegated `task` fan-out, plan wave execution, and safe
+    /// parallel write batches.
     pub max_parallel_tasks: Option<usize>,
     /// Per-session automatic subagent delegation override.
     pub auto_delegation: Option<crate::config::AutoDelegationConfig>,
     /// Per-session switch for model-visible manual child-agent tools.
     ///
     /// This overlays the effective automatic delegation config instead of
-    /// replacing it, so callers can hide `task` and its compatibility alias
-    /// while preserving other delegation settings.
+    /// replacing it, so callers can hide `task` while preserving other
+    /// delegation settings.
     pub manual_delegation_enabled: Option<bool>,
     /// Per-session kill switch for automatic parallel child-agent fan-out.
     ///
@@ -592,6 +592,10 @@ pub struct AgentSession {
     /// replaces the style for the next agent-loop build so hosts can hot-switch
     /// Plan/GeneralPurpose without rebuilding the session.
     runtime_agent_style: std::sync::Mutex<Option<Option<crate::prompts::AgentStyle>>>,
+    /// Runtime override for user-facing reply language. Outer `None` means unset
+    /// (use `prompt_slots.output_language`). `Some(None)` clears an earlier pin.
+    /// `Some(Some(tag))` pins replies for the next agent-loop build.
+    runtime_output_language: std::sync::Mutex<Option<Option<String>>>,
     /// Multi-tenant label. Framework only carries the string; semantics
     /// belong to the host.
     pub(crate) tenant_id: Option<String>,

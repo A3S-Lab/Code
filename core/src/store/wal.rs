@@ -7,7 +7,7 @@
 //! one. The log never stores session plaintext payloads — only digests and
 //! identities.
 
-use crate::evaluation::{digest_json, validate_digest};
+use crate::content_digest::{digest_json, validate_digest};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

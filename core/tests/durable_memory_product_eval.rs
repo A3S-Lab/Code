@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
 use a3s_code_core::host_env::{FixedClock, HostEnv, SequentialIdGenerator};
 use a3s_code_core::memory::MemoryConfig;
@@ -503,7 +504,11 @@ async fn run_capture_evaluation(
     let namespace =
         MemoryNamespace::try_new("capture-tenant", "capture-principal", "capture-workspace")
             .expect("valid capture namespace");
-    let binding = DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    let binding = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
     let client = Arc::new(CaptureEvalClient::new(
         &fixture.main_response,
         extraction_response(fixture, &old_memory_id),

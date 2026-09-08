@@ -231,18 +231,28 @@ impl WorkspaceServices {
 
     /// Enable retrieval on a shared manifest backend.
     ///
-    /// Lexical catalog and best-effort persistent zvec FTS attach on first
-    /// [`Self::chunk_catalog`] / [`Self::persistent_index`] access so hosts can
-    /// construct sessions without opening native index files on the critical
-    /// path. When the host already configured the catalog (eager strategy),
-    /// handles are attached immediately.
+    /// Lexical catalog attaches on first [`Self::chunk_catalog`] access (or when
+    /// the host already configured it). Durable zvec FTS opens only on
+    /// [`Self::persistent_index`] demand so session construction / Loading
+    /// never pays native index open cost. The backend is always retained for
+    /// that demand path.
     pub fn local_with_retrieval_backend(backend: Arc<ManifestWorkspaceBackend>) -> Arc<Self> {
         if backend.catalog_is_configured() {
             let catalog = backend.chunk_catalog();
             let persistent = backend.persistent_index();
-            Self::local_with_manifest_backend_and_catalog(backend, Some(catalog), persistent, None)
+            Self::local_with_manifest_backend_and_catalog(
+                backend.clone(),
+                Some(catalog),
+                persistent,
+                Some(backend),
+            )
         } else {
-            Self::local_with_manifest_backend_and_catalog(backend.clone(), None, None, Some(backend))
+            Self::local_with_manifest_backend_and_catalog(
+                backend.clone(),
+                None,
+                None,
+                Some(backend),
+            )
         }
     }
 
@@ -361,14 +371,31 @@ impl WorkspaceServices {
         if let Some(index) = &self.persistent_index {
             return Some(Arc::clone(index));
         }
-        self.ensure_lazy_lexical()
-            .and_then(|(_, index)| index.clone())
+        // Demand-driven durable FTS must open before the lazy catalog starts.
+        // `chunk_catalog()` wires the coordinator only when a persistent handle
+        // already exists; opening afterward leaves an orphan generation that
+        // never becomes ready (Grep/BM25 would stick on the portable catalog).
+        if let Some(index) = self
+            .lazy_lexical_backend
+            .as_ref()
+            .and_then(|backend| backend.ensure_persistent_index())
+        {
+            let _ = self.ensure_lazy_lexical();
+            return Some(index);
+        }
+        if let Some(handles) = self.ensure_lazy_lexical() {
+            if let Some(index) = &handles.1 {
+                return Some(Arc::clone(index));
+            }
+        }
+        None
     }
 
     fn ensure_lazy_lexical(&self) -> Option<&LazyLexicalHandles> {
         let backend = self.lazy_lexical_backend.as_ref()?;
         Some(self.lazy_lexical.get_or_init(|| {
             let catalog = backend.chunk_catalog();
+            // Do not open durable FTS merely because the catalog was touched.
             let persistent = backend.persistent_index();
             (catalog, persistent)
         }))

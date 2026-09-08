@@ -182,17 +182,17 @@ async fn builtin_subagents_execute_with_real_provider() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(240),
-        session.tool("parallel_task", tasks),
+        session.tool("task", tasks),
     )
     .await
     .expect("timed out waiting for built-in subagents")
-    .expect("parallel_task tool should execute");
+    .expect("task tool should execute multi-item fan-out");
 
-    println!("parallel_task exit_code: {}", result.exit_code);
-    println!("parallel_task output: {}", result.output);
+    println!("task exit_code: {}", result.exit_code);
+    println!("task output: {}", result.output);
 
     assert_eq!(result.exit_code, 0, "{}", result.output);
-    let metadata = result.metadata.expect("parallel_task metadata");
+    let metadata = result.metadata.expect("task metadata");
     assert_eq!(metadata["task_count"], 5);
     let results = metadata["results"].as_array().expect("results");
     assert_eq!(results.len(), 5);

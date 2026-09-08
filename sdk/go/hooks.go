@@ -221,6 +221,23 @@ func (session *Session) SetBudgetGuard(
 	return nil
 }
 
+// SetOutputLanguage pins or clears the user-facing reply language for
+// subsequent turns. Pass a BCP-47 tag such as "zh-CN" to pin; pass "" to
+// clear the runtime override so session PromptSlots apply again.
+func (session *Session) SetOutputLanguage(ctx context.Context, language string) error {
+	const op = "session_set_output_language"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	params := session.params()
+	if language == "" {
+		params["language"] = nil
+	} else {
+		params["language"] = language
+	}
+	return session.runtime.Request(ctx, op, params, nil)
+}
+
 // SetSessionCheckpointExportSink installs a host-owned live checkpoint export
 // callback (SDK-CP1). Pass a nil handler to clear.
 func (session *Session) SetSessionCheckpointExportSink(

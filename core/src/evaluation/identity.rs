@@ -1,7 +1,6 @@
 //! Stable identities and digest helpers used by the evaluation substrate.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const EXECUTION_TARGET_SCHEMA_V1: &str = "a3s.code.execution-target.v1";
@@ -141,32 +140,10 @@ impl EventCursorV1 {
     }
 }
 
-pub fn digest_bytes(domain: &str, bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(domain.as_bytes());
-    hasher.update([0]);
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    format!("sha256:{digest:x}")
-}
-
-pub fn digest_json<T: Serialize>(domain: &str, value: &T) -> Result<String, serde_json::Error> {
-    let bytes = serde_json::to_vec(value)?;
-    Ok(digest_bytes(domain, &bytes))
-}
+pub use crate::content_digest::{digest_bytes, digest_json};
 
 pub fn validate_digest(value: &str) -> Result<(), IdentityError> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        return Err(IdentityError::InvalidDigest);
-    };
-    if hex.len() != 64
-        || !hex
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
-        return Err(IdentityError::InvalidDigest);
-    }
-    Ok(())
+    crate::content_digest::validate_digest(value).map_err(|_| IdentityError::InvalidDigest)
 }
 
 fn validate_id(field: &'static str, value: &str) -> Result<(), IdentityError> {

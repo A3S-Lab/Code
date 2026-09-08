@@ -214,9 +214,19 @@ impl Session {
     /// selected by the model on subsequent runs.
     #[napi]
     pub fn register_dynamic_workflow_runtime(&self) -> napi::Result<()> {
-        self.inner
-            .register_dynamic_workflow_runtime()
-            .map_err(node_code_error)
+        #[cfg(feature = "advanced-harness")]
+        {
+            return self
+                .inner
+                .register_dynamic_workflow_runtime()
+                .map_err(node_code_error);
+        }
+        #[cfg(not(feature = "advanced-harness"))]
+        {
+            Err(napi::Error::from_reason(
+                "dynamic_workflow requires the advanced-harness feature",
+            ))
+        }
     }
 
     /// Remove a previously registered dynamic tool from this live session.

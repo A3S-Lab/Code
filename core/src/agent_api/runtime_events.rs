@@ -558,6 +558,10 @@ fn should_bridge_agent_event(event: &AgentEvent) -> bool {
         AgentEvent::SubagentStart { .. }
             | AgentEvent::SubagentProgress { .. }
             | AgentEvent::SubagentEnd { .. }
+            // Checklist updates from the `update_plan` tool (and any other
+            // tool that mutates the live task list) must reach persistence
+            // and host UI subscribers; filtering them here drops the pin path.
+            | AgentEvent::TaskUpdated { .. }
             // A delegated child that inherits the parent confirmation provider
             // waits for the parent UI to answer these events. Filtering them
             // here leaves the child blocked even though its confirmation is

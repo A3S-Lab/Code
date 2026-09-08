@@ -490,13 +490,14 @@ wrapA3sCodeErrors(Session && Session.prototype, [
   'send', 'run', 'resumeRun', 'sendRequest', 'stream', 'streamRequest',
   'sendWithAttachments', 'streamWithAttachments', 'save',
   'addMcpServer', 'addMcpServerConfig', 'addMcp', 'removeMcpServer', 'removeMcp',
-  'tool', 'governedTool', 'task', 'delegateTask', 'tasks', 'parallelTask', 'program',
+  'tool', 'governedTool', 'task', 'delegateTask', 'tasks', 'program',
   'readFile', 'writeFile', 'ls', 'editFile', 'patchFile', 'bash', 'glob', 'grep',
   'webSearch', 'git', 'gitCommand', 'confirmToolUse', 'verifyCommands',
   'steer', 'interrupt', 'runControlSnapshot',
   'registerAgentDir', 'registerWorkerAgent', 'registerWorkerAgents',
   'registerDynamicWorkflowRuntime', 'unregisterDynamicTool',
   'registerHook', 'unregisterHook', 'registerCommand',
+  'setBudgetGuard', 'setOutputLanguage', 'setSessionCheckpointExportSink',
   'ensureRecoveryCapabilityBinding', 'drainCapabilityCleanup', 'applyCapabilityBatch',
 ])
 wrapA3sCodeErrors(StateGraphRuntime, ['restore'])

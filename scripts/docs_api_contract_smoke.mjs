@@ -386,6 +386,7 @@ sessions_dir = "${aclSessionDir}"
   }
   assert.ok(!initialToolNames.includes('parallel_task'));
   assert.ok(!session.toolDefinitions().some(tool => tool.name === 'parallel_task'));
+  assert.equal(typeof session.parallelTask, 'undefined');
   assert.ok(session.toolDefinitions().some(tool => tool.name === 'program'));
   const fileSkillSearch = await session.tool('search_skills', { query: 'release blockers', limit: 5 });
   assert.equal(fileSkillSearch.exitCode, 0);
@@ -529,23 +530,6 @@ sessions_dir = "${aclSessionDir}"
   ]);
   assert.equal(parallel.name, 'task');
   assert.equal(parallel.exitCode, 0);
-
-  const legacyParallel = await session.parallelTask([
-    {
-      agent: 'general',
-      description: 'legacy compatibility one',
-      prompt: 'Return one short response.',
-      maxSteps: 1,
-    },
-    {
-      agent: 'general',
-      description: 'legacy compatibility two',
-      prompt: 'Return another short response.',
-      maxSteps: 1,
-    },
-  ]);
-  assert.equal(legacyParallel.name, 'parallel_task');
-  assert.equal(legacyParallel.exitCode, 0);
 
   assert.ok((await session.runs()).length >= 2);
   assert.equal(Array.isArray(session.traceEvents()), true);

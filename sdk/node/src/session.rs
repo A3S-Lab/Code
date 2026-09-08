@@ -1100,6 +1100,18 @@ impl Session {
         Ok(())
     }
 
+    /// Pin or clear the user-facing reply language for subsequent turns.
+    ///
+    /// Pass a BCP-47 tag such as `zh-CN` to pin; pass `null` to clear the
+    /// runtime override so session `outputLanguage` / prompt slots apply again.
+    /// Takes effect on the next `send` / `stream`.
+    #[napi(js_name = "setOutputLanguage")]
+    pub fn set_output_language(&self, language: Option<String>) -> napi::Result<()> {
+        self.inner
+            .set_output_language(language)
+            .map_err(node_code_error)
+    }
+
     /// Install a host-owned live checkpoint export sink (SDK-CP1).
     ///
     /// The callback receives one JSON object:

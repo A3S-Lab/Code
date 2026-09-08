@@ -1065,7 +1065,7 @@ async fn write_records(path: &Path, records: &BTreeMap<String, ClaimRecord>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluation::digest_bytes;
+    use crate::content_digest::digest_bytes;
 
     fn identity(tag: &str) -> ExecutionIdentityV1 {
         ExecutionIdentityV1::derive("a3s.test.flow-decision", &serde_json::json!({ "tag": tag }))

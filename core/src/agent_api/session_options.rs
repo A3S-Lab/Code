@@ -733,7 +733,7 @@ impl SessionOptions {
 
     /// Enable or disable manual child-agent tools for this session.
     ///
-    /// When false, the model-visible `task` tool and the hidden `parallel_task`
+    /// When false, the model-visible `task` tool
     /// compatibility alias are not registered. Worker agents remain registered
     /// for introspection and hosts that manage them directly. This is for cost
     /// control or debugging; it is not a security sandbox for the parent agent.
@@ -747,7 +747,7 @@ impl SessionOptions {
 
     /// Globally enable or disable automatic parallel child-agent fan-out.
     ///
-    /// Manual `task` fan-out and legacy `parallel_task` calls remain available
+    /// Manual `task` fan-out calls remain available
     /// when this is false.
     pub fn with_auto_parallel_delegation(mut self, enabled: bool) -> Self {
         if let Some(config) = &mut self.auto_delegation {
@@ -759,9 +759,23 @@ impl SessionOptions {
 
     /// Set slot-based system prompt customization for this session.
     ///
-    /// Allows customizing role, guidelines, response style, and extra instructions
-    /// without overriding the core agentic capabilities.
+    /// Allows customizing role, guidelines, response style, output language,
+    /// and extra instructions without overriding the core agentic capabilities.
     pub fn with_prompt_slots(mut self, slots: SystemPromptSlots) -> Self {
+        self.prompt_slots = Some(slots);
+        self
+    }
+
+    /// Pin user-facing replies to a BCP-47 language tag for this session.
+    ///
+    /// Merges into existing `prompt_slots` when present so hosts can set locale
+    /// without wiping other slot customizations.
+    pub fn with_output_language(mut self, language: impl Into<String>) -> Self {
+        let slots = self
+            .prompt_slots
+            .take()
+            .unwrap_or_default()
+            .with_output_language(language);
         self.prompt_slots = Some(slots);
         self
     }

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use a3s_code_core::memory::{
     AgentMemory, MemoryConfig, MemoryMaintenanceContext, MemoryMaintenanceError,
     MemoryMaintenanceJob, MemoryMaintenanceOptions, MemoryMaintenanceOutcome,
@@ -287,7 +288,11 @@ async fn owned_host_job_applies_verified_atomic_v2_supersession() {
         ))
         .await
         .unwrap();
-    let binding = DurableMemorySession::shadow(repository.clone(), namespace.clone());
+    let binding = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
     binding
         .activate_candidate(
             DurableMemoryActivation::try_new(

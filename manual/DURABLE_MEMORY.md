@@ -31,33 +31,35 @@ This division keeps the repository policy-free. A storage backend cannot decide
 whether an LLM statement is true, and an extraction prompt cannot weaken the
 repository's isolation or durability invariants.
 
-## Candidate shadowing
+## Candidate extraction (not a serving mode)
 
-`DurableMemoryMode::ShadowCandidates` has the following contract:
+Extraction may still write evidence-backed **Candidate** nodes into the V2
+repository. That write path is not a second recall authority:
 
-1. Existing V1 extraction and recall remain the serving path.
-2. A V2 write happens only after the corresponding V1 write succeeds.
-3. The V2 node is always `Candidate`, never `Active`.
+1. Serving recall uses `DurableMemoryMode::ActiveRecall` only.
+2. `DurableMemorySession::shadow` / `ShadowCandidates` were removed
+   (`HARNESS-CONV4` / `CAP-GA1`).
+3. A Candidate write happens only after evidence is available and remains
+   `Candidate` until the host explicitly activates it.
 4. The node contains a typed `SessionTurn` evidence reference. Its digest is
    computed from the same bounded, redacted turn fields used by extraction; the
    URI contains no prompt or response text.
 5. Candidate and change-set identities are content addressed. An exact replay
    returns the original result instead of creating a duplicate.
-6. V2 repository failures are reported as warnings and do not change the V1
-   turn result. Shadow mode is observational, not a second serving authority.
-7. V2 candidates are never queried for prompt context in this mode.
+6. Candidates are never queried for prompt context until activation.
 
 ## Explicit activation and active recall
 
-`DurableMemoryMode::ActiveRecall` retains candidate shadow writes and adds a
-bounded active-only lexical query. An optional second stage performs a bounded
-number of exact reads for one-hop `RelatedTo` targets. It does not recurse,
-follow `ConflictsWith`, return non-Active targets, or widen the exact namespace.
-It does not auto-activate extraction output. The host submits
-`DurableMemoryActivation` for one exact candidate revision; Code accepts only
-new Manual or Verification decision evidence, and A3S Memory stores that
-evidence in the atomic activation revision. LLM confidence and importance
-remain annotations and cannot authorize activation.
+`DurableMemoryMode::ActiveRecall` is the only binding mode. It may retain
+Candidate writes from extraction and adds a bounded active-only lexical query.
+An optional second stage performs a bounded number of exact reads for one-hop
+`RelatedTo` targets. It does not recurse, follow `ConflictsWith`, return
+non-Active targets, or widen the exact namespace. It does not auto-activate
+extraction output. The host submits `DurableMemoryActivation` for one exact
+candidate revision; Code accepts only new Manual or Verification decision
+evidence, and A3S Memory stores that evidence in the atomic activation
+revision. LLM confidence and importance remain annotations and cannot authorize
+activation.
 
 `DurableMemoryRecallPolicy` requires an explicit result bound and minimum
 lexical score; relation reads default to zero. `preview_recall` runs the same
@@ -137,23 +139,6 @@ let namespace = MemoryNamespace::try_new(
     "principal-alice",
     "repository-a3s-code",
 )?;
-let durable_memory = DurableMemorySession::shadow(repository, namespace);
-
-let options = SessionOptions::new().with_durable_memory(durable_memory);
-# Ok(options)
-# }
-```
-
-After shadow evaluation and explicit activation are in place, a host can opt in
-to active recall instead:
-
-```rust,no_run
-# use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySession};
-# use a3s_memory::repository::{InMemoryRepository, MemoryNamespace};
-# use std::sync::Arc;
-# fn binding() -> anyhow::Result<DurableMemorySession> {
-# let repository = Arc::new(InMemoryRepository::new());
-# let namespace = MemoryNamespace::try_new("tenant", "principal", "scope")?;
 let recall = DurableMemoryRecallPolicy::try_new(5, 0.40)?
     .try_with_related_lookups(8)?;
 let durable_memory = DurableMemorySession::active_recall(
@@ -161,7 +146,9 @@ let durable_memory = DurableMemorySession::active_recall(
     namespace,
     recall,
 );
-# Ok(durable_memory)
+
+let options = SessionOptions::new().with_durable_memory(durable_memory);
+# Ok(options)
 # }
 ```
 

@@ -1,3 +1,4 @@
+#![cfg(feature = "dynamic-workflow")]
 //! Cross-process qualification for the dynamic-workflow control boundary.
 //!
 //! The helper test is intentionally launched through the test binary itself.

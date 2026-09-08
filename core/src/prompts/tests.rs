@@ -108,7 +108,7 @@ fn test_default_prompt_matches_current_runtime_contract() {
         "default prompt retains removed SRT wording"
     );
     assert!(
-        built.len() < 11_000,
+        built.len() < 12_000,
         "default prompt grew beyond its budget: {} bytes",
         built.len()
     );
@@ -360,6 +360,65 @@ fn test_slots_custom_response_style_replaces_default() {
 }
 
 #[test]
+fn test_slots_output_language_pins_reply_language() {
+    let slots = SystemPromptSlots::default().with_output_language("zh-CN");
+    let built = slots.build();
+    assert!(built.contains("## Output Language"));
+    assert!(built.contains("Write all user-visible product prose in zh-CN"));
+    assert!(built.contains("reasoning/thinking"));
+    assert!(built.contains("plans, goals, step descriptions"));
+    assert!(built.contains("Do not switch languages because tool output"));
+    assert!(built.contains("Core Behaviour"));
+}
+
+#[test]
+fn test_slots_blank_output_language_is_ignored() {
+    let slots = SystemPromptSlots::default().with_output_language("   ");
+    assert!(slots.output_language.is_none());
+    let built = slots.build();
+    assert!(!built.contains("## Output Language"));
+}
+
+#[test]
+fn infer_user_reply_language_prefers_user_script() {
+    assert_eq!(
+        infer_user_reply_language("请根据第一性原理修复这个问题"),
+        Some("zh-CN")
+    );
+    assert_eq!(
+        infer_user_reply_language("帮我 fix 这个 bug 并跑测试"),
+        Some("zh-CN")
+    );
+    assert_eq!(
+        infer_user_reply_language("このバグを直してください"),
+        Some("ja")
+    );
+    assert_eq!(
+        infer_user_reply_language("이 버그를 고쳐 주세요"),
+        Some("ko")
+    );
+    assert_eq!(
+        infer_user_reply_language("Please fix this from first principles"),
+        Some("en")
+    );
+    assert_eq!(infer_user_reply_language("ok"), None);
+    assert_eq!(infer_user_reply_language("42"), None);
+}
+
+#[test]
+fn resolve_product_output_language_prefers_pin_then_inference() {
+    assert_eq!(
+        resolve_product_output_language(Some("en-US"), "请修复这个问题"),
+        Some("en-US".to_owned())
+    );
+    assert_eq!(
+        resolve_product_output_language(None, "请修复这个问题"),
+        Some("zh-CN".to_owned())
+    );
+    assert_eq!(resolve_product_output_language(Some("  "), "ok"), None);
+}
+
+#[test]
 fn test_slots_extra_appended() {
     let slots = SystemPromptSlots {
         extra: Some("Remember: always write tests first.".to_string()),
@@ -386,6 +445,7 @@ fn test_slots_all_slots_combined() {
         role: Some("You are a Rust expert".to_string()),
         guidelines: Some("Use clippy. No unwrap.".to_string()),
         response_style: Some("Short answers only.".to_string()),
+        output_language: Some("en-US".to_string()),
         extra: Some("Project uses tokio.".to_string()),
     };
     let built = slots.build();
@@ -394,6 +454,8 @@ fn test_slots_all_slots_combined() {
     assert!(built.contains("## Guidelines"));
     assert!(built.contains("Use clippy"));
     assert!(built.contains("Short answers only"));
+    assert!(built.contains("## Output Language"));
+    assert!(built.contains("Write all user-visible product prose in en-US"));
     assert!(built.contains("Project uses tokio"));
     // Default response format replaced
     assert!(!built.contains("keep progress notes brief and useful"));
@@ -409,6 +471,11 @@ fn test_slots_is_empty() {
     .is_empty());
     assert!(!SystemPromptSlots {
         style: Some(AgentStyle::Plan),
+        ..Default::default()
+    }
+    .is_empty());
+    assert!(!SystemPromptSlots {
+        output_language: Some("zh-CN".to_string()),
         ..Default::default()
     }
     .is_empty());

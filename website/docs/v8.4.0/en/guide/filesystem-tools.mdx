@@ -1,0 +1,67 @@
+---
+title: 'tools/ Tool Directory'
+description: 'Declare AgentDir MCP and script tools while preserving permissions, HITL, and allow-list boundaries'
+---
+
+# tools/ Tool Directory
+
+`tools/` declares directory-scoped tools for AgentDir. Each `tools/<name>.md` describes one model-visible capability. A3S Code currently supports `kind: mcp` and `kind: script`.
+
+```text
+release-agent/
+└── tools/
+    ├── github.md
+    └── search-auth.md
+```
+
+Tool definitions come from the filesystem, but visibility, execution, confirmation, and audit still belong to the harness, permission policy, and AgentDir loader. A file existing is not unlimited permission.
+
+## MCP Tool
+
+```md
+---
+kind: mcp
+name: github
+transport: stdio
+command: npx
+args: ['-y', '@modelcontextprotocol/server-github']
+env:
+  GITHUB_TOKEN: '${GITHUB_TOKEN}'
+---
+
+GitHub issues and pull request tools.
+```
+
+Every enabled schedule session connects the MCP server at startup and receives namespaced `mcp__github__*` tools. Inject secrets through environment variables, not the tool file.
+
+## Script Tool
+
+```md
+---
+kind: script
+name: search-auth
+path: scripts/search-auth.js
+allowed_tools: [grep, glob, read]
+limits:
+  timeoutMs: 30000
+  maxToolCalls: 30
+  maxOutputBytes: 65536
+---
+
+Find authentication-related files and return an evidence list.
+```
+
+`kind: script` exposes a pre-parameterized QuickJS `program` call as a model-visible tool. The source must define `async function run(ctx, inputs)`. It has no filesystem, network, process, or environment access; it can only call allow-listed tools through `ctx.tool(...)`.
+
+## Safety Boundary
+
+- `allowed_tools` is the script's internal capability boundary; keep it minimal.
+- Unknown `kind`, workspace-escaping paths, duplicate tool names, and illegal limits should fail at load time.
+- Do not let untrusted directories declare high-privilege MCP servers or scripts.
+- High-risk tools should still use HITL, allow-lists, and audit.
+
+## Current Scope
+
+`tools/` is installed by `serve_agent_dir` per schedule session. It serves durable agents and recurring work. Normal interactive sessions should use host direct tools, MCP connections, or SDK `session.tool(...)` registration.
+
+If a capability is a project-wide connector, prefer host config or MCP. If it belongs only to one durable scheduled agent, put it in that AgentDir's `tools/`.
