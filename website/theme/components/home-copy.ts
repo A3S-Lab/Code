@@ -108,8 +108,7 @@ export const copy = {
       '装好 a3s code，找个项目试一下。要嵌进产品时，再选 Rust、Node.js、Python 或 Go。',
     ctaPrimary: '查看快速开始',
     ctaSecondary: '查看 API',
-    footer:
-      'MIT · 用 Rust 写的 · Terminal / Rust / Node.js / Python / Go',
+    footer: 'MIT · 用 Rust 写的 · Terminal / Rust / Node.js / Python / Go',
   },
   en: {
     eyebrow: 'Open source · embeddable agent runtime',
