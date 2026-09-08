@@ -423,13 +423,14 @@ pub use use_runtime_tasks::{
 pub use workspace::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
     CommandOutputSummary, CommandRequest, CustomWorkspaceChunkingStrategy,
-    FixedWindowChunkingOptions, LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult,
-    LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, LocalWorkspaceFile,
-    LocalWorkspaceFileStatus, LocalWorkspaceManifest, LocalWorkspaceManifestSnapshot,
-    ManifestWorkspaceBackend, RecentWorkspaceFile, RecursiveChunkingOptions, RemoteGitBackend,
-    RemoteGitBackendConfig, RemoteGitConflict, VirtualPathResolver, WorkspaceCapabilities,
-    WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceChunkId, WorkspaceChunkRange,
-    WorkspaceChunkingError, WorkspaceChunkingInput, WorkspaceChunkingStrategy,
+    FixedWindowChunkingOptions, GrepCandidateIndex, GrepCandidateSelection, LexicalSearchHit,
+    LexicalSearchRequest, LexicalSearchResult, LocalWorkspaceAccessPolicy, LocalWorkspaceBackend,
+    LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
+    LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
+    RecursiveChunkingOptions, RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict,
+    SharedGrepCandidateIndex, UnconstrainedGrepCandidateIndex, VirtualPathResolver,
+    WorkspaceCapabilities, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceChunkId,
+    WorkspaceChunkRange, WorkspaceChunkingError, WorkspaceChunkingInput, WorkspaceChunkingStrategy,
     WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceEligibilityPolicy,
     WorkspaceEmbeddingBatchMetrics, WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind,
     WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
@@ -455,3 +456,8 @@ pub use workspace::{
 };
 #[cfg(feature = "s3")]
 pub use workspace::{S3BackendConfig, S3WorkspaceBackend};
+#[cfg(feature = "grep-trigram")]
+pub use workspace::{
+    TrigramGrepCandidateIndex, TrigramGrepCandidateIndexError, AUTO_GREP_TRIGRAM_MAX_FILES,
+    GREP_TRIGRAM_INDEX_RELATIVE_DIR,
+};

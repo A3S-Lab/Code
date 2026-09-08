@@ -556,7 +556,14 @@ fn session_options(
 | `summary` |没有渲染匹配的全扫描行和文件总数 |
 
 非内容模式要求内置工作区后端计算匹配项，而无需
-构造丢弃的匹配文本。在 `mode: "glob"` 中，`search` 保留了
+构造丢弃的匹配文本。精确 `grep` 仍是匹配权威；在默认
+`local-code` 配置下，清单支持的工作区还会在
+`.a3s-code/grep-trigram` 下惰性构建进程内 trigram 候选缓存，
+以便字面量模式在正则扫描前打开更少文件。非字面量模式与
+索引失败会失败开放回今日的全量扫描。该路径不会打开持久
+zvec FTS（排序检索请用 `mode: "bm25"`）。宿主可用
+`ManifestWorkspaceBackend::configure_grep_candidate_index` 替换自动索引。
+在 `mode: "glob"` 中，`search` 保留了
 默认后端的最近度或相关性顺序；请求`sort: "path"`时
 光标页需要稳定的词汇顺序。使用 `mode: "bm25"` 表示有界
 zvec-rust FTS/BM25 对工作区文本块的词汇排名。启用检索

@@ -49,13 +49,12 @@ a3s-lane = "0.5"
 # drift underneath the Code runtime manager.
 a3s-search = { version = "=3.1.0", git = "https://github.com/A3S-Lab/Search.git", rev = "c30e3dd04de8f2874113cda435439d6938bd3eb6", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
-a3s-sandbox = { version = "=0.1.1", path = "../../sandbox" }
+a3s-sandbox = { version = "=0.1.2" }
 # Official zvec Rust binding used by the workspace full-text index. The
 # dependency is optional so minimal/no-native builds can retain the portable
 # scorer, while product builds enable the bundled feature and ship the
 # attested platform library beside the executable.
 zvec_rust = { package = "zvec-rust", version = "=0.7.0", optional = true, default-features = false }
-
 # Async runtime
 tokio = { version = "1.35", features = [
     "rt-multi-thread", "sync", "time", "io-util",
@@ -179,8 +178,9 @@ default = ["local-code"]
 # Governed agent loop, workspace tools, identity/events — no browser, native
 # FTS library, S3, telemetry, serve daemon, or Advanced harness modules.
 minimal = []
-# Minimal plus the workspace persistent zvec FTS lexical path.
-local-code = ["zvec-rust-fts-bundled"]
+# Minimal plus the workspace persistent zvec FTS lexical path and in-tree
+# trigram pruning for workspace `grep` candidates.
+local-code = ["zvec-rust-fts-bundled", "grep-trigram"]
 # Local code plus durable SQLite memory vectors, browser-backed web search, and
 # Advanced evaluation/research/workflow surfaces.
 scientific = ["local-code", "durable-memory-sqlite", "headless-search", "advanced-harness"]
@@ -211,6 +211,10 @@ zvec-rust-fts = ["dep:zvec_rust"]
 # no vendored `ZVEC_LIB_DIR` is supplied. Packagers should set `ZVEC_LIB_DIR`
 # to the verified artifact so builds remain reproducible and offline.
 zvec-rust-fts-bundled = ["zvec-rust-fts", "zvec_rust/bundled"]
+# Enable in-tree trigram pruning for workspace `grep` candidates (tgrep-style
+# fail-open filter). Exact regex matching stays owned by Code; no crates.io
+# git dep (`tgrep-core` is unpublished). Included in `local-code`.
+grep-trigram = []
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.
 telemetry = [
