@@ -42,8 +42,11 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **Safer session reopen (8.5.1).** Writers take a cross-process flock, re-read
   the durable sequence, and can quarantine a bad WAL instead of minting
   colliding IDs.
+- **DeepResearch Flow identity (8.5.2).** Dynamic Flow step identity admits
+  inputs up to 512 KiB; above 64 KiB the identity folds to `sha256` + `bytes`
+  (digest-only) so multi-source selector shards stay scheduler-compatible.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.1`).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.2`).
 
 ### Earlier lines
 

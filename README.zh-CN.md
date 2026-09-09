@@ -40,8 +40,11 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   不会碰持久 zvec FTS（排序检索继续用 `bm25`）。
 - **会话重开更稳（8.5.1）。** 写者先拿跨进程 flock，再读持久序号；坏掉的 WAL
   可以隔离，避免并发写出冲突 ID。
+- **DeepResearch Flow 身份（8.5.2）。** 动态 Flow 步骤身份允许最大 512 KiB
+  输入；超过 64 KiB 时折叠为 `sha256` + `bytes`（仅 digest），使多源选择器
+  分片仍可接入调度器边界。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.1`）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.2`）。
 
 ### 更早的版本线
 
