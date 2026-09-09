@@ -14,6 +14,53 @@ const MAX_SEARCH_LIMIT: usize = 500;
 
 pub(super) struct CodeSymbolsTool;
 
+fn code_symbols_properties() -> Value {
+    serde_json::json!({
+        "operation": {
+            "type": "string",
+            "enum": ["outline", "search"]
+        },
+        "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Saved workspace document path. Required for outline."
+        },
+        "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Semantic symbol query. Required for search."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_SEARCH_LIMIT,
+            "description": "Maximum workspace symbols for search. Default: 100; maximum: 500."
+        }
+    })
+}
+
+fn code_symbols_examples() -> Value {
+    serde_json::json!([
+        {"operation": "outline", "path": "src/lib.rs"},
+        {"operation": "search", "query": "WorkspaceClient", "limit": 50}
+    ])
+}
+
+/// Model-facing schema without top-level `oneOf`.
+///
+/// OpenAI-compatible and Anthropic tool validators reject union keywords at the
+/// parameters root. Operation-specific required fields remain in
+/// [`CodeSymbolsTool::parameters`] for gateway validation and in `execute`.
+fn code_symbols_model_parameters() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": code_symbols_properties(),
+        "required": ["operation"],
+        "examples": code_symbols_examples()
+    })
+}
+
 #[async_trait]
 impl Tool for CodeSymbolsTool {
     fn name(&self) -> &str {
@@ -28,28 +75,7 @@ impl Tool for CodeSymbolsTool {
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["outline", "search"]
-                },
-                "path": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Saved workspace document path. Required for outline."
-                },
-                "query": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Semantic symbol query. Required for search."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_SEARCH_LIMIT,
-                    "description": "Maximum workspace symbols for search. Default: 100; maximum: 500."
-                }
-            },
+            "properties": code_symbols_properties(),
             "required": ["operation"],
             "oneOf": [
                 {
@@ -61,11 +87,16 @@ impl Tool for CodeSymbolsTool {
                     "required": ["query"]
                 }
             ],
-            "examples": [
-                {"operation": "outline", "path": "src/lib.rs"},
-                {"operation": "search", "query": "WorkspaceClient", "limit": 50}
-            ]
+            "examples": code_symbols_examples()
         })
+    }
+
+    fn definition(&self) -> crate::llm::ToolDefinition {
+        crate::llm::ToolDefinition {
+            name: self.name().to_string(),
+            description: self.description().to_string(),
+            parameters: code_symbols_model_parameters(),
+        }
     }
 
     fn capabilities(&self, _args: &Value) -> crate::tools::ToolCapabilities {

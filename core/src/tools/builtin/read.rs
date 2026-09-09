@@ -31,6 +31,95 @@ fn is_zero(value: &usize) -> bool {
 
 pub struct ReadTool;
 
+fn read_properties() -> serde_json::Value {
+    serde_json::json!({
+        "file_path": {
+            "type": "string",
+            "description": "Path to one file, absolute or relative to the workspace. Use exactly one of file_path or files."
+        },
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional. Line number to start reading from. 0-indexed. Default: 0."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_READ_LINES,
+            "description": "Optional. Maximum number of lines to read. Default and maximum: 2000."
+        },
+        "files": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_BATCH_READ_FILES,
+            "description": "Read several independent text ranges in request order under one shared output budget. A failed member is reported in its own segment without discarding successful members.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_BATCH_READ_PATH_BYTES,
+                        "description": "Path to a text file, absolute or relative to the workspace."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional 0-based starting line. Default: 0."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_READ_LINES,
+                        "description": "Optional maximum lines for this file. Default and maximum: 2000."
+                    }
+                },
+                "required": ["path"]
+            }
+        },
+        "max_output_bytes": {
+            "type": "integer",
+            "minimum": MIN_BATCH_READ_OUTPUT_BYTES,
+            "maximum": MAX_BATCH_READ_OUTPUT_BYTES,
+            "description": "Optional shared byte budget for a files read. Default: 65536; maximum: 98304. The returned continuation is included inside this budget."
+        }
+    })
+}
+
+fn read_examples() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "file_path": "src/main.rs"
+        },
+        {
+            "file_path": "src/main.rs",
+            "offset": 40,
+            "limit": 80
+        },
+        {
+            "files": [
+                {"path": "src/lib.rs"},
+                {"path": "src/config.rs", "offset": 20, "limit": 60}
+            ]
+        }
+    ])
+}
+
+/// Model-facing schema for OpenAI-compatible and Anthropic tool APIs.
+///
+/// Provider tool validators reject top-level `oneOf` / `anyOf` / `allOf` on
+/// function parameters. Mutual exclusivity of `file_path` vs `files` stays in
+/// [`ReadTool::parameters`] for gateway validation and in `execute`.
+fn read_model_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": read_properties(),
+        "examples": read_examples()
+    })
+}
+
 #[async_trait]
 impl Tool for ReadTool {
     fn name(&self) -> &str {
@@ -45,80 +134,21 @@ impl Tool for ReadTool {
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to one file, absolute or relative to the workspace. Use exactly one of file_path or files."
-                },
-                "offset": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Optional. Line number to start reading from. 0-indexed. Default: 0."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_READ_LINES,
-                    "description": "Optional. Maximum number of lines to read. Default and maximum: 2000."
-                },
-                "files": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": MAX_BATCH_READ_FILES,
-                    "description": "Read several independent text ranges in request order under one shared output budget. A failed member is reported in its own segment without discarding successful members.",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": MAX_BATCH_READ_PATH_BYTES,
-                                "description": "Path to a text file, absolute or relative to the workspace."
-                            },
-                            "offset": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": "Optional 0-based starting line. Default: 0."
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": MAX_READ_LINES,
-                                "description": "Optional maximum lines for this file. Default and maximum: 2000."
-                            }
-                        },
-                        "required": ["path"]
-                    }
-                },
-                "max_output_bytes": {
-                    "type": "integer",
-                    "minimum": MIN_BATCH_READ_OUTPUT_BYTES,
-                    "maximum": MAX_BATCH_READ_OUTPUT_BYTES,
-                    "description": "Optional shared byte budget for a files read. Default: 65536; maximum: 98304. The returned continuation is included inside this budget."
-                }
-            },
+            "properties": read_properties(),
             "oneOf": [
                 {"required": ["file_path"]},
                 {"required": ["files"]}
             ],
-            "examples": [
-                {
-                    "file_path": "src/main.rs"
-                },
-                {
-                    "file_path": "src/main.rs",
-                    "offset": 40,
-                    "limit": 80
-                },
-                {
-                    "files": [
-                        {"path": "src/lib.rs"},
-                        {"path": "src/config.rs", "offset": 20, "limit": 60}
-                    ]
-                }
-            ]
+            "examples": read_examples()
         })
+    }
+
+    fn definition(&self) -> crate::llm::ToolDefinition {
+        crate::llm::ToolDefinition {
+            name: self.name().to_string(),
+            description: self.description().to_string(),
+            parameters: read_model_parameters(),
+        }
     }
 
     fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
@@ -866,6 +896,21 @@ mod tests {
         assert_eq!(examples[0]["file_path"], "src/main.rs");
         assert!(examples[0].get("path").is_none());
         assert_eq!(examples[2]["files"][0]["path"], "src/lib.rs");
+    }
+
+    #[test]
+    fn test_read_model_definition_has_no_top_level_union() {
+        let definition = ReadTool.definition();
+        let params = &definition.parameters;
+        assert_eq!(params["type"], "object");
+        assert!(params.get("oneOf").is_none());
+        assert!(params.get("anyOf").is_none());
+        assert!(params.get("allOf").is_none());
+        assert!(params.get("enum").is_none());
+        assert!(params.get("const").is_none());
+        assert!(params.get("not").is_none());
+        assert!(params["properties"]["file_path"].is_object());
+        assert!(params["properties"]["files"].is_object());
     }
 
     #[test]

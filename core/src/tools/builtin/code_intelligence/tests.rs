@@ -438,3 +438,17 @@ async fn registration_is_capability_gated_and_tools_are_structured_query_reads()
     assert!(escaped.output.contains("Workspace boundary check failed"));
     assert_eq!(test_provider.calls.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn code_symbols_model_definition_has_no_top_level_union() {
+    let definition = CodeSymbolsTool.definition();
+    let params = &definition.parameters;
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["required"][0], "operation");
+    assert!(params.get("oneOf").is_none());
+    assert!(params.get("anyOf").is_none());
+    assert!(params.get("allOf").is_none());
+    assert!(params.get("enum").is_none());
+    assert!(params.get("const").is_none());
+    assert!(params.get("not").is_none());
+}
