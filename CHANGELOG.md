@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Dynamic Flow step identity no longer hard-rejects inputs above 64 KiB.
+  Inputs up to 512 KiB are admitted; above the 64 KiB inline threshold the
+  identity folds to `sha256` + `bytes` (digest-only, no plaintext retention).
+  This keeps DeepResearch multi-source selector shards (≈96 KiB prompt
+  envelopes) compatible with the shared Flow scheduler boundary.
+
 ## [8.5.1] - 2026-09-08
 
 ### Fixed

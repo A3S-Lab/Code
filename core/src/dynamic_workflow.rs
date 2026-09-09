@@ -56,7 +56,14 @@ const MAX_INLINE_RETRY_DELAY: Duration = Duration::from_secs(5);
 const DEFAULT_MAX_CONCURRENT_STEPS: usize = 4;
 const MAX_MAX_CONCURRENT_STEPS: usize = 32;
 const MAX_FLOW_STEP_ID_BYTES: usize = 256;
-const MAX_FLOW_STEP_INPUT_BYTES: usize = 64 * 1024;
+/// Soft threshold: below this, step input is inlined into the identity
+/// derivation JSON. Above it, only a SHA-256 digest is mixed in so identity
+/// stays digest-only without rejecting legitimate DeepResearch selector
+/// packets (up to 96 KiB prompts plus schema wrappers).
+const MAX_FLOW_STEP_INPUT_INLINE_BYTES: usize = 64 * 1024;
+/// Hard ceiling for hashing step input during identity derivation (DoS bound).
+/// Execution/tool limits remain separately enforced by workflow `limits`.
+const MAX_FLOW_STEP_INPUT_BYTES: usize = 512 * 1024;
 const MAX_DYNAMIC_WORKFLOW_INPUT_BYTES: usize = 128 * 1024;
 const DEFAULT_DYNAMIC_WORKFLOW_LEASE_MS: u64 = 30_000;
 const MAX_DYNAMIC_WORKFLOW_SETTLE: Duration = Duration::from_secs(5);
@@ -972,6 +979,11 @@ impl FlowRuntime for DynamicWorkflowRuntime {
 /// The returned value is digest-only. The step input is included in the
 /// derivation so retries with different arguments cannot share a lease, but no
 /// input bytes are retained in the identity or emitted by the scheduler.
+///
+/// Large inputs (for example DeepResearch selector shards whose prompt envelope
+/// is intentionally up to 96 KiB before schema wrapping) are folded to
+/// `sha256` + `bytes` before derivation so the identity API does not impose a
+/// tighter ceiling than the workflows it hosts.
 pub fn dynamic_workflow_step_identity(
     run_id: &str,
     step_id: &str,
@@ -1004,15 +1016,29 @@ pub fn dynamic_workflow_step_identity(
             )),
         );
     }
+    let input_for_identity = fold_flow_step_input_for_identity(input, &encoded_input);
     ExecutionIdentityV1::derive(
         FLOW_STEP_IDENTITY_DOMAIN_V1,
         &json!({
             "run_id": run_id,
             "step_id": step_id,
             "step_name": step_name,
-            "input": input,
+            "input": input_for_identity,
         }),
     )
+}
+
+/// Soft-fold step input for identity derivation: inline below the retention
+/// budget, otherwise mix only `sha256` + `bytes` (digest-only).
+fn fold_flow_step_input_for_identity(input: &Value, encoded_input: &[u8]) -> Value {
+    if encoded_input.len() <= MAX_FLOW_STEP_INPUT_INLINE_BYTES {
+        input.clone()
+    } else {
+        json!({
+            "sha256": sha256::digest(encoded_input),
+            "bytes": encoded_input.len(),
+        })
+    }
 }
 
 fn dynamic_workflow_input_identity(

@@ -494,12 +494,16 @@ visible progress changes.
 Each Flow step crosses a cancellation-aware, bounded local admission gate. Its
 identity is domain-separated from delegated Agent steps and contains only the
 run/step/handler tuple plus the bounded input derivation; scheduler traces and
-leases never retain input or output plaintext. A standalone Flow adapter may
-layer the agent-wide priority/FIFO scheduler on direct script-backed steps.
-Normal Session calls keep the enclosing scheduler lease and let host `task`
-fan-out use its own child admission, which prevents a single-slot scheduler
-from deadlocking on a nested lease. Delegated tasks now pass their canonical
-step identity through that same global scheduler boundary.
+leases never retain input or output plaintext. Inputs at or below 64 KiB are
+mixed inline; larger inputs (hard ceiling 512 KiB) fold to `sha256` + `bytes`
+before derivation so host workflows such as DeepResearch multi-source selector
+shards remain identity-admissible without raising the plaintext retention
+budget. A standalone Flow adapter may layer the agent-wide priority/FIFO
+scheduler on direct script-backed steps. Normal Session calls keep the enclosing
+scheduler lease and let host `task` fan-out use its own child admission, which
+prevents a single-slot scheduler from deadlocking on a nested lease. Delegated
+tasks now pass their canonical step identity through that same global scheduler
+boundary.
 
 The follow-up mixed-generation continuation qualification is recorded in
 sections 3.3.3 and 3.3.4. Cloud/Use package ownership, fairness policy, and

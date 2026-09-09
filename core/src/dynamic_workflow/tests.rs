@@ -737,6 +737,68 @@ fn dynamic_flow_step_identity_is_digest_only_and_input_bound() {
 }
 
 #[test]
+fn dynamic_flow_step_identity_folds_large_inputs_instead_of_rejecting_them() {
+    // DeepResearch selector shards intentionally pack up to 96 KiB of prompt
+    // before schema wrapping. Identity must still admit those steps.
+    let prompt = "x".repeat(96 * 1024);
+    let large = json!({
+        "schema": { "type": "object" },
+        "prompt": prompt,
+        "schema_name": "emit_deep_research_evidence_selection",
+    });
+    let encoded = serde_json::to_vec(&large).unwrap();
+    assert!(encoded.len() > 64 * 1024);
+    assert!(encoded.len() <= 512 * 1024);
+
+    let folded = fold_flow_step_input_for_identity(&large, &encoded);
+    assert_eq!(
+        folded,
+        json!({
+            "sha256": sha256::digest(encoded.as_slice()),
+            "bytes": encoded.len(),
+        }),
+        "above the 64 KiB inline budget, identity must fold to sha256+bytes"
+    );
+
+    let first = dynamic_workflow_step_identity("run-1", "step-1", "generate_object", &large)
+        .expect("96 KiB selector envelopes must be identity-admissible");
+    let same = dynamic_workflow_step_identity("run-1", "step-1", "generate_object", &large)
+        .expect("large-input identity must be stable");
+    let mut changed = large.clone();
+    changed["prompt"] = json!(format!("{}y", "x".repeat(96 * 1024)));
+    let different = dynamic_workflow_step_identity("run-1", "step-1", "generate_object", &changed)
+        .expect("distinct large inputs must remain distinguishable");
+    assert_eq!(first, same);
+    assert_ne!(first, different);
+    let encoded_identity = serde_json::to_string(&first).unwrap();
+    assert!(!encoded_identity.contains("emit_deep_research_evidence_selection"));
+}
+
+#[test]
+fn dynamic_flow_step_identity_keeps_small_inputs_inline_and_rejects_hard_ceiling() {
+    let small = json!({ "path": "README.md" });
+    let small_encoded = serde_json::to_vec(&small).unwrap();
+    assert_eq!(
+        fold_flow_step_input_for_identity(&small, &small_encoded),
+        small,
+        "at or below 64 KiB, identity must retain the typed input object"
+    );
+
+    // Build a deterministic payload just over the 512 KiB hard ceiling.
+    let oversize_prompt = "z".repeat(512 * 1024);
+    let oversize = json!({ "prompt": oversize_prompt });
+    let oversize_encoded = serde_json::to_vec(&oversize).unwrap();
+    assert!(oversize_encoded.len() > 512 * 1024);
+    let error = dynamic_workflow_step_identity("run-1", "step-1", "generate_object", &oversize)
+        .expect_err("inputs above 512 KiB must stay rejected as a DoS bound");
+    let message = error.to_string();
+    assert!(
+        message.contains("65536") == false && message.contains(&(512 * 1024).to_string()),
+        "hard-ceiling error must cite 512 KiB, not the old 64 KiB reject: {message}"
+    );
+}
+
+#[test]
 fn dynamic_flow_history_projection_reconstructs_resumed_plan() {
     let run_id = "projection-run";
     let envelope = |sequence, event| {
