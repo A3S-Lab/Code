@@ -346,6 +346,13 @@ The skill's allowed-tools are granted during execution and revoked after complet
             .get(&args.skill_name)
             .ok_or_else(|| anyhow!("Skill '{}' not found", args.skill_name))?;
 
+        if skill.disable_model_invocation {
+            anyhow::bail!(
+                "Skill '{}' disables model invocation and cannot be invoked via the Skill tool",
+                skill.name
+            );
+        }
+
         // Create temporary permission policy with skill's allowed-tools
         let skill_permission_policy = Self::create_skill_permission_policy(&skill);
 
@@ -517,8 +524,8 @@ mod tests {
                         text: text.to_string(),
                     }],
                     reasoning_content: None,
-                transcript_text: None,
-                transcript_visibility: Default::default(),
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
@@ -543,8 +550,8 @@ mod tests {
                         input,
                     }],
                     reasoning_content: None,
-                transcript_text: None,
-                transcript_visibility: Default::default(),
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                 },
                 usage: TokenUsage {
                     prompt_tokens: 10,
@@ -1404,5 +1411,36 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("Skill 'missing-skill' not found"));
+    }
+
+    #[tokio::test]
+    async fn skill_tool_rejects_disable_model_invocation_skills() {
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "host-only".to_string(),
+            description: "Not for the model".to_string(),
+            allowed_tools: Some("read(*)".to_string()),
+            disable_model_invocation: true,
+            kind: SkillKind::Instruction,
+            content: "Secret host skill.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }));
+
+        let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "unused",
+        )]));
+        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
+
+        let err = tool
+            .execute(
+                &serde_json::json!({"skill_name": "host-only"}),
+                &ToolContext::new(PathBuf::from("/tmp")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("disables model invocation"));
     }
 }

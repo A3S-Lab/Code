@@ -429,7 +429,11 @@ impl SkillRegistry {
     }
 
     fn is_discoverable_skill(skill: &Skill) -> bool {
-        skill.kind == super::SkillKind::Instruction || skill.kind == super::SkillKind::Tool
+        // `disable-model-invocation` is the Claude Skills contract for
+        // host/user-only skills: keep them registered, but hide them from
+        // model search/catalog and from Skill-tool invocation.
+        !skill.disable_model_invocation
+            && (skill.kind == super::SkillKind::Instruction || skill.kind == super::SkillKind::Tool)
     }
 
     fn skill_search_score(skill: &Skill, query_lower: &str, query_tokens: &[&str]) -> u32 {
@@ -475,8 +479,12 @@ impl SkillRegistry {
     /// Persona-kind skills are excluded — they are bound per-session, not globally.
     /// Generate the system prompt fragment for this registry.
     ///
-    /// Only emits a skill directory (name + description) — NOT the full skill content.
-    /// Full content is injected on-demand via `match_skills` when a user request matches.
+    /// Emits only the catalog header telling the model to use `search_skills`
+    /// then `Skill`. Full skill bodies are never auto-injected into the main
+    /// prompt; they load only when the model invokes `Skill`.
+    ///
+    /// `match_skills` remains a helper for hosts that want keyword injection,
+    /// but the default agent loop does not call it.
     pub fn to_system_prompt(&self) -> String {
         let skills = self.skills.read().unwrap();
 

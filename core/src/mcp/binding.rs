@@ -218,10 +218,26 @@ impl Tool for ProjectedMcpTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, context: &ToolContext) -> Result<ToolOutput> {
-        let result = self
+        if context.is_cancelled() {
+            return Ok(ToolOutput::error(format!(
+                "MCP tool '{}' cancelled by caller",
+                self.full_name
+            )));
+        }
+
+        let cancellation = context.cancellation_token();
+        let call = self
             .binding
-            .call_tool(&self.tool().name, Some(args.clone()))
-            .await;
+            .call_tool(&self.tool().name, Some(args.clone()));
+        let result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Ok(ToolOutput::error(format!(
+                    "MCP tool '{}' cancelled by caller",
+                    self.full_name
+                )));
+            }
+            result = call => result,
+        };
         match result {
             Ok(result) => project_tool_result(&self.full_name, &result, context).await,
             Err(error) => Ok(ToolOutput::error(format!("MCP tool error: {error}"))),
@@ -351,6 +367,32 @@ mod tests {
                 name: "lookup".to_string(),
                 arguments: Some(arguments),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn projected_wrapper_returns_promptly_when_caller_cancels() {
+        let (binding, transport, _) = ready_binding(
+            "catalog",
+            "generation-one",
+            vec![mcp_tool("lookup", "generation-one")],
+        )
+        .await;
+        let wrappers = binding.projected_tools();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let output = wrappers[0]
+            .execute(
+                &serde_json::json!({}),
+                &ToolContext::new(PathBuf::from("/tmp")).with_cancellation(cancel),
+            )
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert!(output.content.contains("cancelled by caller"));
+        assert!(
+            transport.calls().is_empty(),
+            "cancelled calls must not reach the MCP client"
         );
     }
 

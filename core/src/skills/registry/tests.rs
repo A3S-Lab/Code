@@ -664,3 +664,34 @@ fn test_match_skills_matches_name_tag_and_description() {
         .match_skills("totally unrelated request")
         .is_empty());
 }
+
+#[test]
+fn disable_model_invocation_skills_are_not_model_discoverable() {
+    let registry = SkillRegistry::new();
+    registry.register_unchecked(Arc::new(Skill {
+        name: "user-only-skill".to_string(),
+        description: "Host invoked only".to_string(),
+        allowed_tools: Some("read(*)".to_string()),
+        disable_model_invocation: true,
+        kind: SkillKind::Instruction,
+        content: "Do not expose to the model.".to_string(),
+        tags: vec!["secret".to_string()],
+        version: None,
+    }));
+    registry.register_unchecked(Arc::new(Skill {
+        name: "model-skill".to_string(),
+        description: "Model may use this".to_string(),
+        allowed_tools: Some("read(*)".to_string()),
+        disable_model_invocation: false,
+        kind: SkillKind::Instruction,
+        content: "Visible.".to_string(),
+        tags: Vec::new(),
+        version: None,
+    }));
+
+    let matches = registry.search("skill", 10);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].name, "model-skill");
+    assert!(registry.match_skills("user-only-skill").is_empty());
+    assert!(!registry.to_system_prompt().is_empty());
+}

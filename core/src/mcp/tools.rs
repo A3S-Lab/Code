@@ -112,11 +112,24 @@ impl Tool for McpToolWrapper {
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
-        // Call the MCP tool through the manager
-        let result = self
-            .manager
-            .call_tool(&self.full_name, Some(args.clone()))
-            .await;
+        if ctx.is_cancelled() {
+            return Ok(ToolOutput::error(format!(
+                "MCP tool '{}' cancelled by caller",
+                self.full_name
+            )));
+        }
+
+        let cancellation = ctx.cancellation_token();
+        let call = self.manager.call_tool(&self.full_name, Some(args.clone()));
+        let result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Ok(ToolOutput::error(format!(
+                    "MCP tool '{}' cancelled by caller",
+                    self.full_name
+                )));
+            }
+            result = call => result,
+        };
 
         match result {
             Ok(tool_result) => project_tool_result(&self.full_name, &tool_result, ctx).await,
