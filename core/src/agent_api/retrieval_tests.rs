@@ -707,8 +707,10 @@ impl EmbeddingProvider for ImmediateProvider {
 }
 
 async fn wait_for_ready(session: &super::AgentSession) {
+    // Align with retrieval_qa_tests: Linux Default tests have no resource gate
+    // and a 2s wait flakes under full-workspace parallel scheduling.
     tokio::time::timeout(
-        crate::test_support::external_resource_start_timeout(Duration::from_secs(2)),
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(10)),
         async {
             while session.workspace_retrieval_status().phase != WorkspaceRetrievalPhase::Ready {
                 tokio::time::sleep(Duration::from_millis(5)).await;
