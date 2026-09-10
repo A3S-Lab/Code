@@ -15,10 +15,14 @@ lifecycle. A3S Sandbox owns the local command-process boundary; Box and OCI
 Runtime own stronger workload execution and isolation. Gateway owns public
 request traffic and inference request accounting.
 
-The [cross-repository Agent Runtime platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/agent-runtime-platform-roadmap.md)
-defines shared ownership and dependency order. This roadmap must not create a
-second Cloud Agent lifecycle, scheduler, queue, Secret store, usage ledger, or
-checkpoint authority.
+Shared ownership and Cloud Wave 3 (`A1`) dependency order are defined by the
+[Cloud agent and capability portfolio roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/project-roadmaps/agents-and-capabilities.md),
+[architecture optimization roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/architecture-optimization-roadmap.md),
+and
+[cloud-substrate-dependency-roadmap.md](https://github.com/A3S-Lab/a3s/blob/main/docs/cloud-substrate-dependency-roadmap.md).
+This roadmap must not create a second Cloud Agent lifecycle, scheduler, queue,
+Secret store, usage ledger, or checkpoint authority. Real Box recovery remains
+a Cloud gate; Code does not bypass Runtime/Box.
 
 Scientific discovery is a product composition over this runtime, not a new
 runtime mode. The cross-repository implementation plan is tracked in the
