@@ -583,4 +583,3 @@ fn test_from_config_defers_default_model_validation_to_session() {
 
     assert!(error.to_string().contains("default_model"), "{error:#}");
 }
-

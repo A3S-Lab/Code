@@ -973,4 +973,3 @@ async fn test_file_session_store_persistence() {
     let data = store2.load("file-persist").await.unwrap().unwrap();
     assert_eq!(data.messages.len(), 1);
 }
-

@@ -589,4 +589,3 @@ async fn test_registered_task_fanout_inherits_final_confirmation_manager() {
     assert!(!result.output.contains("requires confirmation but no HITL"));
     assert!(!result.output.contains("Permission denied"));
 }
-

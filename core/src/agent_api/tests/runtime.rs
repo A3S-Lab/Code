@@ -948,4 +948,3 @@ async fn async_session_build_and_close_fire_lifecycle_hooks_once() {
         1
     );
 }
-

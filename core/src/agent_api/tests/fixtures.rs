@@ -919,7 +919,6 @@ pub(crate) fn build_effective_registry_for_test(
     super::super::capabilities::build_effective_skill_registry(agent_registry.as_deref(), opts)
 }
 
-
 /// Custom BudgetGuard that denies the first LLM call — used to verify
 /// that the framework consults the guard and bails before touching
 /// the LLM client. Records whether `check_before_llm` was called.
@@ -970,4 +969,3 @@ impl crate::budget::BudgetGuard for DenyingToolBudgetGuard {
         }
     }
 }
-

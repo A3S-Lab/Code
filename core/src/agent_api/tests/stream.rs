@@ -487,4 +487,3 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
     );
     assert!(!session.cancel_run(&run_id).await);
 }
-

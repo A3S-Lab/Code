@@ -329,4 +329,3 @@ async fn independent_sessions_share_scheduler_backed_provider_generation_capacit
     assert!(scheduler_health.released >= 2);
     agent.close().await;
 }
-

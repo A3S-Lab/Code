@@ -289,4 +289,3 @@ fn test_session_command_is_available_from_queue_module() {
     use crate::queue::SessionCommand;
     let _ = std::marker::PhantomData::<Box<dyn SessionCommand>>;
 }
-

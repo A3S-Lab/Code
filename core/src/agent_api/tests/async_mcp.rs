@@ -502,4 +502,3 @@ async fn live_mcp_remove_cleanup_failure_still_commits_registry_removal() {
         .any(|name| name == local_tool_name));
     session.remove_mcp_server(server_name).await.unwrap();
 }
-

@@ -35,4 +35,3 @@ async fn test_session_no_init_warning_without_file_memory() {
         .unwrap();
     assert!(session.init_warning().is_none());
 }
-

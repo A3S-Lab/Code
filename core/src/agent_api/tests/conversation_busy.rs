@@ -270,4 +270,3 @@ async fn test_active_blocking_send_rejects_send_and_stream_then_releases() {
     // Awaiting the blocking operation releases the lease for the next call.
     assert!(session.send("/help", None).await.is_ok());
 }
-
