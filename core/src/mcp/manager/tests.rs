@@ -375,7 +375,8 @@ async fn test_get_all_tools_returns_server_name_not_full_name() {
     let manager = McpManager::new();
     let tools = manager.get_all_tools().await;
     // Empty is fine; verify no full-name leakage by checking the tuple semantics.
-    // (Real server injection is tested via integration_mcp.rs #[ignore] tests.)
+    // (Real server injection is covered by fixtures in
+    // core/tests/fixtures/mcp_fake_server.rs and related MCP integration tests.)
     for (name, _tool) in &tools {
         assert!(
             !name.starts_with("mcp__"),

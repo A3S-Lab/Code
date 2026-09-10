@@ -84,16 +84,6 @@ impl SearchTool {
         self
     }
 
-    /// Compatibility alias for hosts that used the pre-transparent indexed
-    /// search switch. The model-facing schema still exposes only `bm25`; the
-    /// durable projection is an execution detail and remains selected by the
-    /// framework when it is available.
-    #[deprecated(note = "use with_persistent_backend instead")]
-    #[allow(dead_code)]
-    pub fn with_indexed(self, enabled: bool) -> Self {
-        self.with_persistent_backend(enabled)
-    }
-
     fn modes(&self) -> Vec<&'static str> {
         let mut modes = Vec::new();
         if self.backend_search_enabled {
@@ -496,23 +486,6 @@ mod tests {
             )
             .unwrap();
         assert!(fallback.get("_persistent_index").is_none());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn legacy_indexed_builder_alias_keeps_persistent_routing_compatibility() {
-        let adapted = SearchTool::new(true)
-            .with_indexed(true)
-            .adapted_args(
-                SearchMode::Bm25,
-                &serde_json::json!({"mode": "bm25", "query": "workspace policy"}),
-            )
-            .unwrap();
-        assert_eq!(adapted["_persistent_index"], true);
-        assert_eq!(
-            SearchTool::new(true).parameters()["properties"]["mode"]["enum"],
-            serde_json::json!(["grep", "glob", "bm25"])
-        );
     }
 
     #[test]
