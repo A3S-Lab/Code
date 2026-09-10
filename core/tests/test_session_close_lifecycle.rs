@@ -1,6 +1,6 @@
 //! Cross-module integration tests for the session/agent close lifecycle.
 //!
-//! Unit tests in `core/src/agent_api/tests.rs` cover the isolated APIs.
+//! Unit tests in `core/src/agent_api/tests/` cover the isolated APIs.
 //! This file exercises the *interaction* between session close, the
 //! subagent task tracker, and the parent agent's session registry —
 //! crossings that single-module unit tests cannot reach.
