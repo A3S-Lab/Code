@@ -48,8 +48,11 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **Flat tool schemas for providers (8.5.3).** `read` and `code_symbols`
   `definition()` payloads omit top-level `oneOf` so OpenAI-compatible /
   Anthropic validators accept them (`invalid_function_parameters` fix).
+- **Hard-connect fail-fast (8.5.4).** Connection reset/refused, unreachable
+  host, and DNS lookup failures surface immediately instead of ~3 minutes of
+  silent retry.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.3`).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.4`).
 
 ### Earlier lines
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.4] - 2026-09-10
+
+### Fixed
+
+- Hard connect/DNS transport failures (connection reset/refused, unreachable
+  host, DNS lookup errors) fail fast instead of being treated as retryable
+  503s. Previously those errors silently retried for ~3 minutes of
+  Working… before the user saw the real transport error.
+
 ## [8.5.3] - 2026-09-10
 
 ### Fixed

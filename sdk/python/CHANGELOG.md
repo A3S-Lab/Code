@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.4] - 2026-09-10
+
+- Bundled Core 8.5.4: hard connect/DNS transport failures fail fast (no ~3min
+  silent retry).
+
 ## [8.5.3] - 2026-09-10
 
 - Bundled Core 8.5.3: flat `read` / `code_symbols` model schemas (no top-level

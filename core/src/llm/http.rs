@@ -54,8 +54,30 @@ impl HttpClientError {
     }
 
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Transport { .. })
+        match self {
+            // Immediate connect/DNS failures rarely recover after a 30s sleep;
+            // treating them as retryable 503s burns ~3 minutes of silent
+            // Working… before the user sees the real transport error.
+            Self::Transport { message, .. } => !is_hard_connect_failure(message),
+            Self::Cancelled { .. } | Self::InvalidRequest { .. } => false,
+        }
     }
+}
+
+/// True when the failure is a hard connectivity problem (reset, refused, DNS),
+/// not a transient mid-stream blip or request timeout.
+pub(crate) fn is_hard_connect_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("connection reset")
+        || lower.contains("connection refused")
+        || lower.contains("network is unreachable")
+        || lower.contains("no route to host")
+        || lower.contains("name or service not known")
+        || lower.contains("nodename nor servname provided")
+        || lower.contains("failed to lookup address information")
+        || lower.contains("dns error")
+        || lower.contains("could not resolve host")
+        || lower.contains("temporary failure in name resolution")
 }
 
 pub(crate) fn is_retryable_http_failure(error: &anyhow::Error) -> bool {
@@ -410,6 +432,30 @@ mod tests {
 
         let cancelled = anyhow::Error::new(HttpClientError::cancelled("stream request"));
         assert!(!is_retryable_http_failure(&cancelled));
+    }
+
+    #[test]
+    fn hard_connect_failures_are_not_retryable() {
+        let reset = anyhow::Error::new(HttpClientError::transport(
+            "API request",
+            "error sending request for url (https://api.deepseek.com/v1/chat/completions): connection reset",
+        ));
+        assert!(!is_retryable_http_failure(&reset));
+        assert!(is_hard_connect_failure(
+            "error sending request … connection reset by peer"
+        ));
+
+        let refused = anyhow::Error::new(HttpClientError::transport(
+            "API request",
+            "tcp connect error: Connection refused (os error 61)",
+        ));
+        assert!(!is_retryable_http_failure(&refused));
+
+        let timeout = anyhow::Error::new(HttpClientError::transport(
+            "API request",
+            "timed out: operation timed out",
+        ));
+        assert!(is_retryable_http_failure(&timeout));
     }
 
     fn proxy_env_lock() -> &'static Mutex<()> {

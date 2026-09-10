@@ -46,8 +46,10 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **面向模型的扁平工具 schema（8.5.3）。** `read` / `code_symbols` 的
   `definition()` 不再在参数根暴露 `oneOf`，避免 OpenAI 兼容 / Anthropic
   校验器报 `invalid_function_parameters`。
+- **硬连接失败快速返回（8.5.4）。** 连接重置/拒绝、主机不可达、DNS 解析失败
+  立即暴露，不再静默重试约 3 分钟。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.3`）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.4`）。
 
 ### 更早的版本线
 
