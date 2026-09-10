@@ -32,6 +32,9 @@ pub struct SessionSnapshotV1 {
     pub verification_reports: Vec<VerificationReport>,
     #[serde(default)]
     pub subagent_tasks: Vec<SubagentTaskSnapshot>,
+    /// Sticky reply / multi-scenario review findings (optional for older snaps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_review: Option<crate::session_review::SessionReviewStoreV1>,
 }
 
 impl SessionSnapshotV1 {
@@ -55,6 +58,7 @@ impl SessionSnapshotV1 {
             run_records,
             verification_reports,
             subagent_tasks,
+            session_review: None,
         }
     }
 

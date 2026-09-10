@@ -182,7 +182,7 @@ pub(crate) async fn compact_messages(
     let summary_text = truncate_summary_to_token_limit(summary_text.trim(), summary_token_limit);
     tracing::debug!("Generated summary: {} chars", summary_text.len());
 
-    let summary_message = Message::user(&format!(
+    let summary_message = Message::user_wire(&format!(
         "{}{}",
         crate::prompts::CONTEXT_SUMMARY_PREFIX,
         summary_text
@@ -688,6 +688,8 @@ mod tests {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }
     }
 
@@ -698,6 +700,8 @@ mod tests {
                 text: text.to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }
     }
 
@@ -710,6 +714,8 @@ mod tests {
                 input: serde_json::json!({}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }
     }
 
@@ -746,6 +752,8 @@ mod tests {
                     },
                 ],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             make_text_msg("assistant", "done"),
         ];
@@ -866,6 +874,8 @@ mod tests {
                 input: serde_json::json!({"command": "cargo test -p a3s-code-core"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         messages[3] = make_tool_result_msg("tool-1", "all 42 tests passed");
         messages[39] = make_text_msg(
@@ -890,6 +900,10 @@ mod tests {
 
         assert_eq!(compacted.summary, "durable compact summary");
         assert_eq!(compacted.messages[0].role, "user");
+        assert!(
+            !compacted.messages[0].is_product_transcript(),
+            "compaction summary is model-wire context, not a product user bubble"
+        );
         let prompts = client.prompts.lock().unwrap();
         assert!(prompts[0].contains("cargo test -p a3s-code-core"));
         assert!(prompts[0].contains("all 42 tests passed"));
@@ -956,6 +970,8 @@ mod tests {
                 input: serde_json::json!({"command": "cargo test -p a3s-code-core"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         });
         let client = Arc::new(RecordingSummaryClient {
             prompts: Mutex::new(Vec::new()),

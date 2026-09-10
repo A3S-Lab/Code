@@ -399,6 +399,8 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
                 text: "intermediate work".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
     ];
     // Seed NON-ZERO cumulative metrics so the test can detect whether

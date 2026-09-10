@@ -124,7 +124,9 @@ impl AgentLoop {
         // still received the original user message, making prompt rewrites and
         // additionalContext observational instead of authoritative.
         if !msg_prompt.is_empty() {
-            state.messages.push(Message::user(effective_prompt));
+            state
+                .messages
+                .push(product_or_wire_user_message(effective_prompt));
         } else if effective_prompt != prompt_before_hooks {
             rewrite_latest_user_prompt(&mut state.messages, prompt_before_hooks, effective_prompt);
         }
@@ -145,7 +147,9 @@ impl AgentLoop {
             // converge instead of discarding all work at the limit.
             let force_finalization = state.current_turn() >= self.config.max_tool_rounds;
             if force_finalization {
-                state.messages.push(Message::user(TOOL_BUDGET_FINALIZATION));
+                state
+                    .messages
+                    .push(Message::user_wire(TOOL_BUDGET_FINALIZATION));
             }
             let turn = state.next_turn();
             if let Some(control) = &run_control {
@@ -441,17 +445,31 @@ async fn close_capability_turn(
 fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacement: &str) {
     let candidate = messages
         .iter()
-        .rposition(|message| message.role == "user" && message.text() == original)
+        .rposition(|message| {
+            message.role == "user"
+                && message.is_product_transcript()
+                && message.text() == original
+        })
         .or_else(|| {
-            messages
-                .iter()
-                .rposition(|message| message.role == "user" && !message.text().is_empty())
+            messages.iter().rposition(|message| {
+                message.role == "user"
+                    && message.is_product_transcript()
+                    && !message.text().is_empty()
+            })
         });
     let Some(index) = candidate else {
         tracing::warn!("PrePrompt modified input but no user message could be rewritten");
         return;
     };
     let message = &mut messages[index];
+    if message.transcript_text.is_none() {
+        let display = crate::transcript::product_user_text(&message.text());
+        if !display.is_empty() && display != message.text() {
+            message.transcript_text = Some(display);
+        } else if !message.text().is_empty() {
+            message.transcript_text = Some(message.text());
+        }
+    }
 
     let mut wrote_text = false;
     message.content.retain_mut(|block| match block {
@@ -467,5 +485,14 @@ fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacem
         message.content.push(ContentBlock::Text {
             text: replacement.to_string(),
         });
+    }
+}
+
+fn product_or_wire_user_message(text: &str) -> Message {
+    let display = crate::transcript::product_user_text(text);
+    if display.is_empty() {
+        Message::user_wire(text)
+    } else {
+        Message::user_for_model_with_transcript(text, &display)
     }
 }

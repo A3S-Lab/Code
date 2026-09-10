@@ -401,6 +401,8 @@ impl CutoverClient {
                     input: serde_json::json!({"generation": generation}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 1,
@@ -423,6 +425,8 @@ impl CutoverClient {
                     text: text.to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 1,
@@ -510,6 +514,8 @@ impl SkillCutoverClient {
                     input: serde_json::json!({"query": query}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 1,

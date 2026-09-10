@@ -1391,6 +1391,8 @@ fn js_messages_to_rust(messages: &[MessageObject]) -> napi::Result<Vec<RustMessa
             role: m.role.clone(),
             content: m.content.iter().map(js_content_block_to_rust).collect(),
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         })
         .collect())
 }

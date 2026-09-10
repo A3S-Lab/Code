@@ -63,6 +63,7 @@ impl MemorySessionEntry {
             run_records: self.run_records.clone(),
             verification_reports: self.verification_reports.clone(),
             subagent_tasks: self.subagent_tasks.clone(),
+            session_review: None,
         })
     }
 }

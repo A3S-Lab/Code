@@ -111,6 +111,8 @@ impl InspectingClient {
                     text: text.to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 1,

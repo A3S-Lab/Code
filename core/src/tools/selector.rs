@@ -468,6 +468,8 @@ mod tests {
                     input: json!({}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             });
             messages.push(Message::tool_result(&id, "ok", false));
         }

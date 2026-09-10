@@ -453,6 +453,8 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message {
             role: "assistant".to_string(),
@@ -462,6 +464,8 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
                 input: serde_json::json!({"mode": "hybrid", "query": "secret query"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message {
             role: "user".to_string(),
@@ -475,6 +479,8 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message {
             role: "assistant".to_string(),
@@ -484,6 +490,8 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
                 input: serde_json::json!({"mode": "grep", "query": "reuse"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message {
             role: "user".to_string(),
@@ -495,6 +503,8 @@ fn model_input_identifies_semantic_tool_results_without_retaining_them() {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
     ];
     let input = source
@@ -537,6 +547,8 @@ fn model_usage_quantifies_repeated_tool_result_content_without_retaining_it() {
                 input: serde_json::json!({"file_path": "one.rs"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message::tool_result("read-1", repeated, false),
         Message {
@@ -547,6 +559,8 @@ fn model_usage_quantifies_repeated_tool_result_content_without_retaining_it() {
                 input: serde_json::json!({"file_path": "two.rs"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message::tool_result("read-2", repeated, false),
         Message::tool_result("read-3", "unique tool output", false),

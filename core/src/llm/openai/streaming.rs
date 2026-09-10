@@ -173,6 +173,8 @@ impl OpenAiClient {
                                             } else {
                                                 Some(std::mem::take(&mut reasoning_content_accum))
                                             },
+                                            transcript_text: None,
+                                            transcript_visibility: Default::default(),
                                         },
                                         usage: usage.clone(),
                                         stop_reason: std::mem::take(&mut finish_reason),
@@ -632,6 +634,8 @@ impl OpenAiClient {
                             } else {
                                 Some(std::mem::take(&mut reasoning_content_accum))
                             },
+                            transcript_text: None,
+                            transcript_visibility: Default::default(),
                         },
                         usage: usage.clone(),
                         stop_reason: std::mem::take(&mut finish_reason),

@@ -89,6 +89,18 @@ impl AgentSession {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Fork the session LLM client for an independent side path (reviewer).
+    ///
+    /// Falls back to the shared session client when the provider cannot fork.
+    pub fn fork_llm_client_for_side_path(
+        &self,
+        side_path_id: &str,
+    ) -> Arc<dyn crate::llm::LlmClient> {
+        self.llm_client
+            .fork_for_session(side_path_id)
+            .unwrap_or_else(|| Arc::clone(&self.llm_client))
+    }
+
     /// Clone the session-level [`CancellationToken`](tokio_util::sync::CancellationToken).
     ///
     /// All in-flight runs derive their per-operation token from this one via

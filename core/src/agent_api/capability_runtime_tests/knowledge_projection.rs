@@ -92,6 +92,8 @@ impl LlmClient for CheckpointKnowledgeCutoverClient {
                             input: serde_json::json!({"query": "checkpoint"}),
                         }],
                         reasoning_content: None,
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                     },
                     usage: TokenUsage {
                         prompt_tokens: 1,

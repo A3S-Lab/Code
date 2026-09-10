@@ -188,6 +188,8 @@ fn response(content: Vec<ContentBlock>, stop_reason: &str) -> LlmResponse {
             role: "assistant".to_string(),
             content,
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 10,

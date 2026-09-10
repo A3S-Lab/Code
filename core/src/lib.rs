@@ -140,6 +140,7 @@ pub mod security;
 pub mod serve;
 pub mod session_checkpoint;
 pub(crate) mod session_lane_queue;
+pub mod session_review;
 pub mod skills;
 pub(crate) mod sse;
 #[cfg(feature = "state-graph")]
@@ -149,6 +150,7 @@ pub mod subagent;
 pub mod subagent_task_tracker;
 pub mod task_scheduler;
 pub mod telemetry;
+pub mod transcript;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
 #[cfg(test)]
@@ -379,6 +381,11 @@ pub use session_checkpoint::{
     SESSION_CHECKPOINT_MAX_CONTENT_BYTES, SESSION_CHECKPOINT_MEDIA_TYPE_V1,
     SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1, SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1,
     SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
+};
+pub use session_review::{
+    SessionReviewAnchorV1, SessionReviewFindingV1, SessionReviewSeverityV1, SessionReviewStatusV1,
+    SessionReviewStoreV1, SCENARIO_REPLY_TRANSCRIPT, SESSION_REVIEW_FINDING_SCHEMA_V1,
+    SESSION_REVIEW_STORE_SCHEMA_V1,
 };
 #[cfg(feature = "state-graph")]
 pub use state_graph::{

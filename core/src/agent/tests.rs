@@ -392,12 +392,16 @@ fn test_preserve_plan_goal_context_keeps_original_request_visible() {
 
     let preserved = AgentLoop::preserve_plan_goal_context(plan, execution_prompt);
 
-    assert!(preserved.goal.contains("/workspace/app"));
-    assert!(preserved.goal.contains("do not change API"));
-    assert!(preserved.goal.contains("Fix planning mode"));
+    assert_eq!(preserved.goal, "Fix planning mode");
+    assert_eq!(
+        preserved.execution_context.as_deref(),
+        Some(execution_prompt)
+    );
+    assert!(preserved.wire_goal().contains("/workspace/app"));
+    assert!(preserved.wire_goal().contains("do not change API"));
     assert!(
-        !preserved.goal.contains("Planner goal"),
-        "plan goal chrome must not inject English UI labels"
+        !preserved.goal.contains("Original user request"),
+        "product goal must not inherit composed execution chrome"
     );
 }
 
@@ -721,6 +725,8 @@ impl MockLlmClient {
                     text: text.to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -741,6 +747,8 @@ impl MockLlmClient {
                 role: "assistant".to_string(),
                 content: Vec::new(),
                 reasoning_content: Some(reasoning.to_string()),
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -770,6 +778,8 @@ impl MockLlmClient {
                     input: args,
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -2326,6 +2336,8 @@ async fn test_agent_hitl_multiple_tool_calls() {
                     },
                 ],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -2411,6 +2423,8 @@ async fn test_agent_hitl_partial_approval() {
                     },
                 ],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -3392,6 +3406,8 @@ async fn auto_compact_failure_keeps_original_tool_evidence() {
                 input: serde_json::json!({"mode": "grep", "pattern": "evidence"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message {
             role: "user".to_string(),
@@ -3403,6 +3419,8 @@ async fn auto_compact_failure_keeps_original_tool_evidence() {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         Message::assistant("search completed"),
     ];
@@ -4436,6 +4454,8 @@ async fn test_agent_conversation_history_preserved() {
                 text: "Rust is a systems programming language.".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
     ];
 
@@ -4693,6 +4713,8 @@ async fn test_agent_multiple_tools_single_turn() {
                     },
                 ],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,

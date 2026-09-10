@@ -1284,6 +1284,8 @@ fn text_response(text: impl Into<String>) -> LlmResponse {
             role: "assistant".to_string(),
             content: vec![ContentBlock::Text { text: text.into() }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 10,

@@ -170,7 +170,14 @@ impl LlmPlanner {
             "" => "Complete the requested task",
             prompt => prompt,
         };
-        let mut plan = ExecutionPlan::new(content, Complexity::Simple);
+        let product = crate::transcript::product_user_text(content);
+        let mut plan = if product.trim().is_empty() || product == content {
+            ExecutionPlan::new(content, Complexity::Simple)
+        } else {
+            let mut plan = ExecutionPlan::new(product, Complexity::Simple);
+            plan.execution_context = Some(content.to_string());
+            plan
+        };
         plan.add_step(Task::new("step-1", content));
 
         plan
@@ -613,6 +620,13 @@ mod tests {
         let plan = LlmPlanner::fallback_plan("   ");
         assert_eq!(plan.goal, "Complete the requested task");
         assert_eq!(plan.steps[0].content, "Complete the requested task");
+
+        let composed = "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n规划引擎";
+        let plan = LlmPlanner::fallback_plan(composed);
+        assert_eq!(plan.goal, "规划引擎");
+        assert_eq!(plan.execution_context.as_deref(), Some(composed));
+        assert_eq!(plan.wire_goal(), composed);
+        assert_eq!(plan.product_goal(), "规划引擎");
     }
 
     #[test]
@@ -739,6 +753,8 @@ mod tests {
                     role: "assistant".to_string(),
                     content: vec![crate::llm::ContentBlock::Text { text }],
                     reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
                 },
                 usage: crate::llm::TokenUsage::default(),
                 stop_reason: None,

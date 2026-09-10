@@ -399,6 +399,21 @@ fn finish_agent_session(
         owned_workspace_backend,
     });
 
+    let session_review = Arc::new(RwLock::new(
+        crate::session_review::SessionReviewStoreV1::empty(&session_id).unwrap_or_else(|_| {
+            crate::session_review::SessionReviewStoreV1 {
+                schema: crate::session_review::SESSION_REVIEW_STORE_SCHEMA_V1.to_owned(),
+                session_id: session_id.clone(),
+                findings: Vec::new(),
+            }
+        }),
+    ));
+    let review_scenarios = {
+        let registry = Arc::new(crate::session_review::ReviewScenarioRegistry::new());
+        let _ = crate::session_review::register_default_scenarios(&registry);
+        registry
+    };
+
     let session = AgentSession {
         llm_client,
         model_generation_admission,
@@ -457,6 +472,8 @@ fn finish_agent_session(
         runtime_budget_guard: std::sync::Mutex::new(None),
         runtime_agent_style: std::sync::Mutex::new(None),
         runtime_output_language: std::sync::Mutex::new(None),
+        session_review,
+        review_scenarios,
     };
     session.refresh_task_delegation_tools();
     Ok(session)

@@ -482,6 +482,8 @@ impl OpenAiClient {
                     role: "assistant".to_string(),
                     content,
                     reasoning_content,
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                 },
                 usage: TokenUsage {
                     prompt_tokens: parsed.usage.prompt_tokens,

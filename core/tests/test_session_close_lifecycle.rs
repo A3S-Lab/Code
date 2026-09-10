@@ -601,6 +601,8 @@ async fn cluster_ops_consolidated_session_lifecycle() {
                     text: "scanned callsites, planning edits".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
         ],
         total_usage: a3s_code_core::llm::TokenUsage {
@@ -766,6 +768,8 @@ async fn loop_checkpoint_round_trips_through_session_store() {
                     text: "ack".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
         ],
         total_usage: TokenUsage {

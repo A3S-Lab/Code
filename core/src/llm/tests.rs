@@ -258,6 +258,8 @@ mod tests {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "Hello World");
     }
@@ -277,6 +279,8 @@ mod tests {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "Let me run that.");
     }
@@ -301,6 +305,8 @@ mod tests {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -334,6 +340,8 @@ mod tests {
                     text: "Hello!".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -363,6 +371,8 @@ mod tests {
                     input: serde_json::json!({"pattern": "fn main"}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
@@ -472,6 +482,8 @@ mod extra_llm_tests {
                 text: "Hello".into(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "Hello");
     }
@@ -482,6 +494,8 @@ mod extra_llm_tests {
             role: "assistant".into(),
             content: vec![],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "");
     }
@@ -500,6 +514,8 @@ mod extra_llm_tests {
                 ContentBlock::Text { text: "B".into() },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "A B");
     }
@@ -524,6 +540,8 @@ mod extra_llm_tests {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -539,6 +557,8 @@ mod extra_llm_tests {
                 text: "no tools".into(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert!(msg.tool_calls().is_empty());
     }
@@ -580,6 +600,8 @@ mod extra_llm_tests {
                     text: "resp".into(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -600,6 +622,8 @@ mod extra_llm_tests {
                     input: serde_json::json!({}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -1004,6 +1028,8 @@ mod extra_llm_tests2 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
 
@@ -1027,6 +1053,8 @@ mod extra_llm_tests2 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
 
@@ -1916,6 +1944,8 @@ mod extra_llm_tests2 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "First Second");
     }
@@ -1926,6 +1956,8 @@ mod extra_llm_tests2 {
             role: "user".to_string(),
             content: vec![],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert_eq!(msg.text(), "");
     }
@@ -1950,6 +1982,8 @@ mod extra_llm_tests2 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         let calls = msg.tool_calls();
         assert_eq!(calls.len(), 2);
@@ -1967,6 +2001,8 @@ mod extra_llm_tests2 {
                 text: "hello".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         assert!(msg.tool_calls().is_empty());
     }
@@ -1980,6 +2016,8 @@ mod extra_llm_tests2 {
                     text: "response text".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -2000,6 +2038,8 @@ mod extra_llm_tests2 {
                     input: serde_json::json!({"cmd": "ls"}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage::default(),
             stop_reason: Some("tool_use".to_string()),
@@ -2111,6 +2151,8 @@ mod extra_llm_tests2 {
                 text: "Hello".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2131,6 +2173,8 @@ mod extra_llm_tests2 {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2148,6 +2192,8 @@ mod extra_llm_tests2 {
                 text: "Response".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2169,6 +2215,8 @@ mod extra_llm_tests2 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2467,6 +2515,8 @@ mod extra_llm_tests2 {
                 input: serde_json::json!({"cmd": "ls"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2486,6 +2536,8 @@ mod extra_llm_tests2 {
                     text: "Hi".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             Message::user("How are you?"),
         ];
@@ -2519,6 +2571,8 @@ mod extra_llm_tests3 {
                 input: serde_json::json!({"cmd": "ls"}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2542,6 +2596,8 @@ mod extra_llm_tests3 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2571,6 +2627,8 @@ mod extra_llm_tests3 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2598,6 +2656,8 @@ mod extra_llm_tests3 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2619,6 +2679,8 @@ mod extra_llm_tests3 {
                 text: "Hello".to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -2995,6 +3057,8 @@ mod extra_llm_tests3 {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();
@@ -3548,6 +3612,8 @@ mod multimodal_tests {
                 },
             ],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
@@ -3586,6 +3652,8 @@ mod multimodal_tests {
                 redaction_reviewed: false,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted[0]["role"], "tool");

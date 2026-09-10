@@ -209,8 +209,13 @@ pub enum Complexity {
 /// Execution plan for a task
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
-    /// High-level goal
+    /// High-level goal shown in product UI / plan events.
     pub goal: String,
+    /// Optional full model-wire execution context (composed Desktop prompt,
+    /// original request, planner chrome). Kept separate from [`Self::goal`] so
+    /// product surfaces never inherit host preamble mashed into the goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_context: Option<String>,
     /// Decomposed steps
     pub steps: Vec<Task>,
     /// Estimated complexity
@@ -225,11 +230,39 @@ impl ExecutionPlan {
     pub fn new(goal: impl Into<String>, complexity: Complexity) -> Self {
         Self {
             goal: goal.into(),
+            execution_context: None,
             steps: Vec::new(),
             complexity,
             required_tools: Vec::new(),
             estimated_steps: 0,
         }
+    }
+
+    /// Model-wire goal/context for plan kickoff and delegated child prompts.
+    pub fn wire_goal(&self) -> &str {
+        self.execution_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or(self.goal.as_str())
+    }
+
+    /// Product-facing goal text (human sentence when context is composed).
+    pub fn product_goal(&self) -> String {
+        let human = crate::transcript::product_user_text(self.wire_goal());
+        if !human.trim().is_empty() {
+            return human;
+        }
+        let short = self.goal.trim();
+        if !short.is_empty() {
+            return short.to_string();
+        }
+        self.wire_goal()
+            .lines()
+            .next()
+            .unwrap_or("Task plan")
+            .trim()
+            .to_string()
     }
 
     pub fn add_step(&mut self, step: Task) {
@@ -305,6 +338,7 @@ impl ExecutionPlan {
             crate::execution_identity::EXECUTION_PLAN_IDENTITY_DOMAIN_V1,
             &serde_json::json!({
                 "goal": self.goal,
+                "execution_context": self.execution_context,
                 "complexity": self.complexity,
                 "required_tools": required_tools,
                 "steps": steps,

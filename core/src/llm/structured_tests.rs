@@ -47,6 +47,8 @@ impl MockStructuredClient {
                     text: text.to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -71,6 +73,8 @@ impl MockStructuredClient {
                     input: args,
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -100,6 +104,8 @@ impl MockStructuredClient {
                     }]
                 },
                 reasoning_content: Some(reasoning.to_string()),
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 10,
@@ -739,6 +745,8 @@ fn test_extract_raw_candidates_includes_reasoning() {
         role: "assistant".to_string(),
         content: vec![],
         reasoning_content: Some(r#"{"x": 1}"#.to_string()),
+        transcript_text: None,
+        transcript_visibility: Default::default(),
     };
     let cands = extract_raw_candidates(&msg, StructuredMode::Tool);
     assert!(cands.iter().any(|c| c.contains("\"x\"")));
@@ -2280,6 +2288,8 @@ fn test_extract_raw_output_tool_mode_falls_back_to_text() {
             text: r#"{"name": "Bob"}"#.to_string(),
         }],
         reasoning_content: None,
+    transcript_text: None,
+    transcript_visibility: Default::default(),
     };
     let candidates = extract_raw_candidates(&msg, StructuredMode::Tool);
     let value = extract_json_value(&candidates[0]).unwrap();

@@ -128,7 +128,7 @@ impl AgentLoop {
             turn = turn,
             "Injecting reasoning-only repair message - response had no content"
         );
-        state.messages.push(Message::user(REASONING_ONLY_REPAIR));
+        state.messages.push(Message::user_wire(REASONING_ONLY_REPAIR));
         true
     }
 
@@ -192,7 +192,7 @@ impl AgentLoop {
             max_continuation = self.config.max_continuation_turns,
             "Injecting continuation message - response looks incomplete"
         );
-        state.messages.push(Message::user(CONTINUATION));
+        state.messages.push(Message::user_wire(CONTINUATION));
         true
     }
 

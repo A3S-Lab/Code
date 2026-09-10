@@ -54,6 +54,8 @@ fn create_test_session_data() -> SessionData {
                     text: "Hi there!".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
         ],
         context_usage: ContextUsage {

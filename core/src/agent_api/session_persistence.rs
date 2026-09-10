@@ -112,6 +112,7 @@ pub(super) struct SessionPersistenceContext {
     immutable_content_adapter_binding: Option<crate::tools::ImmutableContentAdapterBindingV1>,
     tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
     auto_save: bool,
+    session_review: Arc<RwLock<crate::session_review::SessionReviewStoreV1>>,
 }
 
 impl SessionPersistenceContext {
@@ -150,6 +151,7 @@ impl SessionPersistenceContext {
                 .map(|adapter| adapter.binding().clone()),
             tool_result_transform_policy: session.tool_result_transform_policy.clone(),
             auto_save: session.auto_save,
+            session_review: Arc::clone(&session.session_review),
         }
     }
 
@@ -261,6 +263,8 @@ impl SessionPersistenceContext {
             verification_reports,
             self.subagent_tasks.list().await,
         );
+        let mut snapshot = snapshot;
+        snapshot.session_review = Some(read_or_recover(&self.session_review).clone());
         snapshot
             .validate_for_session(&self.session_id)
             .map_err(|error| {
@@ -545,6 +549,9 @@ pub(super) async fn restore_persisted_session_state(
         .subagent_tasks
         .replace_snapshots(snapshot.subagent_tasks)
         .await;
+    if let Some(review) = snapshot.session_review {
+        *write_or_recover(&session.session_review) = review;
+    }
 
     Ok(())
 }

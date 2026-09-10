@@ -267,6 +267,8 @@ fn gen_message(rng: &mut Rng) -> Message {
         role: roles[rng.usize_below(roles.len() as u64)].to_string(),
         content: (0..n).map(|_| gen_content_block(rng)).collect(),
         reasoning_content: rng.opt_string(),
+        transcript_text: None,
+        transcript_visibility: Default::default(),
     }
 }
 

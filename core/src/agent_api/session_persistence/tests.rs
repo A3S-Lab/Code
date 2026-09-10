@@ -799,6 +799,10 @@ async fn session_save_uses_exactly_one_aggregate_store_call() {
         immutable_content_adapter_binding: None,
         tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1::default(),
         auto_save: false,
+        session_review: Arc::new(RwLock::new(
+            crate::session_review::SessionReviewStoreV1::empty("aggregate-save-test")
+                .expect("empty review store"),
+        )),
     };
 
     context.save().await.unwrap();
@@ -876,6 +880,10 @@ async fn repeated_saves_preserve_restored_metadata_usage_cost_and_tasks() {
         tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1::context_efficient(
         ),
         auto_save: false,
+        session_review: Arc::new(RwLock::new(
+            crate::session_review::SessionReviewStoreV1::empty("lossless-save")
+                .expect("empty review store"),
+        )),
     };
 
     context.save().await.unwrap();

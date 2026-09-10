@@ -74,6 +74,7 @@ mod session_hitl;
 mod session_options;
 mod session_persistence;
 mod session_queue;
+mod session_review_facade;
 mod session_runs;
 mod session_runtime;
 mod session_sandbox;
@@ -606,6 +607,10 @@ pub struct AgentSession {
     pub(crate) agent_template_id: Option<String>,
     /// Distributed-trace correlation id propagated to hooks / traces.
     pub(crate) correlation_id: Option<String>,
+    /// Durable sticky reply / multi-scenario review findings for this session.
+    pub(crate) session_review: Arc<RwLock<crate::session_review::SessionReviewStoreV1>>,
+    /// Process-local review scenario registry (hosts may register more).
+    pub(crate) review_scenarios: Arc<crate::session_review::ReviewScenarioRegistry>,
 }
 
 // ============================================================================

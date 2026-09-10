@@ -386,6 +386,8 @@ impl LlmClient for CodexLoginClient {
                                         content,
                                         reasoning_content: (!reasoning.is_empty())
                                             .then(|| std::mem::take(&mut reasoning)),
+                                        transcript_text: None,
+                                        transcript_visibility: Default::default(),
                                     },
                                     usage,
                                     stop_reason: Some(
@@ -600,6 +602,8 @@ mod tests {
                     input: json!({"command": "pwd"}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             Message::tool_result("call-1", "workspace", false),
             Message {
@@ -610,6 +614,8 @@ mod tests {
                     input: json!({"path": "README.md"}),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             Message::tool_result("call-2", "contents", false),
         ];

@@ -127,6 +127,9 @@ pub fn sanitize_agent_event(
     ) -> crate::planning::ExecutionPlan {
         let mut plan = plan.clone();
         plan.goal = text(provider, &plan.goal);
+        if let Some(context) = plan.execution_context.as_ref() {
+            plan.execution_context = Some(text(provider, context));
+        }
         plan.steps = plan.steps.iter().map(|item| task(provider, item)).collect();
         plan
     }

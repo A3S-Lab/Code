@@ -266,7 +266,15 @@ impl AgentLoop {
         let mut tool_calls_count = 0;
         let total_steps = plan.steps.len();
 
-        // Add initial user message with the goal
+        // Product transcript keeps the human task; model wire gets the plan kickoff.
+        let human_task = plan.product_goal();
+        let product_text = human_task;
+        if current_history
+            .last()
+            .is_none_or(|message| message.role != "user" || !message.is_product_transcript())
+        {
+            current_history.push(Message::user(&product_text));
+        }
         let steps_text = plan
             .steps
             .iter()
@@ -274,9 +282,10 @@ impl AgentLoop {
             .map(|(i, step)| format!("{}. {}", i + 1, step.content))
             .collect::<Vec<_>>()
             .join("\n");
-        current_history.push(Message::user(&crate::prompts::render(
+        let wire_goal = plan.wire_goal().to_string();
+        current_history.push(Message::user_wire(&crate::prompts::render(
             crate::prompts::PLAN_EXECUTE_GOAL,
-            &[("goal", &plan.goal), ("steps", &steps_text)],
+            &[("goal", &wire_goal), ("steps", &steps_text)],
         )));
         self.emit_task_updated(&event_tx, &task_session_id, &plan)
             .await;
@@ -337,7 +346,7 @@ impl AgentLoop {
                 if Self::should_delegate_plan_step(&step) {
                     let args = json!({
                         "tasks": [Self::delegated_task_args_with_goal(
-                            Some(&plan.goal),
+                            Some(plan.wire_goal()),
                             &step,
                             step_number,
                             total_steps,
@@ -356,7 +365,7 @@ impl AgentLoop {
 
                     if is_error {
                         tracing::error!("Delegated plan step '{}' failed: {}", step.id, output);
-                        current_history.push(Message::user(&format!(
+                        current_history.push(Message::user_wire(&format!(
                             "Delegated plan step '{}' failed:\n{}",
                             step.content, output
                         )));
@@ -375,11 +384,7 @@ impl AgentLoop {
                             .ok();
                         }
                     } else {
-                        current_history.push(Message {
-                            role: "assistant".to_string(),
-                            content: vec![crate::llm::ContentBlock::Text { text: output }],
-                            reasoning_content: None,
-                        });
+                        current_history.push(Message::assistant(&output));
                         plan.mark_status(&step.id, TaskStatus::Completed);
                         self.emit_task_updated(&event_tx, &task_session_id, &plan)
                             .await;
@@ -535,7 +540,7 @@ impl AgentLoop {
                 let mut parallel_results: Vec<ParallelStepResult> = Vec::new();
                 if self.should_delegate_plan_wave(&ready_steps) {
                     let args = Self::parallel_delegated_task_args_with_goal(
-                        Some(&plan.goal),
+                        Some(plan.wire_goal()),
                         &ready_steps,
                         total_steps,
                     );
@@ -610,18 +615,12 @@ impl AgentLoop {
                     }
 
                     if wave_failed {
-                        current_history.push(Message::user(&format!(
+                        current_history.push(Message::user_wire(&format!(
                             "Delegated parallel plan wave completed with failures:\n{}",
                             output
                         )));
                     } else {
-                        current_history.push(Message {
-                            role: "assistant".to_string(),
-                            content: vec![crate::llm::ContentBlock::Text {
-                                text: output.clone(),
-                            }],
-                            reasoning_content: None,
-                        });
+                        current_history.push(Message::assistant(&output));
                     }
                 } else {
                     let step_lookup = ready_steps
@@ -796,7 +795,7 @@ impl AgentLoop {
                 if !parallel_results.is_empty() {
                     parallel_results.sort_by_key(|r| r.step_number);
                     let envelope = ParallelStepResult::build_envelope(parallel_results);
-                    current_history.push(Message::user(
+                    current_history.push(Message::user_wire(
                         &serde_json::to_string(&envelope).unwrap_or_default(),
                     ));
                 }

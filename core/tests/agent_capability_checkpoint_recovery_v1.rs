@@ -182,6 +182,8 @@ fn tool_response() -> LlmResponse {
                 input: serde_json::json!({}),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage::default(),
         stop_reason: Some("tool_use".into()),

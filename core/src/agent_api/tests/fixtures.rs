@@ -147,6 +147,8 @@ impl StaticStreamingClient {
                     text: self.text.clone(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             },
             usage: TokenUsage {
                 prompt_tokens: 1,
@@ -187,6 +189,8 @@ pub(crate) fn scripted_text_response(text: &str) -> LlmResponse {
                 text: text.to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 1,
@@ -215,6 +219,8 @@ pub(crate) fn scripted_tool_call_response(
                 input: args,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 1,

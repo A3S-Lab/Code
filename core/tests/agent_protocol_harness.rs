@@ -107,6 +107,8 @@ fn response() -> LlmResponse {
                 text: "done".into(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 1,
@@ -131,6 +133,8 @@ fn tool_response(name: &str, input: serde_json::Value) -> LlmResponse {
                 input,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 1,

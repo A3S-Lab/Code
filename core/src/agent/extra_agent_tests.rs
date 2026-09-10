@@ -2446,6 +2446,75 @@ async fn test_execute_plan_emits_task_list_snapshots() {
 }
 
 #[tokio::test]
+async fn test_execute_plan_keeps_human_goal_product_and_plan_chrome_wire() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let mock_client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::text_response("Step 1 done"),
+        MockLlmClient::text_response("Step 2 done"),
+    ]));
+
+    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        test_tool_context(),
+        AgentConfig::default(),
+    );
+
+    let human = "规划如何开发一个游戏引擎？";
+    let composed = format!(
+        "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n{human}"
+    );
+    let mut plan = ExecutionPlan::new(&composed, Complexity::Simple);
+    plan.add_step(Task::new("s1", "Survey engines"));
+    plan.add_step(Task::new("s2", "Draft architecture").with_dependencies(vec!["s1".to_string()]));
+
+    let result = agent
+        .execute_plan(
+            &[],
+            &plan,
+            Some("product-transcript-session"),
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let product_users: Vec<_> = result
+        .messages
+        .iter()
+        .filter(|message| message.role == "user" && message.is_product_transcript())
+        .collect();
+    assert_eq!(product_users.len(), 1);
+    assert_eq!(product_users[0].text(), human);
+
+    let wire_users: Vec<_> = result
+        .messages
+        .iter()
+        .filter(|message| message.role == "user" && !message.is_product_transcript())
+        .collect();
+    assert!(
+        wire_users.iter().any(|message| {
+            message
+                .text()
+                .contains("Execute the following plan step by step:")
+        }),
+        "plan kickoff must remain wire-only"
+    );
+    assert!(
+        wire_users
+            .iter()
+            .any(|message| message.text().starts_with("Execute step ")),
+        "plan step prompts must remain wire-only"
+    );
+    assert!(
+        !wire_users.iter().any(|message| message.text() == human),
+        "human goal must not be duplicated as a wire-only bubble"
+    );
+}
+
+#[tokio::test]
 async fn test_execute_plan_delegates_task_tool_steps() {
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;

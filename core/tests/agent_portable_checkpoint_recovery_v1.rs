@@ -30,6 +30,8 @@ fn response() -> LlmResponse {
                 text: "portable recovery complete".into(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: 1,

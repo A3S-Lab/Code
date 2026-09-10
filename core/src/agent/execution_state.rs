@@ -314,6 +314,8 @@ impl ExecutionLoopState {
                     text: "(Response interrupted by the user.)".to_string(),
                 }],
                 reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
             });
         }
         AgentResult {

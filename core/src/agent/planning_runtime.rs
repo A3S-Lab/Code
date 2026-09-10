@@ -11,15 +11,30 @@ impl AgentLoop {
         execution_prompt: &str,
     ) -> ExecutionPlan {
         let context = execution_prompt.trim();
-        let goal = plan.goal.trim();
-
-        if context.is_empty() || goal == context || goal.contains(context) {
+        if context.is_empty() {
             return plan;
         }
 
-        // Keep both texts without English chrome labels — product UI shows this
-        // string under the host locale, and English headers cause mixed language.
-        plan.goal = format!("{context}\n\n{goal}");
+        let goal = plan.goal.trim();
+        // Keep the short planner goal for product events/HUD. Attach the full
+        // execution prompt as wire context only — never mash host preamble into
+        // `plan.goal` (that leaked Desktop chrome into user-visible plan copy).
+        if plan.execution_context.as_deref().map(str::trim) != Some(context) {
+            plan.execution_context = Some(context.to_string());
+        }
+        if goal.is_empty() {
+            let product = crate::transcript::product_user_text(context);
+            plan.goal = if product.trim().is_empty() {
+                context
+                    .lines()
+                    .next()
+                    .unwrap_or("Task plan")
+                    .trim()
+                    .to_string()
+            } else {
+                product
+            };
+        }
         plan
     }
 

@@ -176,6 +176,8 @@ fn model_response(text: String, input_tokens: usize, output_tokens: usize) -> Ll
             role: "assistant".into(),
             content: vec![ContentBlock::Text { text }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
         },
         usage: TokenUsage {
             prompt_tokens: input_tokens,

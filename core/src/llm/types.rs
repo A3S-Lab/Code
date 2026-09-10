@@ -313,6 +313,38 @@ impl PartialEq<str> for ToolResultContentField {
     }
 }
 
+/// Whether a message belongs in the product transcript or only on the model wire.
+///
+/// Product transcript shows what a human authored (and ordinary assistant/tool
+/// chrome). Wire-only messages are runtime steering for the model — plan
+/// kickoffs, continuations, compaction summaries, repair prompts — and must not
+/// appear as user bubbles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptVisibility {
+    /// Included in the product-facing transcript.
+    #[default]
+    Product,
+    /// Model-wire only; omitted from product transcript export.
+    Wire,
+}
+
+impl TranscriptVisibility {
+    pub const fn is_product(self) -> bool {
+        matches!(self, Self::Product)
+    }
+
+    pub const fn is_wire(self) -> bool {
+        matches!(self, Self::Wire)
+    }
+
+    /// Serde `skip_serializing_if` callback (receives `&Self`).
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn is_product_ref(visibility: &Self) -> bool {
+        visibility.is_product()
+    }
+}
+
 /// Message in conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -322,29 +354,66 @@ pub struct Message {
     /// Stored so it can be sent back in conversation history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Optional product-facing text when `content` carries a richer model-wire
+    /// prompt (composed context, planner chrome). LLM providers still read
+    /// `content`; Desktop/export uses this when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_text: Option<String>,
+    /// Defaults to [`TranscriptVisibility::Product`] for backward-compatible
+    /// snapshots that predate this field.
+    #[serde(default, skip_serializing_if = "TranscriptVisibility::is_product_ref")]
+    pub transcript_visibility: TranscriptVisibility,
 }
 
 impl Message {
-    pub fn user(text: &str) -> Self {
+    fn plain(role: impl Into<String>, text: &str) -> Self {
         Self {
-            role: "user".to_string(),
+            role: role.into(),
             content: vec![ContentBlock::Text {
                 text: text.to_string(),
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: TranscriptVisibility::Product,
         }
+    }
+
+    /// Product-visible user message (human-authored or ordinary user turn).
+    pub fn user(text: &str) -> Self {
+        Self::plain("user", text)
+    }
+
+    /// Model-wire user steering that must not appear as a product user bubble.
+    pub fn user_wire(text: &str) -> Self {
+        let mut message = Self::plain("user", text);
+        message.transcript_visibility = TranscriptVisibility::Wire;
+        message
+    }
+
+    /// Persist model-wire `content` while keeping a separate product transcript
+    /// string for UI export (composed / planner prompts).
+    pub fn user_for_model_with_transcript(model_text: &str, transcript_text: &str) -> Self {
+        let model = model_text.trim();
+        let transcript = transcript_text.trim();
+        let mut message = Self::plain("user", model);
+        if !transcript.is_empty() && transcript != model {
+            message.transcript_text = Some(transcript.to_string());
+        }
+        message
     }
 
     /// A plain-text assistant message. Used e.g. to mark a host-cancelled turn
     /// in committed history so role alternation stays valid for the next turn.
     pub fn assistant(text: &str) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-            reasoning_content: None,
-        }
+        Self::plain("assistant", text)
+    }
+
+    /// Model-wire assistant output that must not appear in the product transcript
+    /// (e.g. Findings address replies — only Findings status is product-visible).
+    pub fn assistant_wire(text: &str) -> Self {
+        let mut message = Self::plain("assistant", text);
+        message.transcript_visibility = TranscriptVisibility::Wire;
+        message
     }
 
     /// Create a user message with text and image attachments.
@@ -358,6 +427,8 @@ impl Message {
             role: "user".to_string(),
             content,
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: TranscriptVisibility::Product,
         }
     }
 
@@ -399,6 +470,8 @@ impl Message {
                 redaction_reviewed,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: TranscriptVisibility::Product,
         }
     }
 
@@ -449,7 +522,26 @@ impl Message {
                 redaction_reviewed,
             }],
             reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: TranscriptVisibility::Product,
         }
+    }
+
+    pub fn is_product_transcript(&self) -> bool {
+        self.transcript_visibility.is_product()
+    }
+
+    /// Text the product UI should show for this message.
+    pub fn transcript_display_text(&self) -> String {
+        if let Some(text) = self
+            .transcript_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return text.to_string();
+        }
+        self.text()
     }
 
     /// Extract text content from message
