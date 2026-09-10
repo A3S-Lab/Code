@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.3] - 2026-09-10
+
+### Fixed
+
+- Provider-facing `read` and `code_symbols` tool schemas no longer expose a
+  top-level `oneOf` in `definition()` payloads. OpenAI-compatible and Anthropic
+  validators reject union keywords at the function-parameters root
+  (`invalid_function_parameters`). Gateway `parameters()` still uses `oneOf`;
+  model schemas are flat objects (same pattern as `task`). Closes #135.
+- Node SDK `package-lock.json` files aligned to the published version (root +
+  examples parent pin), so release CI version checks stay consistent.
+
 ## [8.5.2] - 2026-09-09
 
 ### Fixed

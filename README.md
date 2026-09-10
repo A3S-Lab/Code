@@ -45,8 +45,11 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **DeepResearch Flow identity (8.5.2).** Dynamic Flow step identity admits
   inputs up to 512 KiB; above 64 KiB the identity folds to `sha256` + `bytes`
   (digest-only) so multi-source selector shards stay scheduler-compatible.
+- **Flat tool schemas for providers (8.5.3).** `read` and `code_symbols`
+  `definition()` payloads omit top-level `oneOf` so OpenAI-compatible /
+  Anthropic validators accept them (`invalid_function_parameters` fix).
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.2`).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.3`).
 
 ### Earlier lines
 

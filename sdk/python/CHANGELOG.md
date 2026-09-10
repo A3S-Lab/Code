@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.3] - 2026-09-10
+
+- Bundled Core 8.5.3: flat `read` / `code_symbols` model schemas (no top-level
+  `oneOf` in provider-facing `definition()` payloads; closes #135).
+
 ## [8.5.2] - 2026-09-09
 
 - Bundled Core 8.5.2: Flow step identity digest-fold for DeepResearch
