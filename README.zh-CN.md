@@ -61,17 +61,100 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 
 ## 60 秒内起步
 
-### 运行终端产品
+### 安装、更新与卸载终端产品
+
+交互式 Code TUI 是 **`a3s code`**。请安装伞形 **`a3s` CLI**，不要用遗留的
+`a3s-code` Homebrew formula。只选 **一种** 安装渠道，并在同一渠道上更新，
+避免 PATH 上出现互相遮蔽的第二份副本。
+
+| 操作系统 | 架构 | 交付方式 |
+| --- | --- | --- |
+| macOS 12+ | `aarch64`、`x86_64` | 官方安装脚本、Homebrew 或 Cargo |
+| Linux（glibc） | `x86_64`、`aarch64` | 官方安装脚本、Homebrew 或 Cargo |
+| Windows 10/11 | 仅 `x64` | PowerShell 安装脚本或 Cargo |
+
+伞形 CLI 当前不发布：musl/Alpine、Windows ARM、Mingw、Cygwin。
+
+#### Homebrew（macOS 与 Linux）
 
 ```bash
-brew install A3S-Lab/tap/a3s
+brew tap a3s-lab/tap https://github.com/A3S-Lab/homebrew-tap
+brew install a3s
+# 等价：brew install a3s-lab/tap/a3s
 
-# Or install from crates.io
-cargo install a3s
-
+a3s --version
 cd /path/to/your/project
 a3s code
 ```
+
+```bash
+# 更新
+brew update && brew upgrade a3s
+
+# 卸载
+brew uninstall a3s
+# 可选：brew untap a3s-lab/tap
+```
+
+**不要**用 `brew install a3s-code`。那个 formula 安装的是遗留独立
+`a3s-code` 二进制，**不会**提供 `a3s`。
+
+#### 官方安装脚本 — macOS 与 glibc Linux
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
+```
+
+默认安装到 `~/.local/bin`。设 `A3S_MODIFY_PATH=1` 可将该目录写入 shell
+profile。覆盖变量：`A3S_VERSION`、`A3S_INSTALL_DIR`、`A3S_GITHUB_TOKEN`。
+
+```bash
+# 更新
+a3s self update
+# 或重新运行 install.sh
+
+# 卸载
+rm -f ~/.local/bin/a3s ~/.local/bin/a3s-webview
+rm -rf ~/.local/bin/moli
+# 若用过 A3S_MODIFY_PATH=1，请从 shell profile 去掉对应 PATH 行。
+```
+
+#### 官方安装脚本 — Windows x64（PowerShell 5.1+）
+
+```powershell
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+默认安装到 `%LOCALAPPDATA%\Programs\a3s\bin`。设 `$env:A3S_MODIFY_PATH = '1'`
+可更新用户 PATH。
+
+```powershell
+# 更新 — 重新运行安装脚本（Windows 不支持原地 self-update）
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+
+# 卸载
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\a3s"
+```
+
+#### Cargo
+
+```bash
+cargo install a3s --locked
+
+# 更新
+cargo install a3s --locked
+
+# 卸载
+cargo uninstall a3s
+```
+
+Cargo 可能缺少发布配套（`a3s-webview`、捆绑的 `moli/`）。需要完整发布布局时
+请优先 Homebrew 或官方安装脚本。
+
+卸载二进制**不会**删除 `~/.a3s/`（或 Windows 等价目录）。更完整的平台说明见
+[a3s 安装](https://github.com/A3S-Lab/a3s#installation) 与
+[CLI Quick start](https://github.com/A3S-Lab/CLI#quick-start)。
 
 终端里会流式显示推理、工具、审批、任务进度和 diff。恢复会话用
 `a3s code resume` 或 `a3s code resume <session-id>`。

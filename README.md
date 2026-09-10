@@ -64,17 +64,101 @@ Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.3`).
 
 ## Start in 60 seconds
 
-### Run the terminal product
+### Install, update, and uninstall the terminal product
+
+The interactive Code TUI is **`a3s code`**. Install the umbrella **`a3s` CLI**,
+not the legacy `a3s-code` Homebrew formula. Pick **one** channel and keep
+updates on that channel so PATH does not shadow a second copy.
+
+| OS | Architectures | Delivery |
+| --- | --- | --- |
+| macOS 12+ | `aarch64`, `x86_64` | Official installer, Homebrew, or Cargo |
+| Linux (glibc) | `x86_64`, `aarch64` | Official installer, Homebrew, or Cargo |
+| Windows 10/11 | `x64` only | PowerShell installer or Cargo |
+
+Not shipped for the umbrella CLI: musl/Alpine, Windows ARM, Mingw, or Cygwin.
+
+#### Homebrew (macOS and Linux)
 
 ```bash
-brew install A3S-Lab/tap/a3s
+brew tap a3s-lab/tap https://github.com/A3S-Lab/homebrew-tap
+brew install a3s
+# Equivalent: brew install a3s-lab/tap/a3s
 
-# Or install from crates.io
-cargo install a3s
-
+a3s --version
 cd /path/to/your/project
 a3s code
 ```
+
+```bash
+# Update
+brew update && brew upgrade a3s
+
+# Uninstall
+brew uninstall a3s
+# Optional: brew untap a3s-lab/tap
+```
+
+Do **not** use `brew install a3s-code`. That formula installs a legacy
+standalone `a3s-code` binary and does **not** provide `a3s`.
+
+#### Official installer — macOS and glibc Linux
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
+```
+
+Defaults to `~/.local/bin`. Set `A3S_MODIFY_PATH=1` to append that directory to
+a shell profile. Overrides: `A3S_VERSION`, `A3S_INSTALL_DIR`, `A3S_GITHUB_TOKEN`.
+
+```bash
+# Update
+a3s self update
+# or re-run install.sh
+
+# Uninstall
+rm -f ~/.local/bin/a3s ~/.local/bin/a3s-webview
+rm -rf ~/.local/bin/moli
+# Remove any PATH line added when A3S_MODIFY_PATH=1 was used.
+```
+
+#### Official installer — Windows x64 (PowerShell 5.1+)
+
+```powershell
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+Defaults to `%LOCALAPPDATA%\Programs\a3s\bin`. Set `$env:A3S_MODIFY_PATH = '1'`
+to update the user PATH.
+
+```powershell
+# Update — re-run the installer (no in-place self-update on Windows)
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+
+# Uninstall
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\a3s"
+```
+
+#### Cargo
+
+```bash
+cargo install a3s --locked
+
+# Update
+cargo install a3s --locked
+
+# Uninstall
+cargo uninstall a3s
+```
+
+Cargo may omit release companions (`a3s-webview`, bundled `moli/`). Prefer
+Homebrew or the official installer for the full release layout.
+
+Uninstalling the binary does **not** remove `~/.a3s/` (or the Windows
+equivalent). Full platform notes live in the
+[a3s Installation](https://github.com/A3S-Lab/a3s#installation) section and the
+[CLI Quick start](https://github.com/A3S-Lab/CLI#quick-start).
 
 The terminal product streams reasoning, tool activity, approvals, task
 progress, and diffs. Resume persisted work with `a3s code resume` or
