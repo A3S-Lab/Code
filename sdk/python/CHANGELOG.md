@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.5] - 2026-09-10
+
+- Bundled Core 8.5.5: join chat URL without duplicating Coding Plan `/paas/v4`
+  paths (closes #136).
+
 ## [8.5.4] - 2026-09-10
 
 - Bundled Core 8.5.4: hard connect/DNS transport failures fail fast (no ~3min

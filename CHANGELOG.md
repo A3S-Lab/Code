@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.5] - 2026-09-10
+
+### Fixed
+
+- Join chat-completions URLs without duplicating Coding Plan `/paas/v4` (or
+  appending `/v1` onto an already-versioned API root). Custom OpenAI-compatible
+  and built-in Zhipu `base_url` overrides such as
+  `https://open.bigmodel.cn/api/coding/paas/v4` now resolve to
+  `…/paas/v4/chat/completions` instead of `…/v4/v1/…` or
+  `…/paas/v4/api/paas/v4/…`. Closes #136.
+
 ## [8.5.4] - 2026-09-10
 
 ### Fixed

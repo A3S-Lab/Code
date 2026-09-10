@@ -411,6 +411,54 @@ pub(crate) fn normalize_base_url(base_url: &str) -> String {
         .to_string()
 }
 
+fn base_has_versioned_api_root(base: &str) -> bool {
+    base.contains("/api/")
+        || base.ends_with("/v4")
+        || base.ends_with("/v3")
+        || base.ends_with("/v2")
+}
+
+/// Join a normalized provider `base_url` with a chat-completions path.
+///
+/// Avoids duplicated path segments when the user supplies a base URL that
+/// already includes a provider API root (for example Zhipu Coding Plan
+/// `https://open.bigmodel.cn/api/coding/paas/v4`).
+pub(crate) fn join_chat_completions_url(base_url: &str, chat_path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if chat_path.is_empty() {
+        return base.to_string();
+    }
+    let mut path = if chat_path.starts_with('/') {
+        chat_path.to_string()
+    } else {
+        format!("/{chat_path}")
+    };
+
+    if base.ends_with("/chat/completions") {
+        return base.to_string();
+    }
+
+    // OpenAI-compatible default path is `/v1/chat/completions`. When the base
+    // already ends at a versioned API root (…/paas/v4, …/api/…), append only
+    // `/chat/completions` so Coding Plan URLs are not turned into …/v4/v1/….
+    if path.starts_with("/v1/") && base_has_versioned_api_root(base) {
+        path = path.replacen("/v1", "", 1);
+    }
+
+    // Built-in Zhipu uses `/api/paas/v4/chat/completions` against the host-only
+    // default base. If the user overrides base_url to a Coding Plan root that
+    // already contains `/paas/v4`, keep only the suffix after that marker.
+    const PAAS_V4: &str = "/paas/v4";
+    if base.contains(PAAS_V4) {
+        if let Some(idx) = path.find(PAAS_V4) {
+            let suffix = &path[idx + PAAS_V4.len()..];
+            return format!("{base}{suffix}");
+        }
+    }
+
+    format!("{base}{path}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,6 +580,57 @@ mod tests {
     #[test]
     fn test_normalize_base_url_empty_string() {
         assert_eq!(normalize_base_url(""), "");
+    }
+
+    #[test]
+    fn join_chat_completions_url_openai_default() {
+        assert_eq!(
+            join_chat_completions_url("https://api.openai.com", "/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn join_chat_completions_url_zhipu_default() {
+        assert_eq!(
+            join_chat_completions_url("https://open.bigmodel.cn", "/api/paas/v4/chat/completions"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn join_chat_completions_url_coding_plan_openai_compatible() {
+        // Issue #136: custom OpenAI-compatible provider with Coding Plan base.
+        assert_eq!(
+            join_chat_completions_url(
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                "/v1/chat/completions"
+            ),
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn join_chat_completions_url_coding_plan_builtin_zhipu() {
+        // Issue #136: built-in zhipu with Coding Plan base_url override.
+        assert_eq!(
+            join_chat_completions_url(
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                "/api/paas/v4/chat/completions"
+            ),
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn join_chat_completions_url_full_endpoint_as_base() {
+        assert_eq!(
+            join_chat_completions_url(
+                "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+                "/v1/chat/completions"
+            ),
+            "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
+        );
     }
 
     #[test]

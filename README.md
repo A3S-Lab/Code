@@ -51,8 +51,16 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **Hard-connect fail-fast (8.5.4).** Connection reset/refused, unreachable
   host, and DNS lookup failures surface immediately instead of ~3 minutes of
   silent retry.
+- **GLM Coding Plan base_url join (8.5.5).** Chat URL join no longer duplicates
+  `/paas/v4` or appends `/v1` onto an already-versioned Coding Plan root
+  (closes #136).
+- **Session review substrate.** Durable `pending → addressed → accepted |
+  reopen | waived` findings live on `SessionSnapshot` with pluggable
+  `ReviewScenario` / `ReviewSubject` (no rubrics in Core). Sticky inject
+  includes only pending findings whose registered scenario opts into main
+  prompt injection.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.4`).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.5`).
 
 ### Earlier lines
 

@@ -1,6 +1,6 @@
 //! OpenAI-compatible LLM client
 
-use super::http::{default_http_client, normalize_base_url, HttpClient};
+use super::http::{default_http_client, join_chat_completions_url, normalize_base_url, HttpClient};
 use super::structured;
 use super::types::*;
 use super::{LlmClient, ModelGenerationPool};
@@ -388,7 +388,7 @@ impl OpenAiClient {
     async fn send_request(&self, request: serde_json::Value) -> Result<LlmResponse> {
         {
             let request_started_at = Instant::now();
-            let url = format!("{}{}", self.base_url, self.chat_completions_path);
+            let url = join_chat_completions_url(&self.base_url, &self.chat_completions_path);
             let request_headers = self.request_headers();
 
             let response = crate::retry::with_retry(&self.retry_config, |_attempt| {

@@ -48,8 +48,11 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   校验器报 `invalid_function_parameters`。
 - **硬连接失败快速返回（8.5.4）。** 连接重置/拒绝、主机不可达、DNS 解析失败
   立即暴露，不再静默重试约 3 分钟。
+- **GLM Coding Plan base_url 拼接（8.5.5）。** 聊天 URL 拼接不再重复
+  `/paas/v4`，也不会在已带版本根的 Coding Plan base 上再追加 `/v1`
+  （closes #136）。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.4`）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.5`）。
 
 ### 更早的版本线
 

@@ -11,7 +11,10 @@ impl OpenAiClient {
             request["stream"] = serde_json::json!(true);
             request["stream_options"] = serde_json::json!({ "include_usage": true });
             let request_started_at = Instant::now();
-            let url = format!("{}{}", self.base_url, self.chat_completions_path);
+            let url = crate::llm::http::join_chat_completions_url(
+                &self.base_url,
+                &self.chat_completions_path,
+            );
             let request_headers = self.request_headers();
 
             let streaming_resp = crate::retry::with_retry_cancellable(
