@@ -409,7 +409,7 @@ impl Message {
     }
 
     /// Model-wire assistant output that must not appear in the product transcript
-    /// (e.g. Findings address replies — only Findings status is product-visible).
+    /// (runtime steering / side-path chrome — not ordinary address replies).
     pub fn assistant_wire(text: &str) -> Self {
         let mut message = Self::plain("assistant", text);
         message.transcript_visibility = TranscriptVisibility::Wire;

@@ -122,12 +122,13 @@ impl AgentSession {
             .map_err(|error| CodeError::Session(error.to_string()))
     }
 
-    /// Conceal the latest Findings address turn in the product transcript.
+    /// Mark recent Findings address steering as wire-only if a host path left it
+    /// product-visible by mistake.
     ///
-    /// After a host-driven address stream, the user steering is already wire-only
-    /// (`Address each open review finding…`). The assistant reply must also be
-    /// wire-only so historical product messages stay immutable — Findings item
-    /// status (and card projection) is the product surface for that work.
+    /// Prefer not calling this after a successful address stream: the address
+    /// assistant reply should remain a new product message appended to history.
+    /// Historical messages must not be cleared. Address **user** steering is
+    /// already wire-only via `transcript::is_pure_runtime_steering`.
     pub fn conceal_latest_findings_address_turn(&self) -> usize {
         use crate::llm::TranscriptVisibility;
 
@@ -137,11 +138,10 @@ impl AgentSession {
         while idx > 0 {
             idx -= 1;
             let role = history[idx].role.as_str();
+            // Do not conceal assistant address replies — they are the appended
+            // product round. Only demote mistaken product-visible address
+            // *user* steering prompts.
             if role == "assistant" {
-                if history[idx].transcript_visibility.is_product() {
-                    history[idx].transcript_visibility = TranscriptVisibility::Wire;
-                    concealed += 1;
-                }
                 continue;
             }
             if role == "user" {
