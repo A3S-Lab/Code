@@ -47,6 +47,10 @@ sessions_dir = ".a3s/sessions"
 | `glm` / `zhipu` / `bigmodel` | 智谱兼容客户端      | 密钥和基础 URL 仍应从环境变量注入。            |
 | 其它服务提供商名称           | OpenAI 兼容兜底路径 | 适合私有或自托管的 OpenAI 兼容服务。           |
 
+Coding Plan 类基础地址（例如
+`https://open.bigmodel.cn/api/coding/paas/v4`）会正确拼接到
+`/chat/completions`（不会加 `/v1`，也不会重复 `/paas/v4`）。
+
 运行时不硬编码模型名。`default_model` 和每个会话的 `model` 都是
 `provider/model-id` 形式的标识符，必须能匹配你在服务提供商配置块里声明的模型。
 

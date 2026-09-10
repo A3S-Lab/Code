@@ -11,7 +11,7 @@ A3S Code is the Rust runtime behind `a3s code`. Embed it in an IDE, runner,
 service, or desktop app when you need the same loop outside the terminal: tools,
 permissions, child tasks, workspace search, and session save/resume.
 
-In 8.5.1, literal `grep` can use a small trigram cache so it opens fewer files
+In 8.5.x, literal `grep` can use a small trigram cache so it opens fewer files
 first; ranked search still goes through `bm25` / zvec. Session stores take a
 flock on reopen so a bad WAL does not mint colliding sequence numbers.
 
@@ -60,14 +60,17 @@ same events, so every UI does not need its own agent loop.
 | Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                                  |
 | Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                                  |
 
-## What is new in v8.5.1
+## What is new in v8.5.5
 
-- **Faster literal `grep` (`CODE-G1`).** Builds a fail-open trigram cache under
-  `.a3s-code/grep-trigram`. Exact regex still runs in Code; durable zvec FTS is
-  not opened on this path.
-- **Session-store WAL flock.** Concurrent writers re-read the durable max
-  sequence under flock; a corrupt WAL can be quarantined so the host keeps
-  going from snapshots.
+- **GLM Coding Plan `base_url` join.** Bases like
+  `https://open.bigmodel.cn/api/coding/paas/v4` join to `/chat/completions`
+  without a `/v1` suffix or a duplicated `/paas/v4` path segment.
+- **Faster literal `grep` (`CODE-G1`, since 8.5.1).** Builds a fail-open
+  trigram cache under `.a3s-code/grep-trigram`. Exact regex still runs in
+  Code; durable zvec FTS is not opened on this path.
+- **Session-store WAL flock (since 8.5.1).** Concurrent writers re-read the
+  durable max sequence under flock; a corrupt WAL can be quarantined so the
+  host keeps going from snapshots.
 - Still includes the 8.4 smaller harness and the 8.3 durability/trust work.
 
 ## Earlier v8.4.0 additions

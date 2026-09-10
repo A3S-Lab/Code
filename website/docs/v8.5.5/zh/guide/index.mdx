@@ -11,7 +11,7 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 桌面应用，复用同一套 Agent 循环：工具、权限、子任务、工作区搜索，以及会话的
 保存和恢复。
 
-8.5.1 里，字面量 `grep` 可以先用小的 trigram 缓存缩小文件范围；排序检索仍走
+8.5.x 里，字面量 `grep` 可以先用小的 trigram 缓存缩小文件范围；排序检索仍走
 `bm25` / zvec。会话存储重开时会拿 flock，坏 WAL 不会再写出冲突序号。
 
 ## 设计规则
@@ -58,12 +58,16 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 | 保存与恢复 | `SessionSnapshotV1`、Session ID、Auto-save、Run Event、Trace、Artifact、Loop / Workflow Checkpoint 和 Memory Store 用来恢复会话和回放运行过程。                                   |
 | 验证       | [验证](/guide/verification) 支持验证命令、预设、结构化报告、摘要、Artifact、Trace Event 和 Run Replay。                                                                           |
 
-## v8.5.1 新增内容
+## v8.5.5 新增内容
 
-- **更快的字面量 `grep`（`CODE-G1`）。** 在 `.a3s-code/grep-trigram` 下建失败可
-  回退的 trigram 缓存。精确正则仍在 Code 里跑，这条路径不打开持久 zvec FTS。
-- **会话存储 WAL flock。** 并发写者在 flock 下重读持久最大序号；坏 WAL 可以隔离，
-  宿主从快照继续。
+- **GLM Coding Plan `base_url` 拼接。** 类似
+  `https://open.bigmodel.cn/api/coding/paas/v4` 的基础地址会正确拼接到
+  `/chat/completions`，不会加 `/v1`，也不会重复 `/paas/v4`。
+- **更快的字面量 `grep`（`CODE-G1`，自 8.5.1）。** 在 `.a3s-code/grep-trigram`
+  下建失败可回退的 trigram 缓存。精确正则仍在 Code 里跑，这条路径不打开持久
+  zvec FTS。
+- **会话存储 WAL flock（自 8.5.1）。** 并发写者在 flock 下重读持久最大序号；
+  坏 WAL 可以隔离，宿主从快照继续。
 - 仍包含 8.4 的小 harness 默认，以及 8.3 的耐久 / 信任改动。
 
 ## 早期 v8.4.0 新增内容

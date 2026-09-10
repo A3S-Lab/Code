@@ -50,6 +50,10 @@ The built-in factory covers three paths:
 | `glm` / `zhipu` / `bigmodel` | Zhipu-compatible client    | Use environment variables for the key and base URL.           |
 | Any other provider name      | OpenAI-compatible fallback | Useful for private or self-hosted OpenAI-compatible services. |
 
+Coding Plan bases such as
+`https://open.bigmodel.cn/api/coding/paas/v4` join correctly to
+`/chat/completions` (no `/v1` suffix and no duplicated `/paas/v4`).
+
 The runtime does not hard-code model names. `default_model` and per-session
 `model` values are identifiers in the `provider/model-id` form that must match
 the provider blocks you define.
