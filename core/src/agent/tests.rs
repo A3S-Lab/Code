@@ -3247,7 +3247,7 @@ async fn test_streaming_llm_memory_extraction_does_not_block_final_result() {
 }
 
 #[tokio::test]
-async fn scoped_streaming_memory_extraction_is_promoted_and_run_supervised() {
+async fn scoped_streaming_memory_extraction_survives_turn_cancel() {
     let mock_client = Arc::new(BlockingExtractionLlmClient::new());
     let memory = crate::memory::AgentMemory::new(Arc::new(a3s_memory::InMemoryStore::new()));
     let temp_dir = tempfile::tempdir().unwrap();
@@ -3309,14 +3309,22 @@ async fn scoped_streaming_memory_extraction_is_promoted_and_run_supervised() {
         mock_client.extraction_started.notified(),
     )
     .await
-    .expect("Turn close must not cancel a Run-promoted memory extraction");
+    .expect("streaming memory extraction must start after End without inheriting turn cancel");
+
+    mock_client.extraction_release.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        mock_client.extraction_finished.notified(),
+    )
+    .await
+    .expect("streaming memory extraction must finish after release");
 
     let report = tokio::time::timeout(std::time::Duration::from_secs(1), run_scope.close())
         .await
-        .expect("Run close must settle the promoted memory extraction")
+        .expect("Run close must remain healthy after session-scoped extraction")
         .unwrap();
-    mock_client.extraction_release.notify_one();
-    assert_eq!(report.tasks_completed, 1, "{report:?}");
+    // Extraction is intentionally session-drained rather than Run-promoted so
+    // streaming hosts that cancel the turn on End still persist durable memory.
     assert_eq!(report.tasks_failed, 0, "{report:?}");
     assert_eq!(report.tasks_timed_out, 0, "{report:?}");
 
