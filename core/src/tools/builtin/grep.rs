@@ -909,6 +909,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_finds_personal_kb_even_when_dot_a3s_is_gitignored() {
+        use crate::workspace::{
+            ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend,
+            WorkspaceChunkingStrategy, WorkspaceServices,
+        };
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".gitignore"), ".a3s/\n").unwrap();
+        std::fs::create_dir_all(temp.path().join(".a3s/kb/sources")).unwrap();
+        std::fs::write(
+            temp.path().join(".a3s/kb/sources/seed.md"),
+            "grep_kb_token_unique_42 is vault content\n",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join(".a3s/config.acl"), "x = 1\n").unwrap();
+        std::fs::write(temp.path().join("lib.rs"), "fn main() {}\n").unwrap();
+
+        let backend = ManifestWorkspaceBackend::new(temp.path());
+        backend
+            .configure_chunk_catalog(
+                WorkspaceChunkingStrategy::Lines,
+                ChunkingConfig::default(),
+                ChunkCatalogLimits::default(),
+            )
+            .unwrap();
+        let mut rx = backend.manifest().subscribe();
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let services = WorkspaceServices::local_with_retrieval_backend(Arc::clone(&backend));
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+
+        let result = GrepTool
+            .execute(
+                &serde_json::json!({"pattern": "grep_kb_token_unique_42"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("grep_kb_token_unique_42"),
+            "expected personal KB hit, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(".a3s/kb/sources/seed.md")
+                || result.content.contains("seed.md"),
+            "expected KB path in grep output, got: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
     async fn grep_does_not_open_durable_zvec() {
         use crate::workspace::{
             ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend,

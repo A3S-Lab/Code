@@ -506,6 +506,10 @@ fn eligibility_excludes_sensitive_generated_binary_and_oversized_files() {
     ] {
         assert!(!policy.admits(&manifest_file(path, 20, 1)), "{path}");
     }
+    assert!(
+        policy.admits(&manifest_file(".a3s/kb/sources/note.md", 20, 1)),
+        "personal KB vault must be eligible for agent search"
+    );
     let mut generated = manifest_file("generated.rs", 20, 1);
     generated.generated = true;
     assert!(!policy.admits(&generated));

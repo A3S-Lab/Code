@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// Return whether a workspace-relative path is excluded from source egress.
 ///
@@ -9,7 +9,45 @@ pub(crate) fn path_is_denied(path: &Path) -> bool {
     has_sensitive_component(path) || has_sensitive_file_name(path)
 }
 
+/// Personal knowledge vault under `.a3s/kb/` is shared agent/human substrate.
+///
+/// Control-plane siblings (config, memory, auth, sessions) stay denied; only
+/// the vault subtree is admitted for catalog + retrieval.
+pub(crate) fn is_personal_kb_path(path: &Path) -> bool {
+    personal_kb_rest(path).is_some()
+}
+
+fn personal_kb_rest(path: &Path) -> Option<PathBuf> {
+    let comps: Vec<_> = path.components().collect();
+    for index in 0..comps.len().saturating_sub(1) {
+        let (Component::Normal(first), Component::Normal(second)) =
+            (comps[index], comps[index + 1])
+        else {
+            continue;
+        };
+        if first.to_string_lossy().eq_ignore_ascii_case(".a3s")
+            && second.to_string_lossy().eq_ignore_ascii_case("kb")
+        {
+            return Some(comps[index + 2..].iter().collect());
+        }
+    }
+    None
+}
+
 fn has_sensitive_component(path: &Path) -> bool {
+    for component in path.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return true,
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+    if let Some(rest) = personal_kb_rest(path) {
+        return has_sensitive_dir_name(&rest);
+    }
+    has_sensitive_dir_name(path)
+}
+
+fn has_sensitive_dir_name(path: &Path) -> bool {
     for component in path.components() {
         let name = match component {
             Component::CurDir => continue,
@@ -109,11 +147,20 @@ mod tests {
             "src/config.rs",
             ".env.example",
             "fixtures/credentials.sample",
+            ".a3s/kb/sources/note.md",
+            ".a3s/kb/wiki/concept.md",
+            "nested/.a3s/kb/note.md",
         ] {
             assert!(
                 !path_is_denied(Path::new(path)),
                 "{path} should be admitted"
             );
         }
+        assert!(
+            path_is_denied(Path::new(".a3s/kb/.env")),
+            "secret filenames under the personal KB stay denied"
+        );
+        assert!(is_personal_kb_path(Path::new(".a3s/kb/sources/a.md")));
+        assert!(!is_personal_kb_path(Path::new(".a3s/config.acl")));
     }
 }

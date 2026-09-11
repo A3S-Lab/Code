@@ -5,6 +5,7 @@ use super::{
     normalize_relative_path_lossy, system_time_ms, LocalWorkspaceFile, LocalWorkspaceFileStatus,
 };
 use crate::language::LanguageCatalog;
+use crate::workspace::source_egress::is_personal_kb_path;
 use ignore::WalkBuilder;
 use notify::{Event, EventKind};
 use std::collections::HashMap;
@@ -239,7 +240,53 @@ fn scan_with_ignore(
             files.push(file);
         }
     }
+    append_personal_kb_files(root, &mut files, is_cancelled)?;
     Some(files)
+}
+
+/// Workspace `.gitignore` often lists `.a3s/`, which would hide the personal
+/// vault from ignore-aware walks. Re-scan `.a3s/kb/` without gitignore so agent
+/// search/grep can discover shared notes without admitting other `.a3s` control
+/// plane files.
+fn append_personal_kb_files(
+    root: &Path,
+    files: &mut Vec<LocalWorkspaceFile>,
+    is_cancelled: &impl Fn() -> bool,
+) -> Option<()> {
+    let kb_root = root.join(".a3s").join("kb");
+    if !kb_root.is_dir() {
+        return Some(());
+    }
+    let walker = WalkBuilder::new(&kb_root)
+        .hidden(false)
+        .parents(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_exclude(false)
+        .git_global(false)
+        .build();
+    for entry in walker {
+        if is_cancelled() {
+            return None;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if path == kb_root {
+            continue;
+        }
+        let Some(relative) = path.strip_prefix(root).ok() else {
+            continue;
+        };
+        if !is_personal_kb_path(relative) {
+            continue;
+        }
+        if let Some(file) = workspace_file(root, relative, LocalWorkspaceFileStatus::Unknown) {
+            files.push(file);
+        }
+    }
+    Some(())
 }
 
 fn workspace_file(
@@ -286,6 +333,9 @@ fn sorted_dedup(files: Vec<LocalWorkspaceFile>) -> Vec<LocalWorkspaceFile> {
     files
 }
 pub(super) fn path_has_noise_component(path: &Path) -> bool {
+    if is_personal_kb_path(path) {
+        return false;
+    }
     path.components().any(|component| {
         let Component::Normal(name) = component else {
             return false;
@@ -295,7 +345,8 @@ pub(super) fn path_has_noise_component(path: &Path) -> bool {
             // Control-plane and package/build trees must not invalidate the
             // workspace catalog. Persistent retrieval writes under `.a3s-code/`
             // inside the workspace; treating those as source changes republishes
-            // mid-query and empties hybrid hits (revision-changed).
+            // mid-query and empties hybrid hits (revision-changed). The personal
+            // vault (`.a3s/kb/`) is carved out above via `is_personal_kb_path`.
             ".git"
                 | ".a3s"
                 | ".a3s-code"
@@ -353,6 +404,35 @@ mod cancellation_tests {
             );
         }
         assert!(!path_has_noise_component(Path::new("src/lib.rs")));
+        assert!(
+            !path_has_noise_component(Path::new(".a3s/kb/sources/note.md")),
+            "personal KB vault must stay discoverable for agent search"
+        );
+    }
+
+    #[test]
+    fn scan_includes_personal_kb_even_when_dot_a3s_is_gitignored() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join(".gitignore"), ".a3s/\n").unwrap();
+        std::fs::create_dir_all(workspace.path().join(".a3s/kb/sources")).unwrap();
+        std::fs::write(
+            workspace.path().join(".a3s/kb/sources/seeded-kb-token.md"),
+            "seeded_kb_token_for_scan\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.path().join(".a3s/config.acl"), "x = 1\n").unwrap();
+        std::fs::write(workspace.path().join("lib.rs"), "fn main() {}\n").unwrap();
+
+        let files = scan_workspace_files(workspace.path());
+        let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert!(
+            paths.iter().any(|path| path.contains("seeded-kb-token.md")),
+            "expected personal KB source in catalog, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path.contains("config.acl")),
+            "control-plane files under .a3s must stay out of catalog"
+        );
     }
 
     #[test]
