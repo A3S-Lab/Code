@@ -171,11 +171,19 @@ impl PermissionRule {
                     .to_string()
             }
             "read" | "write" | "edit" | "download" => {
-                // For file operations, use the file_path field
-                args.get("file_path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
+                if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
+                    return path.to_string();
+                }
+                if tool_name.eq_ignore_ascii_case("read") {
+                    if let Some(files) = args.get("files").and_then(|v| v.as_array()) {
+                        return files
+                            .iter()
+                            .filter_map(|entry| entry.get("path").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                    }
+                }
+                String::new()
             }
             "search" => {
                 // For repository search, combine the mode, query, and path.

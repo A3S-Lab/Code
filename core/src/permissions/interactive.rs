@@ -90,15 +90,19 @@ impl InteractiveToolGuardrail {
         Self::new(InteractiveApprovalMode::from_name(mode))
     }
 
-    /// Add a local workspace root so existing symlink components can be checked.
+    /// Add a local workspace root so absolute in-workspace paths are admitted
+    /// and existing symlink components can be checked.
     pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = Some(workspace.into());
         self
     }
 
     /// Return the explainable risk assessment before host mode semantics.
+    ///
+    /// Static callers have no workspace root, so absolute paths fail closed.
+    /// Prefer [`Self::assess`] when a workspace is known.
     pub fn risk_assessment(tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
-        assess_tool(tool_name, args)
+        assess_tool(tool_name, args, None)
     }
 
     /// Return the conservative legacy permission decision before mode semantics.
@@ -106,8 +110,11 @@ impl InteractiveToolGuardrail {
     /// This projection preserves existing host integrations. New hosts should
     /// consume [`Self::risk_assessment`] and the mode's decision matrix when they
     /// need to distinguish human confirmation from LLM review.
+    ///
+    /// Static callers have no workspace root, so absolute paths fail closed.
+    /// Prefer [`Self::check`] / [`Self::assess`] when a workspace is known.
     pub fn risk_decision(tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
-        assessment_permission(&assess_tool(tool_name, args))
+        assessment_permission(&assess_tool(tool_name, args, None))
     }
 
     /// Return whether an exact Bash command matches the deterministic,
@@ -121,12 +128,12 @@ impl InteractiveToolGuardrail {
         is_catastrophic_bash_command(command)
     }
 
-    /// Assess an invocation, including workspace symlink boundary checks.
+    /// Assess an invocation, including workspace path and symlink boundary checks.
     pub fn assess(&self, tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
         if let Some(assessment) = self.workspace_boundary_assessment(tool_name, args) {
             return assessment;
         }
-        assess_tool(tool_name, args)
+        assess_tool(tool_name, args, self.workspace.as_deref())
     }
 
     /// Return the explicit routing action selected for this guardrail mode.
@@ -192,8 +199,24 @@ fn invocation_crosses_local_symlink(
     if tool == "bash" {
         return shell_path_crosses_symlink(root, args);
     }
+    if tool == "read" {
+        if let Some(path) = args.get("file_path").and_then(serde_json::Value::as_str) {
+            return local_path_crosses_symlink(root, path);
+        }
+        return args
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|files| {
+                files.iter().any(|entry| {
+                    entry
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|path| local_path_crosses_symlink(root, path))
+                })
+            });
+    }
     let field = match tool.as_str() {
-        "read" | "write" | "edit" | "patch" | "download" => "file_path",
+        "write" | "edit" | "patch" | "download" => "file_path",
         "search" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => "path",
         _ => return false,
     };
@@ -224,11 +247,14 @@ fn shell_token_path_crosses_symlink(root: &std::path::Path, path: &str) -> bool 
 }
 
 fn path_crosses_symlink(root: &std::path::Path, path: &str, stop_at_shell_glob: bool) -> bool {
-    if path_is_outside_workspace(path) {
+    if path_is_outside_workspace(path, Some(root)) {
         return false;
     }
+    let Some(relative) = workspace_relative_path(root, path) else {
+        return true;
+    };
     let mut current = root.to_path_buf();
-    for component in std::path::Path::new(path).components() {
+    for component in std::path::Path::new(&relative).components() {
         match component {
             std::path::Component::CurDir => continue,
             std::path::Component::Normal(component) => {
@@ -256,14 +282,18 @@ fn path_crosses_symlink(root: &std::path::Path, path: &str, stop_at_shell_glob: 
     false
 }
 
-pub(super) fn atomic_tool_is_bounded(tool_name: &str, args: &serde_json::Value) -> bool {
+pub(super) fn atomic_tool_is_bounded(
+    tool_name: &str,
+    args: &serde_json::Value,
+    workspace: Option<&std::path::Path>,
+) -> bool {
     match tool_name.to_ascii_lowercase().as_str() {
         // Workspace-confined edits and ordinary structured Git changes are the
         // bounded operations that auto mode exists to streamline.
-        "write" | "edit" | "patch" => bounded_file_target(args),
+        "write" | "edit" | "patch" => bounded_file_target(args, workspace),
         // A missing destination is still bounded because download derives and
         // sanitizes a workspace-relative filename from the response metadata.
-        "download" => args.get("file_path").is_none() || bounded_file_target(args),
+        "download" => args.get("file_path").is_none() || bounded_file_target(args, workspace),
         "git" => {
             classify_git(args) == PermissionDecision::Ask
                 && git_call_is_known_bounded_mutation(args)
@@ -274,10 +304,10 @@ pub(super) fn atomic_tool_is_bounded(tool_name: &str, args: &serde_json::Value) 
     }
 }
 
-fn bounded_file_target(args: &serde_json::Value) -> bool {
+fn bounded_file_target(args: &serde_json::Value, workspace: Option<&std::path::Path>) -> bool {
     args.get("file_path")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|path| !path.trim().is_empty() && !path_is_outside_workspace(path))
+        .is_some_and(|path| !path.trim().is_empty() && !path_is_outside_workspace(path, workspace))
 }
 
 fn git_call_is_known_bounded_mutation(args: &serde_json::Value) -> bool {
@@ -315,22 +345,25 @@ fn git_requires_explicit_confirmation(args: &serde_json::Value) -> bool {
 pub(super) fn classify_atomic_tool(
     tool_name: &str,
     args: &serde_json::Value,
+    workspace: Option<&std::path::Path>,
 ) -> PermissionDecision {
     match tool_name.to_ascii_lowercase().as_str() {
-        "read" => classify_scoped_path(args, "file_path", PermissionDecision::Allow),
+        "read" => classify_read(args, workspace),
         "search" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
-            classify_scoped_path(args, "path", PermissionDecision::Allow)
+            classify_scoped_path(args, "path", PermissionDecision::Allow, workspace)
         }
         "web_search" | "web_fetch" | "search_skills" | "generate_object" => {
             PermissionDecision::Allow
         }
-        "write" | "edit" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
+        "write" | "edit" => {
+            classify_scoped_path(args, "file_path", PermissionDecision::Ask, workspace)
+        }
         "download" if args.get("file_path").is_none() => PermissionDecision::Ask,
-        "download" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
+        "download" => classify_scoped_path(args, "file_path", PermissionDecision::Ask, workspace),
         // Patch carries its target in a separate top-level field. A missing or
         // boundary-crossing target must never be silently approved.
-        "patch" => classify_scoped_path(args, "file_path", PermissionDecision::Ask),
-        "bash" => classify_bash(args),
+        "patch" => classify_scoped_path(args, "file_path", PermissionDecision::Ask, workspace),
+        "bash" => classify_bash(args, workspace),
         "git" => classify_git(args),
         // Delegation, scripts, skills, runtime calls, dynamic and MCP tools can
         // perform nested or external side effects, so they need authorization.
@@ -338,10 +371,46 @@ pub(super) fn classify_atomic_tool(
     }
 }
 
+fn classify_read(
+    args: &serde_json::Value,
+    workspace: Option<&std::path::Path>,
+) -> PermissionDecision {
+    if let Some(path) = args.get("file_path").and_then(serde_json::Value::as_str) {
+        return classify_path_value(path, PermissionDecision::Allow, workspace);
+    }
+    let Some(files) = args.get("files").and_then(serde_json::Value::as_array) else {
+        return PermissionDecision::Ask;
+    };
+    if files.is_empty() {
+        return PermissionDecision::Ask;
+    }
+    let mut decision = PermissionDecision::Allow;
+    for entry in files {
+        let Some(path) = entry.get("path").and_then(serde_json::Value::as_str) else {
+            return PermissionDecision::Ask;
+        };
+        decision = stricter_permission(
+            decision,
+            classify_path_value(path, PermissionDecision::Allow, workspace),
+        );
+    }
+    decision
+}
+
+fn stricter_permission(left: PermissionDecision, right: PermissionDecision) -> PermissionDecision {
+    use PermissionDecision::*;
+    match (left, right) {
+        (Deny, _) | (_, Deny) => Deny,
+        (Ask, _) | (_, Ask) => Ask,
+        (Allow, Allow) => Allow,
+    }
+}
+
 fn classify_scoped_path(
     args: &serde_json::Value,
     field: &str,
     safe_decision: PermissionDecision,
+    workspace: Option<&std::path::Path>,
 ) -> PermissionDecision {
     let Some(path) = args.get(field).and_then(serde_json::Value::as_str) else {
         // Some read-only tools have an optional path that defaults to the
@@ -359,7 +428,18 @@ fn classify_scoped_path(
             PermissionDecision::Ask
         };
     }
-    if path_is_outside_workspace(path) {
+    classify_path_value(path, safe_decision, workspace)
+}
+
+fn classify_path_value(
+    path: &str,
+    safe_decision: PermissionDecision,
+    workspace: Option<&std::path::Path>,
+) -> PermissionDecision {
+    if path.trim().is_empty() {
+        return PermissionDecision::Ask;
+    }
+    if path_is_outside_workspace(path, workspace) {
         PermissionDecision::Deny
     } else {
         safe_decision
@@ -470,7 +550,10 @@ fn valid_optional_nonnegative_integer(args: &serde_json::Value, field: &str) -> 
     args.get(field).is_none_or(|value| value.as_u64().is_some())
 }
 
-fn classify_bash(args: &serde_json::Value) -> PermissionDecision {
+fn classify_bash(
+    args: &serde_json::Value,
+    workspace: Option<&std::path::Path>,
+) -> PermissionDecision {
     let Some(command) = args.get("command").and_then(serde_json::Value::as_str) else {
         return PermissionDecision::Ask;
     };
@@ -480,7 +563,7 @@ fn classify_bash(args: &serde_json::Value) -> PermissionDecision {
     }
     if is_catastrophic_bash_command(command) {
         PermissionDecision::Deny
-    } else if is_read_only_bash_command(command) {
+    } else if is_read_only_bash_command(command, workspace) {
         PermissionDecision::Allow
     } else {
         PermissionDecision::Ask
@@ -541,7 +624,7 @@ fn shell_invokes_mkfs(command: &str) -> bool {
         .any(|executable| executable == "mkfs" || executable.starts_with("mkfs."))
 }
 
-fn is_read_only_bash_command(command: &str) -> bool {
+fn is_read_only_bash_command(command: &str, workspace: Option<&std::path::Path>) -> bool {
     // The allow-list intentionally rejects shell quoting, expansion, globs, and
     // non-space control whitespace. A tokenizer-aware sandbox can broaden this
     // later; a string heuristic must fail closed.
@@ -549,7 +632,7 @@ fn is_read_only_bash_command(command: &str) -> bool {
         .chars()
         .any(|character| character.is_whitespace() && character != ' ')
         || command.contains(['\'', '"', '*', '?', '[', ']', '{', '}'])
-        || contains_unsafe_shell_syntax(command)
+        || contains_unsafe_shell_syntax(command, workspace)
     {
         return false;
     }
@@ -558,7 +641,7 @@ fn is_read_only_bash_command(command: &str) -> bool {
         .all(|segment| is_read_only_bash_segment(segment.trim()))
 }
 
-fn contains_unsafe_shell_syntax(command: &str) -> bool {
+fn contains_unsafe_shell_syntax(command: &str, workspace: Option<&std::path::Path>) -> bool {
     command.contains("&&")
         || command.contains("||")
         || command.contains(';')
@@ -570,15 +653,15 @@ fn contains_unsafe_shell_syntax(command: &str) -> bool {
         || command.contains('\n')
         || command.contains('\r')
         || command.contains('$')
-        || has_unscoped_path_token(command)
+        || has_unscoped_path_token(command, workspace)
 }
 
-fn has_unscoped_path_token(command: &str) -> bool {
+fn has_unscoped_path_token(command: &str, workspace: Option<&std::path::Path>) -> bool {
     command
         .split_whitespace()
         .map(clean_shell_token)
         .filter(|token| !token.is_empty())
-        .any(path_is_outside_workspace)
+        .any(|token| path_is_outside_workspace(token, workspace))
 }
 
 fn clean_shell_token(token: &str) -> &str {
@@ -590,20 +673,34 @@ fn clean_shell_token(token: &str) -> &str {
     })
 }
 
-fn path_is_outside_workspace(path: &str) -> bool {
+/// Return true when `path` is outside the optional workspace root.
+///
+/// Without a workspace root, absolute paths and `..` escapes fail closed.
+/// With a root, absolute paths that normalize inside the workspace are admitted.
+fn path_is_outside_workspace(path: &str, workspace: Option<&std::path::Path>) -> bool {
     let normalized = path.replace('\\', "/");
     let path = normalized.trim();
-    let bytes = path.as_bytes();
-    if (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-        || path.starts_with("//")
-        || path.starts_with('/')
-        || path.starts_with('~')
-        || path.starts_with("$HOME")
-        || path.starts_with("${HOME}")
-    {
+    if path.is_empty() {
+        return false;
+    }
+    if path.starts_with('~') || path.starts_with("$HOME") || path.starts_with("${HOME}") {
         return true;
     }
 
+    let Some(root) = workspace else {
+        return path_is_lexically_absolute(path) || relative_path_escapes(path);
+    };
+    path_escapes_workspace_root(root, path)
+}
+
+fn path_is_lexically_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        || path.starts_with("//")
+        || path.starts_with('/')
+}
+
+fn relative_path_escapes(path: &str) -> bool {
     let mut depth = 0_i32;
     for component in path.split('/') {
         match component {
@@ -614,6 +711,87 @@ fn path_is_outside_workspace(path: &str) -> bool {
         }
     }
     false
+}
+
+fn path_escapes_workspace_root(root: &std::path::Path, input: &str) -> bool {
+    let candidate = std::path::Path::new(input);
+    if candidate.is_absolute() || path_is_lexically_absolute(input) {
+        match (
+            normalize_abs_for_compare(root),
+            normalize_abs_for_compare(candidate),
+        ) {
+            (Ok(root_cmp), Ok(target_cmp)) => !target_cmp.starts_with(&root_cmp),
+            _ => true,
+        }
+    } else {
+        relative_path_escapes(input)
+    }
+}
+
+fn workspace_relative_path(root: &std::path::Path, path: &str) -> Option<String> {
+    let candidate = std::path::Path::new(path);
+    if !candidate.is_absolute() && !path_is_lexically_absolute(path) {
+        return Some(path.replace('\\', "/"));
+    }
+    let root_cmp = normalize_abs_for_compare(root).ok()?;
+    let target_cmp = normalize_abs_for_compare(candidate).ok()?;
+    let relative = target_cmp.strip_prefix(&root_cmp).ok()?;
+    Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+/// Canonicalize when possible; for missing leaf paths, canonicalize the
+/// deepest existing ancestor and reattach the suffix (macOS `/var` →
+/// `/private/var` must stay consistent with the workspace root).
+fn normalize_abs_for_compare(path: &std::path::Path) -> Result<std::path::PathBuf, ()> {
+    let lexical = normalize_abs_lexical(path)?;
+    if let Ok(canonical) = lexical.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut current = lexical.as_path();
+    let mut suffix = Vec::new();
+    while !current.exists() {
+        let Some(file_name) = current.file_name() else {
+            return Ok(lexical);
+        };
+        suffix.push(file_name.to_os_string());
+        let Some(parent) = current.parent() else {
+            return Ok(lexical);
+        };
+        current = parent;
+    }
+
+    let mut normalized = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    for part in suffix.iter().rev() {
+        normalized.push(part);
+    }
+    Ok(normalized)
+}
+
+fn normalize_abs_lexical(path: &std::path::Path) -> Result<std::path::PathBuf, ()> {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            std::path::Component::RootDir => {
+                out.push(std::path::Path::new(std::path::MAIN_SEPARATOR_STR));
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return Err(());
+                }
+            }
+        }
+    }
+    if out.as_os_str().is_empty() {
+        Err(())
+    } else {
+        Ok(out)
+    }
 }
 
 fn is_read_only_bash_segment(segment: &str) -> bool {

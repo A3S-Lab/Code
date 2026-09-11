@@ -5,28 +5,34 @@ use crate::permissions::{
     EnvironmentSensitivity, ImpactScope, OperationTarget, PermissionDecision, Reversibility,
     ToolRiskAssessment, ToolRiskDimensions, ToolRiskLevel, ToolRiskReason, ToolRiskType,
 };
+use std::path::Path;
 
 const MAX_BATCH_RISK_DEPTH: usize = 16;
 
-pub(super) fn assess_tool(tool_name: &str, args: &serde_json::Value) -> ToolRiskAssessment {
-    assess_tool_at_depth(tool_name, args, 0)
+pub(super) fn assess_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    workspace: Option<&Path>,
+) -> ToolRiskAssessment {
+    assess_tool_at_depth(tool_name, args, workspace, 0)
 }
 
 fn assess_tool_at_depth(
     tool_name: &str,
     args: &serde_json::Value,
+    workspace: Option<&Path>,
     depth: usize,
 ) -> ToolRiskAssessment {
     if tool_name.eq_ignore_ascii_case("batch") {
-        return assess_batch(args, depth);
+        return assess_batch(args, workspace, depth);
     }
     if !args.is_object() {
         return high_assessment(tool_name, ToolRiskReason::MalformedOrUnknownOperation);
     }
 
-    match classify_atomic_tool(tool_name, args) {
+    match classify_atomic_tool(tool_name, args, workspace) {
         PermissionDecision::Allow => routine_assessment(tool_name),
-        PermissionDecision::Ask if atomic_tool_is_bounded(tool_name, args) => {
+        PermissionDecision::Ask if atomic_tool_is_bounded(tool_name, args, workspace) => {
             bounded_assessment(tool_name)
         }
         PermissionDecision::Ask => {
@@ -72,7 +78,11 @@ fn assess_tool_at_depth(
     }
 }
 
-fn assess_batch(args: &serde_json::Value, depth: usize) -> ToolRiskAssessment {
+fn assess_batch(
+    args: &serde_json::Value,
+    workspace: Option<&Path>,
+    depth: usize,
+) -> ToolRiskAssessment {
     let Some(invocations) = args
         .get("invocations")
         .and_then(serde_json::Value::as_array)
@@ -93,7 +103,7 @@ fn assess_batch(args: &serde_json::Value, depth: usize) -> ToolRiskAssessment {
         let Some(tool_args) = invocation.get("args").filter(|args| args.is_object()) else {
             return malformed_batch_assessment();
         };
-        let child = assess_tool_at_depth(tool, tool_args, depth + 1);
+        let child = assess_tool_at_depth(tool, tool_args, workspace, depth + 1);
         reasons.extend(child.reasons.iter().copied());
         if highest
             .as_ref()

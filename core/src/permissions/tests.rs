@@ -44,6 +44,46 @@ fn interactive_guardrail_default_mode_balances_safe_and_sensitive_calls() {
 }
 
 #[test]
+fn interactive_guardrail_allows_absolute_paths_inside_workspace() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("README.md"), "ok\n").unwrap();
+    let inside = workspace.path().join("README.md");
+    let guardrail = InteractiveToolGuardrail::for_mode("plan").with_workspace(workspace.path());
+
+    assert_eq!(
+        guardrail.check("read", &json!({"file_path": inside})),
+        PermissionDecision::Allow,
+        "absolute in-workspace reads must be routine under plan"
+    );
+    assert_eq!(
+        guardrail.check(
+            "read",
+            &json!({"files": [{"path": inside.to_string_lossy()}]}),
+        ),
+        PermissionDecision::Allow,
+        "absolute in-workspace files[] reads must be routine under plan"
+    );
+    assert_eq!(
+        guardrail.check("read", &json!({"files": [{"path": "README.md"}]})),
+        PermissionDecision::Allow,
+        "relative files[] reads must be routine under plan"
+    );
+    assert_eq!(
+        guardrail.check("read", &json!({"file_path": "/etc/passwd"})),
+        PermissionDecision::Deny,
+        "host absolute paths must stay denied when a workspace is configured"
+    );
+    assert_eq!(
+        guardrail.check(
+            "write",
+            &json!({"file_path": workspace.path().join("note.txt"), "content": "x"}),
+        ),
+        PermissionDecision::Ask,
+        "absolute in-workspace writes remain confirmation-gated in plan"
+    );
+}
+
+#[test]
 fn interactive_guardrail_exposes_four_risk_levels_without_weakening_hitl() {
     let cases = [
         (
