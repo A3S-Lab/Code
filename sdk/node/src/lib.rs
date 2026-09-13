@@ -996,9 +996,9 @@ fn inline_skill_to_rust(skill: InlineSkill) -> napi::Result<Arc<RustSkill>> {
     }))
 }
 
-mod typed_providers;
 #[cfg(feature = "s3")]
 mod s3_backend;
+mod typed_providers;
 use typed_providers::*;
 
 mod session_options;
@@ -1103,6 +1103,8 @@ mod immutable_content;
 pub use immutable_content::*;
 
 mod session_governance;
+
+mod session_host_contract;
 
 mod session_capabilities;
 

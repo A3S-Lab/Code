@@ -120,6 +120,19 @@ impl LocalWorkspaceAccessBoundary {
         }
     }
 
+    pub(crate) fn refuse_promote(&self, workspace: &Path, relative: &Path) -> Result<()> {
+        let destination = workspace.join(relative);
+        let metadata = std::fs::metadata(&destination).ok();
+        self.ensure_access(
+            workspace,
+            relative,
+            Some(&destination),
+            metadata.as_ref(),
+            None,
+            "promote",
+        )
+    }
+
     pub(crate) fn ensure_access(
         &self,
         workspace: &Path,

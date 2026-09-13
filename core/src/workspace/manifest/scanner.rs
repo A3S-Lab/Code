@@ -257,6 +257,11 @@ fn append_personal_kb_files(
     if !kb_root.is_dir() {
         return Some(());
     }
+    // `.a3s/kb` is re-scanned because gitignore hides it. That second walk must
+    // not treat a symlink to another tree as vault content.
+    if !stays_in_workspace(root, &kb_root) {
+        return Some(());
+    }
     let walker = WalkBuilder::new(&kb_root)
         .hidden(false)
         .parents(false)
@@ -282,11 +287,22 @@ fn append_personal_kb_files(
         if !is_personal_kb_path(relative) {
             continue;
         }
+        if !stays_in_workspace(root, &root.join(relative)) {
+            continue;
+        }
         if let Some(file) = workspace_file(root, relative, LocalWorkspaceFileStatus::Unknown) {
             files.push(file);
         }
     }
     Some(())
+}
+
+fn stays_in_workspace(root: &Path, path: &Path) -> bool {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    canonical.starts_with(root)
 }
 
 fn workspace_file(
@@ -432,6 +448,29 @@ mod cancellation_tests {
         assert!(
             !paths.iter().any(|path| path.contains("config.acl")),
             "control-plane files under .a3s must stay out of catalog"
+        );
+    }
+
+    #[test]
+    fn personal_kb_scan_does_not_follow_a_symlink_out_of_the_workspace() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = parent.path().join("repo");
+        let outside = parent.path().join("outside");
+        std::fs::create_dir_all(outside.join("sources")).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(workspace.join(".a3s")).unwrap();
+        std::fs::write(
+            outside.join("sources/outside-kb-token.md"),
+            "outside_kb_token_91c4\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".a3s/kb")).unwrap();
+
+        let files = scan_workspace_files(&workspace);
+        let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|path| path.contains("outside-kb-token")),
+            "a kb symlink must not catalog an outside note: {paths:?}"
         );
     }
 

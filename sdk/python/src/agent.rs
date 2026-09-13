@@ -144,6 +144,51 @@ impl PyAgent {
         })
     }
 
+    /// Hot-sync the shared global MCP manager to match `servers`.
+    ///
+    /// Enabled entries are registered and best-effort connected; disabled or
+    /// omitted entries are removed. New sessions see the refreshed catalog.
+    /// Live sessions must republish inherited MCP tools themselves.
+    fn sync_global_mcp_servers(&self, py: Python<'_>, servers: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut parsed = Vec::with_capacity(servers.len());
+        for item in servers.iter() {
+            let dict = item.downcast::<PyDict>()?;
+            let json_str = py_dict_to_json(&dict)?;
+            let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|error| {
+                PyValueError::new_err(format!("Invalid MCP server config: {error}"))
+            })?;
+            parsed.push(normalize_mcp_server_config(value)?);
+        }
+        let agent = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(async {
+                agent
+                    .sync_global_mcp_servers(parsed)
+                    .await
+                    .map_err(|error| {
+                        PyRuntimeError::new_err(format!("sync_global_mcp_servers failed: {error}"))
+                    })
+            })
+        })
+    }
+
+    /// Live status of servers on this agent's shared global MCP manager.
+    ///
+    /// Empty when the agent has no global manager. Enabled is not connected.
+    fn global_mcp_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let agent = self.inner.clone();
+        let status = py.allow_threads(move || get_runtime().block_on(agent.global_mcp_status()));
+        let dict = PyDict::new(py);
+        for (name, entry) in status {
+            let item = PyDict::new(py);
+            item.set_item("connected", entry.connected)?;
+            item.set_item("tool_count", entry.tool_count)?;
+            item.set_item("error", entry.error.as_deref())?;
+            dict.set_item(name, item)?;
+        }
+        Ok(dict)
+    }
+
     /// Return current occupancy of the priority scheduler shared by every
     /// session created from this Agent.
     fn task_scheduler_stats(&self, py: Python<'_>) -> PyResult<PyObject> {

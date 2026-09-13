@@ -46,7 +46,7 @@ concurrent processes share the same installation. Linux musl is not bundled
 because upstream Moli has no musl asset; provide an explicit/system browser or
 select another backend there.
 
-The release pins `a3s-search` v3.1.0 and uses Moli for JavaScript-capable
+The release pins `a3s-search` v3.1.4 and uses Moli for JavaScript-capable
 `web_search` by default. `sdk_capabilities()` exposes the complete product
 capability inventory, and `moli_runtime_info()` / `ensure_moli_async()` expose
 runtime diagnostics and provisioning without requiring callers to manage a

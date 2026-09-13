@@ -53,7 +53,43 @@ impl CommandOutputObserver for ToolEventObserver {
     }
 }
 
+fn with_changed_paths(metadata: serde_json::Value, paths: &[String]) -> serde_json::Value {
+    let mut wrapped = Some(metadata);
+    crate::porcelain::attach(&mut wrapped, paths);
+    wrapped.unwrap_or_else(|| serde_json::json!({}))
+}
+
 pub struct BashTool;
+
+async fn workspace_watch(root: &std::path::Path) -> crate::porcelain::Watch {
+    crate::porcelain::Watch::start(root).await
+}
+
+/// A session that dirtied a path owns it. The command is not parsed; ownership
+/// follows the observed delta, including a non-zero exit that still wrote.
+fn claim_dirtied_paths(ctx: &ToolContext, paths: &[String]) {
+    let Some(session_id) = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty()) else {
+        return;
+    };
+    for path in paths {
+        let _ = crate::external_observation::claim_bound_write(
+            Some(session_id),
+            ctx.workspace.as_path(),
+            path,
+        );
+    }
+}
+
+async fn observed_changes(ctx: &ToolContext, before: crate::porcelain::Watch) -> Vec<String> {
+    let paths = before.finish(ctx.workspace.as_path()).await;
+    claim_dirtied_paths(ctx, &paths);
+    paths
+}
+
+#[cfg(test)]
+fn changed_paths_from_porcelain(before: &[String], after: &[String]) -> Vec<String> {
+    crate::porcelain::changed_paths(before, after)
+}
 
 #[cfg(windows)]
 fn prepare_windows_command(
@@ -193,10 +229,18 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        if let Some(output) = observe_detached_job(args, ctx).await {
+            return Ok(output);
+        }
+        if let Some(output) = session_shell_control(args, ctx) {
+            return Ok(output);
+        }
         let command = match args.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolOutput::error("command parameter is required")),
         };
+        let command = prefix_session_cwd(command, ctx);
+        let command = command.as_str();
         let require_escalated = match args
             .get("sandbox_permissions")
             .and_then(serde_json::Value::as_str)
@@ -219,6 +263,9 @@ impl Tool for BashTool {
             return Ok(ToolOutput::error(
                 "justification is required when sandbox_permissions is require_escalated",
             ));
+        }
+        if let Some(denied) = refuse_hidden_foreign_write(ctx) {
+            return Ok(denied);
         }
 
         let requested_timeout_ms = args
@@ -254,6 +301,7 @@ impl Tool for BashTool {
         }
         if !require_escalated {
             if let Some(ref sandbox) = ctx.sandbox {
+                let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
                 let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {
                     command: command.to_string(),
                     guest_workspace: "/workspace".to_string(),
@@ -283,12 +331,15 @@ impl Tool for BashTool {
                             "[Command timed out after {}ms]",
                             timeout_ms
                         ));
-                        timed_out.metadata = Some(serde_json::json!({
-                            "exit_code": null,
-                            "timeout_ms": timeout_ms,
-                            "sandboxed": true,
-                            "output": capture_metadata,
-                        }));
+                        timed_out.metadata = Some(with_changed_paths(
+                            serde_json::json!({
+                                "exit_code": null,
+                                "timeout_ms": timeout_ms,
+                                "sandboxed": true,
+                                "output": capture_metadata,
+                            }),
+                            &observed_changes(ctx, before_porcelain).await,
+                        ));
                         timed_out.error_kind = Some(ToolErrorKind::Timeout {
                             op: "bash".to_string(),
                             duration_ms: timeout_ms,
@@ -317,12 +368,15 @@ impl Tool for BashTool {
                         "{}\n\n[Command timed out after {}ms]",
                         output, timeout_ms
                     ));
-                    timed_out.metadata = Some(serde_json::json!({
-                        "exit_code": result.exit_code,
-                        "timeout_ms": timeout_ms,
-                        "sandboxed": true,
-                        "output": capture_metadata,
-                    }));
+                    timed_out.metadata = Some(with_changed_paths(
+                        serde_json::json!({
+                            "exit_code": result.exit_code,
+                            "timeout_ms": timeout_ms,
+                            "sandboxed": true,
+                            "output": capture_metadata,
+                        }),
+                        &observed_changes(ctx, before_porcelain).await,
+                    ));
                     timed_out.error_kind = Some(ToolErrorKind::Timeout {
                         op: "bash".to_string(),
                         duration_ms: timeout_ms,
@@ -330,14 +384,18 @@ impl Tool for BashTool {
                     return Ok(timed_out);
                 }
 
+                let changed_paths = observed_changes(ctx, before_porcelain).await;
                 return Ok(ToolOutput {
                     content: output,
                     success: result.exit_code == 0,
-                    metadata: Some(serde_json::json!({
-                        "exit_code": result.exit_code,
-                        "sandboxed": true,
-                        "output": capture_metadata,
-                    })),
+                    metadata: Some(with_changed_paths(
+                        serde_json::json!({
+                            "exit_code": result.exit_code,
+                            "sandboxed": true,
+                            "output": capture_metadata,
+                        }),
+                        &changed_paths,
+                    )),
                     images: vec![],
                     error_kind: None,
                     trust: crate::tools::ToolResultTrustV1::WorkspaceData,
@@ -351,6 +409,7 @@ impl Tool for BashTool {
             .workspace_services
             .command_runner()
             .expect("bash registered without workspace command runner");
+        let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
         let result = runner
             .exec(CommandRequest {
                 command: command.to_string(),
@@ -360,6 +419,7 @@ impl Tool for BashTool {
             })
             .await
             .map_err(|e| anyhow::anyhow!("Workspace bash execution failed: {}", e))?;
+        let changed_paths = observed_changes(ctx, before_porcelain).await;
 
         let capture_summary = *event_observer.summary.lock().unwrap();
         let capture_metadata = capture_summary.map(|summary| {
@@ -376,12 +436,21 @@ impl Tool for BashTool {
                 "{}\n\n[Command timed out after {}ms]",
                 result.output, timeout_ms
             ));
-            output.metadata = Some(serde_json::json!({
-                "exit_code": result.exit_code,
-                "timeout_ms": timeout_ms,
-                "sandboxed": false,
-                "output": capture_metadata,
-            }));
+            output.metadata = crate::verification::merge_shell_verification_metadata(
+                Some(with_changed_paths(
+                    serde_json::json!({
+                        "exit_code": result.exit_code,
+                        "timeout_ms": timeout_ms,
+                        "sandboxed": false,
+                        "output": capture_metadata,
+                    }),
+                    &changed_paths,
+                )),
+                Some(ctx.workspace.as_path()),
+                command,
+                result.exit_code,
+                Some("command timed out"),
+            );
             output.error_kind = Some(ToolErrorKind::Timeout {
                 op: "bash".to_string(),
                 duration_ms: timeout_ms,
@@ -392,15 +461,142 @@ impl Tool for BashTool {
         Ok(ToolOutput {
             content: result.output,
             success: result.exit_code == 0,
-            metadata: Some(serde_json::json!({
-                "exit_code": result.exit_code,
-                "sandboxed": false,
-                "output": capture_metadata,
-            })),
+            metadata: crate::verification::merge_shell_verification_metadata(
+                Some(with_changed_paths(
+                    serde_json::json!({
+                        "exit_code": result.exit_code,
+                        "sandboxed": false,
+                        "output": capture_metadata,
+                    }),
+                    &changed_paths,
+                )),
+                Some(ctx.workspace.as_path()),
+                command,
+                result.exit_code,
+                None,
+            ),
             images: vec![],
             error_kind: None,
             trust: crate::tools::ToolResultTrustV1::WorkspaceData,
         })
+    }
+}
+
+/// A command that does not name its files must not hide a path another
+/// session already claimed. A missing session with an empty claim map still
+/// runs; that is observation-after, not a pre-apply session gate.
+fn refuse_hidden_foreign_write(ctx: &ToolContext) -> Option<ToolOutput> {
+    match crate::external_observation::refuse_foreign_workspace_owner(
+        ctx.session_id.as_deref(),
+        &ctx.workspace,
+    ) {
+        Ok(()) => None,
+        Err(error) => Some(ToolOutput::error(error)),
+    }
+}
+
+/// A detached job shares the workspace and outlives this tool result. The
+/// completion gate waits for the same child slot foreground tasks use.
+async fn observe_detached_job(args: &serde_json::Value, ctx: &ToolContext) -> Option<ToolOutput> {
+    let session_id = ctx.session_id.as_deref()?;
+    crate::shell_session::cwd(session_id)?;
+    if args.get("job_action").and_then(|value| value.as_str()) != Some("detach") {
+        return None;
+    }
+    let command = args.get("command").and_then(|value| value.as_str())?;
+    if let Some(denied) = refuse_hidden_foreign_write(ctx) {
+        return Some(denied);
+    }
+    let watch = crate::porcelain::Watch::start(ctx.workspace.as_path()).await;
+    match crate::shell_session::detach(session_id, command, shell_admission(ctx, command)) {
+        Ok(job_id) => {
+            crate::porcelain::install_workspace_child(&job_id, watch);
+            let session = session_id.to_string();
+            let job = job_id.clone();
+            let workspace = ctx.workspace.clone();
+            tokio::spawn(async move {
+                let mut guard = crate::porcelain::WorkspaceChildGuard::new(&job);
+                loop {
+                    match crate::shell_session::poll(&session, &job) {
+                        Ok(status) if status == "running" => {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        _ => break,
+                    }
+                }
+                crate::porcelain::settle_workspace_child_guard(&mut guard, &workspace).await;
+                if let Some(paths) = crate::porcelain::peek_settled_workspace_child(&job) {
+                    claim_dirtied_paths(
+                        &ToolContext::new(workspace.as_path().to_path_buf())
+                            .with_session_id(&session),
+                        &paths,
+                    );
+                }
+            });
+            Some(
+                ToolOutput::success(job_id.clone()).with_metadata(serde_json::json!({
+                    "job_id": job_id,
+                    "workspace_child": job_id,
+                })),
+            )
+        }
+        Err(error) => {
+            drop(watch);
+            Some(ToolOutput::error(error.to_string()))
+        }
+    }
+}
+
+fn session_shell_control(args: &serde_json::Value, ctx: &ToolContext) -> Option<ToolOutput> {
+    let session_id = ctx.session_id.as_deref()?;
+    crate::shell_session::cwd(session_id)?;
+    let action = args.get("job_action").and_then(|value| value.as_str())?;
+    let job_id = args
+        .get("job_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let result = match action {
+        "poll" => crate::shell_session::poll(session_id, job_id),
+        "kill" => crate::shell_session::kill(session_id, job_id).map(|()| "killed".to_string()),
+        _ => {
+            return Some(ToolOutput::error(format!(
+                "unsupported job_action: {action}"
+            )))
+        }
+    };
+    Some(match result {
+        Ok(text) => ToolOutput::success(text),
+        Err(error) => ToolOutput::error(error.to_string()),
+    })
+}
+
+fn prefix_session_cwd(command: &str, ctx: &ToolContext) -> String {
+    let Some(session_id) = ctx.session_id.as_deref() else {
+        return command.to_string();
+    };
+    if let Ok(admitted) =
+        crate::shell_session::admit(session_id, command, shell_admission(ctx, command))
+    {
+        if command.trim().starts_with("cd ") {
+            return format!("cd {}", admitted.cwd.display());
+        }
+        return format!("cd {} && {command}", admitted.cwd.display());
+    }
+    command.to_string()
+}
+
+/// The shell applies cwd only after admission. A run checker that denies this
+/// command must not move the session, even if an earlier command was allowed.
+fn shell_admission(ctx: &ToolContext, command: &str) -> crate::shell_session::CommandAdmission {
+    let Some(checker) = ctx.run_permission_checker() else {
+        return crate::shell_session::CommandAdmission::Allow;
+    };
+    if checker.check("bash", &serde_json::json!({ "command": command }))
+        == crate::permissions::PermissionDecision::Deny
+    {
+        crate::shell_session::CommandAdmission::Deny
+    } else {
+        crate::shell_session::CommandAdmission::Allow
     }
 }
 

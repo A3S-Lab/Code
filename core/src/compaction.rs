@@ -309,34 +309,53 @@ fn safe_recent_start(messages: &[Message], desired_start: usize) -> usize {
     if desired_start == 0 || desired_start >= messages.len() {
         return desired_start.min(messages.len());
     }
-    let result_ids = messages[desired_start]
+
+    let mut earliest_call = desired_start;
+    let mut start_has_result = false;
+    let mut start_has_orphan = false;
+    for (message_index, message) in messages.iter().enumerate().skip(desired_start) {
+        for result_id in tool_result_ids(message) {
+            if message_index == desired_start {
+                start_has_result = true;
+            }
+            match tool_call_index_before(messages, message_index, result_id) {
+                Some(call_index) => earliest_call = earliest_call.min(call_index),
+                None if message_index == desired_start => start_has_orphan = true,
+                None => {}
+            }
+        }
+    }
+
+    // An orphaned result must not be the first retained provider message.
+    // A later result that still has its call keeps that call, even when the
+    // cut landed between them.
+    if start_has_orphan && earliest_call == desired_start {
+        return desired_start.saturating_add(1).min(messages.len());
+    }
+    if !start_has_result && earliest_call == desired_start {
+        return desired_start;
+    }
+    earliest_call
+}
+
+fn tool_result_ids(message: &Message) -> Vec<&str> {
+    message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
             _ => None,
         })
-        .collect::<Vec<_>>();
-    if result_ids.is_empty() {
-        return desired_start;
-    }
+        .collect()
+}
 
-    let mut earliest_call = desired_start;
-    for result_id in result_ids {
-        let Some(call_index) = (0..desired_start).rev().find(|index| {
-            messages[*index].content.iter().any(|block| match block {
-                ContentBlock::ToolUse { id, .. } => id == result_id,
-                _ => false,
-            })
-        }) else {
-            // The input history is already missing this tool call. Keep the
-            // orphaned result inside the summarized prefix instead of making
-            // it the first retained provider message.
-            return desired_start.saturating_add(1).min(messages.len());
-        };
-        earliest_call = earliest_call.min(call_index);
-    }
-    earliest_call
+fn tool_call_index_before(messages: &[Message], before: usize, result_id: &str) -> Option<usize> {
+    (0..before).rev().find(|index| {
+        messages[*index].content.iter().any(|block| match block {
+            ContentBlock::ToolUse { id, .. } => id == result_id,
+            _ => false,
+        })
+    })
 }
 
 fn render_message_for_summary(message: &Message) -> String {
@@ -770,6 +789,28 @@ mod tests {
         ];
 
         assert_eq!(safe_recent_start(&messages, 1), 2);
+    }
+
+    #[test]
+    fn safe_recent_boundary_keeps_a_tool_call_whose_result_is_after_the_cut() {
+        let messages = vec![
+            make_tool_use_msg("write-1"),
+            make_text_msg("assistant", "between call and result"),
+            make_tool_result_msg("write-1", "wrote guest.txt"),
+            make_text_msg("assistant", "done"),
+        ];
+
+        let start = safe_recent_start(&messages, 1);
+        let kept_call = messages[start..].iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "write-1"))
+        });
+        assert!(
+            kept_call,
+            "a retained tool result must keep its call; start={start}"
+        );
     }
 
     #[test]

@@ -137,7 +137,20 @@ impl AgentLoop {
         };
 
         match serde_json::from_value::<VerificationReport>(report.clone()) {
-            Ok(report) => reports.push(report),
+            Ok(report) => {
+                let author = match metadata
+                    .get("verification_author")
+                    .and_then(Value::as_str)
+                    .unwrap_or("host")
+                {
+                    "editor" => crate::read_only_verifier::ReportAuthor::Editor,
+                    "verifier" => crate::read_only_verifier::ReportAuthor::Verifier,
+                    _ => crate::read_only_verifier::ReportAuthor::Host,
+                };
+                if let Some(report) = crate::read_only_verifier::accept_report(author, report) {
+                    reports.push(report);
+                }
+            }
             Err(err) => tracing::warn!(
                 error = %err,
                 "Ignoring malformed verification_report tool metadata"

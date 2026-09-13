@@ -72,7 +72,6 @@ impl Tool for WriteTool {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
-
         let content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return Ok(ToolOutput::error("content parameter is required")),
@@ -167,6 +166,10 @@ impl Tool for WriteTool {
             }
 
             current.push_str(content);
+            let newly_acquired = match begin_write_claim(ctx, file_path) {
+                Ok(acquired) => acquired,
+                Err(output) => return Ok(output),
+            };
             return match ctx
                 .workspace_services
                 .write_for_edit(&workspace_path, &current, version.as_deref())
@@ -181,6 +184,7 @@ impl Tool for WriteTool {
                     false,
                 )),
                 Err(error) => {
+                    release_new_write_claim(ctx, file_path, newly_acquired);
                     let typed = crate::tools::ToolErrorKind::from_workspace_error(&error);
                     let output = if matches!(error, WorkspaceError::VersionConflict(_)) {
                         ToolOutput::error(format!(
@@ -215,6 +219,10 @@ impl Tool for WriteTool {
 
         let path_for_write = workspace_path.clone();
         let content_for_write = content.to_string();
+        let newly_acquired = match begin_write_claim(ctx, file_path) {
+            Ok(acquired) => acquired,
+            Err(output) => return Ok(output),
+        };
         match ctx
             .workspace_services
             .run_with_timeout("write_text", async move {
@@ -244,12 +252,39 @@ impl Tool for WriteTool {
                 ))
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
-            Err(e) => Ok(ToolOutput::error(format!(
-                "Failed to write file {}: {}",
-                ctx.workspace_services.display_path(&workspace_path),
-                e
-            ))),
+            Err(e) => {
+                release_new_write_claim(ctx, file_path, newly_acquired);
+                Ok(ToolOutput::error(format!(
+                    "Failed to write file {}: {}",
+                    ctx.workspace_services.display_path(&workspace_path),
+                    e
+                )))
+            }
         }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn begin_write_claim(ctx: &ToolContext, file_path: &str) -> std::result::Result<bool, ToolOutput> {
+    let session_id = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty());
+    let newly_acquired = session_id.is_some_and(|id| {
+        !crate::external_observation::session_owns_write(id, &ctx.workspace, file_path)
+    });
+    crate::external_observation::claim_bound_write(
+        ctx.session_id.as_deref(),
+        &ctx.workspace,
+        file_path,
+    )
+    .map_err(ToolOutput::error)?;
+    Ok(newly_acquired)
+}
+
+fn release_new_write_claim(ctx: &ToolContext, file_path: &str, newly_acquired: bool) {
+    if !newly_acquired {
+        return;
+    }
+    if let Some(id) = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        crate::external_observation::release_write_claim(id, &ctx.workspace, file_path);
     }
 }
 
@@ -300,7 +335,7 @@ mod tests {
     async fn test_write_new_file() {
         let temp = tempfile::tempdir().unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -326,7 +361,7 @@ mod tests {
     async fn test_write_creates_parent_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -345,7 +380,7 @@ mod tests {
     async fn test_write_overwrite_accepts_provider_materialized_zero_offset() {
         let temp = tempfile::tempdir().unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -373,7 +408,7 @@ mod tests {
         std::fs::write(temp.path().join("existing.txt"), "old").unwrap();
 
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -399,7 +434,7 @@ mod tests {
     async fn test_write_append_reconstructs_large_content() {
         let temp = tempfile::tempdir().unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
         let chunk = "0123456789abcdef".repeat(1024);
         let expected = chunk.repeat(16);
 
@@ -439,7 +474,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("existing.txt"), "prefix").unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -471,7 +506,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("existing.txt"), "prefixsuffix").unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
         let args = serde_json::json!({
             "file_path": "existing.txt",
             "content": "suffix",
@@ -498,7 +533,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("existing.txt"), "prefix").unwrap();
         let tool = WriteTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-test");
 
         let result = tool
             .execute(
@@ -525,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_missing_params() {
         let tool = WriteTool;
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
+        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp")).with_session_id("write-test");
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
@@ -535,6 +570,97 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn rejected_write_does_not_own_a_file_that_was_not_written() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("guest.txt"), "keep").unwrap();
+        let tool = WriteTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-reject-owner");
+        let result = tool
+            .execute(&serde_json::json!({"file_path": "guest.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("guest.txt")).unwrap(),
+            "keep"
+        );
+        assert!(
+            crate::external_observation::claim_bound_write(
+                Some("write-reject-other"),
+                temp.path(),
+                "guest.txt",
+            )
+            .is_ok(),
+            "a rejected write must not own a file it did not write"
+        );
+        crate::external_observation::release_session("write-reject-owner");
+        crate::external_observation::release_session("write-reject-other");
+    }
+
+    #[tokio::test]
+    async fn write_without_a_session_does_not_claim_an_anonymous_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = WriteTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let result = tool
+            .execute(
+                &serde_json::json!({"file_path": "new.txt", "content": "hello"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("session id"));
+        assert!(!temp.path().join("new.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn write_spelling_does_not_hide_another_sessions_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let guest = temp.path().join("guest.txt");
+        let tool = WriteTool;
+        let owner = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-owner");
+        let applied = tool
+            .execute(
+                &serde_json::json!({"file_path": "guest.txt", "content": "spell-token-2a91"}),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert!(applied.success, "owner write failed: {applied:?}");
+
+        let other = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-other");
+        for spelling in ["./guest.txt", "subdir/../guest.txt"] {
+            let denied = tool
+                .execute(
+                    &serde_json::json!({
+                        "file_path": spelling,
+                        "content": "hidden-spell-2a91",
+                    }),
+                    &other,
+                )
+                .await
+                .unwrap();
+            assert!(!denied.success, "{spelling} hid the claim");
+            assert_eq!(std::fs::read_to_string(&guest).unwrap(), "spell-token-2a91");
+        }
+
+        let again = tool
+            .execute(
+                &serde_json::json!({"file_path": "./guest.txt", "content": "owner-again-2a91"}),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert!(
+            again.success,
+            "owner spelling should still apply: {again:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&guest).unwrap(), "owner-again-2a91");
+        crate::external_observation::release_session("write-owner");
     }
 
     #[test]

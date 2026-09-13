@@ -22,6 +22,8 @@ impl From<SearchEngineConfig> for RustSearchEngineConfig {
             enabled: config.enabled.unwrap_or(true),
             weight: config.weight.unwrap_or(1.0),
             timeout: config.timeout.map(u64::from),
+            api_key: None,
+            project: None,
         }
     }
 }
@@ -120,6 +122,7 @@ impl From<SearchConfig> for RustSearchConfig {
         Self {
             timeout: u64::from(config.timeout.unwrap_or(20)),
             health: config.health.map(Into::into),
+            cascade_order: None,
             engines: config
                 .engines
                 .unwrap_or_default()

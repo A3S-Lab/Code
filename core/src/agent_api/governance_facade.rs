@@ -30,6 +30,76 @@ impl AgentSession {
         })
     }
 
+    /// Record a kept, reverted, or rejected constraint against a change-set
+    /// digest. The next agent-loop build serves only Accept records. A
+    /// secret-shaped constraint is not stored.
+    pub fn record_outcome(
+        &self,
+        outcome: crate::outcome_memory::OutcomeKind,
+        change_digest: &str,
+        constraint: &str,
+    ) -> crate::error::Result<bool> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_outcome_ledger
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut ledger = slot
+                .clone()
+                .unwrap_or_else(|| self.config.outcome_ledger.clone());
+            let stored = match outcome {
+                crate::outcome_memory::OutcomeKind::Accept => {
+                    ledger.accept(change_digest, constraint)
+                }
+                crate::outcome_memory::OutcomeKind::Revert => {
+                    ledger.revert(change_digest, constraint)
+                }
+                crate::outcome_memory::OutcomeKind::Reject => {
+                    ledger.reject(change_digest, constraint)
+                }
+            };
+            if stored {
+                *slot = Some(ledger);
+            }
+            stored
+        })
+    }
+
+    /// Remember the promoted isolation digest without activating recall.
+    pub fn note_promoted_digest(&self, digest: &str) -> crate::error::Result<bool> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_outcome_ledger
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut ledger = slot
+                .clone()
+                .unwrap_or_else(|| self.config.outcome_ledger.clone());
+            let stored = ledger.note_promoted(digest);
+            if stored {
+                *slot = Some(ledger);
+            }
+            stored
+        })
+    }
+
+    /// Ledger the next turn will serve, including host records made since
+    /// session construction.
+    pub fn outcome_ledger_snapshot(&self) -> crate::outcome_memory::OutcomeLedger {
+        self.runtime_outcome_ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| self.config.outcome_ledger.clone())
+    }
+
+    pub(crate) fn outcome_ledger_override(&self) -> Option<crate::outcome_memory::OutcomeLedger> {
+        self.runtime_outcome_ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// Return the currently-installed runtime budget guard, if any.
     /// `None` means the loop falls back to `config.budget_guard`.
     pub fn budget_guard(&self) -> Option<Arc<dyn crate::budget::BudgetGuard>> {

@@ -11,7 +11,7 @@ use crate::content_digest::{digest_json, validate_digest};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -124,18 +124,54 @@ pub fn snapshot_content_digest<T: Serialize>(snapshot: &T) -> Result<String> {
 
 /// Durable append-only JSONL WAL under a FileSessionStore root.
 pub struct FileSessionStoreWal {
+    root: PathBuf,
     path: PathBuf,
 }
 
 impl FileSessionStoreWal {
     pub fn new(store_root: impl AsRef<Path>) -> Self {
+        let root = store_root.as_ref().to_path_buf();
         Self {
-            path: store_root
-                .as_ref()
-                .join("v1")
-                .join("wal")
-                .join("session-store.ndjson"),
+            path: root.join("v1").join("wal").join("session-store.ndjson"),
+            root,
         }
+    }
+
+    /// A symlink whose resolved path leaves this store is not the WAL.
+    fn refuse_leave(&self) -> Result<()> {
+        let root = std::fs::canonicalize(&self.root)
+            .with_context(|| format!("Failed to resolve session store: {}", self.root.display()))?;
+        let relative = self
+            .path
+            .strip_prefix(&self.root)
+            .unwrap_or(self.path.as_path());
+        let mut current = root.clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                bail!("session store WAL path must stay inside the store");
+            };
+            current.push(name);
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    let canonical = std::fs::canonicalize(&current).with_context(|| {
+                        format!(
+                            "refusing to follow a symbolic link in {}",
+                            current.display()
+                        )
+                    })?;
+                    if !canonical.starts_with(&root) {
+                        bail!(
+                            "session store WAL is a symbolic link outside the store: {}",
+                            current.display()
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => bail!("failed to inspect session store WAL path: {error}"),
+            }
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -144,6 +180,7 @@ impl FileSessionStoreWal {
 
     /// Load every validated entry and return the next one-based sequence.
     pub async fn load_entries(&self) -> Result<(Vec<SessionStoreWalEntryV1>, u64)> {
+        self.refuse_leave()?;
         if !self.path.exists() {
             return Ok((Vec::new(), 1));
         }
@@ -202,6 +239,7 @@ impl FileSessionStoreWal {
     /// Rename a corrupt WAL aside so a fresh log can be opened. Session
     /// snapshots under `v1/sessions/` are left untouched.
     pub async fn quarantine_corrupt(&self) -> Result<PathBuf> {
+        self.refuse_leave()?;
         if !self.path.exists() {
             bail!(
                 "session store WAL does not exist at {} so nothing to quarantine",
@@ -228,6 +266,7 @@ impl FileSessionStoreWal {
     /// Append one validated entry with a data sync so reopen can observe it.
     pub async fn append(&self, entry: &SessionStoreWalEntryV1) -> Result<()> {
         entry.validate()?;
+        self.refuse_leave()?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .await

@@ -21,7 +21,7 @@ use assessment::{assess_tool, assessment_permission, critical_assessment, tool_r
 pub enum InteractiveApprovalMode {
     /// Allow known-safe operations and prompt for ordinary side effects.
     Default,
-    /// Allow known-safe operations and prompt for side effects.
+    /// Allow known-safe reads and deny workspace mutations. Not an alias of default.
     Plan,
     /// Streamline bounded workspace side effects while retaining HITL elsewhere.
     Auto,
@@ -42,13 +42,14 @@ impl InteractiveApprovalMode {
 
     /// Apply the mode decision matrix to an explainable risk assessment.
     ///
-    /// Routine calls are quiet in every mode. Default and plan require human
-    /// confirmation for bounded mutations, while auto streamlines them. Force
-    /// also streamlines high-risk review candidates. Critical rule denials are
-    /// non-bypassable in every mode.
+    /// Routine calls are quiet in every mode. Plan denies bounded and high
+    /// mutations. Default requires confirmation for them, while auto
+    /// streamlines bounded mutations. Force also streamlines high-risk review
+    /// candidates. Critical rule denials are non-bypassable in every mode.
     pub const fn action_for(self, assessment: &ToolRiskAssessment) -> ToolRiskAction {
         match (self, assessment.level) {
             (_, ToolRiskLevel::Routine) => ToolRiskAction::Allow,
+            (Self::Plan, ToolRiskLevel::Bounded | ToolRiskLevel::High) => ToolRiskAction::RuleDeny,
             (Self::Auto | Self::Force, ToolRiskLevel::Bounded) => ToolRiskAction::Allow,
             (_, ToolRiskLevel::Bounded) => ToolRiskAction::RequireConfirmation,
             (Self::Force, ToolRiskLevel::High) => ToolRiskAction::Allow,
@@ -352,9 +353,8 @@ pub(super) fn classify_atomic_tool(
         "search" | "ls" | "code_symbols" | "code_navigation" | "code_diagnostics" => {
             classify_scoped_path(args, "path", PermissionDecision::Allow, workspace)
         }
-        "web_search" | "web_fetch" | "search_skills" | "generate_object" => {
-            PermissionDecision::Allow
-        }
+        "web_search" | "web_fetch" | "search_skills" | "generate_object" | "update_plan"
+        | "ask_user" => PermissionDecision::Allow,
         "write" | "edit" => {
             classify_scoped_path(args, "file_path", PermissionDecision::Ask, workspace)
         }

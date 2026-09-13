@@ -603,6 +603,55 @@ Nested prompt
     assert!(names.contains(&"nested-agent"));
 }
 
+#[cfg(unix)]
+#[test]
+fn test_load_agents_from_dir_does_not_follow_symlinks_outside_the_agent_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let agent_root = temp_dir.path().join("agents");
+    let outside = temp_dir.path().join("outside");
+    std::fs::create_dir_all(agent_root.join("local")).unwrap();
+    std::fs::create_dir_all(agent_root.join("nested")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    std::fs::write(
+        agent_root.join("local").join("inside.md"),
+        "---\nname: local-agent\ndescription: Stays in the agent root\n---\nLOCAL\n",
+    )
+    .unwrap();
+    std::fs::write(
+        outside.join("agent.md"),
+        "---\nname: outside-dir-agent\ndescription: Must not load\n---\nOUTSIDE_DIR_TOKEN\n",
+    )
+    .unwrap();
+    std::fs::write(
+        outside.join("leak.yaml"),
+        "name: outside-file-agent\ndescription: Must not load\nprompt: OUTSIDE_FILE_TOKEN\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, agent_root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("leak.yaml"),
+        agent_root.join("nested").join("leak.yaml"),
+    )
+    .unwrap();
+
+    let agents = load_agents_from_dir(&agent_root);
+    let names: Vec<&str> = agents.iter().map(|agent| agent.name.as_str()).collect();
+    assert_eq!(names, vec!["local-agent"]);
+    assert!(agents.iter().all(|agent| {
+        !agent
+            .prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("OUTSIDE_DIR_TOKEN")
+            && !agent
+                .prompt
+                .as_deref()
+                .unwrap_or("")
+                .contains("OUTSIDE_FILE_TOKEN")
+    }));
+}
+
 #[test]
 fn test_load_agents_from_nonexistent_dir() {
     let agents = load_agents_from_dir(std::path::Path::new("/nonexistent/dir"));

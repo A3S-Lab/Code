@@ -7,7 +7,13 @@ impl AgentLoop {
         context_results: &mut Vec<ContextResult>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> Vec<crate::durable_memory::DurableMemoryRecallIdentity> {
+        let mut recalled = Vec::new();
+        for record in self.config.outcome_ledger.active_recall() {
+            recalled.push((record.change_digest.clone(), record.constraint.clone(), 1.0));
+        }
         let Some(ref memory) = self.config.memory else {
+            self.emit_recalled(event_tx, &recalled, effective_prompt)
+                .await;
             return Vec::new();
         };
 
@@ -50,7 +56,6 @@ impl AgentLoop {
             }
         }
 
-        let mut recalled = Vec::new();
         if !v1_items.is_empty() {
             recalled.extend(v1_items.iter().map(|item| {
                 (
@@ -75,8 +80,19 @@ impl AgentLoop {
             context_results.push(batch.result);
         }
 
+        self.emit_recalled(event_tx, &recalled, effective_prompt)
+            .await;
+        durable_identities
+    }
+
+    async fn emit_recalled(
+        &self,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        recalled: &[(String, String, f32)],
+        effective_prompt: &str,
+    ) {
         if let Some(tx) = event_tx {
-            for (memory_id, content, relevance) in &recalled {
+            for (memory_id, content, relevance) in recalled {
                 tx.send(AgentEvent::MemoryRecalled {
                     memory_id: memory_id.clone(),
                     content: content.clone(),
@@ -95,7 +111,6 @@ impl AgentLoop {
                 .ok();
             }
         }
-        durable_identities
     }
 }
 

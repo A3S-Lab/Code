@@ -42,17 +42,13 @@ fn parse_py_immutable_content_adapter(
             .get_item("authority_digest")
             .or_else(|_| obj.getattr("authority_digest"))
             .map_err(|_| {
-                PyValueError::new_err(
-                    "immutable_content_adapter requires authority_digest",
-                )
+                PyValueError::new_err("immutable_content_adapter requires authority_digest")
             })?
             .extract()?;
         let maximum_bytes: u64 = obj
             .get_item("maximum_bytes")
             .or_else(|_| obj.getattr("maximum_bytes"))
-            .map_err(|_| {
-                PyValueError::new_err("immutable_content_adapter requires maximum_bytes")
-            })?
+            .map_err(|_| PyValueError::new_err("immutable_content_adapter requires maximum_bytes"))?
             .extract()?;
         let adapter_name: String = obj
             .get_item("adapter_name")
@@ -60,9 +56,7 @@ fn parse_py_immutable_content_adapter(
             .or_else(|_| obj.getattr("adapter_name"))
             .or_else(|_| obj.getattr("name"))
             .map_err(|_| {
-                PyValueError::new_err(
-                    "immutable_content_adapter requires adapter_name or name",
-                )
+                PyValueError::new_err("immutable_content_adapter requires adapter_name or name")
             })?
             .extract()?;
         let put = obj
@@ -131,6 +125,7 @@ fn build_rust_session_options_inner(
     event_loop: Option<PyObject>,
 ) -> PyResult<RustSessionOptions> {
     let mut o = RustSessionOptions::new();
+    o = apply_py_host_contract_options(o, &so)?;
     if let Some(m) = so.model {
         o = o.with_model(m);
     }
@@ -438,4 +433,61 @@ fn build_rust_session_options_inner(
     }
 
     Ok(o)
+}
+
+fn apply_py_host_contract_options(
+    mut options: RustSessionOptions,
+    source: &PySessionOptions,
+) -> PyResult<RustSessionOptions> {
+    if let Some(env) = &source.command_env {
+        options = options.with_command_env(py_json(env)?);
+    }
+    if let Some(waivers) = &source.completion_waivers {
+        options = options.with_completion_waivers(py_json(waivers)?);
+    }
+    if let Some(enabled) = source.effect_isolation {
+        options = options.with_effect_isolation(enabled);
+    }
+    if let Some(observations) = &source.external_observations {
+        options = options.with_external_observations(py_json(observations)?);
+    }
+    if let Some(ledger) = &source.outcome_ledger {
+        options = options.with_outcome_ledger(py_json(ledger)?);
+    }
+    if let Some(rules) = &source.path_rules {
+        let items: Vec<serde_json::Value> = py_json(rules)?;
+        let mut parsed = Vec::with_capacity(items.len());
+        for item in items {
+            let glob = item
+                .get("glob")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| PyValueError::new_err("path_rules item requires glob"))?;
+            let text = item
+                .get("text")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| PyValueError::new_err("path_rules item requires text"))?;
+            parsed.push(a3s_code_core::path_instructions::PathRule {
+                glob: glob.to_string(),
+                text: text.to_string(),
+            });
+        }
+        options = options.with_path_rules(parsed);
+    }
+    if let Some(plan) = &source.plan_run {
+        options = options.with_plan_run(py_json(plan)?);
+    }
+    if let Some(read_only) = source.read_only_session {
+        options = options.with_read_only_session(read_only);
+    }
+    if let Some(enabled) = source.verifier_enabled {
+        options = options.with_verifier(enabled);
+    }
+    Ok(options)
+}
+
+fn py_json<T: serde::de::DeserializeOwned>(value: &PyObject) -> PyResult<T> {
+    Python::with_gil(|py| {
+        let json = py_any_to_json(value.bind(py))?;
+        serde_json::from_str(&json).map_err(|error| PyValueError::new_err(error.to_string()))
+    })
 }

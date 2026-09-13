@@ -433,6 +433,7 @@ const pythonSessionSources = await Promise.all(
   [
     'session.rs',
     'session_capabilities.rs',
+    'session_host_contract.rs',
     'session_memory.rs',
     'session_queue_api.rs',
     'session_tools.rs',

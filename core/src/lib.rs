@@ -79,6 +79,7 @@ pub(crate) mod agent_api;
 pub mod agent_protocol;
 pub mod agent_protocol_harness;
 pub mod agent_protocol_host;
+pub mod ask_user;
 pub(crate) mod bounded_io;
 pub mod budget;
 pub mod capability;
@@ -95,16 +96,19 @@ pub mod core_identity;
 pub mod durable_memory;
 #[cfg(feature = "dynamic-workflow")]
 pub mod dynamic_workflow;
+pub mod effect_isolation;
 pub mod embedding;
 pub mod error;
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
 pub mod event_protocol;
 pub mod execution_identity;
+pub mod external_observation;
 #[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;
 pub mod harness_evidence;
+pub mod harness_loop;
 pub mod hitl;
 pub mod hooks;
 pub mod host_env;
@@ -117,11 +121,15 @@ pub mod memory;
 pub mod moli_runtime;
 pub mod orchestration;
 pub(crate) mod ordered_parallel;
+pub mod outcome_memory;
+pub mod path_instructions;
 pub mod permissions;
 pub mod planning;
+pub(crate) mod porcelain;
 pub mod program;
 pub(crate) mod prompts;
 pub mod queue;
+pub mod read_only_verifier;
 pub mod release;
 #[cfg(feature = "research")]
 pub mod research;
@@ -141,6 +149,7 @@ pub mod serve;
 pub mod session_checkpoint;
 pub(crate) mod session_lane_queue;
 pub mod session_review;
+pub mod shell_session;
 pub mod skills;
 pub(crate) mod sse;
 #[cfg(feature = "state-graph")]
@@ -150,7 +159,6 @@ pub mod subagent;
 pub mod subagent_task_tracker;
 pub mod task_scheduler;
 pub mod telemetry;
-pub mod transcript;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
 #[cfg(test)]
@@ -159,6 +167,7 @@ pub(crate) mod text;
 pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;
+pub mod transcript;
 pub mod use_runtime_tasks;
 pub mod verification;
 pub mod workspace;

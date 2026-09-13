@@ -191,6 +191,60 @@ async fn snapshot_fork_rebinds_every_top_level_session_owner() {
 // FileSessionStore Tests
 // ========================================================================
 
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_does_not_write_through_a_sessions_symlink() {
+    let parent = tempdir().unwrap();
+    let store_dir = parent.path().join("store");
+    let outside = parent.path().join("outside");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(store_dir.join("v1")).unwrap();
+    std::os::unix::fs::symlink(&outside, store_dir.join("v1/sessions")).unwrap();
+
+    let store = FileSessionStore::new(&store_dir).await.unwrap();
+    let snapshot = create_test_snapshot().await;
+    let saved = store.save_snapshot(&snapshot).await;
+    assert!(
+        saved.is_err(),
+        "a session snapshot must not be written through a sessions symlink"
+    );
+    let leaked = std::fs::read_dir(&outside).unwrap().any(|entry| {
+        std::fs::read_to_string(entry.unwrap().path())
+            .ok()
+            .is_some_and(|text| text.contains("test-session-1"))
+    });
+    assert!(
+        !leaked,
+        "a sessions symlink must not receive a session snapshot"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn session_wal_append_does_not_follow_a_file_symlink_out_of_the_store() {
+    let parent = tempdir().unwrap();
+    let store_dir = parent.path().join("store");
+    let outside = parent.path().join("outside.ndjson");
+    std::fs::create_dir_all(store_dir.join("v1/wal")).unwrap();
+    std::fs::write(&outside, "").unwrap();
+    std::os::unix::fs::symlink(&outside, store_dir.join("v1/wal/session-store.ndjson")).unwrap();
+
+    let snapshot = create_test_snapshot().await;
+    if let Ok(store) = FileSessionStore::new(&store_dir).await {
+        let saved = store.save_snapshot(&snapshot).await;
+        assert!(
+            saved.is_err(),
+            "a WAL append must not follow a file symlink out of the store"
+        );
+    }
+    let outside_text = std::fs::read_to_string(&outside).unwrap();
+    assert!(
+        !outside_text.contains("test-session-1"),
+        "a WAL symlink must not receive a session record: {outside_text}"
+    );
+}
+
 #[tokio::test]
 async fn test_file_store_save_and_load() {
     let dir = tempdir().unwrap();

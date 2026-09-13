@@ -25,7 +25,13 @@ agent stopped the continuation loop because no progress was being made.";
 
 pub(super) enum CompletionFlow {
     Continue,
-    Finished(String),
+    Finished {
+        text: String,
+        completion: crate::harness_loop::CompletionTerminal,
+        run_admission: String,
+    },
+    /// Mutating run closed without bound evidence. Not a success result.
+    Blocked(String),
 }
 
 impl AgentLoop {
@@ -73,6 +79,66 @@ impl AgentLoop {
             return CompletionFlow::Continue;
         }
 
+        let admission = self.config.plan_run.label().to_string();
+        if state.next_turn_is_verifier && state.verifier_spent {
+            state.next_turn_is_verifier = false;
+        }
+        let child_unobserved = crate::harness_loop::absorb_open_workspace_children(
+            &mut state.mutations,
+            memory_task_context.workspace.as_path(),
+            cancel_token,
+        )
+        .await;
+        let unseen = state
+            .unseen_workspace_paths(memory_task_context.workspace.as_path())
+            .await;
+        state
+            .mutations
+            .set_observation_incomplete(child_unobserved || unseen.incomplete);
+        state.mutations.observe_unseen_paths(&unseen.paths);
+        if !force_terminal
+            && !state.verifier_spent
+            && crate::read_only_verifier::should_invoke(
+                self.config.verifier_enabled,
+                !state.mutations.is_empty(),
+            )
+        {
+            state.verifier_spent = true;
+            state.next_turn_is_verifier = true;
+            state.messages.push(Message::user_wire(
+                crate::read_only_verifier::VERIFIER_TURN_INPUT,
+            ));
+            return CompletionFlow::Continue;
+        }
+        let gate = crate::harness_loop::decide_with_observations(
+            &state.mutations,
+            &state.verification_reports,
+            &self.config.completion_waivers,
+            !force_terminal
+                && self.config.continuation_enabled
+                && state.gate_continuation_count == 0,
+            &state.open_observations,
+        );
+        let completion = match gate {
+            crate::harness_loop::CompletionGate::Continue { message } => {
+                state.gate_continuation_count += 1;
+                tracing::info!(turn, "Injecting completion-gate observation");
+                state.messages.push(Message::user_wire(&message));
+                return CompletionFlow::Continue;
+            }
+            crate::harness_loop::CompletionGate::Incomplete { message } => {
+                if let Some(tx) = event_tx {
+                    tx.send(AgentEvent::Error {
+                        message: message.clone(),
+                    })
+                    .await
+                    .ok();
+                }
+                return CompletionFlow::Blocked(message);
+            }
+            crate::harness_loop::CompletionGate::Allow(terminal) => terminal,
+        };
+
         let candidate_text = if state.incomplete_response_stalled() {
             NO_PROGRESS_FALLBACK.to_string()
         } else {
@@ -104,7 +170,11 @@ impl AgentLoop {
         self.emit_end_if_requested(state, response, &final_text, event_tx, emit_end)
             .await;
 
-        CompletionFlow::Finished(final_text)
+        CompletionFlow::Finished {
+            text: final_text,
+            completion,
+            run_admission: admission,
+        }
     }
 
     fn inject_reasoning_only_repair_if_needed(
@@ -128,7 +198,9 @@ impl AgentLoop {
             turn = turn,
             "Injecting reasoning-only repair message - response had no content"
         );
-        state.messages.push(Message::user_wire(REASONING_ONLY_REPAIR));
+        state
+            .messages
+            .push(Message::user_wire(REASONING_ONLY_REPAIR));
         true
     }
 

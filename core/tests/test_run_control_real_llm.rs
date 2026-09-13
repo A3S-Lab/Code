@@ -151,7 +151,7 @@ async fn real_model_applies_steer_after_an_in_flight_tool() {
     assert_eq!(receipt.state, RunControlReceiptState::Accepted);
 
     let mut saw_applied = false;
-    let mut final_text = None;
+    let mut terminal_error = None;
     tokio::time::timeout(MODEL_TIMEOUT, async {
         while let Some(event) = events.recv().await {
             match event {
@@ -159,8 +159,9 @@ async fn real_model_applies_steer_after_an_in_flight_tool() {
                     operation: RunControlOperation::Steer,
                     ..
                 } => saw_applied = true,
-                AgentEvent::End { text, .. } => {
-                    final_text = Some(text);
+                AgentEvent::End { .. } => return,
+                AgentEvent::Error { message } if message.starts_with("completion gate:") => {
+                    terminal_error = Some(message);
                     return;
                 }
                 AgentEvent::Error { message } => panic!("steered stream failed: {message}"),
@@ -173,9 +174,14 @@ async fn real_model_applies_steer_after_an_in_flight_tool() {
     worker.await.expect("steer worker join");
 
     assert!(saw_applied, "stream omitted RunControlApplied");
-    assert_eq!(final_text.as_deref().map(str::trim), Some("STEER_REAL_OK"));
+    assert!(
+        terminal_error
+            .as_deref()
+            .is_some_and(|message| message.starts_with("completion gate:")),
+        "a workspace-mutating steered run was narrative success: {terminal_error:?}"
+    );
     assert!(workspace.path().join("steer-finished.txt").is_file());
-    assert_eq!(
+    assert_ne!(
         session.run_snapshot(&snapshot.run_id).await.unwrap().status,
         RunStatus::Completed
     );

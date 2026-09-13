@@ -13,12 +13,12 @@ use super::retrieval::{
 };
 use super::{
     escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
-    LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry,
-    WorkspaceFileSystem, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
-    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
-    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
-    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
-    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    DirectWriteGuard, LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner,
+    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceGit, WorkspaceGitBranch,
+    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
+    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
+    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
+    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
     WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
     WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
     WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
@@ -889,6 +889,12 @@ impl Drop for ManifestWorkspaceBackend {
                 index.wait_for_idle();
             }
         }
+    }
+}
+
+impl DirectWriteGuard for ManifestWorkspaceBackend {
+    fn refuse_direct_write(&self, path: &WorkspacePath) -> anyhow::Result<()> {
+        self.local.refuse_direct_write(path)
     }
 }
 

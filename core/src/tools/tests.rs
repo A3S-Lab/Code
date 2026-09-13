@@ -399,9 +399,34 @@ impl WorkspaceCommandRunner for MockCommandRunner {
 #[tokio::test]
 async fn test_tool_executor_creation() {
     let executor = ToolExecutor::new("/tmp".to_string());
-    // Baseline tools on a raw local ToolExecutor: 14 (includes update_plan).
-    // Workspace search is one model-facing tool with three internal modes.
-    assert_eq!(executor.registry.len(), 14);
+    // Names, not a count: a new builtin must be an explicit product decision.
+    let mut names: Vec<_> = executor
+        .registry()
+        .definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "ask_user",
+            "bash",
+            "batch",
+            "download",
+            "edit",
+            "git",
+            "ls",
+            "patch",
+            "program",
+            "read",
+            "search",
+            "update_plan",
+            "web_fetch",
+            "web_search",
+            "write",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -447,7 +472,7 @@ async fn test_builtin_file_tools_use_workspace_services() {
     )
     .build();
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
-        "/server/local-placeholder".to_string(),
+        "/server/file-tools-placeholder".to_string(),
         services,
         ArtifactStoreLimits::default(),
     );
@@ -468,14 +493,20 @@ async fn test_builtin_file_tools_use_workspace_services() {
     assert_eq!(read.exit_code, 0);
     assert!(read.output.contains("first"));
 
+    let ctx = executor
+        .registry()
+        .context()
+        .with_session_id("remote-write");
     let write = executor
-        .execute(
+        .execute_with_context(
             "write",
             &serde_json::json!({"file_path": "created.txt", "content": "remote write\n"}),
+            &ctx,
         )
         .await
         .unwrap();
-    assert_eq!(write.exit_code, 0);
+    crate::external_observation::release_session("remote-write");
+    assert_eq!(write.exit_code, 0, "{}", write.output);
     assert_eq!(fs.get("created.txt").unwrap(), "remote write\n");
 
     let ls = executor
@@ -498,7 +529,7 @@ async fn test_bash_uses_workspace_command_runner() {
     .command_runner(Arc::new(MockCommandRunner))
     .build();
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
-        "/server/local-placeholder".to_string(),
+        "/server/bash-runner-placeholder".to_string(),
         services,
         ArtifactStoreLimits::default(),
     );
@@ -512,7 +543,7 @@ async fn test_bash_uses_workspace_command_runner() {
         .await
         .unwrap();
 
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.exit_code, 0, "{}", result.output);
     assert_eq!(result.output, "remote: pwd\n");
 }
 
@@ -648,8 +679,32 @@ fn test_tool_executor_workspace() {
 fn test_tool_executor_registry() {
     let executor = ToolExecutor::new("/tmp".to_string());
     let registry = executor.registry();
-    // Baseline tools on a raw local ToolExecutor: 14 (includes update_plan).
-    assert_eq!(registry.len(), 14);
+    let mut names: Vec<_> = registry
+        .definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "ask_user",
+            "bash",
+            "batch",
+            "download",
+            "edit",
+            "git",
+            "ls",
+            "patch",
+            "program",
+            "read",
+            "search",
+            "update_plan",
+            "web_fetch",
+            "web_search",
+            "write",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1181,11 +1236,16 @@ async fn test_execute_attaches_diff_metadata() {
     std::fs::write(&file, "before content\n").unwrap();
 
     let executor = ToolExecutor::new(dir.path().to_str().unwrap().to_string());
+    let ctx = executor.registry().context().with_session_id("diff-meta");
     let args = serde_json::json!({
         "file_path": "hello.txt",
         "content": "after content\n"
     });
-    let result = executor.execute("write", &args).await.unwrap();
+    let result = executor
+        .execute_with_context("write", &args, &ctx)
+        .await
+        .unwrap();
+    crate::external_observation::release_session("diff-meta");
 
     let meta = result.metadata.expect("metadata should be present");
     assert_eq!(meta["before"], "before content\n");
@@ -1202,7 +1262,7 @@ async fn test_execute_with_context_attaches_diff_metadata() {
     std::fs::write(&file, "original\n").unwrap();
 
     let executor = ToolExecutor::new(canonical_dir.to_str().unwrap().to_string());
-    let ctx = ToolContext::new(canonical_dir.clone());
+    let ctx = ToolContext::new(canonical_dir.clone()).with_session_id("diff-meta-ctx");
     let args = serde_json::json!({
         "file_path": "ctx.txt",
         "content": "updated\n"
@@ -1214,6 +1274,7 @@ async fn test_execute_with_context_attaches_diff_metadata() {
     assert_eq!(result.exit_code, 0, "write tool failed: {}", result.output);
 
     let meta = result.metadata.expect("metadata should be present");
+    crate::external_observation::release_session("diff-meta-ctx");
     assert_eq!(meta["before"], "original\n");
     assert_eq!(meta["after"], "updated\n");
     assert_eq!(meta["file_path"], "ctx.txt");

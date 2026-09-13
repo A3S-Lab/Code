@@ -11,9 +11,20 @@ use crate::agent::AgentEvent;
 use crate::execution_identity::ExecutionResultReceiptV1;
 use crate::ordered_parallel::run_ordered_parallel_with_limit;
 use crate::store::SessionStore;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+
+fn duplicated_task_ids(specs: &[AgentStepSpec]) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut duplicated = HashSet::new();
+    for spec in specs {
+        if !seen.insert(spec.task_id.clone()) {
+            duplicated.insert(spec.task_id.clone());
+        }
+    }
+    duplicated
+}
 
 fn now_epoch_ms() -> u64 {
     std::time::SystemTime::now()
@@ -107,6 +118,7 @@ pub async fn execute_steps_parallel_resumable(
     store: Arc<dyn SessionStore>,
     event_tx: Option<broadcast::Sender<AgentEvent>>,
 ) -> Vec<StepOutcome> {
+    let duplicated = duplicated_task_ids(&specs);
     // Prior progress. A checkpoint is a side-effect boundary: if it cannot be
     // decoded or its identity does not match the current specs, fail closed
     // rather than re-running work whose external outcome is ambiguous.
@@ -166,7 +178,7 @@ pub async fn execute_steps_parallel_resumable(
 
     let pending: Vec<AgentStepSpec> = specs
         .iter()
-        .filter(|s| !done.contains_key(&s.task_id))
+        .filter(|s| !duplicated.contains(&s.task_id) && !done.contains_key(&s.task_id))
         .cloned()
         .collect();
     let labels: Vec<(String, String)> = pending
@@ -257,6 +269,16 @@ pub async fn execute_steps_parallel_resumable(
     let merged: Vec<StepOutcome> = specs
         .iter()
         .map(|s| {
+            if duplicated.contains(&s.task_id) {
+                return StepOutcome::failed(
+                    s.task_id.clone(),
+                    s.agent.clone(),
+                    format!(
+                        "workflow step id '{}' is duplicated; refusing all steps with this id",
+                        s.task_id
+                    ),
+                );
+            }
             done.get(&s.task_id)
                 .cloned()
                 .or_else(|| fresh.remove(&s.task_id))
@@ -523,6 +545,62 @@ mod tests {
         fn concurrency_hint(&self) -> usize {
             4
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_task_id_does_not_report_one_step_as_the_other() {
+        struct PromptExecutor {
+            prompts: Arc<tokio::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl AgentExecutor for PromptExecutor {
+            async fn execute_step(
+                &self,
+                spec: AgentStepSpec,
+                _event_tx: Option<broadcast::Sender<AgentEvent>>,
+            ) -> StepOutcome {
+                self.prompts.lock().await.push(spec.prompt.clone());
+                StepOutcome {
+                    task_id: spec.task_id.clone(),
+                    session_id: format!("task-run-{}", spec.task_id),
+                    agent: spec.agent.clone(),
+                    output: spec.prompt,
+                    success: true,
+                    structured: None,
+                    source_anchors: Vec::new(),
+                }
+            }
+            fn concurrency_hint(&self) -> usize {
+                1
+            }
+        }
+
+        use crate::store::MemorySessionStore;
+        let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+        let prompts = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exec: Arc<dyn AgentExecutor> = Arc::new(PromptExecutor {
+            prompts: Arc::clone(&prompts),
+        });
+        let specs = vec![
+            AgentStepSpec::new("dup", "explore", "first", "prompt-one"),
+            AgentStepSpec::new("dup", "review", "second", "prompt-two"),
+            AgentStepSpec::new("keep", "explore", "third", "prompt-three"),
+        ];
+
+        let out =
+            execute_steps_parallel_resumable(exec, specs, "wf-dup", Arc::clone(&store), None).await;
+
+        let ran = prompts.lock().await.clone();
+        assert_eq!(ran, vec!["prompt-three".to_string()], "{ran:?}");
+        assert!(!out[0].success);
+        assert!(!out[1].success);
+        assert!(out[0].output.contains("duplicated"), "{}", out[0].output);
+        assert!(out[1].output.contains("duplicated"), "{}", out[1].output);
+        assert_ne!(out[0].output, "prompt-one");
+        assert_ne!(out[1].output, "prompt-two");
+        assert!(out[2].success);
+        assert_eq!(out[2].output, "prompt-three");
     }
 
     #[tokio::test]

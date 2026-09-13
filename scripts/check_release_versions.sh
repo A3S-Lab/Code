@@ -132,10 +132,31 @@ def check_go_module(path):
         fail(f"{path} module: expected {wanted!r}, found {match.group(1)!r}")
 
 
+def unreleased_notes(text):
+    notes = []
+    in_unreleased = False
+    for line in text.splitlines():
+        if line.startswith("## Unreleased"):
+            in_unreleased = True
+            continue
+        if in_unreleased and line.startswith("## "):
+            break
+        if in_unreleased and line.startswith("- "):
+            notes.append(line)
+    return notes
+
+
 def check_changelog(path):
+    text = read(path)
     heading = f"## [{expected}]"
-    if heading not in read(path):
+    if heading not in text:
         fail(f"{path}: missing release heading {heading}")
+    notes = unreleased_notes(text)
+    if notes:
+        fail(
+            f"{path}: {len(notes)} Unreleased note(s) are not part of {expected}; "
+            "refuse to call this version a published release of that delta"
+        )
 
 
 if not expected:

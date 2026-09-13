@@ -34,6 +34,15 @@ pub use grep_candidates::{
     GREP_TRIGRAM_INDEX_RELATIVE_DIR,
 };
 pub use local::LocalWorkspaceBackend;
+pub(crate) use local_access::LocalWorkspaceAccessBoundary;
+
+/// Direct file mutation that does not go through [`WorkspaceFileSystem::write_text`].
+///
+/// Download promotion is one caller. The implementation is the local backend's
+/// write boundary, not a second policy.
+pub(crate) trait DirectWriteGuard: Send + Sync {
+    fn refuse_direct_write(&self, path: &WorkspacePath) -> Result<()>;
+}
 pub use local_access::LocalWorkspaceAccessPolicy;
 pub use manifest::{
     scan_workspace_files, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,

@@ -86,6 +86,13 @@ pub struct TaskResult {
     /// Source locations observed by successful built-in child tool calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_anchors: Vec<ToolSourceAnchor>,
+    /// Child completion terminal. Narrative is omitted so a read-only task
+    /// does not look like a bound closure.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::harness_loop::CompletionTerminal::is_narrative"
+    )]
+    pub completion: crate::harness_loop::CompletionTerminal,
 }
 
 struct ScopedTaskExecution<'a> {
@@ -953,6 +960,7 @@ impl TaskExecutor {
         let execution_prompt = structured_prompt.as_deref().unwrap_or(&params.prompt);
 
         let mut structured = None;
+        let mut child_completion = crate::harness_loop::CompletionTerminal::Narrative;
         let (mut output, mut success, raw_output) = if tool_free && output_schema.is_some() {
             let operation = agent_loop.begin_capability_operation(
                 0,
@@ -1012,6 +1020,7 @@ impl TaskExecutor {
                     (format!("Task failed: {}", result.text), false, None)
                 }
                 Ok(result) => {
+                    child_completion = result.completion.clone();
                     let raw_output = result
                         .messages
                         .last()
@@ -1137,6 +1146,7 @@ impl TaskExecutor {
             task_id,
             structured,
             source_anchors,
+            completion: child_completion,
         })
     }
 
@@ -1155,21 +1165,28 @@ impl TaskExecutor {
     ) -> String {
         let parent_cancellation = self.parent_cancellation.clone();
         self.execute_background_with_parent_cancellation(
+            format!("task-{}", uuid::Uuid::new_v4()),
             params,
             event_tx,
             parent_session_id,
             parent_cancellation,
         )
+        .task_id
     }
 
     fn execute_background_with_parent_cancellation(
         self: Arc<Self>,
+        task_id: String,
         params: TaskParams,
         event_tx: Option<broadcast::Sender<AgentEvent>>,
         parent_session_id: Option<String>,
         parent_cancellation: Option<CancellationToken>,
-    ) -> String {
-        let task_id = format!("task-{}", uuid::Uuid::new_v4());
+    ) -> BackgroundLaunch {
+        let task_id = if task_id.trim().is_empty() {
+            format!("task-{}", uuid::Uuid::new_v4())
+        } else {
+            task_id
+        };
         let session_id = format!("task-run-{}", task_id);
         let failure_session_id = session_id.clone();
         let failure_agent = params.agent.clone();
@@ -1224,7 +1241,10 @@ impl TaskExecutor {
                     let _ = tx.send(end_event);
                 }
                 tracing::error!(task_id = %task_id, "{message}");
-                return task_id;
+                return BackgroundLaunch {
+                    task_id,
+                    running: false,
+                };
             }
         };
 
@@ -1235,11 +1255,15 @@ impl TaskExecutor {
         let admission_failure_agent = failure_agent.clone();
         let admission_failure_events = event_tx.clone();
         let admission_failure_security = security_provider.clone();
+        let workspace_root = PathBuf::from(&self.workspace);
+        let observed_task_id = task_id_for_spawn.clone();
         let background = async move {
+            let mut workspace_child = crate::porcelain::WorkspaceChildGuard::new(&observed_task_id);
             if let Some(ref tracker) = self.subagent_tracker {
                 tracker.record_event(&start_event).await;
             }
             let failure_event_tx = event_tx.clone();
+            let child_session_id = failure_session_id.clone();
             if let Err(error) = self
                 .execute_with_task_id_scoped(
                     task_id_for_spawn,
@@ -1276,7 +1300,18 @@ impl TaskExecutor {
                 }
                 tracing::error!("Background task {} failed: {}", task_id_for_log, error);
             }
+            crate::porcelain::settle_workspace_child_guard(&mut workspace_child, &workspace_root)
+                .await;
+            if let Some(paths) = crate::porcelain::peek_settled_workspace_child(&observed_task_id) {
+                adopt_dirtied_paths(
+                    parent_session_id.as_deref(),
+                    &child_session_id,
+                    &workspace_root,
+                    &paths,
+                );
+            }
         };
+        let mut running = true;
         if let Some(run) = capability_run {
             let task_name = format!("subagent.{task_id}");
             if let Err(error) = run.spawn_task(task_name, async move {
@@ -1303,13 +1338,19 @@ impl TaskExecutor {
                     let _ = tx.send(end_event);
                 }
                 tracing::error!(task_id = %admission_failure_task_id, "{message}");
+                running = false;
             }
         } else {
             tokio::spawn(background);
         }
 
-        task_id
+        BackgroundLaunch { task_id, running }
     }
+}
+
+struct BackgroundLaunch {
+    task_id: String,
+    running: bool,
 }
 
 async fn close_capability_subtask(
@@ -1541,18 +1582,32 @@ impl TaskTool {
         let executor = self.executor.scoped_for_invocation(ctx);
 
         if params.background {
-            let task_id = executor.execute_background_with_parent_cancellation(
+            let task_id = format!("task-{}", uuid::Uuid::new_v4());
+            crate::porcelain::reserve_workspace_child(&task_id);
+            crate::porcelain::begin_workspace_child(&task_id, ctx.workspace.as_path()).await;
+            let launch = executor.execute_background_with_parent_cancellation(
+                task_id.clone(),
                 params,
                 ctx.agent_event_tx.clone(),
                 ctx.session_id.clone(),
                 Some(parent_cancellation),
             );
+            if !launch.running {
+                crate::porcelain::settle_workspace_child(&launch.task_id, ctx.workspace.as_path())
+                    .await;
+            }
+            let task_id = launch.task_id;
             return Ok(ToolOutput::success(format!(
                 "Task started in background. Task ID: {}",
                 task_id
-            )));
+            ))
+            .with_metadata(serde_json::json!({
+                "task_id": task_id,
+                "workspace_child": task_id,
+            })));
         }
 
+        let watch = crate::porcelain::Watch::start(&ctx.workspace).await;
         let result = executor
             .execute_with_parent_cancellation(
                 params,
@@ -1561,8 +1616,15 @@ impl TaskTool {
                 Some(&parent_cancellation),
             )
             .await?;
+        let changed = watch.finish(&ctx.workspace).await;
+        adopt_dirtied_paths(
+            ctx.session_id.as_deref(),
+            &result.session_id,
+            &ctx.workspace,
+            &changed,
+        );
         let (content, truncated) = format_task_result_for_context(&result);
-        let metadata = serde_json::json!({
+        let mut metadata = Some(serde_json::json!({
             "task_id": result.task_id,
             "session_id": result.session_id,
             "agent": result.agent,
@@ -1573,7 +1635,15 @@ impl TaskTool {
             "artifact_uri": task_artifact_uri(&result),
             "structured": result.structured,
             "source_anchors": result.source_anchors,
-        });
+        }));
+        if let Some(meta) = metadata.as_mut() {
+            if !result.completion.is_narrative() {
+                meta["completion"] =
+                    serde_json::to_value(&result.completion).unwrap_or(serde_json::Value::Null);
+            }
+        }
+        crate::porcelain::attach(&mut metadata, &changed);
+        let metadata = metadata.unwrap_or_else(|| serde_json::json!({}));
 
         if result.success {
             Ok(ToolOutput::success(content).with_metadata(metadata))
@@ -1651,6 +1721,22 @@ pub use parallel_params::{parallel_task_params_schema, ParallelTaskParams};
 
 mod parallel_task;
 pub use parallel_task::ParallelTaskTool;
+
+fn adopt_dirtied_paths(
+    parent_session: Option<&str>,
+    child_session: &str,
+    workspace: &std::path::Path,
+    paths: &[String],
+) {
+    let owner = parent_session
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
+        .unwrap_or(child_session);
+    for path in paths {
+        let _ =
+            crate::external_observation::adopt_write_claim(child_session, owner, workspace, path);
+    }
+}
 
 fn invalid_delegation_argument(message: String) -> ToolOutput {
     ToolOutput::error(&message)

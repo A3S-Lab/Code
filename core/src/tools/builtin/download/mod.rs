@@ -253,7 +253,18 @@ async fn run_download(
     if cancellation.is_cancelled() {
         return Err(DownloadFailure::cancelled());
     }
+    if ctx
+        .session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .is_none()
+    {
+        return Err(path_failure("write requires a session id"));
+    }
 
+    if let Some(path) = args.explicit_path.as_ref() {
+        refuse_download_write(&ctx, path)?;
+    }
     let mut destination = match args.explicit_path.clone() {
         Some(path) => Some(
             prepare_destination_async(local_root.clone(), path, args.overwrite)
@@ -275,6 +286,7 @@ async fn run_download(
         let workspace_path = ctx
             .resolve_workspace_path(&filename)
             .map_err(|error| path_failure(format!("Invalid inferred filename: {error}")))?;
+        refuse_download_write(&ctx, &workspace_path)?;
         destination = Some(
             prepare_destination_async(local_root, workspace_path, args.overwrite)
                 .await
@@ -409,7 +421,12 @@ async fn run_download(
         return Err(DownloadFailure::cancelled());
     }
 
-    persist_temp_file(temp_path, &destination, args.overwrite).await?;
+    refuse_download_write(&ctx, &destination.workspace_path)?;
+    let newly_acquired = claim_destination(&ctx, &destination.workspace_path)?;
+    if let Err(error) = persist_temp_file(temp_path, &destination, args.overwrite).await {
+        release_new_download_claim(&ctx, &destination.workspace_path, newly_acquired);
+        return Err(error);
+    }
     sync_parent_directory(&destination.parent).await?;
 
     let mut source_anchors = Vec::new();
@@ -572,6 +589,36 @@ fn optional_u64(
         Some(value) => value
             .as_u64()
             .ok_or_else(|| format!("{field} must be a positive integer")),
+    }
+}
+
+fn refuse_download_write(ctx: &ToolContext, path: &WorkspacePath) -> Result<(), DownloadFailure> {
+    ctx.workspace_services
+        .refuse_direct_write(path)
+        .map_err(|error| path_failure(error.to_string()))
+}
+
+fn claim_destination(ctx: &ToolContext, path: &WorkspacePath) -> Result<bool, DownloadFailure> {
+    let relative = path.as_str();
+    let session_id = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty());
+    let newly_acquired = session_id.is_some_and(|id| {
+        !crate::external_observation::session_owns_write(id, &ctx.workspace, relative)
+    });
+    crate::external_observation::claim_bound_write(
+        ctx.session_id.as_deref(),
+        &ctx.workspace,
+        relative,
+    )
+    .map_err(path_failure)?;
+    Ok(newly_acquired)
+}
+
+fn release_new_download_claim(ctx: &ToolContext, path: &WorkspacePath, newly_acquired: bool) {
+    if !newly_acquired {
+        return;
+    }
+    if let Some(id) = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        crate::external_observation::release_write_claim(id, &ctx.workspace, path.as_str());
     }
 }
 

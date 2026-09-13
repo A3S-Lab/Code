@@ -78,8 +78,8 @@ fn interactive_guardrail_allows_absolute_paths_inside_workspace() {
             "write",
             &json!({"file_path": workspace.path().join("note.txt"), "content": "x"}),
         ),
-        PermissionDecision::Ask,
-        "absolute in-workspace writes remain confirmation-gated in plan"
+        PermissionDecision::Deny,
+        "plan denies bounded writes, including an absolute path that stays inside the workspace"
     );
 }
 
@@ -353,8 +353,41 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
     assert_eq!(
         InteractiveToolGuardrail::for_mode("plan")
             .check("write", &json!({"file_path": "README.md"})),
-        PermissionDecision::Ask,
-        "plan mode may request an explicit write escalation"
+        PermissionDecision::Deny,
+        "plan mode denies workspace writes instead of escalating them"
+    );
+    let plan = InteractiveToolGuardrail::for_mode("plan");
+    for (tool, args) in [
+        ("edit", json!({"file_path": "src/lib.rs"})),
+        ("patch", json!({"file_path": "src/lib.rs"})),
+        ("bash", json!({"command": "echo hi > README.md"})),
+    ] {
+        assert_eq!(
+            plan.check(tool, &args),
+            PermissionDecision::Deny,
+            "plan mode denies {tool}"
+        );
+    }
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("default")
+            .check("edit", &json!({"file_path": "src/lib.rs"})),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("auto")
+            .check("write", &json!({"file_path": "src/lib.rs"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("plan").check("update_plan", &json!({"plan": []})),
+        PermissionDecision::Allow,
+        "plan mode still allows the checklist tool"
+    );
+    assert_eq!(
+        InteractiveToolGuardrail::for_mode("plan")
+            .check("code_diagnostics", &json!({"path": "src/lib.rs"})),
+        PermissionDecision::Allow,
+        "plan mode still allows diagnostics"
     );
     let auto = InteractiveToolGuardrail::for_mode("auto");
     assert_eq!(

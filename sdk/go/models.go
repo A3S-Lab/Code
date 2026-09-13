@@ -303,6 +303,51 @@ type SessionOptions struct {
 	Trajectory                 *TrajectoryConfig               `json:"trajectory,omitempty"`
 	InlineSkills               []InlineSkill                   `json:"inline_skills,omitempty"`
 	PromptSlots                *PromptSlots                    `json:"prompt_slots,omitempty"`
+	CommandEnv                 map[string]string               `json:"command_env,omitempty"`
+	CompletionWaivers          []CompletionWaiver              `json:"completion_waivers,omitempty"`
+	EffectIsolation            *bool                           `json:"effect_isolation,omitempty"`
+	ExternalObservations       []ExternalObservation           `json:"external_observations,omitempty"`
+	OutcomeLedger              *OutcomeLedger                  `json:"outcome_ledger,omitempty"`
+	PathRules                  []PathRule                      `json:"path_rules,omitempty"`
+	PlanRun                    *PlanRunAdmission               `json:"plan_run,omitempty"`
+	ReadOnlySession            *bool                           `json:"read_only_session,omitempty"`
+	VerifierEnabled            *bool                           `json:"verifier_enabled,omitempty"`
+}
+
+type CompletionWaiver struct {
+	EffectDigest string `json:"effect_digest"`
+	Reason       string `json:"reason"`
+}
+
+type PlanRunAdmission struct {
+	ClaimsImplementation bool    `json:"claims_implementation"`
+	PlanDigest           *string `json:"plan_digest,omitempty"`
+}
+
+type PathRule struct {
+	Glob string `json:"glob"`
+	Text string `json:"text"`
+}
+
+type ExternalObservation struct {
+	Schema         string  `json:"schema"`
+	Kind           string  `json:"kind"`
+	Subject        string  `json:"subject"`
+	Digest         string  `json:"digest"`
+	Payload        string  `json:"payload"`
+	SourceRevision *string `json:"source_revision,omitempty"`
+	RequiredAction string  `json:"required_action"`
+}
+
+type OutcomeRecord struct {
+	ChangeDigest string `json:"change_digest"`
+	Constraint   string `json:"constraint"`
+	Outcome      string `json:"outcome"`
+}
+
+type OutcomeLedger struct {
+	Records            []OutcomeRecord `json:"records"`
+	LastPromotedDigest *string         `json:"last_promoted_digest,omitempty"`
 }
 
 // Ptr is a convenience for pointer-valued options that distinguish an

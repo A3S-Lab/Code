@@ -464,34 +464,38 @@ impl a3s_code_core::ImmutableContentAdapter for PyImmutableContentAdapter {
         let timeout_ms = self.timeout_ms;
         let callback = pyo3::Python::with_gil(|py| self.callback.clone_ref(py));
         let task = tokio::task::spawn_blocking(move || {
-            pyo3::Python::with_gil(|py| -> a3s_code_core::ImmutableContentResult<
-                a3s_code_core::ImmutableContentReferenceV1,
-            > {
-                let callback = callback.bind(py);
-                let json_mod = py.import("json").map_err(|error| {
-                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
-                })?;
-                let value = json_mod.call_method1("loads", (payload,)).map_err(|error| {
-                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
-                })?;
-                let result = callback.call1((value,)).map_err(|error| {
-                    a3s_code_core::ImmutableContentError::Provider(error.to_string())
-                })?;
-                let encoded = json_mod
-                    .call_method1("dumps", (result,))
-                    .map_err(|error| {
-                        a3s_code_core::ImmutableContentError::Provider(error.to_string())
-                    })?
-                    .extract::<String>()
-                    .map_err(|error| {
+            pyo3::Python::with_gil(
+                |py| -> a3s_code_core::ImmutableContentResult<
+                    a3s_code_core::ImmutableContentReferenceV1,
+                > {
+                    let callback = callback.bind(py);
+                    let json_mod = py.import("json").map_err(|error| {
                         a3s_code_core::ImmutableContentError::Provider(error.to_string())
                     })?;
-                serde_json::from_str(&encoded).map_err(|error| {
-                    a3s_code_core::ImmutableContentError::Provider(format!(
-                        "immutable content put returned an invalid reference: {error}"
-                    ))
-                })
-            })
+                    let value = json_mod
+                        .call_method1("loads", (payload,))
+                        .map_err(|error| {
+                            a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                        })?;
+                    let result = callback.call1((value,)).map_err(|error| {
+                        a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                    })?;
+                    let encoded = json_mod
+                        .call_method1("dumps", (result,))
+                        .map_err(|error| {
+                            a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                        })?
+                        .extract::<String>()
+                        .map_err(|error| {
+                            a3s_code_core::ImmutableContentError::Provider(error.to_string())
+                        })?;
+                    serde_json::from_str(&encoded).map_err(|error| {
+                        a3s_code_core::ImmutableContentError::Provider(format!(
+                            "immutable content put returned an invalid reference: {error}"
+                        ))
+                    })
+                },
+            )
         });
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), task).await {
             Ok(Ok(result)) => result,

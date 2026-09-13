@@ -18,6 +18,7 @@ fn make_context(headless: Option<HeadlessConfig>) -> ToolContext {
     let search_config = headless.map(|h| {
         Arc::new(SearchConfig {
             timeout: 30,
+            cascade_order: None,
             health: None,
             engines: HashMap::new(),
             headless: Some(h),

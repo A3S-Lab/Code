@@ -135,6 +135,7 @@ pub struct AgentDir {
 
 impl AgentDir {
     /// Load an agent directory by convention. `instructions.md` is required.
+    /// A symlink whose resolved path leaves this directory is not loaded.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         if !dir.is_dir() {
@@ -146,8 +147,15 @@ impl AgentDir {
 
         // instructions.md (required) → role SLOT. Using a slot (not a raw system
         // prompt) keeps the harness's BOUNDARIES/response-format/verification.
+        let instructions_path = dir.join("instructions.md");
+        if !stays_in_directory(&dir, &instructions_path) {
+            return Err(CodeError::Context(format!(
+                "agent dir {} instructions.md must be a regular file inside the agent directory",
+                dir.display()
+            )));
+        }
         let instructions = crate::bounded_io::read_utf8_file_bounded(
-            &dir.join("instructions.md"),
+            &instructions_path,
             crate::bounded_io::MAX_AGENT_DIRECTORY_FILE_BYTES,
         )
         .map_err(|e| {
@@ -164,14 +172,21 @@ impl AgentDir {
         // agent.acl (optional) → CodeConfig, else default.
         let acl_path = dir.join("agent.acl");
         let mut config = if acl_path.is_file() {
+            if !stays_in_directory(&dir, &acl_path) {
+                return Err(CodeError::Context(format!(
+                    "agent dir {} agent.acl must stay inside the agent directory",
+                    dir.display()
+                )));
+            }
             CodeConfig::from_file(&acl_path)?
         } else {
             CodeConfig::default()
         };
 
         // skills/ → appended to skill_dirs (existing *.md format, zero adaptation).
+        // A symlink that leaves this directory would retarget the skill scan root.
         let skills_dir = dir.join("skills");
-        if skills_dir.is_dir() {
+        if skills_dir.is_dir() && stays_in_directory(&dir, &skills_dir) {
             config.skill_dirs.push(skills_dir);
         }
 
@@ -190,6 +205,15 @@ impl AgentDir {
 
 /// Markdown files with a `<ext>` extension in `dir`, sorted by path. Returns an
 /// empty list when `dir` does not exist.
+fn stays_in_directory(root: &Path, path: &Path) -> bool {
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    std::fs::canonicalize(path)
+        .map(|canonical| canonical.starts_with(&root))
+        .unwrap_or(false)
+}
+
 fn md_files(dir: &Path, exts: &[&str]) -> Result<Vec<PathBuf>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
@@ -210,6 +234,9 @@ fn collect_md_paths(
         let path = entry.map_err(|e| {
             CodeError::Context(format!("read directory entry in {}: {e}", dir.display()))
         })?;
+        if !stays_in_directory(dir, &path) {
+            continue;
+        }
         if path
             .extension()
             .and_then(|s| s.to_str())
@@ -530,6 +557,71 @@ mod tests {
         assert_eq!(s.limits.max_tool_calls, Some(10));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_does_not_follow_symlinks_outside_the_agent_directory() {
+        let dir = fixture();
+        let outside =
+            std::env::temp_dir().join(format!("a3s-agentdir-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(outside.join("skills/leak")).unwrap();
+        std::fs::write(
+            outside.join("skills/leak/SKILL.md"),
+            "---\nname: outside-skill\ndescription: Must not load\nkind: instruction\n---\nOUTSIDE_SKILL\n",
+        )
+        .unwrap();
+        std::fs::write(
+            outside.join("tool.md"),
+            "---\nkind: mcp\nname: outside-mcp\ntransport: stdio\ncommand: outside-token\nargs: [\"exfil\"]\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            outside.join("schedule.md"),
+            "---\ncron: \"* * * * *\"\nname: outside-schedule\n---\nOUTSIDE_SCHEDULE\n",
+        )
+        .unwrap();
+        std::fs::write(outside.join("instructions.md"), "OUTSIDE_ROLE").unwrap();
+
+        std::fs::remove_dir_all(dir.join("skills")).unwrap();
+        std::os::unix::fs::symlink(outside.join("skills"), dir.join("skills")).unwrap();
+        std::os::unix::fs::symlink(outside.join("tool.md"), dir.join("tools/escape.md")).unwrap();
+        std::os::unix::fs::symlink(outside.join("schedule.md"), dir.join("schedules/escape.md"))
+            .unwrap();
+
+        let agent = AgentDir::load(&dir).unwrap();
+        assert!(
+            agent.tools.iter().all(|tool| tool.name() != "outside-mcp"),
+            "outside tool was registered: {:?}",
+            agent
+                .tools
+                .iter()
+                .map(|tool| tool.name())
+                .collect::<Vec<_>>()
+        );
+        assert!(agent
+            .schedules
+            .iter()
+            .all(|schedule| schedule.name != "outside-schedule"));
+        let registry = crate::skills::SkillRegistry::new();
+        for skill_dir in &agent.config.skill_dirs {
+            registry.load_from_dir(skill_dir).unwrap();
+        }
+        assert!(registry.get("outside-skill").is_none());
+
+        std::fs::remove_file(dir.join("instructions.md")).unwrap();
+        std::os::unix::fs::symlink(outside.join("instructions.md"), dir.join("instructions.md"))
+            .unwrap();
+        let error = AgentDir::load(&dir).unwrap_err().to_string();
+        assert!(
+            !error.contains("OUTSIDE_ROLE"),
+            "outside instructions were read: {error}"
+        );
+        assert!(AgentDir::load(&dir).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

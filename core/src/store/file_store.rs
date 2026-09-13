@@ -14,7 +14,7 @@ use crate::verification::VerificationReport;
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
@@ -136,6 +136,7 @@ impl FileSessionStore {
     /// Exclusive cross-process lock covering WAL recover and sequence minting.
     async fn acquire_wal_file_lock(&self) -> Result<std::fs::File> {
         let path = self.wal_lock_path();
+        self.refuse_symlink_leave(&path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await.with_context(|| {
                 format!(
@@ -244,6 +245,7 @@ impl FileSessionStore {
         value: &T,
         description: &str,
     ) -> Result<()> {
+        self.refuse_symlink_leave(path)?;
         let _guard = self.write_lock.lock().await;
         write_json_atomic(path, value, description, self.encryption.as_ref()).await
     }
@@ -254,6 +256,7 @@ impl FileSessionStore {
         value: &T,
         description: &str,
     ) -> Result<()> {
+        self.refuse_symlink_leave(path)?;
         write_json_atomic(path, value, description, self.encryption.as_ref()).await
     }
 
@@ -313,6 +316,7 @@ impl FileSessionStore {
             return Ok(());
         };
         let path = artifact_dir.join("artifacts.json");
+        self.refuse_symlink_leave(&path)?;
         if !path.exists() {
             return Ok(());
         }
@@ -331,6 +335,7 @@ impl FileSessionStore {
 
     async fn load_artifact_manifest_bytes(&self, artifact_dir: &Path) -> Result<Vec<u8>> {
         let path = artifact_dir.join("artifacts.json");
+        self.refuse_symlink_leave(&path)?;
         if !path.exists() {
             return Ok(b"{\"artifacts\":[]}".to_vec());
         }
@@ -408,6 +413,40 @@ impl FileSessionStore {
             .join("v1")
             .join(category)
             .join(encoded_storage_key(id))
+    }
+
+    /// A symlink whose resolved path leaves this store is not a session file.
+    fn refuse_symlink_leave(&self, path: &Path) -> Result<()> {
+        let root = std::fs::canonicalize(&self.dir)
+            .with_context(|| format!("Failed to resolve session store: {}", self.dir.display()))?;
+        let relative = path.strip_prefix(&self.dir).unwrap_or(path);
+        let mut current = root.clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                anyhow::bail!("session store path must stay inside the store");
+            };
+            current.push(name);
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    let canonical = std::fs::canonicalize(&current).with_context(|| {
+                        format!(
+                            "refusing to follow a symbolic link in {}",
+                            current.display()
+                        )
+                    })?;
+                    if !canonical.starts_with(&root) {
+                        anyhow::bail!(
+                            "session store path is a symbolic link outside the store: {}",
+                            current.display()
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => anyhow::bail!("failed to inspect session store path: {error}"),
+            }
+        }
+        Ok(())
     }
 
     /// Get the collision-free file path for a session.
@@ -515,6 +554,7 @@ impl FileSessionStore {
 
     async fn read_session_file(&self, id: &str) -> Result<Option<StoredSessionFile>> {
         let current = self.session_path(id);
+        self.refuse_symlink_leave(&current)?;
         let legacy = self.legacy_session_path(id);
         let path = if current.exists() {
             current
@@ -587,6 +627,7 @@ impl FileSessionStore {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum StoredSessionFile {
     Snapshot(SessionSnapshotV1),
     Legacy(SessionData),
@@ -924,6 +965,7 @@ impl SessionStore for FileSessionStore {
         // it belongs to the requested id. Historical sanitization was lossy,
         // so path equality alone is not ownership evidence.
         let legacy_owned = self.legacy_session_belongs_to(id).await?;
+        self.refuse_symlink_leave(&self.session_path(id))?;
 
         remove_file_if_exists(&self.session_path(id), "session file").await?;
         remove_dir_if_exists(&self.artifact_dir(id), "artifact directory").await?;

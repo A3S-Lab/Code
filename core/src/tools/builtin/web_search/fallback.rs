@@ -27,6 +27,83 @@ pub(super) fn automatic_tier_order() -> [EngineTier; 2] {
     [EngineTier::Http, EngineTier::Api]
 }
 
+/// Resolve cascade tier order from SearchConfig, falling back to the product default.
+pub(super) fn resolved_tier_order(config: Option<&crate::config::SearchConfig>) -> Vec<EngineTier> {
+    let defaults = automatic_tier_order();
+    let Some(order) = config.and_then(|config| config.cascade_order.as_ref()) else {
+        return defaults.to_vec();
+    };
+
+    let mut tiers = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for tier in order {
+        let mapped = match tier {
+            crate::config::SearchCascadeTier::Http => Some(EngineTier::Http),
+            crate::config::SearchCascadeTier::Api => Some(EngineTier::Api),
+            crate::config::SearchCascadeTier::Headless => {
+                #[cfg(feature = "headless-search")]
+                {
+                    Some(EngineTier::Headless)
+                }
+                #[cfg(not(feature = "headless-search"))]
+                {
+                    None
+                }
+            }
+        };
+        let Some(mapped) = mapped else {
+            continue;
+        };
+        if seen.insert(mapped) {
+            tiers.push(mapped);
+        }
+    }
+
+    if tiers.is_empty() {
+        defaults.to_vec()
+    } else {
+        tiers
+    }
+}
+
+#[cfg(test)]
+mod cascade_order_tests {
+    use super::{automatic_tier_order, resolved_tier_order, EngineTier};
+    use crate::config::{SearchCascadeTier, SearchConfig};
+    use std::collections::HashMap;
+
+    #[cfg(feature = "headless-search")]
+    #[test]
+    fn resolved_tier_order_uses_config_and_falls_back_to_defaults() {
+        assert_eq!(resolved_tier_order(None), automatic_tier_order().to_vec());
+
+        let config = SearchConfig {
+            timeout: 10,
+            cascade_order: Some(vec![
+                SearchCascadeTier::Api,
+                SearchCascadeTier::Http,
+                SearchCascadeTier::Api,
+            ]),
+            health: None,
+            engines: HashMap::new(),
+            headless: None,
+        };
+        assert_eq!(
+            resolved_tier_order(Some(&config)),
+            vec![EngineTier::Api, EngineTier::Http]
+        );
+
+        let empty = SearchConfig {
+            cascade_order: Some(Vec::new()),
+            ..config
+        };
+        assert_eq!(
+            resolved_tier_order(Some(&empty)),
+            automatic_tier_order().to_vec()
+        );
+    }
+}
+
 impl EngineTierPlan {
     pub fn is_empty(&self) -> bool {
         self.api.is_empty() && self.http.is_empty() && self.headless.is_empty()

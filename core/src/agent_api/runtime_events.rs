@@ -569,6 +569,9 @@ fn should_bridge_agent_event(event: &AgentEvent) -> bool {
             | AgentEvent::ConfirmationRequired { .. }
             | AgentEvent::ConfirmationReceived { .. }
             | AgentEvent::ConfirmationTimeout { .. }
+            // `ask_user` parks until the host answers. Dropping this event
+            // leaves the tool unanswered even though the question is registered.
+            | AgentEvent::UserQuestion { .. }
     )
 }
 

@@ -250,6 +250,152 @@ pub(super) async fn refresh_mcp_tools(agent: &Agent) -> Result<()> {
     Ok(())
 }
 
+/// Reconcile the agent's shared global MCP manager with the desired server set.
+///
+/// Enabled servers are registered and best-effort connected; disabled or absent
+/// servers are removed. The tool-definition cache is refreshed afterward so
+/// **new** sessions see the updated catalog. Live sessions must also call
+/// [`AgentSession::republish_inherited_mcp_tools`] to update their executors.
+pub(super) async fn sync_global_mcp_servers(
+    agent: &Agent,
+    servers: Vec<crate::mcp::McpServerConfig>,
+) -> Result<()> {
+    bail_if_agent_closed(agent)?;
+    let Some(manager) = agent.global_mcp.as_ref() else {
+        return Err(crate::error::CodeError::Config(
+            "Agent has no global MCP manager to sync".into(),
+        ));
+    };
+
+    let desired: std::collections::HashMap<String, crate::mcp::McpServerConfig> = servers
+        .into_iter()
+        .filter(|server| server.enabled)
+        .map(|server| (server.name.clone(), server))
+        .collect();
+
+    let current = manager.all_configs().await;
+    for existing in &current {
+        if !desired.contains_key(&existing.name) {
+            if let Err(error) = manager.remove_server(&existing.name).await {
+                tracing::warn!(
+                    server = %existing.name,
+                    error = %error,
+                    "Failed to remove MCP server during global sync"
+                );
+            }
+        }
+    }
+
+    for (name, config) in &desired {
+        let existing = current.iter().find(|item| item.name == *name);
+        let config_changed = existing.is_none_or(|item| !mcp_server_config_eq(item, config));
+        if config_changed {
+            if existing.is_some() {
+                if let Err(error) = manager.remove_server(name).await {
+                    tracing::warn!(
+                        server = %name,
+                        error = %error,
+                        "Failed to replace MCP server during global sync"
+                    );
+                }
+            }
+            manager.register_server(config.clone()).await;
+        }
+
+        let needs_connect = config_changed || !manager.is_connected(name).await;
+        if !needs_connect {
+            continue;
+        }
+        // User-initiated connector sync can wait longer than Agent bootstrap:
+        // the host already paid for the mutation round-trip and needs a real
+        // connect attempt, not a silent 3s skip. Timeouts still record status.
+        const MCP_SYNC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        if let Err(error) = manager
+            .connect_with_timeout(name, MCP_SYNC_CONNECT_TIMEOUT)
+            .await
+        {
+            tracing::warn!(
+                server = %name,
+                error = %error,
+                "Failed to connect MCP server during global sync"
+            );
+        }
+    }
+
+    refresh_mcp_tools(agent).await
+}
+
+fn mcp_server_config_eq(
+    left: &crate::mcp::McpServerConfig,
+    right: &crate::mcp::McpServerConfig,
+) -> bool {
+    left.name == right.name
+        && left.enabled == right.enabled
+        && left.tool_timeout_secs == right.tool_timeout_secs
+        && left.env == right.env
+        && transport_eq(&left.transport, &right.transport)
+        && oauth_eq(left.oauth.as_ref(), right.oauth.as_ref())
+}
+
+fn transport_eq(
+    left: &crate::mcp::McpTransportConfig,
+    right: &crate::mcp::McpTransportConfig,
+) -> bool {
+    use crate::mcp::McpTransportConfig;
+    match (left, right) {
+        (
+            McpTransportConfig::Stdio {
+                command: lc,
+                args: la,
+            },
+            McpTransportConfig::Stdio {
+                command: rc,
+                args: ra,
+            },
+        ) => lc == rc && la == ra,
+        (
+            McpTransportConfig::Http {
+                url: lu,
+                headers: lh,
+            },
+            McpTransportConfig::Http {
+                url: ru,
+                headers: rh,
+            },
+        )
+        | (
+            McpTransportConfig::StreamableHttp {
+                url: lu,
+                headers: lh,
+            },
+            McpTransportConfig::StreamableHttp {
+                url: ru,
+                headers: rh,
+            },
+        ) => lu == ru && lh == rh,
+        _ => false,
+    }
+}
+
+fn oauth_eq(
+    left: Option<&crate::mcp::OAuthConfig>,
+    right: Option<&crate::mcp::OAuthConfig>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.auth_url == right.auth_url
+                && left.token_url == right.token_url
+                && left.client_id == right.client_id
+                && left.client_secret == right.client_secret
+                && left.scopes == right.scopes
+                && left.redirect_uri == right.redirect_uri
+                && left.access_token == right.access_token
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn create_session(
     agent: &Agent,
     workspace: impl Into<String>,

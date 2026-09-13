@@ -240,6 +240,13 @@ pub struct SessionOptions {
     /// Extra directories to scan for skill files (*.md).
     /// Merged with any global `skill_dirs` from [`CodeConfig`].
     pub skill_dirs: Vec<PathBuf>,
+    /// Extra environment variables merged into Bash / sandbox command execution.
+    ///
+    /// Hosts use this to inject absolute tool paths (for example `A3S_BOX_CLI`
+    /// and a PATH prefix) without requiring the agent process to inherit a
+    /// full desktop environment. Values are applied on top of the sandbox
+    /// safe-env allowlist.
+    pub command_env: Option<HashMap<String, String>>,
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
     /// Whether active skill `allowed-tools` restrict ordinary session tool calls.
@@ -455,6 +462,22 @@ pub struct SessionOptions {
     ///
     /// When set, it replaces the built-in `HookEngine` for this session.
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
+    /// When true, writes bind a git worktree and never fall back to the source tree.
+    pub effect_isolation: bool,
+    /// Host-confirmed completion waivers bound to an effect digest.
+    pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Admitted plan digest for an implementation run. Empty means ordinary.
+    pub plan_run: crate::harness_loop::PlanRunAdmission,
+    /// Path-scoped instruction fragments. The AGENTS.md prefix stays stable.
+    pub path_rules: Vec<crate::path_instructions::PathRule>,
+    /// Opt-in read-only verifier. Default is off so local-code spends no extra model call.
+    pub verifier_enabled: bool,
+    /// Typed external observations bound into the run.
+    pub external_observations: Vec<crate::external_observation::ExternalObservationV1>,
+    /// Outcome ledger written by the promoting host.
+    pub outcome_ledger: crate::outcome_memory::OutcomeLedger,
+    /// A session that cannot write does not get an isolated worktree.
+    pub read_only_session: bool,
 }
 
 // ============================================================================
@@ -588,6 +611,9 @@ pub struct AgentSession {
     /// guard after `session()` has returned without ever putting a
     /// JS callable into `SessionOptions`.
     runtime_budget_guard: std::sync::Mutex<Option<Arc<dyn crate::budget::BudgetGuard>>>,
+    /// Promoting-host outcome ledger. When set, the next agent-loop build
+    /// uses it instead of the ledger copied at session construction.
+    runtime_outcome_ledger: std::sync::Mutex<Option<crate::outcome_memory::OutcomeLedger>>,
     /// Runtime override for specialty [`crate::prompts::AgentStyle`]. `None`
     /// means "no override" (use session-built `prompt_slots.style`). `Some(style)`
     /// replaces the style for the next agent-loop build so hosts can hot-switch

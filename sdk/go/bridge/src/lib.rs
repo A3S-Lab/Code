@@ -56,6 +56,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "agent_create",
     "agent_create_config",
     "agent_refresh_mcp_tools",
+    "agent_sync_global_mcp_servers",
+    "agent_global_mcp_status",
     "agent_task_scheduler_stats",
     "agent_task_scheduler_health",
     "agent_replace_session",
@@ -151,6 +153,22 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_add_mcp_server",
     "session_remove_mcp_server",
     "session_mcp_status",
+    "session_republish_inherited_mcp_tools",
+    "session_inherits_mcp_managers",
+    "session_review_store",
+    "session_review_scenario_ids",
+    "session_pending_review_findings",
+    "session_pending_review_findings_for_scenario",
+    "session_addressed_review_findings",
+    "session_upsert_review_finding",
+    "session_mark_review_addressed",
+    "session_accept_review_finding",
+    "session_reopen_review_finding",
+    "session_waive_review_finding",
+    "session_conceal_findings_address_turn",
+    "session_record_outcome",
+    "session_note_promoted_digest",
+    "session_outcome_ledger_snapshot",
     "session_has_memory",
     "session_remember_success",
     "session_remember_failure",
@@ -739,6 +757,23 @@ impl BridgeState {
                     .refresh_mcp_tools()
                     .await?;
                 Ok(json!({ "refreshed": true }))
+            }
+            "agent_sync_global_mcp_servers" => {
+                let servers: Vec<a3s_code_core::mcp::McpServerConfig> =
+                    required(&request.params, "servers")?;
+                self.agent(&required::<String>(&request.params, "agent_id")?)
+                    .await?
+                    .sync_global_mcp_servers(servers)
+                    .await?;
+                Ok(json!({ "synced": true }))
+            }
+            "agent_global_mcp_status" => {
+                let statuses = self
+                    .agent(&required::<String>(&request.params, "agent_id")?)
+                    .await?
+                    .global_mcp_status()
+                    .await;
+                encode(statuses)
             }
             "agent_task_scheduler_stats" => {
                 let stats = self
@@ -1646,6 +1681,123 @@ impl BridgeState {
                     .await;
                 encode(statuses)
             }
+            "session_republish_inherited_mcp_tools" => {
+                self.request_session(&request.params)
+                    .await?
+                    .republish_inherited_mcp_tools()
+                    .await?;
+                Ok(json!({ "republished": true }))
+            }
+            "session_inherits_mcp_managers" => {
+                let inherits = self
+                    .request_session(&request.params)
+                    .await?
+                    .inherits_mcp_managers();
+                Ok(json!({ "inherits": inherits }))
+            }
+            "session_review_store" => encode(
+                self.request_session(&request.params)
+                    .await?
+                    .session_review_store(),
+            ),
+            "session_review_scenario_ids" => {
+                let ids = self
+                    .request_session(&request.params)
+                    .await?
+                    .review_scenario_ids();
+                Ok(json!({ "ids": ids }))
+            }
+            "session_pending_review_findings" => encode(
+                self.request_session(&request.params)
+                    .await?
+                    .pending_session_review_findings(),
+            ),
+            "session_pending_review_findings_for_scenario" => {
+                let scenario_id: String = required(&request.params, "scenario_id")?;
+                encode(
+                    self.request_session(&request.params)
+                        .await?
+                        .pending_session_review_findings_for_scenario(&scenario_id),
+                )
+            }
+            "session_addressed_review_findings" => encode(
+                self.request_session(&request.params)
+                    .await?
+                    .addressed_session_review_findings(),
+            ),
+            "session_upsert_review_finding" => {
+                let finding: a3s_code_core::SessionReviewFindingV1 =
+                    required(&request.params, "finding")?;
+                self.request_session(&request.params)
+                    .await?
+                    .upsert_session_review_finding(finding)?;
+                Ok(json!({ "upserted": true }))
+            }
+            "session_mark_review_addressed" => {
+                let finding_id: String = required(&request.params, "finding_id")?;
+                let run_id: String = required(&request.params, "run_id")?;
+                let at_ms: u64 = required(&request.params, "at_ms")?;
+                self.request_session(&request.params)
+                    .await?
+                    .mark_session_review_addressed(&finding_id, run_id, at_ms)?;
+                Ok(json!({ "addressed": true }))
+            }
+            "session_accept_review_finding" => {
+                let finding_id: String = required(&request.params, "finding_id")?;
+                let review_id: String = required(&request.params, "review_id")?;
+                let at_ms: u64 = required(&request.params, "at_ms")?;
+                self.request_session(&request.params)
+                    .await?
+                    .accept_session_review_finding(&finding_id, review_id, at_ms)?;
+                Ok(json!({ "accepted": true }))
+            }
+            "session_reopen_review_finding" => {
+                let finding_id: String = required(&request.params, "finding_id")?;
+                let reason: String = required(&request.params, "reason")?;
+                let at_ms: u64 = required(&request.params, "at_ms")?;
+                self.request_session(&request.params)
+                    .await?
+                    .reopen_session_review_finding(&finding_id, reason, at_ms)?;
+                Ok(json!({ "reopened": true }))
+            }
+            "session_waive_review_finding" => {
+                let finding_id: String = required(&request.params, "finding_id")?;
+                let at_ms: u64 = required(&request.params, "at_ms")?;
+                self.request_session(&request.params)
+                    .await?
+                    .waive_session_review_finding(&finding_id, at_ms)?;
+                Ok(json!({ "waived": true }))
+            }
+            "session_conceal_findings_address_turn" => {
+                let concealed = self
+                    .request_session(&request.params)
+                    .await?
+                    .conceal_latest_findings_address_turn();
+                Ok(json!({ "concealed": concealed }))
+            }
+            "session_record_outcome" => {
+                let outcome = parse_outcome_kind(required::<String>(&request.params, "outcome")?)?;
+                let change_digest: String = required(&request.params, "change_digest")?;
+                let constraint: String = required(&request.params, "constraint")?;
+                let stored = self
+                    .request_session(&request.params)
+                    .await?
+                    .record_outcome(outcome, &change_digest, &constraint)?;
+                Ok(json!({ "stored": stored }))
+            }
+            "session_note_promoted_digest" => {
+                let digest: String = required(&request.params, "digest")?;
+                let stored = self
+                    .request_session(&request.params)
+                    .await?
+                    .note_promoted_digest(&digest)?;
+                Ok(json!({ "stored": stored }))
+            }
+            "session_outcome_ledger_snapshot" => encode(
+                self.request_session(&request.params)
+                    .await?
+                    .outcome_ledger_snapshot(),
+            ),
             "session_has_memory" => {
                 let available = self
                     .request_session(&request.params)
@@ -3097,6 +3249,21 @@ struct BridgeSessionOptions {
     trajectory: Option<BridgeTrajectoryConfig>,
     inline_skills: Vec<BridgeInlineSkill>,
     prompt_slots: Option<BridgePromptSlots>,
+    command_env: Option<HashMap<String, String>>,
+    completion_waivers: Vec<a3s_code_core::harness_loop::CompletionWaiverV1>,
+    effect_isolation: Option<bool>,
+    external_observations: Vec<a3s_code_core::external_observation::ExternalObservationV1>,
+    outcome_ledger: Option<a3s_code_core::outcome_memory::OutcomeLedger>,
+    path_rules: Vec<BridgePathRule>,
+    plan_run: Option<a3s_code_core::harness_loop::PlanRunAdmission>,
+    read_only_session: Option<bool>,
+    verifier_enabled: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BridgePathRule {
+    glob: String,
+    text: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -3301,6 +3468,41 @@ impl BridgeSessionOptions {
         if let Some(value) = self.auto_save {
             options = options.with_auto_save(value);
         }
+        if let Some(env) = self.command_env {
+            options = options.with_command_env(env);
+        }
+        if !self.completion_waivers.is_empty() {
+            options = options.with_completion_waivers(self.completion_waivers);
+        }
+        if let Some(enabled) = self.effect_isolation {
+            options = options.with_effect_isolation(enabled);
+        }
+        if !self.external_observations.is_empty() {
+            options = options.with_external_observations(self.external_observations);
+        }
+        if let Some(ledger) = self.outcome_ledger {
+            options = options.with_outcome_ledger(ledger);
+        }
+        if !self.path_rules.is_empty() {
+            options = options.with_path_rules(
+                self.path_rules
+                    .into_iter()
+                    .map(|rule| a3s_code_core::path_instructions::PathRule {
+                        glob: rule.glob,
+                        text: rule.text,
+                    })
+                    .collect(),
+            );
+        }
+        if let Some(plan) = self.plan_run {
+            options = options.with_plan_run(plan);
+        }
+        if let Some(read_only) = self.read_only_session {
+            options = options.with_read_only_session(read_only);
+        }
+        if let Some(enabled) = self.verifier_enabled {
+            options = options.with_verifier(enabled);
+        }
         if let Some(value) = self.max_parse_retries {
             options = options.with_parse_retries(value);
         }
@@ -3443,6 +3645,20 @@ fn optional<T: DeserializeOwned>(params: &Value, key: &str) -> Result<Option<T>,
             .map_err(|error| {
                 BridgeFailure::new("INVALID_REQUEST", format!("invalid field {key:?}: {error}"))
             }),
+    }
+}
+
+fn parse_outcome_kind(
+    outcome: String,
+) -> Result<a3s_code_core::outcome_memory::OutcomeKind, BridgeFailure> {
+    match outcome.as_str() {
+        "accept" => Ok(a3s_code_core::outcome_memory::OutcomeKind::Accept),
+        "revert" => Ok(a3s_code_core::outcome_memory::OutcomeKind::Revert),
+        "reject" => Ok(a3s_code_core::outcome_memory::OutcomeKind::Reject),
+        other => Err(BridgeFailure::new(
+            "INVALID_REQUEST",
+            format!("outcome must be accept, revert, or reject; got {other}"),
+        )),
     }
 }
 

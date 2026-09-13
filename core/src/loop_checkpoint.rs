@@ -45,6 +45,40 @@ pub struct LoopConvergenceState {
     pub last_incomplete_response_hash: Option<String>,
     #[serde(default)]
     pub incomplete_response_stalled: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gate_continuation_count: u32,
+    #[serde(default, skip_serializing_if = "is_default_mutation_ledger")]
+    pub mutations: crate::harness_loop::MutationLedger,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_observations: Vec<crate::external_observation::ExternalObservationV1>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub verifier_spent: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub next_turn_is_verifier: bool,
+    /// Git baseline from run start. A resumed process deltas against this
+    /// instead of a fresh snapshot, so an unobserved write still opens the gate.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub workspace_watch_bound: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_porcelain: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_head: Option<String>,
+    /// Length and mtime of porcelain paths at run start. A later write that
+    /// keeps the same status line is still a mutation on resume.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) workspace_stamps: Vec<crate::porcelain::ContentStamp>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_default_mutation_ledger(ledger: &crate::harness_loop::MutationLedger) -> bool {
+    ledger == &crate::harness_loop::MutationLedger::default()
 }
 
 /// Snapshot of the agent loop at the boundary between tool rounds.
@@ -258,7 +292,12 @@ mod tests {
         let mut cp = sample("run-1", 3);
         cp.convergence.continuation_count = 2;
         cp.convergence.recent_tool_signatures = vec!["read:deadbeef => ok".to_string()];
+        cp.convergence.gate_continuation_count = 1;
+        cp.convergence.verifier_spent = true;
+        cp.convergence.workspace_watch_bound = true;
         let json = serde_json::to_string(&cp).unwrap();
+        assert!(json.contains("\"gate_continuation_count\":1"));
+        assert!(!json.contains("\"open_observations\""));
         let back: LoopCheckpoint = serde_json::from_str(&json).unwrap();
         assert_eq!(back.run_id, "run-1");
         assert_eq!(back.turn, 3);

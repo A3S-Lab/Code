@@ -20,6 +20,18 @@ pub(super) struct ExecutionLoopState {
     guarded_duplicate_count: u32,
     last_incomplete_response_hash: Option<String>,
     incomplete_response_stalled: bool,
+    pub(super) gate_continuation_count: u32,
+    pub(super) mutations: crate::harness_loop::MutationLedger,
+    pub(super) open_observations: Vec<crate::external_observation::ExternalObservationV1>,
+    pub(super) targeted_paths: Vec<String>,
+    pub(super) verifier_spent: bool,
+    pub(super) next_turn_is_verifier: bool,
+    pub(super) run_watch: Option<crate::porcelain::RunWatch>,
+    pub(super) run_watch_is_baseline: bool,
+    workspace_watch_bound: bool,
+    workspace_porcelain: Option<Vec<String>>,
+    workspace_head: Option<String>,
+    workspace_stamps: Vec<crate::porcelain::ContentStamp>,
     execution_start: Instant,
 }
 
@@ -72,8 +84,60 @@ impl ExecutionLoopState {
             guarded_duplicate_count: convergence.guarded_duplicate_count,
             last_incomplete_response_hash: convergence.last_incomplete_response_hash,
             incomplete_response_stalled: convergence.incomplete_response_stalled,
+            gate_continuation_count: convergence.gate_continuation_count,
+            mutations: convergence.mutations,
+            open_observations: convergence.open_observations,
+            targeted_paths: Vec::new(),
+            verifier_spent: convergence.verifier_spent,
+            next_turn_is_verifier: convergence.next_turn_is_verifier,
+            run_watch: None,
+            run_watch_is_baseline: false,
+            workspace_watch_bound: convergence.workspace_watch_bound,
+            workspace_porcelain: convergence.workspace_porcelain,
+            workspace_head: convergence.workspace_head,
+            workspace_stamps: convergence.workspace_stamps,
             execution_start: Instant::now(),
         }
+    }
+
+    pub(super) async fn bind_run_watch(&mut self, workspace: &std::path::Path) {
+        let watch = crate::porcelain::RunWatch::start(workspace).await;
+        if !self.workspace_watch_bound {
+            self.workspace_porcelain = watch.porcelain();
+            self.workspace_head = watch.head();
+            self.workspace_stamps = watch.stamps();
+            self.workspace_watch_bound = true;
+            self.run_watch_is_baseline = true;
+        }
+        self.run_watch = Some(watch);
+    }
+
+    pub(super) async fn unseen_workspace_paths(
+        &self,
+        workspace: &std::path::Path,
+    ) -> crate::porcelain::PathDelta {
+        let mut observed = if self.workspace_watch_bound {
+            crate::porcelain::baseline_delta(
+                workspace,
+                self.workspace_porcelain.clone(),
+                self.workspace_head.clone(),
+                self.workspace_stamps.clone(),
+            )
+            .await
+        } else {
+            crate::porcelain::PathDelta::default()
+        };
+        if observed.paths.is_empty() && !observed.incomplete && self.run_watch_is_baseline {
+            if let Some(watch) = &self.run_watch {
+                let files = watch.file_changes(workspace);
+                if files.incomplete {
+                    observed.incomplete = true;
+                } else {
+                    observed.paths = files.paths;
+                }
+            }
+        }
+        observed
     }
 
     pub(super) fn next_turn(&mut self) -> usize {
@@ -122,6 +186,15 @@ impl ExecutionLoopState {
             guarded_duplicate_count: self.guarded_duplicate_count,
             last_incomplete_response_hash: self.last_incomplete_response_hash.clone(),
             incomplete_response_stalled: self.incomplete_response_stalled,
+            gate_continuation_count: self.gate_continuation_count,
+            mutations: self.mutations.clone(),
+            open_observations: self.open_observations.clone(),
+            verifier_spent: self.verifier_spent,
+            next_turn_is_verifier: self.next_turn_is_verifier,
+            workspace_watch_bound: self.workspace_watch_bound,
+            workspace_porcelain: self.workspace_porcelain.clone(),
+            workspace_head: self.workspace_head.clone(),
+            workspace_stamps: self.workspace_stamps.clone(),
         }
     }
 
@@ -286,7 +359,21 @@ impl ExecutionLoopState {
             usage: self.total_usage,
             tool_calls_count: self.tool_calls_count,
             verification_reports: self.verification_reports,
+            completion: crate::harness_loop::CompletionTerminal::Narrative,
+            run_admission: "ordinary".to_string(),
         }
+    }
+
+    pub(super) fn finish_with(
+        self,
+        text: String,
+        completion: crate::harness_loop::CompletionTerminal,
+        run_admission: String,
+    ) -> AgentResult {
+        let mut result = self.finish(text);
+        result.completion = completion;
+        result.run_admission = run_admission;
+        result
     }
 
     pub(super) fn finish_failed(self, error: anyhow::Error) -> anyhow::Error {
@@ -324,6 +411,8 @@ impl ExecutionLoopState {
             usage: self.total_usage,
             tool_calls_count: self.tool_calls_count,
             verification_reports: self.verification_reports,
+            completion: crate::harness_loop::CompletionTerminal::Narrative,
+            run_admission: "ordinary".to_string(),
         }
     }
 
@@ -337,6 +426,287 @@ impl ExecutionLoopState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn baseline_sees_an_unpublished_write_and_ignores_harness_metadata() {
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(workspace.path()).await;
+        std::fs::write(workspace.path().join("guest.txt"), "hello\n").unwrap();
+        std::fs::create_dir_all(workspace.path().join(".a3s")).unwrap();
+        std::fs::write(workspace.path().join(".a3s/note"), "harness\n").unwrap();
+        std::fs::create_dir_all(workspace.path().join(".a3s-code/grep-trigram")).unwrap();
+        std::fs::write(
+            workspace.path().join(".a3s-code/grep-trigram/stamp.txt"),
+            "index\n",
+        )
+        .unwrap();
+        let paths = state.unseen_workspace_paths(workspace.path()).await.paths;
+        assert!(
+            paths.iter().any(|path| path == "guest.txt"),
+            "baseline missed an unpublished write: {paths:?}"
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains(".a3s")),
+            "harness metadata was treated as source: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_keeps_every_unpublished_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(workspace.path()).await;
+        for index in 0..33 {
+            std::fs::write(workspace.path().join(format!("f{index:02}.txt")), "x\n").unwrap();
+        }
+        let observed = state.unseen_workspace_paths(workspace.path()).await;
+        assert!(
+            !observed.incomplete,
+            "a readable git status is a complete observation"
+        );
+        assert!(
+            observed.paths.iter().any(|path| path == "f32.txt"),
+            "suffix past the old 32-path cap was dropped: {:?}",
+            observed.paths
+        );
+        assert_eq!(observed.paths.len(), 33, "{:?}", observed.paths);
+    }
+
+    #[tokio::test]
+    async fn baseline_sees_a_quoted_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(workspace.path()).await;
+        std::fs::write(workspace.path().join("my file.txt"), "x\n").unwrap();
+        std::fs::write(workspace.path().join("说明.md"), "x\n").unwrap();
+        let observed = state.unseen_workspace_paths(workspace.path()).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|path| path == "my file.txt"),
+            "{:?}",
+            observed.paths
+        );
+        assert!(
+            observed.paths.iter().any(|path| path == "说明.md"),
+            "{:?}",
+            observed.paths
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_sees_a_rewrite_of_an_already_untracked_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(workspace.path().join("guest.txt"), "one\n").unwrap();
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(workspace.path()).await;
+        std::fs::write(workspace.path().join("guest.txt"), "one\ntwo\n").unwrap();
+        let observed = state.unseen_workspace_paths(workspace.path()).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|path| path == "guest.txt"),
+            "a stable porcelain line hid a rewrite: {:?}",
+            observed.paths
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_sees_a_mode_change_on_an_already_dirty_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "{args:?}"
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "tests@a3s.local"]);
+        git(&["config", "user.name", "A3S Tests"]);
+        std::fs::write(root.join("guest.txt"), "one\n").unwrap();
+        git(&["add", "guest.txt"]);
+        git(&["commit", "-m", "init"]);
+        std::fs::write(root.join("guest.txt"), "two\n").unwrap();
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(root).await;
+        let path = root.join("guest.txt");
+        let mut permissions = std::fs::symlink_metadata(&path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o111);
+        }
+        #[cfg(not(unix))]
+        {
+            permissions.set_readonly(true);
+        }
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let observed = state.unseen_workspace_paths(root).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|path| path == "guest.txt"),
+            "a mode change on a dirty file was not a mutation: {:?}",
+            observed.paths
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_sees_a_write_git_status_hides() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "{args:?}"
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "tests@a3s.local"]);
+        git(&["config", "user.name", "A3S Tests"]);
+        std::fs::write(root.join("skipped.txt"), "one\n").unwrap();
+        std::fs::write(root.join("assumed.txt"), "one\n").unwrap();
+        git(&["add", "skipped.txt", "assumed.txt"]);
+        git(&["commit", "-m", "init"]);
+        git(&["update-index", "--skip-worktree", "skipped.txt"]);
+        git(&["update-index", "--assume-unchanged", "assumed.txt"]);
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(root).await;
+        std::fs::write(root.join("skipped.txt"), "two\n").unwrap();
+        std::fs::write(root.join("assumed.txt"), "two\n").unwrap();
+        let observed = state.unseen_workspace_paths(root).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|path| path == "skipped.txt"),
+            "skip-worktree write was not a mutation: {:?}",
+            observed.paths
+        );
+        assert!(
+            observed.paths.iter().any(|path| path == "assumed.txt"),
+            "assume-unchanged write was not a mutation: {:?}",
+            observed.paths
+        );
+    }
+
+    #[tokio::test]
+    async fn nongit_baseline_sees_an_unpublished_write() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(workspace.path()).await;
+        std::fs::write(workspace.path().join("guest.txt"), "hello\n").unwrap();
+        let observed = state.unseen_workspace_paths(workspace.path()).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert_eq!(observed.paths, vec!["guest.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn nongit_baseline_sees_a_mode_change_that_preserves_mtime() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let path = root.join("guest.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(root).await;
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
+        let mut permissions = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() ^ 0o111);
+        }
+        #[cfg(not(unix))]
+        {
+            permissions.set_readonly(true);
+        }
+        std::fs::set_permissions(&path, permissions).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let observed = state.unseen_workspace_paths(root).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|entry| entry == "guest.txt"),
+            "a mode change that preserved mtime was not a mutation: {:?}",
+            observed.paths
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nongit_baseline_sees_a_new_symlink() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        std::fs::write(root.join("guest.txt"), "hello\n").unwrap();
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(root).await;
+        std::os::unix::fs::symlink("guest.txt", root.join("alias")).unwrap();
+        let observed = state.unseen_workspace_paths(root).await;
+        assert!(!observed.incomplete, "{observed:?}");
+        assert!(
+            observed.paths.iter().any(|entry| entry == "alias"),
+            "a new symlink was not a mutation: {:?}",
+            observed.paths
+        );
+    }
+
+    #[tokio::test]
+    async fn nongit_walk_past_the_file_cap_is_incomplete_not_an_empty_mutation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        for index in 0..4_096 {
+            std::fs::write(root.join(format!("f{index:04}.txt")), "x").unwrap();
+        }
+        let mut state = ExecutionLoopState::new(&[]);
+        state.bind_run_watch(root).await;
+        std::fs::write(root.join("overflow.txt"), "hidden\n").unwrap();
+        let observed = state.unseen_workspace_paths(root).await;
+        assert!(
+            observed.incomplete,
+            "a truncated non-git walk was treated as a complete observation: {observed:?}"
+        );
+        assert!(
+            observed.paths.is_empty(),
+            "a truncated walk must not invent paths: {:?}",
+            observed.paths
+        );
+    }
 
     #[test]
     fn finish_interrupted_keeps_user_message_and_alternates() {

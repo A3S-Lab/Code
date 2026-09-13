@@ -15,7 +15,7 @@ asset; musl packages include an explicit `MOLI_UNAVAILABLE` marker because the
 Moli release has no musl build. The Intel binding is built with a macOS 12
 deployment target and runs on macOS 12 or later.
 
-Since v8.1.0, the package pins `a3s-search` v3.1.0 and selects Moli as the default
+Since v8.1.0, the package pins `a3s-search` v3.1.4 and selects Moli as the default
 JavaScript-capable search backend. `sdkCapabilities()` returns the complete
 product capability inventory, while `moliRuntimeInfo()` and `ensureMoli()`
 expose read-only diagnostics and verified shared-cache provisioning. Multiple

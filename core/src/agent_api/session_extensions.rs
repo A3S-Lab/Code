@@ -380,6 +380,73 @@ impl<'a> SessionExtensionRuntime<'a> {
         Ok(())
     }
 
+    /// Align the session tool executor with the current inherited MCP managers.
+    ///
+    /// Session-local ownership (from [`Self::add_mcp_server`]) is preserved.
+    /// Inherited tools that disappeared from every manager are unregistered;
+    /// newly available tools are registered when absent.
+    pub(super) async fn republish_inherited_mcp_tools(&self) -> Result<()> {
+        let _mutation = self.extension_mutation().await?;
+
+        let owned_servers: std::collections::HashSet<String> = self
+            .session
+            .close_handle
+            .mcp_tool_ownership
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .server_names()
+            .into_iter()
+            .collect();
+
+        let mut desired = BTreeMap::new();
+        for manager in &self.session.inherited_mcp_managers {
+            for config in manager.all_configs().await {
+                let tools = manager.get_server_tools(&config.name).await;
+                for tool in
+                    crate::mcp::tools::create_mcp_tools(&config.name, tools, Arc::clone(manager))
+                {
+                    desired.insert(tool.name().to_string(), tool);
+                }
+            }
+        }
+
+        let current_mcp_tools: Vec<String> = self
+            .session
+            .tool_executor
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .filter(|name| name.starts_with("mcp__"))
+            .collect();
+
+        for name in &current_mcp_tools {
+            let Some(server) = mcp_server_name_from_tool(name) else {
+                continue;
+            };
+            if owned_servers.contains(server) {
+                continue;
+            }
+            if !desired.contains_key(name) {
+                self.session.tool_executor.unregister_dynamic_tool(name);
+            }
+        }
+
+        for (name, tool) in desired {
+            let Some(server) = mcp_server_name_from_tool(&name) else {
+                continue;
+            };
+            if owned_servers.contains(server) {
+                continue;
+            }
+            self.session
+                .tool_executor
+                .register_dynamic_tool_if_absent(tool);
+        }
+
+        self.session.refresh_task_delegation_tools();
+        Ok(())
+    }
+
     async fn extension_mutation(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
         let guard = self.session.close_handle.extension_mutation.lock().await;
         if self.session.close_handle.is_closed() {
@@ -447,11 +514,36 @@ impl<'a> SessionExtensionRuntime<'a> {
     }
 }
 
+/// Parse `mcp__<server>__<tool>` into the server segment.
+fn mcp_server_name_from_tool(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, _) = rest.split_once("__")?;
+    if server.is_empty() {
+        None
+    } else {
+        Some(server)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::{ToolContext, ToolOutput};
     use async_trait::async_trait;
+
+    #[test]
+    fn parses_mcp_tool_server_names() {
+        assert_eq!(
+            mcp_server_name_from_tool("mcp__github__create_issue"),
+            Some("github")
+        );
+        assert_eq!(
+            mcp_server_name_from_tool("mcp__local_fs__read_file"),
+            Some("local_fs")
+        );
+        assert_eq!(mcp_server_name_from_tool("bash"), None);
+        assert_eq!(mcp_server_name_from_tool("mcp__incomplete"), None);
+    }
 
     struct NamedTool(String);
 

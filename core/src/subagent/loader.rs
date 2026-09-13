@@ -221,14 +221,28 @@ pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
 /// Load all agent definitions from a directory
 ///
 /// Scans for *.yaml and *.md files and parses them as agent definitions.
+/// A symlink whose resolved path leaves this directory is not loaded.
 /// Invalid files are logged and skipped.
 pub fn load_agents_from_dir(dir: &Path) -> Vec<AgentDefinition> {
+    let Ok(root) = std::fs::canonicalize(dir) else {
+        tracing::warn!("Failed to resolve agent directory: {}", dir.display());
+        return Vec::new();
+    };
     let mut agents = Vec::new();
-    load_agents_from_dir_inner(dir, &mut agents);
+    load_agents_from_dir_inner(&root, &root, &mut agents);
     agents
 }
 
-fn load_agents_from_dir_inner(dir: &Path, agents: &mut Vec<AgentDefinition>) {
+fn stays_in_agent_root(root: &Path, path: &Path) -> bool {
+    std::fs::canonicalize(path)
+        .map(|canonical| canonical.starts_with(root))
+        .unwrap_or(false)
+}
+
+fn load_agents_from_dir_inner(dir: &Path, root: &Path, agents: &mut Vec<AgentDefinition>) {
+    if !stays_in_agent_root(root, dir) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         tracing::warn!("Failed to read agent directory: {}", dir.display());
         return;
@@ -236,9 +250,12 @@ fn load_agents_from_dir_inner(dir: &Path, agents: &mut Vec<AgentDefinition>) {
 
     for entry in entries.flatten() {
         let path = entry.path();
+        if !stays_in_agent_root(root, &path) {
+            continue;
+        }
 
         if path.is_dir() {
-            load_agents_from_dir_inner(&path, agents);
+            load_agents_from_dir_inner(&path, root, agents);
             continue;
         }
         if !path.is_file() {

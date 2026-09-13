@@ -319,6 +319,83 @@ fn test_load_from_dir_recurses_into_nested_skill_dirs() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn test_load_from_dir_tolerates_symlink_cycles() -> anyhow::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let left = temp_dir.path().join("left");
+    let right = temp_dir.path().join("right");
+    std::fs::create_dir_all(&left)?;
+    std::fs::create_dir_all(&right)?;
+
+    std::fs::write(
+        left.join("SKILL.md"),
+        "---\nname: cycle-safe\ndescription: Survives symlink cycles\nkind: instruction\n---\n# Cycle Safe\n",
+    )?;
+
+    std::os::unix::fs::symlink(&right, left.join("loop"))?;
+    std::os::unix::fs::symlink(&left, right.join("loop"))?;
+
+    let registry = SkillRegistry::new();
+    let loaded = registry.load_from_dir(temp_dir.path())?;
+
+    assert_eq!(loaded, 1);
+    assert!(registry.get("cycle-safe").is_some());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_load_from_dir_does_not_follow_symlinks_outside_the_skill_root() -> anyhow::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let skill_root = temp_dir.path().join("skills");
+    let outside = temp_dir.path().join("outside");
+    std::fs::create_dir_all(skill_root.join("inside"))?;
+    std::fs::create_dir_all(skill_root.join("nested"))?;
+    std::fs::create_dir_all(&outside)?;
+
+    std::fs::write(
+        skill_root.join("inside").join("SKILL.md"),
+        "---\nname: local-skill\ndescription: Stays in the skill root\nkind: instruction\n---\n# Local\n",
+    )?;
+    std::fs::write(
+        outside.join("SKILL.md"),
+        "---\nname: outside-dir-skill\ndescription: Must not be loaded\nkind: instruction\n---\nOUTSIDE_DIR_TOKEN\n",
+    )?;
+    std::fs::write(
+        outside.join("leak.md"),
+        "---\nname: outside-file-skill\ndescription: Must not be loaded\nkind: instruction\n---\nOUTSIDE_FILE_TOKEN\n",
+    )?;
+    std::fs::create_dir_all(skill_root.join("alias"))?;
+    std::os::unix::fs::symlink(&outside, skill_root.join("escape"))?;
+    std::os::unix::fs::symlink(
+        outside.join("leak.md"),
+        skill_root.join("nested").join("leak.md"),
+    )?;
+    std::os::unix::fs::symlink(
+        outside.join("SKILL.md"),
+        skill_root.join("alias").join("SKILL.md"),
+    )?;
+
+    let registry = SkillRegistry::new();
+    let loaded = registry.load_from_dir(&skill_root)?;
+
+    assert_eq!(loaded, 1, "only the in-root skill is registered");
+    assert!(registry.get("local-skill").is_some());
+    assert!(registry.get("outside-dir-skill").is_none());
+    assert!(registry.get("outside-file-skill").is_none());
+    let bodies = registry
+        .all()
+        .into_iter()
+        .map(|skill| skill.content.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        bodies.iter().all(|body| !body.contains("OUTSIDE_DIR_TOKEN") && !body.contains("OUTSIDE_FILE_TOKEN")),
+        "skill bodies leaked outside content: {bodies:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_load_from_dir_accepts_yaml_list_allowed_tools() -> anyhow::Result<()> {
     let temp_dir = TempDir::new()?;

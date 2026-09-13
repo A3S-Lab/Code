@@ -469,6 +469,33 @@ impl ToolInvoker for ScopedToolInvoker {
         };
         debug_assert!(lifecycle.transition(ToolInvocationState::Admitted).is_ok());
         let cancellation = invocation_ctx.cancellation_token();
+        if ctx.verifier_read_only() {
+            let declared_read_only = self
+                .agent
+                .tool_executor
+                .registry()
+                .capabilities(&invocation.name, &invocation.args)
+                .is_some_and(|capabilities| capabilities.read_only);
+            if !crate::read_only_verifier::nested_call_allowed(
+                &invocation.name,
+                &invocation.args,
+                declared_read_only,
+            ) {
+                lifecycle.terminal(ToolInvocationTerminal::Failed);
+                let result = self
+                    .finish(
+                        &invocation,
+                        started,
+                        NormalizedToolResult::denied(
+                            "verifier role cannot mutate the workspace".to_string(),
+                        ),
+                        &cancellation,
+                    )
+                    .await;
+                self.emit_nested_tool_end(&invocation, &result).await;
+                return result;
+            }
+        }
         if let Err(message) = self
             .agent
             .tool_executor
@@ -604,5 +631,85 @@ impl AgentLoop {
             .with_host_direct_policy(host_direct_policy)
             .with_tool_invoker(Arc::clone(&invoker));
         invoker.invoke(invocation, &ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::MockLlmClient;
+    use super::super::{AgentConfig, AgentLoop};
+    use crate::tools::{Tool, ToolContext, ToolExecutor, ToolOutput};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct MarkerWrite;
+
+    #[async_trait::async_trait]
+    impl Tool for MarkerWrite {
+        fn name(&self) -> &str {
+            "marker_write"
+        }
+
+        fn description(&self) -> &str {
+            "writes a marker file"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> anyhow::Result<ToolOutput> {
+            std::fs::write(ctx.workspace.join("marker.txt"), "written\n")?;
+            Ok(ToolOutput::success("wrote marker"))
+        }
+    }
+
+    fn program_args() -> serde_json::Value {
+        serde_json::json!({
+            "type": "script",
+            "language": "javascript",
+            "source": "async function run(ctx) { return await ctx.tool('marker_write', {}); }",
+            "allowed_tools": ["marker_write"]
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verifier_program_cannot_write_through_a_nested_tool() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("marker.txt");
+        let executor = Arc::new(ToolExecutor::new(root.path().to_string_lossy().to_string()));
+        executor.register_dynamic_tool(Arc::new(MarkerWrite));
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            executor,
+            ToolContext::new(root.path().to_path_buf()),
+            AgentConfig::default(),
+        );
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let ctx = ToolContext::new(PathBuf::from(root.path())).with_verifier_read_only(true);
+        let result = agent
+            .invoke_host_tool(
+                crate::tools::ToolInvocation::host_direct(
+                    "host-program",
+                    "program",
+                    program_args(),
+                ),
+                "verifier-program",
+                &None,
+                &cancellation,
+                &ctx,
+            )
+            .await;
+        assert!(
+            result.output.contains("verifier role cannot mutate"),
+            "{}",
+            result.output
+        );
+        assert!(!result.output.contains("wrote marker"), "{}", result.output);
+        assert!(!marker.exists(), "nested write landed: {}", result.output);
     }
 }

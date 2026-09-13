@@ -44,6 +44,8 @@ impl From<PySearchEngineConfig> for RustSearchEngineConfig {
             enabled: config.enabled,
             weight: config.weight,
             timeout: config.timeout,
+            api_key: None,
+            project: None,
         }
     }
 }
@@ -255,6 +257,7 @@ impl From<PySearchConfig> for RustSearchConfig {
         Self {
             timeout: config.timeout,
             health: config.health.map(Into::into),
+            cascade_order: None,
             engines: config
                 .engines
                 .into_iter()

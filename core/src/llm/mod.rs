@@ -11,6 +11,7 @@ pub mod factory;
 pub mod http;
 pub mod openai;
 pub mod structured;
+mod text_tool_calls;
 mod token_estimation;
 mod types;
 pub mod zhipu;
@@ -31,6 +32,7 @@ pub use http::{
     HttpClientError, HttpMetricsCallback, HttpMetricsRecord, HttpResponse, StreamingHttpResponse,
 };
 pub use openai::OpenAiClient;
+pub(crate) use text_tool_calls::recover_text_tool_calls;
 pub(crate) use token_estimation::{
     estimate_message_tokens, estimate_prompt_tokens, estimate_tool_result_contents_tokens,
 };

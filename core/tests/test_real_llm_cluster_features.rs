@@ -263,8 +263,8 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
                             text: "working".to_string(),
                         }],
                         reasoning_content: None,
-                    transcript_text: None,
-                    transcript_visibility: Default::default(),
+                        transcript_text: None,
+                        transcript_visibility: Default::default(),
                     },
                 ],
                 total_usage: TokenUsage {

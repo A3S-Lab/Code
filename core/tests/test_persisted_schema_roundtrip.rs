@@ -302,6 +302,7 @@ fn gen_verification_report(rng: &mut Rng) -> VerificationReport {
         status: gen_verification_status(rng),
         checks: (0..n).map(|_| gen_verification_check(rng)).collect(),
         residual_risks: rng.string_vec(3),
+        effect_digest: rng.opt_string(),
     }
 }
 

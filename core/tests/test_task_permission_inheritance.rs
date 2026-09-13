@@ -150,10 +150,9 @@ async fn test_task_executor_child_run_inherits_permissions() {
         .await
         .expect("TaskExecutor::execute should not return Err");
 
-    // The child run should succeed — no MissingConfirmationManager denial.
     assert!(
-        result.success,
-        "child run should succeed with inherited permissions. Output: {}",
+        result.output.contains("completion gate:"),
+        "an inherited write was treated as narrative success or denied: {}",
         result.output
     );
     assert!(
@@ -235,8 +234,8 @@ async fn test_parallel_task_executor_inherits_permissions() {
 
     for result in &results {
         assert!(
-            result.success,
-            "parallel child run should succeed. Output: {}",
+            result.output.contains("completion gate:"),
+            "a parallel inherited write was treated as narrative success or denied: {}",
             result.output
         );
         assert!(
@@ -252,8 +251,8 @@ async fn test_parallel_task_executor_inherits_permissions() {
     let b_path = workspace.path().join("b.txt");
 
     assert!(
-        a_path.exists() || b_path.exists(),
-        "at least one output file should exist. Results: {:?}",
+        a_path.exists() && b_path.exists(),
+        "both parallel writes should land. Results: {:?}",
         results.iter().map(|r| &r.output).collect::<Vec<_>>()
     );
 

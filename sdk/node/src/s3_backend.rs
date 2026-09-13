@@ -77,4 +77,3 @@ pub(super) fn s3_config_to_core(js: &JsS3BackendConfig) -> a3s_code_core::S3Back
     }
     cfg
 }
-

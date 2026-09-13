@@ -414,6 +414,35 @@ func (agent *Agent) RefreshMCPTools(ctx context.Context) error {
 	return agent.runtime.Request(ctx, op, map[string]any{"agent_id": agent.id}, nil)
 }
 
+// SyncGlobalMCPServers hot-syncs the shared global MCP manager to match servers.
+// Enabled entries are registered and best-effort connected; disabled or omitted
+// entries are removed. New sessions see the refreshed catalog.
+func (agent *Agent) SyncGlobalMCPServers(ctx context.Context, servers []MCPServerConfig) error {
+	const op = "agent_sync_global_mcp_servers"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return err
+	}
+	if servers == nil {
+		servers = []MCPServerConfig{}
+	}
+	return agent.runtime.Request(ctx, op, map[string]any{
+		"agent_id": agent.id,
+		"servers":  servers,
+	}, nil)
+}
+
+// GlobalMCPStatus returns live status for servers on this agent's shared
+// global MCP manager. Empty when the agent has no global manager.
+func (agent *Agent) GlobalMCPStatus(ctx context.Context) (map[string]MCPServerStatus, error) {
+	const op = "agent_global_mcp_status"
+	if err := validateAgent(agent, ctx, op); err != nil {
+		return nil, err
+	}
+	var result map[string]MCPServerStatus
+	err := agent.runtime.Request(ctx, op, map[string]any{"agent_id": agent.id}, &result)
+	return result, err
+}
+
 // TaskSchedulerStats returns current occupancy of the priority scheduler
 // shared by every session created from this Agent.
 func (agent *Agent) TaskSchedulerStats(ctx context.Context) (TaskSchedulerStats, error) {

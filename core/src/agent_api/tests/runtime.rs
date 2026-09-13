@@ -223,9 +223,10 @@ async fn test_runtime_budget_guard_overrides_session_options_value() {
 #[tokio::test]
 async fn test_disconnect_idle_mcp_is_safe_no_op_without_global_mcp() {
     let agent = Agent::from_config(test_config()).await.unwrap();
-    // test_config carries no mcp_servers, so global_mcp is None and
+    // test_config carries no mcp_servers, so the global manager is empty and
     // the idle sweep must short-circuit to an empty Vec without
     // panicking — the contract surface a host's sweeper will rely on.
+    assert!(agent.global_mcp.is_some());
     let dropped = agent.disconnect_idle_mcp(0).await;
     assert!(dropped.is_empty());
 }

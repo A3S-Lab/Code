@@ -26,6 +26,7 @@ KnownAgentEventTypeV1 = Literal[
     "confirmation_required",
     "confirmation_received",
     "confirmation_timeout",
+    "user_question",
     "external_task_pending",
     "external_task_completed",
     "permission_denied",
@@ -84,6 +85,7 @@ AGENT_EVENT_TYPES_V1: Final[Tuple[KnownAgentEventTypeV1, ...]] = (
     "confirmation_required",
     "confirmation_received",
     "confirmation_timeout",
+    "user_question",
     "external_task_pending",
     "external_task_completed",
     "permission_denied",
@@ -141,6 +143,7 @@ class EventType:
     CONFIRMATION_REQUIRED: Final[str] = "confirmation_required"
     CONFIRMATION_RECEIVED: Final[str] = "confirmation_received"
     CONFIRMATION_TIMEOUT: Final[str] = "confirmation_timeout"
+    USER_QUESTION: Final[str] = "user_question"
     EXTERNAL_TASK_PENDING: Final[str] = "external_task_pending"
     EXTERNAL_TASK_COMPLETED: Final[str] = "external_task_completed"
     PERMISSION_DENIED: Final[str] = "permission_denied"

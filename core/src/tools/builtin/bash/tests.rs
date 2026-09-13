@@ -138,6 +138,75 @@ async fn test_bash_delegates_to_sandbox() {
     assert_eq!(metadata["sandboxed"], true);
 }
 
+struct WorkspaceWritingSandbox {
+    root: PathBuf,
+}
+
+#[async_trait]
+impl BashSandbox for WorkspaceWritingSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        anyhow::bail!("the bash tool must use the extended sandbox contract")
+    }
+
+    async fn exec(
+        &self,
+        _request: SandboxCommandRequest,
+    ) -> anyhow::Result<SandboxExecutionOutput> {
+        std::fs::write(self.root.join("guest.txt"), "from sandbox\n").unwrap();
+        Ok(SandboxExecutionOutput {
+            stdout: "wrote".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+
+    async fn shutdown(&self) {}
+}
+
+#[tokio::test]
+async fn sandbox_bash_records_changed_paths_from_the_workspace_not_the_command() {
+    let root = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{args:?}");
+    };
+    git(&["init"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    std::fs::write(root.path().join("README.md"), "base\n").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "base"]);
+
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_sandbox(Arc::new(
+        WorkspaceWritingSandbox {
+            root: root.path().to_path_buf(),
+        },
+    ));
+    let result = tool
+        .execute(&serde_json::json!({"command": "printf done"}), &ctx)
+        .await
+        .unwrap();
+    assert!(result.success);
+    let paths = result.metadata.unwrap()["changed_paths"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        paths.iter().any(|path| path == "guest.txt"),
+        "sandbox mutation must be recorded without parsing the command"
+    );
+}
+
 #[tokio::test]
 async fn default_sandbox_execution_preserves_timeout_env_and_streaming_contract() {
     let tool = BashTool;
@@ -344,8 +413,14 @@ async fn sandbox_execution_is_bounded_when_the_backend_ignores_the_timeout() {
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(HangingSandbox));
 
+    // Paused time does not wake `tokio::process`, so each porcelain git
+    // query burns its full 400ms budget. A non-repo snapshot is status plus
+    // rev-parse, and both the pre-exec watch and the timeout re-read pay it.
+    // The product deadline is still `timeout`; this bound only proves the
+    // tool returns instead of following a hanging sandbox.
+    const PORCELAIN_GIT_BUDGET_MS: u64 = 400 * 4;
     let result = tokio::time::timeout(
-        std::time::Duration::from_millis(MIN_TIMEOUT_MS + 100),
+        std::time::Duration::from_millis(MIN_TIMEOUT_MS + PORCELAIN_GIT_BUDGET_MS),
         tool.execute(
             &serde_json::json!({"command": "hang forever", "timeout": MIN_TIMEOUT_MS}),
             &ctx,
@@ -824,4 +899,293 @@ async fn test_bash_workspace_dir() {
         .trim_start_matches(r"\\?\")
         .to_lowercase();
     assert!(result.content.to_lowercase().contains(&canonical_str));
+}
+
+#[test]
+fn porcelain_diff_records_only_paths_that_changed() {
+    let before = vec![" M keep.rs".to_string()];
+    let after = vec![" M keep.rs".to_string(), "?? src/new.rs".to_string()];
+    assert_eq!(
+        changed_paths_from_porcelain(&before, &after),
+        vec!["src/new.rs".to_string()]
+    );
+    assert!(
+        changed_paths_from_porcelain(&["?? README.md".to_string()], &[])
+            .contains(&"README.md".to_string())
+    );
+}
+
+#[cfg(test)]
+struct DenyNamedCommand;
+
+#[cfg(test)]
+impl crate::permissions::PermissionChecker for DenyNamedCommand {
+    fn check(&self, _: &str, args: &serde_json::Value) -> crate::permissions::PermissionDecision {
+        let command = args
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if command.contains("leaked") {
+            crate::permissions::PermissionDecision::Deny
+        } else {
+            crate::permissions::PermissionDecision::Allow
+        }
+    }
+}
+
+#[test]
+fn denied_second_command_does_not_move_the_same_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let nested = root.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let session = format!("bash-deny-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let allow = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    prefix_session_cwd("cd nested", &allow);
+    assert_eq!(crate::shell_session::cwd(&session).unwrap(), nested);
+    let deny = allow.with_run_governance(Some(Arc::new(DenyNamedCommand)), None);
+    let rejected = prefix_session_cwd("cd leaked", &deny);
+    assert_eq!(rejected, "cd leaked");
+    assert_eq!(crate::shell_session::cwd(&session).unwrap(), nested);
+    assert!(!nested.join("leaked").exists());
+    crate::shell_session::drop_session(&session);
+}
+
+#[tokio::test]
+async fn detached_job_write_opens_the_parent_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-detach-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "job_action": "detach",
+                "command": "sleep 0.2; printf 'hello\\n' > guest.txt"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(output.success, "detach failed: {output:#?}");
+    let metadata = output.metadata.expect("detach metadata");
+    let job_id = metadata["workspace_child"]
+        .as_str()
+        .expect("workspace_child");
+    let mut ledger = crate::harness_loop::MutationLedger::default();
+    ledger.observe_tool("bash", 0, Some(&metadata));
+    assert!(
+        ledger.has_open_children() || !ledger.is_empty(),
+        "detached job did not open a parent effect: {metadata}"
+    );
+    if ledger.has_open_children() {
+        assert!(matches!(
+            crate::harness_loop::decide_completion(&ledger, &[], &[], true),
+            crate::harness_loop::CompletionGate::Incomplete { .. }
+        ));
+    }
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::harness_loop::absorb_open_workspace_children(
+            &mut ledger,
+            root.path(),
+            &tokio_util::sync::CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("detached job should settle");
+    crate::shell_session::drop_session(&session);
+    assert!(root.path().join("guest.txt").is_file(), "job did not write");
+    assert!(
+        ledger.paths().any(|path| path == "guest.txt"),
+        "parent gate missed detached write {job_id}; ledger paths missing"
+    );
+    assert!(!ledger.has_open_children());
+}
+
+#[tokio::test]
+async fn detached_job_write_stays_owned_by_the_parent_session() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-detach-own-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let output = BashTool
+        .execute(
+            &serde_json::json!({
+                "job_action": "detach",
+                "command": "printf 'owned-by-detach\\n' > guest.txt"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(output.success, "detach failed: {output:#?}");
+    let appeared = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if root.path().join("guest.txt").is_file() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(appeared.is_ok(), "detached job did not write");
+    let owned = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if crate::external_observation::session_owns_write(&session, root.path(), "guest.txt") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let late = format!("bash-detach-late-{}", std::process::id());
+    let blocked =
+        crate::external_observation::claim_bound_write(Some(&late), root.path(), "guest.txt");
+    crate::external_observation::release_session(&session);
+    crate::external_observation::release_session(&late);
+    crate::shell_session::drop_session(&session);
+    assert!(
+        owned.is_ok(),
+        "a finished detached write must stay owned by the parent session"
+    );
+    assert!(
+        blocked.is_err(),
+        "another session must not claim a path a detached job already wrote"
+    );
+}
+
+struct OverwriteIfCalled {
+    root: PathBuf,
+    called: Arc<AtomicBool>,
+    bytes: &'static str,
+}
+
+#[async_trait]
+impl BashSandbox for OverwriteIfCalled {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        anyhow::bail!("the bash tool must use the extended sandbox contract")
+    }
+
+    async fn exec(
+        &self,
+        _request: SandboxCommandRequest,
+    ) -> anyhow::Result<SandboxExecutionOutput> {
+        self.called.store(true, Ordering::SeqCst);
+        std::fs::write(self.root.join("guest.txt"), self.bytes).unwrap();
+        Ok(SandboxExecutionOutput {
+            stdout: "wrote".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+
+    async fn shutdown(&self) {}
+}
+
+#[tokio::test]
+async fn bash_owns_a_path_it_dirtied_so_another_session_cannot_overwrite_it() {
+    let root = tempfile::tempdir().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let owner = ToolContext::new(root.path().to_path_buf())
+        .with_session_id("bash-writer")
+        .with_sandbox(Arc::new(OverwriteIfCalled {
+            root: root.path().to_path_buf(),
+            called: Arc::clone(&called),
+            bytes: "bash-token-4c91",
+        }));
+    let written = BashTool
+        .execute(&serde_json::json!({"command": "overwrite"}), &owner)
+        .await
+        .unwrap();
+    assert!(written.success, "{}", written.content);
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("guest.txt")).unwrap(),
+        "bash-token-4c91"
+    );
+    let blocked =
+        crate::external_observation::claim_bound_write(Some("bash-late"), root.path(), "guest.txt");
+    assert!(
+        blocked.is_err(),
+        "bash must own the path it changed, not leave it for another session"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("guest.txt")).unwrap(),
+        "bash-token-4c91"
+    );
+    crate::external_observation::release_session("bash-writer");
+    crate::external_observation::release_session("bash-late");
+}
+
+#[tokio::test]
+async fn bash_does_not_hide_another_sessions_dirty_path() {
+    let root = tempfile::tempdir().unwrap();
+    let guest = root.path().join("guest.txt");
+    std::fs::write(&guest, "owned-token-7e2c").unwrap();
+    crate::external_observation::claim_bound_write(Some("bash-owner"), root.path(), "guest.txt")
+        .unwrap();
+
+    let hidden = Arc::new(AtomicBool::new(false));
+    let other = ToolContext::new(root.path().to_path_buf())
+        .with_session_id("bash-other")
+        .with_sandbox(Arc::new(OverwriteIfCalled {
+            root: root.path().to_path_buf(),
+            called: Arc::clone(&hidden),
+            bytes: "hidden-token-7e2c",
+        }));
+    let denied = BashTool
+        .execute(&serde_json::json!({"command": "overwrite"}), &other)
+        .await
+        .unwrap();
+    assert!(!denied.success);
+    assert!(!hidden.load(Ordering::SeqCst), "foreign bash ran");
+    assert_eq!(std::fs::read_to_string(&guest).unwrap(), "owned-token-7e2c");
+
+    let unbound_called = Arc::new(AtomicBool::new(false));
+    let unbound =
+        ToolContext::new(root.path().to_path_buf()).with_sandbox(Arc::new(OverwriteIfCalled {
+            root: root.path().to_path_buf(),
+            called: Arc::clone(&unbound_called),
+            bytes: "unbound-token-7e2c",
+        }));
+    let unbound_denied = BashTool
+        .execute(&serde_json::json!({"command": "overwrite"}), &unbound)
+        .await
+        .unwrap();
+    assert!(!unbound_denied.success);
+    assert!(
+        !unbound_called.load(Ordering::SeqCst),
+        "unbound bash hid a claimed path"
+    );
+    assert_eq!(std::fs::read_to_string(&guest).unwrap(), "owned-token-7e2c");
+
+    let owner_called = Arc::new(AtomicBool::new(false));
+    let owner = ToolContext::new(root.path().to_path_buf())
+        .with_session_id("bash-owner")
+        .with_sandbox(Arc::new(OverwriteIfCalled {
+            root: root.path().to_path_buf(),
+            called: Arc::clone(&owner_called),
+            bytes: "owner-applied-7e2c",
+        }));
+    let applied = BashTool
+        .execute(&serde_json::json!({"command": "overwrite"}), &owner)
+        .await
+        .unwrap();
+    assert!(
+        applied.success,
+        "owner bash should still apply: {applied:?}"
+    );
+    assert!(owner_called.load(Ordering::SeqCst));
+    assert_eq!(
+        std::fs::read_to_string(&guest).unwrap(),
+        "owner-applied-7e2c"
+    );
+    crate::external_observation::release_session("bash-owner");
 }

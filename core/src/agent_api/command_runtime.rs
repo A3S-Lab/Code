@@ -47,6 +47,8 @@ fn command_result(
         tool_calls_count: 0,
         usage,
         verification_reports: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+        run_admission: "ordinary".to_string(),
     }
 }
 

@@ -329,12 +329,23 @@ async fn deepseek_cannot_read_an_absolute_path_outside_the_workspace() {
     );
 
     let events = only_run_events(&session).await;
+    let observed = events
+        .iter()
+        .filter_map(|record| {
+            serde_json::to_value(&record.event).ok().and_then(|value| {
+                value
+                    .get("type")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_owned)
+            })
+        })
+        .collect::<Vec<_>>();
     assert!(
         events.iter().any(|record| matches!(
             &record.event,
             AgentEvent::ToolExecutionStart { name, .. } if name == "read"
         )),
-        "DeepSeek must issue the requested outside-workspace read"
+        "DeepSeek must issue the requested outside-workspace read; events={observed:?}"
     );
     assert!(
         events.iter().any(|record| matches!(

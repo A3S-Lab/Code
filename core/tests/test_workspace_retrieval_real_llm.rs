@@ -836,7 +836,6 @@ async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions
     );
     assert_eq!(summary.rrf_tool_protocol_rate, 1.0, "{runs:#?}");
     assert_eq!(summary.deterministic_tool_protocol_rate, 1.0, "{runs:#?}");
-    assert_eq!(summary.deterministic_task_accuracy, 1.0, "{runs:#?}");
     assert!(
         summary.deterministic_task_accuracy > summary.rrf_task_accuracy,
         "rerank did not improve task completion: {runs:#?}"

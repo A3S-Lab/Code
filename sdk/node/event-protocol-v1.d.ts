@@ -24,6 +24,7 @@ export type KnownAgentEventTypeV1 =
   | 'confirmation_required'
   | 'confirmation_received'
   | 'confirmation_timeout'
+  | 'user_question'
   | 'external_task_pending'
   | 'external_task_completed'
   | 'permission_denied'

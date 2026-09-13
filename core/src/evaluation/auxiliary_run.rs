@@ -303,7 +303,7 @@ impl AuxiliaryExecutor for StructuredAuxiliaryExecutor {
             context.cancellation.clone(),
         )
         .await
-        .map_err(|error| AuxiliaryRunError::Executor(error.to_string()))?;
+        .map_err(|error| AuxiliaryRunError::Executor(format!("{error:#}")))?;
         if context.cancellation.is_cancelled() {
             return Err(AuxiliaryRunError::Cancelled);
         }

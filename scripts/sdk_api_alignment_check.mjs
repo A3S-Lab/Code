@@ -81,6 +81,18 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'apply_sdk_capability_batch',
     'Internal serializable Skill-batch helper; SDKs expose apply_capability_batch with SdkCapabilityBatchV1 JSON.',
   ],
+  [
+    'fork_llm_client_for_side_path',
+    'Returns a Rust LlmClient trait object; SDKs cannot transport the live client.',
+  ],
+  [
+    'register_review_scenario',
+    'Requires a Rust ReviewScenario trait object; SDKs expose review_scenario_ids and the finding lifecycle instead.',
+  ],
+  [
+    'review_scenario_registry',
+    'Rust Arc handle; SDKs expose review_scenario_ids and finding queries instead.',
+  ],
 ]);
 
 const AGENT_ALIASES = new Map([
@@ -590,6 +602,8 @@ assertContainsAll('Go Agent', goAgent, [
   'Session',
   'ResumeSession',
   'RefreshMCPTools',
+  'SyncGlobalMCPServers',
+  'GlobalMCPStatus',
   'TaskSchedulerStats',
   'ListSessions',
   'CloseSession',
@@ -656,6 +670,22 @@ assertContainsAll('Go Session', goSession, [
   'SetBudgetGuard',
   'SetOutputLanguage',
   'SetSessionCheckpointExportSink',
+  'RepublishInheritedMCPTools',
+  'InheritsMCPManagers',
+  'SessionReviewStore',
+  'ReviewScenarioIDs',
+  'PendingSessionReviewFindings',
+  'PendingSessionReviewFindingsForScenario',
+  'AddressedSessionReviewFindings',
+  'UpsertSessionReviewFinding',
+  'MarkSessionReviewAddressed',
+  'AcceptSessionReviewFinding',
+  'ReopenSessionReviewFinding',
+  'WaiveSessionReviewFinding',
+  'ConcealLatestFindingsAddressTurn',
+  'RecordOutcome',
+  'NotePromotedDigest',
+  'OutcomeLedgerSnapshot',
 ]);
 assert.ok(!goSession.includes('ParallelTask'), 'Go Session must not expose ParallelTask (HARNESS-CONV4)');
 assertContainsAll('Go SessionOptions', goSessionOptions, [
@@ -684,6 +714,15 @@ assertContainsAll('Go SessionOptions', goSessionOptions, [
   'MaxParallelTasks',
   'PromptSlots',
   'ImmutableContentAdapter',
+  'CommandEnv',
+  'CompletionWaivers',
+  'EffectIsolation',
+  'ExternalObservations',
+  'OutcomeLedger',
+  'PathRules',
+  'PlanRun',
+  'ReadOnlySession',
+  'VerifierEnabled',
 ]);
 assertContainsAll('Go StateGraphRuntime', goMethods(go, 'StateGraphRuntime'), [
   'BranchID',

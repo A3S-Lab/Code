@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.6] - 2026-09-13
+
+### Changed
+
+- Pinned `a3s-search` v3.1.4 (`e38555cebb5a0fe9a982bde72700971262ac0773`).
+  Named engines can use the opt-in billed providers `tinyfish`, `bocha`,
+  `aliyun`, `tencent`, and `firecrawl`. They stay out of the default cascade.
+- Node, Python, and Go SDKs expose the serializable Core host-contract
+  surface: `sync_global_mcp_servers` / `global_mcp_status`, session review,
+  outcome-ledger records, and SessionOptions fields `command_env`,
+  `completion_waivers`, `effect_isolation`, `external_observations`,
+  `outcome_ledger`, `path_rules`, `plan_run`, `read_only_session`, and
+  `verifier_enabled`. Trait-object host hooks stay omitted.
+
+### Fixed
+
+- An unverified workspace mutation cannot complete a turn. The completion
+  gate requires a Passed `verification_report` bound to the mutation digest,
+  or a host waiver for that digest. Assistant text does not count, and a
+  host waiver is not model-grantable.
+
 ## [8.5.5] - 2026-09-10
 
 ### Fixed

@@ -216,8 +216,7 @@ fn sdk_capability_batch_fixture_commits_skill_generation() {
     assert_eq!(fixture["fixture_id"], "sdk-capability-batch-v1");
 
     let batch: a3s_code_core::capability::SdkCapabilityBatchV1 =
-        serde_json::from_value(fixture["sample_batch"].clone())
-            .expect("sample batch deserializes");
+        serde_json::from_value(fixture["sample_batch"].clone()).expect("sample batch deserializes");
     let session = build_test_session();
     let receipt = get_runtime()
         .block_on(session.inner.apply_sdk_capability_batch(batch))
@@ -240,7 +239,10 @@ fn sdk_capability_batch_fixture_commits_skill_generation() {
         assert!(encoded.get(name).is_some(), "missing receipt field {name}");
     }
     assert_no_forbidden_middleware_fields(&encoded, &fixture);
-    assert_eq!(session.inner.capability_catalog_stamp().generation().get(), 1);
+    assert_eq!(
+        session.inner.capability_catalog_stamp().generation().get(),
+        1
+    );
 }
 
 fn assert_python_middleware_health_fixture(

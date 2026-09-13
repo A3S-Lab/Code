@@ -20,6 +20,10 @@ pub fn product_user_text(text: &str) -> String {
         "\n规划优化请求:",
         "\n优化后的请求：",
         "\n优化后的请求:",
+        // PrePlanning hooks dual-mark like the planner; keep only the Original /
+        // human prefix for product transcript.
+        "\nHook-modified planning task:",
+        "\nPlanning hook guidance:",
     ];
     for marker in planner_markers {
         if let Some((before, _)) = working.split_once(marker) {
@@ -31,7 +35,22 @@ pub fn product_user_text(text: &str) -> String {
         working = before;
     }
 
-    let user_markers = ["\nUser task:\n", "\nUser task:", "\n用户任务：", "\n用户任务:"];
+    // PrePrompt hooks may append model-only context. Never surface it in the
+    // product user bubble — strip both well-formed blocks and a dangling open tag.
+    working = strip_user_prompt_hook_context(working);
+
+    // Prefer the last explicit human marker. Desktop follow-ups use
+    // "Latest user message:"; first turns use "User task:".
+    let user_markers = [
+        "\nLatest user message:\n",
+        "\nLatest user message:",
+        "\n最新用户消息：",
+        "\n最新用户消息:",
+        "\nUser task:\n",
+        "\nUser task:",
+        "\n用户任务：",
+        "\n用户任务:",
+    ];
     let mut task = working;
     for marker in user_markers {
         if let Some((_, after)) = working.rsplit_once(marker) {
@@ -40,7 +59,16 @@ pub fn product_user_text(text: &str) -> String {
         }
     }
     if std::ptr::eq(task, working) {
-        let leading_markers = ["User task:\n", "User task:", "用户任务：", "用户任务:"];
+        let leading_markers = [
+            "Latest user message:\n",
+            "Latest user message:",
+            "最新用户消息：",
+            "最新用户消息:",
+            "User task:\n",
+            "User task:",
+            "用户任务：",
+            "用户任务:",
+        ];
         for marker in leading_markers {
             if let Some(after) = working.strip_prefix(marker) {
                 task = after;
@@ -55,9 +83,7 @@ pub fn product_user_text(text: &str) -> String {
         .trim_start_matches("Original user request：")
         .trim();
 
-    if is_pure_runtime_steering(trimmed) {
-        String::new()
-    } else if trimmed.is_empty() {
+    if is_pure_runtime_steering(trimmed) || trimmed.is_empty() {
         String::new()
     } else {
         trimmed.to_string()
@@ -86,6 +112,19 @@ fn strip_prefix_fence<'a>(text: &'a str, fence: &str) -> &'a str {
     } else {
         text
     }
+}
+
+fn strip_user_prompt_hook_context(text: &str) -> &str {
+    const OPEN: &str = "\n\n<user-prompt-hook-context>\n";
+    if let Some(start) = text.find(OPEN) {
+        // Hooks append this block at the end of the wire prompt. Keep the
+        // human prefix whether or not the close tag is present.
+        return text[..start].trim_end();
+    }
+    if let Some(start) = text.find("<user-prompt-hook-context>") {
+        return text[..start].trim_end();
+    }
+    text
 }
 
 fn is_pure_runtime_steering(text: &str) -> bool {
@@ -117,6 +156,48 @@ mod tests {
         let text = "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n规划如何开发一个游戏引擎？";
         assert_eq!(product_user_text(text), "规划如何开发一个游戏引擎？");
         assert!(!is_wire_only_user_text(text));
+    }
+
+    #[test]
+    fn unwraps_desktop_latest_user_message() {
+        let text = "A3S Desktop workbench context:\n- Active workbench: Office.\n\nLatest user message:\n再试试";
+        assert_eq!(product_user_text(text), "再试试");
+    }
+
+    #[test]
+    fn unwraps_planner_wrapper_with_latest_user_message() {
+        let text = "Original user request:\nA3S Desktop workbench context:\nLatest user message:\n再试试\n\nPlanner-optimized request:\n再试试\n当前请求仅表示“再试试”，需先澄清。";
+        assert_eq!(product_user_text(text), "再试试");
+    }
+
+    #[test]
+    fn strips_pre_prompt_hook_context_appendix() {
+        let text = "Ship the release\n\n<user-prompt-hook-context>\npolicy note\n</user-prompt-hook-context>";
+        assert_eq!(product_user_text(text), "Ship the release");
+    }
+
+    #[test]
+    fn strips_pre_planning_hook_appendix() {
+        let text = [
+            "Original user request:",
+            "A3S Desktop workbench context:",
+            "User task:",
+            "Ship the release",
+            "",
+            "Hook-modified planning task:",
+            "Rewrite the release checklist first",
+            "",
+            "Planning hook guidance:",
+            "Selected strategy: careful",
+        ]
+        .join("\n");
+        assert_eq!(product_user_text(&text), "Ship the release");
+    }
+
+    #[test]
+    fn keeps_human_skill_slash_spelling_from_desktop_compose() {
+        let text = "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n/a3s-box run nginx";
+        assert_eq!(product_user_text(text), "/a3s-box run nginx");
     }
 
     #[test]
@@ -154,7 +235,8 @@ mod tests {
 
     #[test]
     fn unwraps_open_reply_review_findings_fence() {
-        let text = "```open-reply-review-findings\nDATA\n```\nUser task:\nFix the failing assertion";
+        let text =
+            "```open-reply-review-findings\nDATA\n```\nUser task:\nFix the failing assertion";
         assert_eq!(product_user_text(text), "Fix the failing assertion");
     }
 

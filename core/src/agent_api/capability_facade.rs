@@ -259,6 +259,24 @@ impl AgentSession {
             .await
     }
 
+    /// Rebuild executor tool registrations from inherited MCP managers.
+    ///
+    /// Call after [`Agent::sync_global_mcp_servers`] so live sessions pick up
+    /// added/removed/updated global connectors without a process restart.
+    /// Session-local servers installed via [`Self::add_mcp_server`] are left
+    /// untouched.
+    pub async fn republish_inherited_mcp_tools(&self) -> crate::error::Result<()> {
+        SessionExtensionRuntime::from_session(self)
+            .republish_inherited_mcp_tools()
+            .await
+    }
+
+    /// Return whether this session inherits at least one shared MCP manager
+    /// (typically the agent's global manager).
+    pub fn inherits_mcp_managers(&self) -> bool {
+        !self.inherited_mcp_managers.is_empty()
+    }
+
     /// Return current projected and compatibility MCP server status.
     pub async fn mcp_status(
         &self,

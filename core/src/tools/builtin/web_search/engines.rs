@@ -5,7 +5,11 @@ use crate::config::BrowserBackend;
 use a3s_search::engines::{
     BingChina, BingParser, BraveParser, DuckDuckGoParser, So360Parser, SogouParser, Wikipedia,
 };
-use a3s_search::providers::BuiltinProvider;
+use a3s_search::providers::{
+    AliyunConfig, AliyunProvider, AnySearchConfig, AnySearchProvider, BochaConfig, BochaProvider,
+    BuiltinProvider, CredentialSource, FirecrawlConfig, FirecrawlProvider, ProviderEngine,
+    TavilyConfig, TavilyProvider, TencentConfig, TencentProvider, TinyFishConfig, TinyFishProvider,
+};
 #[cfg(feature = "headless-search")]
 use a3s_search::{
     a3s_use_browser::PageRenderer,
@@ -17,7 +21,7 @@ use std::sync::Arc;
 
 const PUBLIC_FALLBACK_ENGINES: [&str; 2] = ["ddg", "wiki"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum EngineTier {
     Api,
     Http,
@@ -80,6 +84,7 @@ pub(super) fn add_http_engine(
     search: &mut Search,
     shortcut: &str,
     proxy_url: Option<&str>,
+    config: Option<&crate::config::SearchConfig>,
 ) -> std::result::Result<bool, EngineFailure> {
     let fetcher = || {
         proxy_url
@@ -118,12 +123,11 @@ pub(super) fn add_http_engine(
             search.add_engine(BingChina::new(Arc::new(fetcher())));
             Ok(true)
         }
-        "anysearch" | "tavily" => {
-            let Some(provider) = BuiltinProvider::from_id(canonical_engine_shortcut(shortcut))
-            else {
+        shortcut if BuiltinProvider::from_id(shortcut).is_some() => {
+            let Some(provider) = BuiltinProvider::from_id(shortcut) else {
                 return Ok(false);
             };
-            match provider.create_engine() {
+            match create_api_engine(provider, config) {
                 Ok(engine) => {
                     search.add_engine(engine);
                     Ok(true)
@@ -132,6 +136,86 @@ pub(super) fn add_http_engine(
             }
         }
         _ => Ok(false),
+    }
+}
+
+fn with_api_key<T>(
+    config: T,
+    api_key: Option<&str>,
+    apply: impl FnOnce(T, CredentialSource) -> T,
+) -> T {
+    match api_key {
+        Some(api_key) => apply(config, CredentialSource::value(api_key)),
+        None => config,
+    }
+}
+
+fn create_api_engine(
+    provider: BuiltinProvider,
+    config: Option<&crate::config::SearchConfig>,
+) -> a3s_search::Result<ProviderEngine> {
+    let engine_config =
+        config.and_then(|config| super::fallback::configured_engine(config, provider.id()));
+    let api_key = engine_config
+        .and_then(|engine| engine.api_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let project = engine_config
+        .and_then(|engine| engine.project.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match provider {
+        BuiltinProvider::AnySearch => {
+            let mut provider_config = AnySearchConfig::new()?;
+            if let Some(api_key) = api_key {
+                provider_config = provider_config.with_api_key(CredentialSource::value(api_key));
+            }
+            Ok(ProviderEngine::new(AnySearchProvider::new(
+                provider_config,
+            )?))
+        }
+        BuiltinProvider::Tavily => {
+            let mut provider_config = TavilyConfig::new()?;
+            if let Some(api_key) = api_key {
+                provider_config = provider_config.with_api_key(CredentialSource::value(api_key));
+            }
+            if let Some(project) = project {
+                provider_config = provider_config.with_project(CredentialSource::value(project));
+            }
+            Ok(ProviderEngine::new(TavilyProvider::new(provider_config)?))
+        }
+        BuiltinProvider::TinyFish => Ok(ProviderEngine::new(TinyFishProvider::new(with_api_key(
+            TinyFishConfig::new()?,
+            api_key,
+            TinyFishConfig::with_api_key,
+        ))?)),
+        BuiltinProvider::Bocha => Ok(ProviderEngine::new(BochaProvider::new(with_api_key(
+            BochaConfig::new()?,
+            api_key,
+            BochaConfig::with_api_key,
+        ))?)),
+        BuiltinProvider::Aliyun => Ok(ProviderEngine::new(AliyunProvider::new(with_api_key(
+            AliyunConfig::new()?,
+            api_key,
+            AliyunConfig::with_api_key,
+        ))?)),
+        BuiltinProvider::Tencent => Ok(ProviderEngine::new(TencentProvider::new(with_api_key(
+            TencentConfig::new()?,
+            api_key,
+            TencentConfig::with_api_key,
+        ))?)),
+        BuiltinProvider::Firecrawl => {
+            Ok(ProviderEngine::new(FirecrawlProvider::new(with_api_key(
+                FirecrawlConfig::new()?,
+                api_key,
+                FirecrawlConfig::with_api_key,
+            ))?))
+        }
+        // BuiltinProvider is non_exhaustive; refuse unknown future providers fail-closed.
+        _ => Err(SearchError::Other(
+            "unsupported builtin search provider".into(),
+        )),
     }
 }
 

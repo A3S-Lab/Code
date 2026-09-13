@@ -27,7 +27,16 @@ impl AgentLoop {
         if optimized.is_empty() || optimized == original {
             return original.to_string();
         }
-        if optimized.contains(original) {
+        // Never collapse on `optimized.contains(original)`. Short human phrases
+        // such as "再试试" are often embedded inside a planner rewrite/appendix;
+        // collapsing would publish that appendix as the product user bubble.
+        // Always keep the dual markers so `product_user_text` can recover the
+        // human sentence from the Original section.
+        if optimized.contains("Original user request:")
+            && (optimized.contains("Planner-optimized request:")
+                || optimized.contains("规划优化请求")
+                || optimized.contains("优化后的请求"))
+        {
             return optimized.to_string();
         }
 
@@ -107,6 +116,7 @@ impl AgentLoop {
         }
         let mut effective_prompt = route.effective_prompt.clone();
         let mut auto_tool_calls_count = 0;
+        let mut prior_completions = Vec::new();
         if !route.use_planning {
             if let Some(outcome) = agent
                 .maybe_apply_auto_delegation(&effective_prompt, session_id, &event_tx, token)
@@ -114,6 +124,7 @@ impl AgentLoop {
             {
                 effective_prompt = outcome.prompt;
                 auto_tool_calls_count = outcome.tool_calls_count;
+                prior_completions = outcome.completions;
             }
         }
 
@@ -146,6 +157,11 @@ impl AgentLoop {
                 result.tool_calls_count = result
                     .tool_calls_count
                     .saturating_add(auto_tool_calls_count);
+                if !prior_completions.is_empty() {
+                    prior_completions.push(result.completion.clone());
+                    result.completion =
+                        crate::harness_loop::fold_step_completions(&prior_completions);
+                }
                 Ok(result)
             }
             Err(mut error) => {

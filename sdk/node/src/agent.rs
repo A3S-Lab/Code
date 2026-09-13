@@ -69,6 +69,46 @@ impl Agent {
         Ok(())
     }
 
+    /// Hot-sync the shared global MCP manager to match `servers`.
+    ///
+    /// Enabled entries are registered and best-effort connected; disabled or
+    /// omitted entries are removed. New sessions see the refreshed catalog.
+    /// Live sessions must republish inherited MCP tools themselves.
+    #[napi(ts_args_type = "servers: McpServerConfig[]")]
+    pub async fn sync_global_mcp_servers(
+        &self,
+        servers: Vec<serde_json::Value>,
+    ) -> napi::Result<()> {
+        let mut parsed = Vec::with_capacity(servers.len());
+        for server in servers {
+            parsed.push(normalize_mcp_server_config(server)?);
+        }
+        let agent = self.inner.clone();
+        agent
+            .sync_global_mcp_servers(parsed)
+            .await
+            .map_err(node_code_error)?;
+        Ok(())
+    }
+
+    /// Live status of servers on this agent's shared global MCP manager.
+    ///
+    /// Empty when the agent has no global manager. Enabled is not connected.
+    #[napi]
+    pub async fn global_mcp_status(&self) -> napi::Result<Vec<McpServerStatusEntry>> {
+        let agent = self.inner.clone();
+        let status = agent.global_mcp_status().await;
+        Ok(status
+            .into_iter()
+            .map(|(name, entry)| McpServerStatusEntry {
+                name,
+                connected: entry.connected,
+                tool_count: entry.tool_count as u32,
+                error: entry.error,
+            })
+            .collect())
+    }
+
     /// Return current occupancy of the priority scheduler shared by every
     /// session created from this Agent.
     #[napi]
@@ -391,6 +431,4 @@ impl Agent {
             .disconnect_idle_mcp(idle_threshold_ms.max(0) as u64)
             .await
     }
-
-
 }

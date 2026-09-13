@@ -7,7 +7,7 @@
 use crate::program::ProgramVerificationHint;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const VERIFICATION_REPORT_SCHEMA: &str = "a3s.verification_report.v1";
 
@@ -112,6 +112,9 @@ pub struct VerificationCommand {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Expected process exit code (ACCEPTANCE `expect:exit=N`; presets use 0).
+    #[serde(default)]
+    pub expect_exit: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +155,7 @@ impl VerificationCommand {
             command: command.into(),
             required: true,
             timeout_ms: None,
+            expect_exit: 0,
         }
     }
 
@@ -165,6 +169,11 @@ impl VerificationCommand {
             required: false,
             ..Self::required(id, kind, description, command)
         }
+    }
+
+    pub fn with_expect_exit(mut self, expect_exit: i32) -> Self {
+        self.expect_exit = expect_exit;
+        self
     }
 
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
@@ -196,13 +205,12 @@ impl VerificationCommand {
         metadata: Option<&serde_json::Value>,
         execution_error: Option<&str>,
     ) -> VerificationCheck {
-        let mut check =
-            self.to_check()
-                .with_status(if exit_code == 0 && execution_error.is_none() {
-                    VerificationStatus::Passed
-                } else {
-                    VerificationStatus::Failed
-                });
+        let passed = exit_code == self.expect_exit && execution_error.is_none();
+        let mut check = self.to_check().with_status(if passed {
+            VerificationStatus::Passed
+        } else {
+            VerificationStatus::Failed
+        });
 
         let evidence_uris = artifact_uris(metadata);
         if !evidence_uris.is_empty() {
@@ -214,10 +222,10 @@ impl VerificationCommand {
                 .with_residual_risk(format!("verification command could not run: {error}"));
         }
 
-        if exit_code != 0 {
+        if exit_code != self.expect_exit {
             check = check.with_residual_risk(format!(
-                "verification command exited with code {exit_code}: {}",
-                self.command
+                "verification command exited with code {exit_code}, expected {}: {}",
+                self.expect_exit, self.command
             ));
         }
 
@@ -410,6 +418,9 @@ pub struct VerificationReport {
     pub checks: Vec<VerificationCheck>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub residual_risks: Vec<String>,
+    /// Effect digest this report is allowed to close. Unbound reports never pass the completion gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_digest: Option<String>,
 }
 
 impl VerificationReport {
@@ -420,6 +431,7 @@ impl VerificationReport {
             status: VerificationStatus::Skipped,
             checks,
             residual_risks: Vec::new(),
+            effect_digest: None,
         };
         report.status = report.derive_status();
         report
@@ -432,6 +444,11 @@ impl VerificationReport {
             .map(|(index, hint)| VerificationCheck::from_program_hint(subject, index, hint))
             .collect();
         Self::new(format!("program:{subject}"), checks)
+    }
+
+    pub fn with_effect_digest(mut self, digest: impl Into<String>) -> Self {
+        self.effect_digest = Some(digest.into());
+        self
     }
 
     pub fn with_residual_risk(mut self, risk: impl Into<String>) -> Self {
@@ -614,6 +631,20 @@ impl VerificationSummary {
         !matches!(self.status, VerificationStatus::NeedsReview)
     }
 
+    /// Whether structured verification is strong enough to authorize `GoalAchieved`.
+    ///
+    /// Fail-closed: empty reports, skipped/optional-only passes, pending required
+    /// checks, failures, and residual risks never authorize completion by themselves.
+    /// An LLM may still evaluate prose, but the host/core gate requires this.
+    pub fn supports_goal_achievement(&self) -> bool {
+        matches!(self.status, VerificationStatus::Passed)
+            && self.report_count > 0
+            && self.required_check_count > 0
+            && self.pending_required_check_count == 0
+            && self.failed_check_count == 0
+            && self.residual_risk_count == 0
+    }
+
     pub fn to_value(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
             serde_json::json!({
@@ -627,6 +658,388 @@ impl VerificationSummary {
             })
         })
     }
+}
+
+/// Normalize shell text for preset command coverage checks.
+pub fn normalize_shell_command(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// True when `command` executes `preset` (exact, with trailing args, or after `&&` / `;`).
+pub fn shell_command_covers_preset(command: &str, preset: &str) -> bool {
+    let command = normalize_shell_command(command);
+    let preset = normalize_shell_command(preset);
+    if command.is_empty() || preset.is_empty() {
+        return false;
+    }
+    if command == preset || command.starts_with(&format!("{preset} ")) {
+        return true;
+    }
+    let and_prefix = format!("&& {preset}");
+    let semi_prefix = format!("; {preset}");
+    command.contains(&format!("{and_prefix} "))
+        || command.ends_with(&and_prefix)
+        || command.contains(&format!("{semi_prefix} "))
+        || command.ends_with(&semi_prefix)
+}
+
+/// Build a verification report when a shell command covers a workspace preset
+/// command **or** a durable `/goal` ACCEPTANCE.md machine criterion
+/// (`kind:command` or synthesized `test -f` for `kind:file_exists`).
+pub fn shell_verification_report_for_command(
+    workspace: &Path,
+    command: &str,
+    exit_code: i32,
+    metadata: Option<&serde_json::Value>,
+    execution_error: Option<&str>,
+) -> Option<VerificationReport> {
+    let matched = verification_presets_for_workspace(workspace)
+        .into_iter()
+        .flat_map(|preset| preset.commands)
+        .chain(acceptance_shell_commands_for_workspace(workspace))
+        .find(|preset_command| shell_command_covers_preset(command, &preset_command.command))?;
+    let check = matched.check_from_execution(exit_code, metadata, execution_error);
+    Some(VerificationReport::new(
+        format!("shell:{}", matched.id),
+        vec![check],
+    ))
+}
+
+/// Loop STATE statuses that still own a live `/goal` ACCEPTANCE contract.
+///
+/// Completed (`verified` / `achieved` / `cancelled`) loops must not pollute
+/// shell evidence or GoalAchieved emission for a later goal in the same workspace.
+const ACTIVE_GOAL_LOOP_STATUSES: &[&str] = &["running", "retrying", "paused"];
+
+/// True when `STATE.md` marks this loop as still owning durable ACCEPTANCE.
+fn loop_owns_active_acceptance_contract(loop_dir: &Path) -> bool {
+    let Ok(state) = std::fs::read_to_string(loop_dir.join("STATE.md")) else {
+        return false;
+    };
+    for line in state.lines() {
+        let trimmed = line.trim();
+        let Some(status) = trimmed.strip_prefix("Status:") else {
+            continue;
+        };
+        let status = status.trim();
+        return ACTIVE_GOAL_LOOP_STATUSES
+            .iter()
+            .any(|allowed| status.eq_ignore_ascii_case(allowed));
+    }
+    false
+}
+
+/// Parse machine ACCEPTANCE criteria from **active** `.a3s/loops/*/ACCEPTANCE.md`
+/// so Core shell evidence and Host ACCEPTANCE re-checks share the same predicates.
+///
+/// Only loops whose `STATE.md` is `running`, `retrying`, or `paused` contribute.
+/// Stale completed loops are ignored (avoids leftover `assert:true` authorizing
+/// a later goal).
+///
+/// - `kind:command` → the assert command (with optional `expect:exit`)
+/// - `kind:file_exists` → synthesized `test -f <path>` (exit 0 == exists)
+pub fn acceptance_shell_commands_for_workspace(
+    workspace: impl AsRef<Path>,
+) -> Vec<VerificationCommand> {
+    let loops = workspace.as_ref().join(".a3s").join("loops");
+    let Ok(entries) = std::fs::read_dir(&loops) else {
+        return Vec::new();
+    };
+    let mut commands = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if !loop_owns_active_acceptance_contract(&path) {
+            continue;
+        }
+        let acceptance = path.join("ACCEPTANCE.md");
+        let Ok(body) = std::fs::read_to_string(&acceptance) else {
+            continue;
+        };
+        let loop_id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("goal");
+        commands.extend(parse_acceptance_shell_commands(
+            &body,
+            loop_id,
+            workspace.as_ref(),
+        ));
+    }
+    commands
+}
+
+fn parse_acceptance_shell_commands(
+    body: &str,
+    loop_id: &str,
+    workspace: &Path,
+) -> Vec<VerificationCommand> {
+    let mut commands = Vec::new();
+    for (index, line) in body.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let rest = if let Some(rest) = trimmed.strip_prefix("- [") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("* [") {
+            rest
+        } else {
+            continue;
+        };
+        let Some((_mark, body)) = rest.split_once(']') else {
+            continue;
+        };
+        let body = body.trim().trim_start_matches(':').trim();
+        let lower = body.to_ascii_lowercase();
+        let line_id = format!("acceptance:{loop_id}:{}", index + 1);
+        if lower.starts_with("kind:command") {
+            let Some(command) = extract_acceptance_assert_command(body) else {
+                continue;
+            };
+            let expect_exit = extract_acceptance_expect_exit(body).unwrap_or(0);
+            commands.push(
+                VerificationCommand::required(
+                    line_id,
+                    "acceptance_command",
+                    format!("ACCEPTANCE kind:command ({loop_id})"),
+                    command,
+                )
+                .with_expect_exit(expect_exit),
+            );
+            continue;
+        }
+        if lower.starts_with("kind:file_exists") || lower.starts_with("kind:file-exists") {
+            let Some(path) = extract_acceptance_assert_command(body) else {
+                continue;
+            };
+            // Skip workspace-escaping paths so Core evidence matches Host latch
+            // (durable goals prove in-workspace outcomes only).
+            if !acceptance_file_path_allowed_in_workspace(workspace, &path) {
+                continue;
+            }
+            let command = format!("test -f {}", shell_quote_acceptance_path(&path));
+            commands.push(VerificationCommand::required(
+                line_id,
+                "acceptance_file_exists",
+                format!("ACCEPTANCE kind:file_exists ({loop_id})"),
+                command,
+            ));
+        }
+    }
+    commands
+}
+
+/// Whether a `kind:file_exists` assert may contribute Core shell evidence.
+///
+/// Relative `../` escapes are rejected. Absolute paths are accepted only when
+/// they canonicalize to a regular file under the workspace (otherwise Host
+/// latch is the authority and Core must not treat them as machine evidence).
+fn acceptance_file_path_allowed_in_workspace(workspace: &Path, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        let mut depth = 0i32;
+        for component in p.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                std::path::Component::Normal(_) => depth += 1,
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
+                std::path::Component::CurDir => {}
+            }
+        }
+        return true;
+    }
+    let Ok(workspace_canon) = workspace.canonicalize() else {
+        return false;
+    };
+    let candidate = PathBuf::from(path);
+    if !candidate.is_file() {
+        return false;
+    }
+    let Ok(file_canon) = candidate.canonicalize() else {
+        return false;
+    };
+    file_canon.starts_with(&workspace_canon)
+}
+
+/// Quote a path for a synthesized `test -f` ACCEPTANCE predicate.
+fn shell_quote_acceptance_path(path: &str) -> String {
+    if path.is_empty() {
+        return "''".to_string();
+    }
+    if path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    {
+        return path.to_string();
+    }
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+fn extract_acceptance_assert_command(body: &str) -> Option<String> {
+    let idx = body.to_ascii_lowercase().find("assert:")?;
+    let after = body[idx + "assert:".len()..].trim_start();
+    if let Some(rest) = after.strip_prefix('`') {
+        let end = rest.find('`')?;
+        let command = rest[..end].trim();
+        if command.is_empty() {
+            return None;
+        }
+        return Some(command.to_string());
+    }
+    let command = after
+        .split_whitespace()
+        .next()
+        .filter(|token| !token.to_ascii_lowercase().starts_with("expect:"))?;
+    Some(command.to_string())
+}
+
+fn extract_acceptance_expect_exit(body: &str) -> Option<i32> {
+    let lower = body.to_ascii_lowercase();
+    let idx = lower.find("expect:exit=")?;
+    let after = &body[idx + "expect:exit=".len()..];
+    let digits: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    digits.parse().ok()
+}
+
+/// Merge a shell-preset verification report into tool metadata when applicable.
+pub fn merge_shell_verification_metadata(
+    metadata: Option<serde_json::Value>,
+    workspace: Option<&Path>,
+    command: &str,
+    exit_code: i32,
+    execution_error: Option<&str>,
+) -> Option<serde_json::Value> {
+    let mut metadata = metadata.unwrap_or_else(|| serde_json::json!({}));
+    let Some(workspace) = workspace else {
+        return Some(metadata);
+    };
+    if metadata.get("verification_report").is_some() {
+        return Some(metadata);
+    }
+    let Some(report) = shell_verification_report_for_command(
+        workspace,
+        command,
+        exit_code,
+        Some(&metadata),
+        execution_error,
+    ) else {
+        return Some(metadata);
+    };
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("verification_report".to_string(), report.to_value());
+    }
+    Some(metadata)
+}
+
+/// Combine an LLM achievement judgment with structured verification evidence.
+pub fn goal_achieved_after_evidence_gate(
+    llm_achieved: bool,
+    reports: &[VerificationReport],
+) -> bool {
+    llm_achieved && VerificationSummary::from_reports(reports).supports_goal_achievement()
+}
+
+/// True when a shell verification subject was derived from ACCEPTANCE.md.
+pub fn is_acceptance_verification_subject(subject: &str) -> bool {
+    subject.starts_with("shell:acceptance:")
+}
+
+/// True when reports include at least one passing ACCEPTANCE-derived shell report.
+pub fn reports_include_passing_acceptance(reports: &[VerificationReport]) -> bool {
+    reports.iter().any(|report| {
+        is_acceptance_verification_subject(&report.subject)
+            && matches!(report.status, VerificationStatus::Passed)
+            && report
+                .checks
+                .iter()
+                .any(|check| check.required && matches!(check.status, VerificationStatus::Passed))
+    })
+}
+
+fn reports_include_passing_active_acceptance(
+    reports: &[VerificationReport],
+    acceptance_commands: &[VerificationCommand],
+) -> bool {
+    // Group machine criteria by loop id. Every active loop that still owns
+    // ACCEPTANCE must have its own passing report — a sibling/orphaned loop's
+    // easy criterion must not authorize GoalAchieved for a different loop.
+    let mut subjects_by_loop: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for command in acceptance_commands {
+        let Some(loop_id) = acceptance_loop_id_from_command_id(&command.id) else {
+            continue;
+        };
+        subjects_by_loop
+            .entry(loop_id.to_string())
+            .or_default()
+            .insert(format!("shell:{}", command.id));
+    }
+    if subjects_by_loop.is_empty() {
+        return false;
+    }
+    subjects_by_loop.values().all(|subjects| {
+        reports.iter().any(|report| {
+            subjects.contains(&report.subject)
+                && matches!(report.status, VerificationStatus::Passed)
+                && report.checks.iter().any(|check| {
+                    check.required && matches!(check.status, VerificationStatus::Passed)
+                })
+        })
+    })
+}
+
+/// Command ids look like `acceptance:<loop_id>:<line>` (loop ids may contain `-`).
+fn acceptance_loop_id_from_command_id(command_id: &str) -> Option<&str> {
+    let rest = command_id.strip_prefix("acceptance:")?;
+    let (loop_id, _line) = rest.rsplit_once(':')?;
+    if loop_id.is_empty() {
+        return None;
+    }
+    Some(loop_id)
+}
+
+/// Decide whether planning should emit `GoalAchieved` before `End`.
+///
+/// When the workspace declares durable `/goal` machine ACCEPTANCE criteria on an
+/// **active** loop, emission requires a passing report for **each** such loop's
+/// criteria — so a workspace preset alone, a completed-loop leftover, or a
+/// sibling/orphaned active loop's report cannot authorize GoalAchieved.
+/// Host latch still re-checks the current loop ACCEPTANCE.
+pub fn should_emit_goal_achieved_for_workspace(
+    llm_achieved: bool,
+    reports: &[VerificationReport],
+    workspace: Option<&Path>,
+) -> bool {
+    if !goal_achieved_after_evidence_gate(llm_achieved, reports) {
+        return false;
+    }
+    let Some(workspace) = workspace else {
+        return true;
+    };
+    let acceptance = acceptance_shell_commands_for_workspace(workspace);
+    if acceptance.is_empty() {
+        return true;
+    }
+    reports_include_passing_active_acceptance(reports, &acceptance)
+}
+
+/// Decide whether planning should emit `GoalAchieved` before `End`.
+///
+/// Kept as a thin wrapper so host/core share one fail-closed contract and tests
+/// can pin emission policy without standing up a full agent loop.
+pub fn should_emit_goal_achieved(llm_achieved: bool, reports: &[VerificationReport]) -> bool {
+    should_emit_goal_achieved_for_workspace(llm_achieved, reports, None)
 }
 
 pub fn format_verification_summary(summary: &VerificationSummary) -> String {

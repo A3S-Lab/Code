@@ -195,6 +195,7 @@ async fn delegated_context_inherits_search_limits_and_flights_but_gets_a_fresh_c
     });
     let search_config = crate::config::SearchConfig {
         timeout: 17,
+        cascade_order: None,
         health: Some(crate::config::SearchHealthConfig {
             max_failures: 1,
             suspend_seconds: 60,
@@ -331,6 +332,7 @@ fn test_task_result_serialize() {
         task_id: "task-456".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
 
     let json = serde_json::to_string(&result).unwrap();
@@ -367,6 +369,7 @@ fn test_task_result_clone() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
 
     let cloned = result.clone();
@@ -391,6 +394,7 @@ fn test_format_task_result_for_context_truncates_large_output() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
 
     let (formatted, truncated) = format_task_result_for_context(&result);
@@ -413,6 +417,7 @@ fn test_task_artifact_reference_is_stable() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
 
     assert_eq!(task_artifact_id(&result), "task-output:task-1");
@@ -671,6 +676,7 @@ fn parallel_result_source_anchor_budget_prioritizes_successful_results() {
                 url_or_path: format!("{task_id}-source-{index}.md"),
             })
             .collect(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     let successful_count = 8;
     let results = vec![
@@ -811,6 +817,7 @@ fn test_task_result_success_true() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     assert!(result.success);
 }
@@ -825,6 +832,7 @@ fn test_task_result_success_false() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     assert!(!result.success);
 }
@@ -856,6 +864,7 @@ fn test_task_result_empty_output() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     assert_eq!(result.output, "");
 }
@@ -885,6 +894,7 @@ fn test_task_result_debug_format() {
         task_id: "task-1".to_string(),
         structured: None,
         source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     let debug_str = format!("{:?}", result);
     assert!(debug_str.contains("Output"));
@@ -923,6 +933,7 @@ fn test_task_result_roundtrip() {
             tool: "read".to_string(),
             url_or_path: "docs/source.md".to_string(),
         }],
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
     };
     let json = serde_json::to_string(&original).unwrap();
     let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
@@ -3304,10 +3315,19 @@ async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_
     .await
     .expect("background child should finish");
 
-    assert_eq!(snapshot.status, SubagentStatus::Completed);
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("run-snapshot.txt")).unwrap(),
         "kept-original-run-authority"
+    );
+    assert_eq!(snapshot.status, SubagentStatus::Failed);
+    let output = snapshot.output.unwrap_or_default();
+    assert!(
+        output.contains("completion gate:"),
+        "admitted write must fail the child gate, not the live deny: {output}"
+    );
+    assert!(
+        !output.to_ascii_lowercase().contains("permission"),
+        "live deny leaked into the admitted child: {output}"
     );
 }
 
@@ -3462,7 +3482,7 @@ async fn task_child_run_permission_allow() {
             "t1",
             "write",
             serde_json::json!({
-                "file_path": workspace.path().join("out.txt").to_string_lossy(),
+                "file_path": "out.txt",
                 "content": "WRITTEN"
             }),
         ),
@@ -3492,8 +3512,13 @@ async fn task_child_run_permission_allow() {
         .unwrap();
 
     assert!(
-        result.success,
-        "child run should succeed: {}",
+        !result.success,
+        "an allowed write is still an unverified mutation: {}",
+        result.output
+    );
+    assert!(
+        result.output.contains("completion gate:"),
+        "allow must not skip the completion gate: {}",
         result.output
     );
     assert!(
@@ -4144,6 +4169,189 @@ async fn task_tool_executes_the_unified_single_task_shape() {
     let metadata = output.metadata.unwrap();
     assert!(metadata["task_id"].is_string());
     assert!(metadata.get("task_count").is_none());
+}
+
+#[tokio::test]
+async fn task_child_workspace_write_is_a_parent_mutation() {
+    let workspace = tempfile::tempdir().unwrap();
+    let guest = workspace.path().join("guest.txt");
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(WritingLlmClient {
+            path: guest.clone(),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = TaskTool::new(executor);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "worker",
+                    "description": "Write aside",
+                    "prompt": "Finish after the side effect"
+                }]
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    assert!(guest.is_file(), "task child did not write");
+    let metadata = output.metadata.expect("task metadata");
+    let paths = metadata["changed_paths"].as_array().expect("changed_paths");
+    assert!(
+        paths.iter().any(|path| path == "guest.txt"),
+        "task hid a workspace write: {metadata}"
+    );
+    let mut ledger = crate::harness_loop::MutationLedger::default();
+    ledger.observe_tool("task", if output.success { 0 } else { 1 }, Some(&metadata));
+    assert!(!ledger.is_empty(), "parent gate did not see the task write");
+}
+
+#[tokio::test]
+async fn finished_task_owns_a_path_it_dirtied_for_the_parent_session() {
+    let workspace = tempfile::tempdir().unwrap();
+    let guest = workspace.path().join("guest.txt");
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(WritingLlmClient {
+            path: guest.clone(),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = TaskTool::new(executor);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "worker",
+                    "description": "Write aside",
+                    "prompt": "Finish after the side effect"
+                }]
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()).with_session_id("task-parent"),
+        )
+        .await
+        .unwrap();
+
+    assert!(guest.is_file(), "task child did not write");
+    assert_eq!(std::fs::read_to_string(&guest).unwrap(), "hello\n");
+    let metadata = output.metadata.expect("task metadata");
+    let child = metadata["session_id"].as_str().expect("child session");
+    assert!(
+        crate::external_observation::session_owns_write(
+            "task-parent",
+            workspace.path(),
+            "guest.txt"
+        ),
+        "the parent session must own a path its finished task changed"
+    );
+    assert!(
+        !crate::external_observation::session_owns_write(child, workspace.path(), "guest.txt"),
+        "a finished child session must not keep the path from the parent"
+    );
+    let blocked = crate::external_observation::claim_bound_write(
+        Some("task-late"),
+        workspace.path(),
+        "guest.txt",
+    );
+    assert!(
+        blocked.is_err(),
+        "another session must not overwrite a path the finished task changed"
+    );
+    crate::external_observation::release_session("task-parent");
+    crate::external_observation::release_session(child);
+    crate::external_observation::release_session("task-late");
+}
+
+#[tokio::test]
+async fn background_task_write_is_a_parent_mutation_after_it_settles() {
+    let workspace = tempfile::tempdir().unwrap();
+    let guest = workspace.path().join("guest.txt");
+    let executor = Arc::new(TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(WritingLlmClient {
+            path: guest.clone(),
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    ));
+    let tool = TaskTool::new(executor);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "tasks": [{
+                    "agent": "worker",
+                    "description": "Write aside",
+                    "prompt": "Finish after the side effect",
+                    "background": true
+                }]
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    assert!(output.success, "unexpected output: {output:#?}");
+    let metadata = output.metadata.expect("task metadata");
+    let task_id = metadata["workspace_child"]
+        .as_str()
+        .expect("workspace_child");
+    let mut ledger = crate::harness_loop::MutationLedger::default();
+    ledger.observe_tool("task", 0, Some(&metadata));
+    assert!(
+        ledger.has_open_children() || !ledger.is_empty(),
+        "background start did not open a parent effect: {metadata}"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::harness_loop::absorb_open_workspace_children(
+            &mut ledger,
+            workspace.path(),
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("background child should settle");
+    assert!(guest.is_file(), "background child did not write");
+    assert!(
+        ledger.paths().any(|path| path == "guest.txt"),
+        "parent gate did not see the background write"
+    );
+    assert!(
+        !ledger.has_open_children(),
+        "settled child {task_id} stayed open"
+    );
+}
+
+struct WritingLlmClient {
+    path: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for WritingLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+        std::fs::write(&self.path, "hello\n")?;
+        Ok(text_response("wrote aside"))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is not used by task executor tests")
+    }
 }
 
 #[tokio::test]

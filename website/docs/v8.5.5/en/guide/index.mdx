@@ -60,6 +60,20 @@ same events, so every UI does not need its own agent loop.
 | Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                                  |
 | Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                                  |
 
+## What is new in v8.5.6
+
+- **Unverified workspace mutations do not complete.** A turn that changed the
+  workspace stays incomplete unless a Passed verification report is bound to
+  that mutation digest, or a host waiver covers that digest. Assistant text
+  does not count, and a host waiver is not model-grantable.
+- **Search 3.1.4.** Named engines can use the opt-in billed providers
+  `tinyfish`, `bocha`, `aliyun`, `tencent`, and `firecrawl`. They stay out of
+  the default cascade.
+- **SDK host contract.** Node, Python, and Go expose
+  `sync_global_mcp_servers` / `global_mcp_status`, session review, outcome
+  ledger records, and the serializable SessionOptions fields already on Core.
+  Trait-object host hooks stay omitted.
+
 ## What is new in v8.5.5
 
 - **GLM Coding Plan `base_url` join.** Bases like

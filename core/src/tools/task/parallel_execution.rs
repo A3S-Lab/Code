@@ -461,6 +461,7 @@ impl From<StepOutcome> for TaskResult {
             task_id: o.task_id,
             structured: o.structured,
             source_anchors: o.source_anchors,
+            completion: crate::harness_loop::CompletionTerminal::Narrative,
         }
     }
 }

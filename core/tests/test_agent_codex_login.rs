@@ -343,8 +343,8 @@ async fn codex_login_agent_resume_preserves_cumulative_accounting() {
                             text: "I will now finish the interrupted task.".to_string(),
                         }],
                         reasoning_content: None,
-                    transcript_text: None,
-                    transcript_visibility: Default::default(),
+                        transcript_text: None,
+                        transcript_visibility: Default::default(),
                     },
                 ],
                 total_usage: TokenUsage {

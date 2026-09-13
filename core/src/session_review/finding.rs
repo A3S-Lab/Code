@@ -159,6 +159,7 @@ pub struct SessionReviewFindingV1 {
 }
 
 impl SessionReviewFindingV1 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         finding_id: impl Into<String>,
         session_id: impl Into<String>,
@@ -195,6 +196,7 @@ impl SessionReviewFindingV1 {
     }
 
     /// Convenience for transcript-bound findings (Desktop sticky / science).
+    #[allow(clippy::too_many_arguments)]
     pub fn new_transcript(
         finding_id: impl Into<String>,
         session_id: impl Into<String>,

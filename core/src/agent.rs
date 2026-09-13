@@ -193,6 +193,18 @@ pub(crate) struct AgentConfig {
     /// Replace via [`SessionOptions::with_host_env`](crate::agent_api::SessionOptions::with_host_env)
     /// when deterministic replay is needed.
     pub host_env: Arc<crate::host_env::HostEnv>,
+    /// Host-confirmed waivers. Assistant text cannot populate this list.
+    pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Distinguishes an ordinary run from a plan-mode implementation admission.
+    pub plan_run: crate::harness_loop::PlanRunAdmission,
+    /// Path-scoped rules injected only when a turn targets a matching path.
+    pub path_rules: Vec<crate::path_instructions::PathRule>,
+    /// Opt-in read-only verifier. Default sessions do not spend a second model call.
+    pub verifier_enabled: bool,
+    /// Host-supplied external observations bound into this run.
+    pub external_observations: Vec<crate::external_observation::ExternalObservationV1>,
+    /// Outcome-conditioned constraints the promoting host has already recorded.
+    pub outcome_ledger: crate::outcome_memory::OutcomeLedger,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -284,6 +296,12 @@ impl Default for AgentConfig {
             max_execution_time_ms: None,
             budget_guard: None,
             host_env: Arc::new(crate::host_env::HostEnv::system()),
+            completion_waivers: Vec::new(),
+            plan_run: crate::harness_loop::PlanRunAdmission::ordinary(),
+            path_rules: Vec::new(),
+            verifier_enabled: false,
+            external_observations: Vec::new(),
+            outcome_ledger: crate::outcome_memory::OutcomeLedger::default(),
         }
     }
 }
@@ -423,6 +441,14 @@ pub enum AgentEvent {
     ConfirmationTimeout {
         tool_id: String,
         action_taken: String, // "rejected" or "auto_approved"
+    },
+
+    /// Structured question. Distinct from permission `Ask` and from steer.
+    #[serde(rename = "user_question")]
+    UserQuestion {
+        question_id: String,
+        question: String,
+        options: Vec<String>,
     },
 
     /// External task pending (needs SDK processing)
@@ -800,6 +826,10 @@ pub struct AgentResult {
     pub usage: TokenUsage,
     pub tool_calls_count: usize,
     pub verification_reports: Vec<crate::verification::VerificationReport>,
+    /// How the run was allowed to finish. Incomplete mutations do not produce this value.
+    pub completion: crate::harness_loop::CompletionTerminal,
+    /// `ordinary` or `plan_implementation`. A plan-exit claim without a digest stays ordinary.
+    pub run_admission: String,
 }
 
 /// An execution error paired with the usage and tool-call accounting that was

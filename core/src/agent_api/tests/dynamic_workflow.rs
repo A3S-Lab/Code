@@ -289,15 +289,14 @@ async function run(ctx, inputs) {
         .unwrap();
 
     assert_eq!(
-        result.exit_code, 0,
-        "dynamic workflow output: {}",
+        result.exit_code, 1,
+        "an inherited write is still an unverified mutation: {}",
         result.output
     );
     assert!(
-        result
-            .output
-            .contains("deep-research child write completed"),
-        "{}",
+        result.output.contains("completion gate:")
+            && result.output.contains("no bound Passed verification"),
+        "allow must not skip the completion gate: {}",
         result.output
     );
     assert!(

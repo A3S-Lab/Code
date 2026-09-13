@@ -9,6 +9,7 @@ use crate::prompts::{PlanningMode, SystemPromptSlots};
 use crate::queue::SessionQueueConfig;
 use crate::subagent::WorkerAgentSpec;
 use a3s_memory::MemoryStore;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,6 +21,10 @@ impl std::fmt::Debug for SessionOptions {
             .field("agent_dirs", &self.agent_dirs)
             .field("worker_agents", &self.worker_agents.len())
             .field("skill_dirs", &self.skill_dirs)
+            .field(
+                "command_env",
+                &self.command_env.as_ref().map(|env| env.len()),
+            )
             .field("queue_config", &self.queue_config)
             .field("search_config", &self.search_config)
             .field("security_provider", &self.security_provider.is_some())
@@ -294,6 +299,14 @@ impl SessionOptions {
         self
     }
 
+    /// Merge environment variables into Bash / sandbox command execution.
+    ///
+    /// Replaces any previously configured `command_env` map.
+    pub fn with_command_env(mut self, env: HashMap<String, String>) -> Self {
+        self.command_env = Some(env);
+        self
+    }
+
     /// Load skills from a directory (eager — scans immediately into a registry).
     pub fn with_skills_from_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
         let registry = self
@@ -452,13 +465,10 @@ impl SessionOptions {
 
     /// Install FIFO retention caps for the session's in-memory stores.
     ///
-    /// Without these caps the in-memory run store, trace sink, and
-    /// subagent task tracker grow unboundedly across long-running
-    /// sessions. Hosts running thousands of long-lived sessions per
-    /// node should set sensible caps (e.g. retain the last 100 runs,
-    /// 5000 events per run, 10000 trace events, 1000 terminal subagent
-    /// tasks). When unset, the framework keeps every record — the
-    /// pre-existing behaviour.
+    /// `None` selects [`SessionRetentionLimits::default`](crate::retention::SessionRetentionLimits::default),
+    /// which is finite. Pass [`SessionRetentionLimits::unbounded`](crate::retention::SessionRetentionLimits::unbounded)
+    /// to retain every record. Hosts running thousands of long-lived
+    /// sessions per node should set explicit caps.
     pub fn with_retention_limits(
         mut self,
         limits: crate::retention::SessionRetentionLimits,
@@ -787,5 +797,63 @@ impl SessionOptions {
     pub fn with_hook_executor(mut self, executor: Arc<dyn crate::hooks::HookExecutor>) -> Self {
         self.hook_executor = Some(executor);
         self
+    }
+
+    /// Isolate mutating writes in a git worktree. Non-git roots fail closed.
+    pub fn with_effect_isolation(mut self, enabled: bool) -> Self {
+        self.effect_isolation = enabled;
+        self
+    }
+
+    pub fn with_completion_waivers(
+        mut self,
+        waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    ) -> Self {
+        self.completion_waivers = waivers;
+        self
+    }
+
+    pub fn with_plan_run(mut self, admission: crate::harness_loop::PlanRunAdmission) -> Self {
+        self.plan_run = admission;
+        self
+    }
+
+    pub fn with_path_rules(mut self, rules: Vec<crate::path_instructions::PathRule>) -> Self {
+        self.path_rules = rules;
+        self
+    }
+
+    pub fn with_verifier(mut self, enabled: bool) -> Self {
+        self.verifier_enabled = enabled;
+        self
+    }
+
+    pub fn with_external_observations(
+        mut self,
+        observations: Vec<crate::external_observation::ExternalObservationV1>,
+    ) -> Self {
+        self.external_observations = observations;
+        self
+    }
+
+    pub fn with_outcome_ledger(mut self, ledger: crate::outcome_memory::OutcomeLedger) -> Self {
+        self.outcome_ledger = ledger;
+        self
+    }
+
+    pub fn with_read_only_session(mut self, read_only: bool) -> Self {
+        self.read_only_session = read_only;
+        self
+    }
+
+    pub(crate) fn session_id_hint(&self) -> String {
+        self.session_id
+            .clone()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| "session".to_string())
+    }
+
+    pub(crate) fn can_write_workspace(&self) -> bool {
+        !self.read_only_session
     }
 }

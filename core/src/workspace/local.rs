@@ -6,6 +6,7 @@
 //! bash, grep, glob, git, git_stash, git_worktree).
 
 use super::local_access::{LocalWorkspaceAccessBoundary, LocalWorkspaceAccessPolicy};
+use super::DirectWriteGuard;
 use super::{
     default_path_input, escape_control_chars_for_display, has_windows_path_prefix,
     normalize_relative_path, pathbuf_to_workspace_path, validate_relative_pattern, CommandOutput,
@@ -111,12 +112,15 @@ impl LocalWorkspaceBackend {
     }
 
     fn local_path_for_write(&self, path: &WorkspacePath) -> Result<PathBuf> {
-        let target = if path.is_root() {
-            self.root.clone()
-        } else {
-            self.root.join(path.as_str())
-        };
+        if path.is_root() {
+            bail!("write path must name a file");
+        }
+        // Refuse before create_dir_all. A symlink directory already inside the
+        // workspace would otherwise receive new parent directories outside it,
+        // and a symlink file would be opened and followed by the later write.
+        refuse_existing_symlink_on_write_path(&self.root, path.as_str())?;
 
+        let target = self.root.join(path.as_str());
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 anyhow!(
@@ -129,6 +133,13 @@ impl LocalWorkspaceBackend {
 
         a3s_common::tools::resolve_path_for_write(&self.root, path.as_str())
             .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub(crate) fn refuse_direct_write(&self, path: &WorkspacePath) -> Result<()> {
+        refuse_existing_symlink_on_write_path(&self.root, path.as_str())?;
+        let candidate = self.root.join(path.as_str());
+        let metadata = std::fs::metadata(&candidate).ok();
+        self.ensure_access(path, Some(&candidate), metadata.as_ref(), None, "write")
     }
 
     fn ensure_access(
@@ -177,6 +188,66 @@ impl LocalWorkspaceBackend {
         Some(content)
     }
 
+    fn refuse_checkout_targets(&self, refspec: &str, force: bool) -> Result<()> {
+        let mut paths = crate::git::paths_changed_between(&self.root, "HEAD", refspec)?;
+        if force {
+            paths.extend(crate::git::get_diff_paths(&self.root, None)?);
+        }
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            self.refuse_checkout_path(&path)?;
+        }
+        Ok(())
+    }
+
+    fn refuse_worktree_checkout(
+        &self,
+        branch: &str,
+        new_branch: bool,
+        destination: &Path,
+    ) -> Result<()> {
+        let Some(destination) = resolved_workspace_destination(&self.root, destination) else {
+            return Ok(());
+        };
+        let revision = if new_branch { "HEAD" } else { branch };
+        let relative_destination = destination.strip_prefix(&self.root).unwrap_or(&destination);
+        for path in crate::git::tracked_tree_paths(&self.root, revision)? {
+            self.refuse_checkout_path(&relative_destination.join(path))?;
+        }
+        Ok(())
+    }
+
+    fn refuse_stash_targets(&self, include_untracked: bool) -> Result<()> {
+        let mut paths = crate::git::get_diff_paths(&self.root, None)?;
+        paths.extend(crate::git::staged_diff_paths(&self.root)?);
+        if include_untracked {
+            paths.extend(crate::git::untracked_paths(&self.root)?);
+        }
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            self.refuse_checkout_path(&path)?;
+        }
+        Ok(())
+    }
+
+    fn refuse_checkout_path(&self, path: &Path) -> Result<()> {
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| anyhow!("checkout path is not utf-8"))?;
+        let workspace_path = normalize_local_path(&self.root, path_text)?;
+        let candidate = self.root.join(path);
+        let metadata = std::fs::metadata(&candidate).ok();
+        self.ensure_access(
+            &workspace_path,
+            Some(&candidate),
+            metadata.as_ref(),
+            None,
+            "write",
+        )
+    }
+
     fn git_diff_path_allowed(&self, path: &Path) -> bool {
         let Some(path_text) = path.to_str() else {
             return false;
@@ -197,6 +268,12 @@ impl LocalWorkspaceBackend {
             "read",
         )
         .is_ok()
+    }
+}
+
+impl DirectWriteGuard for LocalWorkspaceBackend {
+    fn refuse_direct_write(&self, path: &WorkspacePath) -> Result<()> {
+        LocalWorkspaceBackend::refuse_direct_write(self, path)
     }
 }
 
@@ -273,6 +350,13 @@ impl WorkspaceFileSystem for LocalWorkspaceBackend {
                     e
                 ))
             })?;
+        opened_write_stays_in_workspace(&file, &self.root).map_err(|error| {
+            WorkspaceError::Backend(anyhow!(
+                "Failed to write file {}: {}",
+                resolved.display(),
+                error
+            ))
+        })?;
         let metadata = file.metadata().await.map_err(|error| {
             WorkspaceError::Backend(anyhow!(
                 "Failed to inspect file {} before writing: {}",
@@ -524,7 +608,11 @@ impl WorkspaceSearch for LocalWorkspaceBackend {
         let search_path = self.local_path_for_read(&request.base)?;
         self.ensure_search_base_allowed(&request.base)?;
         let mut builder = ignore::WalkBuilder::new(&search_path);
-        builder.hidden(false).git_ignore(true).git_global(true);
+        builder
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .follow_links(false);
 
         if let Some(ref glob_pat) = request.glob {
             let mut types = ignore::types::TypesBuilder::new();
@@ -673,6 +761,9 @@ impl WorkspaceGit for LocalWorkspaceBackend {
     }
 
     async fn create_branch(&self, request: WorkspaceGitCreateBranchRequest) -> Result<()> {
+        if self.access_boundary.is_some() {
+            self.refuse_checkout_targets(&request.base, false)?;
+        }
         self.run_blocking_git(move |root| {
             crate::git::create_branch(&root, &request.name, &request.base)
         })
@@ -683,14 +774,25 @@ impl WorkspaceGit for LocalWorkspaceBackend {
         &self,
         request: WorkspaceGitCheckoutRequest,
     ) -> Result<WorkspaceGitCheckoutOutput> {
+        if request.refspec.trim().is_empty() || request.refspec.contains('\0') {
+            bail!("Git checkout ref must be a non-empty revision");
+        }
+        if self.access_boundary.is_some() {
+            self.refuse_checkout_targets(&request.refspec, request.force)?;
+        }
         let args = if request.force {
             vec![
                 "checkout".to_string(),
                 "--force".to_string(),
+                "--end-of-options".to_string(),
                 request.refspec,
             ]
         } else {
-            vec!["checkout".to_string(), request.refspec]
+            vec![
+                "checkout".to_string(),
+                "--end-of-options".to_string(),
+                request.refspec,
+            ]
         };
         let (success, stdout, stderr) = self.run_git_command(args).await?;
         if !success {
@@ -751,6 +853,9 @@ impl WorkspaceGitStashProvider for LocalWorkspaceBackend {
     }
 
     async fn stash(&self, request: WorkspaceGitStashRequest) -> Result<()> {
+        if self.access_boundary.is_some() {
+            self.refuse_stash_targets(request.include_untracked)?;
+        }
         self.run_blocking_git(move |root| {
             crate::git::stash(&root, request.message.as_deref(), request.include_untracked)
         })
@@ -780,6 +885,16 @@ impl WorkspaceGitWorktreeProvider for LocalWorkspaceBackend {
         request: WorkspaceGitCreateWorktreeRequest,
     ) -> Result<WorkspaceGitWorktreeMutation> {
         let branch = request.branch;
+        let new_branch = request.new_branch;
+        if request.path.as_deref().is_some_and(|path| {
+            let path = Path::new(path);
+            !path.is_absolute()
+                && path
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+        }) {
+            bail!("worktree path contains an unsupported component");
+        }
         let path = request
             .path
             .map(|path| {
@@ -791,8 +906,12 @@ impl WorkspaceGitWorktreeProvider for LocalWorkspaceBackend {
                 }
             })
             .unwrap_or_else(|| default_local_worktree_path(&self.root, &branch));
+        refuse_symlink_worktree_path(&self.root, &path)?;
+        refuse_symlink_escape(&self.root, &path)?;
+        if self.access_boundary.is_some() {
+            self.refuse_worktree_checkout(&branch, new_branch, &path)?;
+        }
         let display_path = path.display().to_string();
-        let new_branch = request.new_branch;
         let branch_for_git = branch.clone();
 
         self.run_blocking_git(move |root| {
@@ -813,6 +932,17 @@ impl WorkspaceGitWorktreeProvider for LocalWorkspaceBackend {
         let path = PathBuf::from(request.path);
         let display_path = path.display().to_string();
         let force = request.force;
+        if self.access_boundary.is_some() {
+            if let Some(canonical) = canonicalize_inside_workspace(&self.root, &path) {
+                refuse_symlink_worktree_path(&self.root, &canonical)?;
+                let relative = canonical
+                    .strip_prefix(&self.root)
+                    .unwrap_or(canonical.as_path());
+                for file in crate::git::worktree_removable_paths(&canonical)? {
+                    self.refuse_checkout_path(&relative.join(file))?;
+                }
+            }
+        }
 
         self.run_blocking_git(move |root| crate::git::remove_worktree(&root, &path, force))
             .await?;
@@ -932,6 +1062,79 @@ fn parse_git_remote_line(line: &str) -> Option<WorkspaceGitRemote> {
     })
 }
 
+/// A write must not follow a symlink that already exists on the requested path.
+///
+/// `create_dir_all` and `File::open` both follow directory and file symlinks.
+/// Checking after either of those has already created or overwritten the
+/// destination outside the workspace.
+fn refuse_existing_symlink_on_write_path(root: &Path, relative: &str) -> Result<()> {
+    let mut current = root
+        .canonicalize()
+        .map_err(|error| anyhow!("Failed to resolve local workspace root: {error}"))?;
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty() {
+        bail!("write path must name a file");
+    }
+    let components: Vec<_> = relative.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            bail!("write path must stay inside the workspace");
+        };
+        current.push(name);
+        let last = index + 1 == components.len();
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!("write path crosses a symbolic link")
+            }
+            Ok(metadata) if !last && !metadata.is_dir() => {
+                bail!("A write path parent component is not a directory")
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => bail!("Failed to inspect write path: {error}"),
+        }
+    }
+    Ok(())
+}
+
+/// Last check before truncation. `/dev/fd` and `/proc/self/fd` are inconclusive
+/// on some hosts; a resolved path that is neither of those and sits outside
+/// the workspace is a followed link and must not be truncated.
+fn opened_write_stays_in_workspace(file: &tokio::fs::File, workspace: &Path) -> Result<()> {
+    let Some(canonical) = opened_file_canonical_path(file) else {
+        return Ok(());
+    };
+    if canonical.starts_with("/dev") || canonical.starts_with("/proc") {
+        return Ok(());
+    }
+    let root = workspace
+        .canonicalize()
+        .map_err(|error| anyhow!("Failed to resolve local workspace root: {error}"))?;
+    if !canonical.starts_with(&root) {
+        bail!("write path resolves outside the workspace");
+    }
+    Ok(())
+}
+
+fn opened_file_canonical_path(file: &tokio::fs::File) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+        for candidate in [format!("/dev/fd/{fd}"), format!("/proc/self/fd/{fd}")] {
+            if let Ok(path) = std::fs::canonicalize(&candidate) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        None
+    }
+}
+
 fn default_local_worktree_path(root: &Path, branch: &str) -> PathBuf {
     let repo_name = root
         .file_name()
@@ -942,7 +1145,95 @@ fn default_local_worktree_path(root: &Path, branch: &str) -> PathBuf {
         .join(format!("{repo_name}-{branch}"))
 }
 
-pub(super) fn normalize_local_path(root: &Path, input: &str) -> Result<WorkspacePath> {
+fn resolved_workspace_destination(root: &Path, path: &Path) -> Option<PathBuf> {
+    if path.starts_with(root) {
+        return Some(path.to_path_buf());
+    }
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let parent = existing.parent()?.to_path_buf();
+        missing.push(existing.file_name()?.to_os_string());
+        if parent == existing {
+            return None;
+        }
+        existing = parent;
+    }
+    let canonical_existing = std::fs::canonicalize(&existing).ok()?;
+    if !canonical_existing.starts_with(root) {
+        return None;
+    }
+    let mut resolved = canonical_existing;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    resolved.starts_with(root).then_some(resolved)
+}
+
+fn canonicalize_inside_workspace(root: &Path, path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    canonical.starts_with(root).then_some(canonical)
+}
+
+fn refuse_symlink_escape(root: &Path, path: &Path) -> Result<()> {
+    let mut cursor = PathBuf::new();
+    for component in path.components() {
+        cursor.push(component);
+        let Ok(metadata) = std::fs::symlink_metadata(&cursor) else {
+            break;
+        };
+        if !metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(target) = std::fs::canonicalize(&cursor) else {
+            bail!("refusing to follow a symbolic link in the worktree path");
+        };
+        if target.starts_with(root) || root.starts_with(&target) {
+            continue;
+        }
+        bail!("refusing to follow a symbolic link in the worktree path");
+    }
+    Ok(())
+}
+
+fn refuse_symlink_worktree_path(root: &Path, path: &Path) -> Result<()> {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) && !path.is_absolute()
+    {
+        bail!("worktree path contains an unsupported component");
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if path.is_absolute() && !candidate.starts_with(root) {
+        return Ok(());
+    }
+    let relative = candidate.strip_prefix(root).unwrap_or(candidate.as_path());
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            bail!("worktree path contains an unsupported component");
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!("refusing to follow a symbolic link in the worktree path");
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => bail!("failed to inspect worktree path: {error}"),
+        }
+    }
+    Ok(())
+}
+
+fn normalize_local_path(root: &Path, input: &str) -> Result<WorkspacePath> {
     let input = default_path_input(input);
     let candidate = Path::new(input);
 
@@ -1345,6 +1636,328 @@ mod tests {
         assert!(!output.exists());
     }
 
+    #[tokio::test]
+    async fn credential_boundary_checkout_does_not_overwrite_a_credential_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join(".env"), "TOKEN=checkout-secret-4e17\n").unwrap();
+        std::fs::write(temp.path().join("src/lib.rs"), "pub const VALUE: u8 = 1;\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "old"]));
+        assert!(run_test_git(temp.path(), &["branch", "old"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=checkout-secret-new\n").unwrap();
+        std::fs::write(temp.path().join("src/lib.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "new"]));
+        let new_branch = if run_test_git(temp.path(), &["rev-parse", "--verify", "main"]) {
+            "main"
+        } else {
+            "master"
+        };
+        assert!(run_test_git(temp.path(), &["checkout", "-q", "old"]));
+
+        let backend = credential_boundary_backend(temp.path());
+        let error = backend
+            .checkout(WorkspaceGitCheckoutRequest {
+                refspec: new_branch.to_string(),
+                force: false,
+            })
+            .await
+            .expect_err("checkout must not apply a credential path");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=checkout-secret-4e17\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
+            "pub const VALUE: u8 = 1;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_checkout_still_updates_an_ordinary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "old"]));
+        assert!(run_test_git(temp.path(), &["branch", "old"]));
+        std::fs::write(temp.path().join("README.md"), "new\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "new"]));
+        let new_branch = if run_test_git(temp.path(), &["rev-parse", "--verify", "main"]) {
+            "main"
+        } else {
+            "master"
+        };
+        assert!(run_test_git(temp.path(), &["checkout", "-q", "old"]));
+
+        let backend = credential_boundary_backend(temp.path());
+        backend
+            .checkout(WorkspaceGitCheckoutRequest {
+                refspec: new_branch.to_string(),
+                force: false,
+            })
+            .await
+            .expect("ordinary checkout");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_force_checkout_does_not_reset_a_dirty_credential_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=committed\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=dirty-checkout-7c41\n").unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        let error = backend
+            .checkout(WorkspaceGitCheckoutRequest {
+                refspec: "HEAD".to_string(),
+                force: true,
+            })
+            .await
+            .expect_err("force checkout must not reset a credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=dirty-checkout-7c41\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_stash_does_not_reset_a_dirty_credential_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=committed\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=dirty-stash-7c41\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "new\n").unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        let error = backend
+            .stash(WorkspaceGitStashRequest {
+                message: Some("should-not-land".to_string()),
+                include_untracked: false,
+            })
+            .await
+            .expect_err("stash must not reset a credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=dirty-stash-7c41\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "new\n"
+        );
+        assert!(backend.list_stashes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_stash_does_not_remove_an_untracked_credential_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=untracked-stash-91aa\n").unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "keep\n").unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        let error = backend
+            .stash(WorkspaceGitStashRequest {
+                message: Some("should-not-land".to_string()),
+                include_untracked: true,
+            })
+            .await
+            .expect_err("stash -u must not remove an untracked credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=untracked-stash-91aa\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("notes.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(backend.list_stashes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_stash_still_saves_an_ordinary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        std::fs::write(temp.path().join("README.md"), "new\n").unwrap();
+
+        let backend = credential_boundary_backend(temp.path());
+        backend
+            .stash(WorkspaceGitStashRequest {
+                message: Some("ordinary".to_string()),
+                include_untracked: false,
+            })
+            .await
+            .expect("an ordinary dirty file must still be stashable");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "old\n"
+        );
+        let stashes = backend.list_stashes().await.unwrap();
+        assert!(
+            stashes
+                .iter()
+                .any(|stash| stash.message.contains("ordinary")),
+            "{stashes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_branch_does_not_treat_an_option_like_base_as_a_git_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=committed\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        assert!(run_test_git(temp.path(), &["branch", "-M", "main"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=dirty-branch-4e18\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "new\n").unwrap();
+
+        let backend = LocalWorkspaceBackend::new(temp.path().to_path_buf());
+        let error = backend
+            .create_branch(WorkspaceGitCreateBranchRequest {
+                name: "feature".to_string(),
+                base: "-f".to_string(),
+            })
+            .await
+            .expect_err("an option-like base must not force-discard the worktree");
+        assert!(error.to_string().contains("create branch"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=dirty-branch-4e18\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".git/HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_create_branch_does_not_rewrite_a_credential_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join(".env"), "TOKEN=branch-secret-4e18\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "one\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "main"]));
+        assert!(run_test_git(temp.path(), &["branch", "-M", "main"]));
+        assert!(run_test_git(
+            temp.path(),
+            &["checkout", "-q", "-b", "other"]
+        ));
+        std::fs::write(temp.path().join(".env"), "TOKEN=other\n").unwrap();
+        std::fs::write(temp.path().join("README.md"), "two\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "other"]));
+        assert!(run_test_git(temp.path(), &["checkout", "-q", "main"]));
+
+        let backend = credential_boundary_backend(temp.path());
+        let error = backend
+            .create_branch(WorkspaceGitCreateBranchRequest {
+                name: "feature".to_string(),
+                base: "other".to_string(),
+            })
+            .await
+            .expect_err("creating a branch must not check out a credential path");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".env")).unwrap(),
+            "TOKEN=branch-secret-4e18\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".git/HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_create_branch_still_updates_an_ordinary_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join("README.md"), "one\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "main"]));
+        assert!(run_test_git(temp.path(), &["branch", "-M", "main"]));
+        assert!(run_test_git(
+            temp.path(),
+            &["checkout", "-q", "-b", "other"]
+        ));
+        std::fs::write(temp.path().join("README.md"), "two\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "other"]));
+        assert!(run_test_git(temp.path(), &["checkout", "-q", "main"]));
+
+        let backend = credential_boundary_backend(temp.path());
+        backend
+            .create_branch(WorkspaceGitCreateBranchRequest {
+                name: "feature".to_string(),
+                base: "other".to_string(),
+            })
+            .await
+            .expect("a branch that only changes an ordinary file must still be created");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(".git/HEAD")).unwrap(),
+            "ref: refs/heads/feature\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn checkout_does_not_treat_an_option_like_ref_as_a_git_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(run_test_git(temp.path(), &["init", "-q"]));
+        std::fs::write(temp.path().join("README.md"), "old\n").unwrap();
+        assert!(run_test_git(temp.path(), &["add", "."]));
+        assert!(run_test_git(temp.path(), &["commit", "-qm", "base"]));
+        let output = temp.path().join("injected-checkout");
+        let backend = LocalWorkspaceBackend::new(temp.path().to_path_buf());
+        let error = backend
+            .checkout(WorkspaceGitCheckoutRequest {
+                refspec: format!("--output={}", output.display()),
+                force: true,
+            })
+            .await
+            .expect_err("an option-like ref must not become a Git flag");
+        assert!(
+            error.to_string().contains("checkout") || error.to_string().contains("Git"),
+            "{error}"
+        );
+        assert!(!output.exists());
+    }
+
     #[test]
     fn local_backend_rejects_absolute_paths_outside_workspace() {
         let temp = tempfile::tempdir().unwrap();
@@ -1375,5 +1988,363 @@ mod tests {
             .normalize_path(absolute.to_str().unwrap())
             .expect("absolute path inside workspace should normalize");
         assert_eq!(path.as_str(), "src/main.rs");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_text_does_not_follow_a_symlink_file_out_of_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "outside-token-4c91").unwrap();
+        symlink(&outside_file, workspace.path().join("guest.txt")).unwrap();
+
+        let services = WorkspaceServices::local(workspace.path());
+        let path = services.normalize_path("guest.txt").unwrap();
+        let error = services
+            .fs()
+            .write_text(&path, "written-through-link")
+            .await
+            .expect_err("a symlink destination must not be written");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap(),
+            "outside-token-4c91"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_text_does_not_create_directories_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), workspace.path().join("escape")).unwrap();
+
+        let services = WorkspaceServices::local(workspace.path());
+        let path = services.normalize_path("escape/nested/new.txt").unwrap();
+        let error = services
+            .fs()
+            .write_text(&path, "created-outside")
+            .await
+            .expect_err("a symlink parent must not receive new directories");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert!(!outside.path().join("nested").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_text_does_not_return_bytes_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "outside-token-b81e").unwrap();
+        symlink(&outside_file, workspace.path().join("guest.txt")).unwrap();
+
+        let services = WorkspaceServices::local(workspace.path());
+        let path = services.normalize_path("guest.txt").unwrap();
+        let error = services
+            .fs()
+            .read_text(&path)
+            .await
+            .expect_err("a symlink read must not return outside bytes");
+        assert!(!error.to_string().contains("outside-token-b81e"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_dir_does_not_follow_a_symlink_directory() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("hidden.txt"), "outside-token-c44a").unwrap();
+        symlink(outside.path(), workspace.path().join("escape")).unwrap();
+
+        let services = WorkspaceServices::local(workspace.path());
+        let path = services.normalize_path("escape").unwrap();
+        let error = services
+            .fs()
+            .list_dir(&path)
+            .await
+            .expect_err("a symlink directory must not be listed");
+        let rendered = error.to_string();
+        assert!(!rendered.contains("hidden.txt"), "{rendered}");
+        assert!(!rendered.contains("outside-token-c44a"), "{rendered}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grep_and_glob_do_not_surface_a_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("hidden.txt"), "outside-token-e90d").unwrap();
+        symlink(outside.path(), workspace.path().join("escape")).unwrap();
+        std::fs::write(workspace.path().join("local.txt"), "local-only\n").unwrap();
+
+        let services = WorkspaceServices::local(workspace.path());
+        let search = services.search().expect("local backend supports search");
+        let grep = search
+            .grep(WorkspaceGrepRequest {
+                base: WorkspacePath::root(),
+                pattern: "outside-token-e90d".to_string(),
+                glob: None,
+                context_lines: 0,
+                case_insensitive: false,
+                max_output_size: 4096,
+            })
+            .await
+            .unwrap();
+        assert_eq!(grep.match_count, 0, "{}", grep.output);
+        assert!(!grep.output.contains("outside-token-e90d"));
+
+        let glob = search
+            .glob(WorkspaceGlobRequest {
+                base: WorkspacePath::root(),
+                pattern: "**/*".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            glob.matches
+                .iter()
+                .all(|path| !path.as_str().contains("hidden.txt")),
+            "{:?}",
+            glob.matches
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_worktree_does_not_follow_a_symlink_directory() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(
+            outside.path().join("keep.txt"),
+            "outside-worktree-token-6a41",
+        )
+        .unwrap();
+        symlink(outside.path(), workspace.path().join("escape")).unwrap();
+        init_worktree_repo(workspace.path());
+
+        let backend = LocalWorkspaceBackend::new(workspace.path().to_path_buf());
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "feature".to_string(),
+                path: Some("escape/wt".to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect_err("worktree create must not follow a symlink out of the workspace");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert!(!outside.path().join("wt").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+            "outside-worktree-token-6a41"
+        );
+
+        let absolute = workspace.path().join("escape/wt-abs");
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "feature-abs".to_string(),
+                path: Some(absolute.display().to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect_err("an absolute path must not follow a symlink out of the workspace");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert!(!outside.path().join("wt-abs").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+            "outside-worktree-token-6a41"
+        );
+
+        let sibling = tempfile::tempdir().unwrap();
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "sibling".to_string(),
+                path: Some(format!(
+                    "../{}",
+                    sibling.path().file_name().unwrap().to_string_lossy()
+                )),
+                new_branch: true,
+            })
+            .await
+            .expect_err("a relative parent path must not select a sibling worktree");
+        assert!(
+            error.to_string().contains("unsupported component"),
+            "{error}"
+        );
+        assert!(std::fs::read_dir(sibling.path()).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn create_worktree_still_creates_an_ordinary_worktree() {
+        let workspace = tempfile::tempdir().unwrap();
+        init_worktree_repo(workspace.path());
+        let backend = LocalWorkspaceBackend::new(workspace.path().to_path_buf());
+        let created = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "feature".to_string(),
+                path: Some("wt".to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect("an ordinary worktree path must still be created");
+        assert!(created.path.ends_with("wt"), "{}", created.path);
+        assert!(workspace.path().join("wt/README.md").is_file());
+        backend
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: workspace.path().join("wt").display().to_string(),
+                force: true,
+            })
+            .await
+            .expect("the ordinary worktree must still be removable");
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_create_worktree_does_not_check_out_a_credential_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        init_worktree_repo(workspace.path());
+        std::fs::write(
+            workspace.path().join(".env"),
+            "TOKEN=worktree-secret-2c91\n",
+        )
+        .unwrap();
+        assert!(run_test_git(workspace.path(), &["add", ".env"]));
+        assert!(run_test_git(workspace.path(), &["commit", "-qm", "secret"]));
+
+        let backend = credential_boundary_backend(workspace.path());
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "feature".to_string(),
+                path: Some("wt".to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect_err("worktree create must not check out a credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert!(!workspace.path().join("wt").exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+            "TOKEN=worktree-secret-2c91\n"
+        );
+
+        assert!(run_test_git(
+            workspace.path(),
+            &["checkout", "-q", "-b", "other"]
+        ));
+        std::fs::write(workspace.path().join(".env"), "TOKEN=other-worktree-8f12\n").unwrap();
+        assert!(run_test_git(workspace.path(), &["add", ".env"]));
+        assert!(run_test_git(workspace.path(), &["commit", "-qm", "other"]));
+        assert!(run_test_git(workspace.path(), &["checkout", "-q", "main"]));
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "other".to_string(),
+                path: Some("wt2".to_string()),
+                new_branch: false,
+            })
+            .await
+            .expect_err("checking out an existing branch must not write a credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert!(!workspace.path().join("wt2").exists());
+
+        let alias = workspace.path().join("wt-alias");
+        let error = backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "alias-feature".to_string(),
+                path: Some(alias.display().to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect_err("a non-canonical absolute path must not skip the credential check");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert!(!alias.exists());
+        assert!(!workspace
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("wt-alias")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_create_worktree_still_creates_an_ordinary_tree() {
+        let workspace = tempfile::tempdir().unwrap();
+        init_worktree_repo(workspace.path());
+        let backend = credential_boundary_backend(workspace.path());
+        backend
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "feature".to_string(),
+                path: Some("wt".to_string()),
+                new_branch: true,
+            })
+            .await
+            .expect("a tree without credential files must still create a worktree");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("wt/README.md")).unwrap(),
+            "v1\n"
+        );
+        assert!(!workspace.path().join("wt/.env").exists());
+        backend
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: workspace.path().join("wt").display().to_string(),
+                force: true,
+            })
+            .await
+            .expect("an ordinary worktree must still be removable");
+        assert!(!workspace.path().join("wt").exists());
+    }
+
+    #[tokio::test]
+    async fn credential_boundary_remove_worktree_does_not_delete_a_credential_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        init_worktree_repo(workspace.path());
+        std::fs::write(workspace.path().join(".env"), "TOKEN=remove-wt-6b20\n").unwrap();
+        assert!(run_test_git(workspace.path(), &["add", ".env"]));
+        assert!(run_test_git(workspace.path(), &["commit", "-qm", "secret"]));
+        assert!(run_test_git(
+            workspace.path(),
+            &["worktree", "add", "wt", "-b", "feature"]
+        ));
+
+        let backend = credential_boundary_backend(workspace.path());
+        let error = backend
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: workspace.path().join("wt").display().to_string(),
+                force: true,
+            })
+            .await
+            .expect_err("worktree remove must not delete a credential file");
+        assert!(error.to_string().contains("credential boundary"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("wt/.env")).unwrap(),
+            "TOKEN=remove-wt-6b20\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+            "TOKEN=remove-wt-6b20\n"
+        );
+    }
+
+    fn init_worktree_repo(root: &Path) {
+        assert!(run_test_git(root, &["init"]));
+        assert!(run_test_git(
+            root,
+            &["config", "user.email", "a3s@example.com"]
+        ));
+        assert!(run_test_git(root, &["config", "user.name", "a3s"]));
+        std::fs::write(root.join("README.md"), "v1\n").unwrap();
+        assert!(run_test_git(root, &["add", "README.md"]));
+        assert!(run_test_git(root, &["commit", "-m", "one"]));
     }
 }

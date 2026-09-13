@@ -24,6 +24,7 @@ const (
 	EventConfirmationRequired   = "confirmation_required"
 	EventConfirmationReceived   = "confirmation_received"
 	EventConfirmationTimeout    = "confirmation_timeout"
+	EventUserQuestion           = "user_question"
 	EventExternalTaskPending    = "external_task_pending"
 	EventExternalTaskCompleted  = "external_task_completed"
 	EventPermissionDenied       = "permission_denied"
@@ -78,6 +79,7 @@ var agentEventTypesV1 = [...]string{
 	EventConfirmationRequired,
 	EventConfirmationReceived,
 	EventConfirmationTimeout,
+	EventUserQuestion,
 	EventExternalTaskPending,
 	EventExternalTaskCompleted,
 	EventPermissionDenied,

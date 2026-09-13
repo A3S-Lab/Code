@@ -46,10 +46,63 @@ struct DelegatedParallelChildResult {
 fn accumulate_result_accounting(
     total_usage: &mut TokenUsage,
     tool_calls_count: &mut usize,
+    verification_reports: &mut Vec<crate::verification::VerificationReport>,
     result: &AgentResult,
 ) {
     total_usage.accumulate(&result.usage);
     *tool_calls_count = (*tool_calls_count).saturating_add(result.tool_calls_count);
+    verification_reports.extend(result.verification_reports.iter().cloned());
+}
+
+pub(super) fn push_published_completions(
+    slot: &mut Vec<crate::harness_loop::CompletionTerminal>,
+    metadata: &Option<Value>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    if let Some(value) = metadata.get("completion") {
+        if let Ok(terminal) = serde_json::from_value(value.clone()) {
+            slot.push(terminal);
+        }
+    }
+    if let Some(results) = metadata.get("results").and_then(Value::as_array) {
+        for result in results {
+            if let Some(value) = result.get("completion") {
+                if let Ok(terminal) = serde_json::from_value(value.clone()) {
+                    slot.push(terminal);
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn delegated_mutation_without_closure(metadata: &Option<Value>) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    let has_paths = metadata
+        .get("changed_paths")
+        .and_then(Value::as_array)
+        .is_some_and(|paths| !paths.is_empty());
+    if !has_paths {
+        return false;
+    }
+    metadata.get("completion").is_none()
+        && metadata
+            .get("results")
+            .and_then(Value::as_array)
+            .is_none_or(|results| {
+                results
+                    .iter()
+                    .all(|result| result.get("completion").is_none())
+            })
+}
+
+fn remember_completion_gate(slot: &mut Option<String>, message: &str) {
+    if slot.is_none() && message.contains("completion gate:") {
+        *slot = Some(message.to_string());
+    }
 }
 
 fn accumulate_failure_accounting(
@@ -264,6 +317,9 @@ impl AgentLoop {
         let mut current_history = history.to_vec();
         let mut total_usage = TokenUsage::default();
         let mut tool_calls_count = 0;
+        let mut verification_reports = Vec::new();
+        let mut completion_gate_failure = None;
+        let mut step_completions = Vec::new();
         let total_steps = plan.steps.len();
 
         // Product transcript keeps the human task; model wire gets the plan kickoff.
@@ -352,7 +408,7 @@ impl AgentLoop {
                             total_steps,
                         )]
                     });
-                    let (output, _exit_code, is_error, _metadata) = self
+                    let (output, _exit_code, is_error, metadata) = self
                         .execute_delegated_plan_tool(
                             "task",
                             &args,
@@ -362,7 +418,16 @@ impl AgentLoop {
                         )
                         .await;
                     tool_calls_count += 1;
+                    Self::collect_verification_report(&mut verification_reports, &metadata);
 
+                    remember_completion_gate(&mut completion_gate_failure, &output);
+                    push_published_completions(&mut step_completions, &metadata);
+                    if !is_error && delegated_mutation_without_closure(&metadata) {
+                        remember_completion_gate(
+                            &mut completion_gate_failure,
+                            "completion gate: delegated plan step changed the workspace without a bound closure. A final answer does not make that narrative.",
+                        );
+                    }
                     if is_error {
                         tracing::error!("Delegated plan step '{}' failed: {}", step.id, output);
                         current_history.push(Message::user_wire(&format!(
@@ -423,9 +488,11 @@ impl AgentLoop {
                     {
                         Ok(result) => {
                             current_history = result.messages.clone();
+                            step_completions.push(result.completion.clone());
                             accumulate_result_accounting(
                                 &mut total_usage,
                                 &mut tool_calls_count,
+                                &mut verification_reports,
                                 &result,
                             );
                             if cancel_token.is_cancelled() {
@@ -460,6 +527,7 @@ impl AgentLoop {
                             }
                         }
                         Err(e) => {
+                            remember_completion_gate(&mut completion_gate_failure, &e.to_string());
                             accumulate_failure_accounting(
                                 &mut total_usage,
                                 &mut tool_calls_count,
@@ -554,18 +622,32 @@ impl AgentLoop {
                         )
                         .await;
                     tool_calls_count += 1;
+                    Self::collect_verification_report(&mut verification_reports, &metadata);
 
                     let child_results = Self::delegated_parallel_child_results(
                         metadata.as_ref(),
                         ready_steps.len(),
                         !is_error,
                     );
+                    remember_completion_gate(&mut completion_gate_failure, &output);
+                    push_published_completions(&mut step_completions, &metadata);
+                    if !is_error && delegated_mutation_without_closure(&metadata) {
+                        remember_completion_gate(
+                            &mut completion_gate_failure,
+                            "completion gate: delegated plan step changed the workspace without a bound closure. A final answer does not make that narrative.",
+                        );
+                    }
                     let wave_failed =
                         is_error || child_results.iter().any(|result| !result.success);
 
                     for ((step, step_number), child_result) in
                         ready_steps.iter().zip(child_results.iter())
                     {
+                        if !child_result.success {
+                            if let Some(error) = child_result.output.as_deref() {
+                                remember_completion_gate(&mut completion_gate_failure, error);
+                            }
+                        }
                         let status = if child_result.success {
                             TaskStatus::Completed
                         } else {
@@ -669,6 +751,14 @@ impl AgentLoop {
                     .await;
 
                     if cancel_token.is_cancelled() {
+                        for outcome in &outcomes {
+                            if let Ok(Err(error)) = &outcome.output {
+                                remember_completion_gate(
+                                    &mut completion_gate_failure,
+                                    &error.to_string(),
+                                );
+                            }
+                        }
                         for (step, step_number) in &ready_steps {
                             plan.mark_status(&step.id, TaskStatus::Cancelled);
                             if let Some(tx) = &event_tx {
@@ -695,9 +785,11 @@ impl AgentLoop {
                         match outcome.output {
                             Ok(step_result) => match step_result {
                                 Ok(result) => {
+                                    step_completions.push(result.completion.clone());
                                     accumulate_result_accounting(
                                         &mut total_usage,
                                         &mut tool_calls_count,
+                                        &mut verification_reports,
                                         &result,
                                     );
                                     plan.mark_status(&step_id, TaskStatus::Completed);
@@ -726,6 +818,10 @@ impl AgentLoop {
                                     }
                                 }
                                 Err(e) => {
+                                    remember_completion_gate(
+                                        &mut completion_gate_failure,
+                                        &e.to_string(),
+                                    );
                                     accumulate_failure_accounting(
                                         &mut total_usage,
                                         &mut tool_calls_count,
@@ -842,12 +938,18 @@ impl AgentLoop {
             })
             .unwrap_or_default();
 
+        if let Some(message) = completion_gate_failure {
+            return Err(anyhow::anyhow!(message));
+        }
+
         Ok(AgentResult {
             text: final_text,
             messages: current_history,
             usage: total_usage,
             tool_calls_count,
-            verification_reports: Vec::new(),
+            verification_reports,
+            completion: crate::harness_loop::fold_step_completions(&step_completions),
+            run_admission: self.config.plan_run.label().to_string(),
         })
     }
 }
@@ -855,6 +957,25 @@ impl AgentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_bound_closure_is_kept_and_a_bare_mutation_is_not_narrative() {
+        let mut completions = Vec::new();
+        let metadata = Some(serde_json::json!({
+            "changed_paths": ["guest.txt"],
+            "completion": { "kind": "verified", "effect_digest": "digest-a" }
+        }));
+        push_published_completions(&mut completions, &metadata);
+        assert_eq!(
+            crate::harness_loop::fold_step_completions(&completions),
+            crate::harness_loop::CompletionTerminal::Verified {
+                effect_digest: "digest-a".to_string(),
+            }
+        );
+        assert!(!delegated_mutation_without_closure(&metadata));
+        let bare = Some(serde_json::json!({ "changed_paths": ["guest.txt"] }));
+        assert!(delegated_mutation_without_closure(&bare));
+    }
 
     #[test]
     fn delegated_results_use_each_child_output_excerpt() {

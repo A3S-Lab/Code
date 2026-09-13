@@ -733,6 +733,24 @@ export interface SessionOptions {
   retentionLimits?: RetentionLimitsObject
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
+  /** Extra environment variables merged into Bash / sandbox command execution. */
+  commandEnv?: Record<string, string>
+  /** Host-confirmed completion waivers bound to an effect digest. */
+  completionWaivers?: Array<{ effect_digest: string, reason: string }>
+  /** When true, writes bind a git worktree and never fall back to the source tree. */
+  effectIsolation?: boolean
+  /** Typed external observations bound into the run. */
+  externalObservations?: any
+  /** Outcome ledger written by the promoting host. */
+  outcomeLedger?: any
+  /** Path-scoped instruction fragments. Each item is `{ glob, text }`. */
+  pathRules?: Array<{ glob: string, text: string }>
+  /** Admitted plan digest for an implementation run. */
+  planRun?: { claims_implementation: boolean, plan_digest?: string }
+  /** A session that cannot write does not get an isolated worktree. */
+  readOnlySession?: boolean
+  /** Opt-in read-only verifier. Default is off. */
+  verifierEnabled?: boolean
   /**
    * HITL confirmation policy configuration.
    *
@@ -2148,6 +2166,48 @@ export declare class Session {
   mcpStatus(): Promise<Array<McpServerStatusEntry>>
   /** Return MCP server status with the compact API. */
   mcps(): Promise<Array<McpServerStatusEntry>>
+  /** Current durable session-review store. */
+  sessionReviewStore(): any
+  /** Registered scenario ids, sorted. */
+  reviewScenarioIds(): Array<string>
+  /** Pending findings whose registered scenario injects into the next main turn. */
+  pendingSessionReviewFindings(): any
+  /** Pending findings for one scenario. Empty when that scenario does not inject. */
+  pendingSessionReviewFindingsForScenario(scenarioId: string): any
+  /** Findings waiting for reviewer acceptance. */
+  addressedSessionReviewFindings(): any
+  /** Insert or replace a finding. New findings must be pending. */
+  upsertSessionReviewFinding(finding: any): void
+  /** Mark a pending finding addressed by a main-agent run. */
+  markSessionReviewAddressed(findingId: string, runId: string, atMs: number): void
+  /** Accept an addressed finding. */
+  acceptSessionReviewFinding(findingId: string, reviewId: string, atMs: number): void
+  /** Reopen an addressed finding. */
+  reopenSessionReviewFinding(findingId: string, reason: string, atMs: number): void
+  /** Waive a pending finding. */
+  waiveSessionReviewFinding(findingId: string, atMs: number): void
+  /** Demote a mistaken product-visible address user prompt to wire-only. */
+  concealLatestFindingsAddressTurn(): number
+  /**
+   * Record a kept, reverted, or rejected constraint against a change-set digest.
+   *
+   * `outcome` is `accept`, `revert`, or `reject`. A secret-shaped constraint
+   * is not stored. Returns whether the ledger kept the record.
+   */
+  recordOutcome(outcome: string, changeDigest: string, constraint: string): boolean
+  /** Remember the promoted isolation digest without activating recall. */
+  notePromotedDigest(digest: string): boolean
+  /** Ledger the next turn will serve, including host records since construction. */
+  outcomeLedgerSnapshot(): any
+  /**
+   * Rebuild executor tool registrations from inherited MCP managers.
+   *
+   * Call after `Agent.syncGlobalMcpServers` so a live session picks up
+   * global connector changes without a restart. Session-local servers stay.
+   */
+  republishInheritedMcpTools(): Promise<void>
+  /** Whether this session inherits at least one shared MCP manager. */
+  inheritsMcpManagers(): boolean
   /**
    * Return the names of all tools currently registered on this session.
    *
@@ -2271,6 +2331,20 @@ export declare class Agent {
    * Existing sessions are unaffected.
    */
   refreshMcpTools(): Promise<void>
+  /**
+   * Hot-sync the shared global MCP manager to match `servers`.
+   *
+   * Enabled entries are registered and best-effort connected; disabled or
+   * omitted entries are removed. New sessions see the refreshed catalog.
+   * Live sessions must republish inherited MCP tools themselves.
+   */
+  syncGlobalMcpServers(servers: McpServerConfig[]): Promise<void>
+  /**
+   * Live status of servers on this agent's shared global MCP manager.
+   *
+   * Empty when the agent has no global manager. Enabled is not connected.
+   */
+  globalMcpStatus(): Promise<Array<McpServerStatusEntry>>
   /**
    * Return current occupancy of the priority scheduler shared by every
    * session created from this Agent.

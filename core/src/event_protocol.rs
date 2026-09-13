@@ -65,6 +65,7 @@ define_agent_event_types_v1! {
     ConfirmationRequired => CONFIRMATION_REQUIRED = "confirmation_required",
     ConfirmationReceived => CONFIRMATION_RECEIVED = "confirmation_received",
     ConfirmationTimeout => CONFIRMATION_TIMEOUT = "confirmation_timeout",
+    UserQuestion => USER_QUESTION = "user_question",
     ExternalTaskPending => EXTERNAL_TASK_PENDING = "external_task_pending",
     ExternalTaskCompleted => EXTERNAL_TASK_COMPLETED = "external_task_completed",
     PermissionDenied => PERMISSION_DENIED = "permission_denied",

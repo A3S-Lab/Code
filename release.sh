@@ -129,6 +129,14 @@ update_node_lockfile sdk/node/examples/package-lock.json
 echo "✅ Version numbers updated"
 echo ""
 
+echo "Step 1b: Promote Unreleased changelog notes"
+echo "----------------------------------------"
+python3 scripts/promote_unreleased_changelog.py "${VERSION}" \
+    CHANGELOG.md \
+    sdk/python/CHANGELOG.md
+echo "✅ Unreleased notes sit under ${VERSION}"
+echo ""
+
 echo "Step 2: Update Cargo.lock"
 echo "----------------------------------------"
 cargo check --workspace

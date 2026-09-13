@@ -5,6 +5,18 @@ use std::path::PathBuf;
 // Search / Browser / Document Configuration
 // ============================================================================
 
+/// Ordered cascade tiers for automatic web-search fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchCascadeTier {
+    /// JavaScript-rendered engines (Google, Baidu, Bing, Brave via headless).
+    Headless,
+    /// Public HTTP/RSS scrapers and feeds.
+    Http,
+    /// Native API providers (AnySearch, Tavily).
+    Api,
+}
+
 /// Search engine configuration (a3s-search integration)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +28,18 @@ pub struct SearchConfig {
     /// Health monitor configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<SearchHealthConfig>,
+
+    /// Preferred cascade tier order for automatic fallback.
+    ///
+    /// When omitted, Code uses Headless → HTTP → API (or HTTP → API without
+    /// the `headless-search` feature). Invalid or empty lists fall back to that
+    /// default. Duplicate entries are ignored.
+    #[serde(
+        default,
+        alias = "cascade_order",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cascade_order: Option<Vec<SearchCascadeTier>>,
 
     /// Engine configurations
     #[serde(default, rename = "engine")]
@@ -224,6 +248,16 @@ pub struct SearchEngineConfig {
     /// Per-engine timeout override in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+
+    /// Optional API key for native providers (`anysearch`, `tavily`, and the
+    /// opt-in billed providers).
+    /// When set, overrides the provider's environment-variable default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Optional Tavily project identifier used with an authenticated key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 pub(crate) fn default_search_timeout() -> u64 {

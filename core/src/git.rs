@@ -724,7 +724,19 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
 
 /// Create a new branch.
 pub fn create_branch(repo_path: &Path, name: &str, base: &str) -> Result<()> {
-    let (success, _, stderr) = run_git(repo_path, &["checkout", "-b", name, base])?;
+    if name.trim().is_empty()
+        || name.contains('\0')
+        || base.trim().is_empty()
+        || base.contains('\0')
+    {
+        return Err(anyhow!(
+            "Git branch name and base must be non-empty revisions"
+        ));
+    }
+    let (success, _, stderr) = run_git(
+        repo_path,
+        &["checkout", "-b", name, "--end-of-options", base],
+    )?;
     if !success && !stderr.is_empty() {
         return Err(anyhow!("Failed to create branch: {}", stderr));
     }
@@ -794,9 +806,16 @@ pub fn create_worktree(
 ) -> Result<()> {
     let path_str = path.display().to_string();
     let args: Vec<&str> = if new_branch {
-        vec!["worktree", "add", "-b", branch, &path_str]
+        vec![
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            "--end-of-options",
+            &path_str,
+        ]
     } else {
-        vec!["worktree", "add", &path_str, branch]
+        vec!["worktree", "add", "--end-of-options", &path_str, branch]
     };
 
     let (success, _, stderr) = run_git(repo_path, &args)?;
@@ -810,9 +829,15 @@ pub fn create_worktree(
 pub fn remove_worktree(repo_path: &Path, path: &Path, force: bool) -> Result<()> {
     let path_str = path.display().to_string();
     let args: Vec<&str> = if force {
-        vec!["worktree", "remove", "--force", &path_str]
+        vec![
+            "worktree",
+            "remove",
+            "--force",
+            "--end-of-options",
+            &path_str,
+        ]
     } else {
-        vec!["worktree", "remove", &path_str]
+        vec!["worktree", "remove", "--end-of-options", &path_str]
     };
 
     let (success, _, stderr) = run_git(repo_path, &args)?;
@@ -838,13 +863,95 @@ fn diff_arguments(target: Option<&str>, output_options: &[&str]) -> Result<Vec<O
     Ok(args)
 }
 
+/// Paths a checkout of `to` would change relative to `from`.
+///
+/// The revision is passed after `--end-of-options`, so a flag-like ref cannot
+/// become a Git option.
+pub(crate) fn paths_changed_between(
+    repo_path: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<PathBuf>> {
+    if from.trim().is_empty() || to.trim().is_empty() || from.contains('\0') || to.contains('\0') {
+        return Err(anyhow!("Git checkout ref must be a non-empty revision"));
+    }
+    let mut args = [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        "--end-of-options",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<Vec<_>>();
+    args.push(OsString::from(from));
+    args.push(OsString::from(to));
+    args.push(OsString::from("--"));
+    args.push(OsString::from("."));
+    nul_delimited_paths(repo_path, &args)
+}
+
+/// Return tracked and untracked files `worktree remove` would delete.
+pub(crate) fn worktree_removable_paths(worktree: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = tracked_tree_paths(worktree, "HEAD")?;
+    let args = ["ls-files", "--others", "-z"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    paths.extend(nul_delimited_paths(worktree, &args)?);
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Return tracked paths that a worktree checkout of `revision` would write.
+pub(crate) fn tracked_tree_paths(repo_path: &Path, revision: &str) -> Result<Vec<PathBuf>> {
+    let args = [
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        "--end-of-options",
+        revision,
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<Vec<_>>();
+    nul_delimited_paths(repo_path, &args)
+}
+
+/// Return staged paths that `stash push` would reset to HEAD.
+pub(crate) fn staged_diff_paths(repo_path: &Path) -> Result<Vec<PathBuf>> {
+    let args = ["diff", "--cached", "--name-only", "-z", "--", "."]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    nul_delimited_paths(repo_path, &args)
+}
+
+/// Return untracked, non-ignored paths that `stash push -u` would remove.
+pub(crate) fn untracked_paths(repo_path: &Path) -> Result<Vec<PathBuf>> {
+    let args = ["ls-files", "--others", "--exclude-standard", "-z"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    nul_delimited_paths(repo_path, &args)
+}
+
 /// Return changed paths using Git's NUL-delimited, non-quoted format.
 pub(crate) fn get_diff_paths(repo_path: &Path, target: Option<&str>) -> Result<Vec<PathBuf>> {
     let mut args = diff_arguments(target, &["--name-only", "-z"])?;
     args.push(OsString::from("--"));
     args.push(OsString::from("."));
 
-    let (success, stdout, stderr) = run_git_os(repo_path, &args)?;
+    nul_delimited_paths(repo_path, &args)
+}
+
+fn nul_delimited_paths(repo_path: &Path, args: &[OsString]) -> Result<Vec<PathBuf>> {
+    let (success, stdout, stderr) = run_git_os(repo_path, args)?;
     if !success {
         return Err(anyhow!(
             "Failed to list Git diff paths: {}",

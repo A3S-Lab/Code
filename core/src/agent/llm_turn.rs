@@ -37,6 +37,7 @@ pub(super) struct LlmTurnRequest<'a> {
     pub(super) event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
     pub(super) cancel_token: &'a tokio_util::sync::CancellationToken,
     pub(super) force_no_tools: bool,
+    pub(super) verifier_role: bool,
 }
 
 struct LlmCallRequest<'a> {
@@ -71,12 +72,14 @@ impl AgentLoop {
             event_tx,
             cancel_token,
             force_no_tools,
+            verifier_role,
         } = request;
         self.ensure_turn_can_start(turn, state, event_tx, force_no_tools)
             .await?;
         self.emit_turn_start(turn, event_tx).await;
 
-        let mut selected_tools = self.presented_tools(&state.messages, force_no_tools)?;
+        let mut selected_tools =
+            self.presented_tools(&state.messages, force_no_tools, verifier_role)?;
         let estimated_prompt_tokens = estimate_prompt_tokens(
             &state.messages,
             augmented_system.as_deref(),
@@ -97,7 +100,7 @@ impl AgentLoop {
 
         // Compaction can change the history-sensitive tool selection. Rebuild
         // the request definitions from the context that will actually be sent.
-        selected_tools = self.presented_tools(&state.messages, force_no_tools)?;
+        selected_tools = self.presented_tools(&state.messages, force_no_tools, verifier_role)?;
         let request_fixed_prompt_tokens =
             estimate_prompt_tokens(&[], augmented_system.as_deref(), &selected_tools);
 
@@ -128,7 +131,7 @@ impl AgentLoop {
         .await;
 
         let llm_start = std::time::Instant::now();
-        let response = self
+        let mut response = self
             .call_llm_with_circuit_breaker(LlmCallRequest {
                 turn,
                 messages: &state.messages,
@@ -141,6 +144,10 @@ impl AgentLoop {
                 max_execution_time_ms: self.config.max_execution_time_ms,
             })
             .await?;
+
+        if !selected_tools.is_empty() {
+            crate::llm::recover_text_tool_calls(&mut response.message);
+        }
 
         state.record_usage(&response.usage);
         self.complete_llm_turn(
@@ -179,6 +186,7 @@ impl AgentLoop {
         &self,
         messages: &[Message],
         force_no_tools: bool,
+        verifier_role: bool,
     ) -> anyhow::Result<Vec<ToolDefinition>> {
         if force_no_tools {
             return Ok(Vec::new());
@@ -194,6 +202,9 @@ impl AgentLoop {
             // then denied by the safety gate. Do not advertise capabilities the
             // runtime can prove are impossible to execute.
             visible_source.clear();
+        }
+        if verifier_role {
+            visible_source.retain(|tool| crate::read_only_verifier::presentable(&tool.name));
         }
         self.config
             .tool_presentation_profile

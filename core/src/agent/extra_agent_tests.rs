@@ -1,3 +1,4 @@
+use super::execution_state::ExecutionLoopState;
 use super::*;
 use crate::agent::tests::MockLlmClient;
 use crate::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
@@ -8,8 +9,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-fn test_tool_context() -> ToolContext {
-    ToolContext::new(PathBuf::from("/tmp"))
+#[tokio::test]
+async fn cancelled_mutating_run_is_not_agent_result_success() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mock_client = Arc::new(MockLlmClient::new(vec![]));
+    let tool_executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        AgentConfig::default(),
+    );
+    let mut clean = ExecutionLoopState::new(&[]);
+    clean.bind_run_watch(workspace.path()).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let read_only = agent
+        .finish_cancel(clean, &cancel)
+        .await
+        .expect("a read-only cancel keeps history");
+    assert_eq!(
+        read_only.completion,
+        crate::harness_loop::CompletionTerminal::Narrative
+    );
+
+    let mut dirty = ExecutionLoopState::new(&[]);
+    dirty.bind_run_watch(workspace.path()).await;
+    std::fs::write(workspace.path().join("guest.txt"), "hello\n").unwrap();
+    let failed = agent
+        .finish_cancel(dirty, &cancel)
+        .await
+        .expect_err("a mutated cancel must not return AgentResult success");
+    let message = failed.to_string();
+    assert!(
+        message.contains("completion gate:"),
+        "cancel of a mutated workspace was not a completion-gate failure: {message}"
+    );
 }
 
 struct AllowDelegatedTools;
@@ -252,11 +286,12 @@ impl LlmClient for CancellablePlanStepClient {
 
 #[tokio::test]
 async fn pre_analysis_stops_on_parent_cancellation_before_execution() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let client = Arc::new(BlockingPreAnalysisClient::new());
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -298,6 +333,7 @@ async fn pre_analysis_stops_on_parent_cancellation_before_execution() {
 
 #[tokio::test]
 async fn pre_analysis_budget_deny_skips_the_llm_client() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let client = Arc::new(CountingPlanningClient {
         calls: AtomicUsize::new(0),
     });
@@ -308,8 +344,8 @@ async fn pre_analysis_budget_deny_skips_the_llm_client() {
     };
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -335,6 +371,7 @@ async fn pre_analysis_budget_deny_skips_the_llm_client() {
 
 #[tokio::test]
 async fn pre_analysis_repair_checks_and_records_each_llm_call() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let valid_pre_analysis = serde_json::json!({
         "intent": "plan",
         "requires_planning": true,
@@ -363,8 +400,8 @@ async fn pre_analysis_repair_checks_and_records_each_llm_call() {
     };
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -385,15 +422,117 @@ async fn pre_analysis_repair_checks_and_records_each_llm_call() {
     assert_eq!(budget.recorded_tokens.load(Ordering::SeqCst), 30);
 }
 
+struct PlanSideWriteClient {
+    workspace: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for PlanSideWriteClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        std::fs::write(self.workspace.join("guest.txt"), "from the plan step\n")?;
+        Ok(MockLlmClient::text_response("The step is finished."))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("this fixture uses the non-streaming plan step")
+    }
+}
+
+#[tokio::test]
+async fn plan_keeps_an_admitted_implementation_label_on_a_read_only_step() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        plan_run: crate::harness_loop::PlanRunAdmission::implementation("plan-digest"),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            "Nothing to change.",
+        )])),
+        Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+    let mut plan = ExecutionPlan::new("read only plan", Complexity::Simple);
+    plan.add_step(Task::new("s1", "Answer without writing"));
+
+    let result = agent
+        .execute_plan(
+            &[],
+            &plan,
+            Some("plan-label"),
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("a read-only plan step may succeed");
+    assert_eq!(result.run_admission, "plan_implementation");
+    assert_eq!(
+        result.completion,
+        crate::harness_loop::CompletionTerminal::Narrative
+    );
+}
+
+#[tokio::test]
+async fn plan_does_not_return_success_when_a_step_fails_the_completion_gate() {
+    use crate::planning::{Complexity, ExecutionPlan, Task};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = AgentLoop::new(
+        Arc::new(PlanSideWriteClient {
+            workspace: workspace.path().to_path_buf(),
+        }),
+        Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+        ToolContext::new(workspace.path().to_path_buf()),
+        AgentConfig::default(),
+    );
+    let mut plan = ExecutionPlan::new("mutate without evidence", Complexity::Simple);
+    plan.add_step(Task::new("s1", "Write the guest file"));
+
+    let failed = agent
+        .execute_plan(
+            &[],
+            &plan,
+            Some("plan-gate"),
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("a plan must not return AgentResult success after a gated mutation");
+    let message = failed.to_string();
+    assert!(
+        message.contains("completion gate:"),
+        "plan wrapped a gated mutation as success: {message}"
+    );
+    assert!(
+        workspace.path().join("guest.txt").is_file(),
+        "the fixture must actually mutate the workspace"
+    );
+}
+
 #[tokio::test]
 async fn serial_plan_steps_stop_starting_llm_calls_after_parent_cancellation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     let client = Arc::new(CancellablePlanStepClient::new());
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
     let mut plan = ExecutionPlan::new("serial cancellation", Complexity::Simple);
@@ -425,6 +564,7 @@ async fn serial_plan_steps_stop_starting_llm_calls_after_parent_cancellation() {
 
 #[tokio::test]
 async fn parallel_plan_steps_stop_starting_llm_calls_after_parent_cancellation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     let client = Arc::new(CancellablePlanStepClient::new());
@@ -434,8 +574,8 @@ async fn parallel_plan_steps_stop_starting_llm_calls_after_parent_cancellation()
     };
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let mut plan = ExecutionPlan::new("parallel cancellation", Complexity::Simple);
@@ -626,12 +766,13 @@ fn test_agent_config_default_values() {
 
 #[test]
 fn test_auto_pre_analysis_runs_without_keyword_gate() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -640,25 +781,32 @@ fn test_auto_pre_analysis_runs_without_keyword_gate() {
 
 #[test]
 fn test_disabled_planning_never_runs_pre_analysis() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         planning_mode: PlanningMode::Disabled,
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     assert!(!agent.should_run_pre_analysis());
 }
 
 #[test]
 fn auto_mode_does_not_fabricate_a_plan_when_pre_analysis_is_unavailable() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -704,6 +852,7 @@ fn planning_hook_recorder(
 
 #[tokio::test]
 async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response(
             r#"{
@@ -722,13 +871,18 @@ async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
         ),
         MockLlmClient::text_response("Planning hooks wired."),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let (hook, events) = planning_hook_recorder(crate::hooks::HookResult::Continue(None));
     let config = AgentConfig {
         hook_engine: Some(hook),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let result = agent
         .execute_with_planning(
@@ -780,7 +934,8 @@ async fn test_execute_with_planning_fires_pre_and_post_planning_hooks() {
 }
 
 #[tokio::test]
-async fn goal_achievement_is_emitted_before_terminal_end() {
+async fn goal_achievement_requires_structured_verification_evidence() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
     use crate::prompts::{AgentStyle, PlanningMode};
 
@@ -790,11 +945,11 @@ async fn goal_achievement_is_emitted_before_terminal_end() {
         ),
         MockLlmClient::text_response(r#"{"achieved":true,"progress":1.0,"remaining_criteria":[]}"#),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: PlanningMode::Enabled,
             goal_tracking: true,
@@ -843,24 +998,23 @@ async fn goal_achievement_is_emitted_before_terminal_end() {
     while let Some(event) = rx.recv().await {
         events.push(event);
     }
-    let achieved = events
-        .iter()
-        .position(|event| matches!(event, AgentEvent::GoalAchieved { .. }))
-        .expect("GoalAchieved should be emitted for a verified goal");
-    let end = events
-        .iter()
-        .position(|event| matches!(event, AgentEvent::End { .. }))
-        .expect("End should be emitted after goal evaluation");
-
     assert!(
-        achieved < end,
-        "GoalAchieved must precede terminal End: {events:?}"
+        events
+            .iter()
+            .all(|event| !matches!(event, AgentEvent::GoalAchieved { .. })),
+        "prose-only LLM yes must not emit GoalAchieved without structured verification: {events:?}"
     );
-    assert!(matches!(events.last(), Some(AgentEvent::End { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::End { .. })),
+        "End should still be emitted after fail-closed goal evaluation: {events:?}"
+    );
 }
 
 #[tokio::test]
 async fn unachieved_goal_emits_terminal_end_without_false_achievement() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
     use crate::prompts::{AgentStyle, PlanningMode};
 
@@ -870,11 +1024,11 @@ async fn unachieved_goal_emits_terminal_end_without_false_achievement() {
             r#"{"achieved":false,"progress":0.6,"remaining_criteria":["verification"]}"#,
         ),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: PlanningMode::Enabled,
             goal_tracking: true,
@@ -922,15 +1076,21 @@ async fn unachieved_goal_emits_terminal_end_without_false_achievement() {
 
 #[tokio::test]
 async fn test_pre_planning_hook_can_block_planning_before_start_event() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let (hook, events) =
         planning_hook_recorder(crate::hooks::HookResult::block("policy denied planning"));
     let config = AgentConfig {
         hook_engine: Some(hook),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let (tx, mut rx) = mpsc::channel(100);
     let error = agent
@@ -971,6 +1131,7 @@ async fn test_pre_planning_hook_can_block_planning_before_start_event() {
 
 #[tokio::test]
 async fn test_pre_planning_hook_modification_updates_planner_input() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response(
             r#"{
@@ -989,7 +1150,7 @@ async fn test_pre_planning_hook_modification_updates_planner_input() {
         ),
         MockLlmClient::text_response("Modified planning complete."),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let (hook, events) =
         planning_hook_recorder(crate::hooks::HookResult::continue_with(serde_json::json!({
             "modified_task": "Use the hook-modified planning task",
@@ -1004,7 +1165,7 @@ async fn test_pre_planning_hook_modification_updates_planner_input() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -1070,6 +1231,7 @@ async fn test_pre_planning_hook_modification_updates_planner_input() {
 
 #[tokio::test]
 async fn test_pre_planning_hook_modification_discards_pre_analysis_plan() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{AgentGoal, Complexity, ExecutionPlan, PreAnalysis, Task};
     use crate::prompts::AgentStyle;
 
@@ -1091,7 +1253,7 @@ async fn test_pre_planning_hook_modification_discards_pre_analysis_plan() {
         ),
         MockLlmClient::text_response("Hook-modified plan executed."),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let (hook, events) =
         planning_hook_recorder(crate::hooks::HookResult::continue_with(serde_json::json!({
             "modified_task": "Use the hook-modified plan instead"
@@ -1103,7 +1265,7 @@ async fn test_pre_planning_hook_modification_discards_pre_analysis_plan() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -1372,6 +1534,8 @@ fn test_agent_result_fields() {
         usage: TokenUsage::default(),
         tool_calls_count: 3,
         verification_reports: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+        run_admission: "ordinary".to_string(),
     };
     assert_eq!(result.text, "output");
     assert_eq!(result.messages.len(), 1);
@@ -1425,6 +1589,8 @@ fn test_agent_result_verification_summary() {
         usage: TokenUsage::default(),
         tool_calls_count: 1,
         verification_reports: vec![report],
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+        run_admission: "ordinary".to_string(),
     };
 
     let summary = result.verification_summary();
@@ -1692,15 +1858,16 @@ fn test_agent_event_serialize_goal_achieved() {
 
 #[tokio::test]
 async fn test_extract_goal_with_json_response() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // LlmPlanner expects JSON with "description" and "success_criteria" fields
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         r#"{"description": "Build web app", "success_criteria": ["App runs on port 3000", "Has login page"]}"#,
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1718,15 +1885,16 @@ async fn test_extract_goal_with_json_response() {
 
 #[tokio::test]
 async fn test_extract_goal_fallback_on_non_json() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Non-JSON response triggers fallback: returns the original prompt as goal
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Some non-JSON response",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1742,14 +1910,15 @@ async fn test_extract_goal_fallback_on_non_json() {
 
 #[tokio::test]
 async fn test_check_goal_achievement_json_yes() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         r#"{"achieved": true, "progress": 1.0, "remaining_criteria": []}"#,
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1767,15 +1936,16 @@ async fn test_check_goal_achievement_json_yes() {
 
 #[tokio::test]
 async fn test_check_goal_achievement_fallback_not_done() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Non-JSON response triggers heuristic fallback
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "invalid json",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1798,8 +1968,9 @@ async fn test_check_goal_achievement_fallback_not_done() {
 
 #[test]
 fn test_build_augmented_system_prompt_empty_context() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         prompt_slots: SystemPromptSlots {
             extra: Some("Base prompt".to_string()),
@@ -1807,7 +1978,12 @@ fn test_build_augmented_system_prompt_empty_context() {
         },
         ..Default::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let result = agent.build_augmented_system_prompt(&[]);
     assert!(result.unwrap().contains("Base prompt"));
@@ -1815,12 +1991,13 @@ fn test_build_augmented_system_prompt_empty_context() {
 
 #[test]
 fn test_build_augmented_system_prompt_no_custom_slots() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1867,14 +2044,15 @@ fn test_project_hint_is_assembled_as_context_item() {
 
 #[test]
 fn test_build_augmented_system_prompt_with_context_no_base() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::context::{ContextItem, ContextResult, ContextType};
 
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -1904,6 +2082,8 @@ fn test_agent_result_clone() {
         usage: TokenUsage::default(),
         tool_calls_count: 3,
         verification_reports: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+        run_admission: "ordinary".to_string(),
     };
     let cloned = result.clone();
     assert_eq!(cloned.text, result.text);
@@ -1918,6 +2098,8 @@ fn test_agent_result_debug() {
         usage: TokenUsage::default(),
         tool_calls_count: 3,
         verification_reports: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+        run_admission: "ordinary".to_string(),
     };
     let debug = format!("{:?}", result);
     assert!(debug.contains("AgentResult"));
@@ -1934,33 +2116,36 @@ fn test_agent_result_debug() {
 
 #[tokio::test]
 async fn test_tool_command_command_type() {
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let hermetic_root = crate::test_support::hermetic_workspace();
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let cmd = ToolCommand {
         tool_executor: executor,
         tool_name: "read".to_string(),
         tool_args: serde_json::json!({"file": "test.rs"}),
         tool_timeout_ms: None,
-        tool_context: test_tool_context(),
+        tool_context: ToolContext::new(hermetic_root.clone()),
     };
     assert_eq!(cmd.command_type(), "read");
 }
 
 #[tokio::test]
 async fn test_tool_command_payload() {
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let hermetic_root = crate::test_support::hermetic_workspace();
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let args = serde_json::json!({"file": "test.rs", "offset": 10});
     let cmd = ToolCommand {
         tool_executor: executor,
         tool_name: "read".to_string(),
         tool_args: args.clone(),
         tool_timeout_ms: None,
-        tool_context: test_tool_context(),
+        tool_context: ToolContext::new(hermetic_root.clone()),
     };
     assert_eq!(cmd.payload(), args);
 }
 
 #[tokio::test]
 async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct NeverCompletes;
 
     #[async_trait::async_trait]
@@ -1987,7 +2172,7 @@ async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
         }
     }
 
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(NeverCompletes));
     let cancellation = tokio_util::sync::CancellationToken::new();
     let cmd = ToolCommand {
@@ -1995,7 +2180,8 @@ async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
         tool_name: "never_completes".to_string(),
         tool_args: serde_json::json!({}),
         tool_timeout_ms: None,
-        tool_context: test_tool_context().with_cancellation(cancellation.clone()),
+        tool_context: ToolContext::new(hermetic_root.clone())
+            .with_cancellation(cancellation.clone()),
     };
 
     let task = tokio::spawn(async move { cmd.execute().await });
@@ -2015,6 +2201,7 @@ async fn test_queued_tool_command_is_cancelled_before_side_effect_completion() {
 
 #[tokio::test]
 async fn test_queued_tool_command_applies_execution_timeout() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct NeverCompletes;
 
     #[async_trait::async_trait]
@@ -2041,14 +2228,14 @@ async fn test_queued_tool_command_applies_execution_timeout() {
         }
     }
 
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(NeverCompletes));
     let cmd = ToolCommand {
         tool_executor: executor,
         tool_name: "never_completes_timeout".to_string(),
         tool_args: serde_json::json!({}),
         tool_timeout_ms: Some(10),
-        tool_context: test_tool_context(),
+        tool_context: ToolContext::new(hermetic_root.clone()),
     };
 
     let result = cmd.execute().await.unwrap();
@@ -2062,6 +2249,7 @@ async fn test_queued_tool_command_applies_execution_timeout() {
 
 #[tokio::test]
 async fn queued_tool_timeout_cancels_and_settles_the_invocation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct CancellationAwareTool {
         cancellations: Arc<AtomicUsize>,
     }
@@ -2092,7 +2280,7 @@ async fn queued_tool_timeout_cancels_and_settles_the_invocation() {
     }
 
     let cancellations = Arc::new(AtomicUsize::new(0));
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(CancellationAwareTool {
         cancellations: Arc::clone(&cancellations),
     }));
@@ -2101,7 +2289,7 @@ async fn queued_tool_timeout_cancels_and_settles_the_invocation() {
         tool_name: "queued_cancellation_aware".to_string(),
         tool_args: serde_json::json!({}),
         tool_timeout_ms: Some(10),
-        tool_context: test_tool_context(),
+        tool_context: ToolContext::new(hermetic_root.clone()),
     };
 
     let result = cmd.execute().await.unwrap();
@@ -2120,6 +2308,7 @@ async fn queued_tool_timeout_cancels_and_settles_the_invocation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_queued_tool_result_preserves_metadata() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct MetadataTool;
 
     #[async_trait::async_trait]
@@ -2149,7 +2338,7 @@ async fn test_queued_tool_result_preserves_metadata() {
 
     use tokio::sync::broadcast;
 
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(MetadataTool));
     let (event_tx, _) = broadcast::channel(100);
     let queue = SessionLaneQueue::new("metadata-session", SessionQueueConfig::default(), event_tx)
@@ -2159,7 +2348,7 @@ async fn test_queued_tool_result_preserves_metadata() {
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     )
     .with_queue(Arc::new(queue));
@@ -2168,7 +2357,7 @@ async fn test_queued_tool_result_preserves_metadata() {
         .execute_tool_queued_or_direct(
             "metadata_tool",
             &serde_json::json!({}),
-            &test_tool_context(),
+            &ToolContext::new(hermetic_root.clone()),
         )
         .await
         .unwrap();
@@ -2186,6 +2375,7 @@ async fn test_queued_tool_result_preserves_metadata() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn queued_orchestrators_do_not_resubmit_nested_tools_into_the_owned_lane() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct NestedEcho;
 
     #[async_trait::async_trait]
@@ -2213,7 +2403,7 @@ async fn queued_orchestrators_do_not_resubmit_nested_tools_into_the_owned_lane()
 
     use tokio::sync::broadcast;
 
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(NestedEcho));
     let config = AgentConfig {
         tool_timeout_ms: Some(500),
@@ -2228,7 +2418,7 @@ async fn queued_orchestrators_do_not_resubmit_nested_tools_into_the_owned_lane()
         .await
         .unwrap();
     queue.start().await.unwrap();
-    let tool_context = test_tool_context().with_session_id("nested-queue");
+    let tool_context = ToolContext::new(hermetic_root.clone()).with_session_id("nested-queue");
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         executor,
@@ -2285,12 +2475,13 @@ async fn queued_orchestrators_do_not_resubmit_nested_tools_into_the_owned_lane()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_agent_loop_with_queue() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use tokio::sync::broadcast;
 
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Hello",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
     let (event_tx, _) = broadcast::channel(100);
@@ -2298,21 +2489,32 @@ async fn test_agent_loop_with_queue() {
         .await
         .unwrap();
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config)
-        .with_queue(Arc::new(queue));
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    )
+    .with_queue(Arc::new(queue));
 
     assert!(agent.command_queue.is_some());
 }
 
 #[tokio::test]
 async fn test_agent_loop_without_queue() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Hello",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     assert!(agent.command_queue.is_none());
 }
@@ -2323,6 +2525,7 @@ async fn test_agent_loop_without_queue() {
 
 #[tokio::test]
 async fn test_execute_plan_parallel_independent() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     // 3 independent steps (no dependencies) — should all execute.
@@ -2333,12 +2536,12 @@ async fn test_execute_plan_parallel_independent() {
         MockLlmClient::text_response("Step 3 done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -2384,6 +2587,7 @@ async fn test_execute_plan_parallel_independent() {
 
 #[tokio::test]
 async fn test_execute_plan_emits_task_list_snapshots() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     let mock_client = Arc::new(MockLlmClient::new(vec![
@@ -2391,11 +2595,11 @@ async fn test_execute_plan_emits_task_list_snapshots() {
         MockLlmClient::text_response("Step 2 done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -2447,6 +2651,7 @@ async fn test_execute_plan_emits_task_list_snapshots() {
 
 #[tokio::test]
 async fn test_execute_plan_keeps_human_goal_product_and_plan_chrome_wire() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     let mock_client = Arc::new(MockLlmClient::new(vec![
@@ -2454,11 +2659,11 @@ async fn test_execute_plan_keeps_human_goal_product_and_plan_chrome_wire() {
         MockLlmClient::text_response("Step 2 done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -2516,22 +2721,23 @@ async fn test_execute_plan_keeps_human_goal_product_and_plan_chrome_wire() {
 
 #[tokio::test]
 async fn test_execute_plan_delegates_task_tool_steps() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
     let child_client = Arc::new(PlanDelegationChildClient);
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     register_task(
         tool_executor.registry(),
         child_client,
         Arc::new(AgentRegistry::new()),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         allow_delegated_tools(AgentConfig::default()),
     );
 
@@ -2581,22 +2787,23 @@ async fn test_execute_plan_delegates_task_tool_steps() {
 
 #[tokio::test]
 async fn test_execute_plan_delegates_parallel_task_wave_once() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
     let child_client = Arc::new(PlanDelegationChildClient);
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     register_task(
         tool_executor.registry(),
         child_client,
         Arc::new(AgentRegistry::new()),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         allow_delegated_tools(AgentConfig::default()),
     );
 
@@ -2677,18 +2884,19 @@ async fn test_execute_plan_delegates_parallel_task_wave_once() {
 
 #[tokio::test]
 async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
 
     let child_client = Arc::new(PlanDelegationChildClient);
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent_registry = Arc::new(AgentRegistry::new());
     register_task(
         tool_executor.registry(),
         child_client,
         Arc::clone(&agent_registry),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let auto_delegation = crate::config::AutoDelegationConfig {
         enabled: true,
@@ -2704,7 +2912,7 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -2761,6 +2969,7 @@ async fn test_execute_plan_auto_delegates_unmarked_parallel_wave_when_enabled() 
 
 #[tokio::test]
 async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
@@ -2768,19 +2977,19 @@ async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
     let child_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "delegated docs complete",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let registry = Arc::new(AgentRegistry::new());
     registry.unregister("verification");
     register_task(
         tool_executor.registry(),
         child_client,
         registry,
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(vec![])),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         allow_delegated_tools(AgentConfig::default()),
     );
 
@@ -2860,7 +3069,62 @@ async fn test_execute_plan_delegated_parallel_wave_maps_child_failure() {
 }
 
 #[tokio::test]
+async fn auto_delegation_mutation_is_not_a_parent_narrative_success() {
+    use crate::prompts::PlanningMode;
+    use crate::subagent::AgentRegistry;
+    use crate::tools::register_task;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(PlanSideWriteClient {
+        workspace: workspace.path().to_path_buf(),
+    });
+    let tool_executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    let agent_registry = Arc::new(AgentRegistry::new());
+    register_task(
+        tool_executor.registry(),
+        client,
+        agent_registry.clone(),
+        workspace.path().display().to_string(),
+    );
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        auto_delegation: crate::config::AutoDelegationConfig {
+            enabled: true,
+            max_tasks: 1,
+            ..Default::default()
+        },
+        agent_registry: Some(agent_registry),
+        permission_checker: Some(Arc::new(AllowDelegatedTools)),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        Arc::new(MockLlmClient::new(vec![])),
+        tool_executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+
+    let failed = agent
+        .execute_with_session(
+            &[],
+            "Review the current diff",
+            Some("auto-gate"),
+            None,
+            None,
+        )
+        .await
+        .expect_err("automatic delegation must not leave a mutated workspace as success");
+    let message = failed.to_string();
+    assert!(
+        message.contains("completion gate:"),
+        "parent treated a pre-loop mutation as success: {message}"
+    );
+    assert!(workspace.path().join("guest.txt").is_file());
+}
+
+#[tokio::test]
 async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::prompts::PlanningMode;
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
@@ -2870,13 +3134,13 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
         MockLlmClient::text_response("verification child complete"),
         MockLlmClient::text_response("final answer with automatic context"),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent_registry = Arc::new(AgentRegistry::new());
     register_task(
         tool_executor.registry(),
         mock_client.clone(),
         agent_registry.clone(),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let auto_delegation = crate::config::AutoDelegationConfig {
         enabled: true,
@@ -2890,7 +3154,12 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
         permission_checker: Some(Arc::new(AllowDelegatedTools)),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
@@ -2928,6 +3197,7 @@ async fn test_auto_delegation_runs_parallel_specialists_when_enabled() {
 
 #[tokio::test]
 async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::prompts::PlanningMode;
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
@@ -2936,13 +3206,13 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
         MockLlmClient::text_response("single child complete"),
         MockLlmClient::text_response("final answer"),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent_registry = Arc::new(AgentRegistry::new());
     register_task(
         tool_executor.registry(),
         mock_client.clone(),
         agent_registry.clone(),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let auto_delegation = crate::config::AutoDelegationConfig {
         enabled: true,
@@ -2957,7 +3227,12 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
         permission_checker: Some(Arc::new(AllowDelegatedTools)),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
@@ -2991,6 +3266,7 @@ async fn test_auto_delegation_global_parallel_switch_uses_single_task() {
 
 #[tokio::test]
 async fn test_auto_delegation_disabled_does_not_start_subagents() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::prompts::PlanningMode;
     use crate::subagent::AgentRegistry;
     use crate::tools::register_task;
@@ -2998,13 +3274,13 @@ async fn test_auto_delegation_disabled_does_not_start_subagents() {
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "final answer without delegation",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent_registry = Arc::new(AgentRegistry::new());
     register_task(
         tool_executor.registry(),
         mock_client.clone(),
         agent_registry.clone(),
-        "/tmp".to_string(),
+        hermetic_root.display().to_string(),
     );
     let config = AgentConfig {
         planning_mode: PlanningMode::Disabled,
@@ -3015,7 +3291,12 @@ async fn test_auto_delegation_disabled_does_not_start_subagents() {
         agent_registry: Some(agent_registry),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let (tx, mut rx) = mpsc::channel(100);
     let result = agent
@@ -3045,6 +3326,7 @@ async fn test_auto_delegation_disabled_does_not_start_subagents() {
 
 #[tokio::test]
 async fn test_execute_plan_respects_dependencies() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     // s1 and s2 are independent (wave 1), s3 depends on both (wave 2).
@@ -3055,12 +3337,12 @@ async fn test_execute_plan_respects_dependencies() {
         MockLlmClient::text_response("Step 3 done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -3123,6 +3405,7 @@ async fn test_execute_plan_respects_dependencies() {
 
 #[tokio::test]
 async fn test_execute_plan_handles_step_failure() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     // s1 succeeds, s2 depends on s1 (succeeds), s3 depends on nothing (succeeds),
@@ -3142,12 +3425,12 @@ async fn test_execute_plan_handles_step_failure() {
         // Actually the MockLlmClient will fail with "No more mock responses"
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -3223,6 +3506,7 @@ fn test_agent_config_resilience_defaults() {
 /// 4.1 — Parse error recovery: bails after max_parse_retries exceeded
 #[tokio::test]
 async fn test_parse_error_recovery_bails_after_threshold() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // 3 parse errors with max_parse_retries=2: count reaches 3 > 2 → bail
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
@@ -3243,12 +3527,17 @@ async fn test_parse_error_recovery_bails_after_threshold() {
         MockLlmClient::text_response("Done"), // never reached
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         max_parse_retries: 2,
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Do something", None).await;
     assert!(result.is_err(), "should bail after parse error threshold");
     let err = result.unwrap_err().to_string();
@@ -3262,6 +3551,7 @@ async fn test_parse_error_recovery_bails_after_threshold() {
 /// 4.1 — Parse error recovery: counter resets after a valid tool execution
 #[tokio::test]
 async fn test_parse_error_counter_resets_on_success() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // 2 parse errors (= max_parse_retries, not yet exceeded)
     // Then a valid tool call (resets counter)
     // Then final text — should NOT bail
@@ -3281,12 +3571,17 @@ async fn test_parse_error_counter_resets_on_success() {
         MockLlmClient::text_response("All done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         max_parse_retries: 2,
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Do something", None).await;
     assert!(
         result.is_ok(),
@@ -3299,12 +3594,13 @@ async fn test_parse_error_counter_resets_on_success() {
 /// 4.2 — Tool timeout: slow tool produces a timeout error result; session continues
 #[tokio::test]
 async fn test_tool_timeout_produces_error_result() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response("t1", "bash", serde_json::json!({"command": "sleep 10"})),
         MockLlmClient::text_response("The command timed out."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         // 50ms — sleep 10 will never finish
         tool_timeout_ms: Some(50),
@@ -3313,7 +3609,7 @@ async fn test_tool_timeout_produces_error_result() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Run sleep", None).await;
@@ -3329,6 +3625,7 @@ async fn test_tool_timeout_produces_error_result() {
 
 #[tokio::test]
 async fn direct_tool_timeout_cancels_and_settles_the_invocation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct CancellationAwareTool {
         cancellations: Arc<AtomicUsize>,
     }
@@ -3359,7 +3656,7 @@ async fn direct_tool_timeout_cancels_and_settles_the_invocation() {
     }
 
     let cancellations = Arc::new(AtomicUsize::new(0));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     tool_executor.register_dynamic_tool(Arc::new(CancellationAwareTool {
         cancellations: Arc::clone(&cancellations),
     }));
@@ -3371,7 +3668,12 @@ async fn direct_tool_timeout_cancels_and_settles_the_invocation() {
         tool_timeout_ms: Some(10),
         ..AgentConfig::default()
     });
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     let result = agent.execute(&[], "Run the tool", None).await.unwrap();
 
@@ -3386,6 +3688,7 @@ async fn direct_tool_timeout_cancels_and_settles_the_invocation() {
 /// 4.2 — Tool timeout: tool that finishes before the deadline succeeds normally
 #[tokio::test]
 async fn test_tool_within_timeout_succeeds() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
             "t1",
@@ -3395,12 +3698,17 @@ async fn test_tool_within_timeout_succeeds() {
         MockLlmClient::text_response("Command succeeded."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         tool_timeout_ms: Some(5_000), // 5 s — echo completes in <100ms
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Run something fast", None).await;
     assert!(
         result.is_ok(),
@@ -3413,11 +3721,12 @@ async fn test_tool_within_timeout_succeeds() {
 /// 4.3 — Circuit breaker: retries non-streaming LLM failures up to threshold
 #[tokio::test]
 async fn test_circuit_breaker_retries_non_streaming() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Empty response list → every call bails with "No more mock responses"
     // threshold=2 → tries twice, then bails with circuit-breaker message
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         circuit_breaker_threshold: 2,
         ..AgentConfig::default()
@@ -3425,7 +3734,7 @@ async fn test_circuit_breaker_retries_non_streaming() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Hello", None).await;
@@ -3445,6 +3754,7 @@ async fn test_circuit_breaker_retries_non_streaming() {
 
 #[tokio::test]
 async fn test_circuit_breaker_backoff_stops_immediately_on_cancellation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     struct AlwaysFails {
         calls: AtomicUsize,
         first_failure: tokio::sync::Notify,
@@ -3480,8 +3790,8 @@ async fn test_circuit_breaker_backoff_stops_immediately_on_cancellation() {
     });
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             circuit_breaker_threshold: 10,
             planning_mode: crate::prompts::PlanningMode::Disabled,
@@ -3521,9 +3831,10 @@ async fn test_circuit_breaker_backoff_stops_immediately_on_cancellation() {
 /// 4.3 — Circuit breaker: threshold=1 bails on the very first failure
 #[tokio::test]
 async fn test_circuit_breaker_threshold_one_no_retry() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         circuit_breaker_threshold: 1,
         ..AgentConfig::default()
@@ -3531,7 +3842,7 @@ async fn test_circuit_breaker_threshold_one_no_retry() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Hello", None).await;
@@ -3546,6 +3857,7 @@ async fn test_circuit_breaker_threshold_one_no_retry() {
 /// 4.3 — Circuit breaker: succeeds when LLM recovers before hitting threshold
 #[tokio::test]
 async fn test_circuit_breaker_succeeds_if_llm_recovers() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // First call fails, second call succeeds; threshold=3 — recovery within threshold
     struct FailOnceThenSucceed {
         inner: MockLlmClient,
@@ -3590,7 +3902,7 @@ async fn test_circuit_breaker_succeeds_if_llm_recovers() {
         call_count: AtomicUsize::new(0),
     });
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let budget = Arc::new(CountingAllowPlanningBudgetGuard::default());
     let config = AgentConfig {
         circuit_breaker_threshold: 3,
@@ -3598,7 +3910,12 @@ async fn test_circuit_breaker_succeeds_if_llm_recovers() {
         budget_guard: Some(budget.clone()),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(mock.clone(), tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock.clone(),
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Hello", None).await;
     assert!(
         result.is_ok(),
@@ -3703,11 +4020,12 @@ async fn collect_stream_retry_events(
 
 #[tokio::test(start_paused = true)]
 async fn interrupted_stream_retries_ten_times_in_the_same_turn() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let client = Arc::new(InterruptedStreamClient::new(10));
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: crate::prompts::PlanningMode::Disabled,
             ..AgentConfig::default()
@@ -3758,11 +4076,12 @@ async fn interrupted_stream_retries_ten_times_in_the_same_turn() {
 
 #[tokio::test(start_paused = true)]
 async fn interrupted_stream_stops_after_ten_retries() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let client = Arc::new(InterruptedStreamClient::new(usize::MAX));
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: crate::prompts::PlanningMode::Disabled,
             ..AgentConfig::default()
@@ -3793,11 +4112,12 @@ async fn interrupted_stream_stops_after_ten_retries() {
 
 #[tokio::test]
 async fn interrupted_stream_backoff_stops_immediately_on_cancellation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let client = Arc::new(InterruptedStreamClient::new(usize::MAX));
     let agent = AgentLoop::new(
         client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: crate::prompts::PlanningMode::Disabled,
             ..AgentConfig::default()

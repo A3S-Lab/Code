@@ -9,16 +9,48 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
-/// Create a default ToolContext for tests
-fn test_tool_context() -> ToolContext {
-    ToolContext::new(PathBuf::from("/tmp"))
-}
-
 struct TurnEffectProbeTool {
     log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 struct AllowAllTools;
+
+struct RecordedCallTool {
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for RecordedCallTool {
+    fn name(&self) -> &str {
+        "recorded_call"
+    }
+
+    fn description(&self) -> &str {
+        "Records which argument the test tool actually executed"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"which": {"type": "string"}},
+            "required": ["which"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        let which = args
+            .get("which")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        self.calls.lock().unwrap().push(which);
+        Ok(crate::tools::ToolOutput::success("recorded"))
+    }
+}
 
 impl crate::permissions::PermissionChecker for AllowAllTools {
     fn check(
@@ -93,8 +125,9 @@ impl crate::tools::Tool for TurnEffectProbeTool {
 
 #[tokio::test]
 async fn agent_tool_effect_is_owned_and_closed_by_its_real_turn_scope() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(TurnEffectProbeTool {
         log: Arc::clone(&log),
     }));
@@ -135,8 +168,13 @@ async fn agent_tool_effect_is_owned_and_closed_by_its_real_turn_scope() {
         permission_checker: Some(Arc::new(AllowAllTools)),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(client, executor, test_tool_context(), config)
-        .with_capability_runtime(runtime);
+    let agent = AgentLoop::new(
+        client,
+        executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    )
+    .with_capability_runtime(runtime);
 
     let result = agent.execute(&[], "probe cleanup", None).await.unwrap();
 
@@ -161,8 +199,9 @@ async fn agent_tool_effect_is_owned_and_closed_by_its_real_turn_scope() {
 
 #[tokio::test]
 async fn pre_analysis_owns_an_orchestration_turn_before_the_agent_turn() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     executor.register_dynamic_tool(Arc::new(TurnEffectProbeTool {
         log: Arc::clone(&log),
     }));
@@ -201,8 +240,13 @@ async fn pre_analysis_owns_an_orchestration_turn_before_the_agent_turn() {
         permission_checker: Some(Arc::new(AllowAllTools)),
         ..AgentConfig::default()
     };
-    let agent = AgentLoop::new(client, executor, test_tool_context(), config)
-        .with_capability_runtime(runtime);
+    let agent = AgentLoop::new(
+        client,
+        executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    )
+    .with_capability_runtime(runtime);
 
     let result = agent
         .execute(&[], "Probe temporal composition", None)
@@ -224,7 +268,8 @@ async fn pre_analysis_owns_an_orchestration_turn_before_the_agent_turn() {
 
 #[test]
 fn plain_tool_context_cannot_register_an_unowned_turn_effect() {
-    let context = test_tool_context();
+    let hermetic_root = crate::test_support::hermetic_workspace();
+    let context = ToolContext::new(hermetic_root.clone());
     let error = context
         .register_capability_effect(TurnEffectProbe {
             scope_id: "unowned".to_string(),
@@ -239,6 +284,7 @@ fn plain_tool_context_cannot_register_an_unowned_turn_effect() {
 
 #[tokio::test]
 async fn scoped_tool_stream_forwarder_is_supervised_by_its_turn() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let set = crate::capability::CapabilitySet::empty().unwrap();
     let ceiling = crate::capability::CapabilityCeiling::all(
         &set,
@@ -264,10 +310,11 @@ async fn scoped_tool_stream_forwarder_is_supervised_by_its_turn() {
     let run_scope = session_scope.admit_run("run-1", ceiling).unwrap();
     let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run_scope);
     let turn = runtime.begin_turn(1).unwrap();
-    let scoped_context = test_tool_context().with_capability_context(turn.tool_context());
+    let scoped_context =
+        ToolContext::new(hermetic_root.clone()).with_capability_context(turn.tool_context());
     let agent = AgentLoop::new(
         Arc::new(MockLlmClient::new(Vec::new())),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
         scoped_context.clone(),
         AgentConfig::default(),
     );
@@ -380,6 +427,31 @@ fn test_preserve_original_prompt_for_planning_execution() {
     assert!(preserved.contains("do not drop negative instructions"));
     assert!(preserved.contains("Planner-optimized request"));
     assert!(preserved.contains(optimized));
+}
+
+#[test]
+fn test_preserve_original_prompt_does_not_collapse_short_phrase_appendix() {
+    // Planner often embeds a short human phrase inside a longer rewrite. The
+    // product transcript must keep dual markers so Desktop can show only the
+    // human sentence ("再试试"), not the appendix about clarifying the task.
+    let original = "再试试";
+    let optimized = "再试试\n当前请求仅表示“再试试”，未说明需要重试的具体任务、已有输入、失败点或期望的可检查工作产物。需先澄清具体要重试的 Office 知识工作任务。";
+
+    let preserved = AgentLoop::preserve_original_prompt_for_execution(original, optimized);
+
+    assert!(
+        preserved.contains("Original user request:\n再试试"),
+        "original human sentence must stay under the Original marker: {preserved}"
+    );
+    assert!(
+        preserved.contains("Planner-optimized request:\n"),
+        "optimized appendix must stay under the Planner marker: {preserved}"
+    );
+    assert_eq!(
+        crate::transcript::product_user_text(&preserved),
+        "再试试",
+        "product transcript must not show the planner appendix"
+    );
 }
 
 #[test]
@@ -949,17 +1021,18 @@ impl crate::budget::BudgetGuard for CountingBudgetGuard {
 
 #[tokio::test]
 async fn test_agent_simple_response() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Hello, I'm an AI assistant.",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Hello", None).await.unwrap();
@@ -979,6 +1052,7 @@ fn model_tool_definition(name: &str) -> ToolDefinition {
 
 #[tokio::test]
 async fn failed_plan_step_preserves_usage_and_tool_calls_completed_before_the_error() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::planning::{Complexity, ExecutionPlan, Task};
 
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::tool_call_response(
@@ -988,8 +1062,8 @@ async fn failed_plan_step_preserves_usage_and_tool_calls_completed_before_the_er
     )]));
     let agent = AgentLoop::new(
         mock_client,
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             circuit_breaker_threshold: 1,
             continuation_enabled: false,
@@ -1021,6 +1095,7 @@ async fn failed_plan_step_preserves_usage_and_tool_calls_completed_before_the_er
 
 #[tokio::test]
 async fn failed_non_planning_run_exposes_and_records_partial_accounting() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let temp = tempfile::tempdir().unwrap();
     let trajectory_path = temp.path().join("trajectory.jsonl");
     let recorder = crate::rl_trajectory::RlTrajectoryRecorder::from_config(Some(
@@ -1034,8 +1109,8 @@ async fn failed_non_planning_run_exposes_and_records_partial_accounting() {
     )]));
     let agent = AgentLoop::new(
         mock_client,
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: PlanningMode::Disabled,
             circuit_breaker_threshold: 1,
@@ -1078,6 +1153,7 @@ fn agent_execution_failure_is_send_and_sync() {
 
 #[tokio::test]
 async fn fatal_tool_round_error_carries_usage_and_the_failed_tool_call() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::tool_call_response(
         "malformed-tool",
         "bash",
@@ -1085,8 +1161,8 @@ async fn fatal_tool_round_error_carries_usage_and_the_failed_tool_call() {
     )]));
     let agent = AgentLoop::new(
         mock_client,
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: PlanningMode::Disabled,
             max_parse_retries: 0,
@@ -1107,6 +1183,7 @@ async fn fatal_tool_round_error_carries_usage_and_the_failed_tool_call() {
 
 #[tokio::test]
 async fn force_finalization_error_carries_all_completed_provider_usage() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
             "ordinary-tool",
@@ -1121,8 +1198,8 @@ async fn force_finalization_error_carries_all_completed_provider_usage() {
     ]));
     let agent = AgentLoop::new(
         mock_client,
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             planning_mode: PlanningMode::Disabled,
             max_tool_rounds: 1,
@@ -1145,10 +1222,11 @@ async fn force_finalization_error_carries_all_completed_provider_usage() {
 
 #[tokio::test]
 async fn missing_permission_and_confirmation_authority_hides_tools_from_llm_request() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "No tool authority is configured.",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         tools: vec![
             model_tool_definition("read"),
@@ -1169,7 +1247,7 @@ async fn missing_permission_and_confirmation_authority_hides_tools_from_llm_requ
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     agent
@@ -1185,10 +1263,11 @@ async fn missing_permission_and_confirmation_authority_hides_tools_from_llm_requ
 
 #[tokio::test]
 async fn confirmation_authority_keeps_tools_visible_without_permission_checker() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Confirmation authority is available.",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         tools: vec![model_tool_definition("read"), model_tool_definition("bash")],
         permission_checker: None,
@@ -1205,7 +1284,7 @@ async fn confirmation_authority_keeps_tools_visible_without_permission_checker()
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     agent
@@ -1221,6 +1300,7 @@ async fn confirmation_authority_keeps_tools_visible_without_permission_checker()
 
 #[tokio::test]
 async fn permission_checker_hides_tools_from_llm_request() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::permissions::{PermissionChecker, PermissionDecision};
 
     struct ReadOnlyModelExposure;
@@ -1238,7 +1318,7 @@ async fn permission_checker_hides_tools_from_llm_request() {
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Tool exposure test complete.",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         tools: vec![
             model_tool_definition("read"),
@@ -1258,7 +1338,7 @@ async fn permission_checker_hides_tools_from_llm_request() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     agent
@@ -1274,6 +1354,7 @@ async fn permission_checker_hides_tools_from_llm_request() {
 
 #[tokio::test]
 async fn permission_checker_default_exposes_selected_tools_to_llm() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::permissions::{PermissionChecker, PermissionDecision};
 
     struct ExecutionOnlyChecker;
@@ -1290,7 +1371,7 @@ async fn permission_checker_default_exposes_selected_tools_to_llm() {
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Default exposure test complete.",
     )]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         tools: vec![
             model_tool_definition("read"),
@@ -1310,7 +1391,7 @@ async fn permission_checker_default_exposes_selected_tools_to_llm() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     agent
@@ -1331,6 +1412,7 @@ async fn permission_checker_default_exposes_selected_tools_to_llm() {
 async fn requested_tools_for_profile(
     profile: crate::tools::ToolPresentationProfileV1,
 ) -> Vec<ToolDefinition> {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Presentation test complete.",
     )]));
@@ -1352,8 +1434,8 @@ async fn requested_tools_for_profile(
     };
     AgentLoop::new(
         mock_client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     )
     .execute(&[], "Hello", None)
@@ -1402,6 +1484,7 @@ async fn presentation_profiles_control_actual_model_requests() {
 
 #[tokio::test]
 async fn permission_visibility_precedes_code_profile_catalog_generation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::permissions::{PermissionChecker, PermissionDecision};
 
     struct HideSecretTool;
@@ -1438,8 +1521,8 @@ async fn permission_visibility_precedes_code_profile_catalog_generation() {
     };
     AgentLoop::new(
         mock_client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     )
     .execute(&[], "Inspect the workspace", None)
@@ -1457,12 +1540,13 @@ async fn permission_visibility_precedes_code_profile_catalog_generation() {
 
 #[tokio::test]
 async fn test_agent_repairs_reasoning_only_response_once() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::reasoning_only_response("I have the answer but put it in reasoning."),
         MockLlmClient::text_response("The answer is 42."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         max_continuation_turns: 0,
         ..Default::default()
@@ -1471,7 +1555,7 @@ async fn test_agent_repairs_reasoning_only_response_once() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Answer plainly", None).await.unwrap();
@@ -1482,19 +1566,20 @@ async fn test_agent_repairs_reasoning_only_response_once() {
 
 #[tokio::test]
 async fn test_agent_stops_after_repeated_reasoning_only_response() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::reasoning_only_response("Thinking only, first pass."),
         MockLlmClient::reasoning_only_response("Thinking only, second pass."),
         MockLlmClient::text_response("This response should not be consumed."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Answer plainly", None).await.unwrap();
@@ -1508,6 +1593,7 @@ async fn test_agent_stops_after_repeated_reasoning_only_response() {
 
 #[tokio::test]
 async fn test_agent_with_tool_call() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         // First response: tool call
         MockLlmClient::tool_call_response(
@@ -1519,13 +1605,13 @@ async fn test_agent_with_tool_call() {
         MockLlmClient::text_response("The command output was: hello"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Run echo hello", None).await.unwrap();
@@ -1536,7 +1622,103 @@ async fn test_agent_with_tool_call() {
 }
 
 #[tokio::test]
+async fn duplicate_tool_call_id_does_not_run_either_call() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    executor.register_dynamic_tool(Arc::new(RecordedCallTool {
+        calls: Arc::clone(&calls),
+    }));
+    let client = Arc::new(MockLlmClient::new(vec![
+        LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "same".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: serde_json::json!({"which": "first"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "same".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: serde_json::json!({"which": "second"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "other".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: serde_json::json!({"which": "unique"}),
+                    },
+                ],
+                reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        },
+        MockLlmClient::text_response("stopped after the ambiguous id"),
+    ]));
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowAllTools)),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client,
+        executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+    let result = agent
+        .execute(&[], "call the recorded tool", None)
+        .await
+        .unwrap();
+
+    let invoked = calls.lock().unwrap().clone();
+    assert_eq!(
+        invoked,
+        vec!["unique".to_string()],
+        "a duplicated id must not run either call; messages={:?}",
+        result.messages
+    );
+    let same_uses = result
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "same"))
+        .count();
+    assert_eq!(same_uses, 1, "messages={:?}", result.messages);
+    let same_results: Vec<_> = result
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } if tool_use_id == "same" => Some((content.as_text(), *is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(same_results.len(), 1, "messages={:?}", result.messages);
+    assert_eq!(same_results[0].1, Some(true));
+    assert!(
+        same_results[0].0.contains("duplicated"),
+        "messages={:?}",
+        result.messages
+    );
+}
+
+#[tokio::test]
 async fn test_agent_permission_deny() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         // First response: tool call that will be denied
         MockLlmClient::tool_call_response(
@@ -1550,7 +1732,7 @@ async fn test_agent_permission_deny() {
         ),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create permission policy that denies rm commands
     let permission_policy = PermissionPolicy::new().deny("bash(rm:*)");
@@ -1564,7 +1746,7 @@ async fn test_agent_permission_deny() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Delete files", Some(tx)).await.unwrap();
@@ -1664,6 +1846,7 @@ async fn prompt_injected_write_cannot_cross_argument_scoped_permission_gate() {
 
 #[tokio::test]
 async fn test_agent_permission_allow() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         // First response: tool call that will be allowed
         MockLlmClient::tool_call_response(
@@ -1675,7 +1858,7 @@ async fn test_agent_permission_allow() {
         MockLlmClient::text_response("Done!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create permission policy that allows echo commands
     let permission_policy = PermissionPolicy::new()
@@ -1690,7 +1873,7 @@ async fn test_agent_permission_allow() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Echo hello", None).await.unwrap();
@@ -1701,14 +1884,20 @@ async fn test_agent_permission_allow() {
 
 #[tokio::test]
 async fn test_agent_streaming_events() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Hello!",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let (tx, mut rx) = mpsc::channel(100);
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
@@ -1730,6 +1919,7 @@ async fn test_agent_streaming_events() {
 
 #[tokio::test]
 async fn test_agent_max_tool_rounds() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Create a mock that always returns tool calls (infinite loop)
     let responses: Vec<LlmResponse> = (0..100)
         .map(|i| {
@@ -1742,14 +1932,19 @@ async fn test_agent_max_tool_rounds() {
         .collect();
 
     let mock_client = Arc::new(MockLlmClient::new(responses));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let config = AgentConfig {
         max_tool_rounds: 3,
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Loop forever", None).await;
 
     // Should fail due to max tool rounds exceeded
@@ -1759,6 +1954,7 @@ async fn test_agent_max_tool_rounds() {
 
 #[tokio::test]
 async fn test_agent_max_tool_rounds_reserves_tool_free_finalization() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response(
             "tool-1",
@@ -1772,7 +1968,7 @@ async fn test_agent_max_tool_rounds_reserves_tool_free_finalization() {
         ),
         MockLlmClient::text_response("Best bounded answer from collected evidence."),
     ]));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         max_tool_rounds: 2,
         ..Default::default()
@@ -1781,7 +1977,7 @@ async fn test_agent_max_tool_rounds_reserves_tool_free_finalization() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent
@@ -1796,6 +1992,7 @@ async fn test_agent_max_tool_rounds_reserves_tool_free_finalization() {
 
 #[tokio::test]
 async fn test_agent_no_permission_policy_defaults_to_ask() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // When no permission policy is set, tools default to Ask.
     // Without a confirmation manager, Ask = safe deny.
     let mock_client = Arc::new(MockLlmClient::new(vec![
@@ -1807,14 +2004,19 @@ async fn test_agent_no_permission_policy_defaults_to_ask() {
         MockLlmClient::text_response("Denied!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         permission_checker: None, // No policy → defaults to Ask
         // No confirmation_manager → safe deny
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Delete", None).await.unwrap();
 
     // Should be denied (no policy + no CM = safe deny)
@@ -1824,6 +2026,7 @@ async fn test_agent_no_permission_policy_defaults_to_ask() {
 
 #[tokio::test]
 async fn test_agent_permission_ask_without_cm_denies() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // When permission is Ask and no confirmation manager configured,
     // tool execution should be denied (safe default).
     let mock_client = Arc::new(MockLlmClient::new(vec![
@@ -1835,7 +2038,7 @@ async fn test_agent_permission_ask_without_cm_denies() {
         MockLlmClient::text_response("Denied!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create policy where bash falls through to Ask (default)
     let permission_policy = PermissionPolicy::new(); // Default decision is Ask
@@ -1846,7 +2049,12 @@ async fn test_agent_permission_ask_without_cm_denies() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Should deny (Ask without CM = safe deny)
@@ -1861,6 +2069,7 @@ async fn test_agent_permission_ask_without_cm_denies() {
 
 #[tokio::test]
 async fn test_agent_hitl_approved() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
 
@@ -1873,7 +2082,7 @@ async fn test_agent_hitl_approved() {
         MockLlmClient::text_response("Command executed!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL confirmation manager with policy enabled
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -1901,7 +2110,12 @@ async fn test_agent_hitl_approved() {
         cm_clone.confirm("tool-1", true, None).await.ok();
     });
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Run echo", None).await.unwrap();
 
     assert_eq!(result.text, "Command executed!");
@@ -1910,6 +2124,7 @@ async fn test_agent_hitl_approved() {
 
 #[tokio::test]
 async fn test_agent_hitl_wait_does_not_consume_tool_timeout_budget() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
 
@@ -1922,7 +2137,7 @@ async fn test_agent_hitl_wait_does_not_consume_tool_timeout_budget() {
         MockLlmClient::text_response("Command executed after approval."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let (event_tx, _event_rx) = broadcast::channel(100);
     let hitl_policy = ConfirmationPolicy {
         enabled: true,
@@ -1946,7 +2161,12 @@ async fn test_agent_hitl_wait_does_not_consume_tool_timeout_budget() {
     });
 
     let started = std::time::Instant::now();
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Run echo", None).await.unwrap();
 
     assert!(
@@ -1959,6 +2179,7 @@ async fn test_agent_hitl_wait_does_not_consume_tool_timeout_budget() {
 
 #[tokio::test]
 async fn test_agent_hitl_rejected() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
 
@@ -1971,7 +2192,7 @@ async fn test_agent_hitl_rejected() {
         MockLlmClient::text_response("Understood, I won't do that."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL confirmation manager
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -2000,7 +2221,12 @@ async fn test_agent_hitl_rejected() {
             .ok();
     });
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Delete everything", None).await.unwrap();
 
     // LLM should respond to the rejection
@@ -2009,6 +2235,7 @@ async fn test_agent_hitl_rejected() {
 
 #[tokio::test]
 async fn test_agent_hitl_timeout_reject() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy, TimeoutAction};
     use tokio::sync::broadcast;
 
@@ -2021,7 +2248,7 @@ async fn test_agent_hitl_timeout_reject() {
         MockLlmClient::text_response("Timed out, I understand."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL with very short timeout and Reject action
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -2042,7 +2269,12 @@ async fn test_agent_hitl_timeout_reject() {
     };
 
     // Don't approve - let it timeout
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Should get timeout rejection response from LLM
@@ -2051,6 +2283,7 @@ async fn test_agent_hitl_timeout_reject() {
 
 #[tokio::test]
 async fn test_agent_hitl_timeout_auto_approve() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy, TimeoutAction};
     use tokio::sync::broadcast;
 
@@ -2063,7 +2296,7 @@ async fn test_agent_hitl_timeout_auto_approve() {
         MockLlmClient::text_response("Auto-approved and executed!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL with very short timeout and AutoApprove action
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -2084,7 +2317,12 @@ async fn test_agent_hitl_timeout_auto_approve() {
     };
 
     // Don't approve - let it timeout and auto-approve
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Should auto-approve on timeout and execute
@@ -2094,6 +2332,7 @@ async fn test_agent_hitl_timeout_auto_approve() {
 
 #[tokio::test]
 async fn test_agent_hitl_confirmation_events() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
 
@@ -2106,7 +2345,7 @@ async fn test_agent_hitl_confirmation_events() {
         MockLlmClient::text_response("Done!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL confirmation manager
     let (event_tx, mut event_rx) = broadcast::channel(100);
@@ -2145,7 +2384,12 @@ async fn test_agent_hitl_confirmation_events() {
         events
     });
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let _result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Check events
@@ -2166,6 +2410,7 @@ async fn test_agent_hitl_confirmation_events() {
 
 #[tokio::test]
 async fn test_agent_hitl_disabled_auto_executes() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // When HITL is disabled, tools should execute automatically even with Ask permission
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
@@ -2179,7 +2424,7 @@ async fn test_agent_hitl_disabled_auto_executes() {
         MockLlmClient::text_response("Auto executed!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL with enabled=false
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -2197,7 +2442,12 @@ async fn test_agent_hitl_disabled_auto_executes() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Should execute without waiting for confirmation
@@ -2207,6 +2457,7 @@ async fn test_agent_hitl_disabled_auto_executes() {
 
 #[tokio::test]
 async fn test_agent_hitl_with_permission_deny_skips_hitl() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // When permission is Deny, HITL should not be triggered
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
@@ -2220,7 +2471,7 @@ async fn test_agent_hitl_with_permission_deny_skips_hitl() {
         MockLlmClient::text_response("Blocked by permission."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL enabled
     let (event_tx, mut event_rx) = broadcast::channel(100);
@@ -2239,7 +2490,12 @@ async fn test_agent_hitl_with_permission_deny_skips_hitl() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Delete", None).await.unwrap();
 
     // Should be denied without HITL
@@ -2260,6 +2516,7 @@ async fn test_agent_hitl_with_permission_deny_skips_hitl() {
 
 #[tokio::test]
 async fn test_agent_hitl_with_permission_allow_skips_hitl() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // When permission is Allow, HITL confirmation is skipped entirely.
     // PermissionPolicy is the declarative rule engine; Allow = execute directly.
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
@@ -2274,7 +2531,7 @@ async fn test_agent_hitl_with_permission_allow_skips_hitl() {
         MockLlmClient::text_response("Allowed!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL enabled
     let (event_tx, mut event_rx) = broadcast::channel(100);
@@ -2293,7 +2550,12 @@ async fn test_agent_hitl_with_permission_allow_skips_hitl() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Echo", None).await.unwrap();
 
     // Should execute directly without HITL (permission Allow skips confirmation)
@@ -2314,6 +2576,7 @@ async fn test_agent_hitl_with_permission_allow_skips_hitl() {
 
 #[tokio::test]
 async fn test_agent_hitl_multiple_tool_calls() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Test multiple tool calls in sequence with HITL
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
@@ -2353,7 +2616,7 @@ async fn test_agent_hitl_multiple_tool_calls() {
         MockLlmClient::text_response("Both executed!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // Create HITL
     let (event_tx, _event_rx) = broadcast::channel(100);
@@ -2381,7 +2644,12 @@ async fn test_agent_hitl_multiple_tool_calls() {
         cm_clone.confirm("tool-2", true, None).await.ok();
     });
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent
         .execute_loop(
             &[],
@@ -2401,6 +2669,7 @@ async fn test_agent_hitl_multiple_tool_calls() {
 
 #[tokio::test]
 async fn test_agent_hitl_partial_approval() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Test: first tool approved, second rejected
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use tokio::sync::broadcast;
@@ -2440,7 +2709,7 @@ async fn test_agent_hitl_partial_approval() {
         MockLlmClient::text_response("First worked, second rejected."),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let (event_tx, _event_rx) = broadcast::channel(100);
     let hitl_policy = ConfirmationPolicy {
@@ -2470,7 +2739,12 @@ async fn test_agent_hitl_partial_approval() {
             .ok();
     });
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Run both", None).await.unwrap();
 
     assert_eq!(result.text, "First worked, second rejected.");
@@ -2479,6 +2753,7 @@ async fn test_agent_hitl_partial_approval() {
 
 #[tokio::test]
 async fn test_agent_hitl_yolo_mode_auto_approves() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // YOLO mode: specific lanes auto-approve without confirmation
     use crate::hitl::{ConfirmationManager, ConfirmationPolicy};
     use crate::queue::SessionLane;
@@ -2493,7 +2768,7 @@ async fn test_agent_hitl_yolo_mode_auto_approves() {
         MockLlmClient::text_response("File read!"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // YOLO mode for Query lane (read, glob, ls, grep)
     let (event_tx, mut event_rx) = broadcast::channel(100);
@@ -2514,7 +2789,12 @@ async fn test_agent_hitl_yolo_mode_auto_approves() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent.execute(&[], "Read file", None).await.unwrap();
 
     // Should auto-execute without confirmation (YOLO mode)
@@ -2633,11 +2913,12 @@ impl ContextProvider for MockContextProvider {
 
 #[tokio::test]
 async fn test_agent_with_context_provider() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Response using context",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider = MockContextProvider::new("test-provider").with_items(vec![ContextItem::new(
         "ctx-1",
@@ -2658,7 +2939,7 @@ async fn test_agent_with_context_provider() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent
@@ -2672,11 +2953,12 @@ async fn test_agent_with_context_provider() {
 
 #[tokio::test]
 async fn test_agent_context_provider_events() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Answer",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider = MockContextProvider::new("event-provider").with_items(vec![ContextItem::new(
         "item-1",
@@ -2691,7 +2973,12 @@ async fn test_agent_context_provider_events() {
     };
 
     let (tx, mut rx) = mpsc::channel(100);
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let _result = agent.execute(&[], "Test prompt", Some(tx)).await.unwrap();
 
     // Collect events
@@ -2729,11 +3016,12 @@ async fn test_agent_context_provider_events() {
 
 #[tokio::test]
 async fn test_agent_multiple_context_providers() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Combined response",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider1 = MockContextProvider::new("provider-1").with_items(vec![ContextItem::new(
         "p1-1",
@@ -2757,7 +3045,12 @@ async fn test_agent_multiple_context_providers() {
     };
 
     let (tx, mut rx) = mpsc::channel(100);
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent
         .execute(&[], "verify combined context", Some(tx))
         .await
@@ -2780,17 +3073,23 @@ async fn test_agent_multiple_context_providers() {
 
 #[tokio::test]
 async fn test_agent_no_context_providers() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "No context",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     // No context providers
     let config = AgentConfig::default();
 
     let (tx, mut rx) = mpsc::channel(100);
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
     let result = agent
         .execute(&[], "verify simple prompt", Some(tx))
         .await
@@ -4297,11 +4596,12 @@ async fn test_agent_llm_memory_judge_returns_empty_for_read_only_tool_turns() {
 
 #[tokio::test]
 async fn test_agent_context_on_turn_complete() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Final response",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider = Arc::new(MockContextProvider::new("memory-provider"));
     let on_turn_calls = provider.on_turn_calls.clone();
@@ -4311,7 +4611,12 @@ async fn test_agent_context_on_turn_complete() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     // Execute with session ID
     let result = agent
@@ -4331,11 +4636,12 @@ async fn test_agent_context_on_turn_complete() {
 
 #[tokio::test]
 async fn test_agent_context_on_turn_complete_no_session() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Response",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider = Arc::new(MockContextProvider::new("memory-provider"));
     let on_turn_calls = provider.on_turn_calls.clone();
@@ -4345,7 +4651,12 @@ async fn test_agent_context_on_turn_complete_no_session() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     // Execute without session ID (uses execute() which passes None)
     let _result = agent.execute(&[], "Prompt", None).await.unwrap();
@@ -4357,9 +4668,10 @@ async fn test_agent_context_on_turn_complete_no_session() {
 
 #[tokio::test]
 async fn test_agent_build_augmented_system_prompt() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response("OK")]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
 
     let provider = MockContextProvider::new("test").with_items(vec![ContextItem::new(
         "doc-1",
@@ -4377,7 +4689,12 @@ async fn test_agent_build_augmented_system_prompt() {
         ..Default::default()
     };
 
-    let agent = AgentLoop::new(mock_client, tool_executor, test_tool_context(), config);
+    let agent = AgentLoop::new(
+        mock_client,
+        tool_executor,
+        ToolContext::new(hermetic_root.clone()),
+        config,
+    );
 
     // Test building augmented prompt
     let context_results = agent.resolve_context("test", None).await.unwrap();
@@ -4408,6 +4725,7 @@ async fn collect_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
 
 #[tokio::test]
 async fn test_agent_multi_turn_tool_chain() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // LLM calls tool A → sees result → calls tool B → sees result → final answer
     let mock_client = Arc::new(MockLlmClient::new(vec![
         // Turn 1: call ls
@@ -4426,13 +4744,13 @@ async fn test_agent_multi_turn_tool_chain() {
         MockLlmClient::text_response("Completed both steps: step1 then step2"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig::default();
 
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Run two steps", None).await.unwrap();
@@ -4453,6 +4771,7 @@ async fn test_agent_multi_turn_tool_chain() {
 
 #[tokio::test]
 async fn test_agent_conversation_history_preserved() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Pass existing history, verify it's preserved in output
     let existing_history = vec![
         Message::user("What is Rust?"),
@@ -4471,11 +4790,11 @@ async fn test_agent_conversation_history_preserved() {
         "Rust was created by Graydon Hoare at Mozilla.",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             prompt_slots: SystemPromptSlots {
                 style: Some(AgentStyle::GeneralPurpose),
@@ -4506,17 +4825,18 @@ async fn test_agent_conversation_history_preserved() {
 
 #[tokio::test]
 async fn test_agent_event_stream_completeness() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Verify full event sequence for a single tool call loop
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response("t1", "bash", serde_json::json!({"command": "echo hi"})),
         MockLlmClient::text_response("Done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             permission_checker: Some(Arc::new(PermissionPolicy::new().allow("bash(echo:*)"))),
             ..Default::default()
@@ -4657,6 +4977,7 @@ async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
 
 #[tokio::test]
 async fn test_repeated_incomplete_text_converges_after_one_continuation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response("Let me inspect the code..."),
         MockLlmClient::text_response("  LET   ME inspect the code...  "),
@@ -4664,8 +4985,8 @@ async fn test_repeated_incomplete_text_converges_after_one_continuation() {
     ]));
     let agent = AgentLoop::new(
         mock_client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             max_continuation_turns: 20,
             max_tool_rounds: 100,
@@ -4680,6 +5001,7 @@ async fn test_repeated_incomplete_text_converges_after_one_continuation() {
 
 #[tokio::test]
 async fn test_standalone_greeting_does_not_trigger_continuation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let greeting = "I'll be happy to help. What would you like to work on?";
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::text_response(greeting),
@@ -4687,8 +5009,8 @@ async fn test_standalone_greeting_does_not_trigger_continuation() {
     ]));
     let agent = AgentLoop::new(
         mock_client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             max_continuation_turns: 20,
             max_tool_rounds: 100,
@@ -4703,6 +5025,7 @@ async fn test_standalone_greeting_does_not_trigger_continuation() {
 
 #[tokio::test]
 async fn test_agent_multiple_tools_single_turn() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // LLM returns 2 tool calls in one response
     let mock_client = Arc::new(MockLlmClient::new(vec![
         LlmResponse {
@@ -4739,11 +5062,11 @@ async fn test_agent_multiple_tools_single_turn() {
         MockLlmClient::text_response("Both commands ran"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig {
             prompt_slots: SystemPromptSlots {
                 style: Some(AgentStyle::GeneralPurpose),
@@ -4783,17 +5106,18 @@ async fn test_agent_multiple_tools_single_turn() {
 
 #[tokio::test]
 async fn test_agent_token_usage_accumulation() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Verify usage sums across multiple turns
     let mock_client = Arc::new(MockLlmClient::new(vec![
         MockLlmClient::tool_call_response("t1", "bash", serde_json::json!({"command": "echo x"})),
         MockLlmClient::text_response("Done"),
     ]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -4808,12 +5132,13 @@ async fn test_agent_token_usage_accumulation() {
 
 #[tokio::test]
 async fn test_agent_system_prompt_passed() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Verify system prompt is used (MockLlmClient captures calls)
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "I am a coding assistant.",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         prompt_slots: SystemPromptSlots {
             extra: Some("You are a coding assistant.".to_string()),
@@ -4825,7 +5150,7 @@ async fn test_agent_system_prompt_passed() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "What are you?", None).await.unwrap();
@@ -4856,6 +5181,7 @@ async fn test_agent_system_prompt_passed() {
 
 #[tokio::test]
 async fn test_explicit_general_style_overrides_task_word_intent() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Task content is data for an explicitly configured execution role. A
     // writable session must not become the read-only planning agent merely
     // because the task contains a word such as "design".
@@ -4872,8 +5198,8 @@ async fn test_explicit_general_style_overrides_task_word_intent() {
     };
     let agent = AgentLoop::new(
         mock_client.clone(),
-        Arc::new(ToolExecutor::new("/tmp".to_string())),
-        test_tool_context(),
+        Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
 
@@ -4896,6 +5222,7 @@ async fn test_explicit_general_style_overrides_task_word_intent() {
 
 #[tokio::test]
 async fn auto_intent_keeps_general_purpose_system_prompt() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // Without an explicit host style, specialty words must not silently
     // downgrade the primary session into a read-only specialty prompt.
     for prompt in [
@@ -4914,8 +5241,8 @@ async fn auto_intent_keeps_general_purpose_system_prompt() {
         };
         let agent = AgentLoop::new(
             mock_client.clone(),
-            Arc::new(ToolExecutor::new("/tmp".to_string())),
-            test_tool_context(),
+            Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+            ToolContext::new(hermetic_root.clone()),
             config,
         );
         agent.execute(&[], prompt, None).await.unwrap();
@@ -4951,6 +5278,7 @@ async fn auto_intent_keeps_general_purpose_system_prompt() {
 
 #[tokio::test]
 async fn test_agent_max_rounds_with_persistent_tool_calls() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     // LLM keeps calling tools forever — should hit max_tool_rounds
     let mut responses = Vec::new();
     for i in 0..15 {
@@ -4962,7 +5290,7 @@ async fn test_agent_max_rounds_with_persistent_tool_calls() {
     }
 
     let mock_client = Arc::new(MockLlmClient::new(responses));
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let config = AgentConfig {
         max_tool_rounds: 5,
         ..Default::default()
@@ -4971,7 +5299,7 @@ async fn test_agent_max_rounds_with_persistent_tool_calls() {
     let agent = AgentLoop::new(
         mock_client.clone(),
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         config,
     );
     let result = agent.execute(&[], "Loop forever", None).await;
@@ -4983,15 +5311,16 @@ async fn test_agent_max_rounds_with_persistent_tool_calls() {
 
 #[tokio::test]
 async fn test_agent_end_event_contains_final_text() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
     let mock_client = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
         "Final answer here",
     )]));
 
-    let tool_executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+    let tool_executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
-        test_tool_context(),
+        ToolContext::new(hermetic_root.clone()),
         AgentConfig::default(),
     );
 
@@ -5045,10 +5374,11 @@ fn parallel_write_batch_fast_path_is_only_a_data_race_check() {
             enforce_active_skill_tool_restrictions,
             ..Default::default()
         };
+        let hermetic_root = crate::test_support::hermetic_workspace();
         AgentLoop::new(
             Arc::new(MockLlmClient::new(vec![])),
-            Arc::new(ToolExecutor::new("/tmp".to_string())),
-            test_tool_context(),
+            Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+            ToolContext::new(hermetic_root),
             config,
         )
     }
@@ -5304,11 +5634,17 @@ mod nested_tool_governance_tests {
         calls: Arc<AtomicUsize>,
         config: AgentConfig,
     ) -> (AgentLoop, Arc<MockLlmClient>) {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let client = Arc::new(MockLlmClient::new(responses));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         executor.register_dynamic_tool(Arc::new(SideEffectTool { calls }));
         (
-            AgentLoop::new(client.clone(), executor, test_tool_context(), config),
+            AgentLoop::new(
+                client.clone(),
+                executor,
+                ToolContext::new(hermetic_root.clone()),
+                config,
+            ),
             client,
         )
     }
@@ -5348,8 +5684,9 @@ mod nested_tool_governance_tests {
 
     #[tokio::test]
     async fn cancelling_one_invocation_settles_only_its_confirmation() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         executor.register_dynamic_tool(Arc::new(SideEffectTool {
             calls: Arc::clone(&calls),
         }));
@@ -5362,7 +5699,7 @@ mod nested_tool_governance_tests {
         let agent = AgentLoop::new(
             Arc::new(MockLlmClient::new(vec![])),
             executor,
-            test_tool_context(),
+            ToolContext::new(hermetic_root.clone()),
             AgentConfig {
                 permission_checker: Some(Arc::new(TargetPermission {
                     target: "side_effect",
@@ -5388,10 +5725,11 @@ mod nested_tool_governance_tests {
             Vec::new(),
         );
         let invoker_a = Arc::clone(&invoker);
-        let context_a = test_tool_context().with_cancellation(cancellation_a.clone());
+        let context_a =
+            ToolContext::new(hermetic_root.clone()).with_cancellation(cancellation_a.clone());
         let run_a = tokio::spawn(async move { invoker_a.invoke(invocation_a, &context_a).await });
         let invoker_b = Arc::clone(&invoker);
-        let context_b = test_tool_context().with_cancellation(cancellation_b);
+        let context_b = ToolContext::new(hermetic_root.clone()).with_cancellation(cancellation_b);
         let run_b = tokio::spawn(async move { invoker_b.invoke(invocation_b, &context_b).await });
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -5421,15 +5759,16 @@ mod nested_tool_governance_tests {
 
     #[tokio::test]
     async fn trusted_host_batch_and_program_propagate_only_builtin_nested_authority() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         executor.register_dynamic_tool(Arc::new(SideEffectTool {
             calls: Arc::clone(&calls),
         }));
         let agent = AgentLoop::new(
             Arc::new(MockLlmClient::new(vec![])),
             executor,
-            test_tool_context(),
+            ToolContext::new(hermetic_root.clone()),
             AgentConfig {
                 permission_checker: Some(Arc::new(TargetPermission {
                     target: "side_effect",
@@ -5439,7 +5778,7 @@ mod nested_tool_governance_tests {
             },
         );
         let cancellation = tokio_util::sync::CancellationToken::new();
-        let context = test_tool_context();
+        let context = ToolContext::new(hermetic_root.clone());
         let calls_to_run = [
             (
                 "batch",
@@ -5480,8 +5819,9 @@ mod nested_tool_governance_tests {
 
     #[tokio::test]
     async fn public_runtime_cannot_amplify_a_host_direct_custom_tool_call() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         executor.register_dynamic_tool(Arc::new(SideEffectTool {
             calls: Arc::clone(&calls),
         }));
@@ -5489,7 +5829,7 @@ mod nested_tool_governance_tests {
         let agent = AgentLoop::new(
             Arc::new(MockLlmClient::new(vec![])),
             executor,
-            test_tool_context(),
+            ToolContext::new(hermetic_root.clone()),
             AgentConfig {
                 permission_checker: Some(Arc::new(TargetPermission {
                     target: "side_effect",
@@ -5508,7 +5848,7 @@ mod nested_tool_governance_tests {
                 "host-custom",
                 &None,
                 &tokio_util::sync::CancellationToken::new(),
-                &test_tool_context(),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await;
 
@@ -5587,8 +5927,9 @@ mod nested_tool_governance_tests {
 
     #[tokio::test]
     async fn delegated_tool_obeys_permission_deny_without_side_effects() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let calls = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         executor.register_dynamic_tool(Arc::new(DelegatedSideEffectTool {
             calls: Arc::clone(&calls),
         }));
@@ -5602,7 +5943,7 @@ mod nested_tool_governance_tests {
         let agent = AgentLoop::new(
             Arc::new(MockLlmClient::new(vec![])),
             executor,
-            test_tool_context(),
+            ToolContext::new(hermetic_root.clone()),
             config,
         );
 

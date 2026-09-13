@@ -92,6 +92,17 @@ struct PreAnalysisPlan {
     required_tools: Vec<String>,
 }
 
+fn claim_step_id(seen: &mut std::collections::HashSet<String>, id: String) -> Result<String> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        anyhow::bail!("plan step id must not be empty");
+    }
+    if !seen.insert(id.clone()) {
+        anyhow::bail!("plan step id '{id}' is duplicated");
+    }
+    Ok(id)
+}
+
 impl LlmPlanner {
     /// Generate an execution plan from a prompt using LLM
     pub async fn create_plan(
@@ -274,8 +285,10 @@ impl LlmPlanner {
         };
 
         let mut plan = ExecutionPlan::new(goal_description, complexity);
+        let mut seen_ids = std::collections::HashSet::new();
         for step_resp in parsed.execution_plan.steps {
-            let mut task = Task::new(step_resp.id, step_resp.description);
+            let id = claim_step_id(&mut seen_ids, step_resp.id)?;
+            let mut task = Task::new(id, step_resp.description);
             if let Some(tool) = step_resp.tool {
                 task = task.with_tool(tool);
             }
@@ -402,9 +415,11 @@ impl LlmPlanner {
         };
 
         let mut plan = ExecutionPlan::new(parsed.goal, complexity);
+        let mut seen_ids = std::collections::HashSet::new();
 
         for step_resp in parsed.steps {
-            let mut task = Task::new(step_resp.id, step_resp.description);
+            let id = claim_step_id(&mut seen_ids, step_resp.id)?;
+            let mut task = Task::new(id, step_resp.description);
             if let Some(tool) = step_resp.tool {
                 task = task.with_tool(tool);
             }
@@ -538,6 +553,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_plan_response_rejects_a_duplicated_step_id() {
+        let json = r#"{"goal":"g","complexity":"Simple","steps":[
+            {"id":"step-1","description":"a"},
+            {"id":"step-1","description":"b"}
+        ],"required_tools":[]}"#;
+        let err = LlmPlanner::parse_plan_response(json)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("duplicated"), "{err}");
+    }
+
+    #[test]
     fn test_parse_plan_response_unknown_complexity() {
         let json =
             r#"{"goal": "Test", "complexity": "Unknown", "steps": [], "required_tools": []}"#;
@@ -621,7 +648,8 @@ mod tests {
         assert_eq!(plan.goal, "Complete the requested task");
         assert_eq!(plan.steps[0].content, "Complete the requested task");
 
-        let composed = "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n规划引擎";
+        let composed =
+            "A3S Desktop workbench context:\n- Active workbench: Office.\n\nUser task:\n规划引擎";
         let plan = LlmPlanner::fallback_plan(composed);
         assert_eq!(plan.goal, "规划引擎");
         assert_eq!(plan.execution_context.as_deref(), Some(composed));
@@ -753,8 +781,8 @@ mod tests {
                     role: "assistant".to_string(),
                     content: vec![crate::llm::ContentBlock::Text { text }],
                     reasoning_content: None,
-                transcript_text: None,
-                transcript_visibility: Default::default(),
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                 },
                 usage: crate::llm::TokenUsage::default(),
                 stop_reason: None,

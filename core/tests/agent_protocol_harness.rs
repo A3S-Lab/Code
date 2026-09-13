@@ -251,6 +251,20 @@ async fn wait_for_terminal(
     .expect("detached Harness run must terminate")
 }
 
+fn assert_unverified_mutation(page: &a3s_code_core::AgentProtocolEventPageV1) {
+    assert_eq!(page.state, AgentProtocolRunStateV1::Failed);
+    let message = page
+        .events
+        .iter()
+        .find(|record| record.event.event_type == "error")
+        .and_then(|record| record.event.payload["message"].as_str())
+        .unwrap_or("");
+    assert!(
+        message.contains("completion gate:") && message.contains("no bound Passed verification"),
+        "{message}"
+    );
+}
+
 async fn wait_for_change_set(
     harness: &AgentProtocolHarness,
     command: &AgentProtocolCommandV1,
@@ -461,7 +475,7 @@ async fn harness_replay_binds_tool_requests_without_argument_plaintext() {
 
     harness.execute(&command).await.unwrap();
     let page = wait_for_terminal(&harness, &command).await;
-    assert_eq!(page.state, AgentProtocolRunStateV1::Completed);
+    assert_unverified_mutation(&page);
     let request_record = page
         .events
         .iter()
@@ -545,10 +559,7 @@ async fn harness_isolates_sessions_and_exports_one_digest_bound_run_patch() {
     );
 
     harness.execute(&command).await.unwrap();
-    assert_eq!(
-        wait_for_terminal(&harness, &command).await.state,
-        AgentProtocolRunStateV1::Completed
-    );
+    assert_unverified_mutation(&wait_for_terminal(&harness, &command).await);
     let change_set = wait_for_change_set(&harness, &command).await;
     change_set.validate().unwrap();
     let patch = base64::engine::general_purpose::STANDARD
@@ -606,10 +617,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     );
     let receipt = first.execute(&command).await.unwrap();
     assert!(!receipt.replayed);
-    assert_eq!(
-        wait_for_terminal(&first, &command).await.state,
-        AgentProtocolRunStateV1::Completed
-    );
+    assert_unverified_mutation(&wait_for_terminal(&first, &command).await);
     wait_for_change_set(&first, &command).await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -620,7 +628,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
                 .is_some_and(|snapshot| {
                     snapshot.run_records.iter().any(|record| {
                         record.snapshot.id == "durable-execution"
-                            && record.snapshot.status == a3s_code_core::RunStatus::Completed
+                            && record.snapshot.status == a3s_code_core::RunStatus::Failed
                             && record.snapshot.workspace_change_set.is_some()
                     })
                 })
@@ -661,7 +669,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
     );
     let replay = second.execute(&command).await.unwrap();
     assert!(replay.replayed);
-    assert_eq!(replay.state, AgentProtocolRunStateV1::Completed);
+    assert_eq!(replay.state, AgentProtocolRunStateV1::Failed);
     assert_eq!(second.session_count().await, 1);
 
     let follow_up = start(
@@ -670,10 +678,7 @@ async fn harness_resumes_the_code_store_before_replaying_a_start_after_restart()
         "durable-execution-follow-up",
     );
     second.execute(&follow_up).await.unwrap();
-    assert_eq!(
-        wait_for_terminal(&second, &follow_up).await.state,
-        AgentProtocolRunStateV1::Completed
-    );
+    assert_unverified_mutation(&wait_for_terminal(&second, &follow_up).await);
     let change_set = wait_for_change_set(&second, &follow_up).await;
     let patch = base64::engine::general_purpose::STANDARD
         .decode(change_set.patch_base64)

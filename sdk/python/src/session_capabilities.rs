@@ -368,7 +368,11 @@ impl PySession {
     /// Apply one SDK-transported Skill capability batch (SDK-CAP1).
     ///
     /// Stages serializable Skill values into one atomic catalog generation.
-    fn apply_capability_batch(&self, py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn apply_capability_batch(
+        &self,
+        py: Python<'_>,
+        batch: &Bound<'_, PyAny>,
+    ) -> PyResult<PyObject> {
         let batch: a3s_code_core::capability::SdkCapabilityBatchV1 =
             serde_json::from_str(&py_any_to_json(batch)?)
                 .map_err(|e| PyValueError::new_err(format!("Invalid SDK capability batch: {e}")))?;

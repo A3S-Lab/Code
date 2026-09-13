@@ -1147,7 +1147,10 @@ impl Session {
         tsfn.unref(&env)?;
 
         let sink: Arc<dyn a3s_code_core::SessionCheckpointExportSink> =
-            Arc::new(NodeCheckpointExportSink { callback: tsfn, timeout });
+            Arc::new(NodeCheckpointExportSink {
+                callback: tsfn,
+                timeout,
+            });
         self.inner
             .set_session_checkpoint_export_sink(Some(sink))
             .map_err(node_code_error)?;
@@ -1174,7 +1177,9 @@ impl a3s_code_core::SessionCheckpointExportSink for NodeCheckpointExportSink {
         let wire = a3s_code_core::SdkSessionCheckpointExportV1::from_export(&checkpoint);
         let value = serde_json::to_value(&wire)
             .map_err(|error| anyhow::anyhow!("serialize checkpoint export: {error}"))?;
-        let callback = self.callback.call_async::<Promise<serde_json::Value>>(value);
+        let callback = self
+            .callback
+            .call_async::<Promise<serde_json::Value>>(value);
         let resolved = tokio::time::timeout(self.timeout, callback)
             .await
             .map_err(|_| anyhow::anyhow!("checkpoint export callback timed out"))?

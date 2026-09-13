@@ -3,8 +3,9 @@
 //! These replace the previous `a3s-tools` binary backend with direct Rust
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
+pub mod ask_user;
 pub(crate) mod bash;
-pub mod batch;
+mod batch;
 mod bm25;
 mod code_intelligence;
 mod download;
@@ -94,6 +95,7 @@ pub fn register_builtins(
     registry.register_builtin(Arc::new(web_search::WebSearchTool::new()));
     // Session checklist updates (no workspace capability gate).
     registry.register_builtin(Arc::new(update_plan::UpdatePlanTool));
+    registry.register_builtin(Arc::new(ask_user::AskUserTool));
 }
 
 #[cfg(test)]

@@ -13,11 +13,11 @@ use futures::stream::{self, StreamExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
 
 const MCP_BOOTSTRAP_CONCURRENCY: usize = 4;
 /// Cap each global MCP handshake so one slow/unreachable server cannot stall
-/// Desktop's first-message Agent bootstrap. Failed servers stay best-effort.
+/// Desktop's first-message Agent bootstrap. Failed servers stay best-effort;
+/// timeouts are recorded on the manager so status remains observable.
 const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) fn load_code_config(config_source: String) -> Result<CodeConfig> {
@@ -135,10 +135,9 @@ async fn connect_global_mcp(
     Option<Arc<crate::mcp::manager::McpManager>>,
     Vec<(String, crate::mcp::McpTool)>,
 ) {
-    if config.mcp_servers.is_empty() {
-        return (None, Vec::new());
-    }
-
+    // Always publish a manager so hosts can hot-sync `mcp_servers` into a
+    // live Agent without rebuilding it. An empty configuration still yields
+    // an empty manager that sessions inherit by Arc.
     let manager = Arc::new(crate::mcp::manager::McpManager::new());
     let enabled_servers = config
         .mcp_servers
@@ -146,6 +145,9 @@ async fn connect_global_mcp(
         .filter(|server| server.enabled)
         .cloned()
         .collect::<Vec<_>>();
+    if enabled_servers.is_empty() {
+        return (Some(manager), Vec::new());
+    }
     // Register all definitions before opening transports, then connect a
     // bounded number in parallel. MCP startup is independent per server, and
     // serial handshakes make a slow/unreachable endpoint delay every other
@@ -158,22 +160,16 @@ async fn connect_global_mcp(
         .map(|server| {
             let manager = Arc::clone(&manager);
             async move {
-                match timeout(MCP_CONNECT_TIMEOUT, manager.connect(&server.name)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::warn!(
-                            server = %server.name,
-                            error = %error,
-                            "Failed to connect to MCP server - skipping"
-                        );
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            server = %server.name,
-                            timeout_secs = MCP_CONNECT_TIMEOUT.as_secs(),
-                            "MCP server connect timed out during agent bootstrap - skipping"
-                        );
-                    }
+                if let Err(error) = manager
+                    .connect_with_timeout(&server.name, MCP_CONNECT_TIMEOUT)
+                    .await
+                {
+                    tracing::warn!(
+                        server = %server.name,
+                        error = %error,
+                        timeout_secs = MCP_CONNECT_TIMEOUT.as_secs(),
+                        "Failed to connect to MCP server during agent bootstrap - skipping"
+                    );
                 }
             }
         })

@@ -247,7 +247,7 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "web_search",
         category: "web",
-        description: "Search HTTP, native, RSS, and JavaScript-rendered engines through a3s-search v3.1.0.",
+        description: "Search HTTP, native, RSS, and JavaScript-rendered engines through a3s-search v3.1.4. Billed providers stay opt-in.",
         operations: &["session.web_search", "session.tool:web_search"],
         host_owned: true,
         tier: CapabilityTier::Baseline,

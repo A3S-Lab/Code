@@ -126,6 +126,7 @@ fn parse_plan_args(args: &serde_json::Value) -> Result<Vec<Task>, String> {
     }
 
     let mut tasks = Vec::with_capacity(rows.len());
+    let mut seen_ids = std::collections::HashSet::new();
     for (index, row) in rows.iter().enumerate() {
         let step = row
             .get("step")
@@ -146,6 +147,9 @@ fn parse_plan_args(args: &serde_json::Value) -> Result<Vec<Task>, String> {
             .filter(|id| !id.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("plan-{}", index + 1));
+        if !seen_ids.insert(id.clone()) {
+            return Err(format!("plan step id '{id}' is duplicated"));
+        }
         let mut task = Task::new(id, content);
         task.status = status;
         tasks.push(task);
@@ -252,6 +256,29 @@ mod tests {
             .unwrap();
         assert!(!bad_status.success);
         assert!(bad_status.content.contains("unknown plan status"));
+    }
+
+    #[tokio::test]
+    async fn update_plan_rejects_a_step_id_that_collides_with_another_step() {
+        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
+        let collided = UpdatePlanTool
+            .execute(
+                &serde_json::json!({
+                    "plan": [
+                        {"step": "First", "status": "pending"},
+                        {"step": "Second", "status": "completed", "id": "plan-1"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!collided.success);
+        assert!(
+            collided.content.contains("duplicated"),
+            "an explicit id must not reuse an automatic id: {}",
+            collided.content
+        );
     }
 
     #[test]

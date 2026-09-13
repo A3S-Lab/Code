@@ -23,6 +23,7 @@ impl ParallelTaskTool {
         min_tasks: usize,
     ) -> Result<ToolOutput> {
         let started_at = std::time::Instant::now();
+        let watch = crate::porcelain::Watch::start(&ctx.workspace).await;
         let parent_cancellation = ctx.cancellation_token();
         let executor = self.executor.scoped_for_invocation(ctx);
 
@@ -107,6 +108,17 @@ impl ParallelTaskTool {
                 "artifact_id": task_artifact_id(result),
                 "artifact_uri": task_artifact_uri(result),
             }));
+            if !result.completion.is_narrative() {
+                if let Some(object) = metadata_results
+                    .last_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    object.insert(
+                        "completion".to_string(),
+                        serde_json::to_value(&result.completion).unwrap_or(serde_json::Value::Null),
+                    );
+                }
+            }
             output.push_str(&format!(
                 "--- Task {} ({}) {} ---\n{}\n\n",
                 i + 1,
@@ -150,7 +162,16 @@ impl ParallelTaskTool {
             });
         }
 
-        Ok(output.with_metadata(serde_json::json!({
+        let changed = watch.finish(&ctx.workspace).await;
+        for result in &results {
+            adopt_dirtied_paths(
+                ctx.session_id.as_deref(),
+                &result.session_id,
+                &ctx.workspace,
+                &changed,
+            );
+        }
+        let mut metadata = Some(serde_json::json!({
             "task_count": task_count,
             "result_count": results.len(),
             "success_count": success_count,
@@ -164,7 +185,9 @@ impl ParallelTaskTool {
             "returned_early": run.returned_early,
             "duration_ms": started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "results": metadata_results,
-        })))
+        }));
+        crate::porcelain::attach(&mut metadata, &changed);
+        Ok(output.with_metadata(metadata.unwrap_or_else(|| serde_json::json!({}))))
     }
 }
 

@@ -58,6 +58,17 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 | 保存与恢复 | `SessionSnapshotV1`、Session ID、Auto-save、Run Event、Trace、Artifact、Loop / Workflow Checkpoint 和 Memory Store 用来恢复会话和回放运行过程。                                   |
 | 验证       | [验证](/guide/verification) 支持验证命令、预设、结构化报告、摘要、Artifact、Trace Event 和 Run Replay。                                                                           |
 
+## v8.5.6 新增内容
+
+- **未验证的工作区改动不能完成。** 改过工作区的一轮保持未完成，除非有一份
+  Passed 的验证报告绑定该变更 digest，或宿主豁免覆盖该 digest。助手正文不算，
+  宿主豁免也不能由模型授予。
+- **Search 3.1.4。** 具名引擎可以使用可选计费提供方 `tinyfish`、`bocha`、
+  `aliyun`、`tencent`、`firecrawl`。它们不进入默认级联。
+- **SDK 宿主契约。** Node、Python、Go 暴露 `sync_global_mcp_servers` /
+  `global_mcp_status`、会话审查、结果账本，以及 Core 上已有的可序列化
+  SessionOptions 字段。trait object 宿主钩子仍然省略。
+
 ## v8.5.5 新增内容
 
 - **GLM Coding Plan `base_url` 拼接。** 类似

@@ -39,7 +39,7 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
         .session_async(
-            "/server/local-placeholder",
+            "/server/session-construction-placeholder",
             Some(
                 SessionOptions::new()
                     .with_workspace_backend(services)
@@ -105,6 +105,7 @@ async fn test_session_uses_workspace_backend_for_direct_tools() {
 
     let bash = session.bash("pwd").await.unwrap();
     assert_eq!(bash, "session runner: pwd\n");
+    crate::external_observation::release_session(session.id());
 }
 
 #[tokio::test]

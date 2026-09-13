@@ -40,8 +40,8 @@ use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy
 use crate::security::SecurityProvider;
 use crate::skills::SkillRegistry;
 use crate::subagent::ConfirmationInheritance;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 /// Capabilities inherited from a parent session into a child run.
@@ -164,6 +164,9 @@ struct DelegatedConfirmationProvider {
     child_confirmation: Option<Arc<dyn ConfirmationProvider>>,
     parent_checker: Option<Arc<dyn PermissionChecker>>,
     parent_confirmation: Option<Arc<dyn ConfirmationProvider>>,
+    /// Parent confirmation ids this delegation opened. Settlement must not
+    /// apply to a parent request that was already pending under the same id.
+    forwarded_parent_ids: Mutex<HashSet<String>>,
 }
 
 #[derive(Default)]
@@ -287,6 +290,49 @@ impl DelegatedConfirmationProvider {
         let _ = tx.send(ConfirmationResponse { approved, reason });
         rx
     }
+
+    fn remember_parent_forward(&self, tool_id: &str, targets: &[Arc<dyn ConfirmationProvider>]) {
+        let Some(parent) = &self.parent_confirmation else {
+            return;
+        };
+        if self.same_as_child(parent) {
+            return;
+        }
+        if targets.iter().any(|provider| Arc::ptr_eq(provider, parent)) {
+            self.forwarded_parent_ids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(tool_id.to_string());
+        }
+    }
+
+    fn take_parent_forward(&self, tool_id: &str) -> bool {
+        self.forwarded_parent_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(tool_id)
+    }
+
+    fn drain_parent_forwards(&self) -> Vec<String> {
+        self.forwarded_parent_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain()
+            .collect()
+    }
+
+    fn parent_forward_ids(&self) -> HashSet<String> {
+        self.forwarded_parent_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn same_as_child(&self, parent: &Arc<dyn ConfirmationProvider>) -> bool {
+        self.child_confirmation
+            .as_ref()
+            .is_some_and(|child| Arc::ptr_eq(child, parent))
+    }
 }
 
 #[async_trait::async_trait]
@@ -307,6 +353,7 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
             child_confirmation: self.child_confirmation.as_ref().map(snapshot_provider),
             parent_checker: self.parent_checker.as_ref().map(snapshot_checker),
             parent_confirmation: self.parent_confirmation.as_ref().map(snapshot_provider),
+            forwarded_parent_ids: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -360,6 +407,7 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
             return Self::immediate_response(true, None);
         }
 
+        self.remember_parent_forward(tool_id, &targets.providers);
         let mut receivers = Vec::with_capacity(targets.providers.len());
         for provider in targets.providers {
             receivers.push(
@@ -419,10 +467,18 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
     ) -> Result<bool, String> {
         let mut found = false;
         let mut errors = Vec::new();
-        for provider in self.all_providers() {
-            match provider.confirm(tool_id, approved, reason.clone()).await {
-                Ok(provider_found) => found |= provider_found,
+        if let Some(child) = &self.child_confirmation {
+            match child.confirm(tool_id, approved, reason.clone()).await {
+                Ok(hit) => found |= hit,
                 Err(error) => errors.push(error),
+            }
+        }
+        if self.take_parent_forward(tool_id) {
+            if let Some(parent) = &self.parent_confirmation {
+                match parent.confirm(tool_id, approved, reason).await {
+                    Ok(hit) => found |= hit,
+                    Err(error) => errors.push(error),
+                }
             }
         }
         if errors.is_empty() {
@@ -444,32 +500,72 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
 
     async fn check_timeouts(&self) -> usize {
         let mut timed_out = 0usize;
-        for provider in self.all_providers() {
-            timed_out = timed_out.saturating_add(provider.check_timeouts().await);
+        if let Some(child) = &self.child_confirmation {
+            timed_out = timed_out.saturating_add(child.check_timeouts().await);
+        }
+        let Some(parent) = &self.parent_confirmation else {
+            return timed_out;
+        };
+        if self.same_as_child(parent) {
+            return timed_out;
+        }
+        let action = parent.policy().await.timeout_action;
+        let forwarded = self.parent_forward_ids();
+        for info in parent.pending_confirmations().await {
+            if forwarded.contains(&info.tool_id)
+                && info.remaining_ms == 0
+                && parent.expire(&info.tool_id, action).await
+            {
+                timed_out = timed_out.saturating_add(1);
+                self.take_parent_forward(&info.tool_id);
+            }
         }
         timed_out
     }
 
     async fn cancel(&self, tool_id: &str) -> bool {
         let mut cancelled = false;
-        for provider in self.all_providers() {
-            cancelled |= provider.cancel(tool_id).await;
+        if let Some(child) = &self.child_confirmation {
+            cancelled |= child.cancel(tool_id).await;
+        }
+        if self.take_parent_forward(tool_id) {
+            if let Some(parent) = &self.parent_confirmation {
+                cancelled |= parent.cancel(tool_id).await;
+            }
         }
         cancelled
     }
 
     async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
         let mut expired = false;
-        for provider in self.all_providers() {
-            expired |= provider.expire(tool_id, action).await;
+        if let Some(child) = &self.child_confirmation {
+            expired |= child.expire(tool_id, action).await;
+        }
+        if self.take_parent_forward(tool_id) {
+            if let Some(parent) = &self.parent_confirmation {
+                expired |= parent.expire(tool_id, action).await;
+            }
         }
         expired
     }
 
     async fn cancel_all(&self) -> usize {
         let mut cancelled = 0usize;
-        for provider in self.all_providers() {
-            cancelled = cancelled.saturating_add(provider.cancel_all().await);
+        if let Some(child) = &self.child_confirmation {
+            cancelled = cancelled.saturating_add(child.cancel_all().await);
+        }
+        let Some(parent) = &self.parent_confirmation else {
+            self.drain_parent_forwards();
+            return cancelled;
+        };
+        if self.same_as_child(parent) {
+            self.drain_parent_forwards();
+            return cancelled;
+        }
+        for tool_id in self.drain_parent_forwards() {
+            if parent.cancel(&tool_id).await {
+                cancelled = cancelled.saturating_add(1);
+            }
         }
         cancelled
     }
@@ -601,6 +697,7 @@ impl ChildRunContext {
             child_confirmation,
             parent_checker: parent_permission_checker,
             parent_confirmation,
+            forwarded_parent_ids: Mutex::new(HashSet::new()),
         }));
         if let Some(enforce) = self.enforce_active_skill_tool_restrictions {
             config.enforce_active_skill_tool_restrictions = enforce;

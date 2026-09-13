@@ -91,7 +91,6 @@ impl Tool for EditTool {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
-
         let old_string = match args.get("old_string").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return Ok(ToolOutput::error("old_string parameter is required")),
@@ -207,6 +206,18 @@ impl Tool for EditTool {
             .with_metadata(change_metadata()));
         }
 
+        let session_id = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty());
+        let newly_acquired = session_id.is_some_and(|id| {
+            !crate::external_observation::session_owns_write(id, &ctx.workspace, file_path)
+        });
+        if let Err(error) = crate::external_observation::claim_bound_write(
+            ctx.session_id.as_deref(),
+            &ctx.workspace,
+            file_path,
+        ) {
+            return Ok(ToolOutput::error(error));
+        }
+
         match ctx
             .workspace_services
             .write_for_edit(&workspace_path, &new_content, version.as_deref())
@@ -218,6 +229,15 @@ impl Tool for EditTool {
             ))
             .with_metadata(change_metadata())),
             Err(e) => {
+                if newly_acquired {
+                    if let Some(id) = session_id {
+                        crate::external_observation::release_write_claim(
+                            id,
+                            &ctx.workspace,
+                            file_path,
+                        );
+                    }
+                }
                 // Surface the typed kind via ToolOutput.error_kind so SDK
                 // callers can react programmatically; the human-readable
                 // `content` message stays the same so the model sees the
@@ -265,7 +285,7 @@ mod tests {
         std::fs::write(temp.path().join("test.txt"), "hello world").unwrap();
 
         let tool = EditTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = tool
             .execute(
@@ -282,6 +302,59 @@ mod tests {
         assert!(result.success);
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");
+        crate::external_observation::release_session("edit-test");
+    }
+
+    #[tokio::test]
+    async fn edit_without_a_session_does_not_apply_or_claim_an_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = "hello world";
+        std::fs::write(temp.path().join("test.txt"), original).unwrap();
+        let tool = EditTool;
+        let unbound = ToolContext::new(temp.path().to_path_buf());
+
+        for session_id in [None, Some("   ")] {
+            let ctx = match session_id {
+                Some(id) => unbound.clone().with_session_id(id),
+                None => unbound.clone(),
+            };
+            let result = tool
+                .execute(
+                    &serde_json::json!({
+                        "file_path": "test.txt",
+                        "old_string": "hello",
+                        "new_string": "goodbye"
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert!(!result.success, "{session_id:?}");
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("test.txt")).unwrap(),
+                original,
+                "{session_id:?}"
+            );
+        }
+
+        let bound = unbound.with_session_id("edit-after-unbound");
+        let applied = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "hello",
+                    "new_string": "goodbye"
+                }),
+                &bound,
+            )
+            .await
+            .unwrap();
+        assert!(applied.success, "{}", applied.content);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("test.txt")).unwrap(),
+            "goodbye world"
+        );
+        crate::external_observation::release_session("edit-after-unbound");
     }
 
     #[tokio::test]
@@ -290,7 +363,7 @@ mod tests {
         std::fs::write(temp.path().join("test.txt"), "aaa bbb aaa").unwrap();
 
         let tool = EditTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = tool
             .execute(
@@ -315,7 +388,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "alpha alpha").unwrap();
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = EditTool
             .execute(
@@ -350,7 +423,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "alpha alpha").unwrap();
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = EditTool
             .execute(
@@ -378,7 +451,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("test.txt");
         std::fs::write(&path, "alpha alpha alpha").unwrap();
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = EditTool
             .execute(
@@ -405,7 +478,7 @@ mod tests {
         std::fs::write(temp.path().join("test.txt"), "aaa bbb aaa").unwrap();
 
         let tool = EditTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = tool
             .execute(
@@ -429,7 +502,7 @@ mod tests {
         std::fs::write(temp.path().join("test.txt"), "hello world").unwrap();
 
         let tool = EditTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-test");
 
         let result = tool
             .execute(
@@ -445,6 +518,97 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.content.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn preview_or_miss_does_not_own_a_file_that_was_not_written() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("guest.txt"), "hello").unwrap();
+        std::fs::write(temp.path().join("other.txt"), "stay").unwrap();
+        std::fs::write(temp.path().join("missing.txt"), "keep").unwrap();
+        let owner =
+            ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-preview-owner");
+        let tool = EditTool;
+
+        let written = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "guest.txt",
+                    "old_string": "hello",
+                    "new_string": "HELLO"
+                }),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert!(written.success, "{}", written.content);
+
+        let preview = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "other.txt",
+                    "old_string": "stay",
+                    "new_string": "STAY",
+                    "dry_run": true
+                }),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert!(preview.success, "{}", preview.content);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("other.txt")).unwrap(),
+            "stay"
+        );
+
+        let missed = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "missing.txt",
+                    "old_string": "absent",
+                    "new_string": "nope"
+                }),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert!(!missed.success);
+
+        let blocked = crate::external_observation::claim_bound_write(
+            Some("edit-preview-other"),
+            temp.path(),
+            "guest.txt",
+        );
+        assert!(blocked.is_err(), "a real edit must keep the claim");
+        assert!(
+            crate::external_observation::claim_bound_write(
+                Some("edit-preview-other"),
+                temp.path(),
+                "other.txt",
+            )
+            .is_ok(),
+            "a dry run must not own a file it did not write"
+        );
+        assert!(
+            crate::external_observation::claim_bound_write(
+                Some("edit-preview-other"),
+                temp.path(),
+                "missing.txt",
+            )
+            .is_ok(),
+            "a missed edit must not own a file it did not write"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("guest.txt")).unwrap(),
+            "HELLO"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("missing.txt")).unwrap(),
+            "keep"
+        );
+
+        crate::external_observation::release_session("edit-preview-owner");
+        crate::external_observation::release_session("edit-preview-other");
     }
 
     #[test]
@@ -541,7 +705,9 @@ mod tests {
             .build();
 
         let tool = EditTool;
-        let ctx = ToolContext::new(std::env::temp_dir()).with_workspace_services(services);
+        let ctx = ToolContext::new(std::env::temp_dir())
+            .with_session_id("edit-test")
+            .with_workspace_services(services);
 
         let result = tool
             .execute(

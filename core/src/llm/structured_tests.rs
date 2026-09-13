@@ -2288,8 +2288,8 @@ fn test_extract_raw_output_tool_mode_falls_back_to_text() {
             text: r#"{"name": "Bob"}"#.to_string(),
         }],
         reasoning_content: None,
-    transcript_text: None,
-    transcript_visibility: Default::default(),
+        transcript_text: None,
+        transcript_visibility: Default::default(),
     };
     let candidates = extract_raw_candidates(&msg, StructuredMode::Tool);
     let value = extract_json_value(&candidates[0]).unwrap();

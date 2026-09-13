@@ -664,8 +664,8 @@ mod tests {
                         input: serde_json::json!({ "elements": ["red", "blue"] }),
                     }],
                     reasoning_content: None,
-                transcript_text: None,
-                transcript_visibility: Default::default(),
+                    transcript_text: None,
+                    transcript_visibility: Default::default(),
                 },
                 usage: TokenUsage {
                     prompt_tokens: 11,

@@ -345,9 +345,14 @@ async fn test_env_config_real_llm_planning_records_run_and_task_events() {
         .expect("agent should be created from resolvable ACL config");
 
     let workspace = tempfile::tempdir().expect("temp workspace");
+    // Default retention keeps 2048 events. A verbose planning stream fills that
+    // window with text and reasoning deltas and FIFO-drops PlanningStart. The
+    // assertion is that planning was recorded, not that it survived the default
+    // tail window.
     let opts = SessionOptions::new()
         .with_session_id("real-env-planning-session")
-        .with_planning_mode(PlanningMode::Enabled);
+        .with_planning_mode(PlanningMode::Enabled)
+        .with_retention_limits(a3s_code_core::retention::SessionRetentionLimits::unbounded());
     let session = agent
         .session_async(workspace.path().to_string_lossy().to_string(), Some(opts))
         .await
@@ -375,11 +380,19 @@ async fn test_env_config_real_llm_planning_records_run_and_task_events() {
     assert_eq!(runs[0].session_id, "real-env-planning-session");
 
     let events = session.run_events(&runs[0].id).await;
+    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+    for record in &events {
+        if let Ok(value) = serde_json::to_value(&record.event) {
+            if let Some(kind) = value.get("type").and_then(|kind| kind.as_str()) {
+                *kinds.entry(kind.to_owned()).or_default() += 1;
+            }
+        }
+    }
     assert!(
         events
             .iter()
             .any(|record| matches!(record.event, AgentEvent::PlanningStart { .. })),
-        "planning start event should be recorded"
+        "planning start event should be recorded; retained_kinds={kinds:?}"
     );
     assert!(
         events

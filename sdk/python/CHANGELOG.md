@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.6] - 2026-09-13
+
+- Bundled Core 8.5.6: unverified workspace mutations cannot complete; Node,
+  Python, and Go expose the serializable host-contract surface; search stays
+  pinned at a3s-search 3.1.4.
+
 ## [8.5.5] - 2026-09-10
 
 - Bundled Core 8.5.5: join chat URL without duplicating Coding Plan `/paas/v4`

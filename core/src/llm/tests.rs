@@ -1659,6 +1659,133 @@ mod extra_llm_tests2 {
         );
     }
 
+    #[tokio::test]
+    async fn stream_tool_delta_with_a_different_id_does_not_append_to_the_started_call() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"write","arguments":"{\"path\":\"ok"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-2","function":{"arguments":"HIJACK"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("write a file")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let mut starts = Vec::new();
+        let mut deltas = Vec::new();
+        let mut final_response = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ToolUseStart { id, name } => starts.push((id, name)),
+                StreamEvent::ToolUseInputDelta { id, delta } => deltas.push((id, delta)),
+                StreamEvent::Done(response) => {
+                    final_response = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let response = final_response.expect("expected final response");
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].id, "call-1");
+        assert_eq!(calls[0].name, "write");
+        assert!(
+            !calls[0].args.to_string().contains("HIJACK"),
+            "a later id must not append arguments onto the started call: {}",
+            calls[0].args
+        );
+        assert_eq!(starts, vec![("call-1".to_string(), "write".to_string())]);
+        assert!(
+            deltas.iter().all(|(id, _)| id.as_deref() == Some("call-1")),
+            "deltas={deltas:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_message_snapshot_does_not_replace_a_started_tool_call() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"write","arguments":"{\"path\":\"ok\"}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"message":{"tool_calls":[{"id":"call-2","function":{"name":"bash","arguments":"HIJACK"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("write a file")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let mut final_response = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                final_response = Some(response);
+                break;
+            }
+        }
+
+        let response = final_response.expect("expected final response");
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].id, "call-1", "calls={calls:?}");
+        assert_eq!(calls[0].name, "write", "calls={calls:?}");
+        assert!(
+            !calls[0].args.to_string().contains("HIJACK"),
+            "a message snapshot must not replace the started call: {}",
+            calls[0].args
+        );
+    }
+
     // ========================================================================
     // LlmConfig and create_client_with_config
     // ========================================================================

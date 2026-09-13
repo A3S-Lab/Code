@@ -586,3 +586,51 @@ async fn delegated_targeted_settlement_leaves_other_confirmation_pending_in_both
         .unwrap());
     assert!(untouched.await.unwrap().approved);
 }
+
+#[tokio::test]
+async fn child_confirmation_does_not_approve_a_parent_request_it_did_not_open() {
+    let (child_events, _) = tokio::sync::broadcast::channel(8);
+    let (parent_events, _) = tokio::sync::broadcast::channel(8);
+    let child = Arc::new(crate::hitl::ConfirmationManager::new(
+        ConfirmationPolicy::enabled().with_timeout(5_000, TimeoutAction::Reject),
+        child_events,
+    ));
+    let parent = Arc::new(crate::hitl::ConfirmationManager::new(
+        ConfirmationPolicy::enabled().with_timeout(5_000, TimeoutAction::Reject),
+        parent_events,
+    ));
+    let mut parent_request = parent
+        .request_confirmation(
+            "call-1",
+            "write",
+            &serde_json::json!({"file_path": "secrets.env", "content": "TOKEN"}),
+        )
+        .await;
+    let config = delegated_config(
+        PermissionDecision::Ask,
+        Some(child.clone()),
+        Some(ConfirmationInheritance::AutoApprove),
+        PermissionDecision::Allow,
+        Some(parent.clone()),
+    );
+    let provider = confirmation(&config);
+    let child_request = provider
+        .request_confirmation("call-1", "bash", &serde_json::json!({"command": "pwd"}))
+        .await;
+
+    assert!(provider
+        .confirm(
+            "call-1",
+            true,
+            Some("approve the child command".to_string())
+        )
+        .await
+        .unwrap());
+    assert!(child_request.await.unwrap().approved);
+
+    assert_eq!(parent.pending_count().await, 1);
+    assert!(
+        parent_request.try_recv().is_err(),
+        "approving the child must not approve the parent's pending write"
+    );
+}

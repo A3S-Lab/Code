@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "8.5.5"
+version = "8.5.6"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -47,7 +47,7 @@ a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git",
 a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
-a3s-search = { version = "=3.1.0", git = "https://github.com/A3S-Lab/Search.git", rev = "c30e3dd04de8f2874113cda435439d6938bd3eb6", default-features = false }
+a3s-search = { version = "=3.1.4", git = "https://github.com/A3S-Lab/Search.git", rev = "e38555cebb5a0fe9a982bde72700971262ac0773", default-features = false }
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
 a3s-sandbox = { version = "=0.1.2" }
 # Official zvec Rust binding used by the workspace full-text index. The

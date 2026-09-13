@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{HeadlessConfig, SearchConfig};
 use crate::tools::types::{Tool, ToolOutputKind};
+use crate::workspace::{LocalWorkspaceAccessPolicy, ManifestWorkspaceBackend, WorkspaceServices};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,15 +11,18 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn context(workspace: &TempDir, server: &MockServer) -> ToolContext {
-    ToolContext::new(workspace.path().to_path_buf()).with_search_config(SearchConfig {
-        timeout: 30,
-        health: None,
-        engines: HashMap::new(),
-        headless: Some(HeadlessConfig {
-            proxy_url: Some(server.uri()),
-            ..HeadlessConfig::default()
-        }),
-    })
+    ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("download-test")
+        .with_search_config(SearchConfig {
+            timeout: 30,
+            cascade_order: None,
+            health: None,
+            engines: HashMap::new(),
+            headless: Some(HeadlessConfig {
+                proxy_url: Some(server.uri()),
+                ..HeadlessConfig::default()
+            }),
+        })
 }
 
 async fn execute(workspace: &TempDir, server: &MockServer, args: serde_json::Value) -> ToolOutput {
@@ -110,6 +114,25 @@ async fn private_literal_urls_are_rejected_before_network_access() {
         .unwrap()
         .next()
         .is_none());
+}
+
+#[tokio::test]
+async fn download_without_a_session_does_not_write() {
+    let workspace = tempfile::tempdir().unwrap();
+    let output = DownloadTool
+        .execute(
+            &json!({
+                "url": "http://example.test/payload.bin",
+                "file_path": "payload.bin"
+            }),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+    assert!(!output.success);
+    assert!(output.content.contains("session id"));
+    assert!(!workspace.path().join("payload.bin").exists());
 }
 
 #[tokio::test]
@@ -314,6 +337,17 @@ async fn max_bytes_rejects_before_creating_a_temporary_file() {
     ));
     assert!(!workspace.path().join("too-large.bin").exists());
     assert_no_download_temps(workspace.path());
+    assert!(
+        crate::external_observation::claim_bound_write(
+            Some("download-other"),
+            workspace.path(),
+            "too-large.bin",
+        )
+        .is_ok(),
+        "a download that did not land must not own the destination"
+    );
+    crate::external_observation::release_session("download-test");
+    crate::external_observation::release_session("download-other");
 }
 
 #[tokio::test]
@@ -343,6 +377,138 @@ async fn checksum_failure_preserves_an_existing_destination() {
     assert_eq!(
         std::fs::read(workspace.path().join("existing.bin")).unwrap(),
         b"original"
+    );
+    assert_no_download_temps(workspace.path());
+    assert!(
+        crate::external_observation::claim_bound_write(
+            Some("download-other"),
+            workspace.path(),
+            "existing.bin",
+        )
+        .is_ok(),
+        "a checksum mismatch must not own a destination it did not change"
+    );
+    crate::external_observation::release_session("download-test");
+    crate::external_observation::release_session("download-other");
+}
+
+fn credential_context(workspace: &TempDir) -> ToolContext {
+    let services = WorkspaceServices::local_with_manifest_backend(
+        ManifestWorkspaceBackend::new_with_access_policy(
+            workspace.path(),
+            LocalWorkspaceAccessPolicy::CredentialBoundary,
+        ),
+    );
+    ToolContext::new(workspace.path().to_path_buf())
+        .with_session_id("download-boundary")
+        .with_workspace_services(services)
+}
+
+#[tokio::test]
+async fn credential_boundary_download_does_not_overwrite_a_credential_file() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join(".env"),
+        "TOKEN=download-secret-5b22\n",
+    )
+    .unwrap();
+
+    let output = DownloadTool
+        .execute(
+            &json!({
+                "url": "http://example.test/env",
+                "file_path": ".env",
+                "overwrite": true
+            }),
+            &credential_context(&workspace),
+        )
+        .await
+        .unwrap();
+
+    assert!(!output.success);
+    assert!(
+        output.content.contains("credential boundary"),
+        "{}",
+        output.content
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join(".env")).unwrap(),
+        "TOKEN=download-secret-5b22\n"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn credential_boundary_download_does_not_replace_a_source_hardlink() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("source.bin");
+    let alias = workspace.path().join("alias.bin");
+    std::fs::write(&source, b"download-hardlink-token-9d04").unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
+
+    let output = DownloadTool
+        .execute(
+            &json!({
+                "url": "http://example.test/alias.bin",
+                "file_path": "alias.bin",
+                "overwrite": true
+            }),
+            &credential_context(&workspace),
+        )
+        .await
+        .unwrap();
+
+    assert!(!output.success);
+    assert!(
+        output.content.contains("credential boundary"),
+        "{}",
+        output.content
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"download-hardlink-token-9d04"
+    );
+    assert_eq!(
+        std::fs::read(&alias).unwrap(),
+        b"download-hardlink-token-9d04"
+    );
+}
+
+#[tokio::test]
+async fn credential_boundary_download_still_writes_an_ordinary_file() {
+    let server = MockServer::start().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let payload = b"ordinary download".to_vec();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
+        .mount(&server)
+        .await;
+    let ctx = credential_context(&workspace).with_search_config(SearchConfig {
+        timeout: 30,
+        cascade_order: None,
+        health: None,
+        engines: HashMap::new(),
+        headless: Some(HeadlessConfig {
+            proxy_url: Some(server.uri()),
+            ..HeadlessConfig::default()
+        }),
+    });
+
+    let output = DownloadTool
+        .execute(
+            &json!({
+                "url": "http://example.test/notes.bin",
+                "file_path": "notes.bin"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(output.success, "{}", output.content);
+    assert_eq!(
+        std::fs::read(workspace.path().join("notes.bin")).unwrap(),
+        payload
     );
     assert_no_download_temps(workspace.path());
 }

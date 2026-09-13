@@ -120,7 +120,11 @@ impl Tool for McpToolWrapper {
         }
 
         let cancellation = ctx.cancellation_token();
-        let call = self.manager.call_tool(&self.full_name, Some(args.clone()));
+        let call = self.manager.call_server_tool(
+            &self.server_name,
+            &self.mcp_tool.name,
+            Some(args.clone()),
+        );
         let result = tokio::select! {
             _ = cancellation.cancelled() => {
                 return Ok(ToolOutput::error(format!(
@@ -188,6 +192,51 @@ mod tests {
         assert_eq!(wrapper.server_name(), "github");
         assert_eq!(wrapper.mcp_tool_name(), "create_issue");
         assert_eq!(wrapper.description(), "Create a GitHub issue");
+    }
+
+    #[tokio::test]
+    async fn wrapper_calls_the_server_it_was_bound_to() {
+        let manager = Arc::new(McpManager::new());
+        for name in ["git", "git__hub"] {
+            manager
+                .register_server(crate::mcp::protocol::McpServerConfig {
+                    name: name.to_string(),
+                    transport: crate::mcp::protocol::McpTransportConfig::Stdio {
+                        command: "echo".to_string(),
+                        args: Vec::new(),
+                    },
+                    enabled: true,
+                    env: HashMap::new(),
+                    oauth: None,
+                    tool_timeout_secs: 5,
+                })
+                .await;
+        }
+        let wrapper = McpToolWrapper::new(
+            "git__hub".to_string(),
+            McpTool {
+                name: "create".to_string(),
+                title: None,
+                description: None,
+                input_schema: serde_json::json!({}),
+                output_schema: None,
+                annotations: None,
+                icons: Vec::new(),
+                meta: None,
+            },
+            manager,
+        );
+        let ctx = crate::tools::ToolContext::new(std::path::PathBuf::from("/tmp"));
+        let output = wrapper
+            .execute(&serde_json::json!({}), &ctx)
+            .await
+            .expect("disconnected MCP server is a tool error, not a transport failure");
+
+        assert!(
+            output.content.contains("not connected: git__hub"),
+            "the bound server must be the one named in the refusal: {}",
+            output.content
+        );
     }
 
     #[test]

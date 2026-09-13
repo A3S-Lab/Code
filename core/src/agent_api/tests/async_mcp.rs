@@ -502,3 +502,66 @@ async fn live_mcp_remove_cleanup_failure_still_commits_registry_removal() {
         .any(|name| name == local_tool_name));
     session.remove_mcp_server(server_name).await.unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_global_mcp_servers_hot_applies_without_rebuilding_agent() {
+    use crate::mcp::test_support::{mcp_tool, RecordingMcpTransport};
+    use crate::mcp::{McpClient, McpServerConfig, McpTransportConfig};
+
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    assert!(agent.global_mcp.is_some());
+    let manager = Arc::clone(agent.global_mcp.as_ref().unwrap());
+
+    let session = agent
+        .session_async("/tmp/test-hot-mcp-sync", None)
+        .await
+        .unwrap();
+    assert!(session.inherits_mcp_managers());
+    assert!(Arc::ptr_eq(
+        session.inherited_mcp_managers.first().unwrap(),
+        &manager
+    ));
+
+    let config = McpServerConfig {
+        name: "hot-probe".to_string(),
+        transport: McpTransportConfig::Stdio {
+            command: "unused".to_string(),
+            args: Vec::new(),
+        },
+        enabled: true,
+        env: HashMap::new(),
+        oauth: None,
+        tool_timeout_secs: 60,
+    };
+    agent
+        .sync_global_mcp_servers(vec![config.clone()])
+        .await
+        .unwrap();
+    assert!(manager.contains_server("hot-probe").await);
+
+    // Seed a connected client so republish can discover tools without a
+    // real stdio process (sync's connect against "unused" is best-effort).
+    let transport = RecordingMcpTransport::new("2024-11-05", vec![mcp_tool("ping", "ping")]);
+    let client = Arc::new(McpClient::new(
+        "hot-probe".to_string(),
+        Arc::clone(&transport) as Arc<dyn crate::mcp::transport::McpTransport>,
+    ));
+    client.initialize().await.unwrap();
+    client.list_tools().await.unwrap();
+    manager.insert_client_for_test("hot-probe", client).await;
+    agent.refresh_mcp_tools().await.unwrap();
+
+    session.republish_inherited_mcp_tools().await.unwrap();
+    assert!(session
+        .tool_names()
+        .iter()
+        .any(|name| name == "mcp__hot-probe__ping"));
+
+    agent.sync_global_mcp_servers(Vec::new()).await.unwrap();
+    session.republish_inherited_mcp_tools().await.unwrap();
+    assert!(!manager.contains_server("hot-probe").await);
+    assert!(!session
+        .tool_names()
+        .iter()
+        .any(|name| name == "mcp__hot-probe__ping"));
+}

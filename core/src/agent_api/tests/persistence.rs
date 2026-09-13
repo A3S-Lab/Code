@@ -850,7 +850,7 @@ async fn test_verify_commands_builds_report_from_shell_results() {
     );
     assert_eq!(
         report.checks[1].residual_risk.as_deref(),
-        Some("verification command exited with code 7: exit 7")
+        Some("verification command exited with code 7, expected 0: exit 7")
     );
     assert_eq!(session.verification_reports(), vec![report]);
     assert_eq!(

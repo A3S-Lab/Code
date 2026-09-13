@@ -354,7 +354,6 @@ impl Tool for PatchTool {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
-
         let diff = match args.get("diff").and_then(|v| v.as_str()) {
             Some(d) => d,
             None => return Ok(ToolOutput::error("diff parameter is required")),
@@ -387,6 +386,17 @@ impl Tool for PatchTool {
         };
 
         let final_content = new_content;
+        let session_id = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty());
+        let newly_acquired = session_id.is_some_and(|id| {
+            !crate::external_observation::session_owns_write(id, &ctx.workspace, file_path)
+        });
+        if let Err(error) = crate::external_observation::claim_bound_write(
+            ctx.session_id.as_deref(),
+            &ctx.workspace,
+            file_path,
+        ) {
+            return Ok(ToolOutput::error(error));
+        }
 
         match ctx
             .workspace_services
@@ -406,6 +416,15 @@ impl Tool for PatchTool {
                 .with_metadata(serde_json::Value::Object(metadata)))
             }
             Err(e) => {
+                if newly_acquired {
+                    if let Some(id) = session_id {
+                        crate::external_observation::release_write_claim(
+                            id,
+                            &ctx.workspace,
+                            file_path,
+                        );
+                    }
+                }
                 let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
                 let out = if matches!(e, WorkspaceError::VersionConflict(_)) {
                     ToolOutput::error(format!(
@@ -512,7 +531,7 @@ mod tests {
         std::fs::write(temp.path().join("test.txt"), "line1\nold_line\nline3\n").unwrap();
 
         let tool = PatchTool;
-        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-test");
 
         let result = tool
             .execute(
@@ -526,6 +545,7 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
+        crate::external_observation::release_session("patch-test");
         let metadata = result.metadata.expect("patch diff metadata");
         assert_eq!(metadata["file_path"], "test.txt");
         assert_eq!(metadata["before"], "line1\nold_line\nline3\n");
@@ -533,6 +553,89 @@ mod tests {
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert!(content.contains("new_line"));
         assert!(!content.contains("old_line"));
+    }
+
+    #[tokio::test]
+    async fn patch_without_a_session_does_not_apply_or_claim_an_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = "line1\nold_line\nline3\n";
+        std::fs::write(temp.path().join("test.txt"), original).unwrap();
+        let tool = PatchTool;
+        let unbound = ToolContext::new(temp.path().to_path_buf());
+        let diff = "@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3";
+
+        for session_id in [None, Some("   ")] {
+            let ctx = match session_id {
+                Some(id) => unbound.clone().with_session_id(id),
+                None => unbound.clone(),
+            };
+            let result = tool
+                .execute(
+                    &serde_json::json!({
+                        "file_path": "test.txt",
+                        "diff": diff
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert!(!result.success, "{session_id:?}");
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("test.txt")).unwrap(),
+                original,
+                "{session_id:?}"
+            );
+        }
+
+        let applied = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "diff": diff
+                }),
+                &unbound.with_session_id("patch-after-unbound"),
+            )
+            .await
+            .unwrap();
+        assert!(applied.success, "{}", applied.content);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("test.txt")).unwrap(),
+            "line1\nnew_line\nline3\n"
+        );
+        crate::external_observation::release_session("patch-after-unbound");
+    }
+
+    #[tokio::test]
+    async fn rejected_hunk_does_not_write_or_open_the_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = "line1\nold_line\nline3\n";
+        std::fs::write(temp.path().join("test.txt"), original).unwrap();
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-reject");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "diff": "@@ -1,3 +1,3 @@\n wrong\n-old_line\n+new_line\n line3"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success, "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("test.txt")).unwrap(),
+            original
+        );
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        ledger.observe_tool("patch", 1, result.metadata.as_ref());
+        assert!(
+            ledger.is_empty(),
+            "a rejected hunk opened the completion gate: {}",
+            ledger.digest()
+        );
     }
 
     #[test]
@@ -544,10 +647,38 @@ mod tests {
     #[tokio::test]
     async fn test_patch_missing_params() {
         let tool = PatchTool;
-        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp"));
+        let ctx = ToolContext::new(std::path::PathBuf::from("/tmp")).with_session_id("patch-test");
 
         let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn rejected_patch_does_not_own_a_file_that_was_not_written() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("guest.txt"), "keep").unwrap();
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-reject-owner");
+        let result = tool
+            .execute(&serde_json::json!({"file_path": "guest.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("guest.txt")).unwrap(),
+            "keep"
+        );
+        assert!(
+            crate::external_observation::claim_bound_write(
+                Some("patch-reject-other"),
+                temp.path(),
+                "guest.txt",
+            )
+            .is_ok(),
+            "a rejected patch must not own a file it did not write"
+        );
+        crate::external_observation::release_session("patch-reject-owner");
+        crate::external_observation::release_session("patch-reject-other");
     }
 
     #[test]

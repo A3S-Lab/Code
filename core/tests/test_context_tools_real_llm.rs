@@ -44,6 +44,9 @@ struct ToolCall {
 struct Trace {
     calls: Vec<ToolCall>,
     final_text: String,
+    /// Set when the completion gate rejects a mutating run. That is a kernel
+    /// terminal, not a transport failure. Assistant wording is not a substitute.
+    terminal_error: Option<String>,
 }
 
 fn repo_config_path() -> PathBuf {
@@ -114,8 +117,9 @@ async fn run_prompt(session: &AgentSession, prompt: &str, snapshot_path: Option<
     let mut starts = HashMap::<String, (String, Value)>::new();
     let mut calls = Vec::new();
 
-    let final_text = tokio::time::timeout(REAL_LLM_TIMEOUT, async {
-        loop {
+    let (final_text, terminal_error) = tokio::time::timeout(REAL_LLM_TIMEOUT, async {
+        let mut terminal_error = None;
+        let text = loop {
             let event = rx
                 .recv()
                 .await
@@ -151,13 +155,18 @@ async fn run_prompt(session: &AgentSession, prompt: &str, snapshot_path: Option<
                     });
                 }
                 AgentEvent::End { text, .. } => break text,
+                AgentEvent::Error { message } if message.starts_with("completion gate:") => {
+                    terminal_error = Some(message);
+                    break String::new();
+                }
                 AgentEvent::Error { message } => panic!("real-LLM stream error: {message}"),
                 AgentEvent::ConfirmationRequired {
                     tool_name, args, ..
                 } => panic!("unexpected confirmation for {tool_name}: {args}"),
                 _ => {}
             }
-        }
+        };
+        (text, terminal_error)
     })
     .await
     .expect("real-LLM context-tool scenario timed out");
@@ -167,7 +176,11 @@ async fn run_prompt(session: &AgentSession, prompt: &str, snapshot_path: Option<
         starts.is_empty(),
         "tool starts without matching ends: {starts:?}"
     );
-    Trace { calls, final_text }
+    Trace {
+        calls,
+        final_text,
+        terminal_error,
+    }
 }
 
 fn metadata(call: &ToolCall) -> &Value {
@@ -425,7 +438,14 @@ After the fourth result, end with EDIT_SEQUENCE_OK and make no more tool calls."
         std::fs::read_to_string(path).expect("read final edit"),
         edited
     );
-    assert!(trace.final_text.contains("EDIT_SEQUENCE_OK"));
+    assert!(
+        trace
+            .terminal_error
+            .as_deref()
+            .is_some_and(|message| message.starts_with("completion gate:")),
+        "a committed edit was treated as narrative success: {:?}",
+        trace.terminal_error
+    );
 }
 
 fn item_paths(output: &str) -> Vec<String> {

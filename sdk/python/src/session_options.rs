@@ -134,6 +134,24 @@ pub(super) struct PySessionOptions {
     pub(super) host_env: Option<PyHostEnvConfig>,
     /// Automatically save the session to the configured store after each turn (default: False).
     pub(super) auto_save: bool,
+    /// Extra environment variables merged into Bash / sandbox command execution.
+    pub(super) command_env: Option<PyObject>,
+    /// Host-confirmed completion waivers bound to an effect digest.
+    pub(super) completion_waivers: Option<PyObject>,
+    /// When true, writes bind a git worktree and never fall back to the source tree.
+    pub(super) effect_isolation: Option<bool>,
+    /// Typed external observations bound into the run.
+    pub(super) external_observations: Option<PyObject>,
+    /// Outcome ledger written by the promoting host.
+    pub(super) outcome_ledger: Option<PyObject>,
+    /// Path-scoped instruction fragments. Each item is a dict with ``glob`` and ``text``.
+    pub(super) path_rules: Option<PyObject>,
+    /// Admitted plan digest for an implementation run.
+    pub(super) plan_run: Option<PyObject>,
+    /// A session that cannot write does not get an isolated worktree.
+    pub(super) read_only_session: Option<bool>,
+    /// Opt-in read-only verifier. Default is off.
+    pub(super) verifier_enabled: Option<bool>,
     /// Optional Python-side BudgetGuard. The framework calls
     /// `check_before_llm(session_id, estimated_tokens)`,
     /// `record_after_llm(session_id, usage_dict)`, and
@@ -246,6 +264,25 @@ impl Clone for PySessionOptions {
             correlation_id: self.correlation_id.clone(),
             host_env: self.host_env.clone(),
             auto_save: self.auto_save,
+            command_env: pyo3::Python::with_gil(|py| {
+                self.command_env.as_ref().map(|o| o.clone_ref(py))
+            }),
+            completion_waivers: pyo3::Python::with_gil(|py| {
+                self.completion_waivers.as_ref().map(|o| o.clone_ref(py))
+            }),
+            effect_isolation: self.effect_isolation,
+            external_observations: pyo3::Python::with_gil(|py| {
+                self.external_observations.as_ref().map(|o| o.clone_ref(py))
+            }),
+            outcome_ledger: pyo3::Python::with_gil(|py| {
+                self.outcome_ledger.as_ref().map(|o| o.clone_ref(py))
+            }),
+            path_rules: pyo3::Python::with_gil(|py| {
+                self.path_rules.as_ref().map(|o| o.clone_ref(py))
+            }),
+            plan_run: pyo3::Python::with_gil(|py| self.plan_run.as_ref().map(|o| o.clone_ref(py))),
+            read_only_session: self.read_only_session,
+            verifier_enabled: self.verifier_enabled,
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -327,6 +364,15 @@ impl PySessionOptions {
             correlation_id: None,
             host_env: None,
             auto_save: false,
+            command_env: None,
+            completion_waivers: None,
+            effect_isolation: None,
+            external_observations: None,
+            outcome_ledger: None,
+            path_rules: None,
+            plan_run: None,
+            read_only_session: None,
+            verifier_enabled: None,
             budget_guard: None,
             budget_guard_timeout_ms: DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
             immutable_content_adapter: None,

@@ -120,7 +120,7 @@ async fn real_llm_general_purpose_can_still_write_a_file() {
         .await
         .expect("session");
 
-    let result = tokio::time::timeout(
+    let sent = tokio::time::timeout(
         MODEL_TIMEOUT,
         session.send(
             "Create hello.txt with exactly the text READY using the write tool. Then stop.",
@@ -128,27 +128,41 @@ async fn real_llm_general_purpose_can_still_write_a_file() {
         ),
     )
     .await
-    .expect("timeout")
-    .expect("send failed");
+    .expect("timeout");
+    let gated = match &sent {
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("completion gate:"),
+                "write send failed for a reason other than the completion gate: {message}"
+            );
+            true
+        }
+        Ok(result) => {
+            assert!(
+                result.usage.total_tokens > 0,
+                "provider usage must be recorded"
+            );
+            false
+        }
+    };
 
     let events = run_events(&session).await;
     let names = tool_names(&events);
 
     assert!(
-        result.usage.total_tokens > 0,
-        "provider usage must be recorded"
+        gated,
+        "a write was treated as narrative success; tools={names:?}"
     );
     assert!(
         target.exists(),
-        "GeneralPurpose prompt must still allow write; missing {}; tools={names:?}; text={}",
-        target.display(),
-        result.text
+        "GeneralPurpose prompt must still allow write; missing {}; tools={names:?}",
+        target.display()
     );
     let body = std::fs::read_to_string(&target).expect("read hello.txt");
     assert!(
         body.contains("READY"),
-        "unexpected file body: {body:?}; agent text={}",
-        result.text
+        "unexpected file body: {body:?}; tools={names:?}"
     );
 }
 

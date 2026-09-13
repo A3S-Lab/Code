@@ -9,9 +9,12 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 The harness treats "done" as something that must be **proven**, not merely
 claimed. When the model says a task is complete, that assertion is worth nothing
-on its own. Verification turns the claim into evidence: you declare commands
-that _must_ succeed, the runtime executes them, and the result carries a report
-you can inspect, gate on, or surface to a user.
+on its own. Since 8.5.6, a workspace mutation cannot complete the turn unless a
+Passed verification report is bound to that mutation digest, or a host waiver
+covers that digest. A host waiver is not model-grantable. Verification turns
+the claim into evidence: you declare commands that _must_ succeed, the runtime
+executes them, and the result carries a report you can inspect, gate on, or
+surface to a user.
 
 Verification is session-scoped. The Rust core runs each command, records its
 exit status and output, and rolls every report up into a single summary that

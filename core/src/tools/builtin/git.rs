@@ -197,13 +197,36 @@ impl Tool for GitTool {
             }
         }
 
-        match command {
+        if command == "checkout" {
+            if let Err(error) = crate::external_observation::foreign_workspace_claim(
+                ctx.session_id.as_deref(),
+                &ctx.workspace,
+            ) {
+                return Ok(ToolOutput::error(error));
+            }
+        }
+
+        let before = crate::porcelain::snapshot(ctx.workspace.as_path()).await;
+        let mut output = match command {
             "status" => self.status(ctx, git.as_ref()).await,
             "log" => self.log(args, git.as_ref()).await,
             "branch" => self.branch(args, git.as_ref()).await,
             "checkout" => self.checkout(args, git.as_ref()).await,
             "diff" => self.diff(args, git.as_ref()).await,
             "stash" => {
+                let writes = args.get("message").and_then(|value| value.as_str()).is_some()
+                    || args
+                        .get("include_untracked")
+                        .and_then(|value| value.as_bool())
+                        == Some(true);
+                if writes {
+                    if let Err(error) = crate::external_observation::foreign_workspace_claim(
+                        ctx.session_id.as_deref(),
+                        &ctx.workspace,
+                    ) {
+                        return Ok(ToolOutput::error(error));
+                    }
+                }
                 let Some(stash) = ctx.workspace_services.git_stash() else {
                     return Ok(ToolOutput::error(
                         "Stash operations are not supported by this workspace backend",
@@ -213,6 +236,18 @@ impl Tool for GitTool {
             }
             "remote" => self.remote(args, git.as_ref()).await,
             "worktree" => {
+                let subcommand = args
+                    .get("subcommand")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("list");
+                if matches!(subcommand, "create" | "remove") {
+                    if let Err(error) = crate::external_observation::foreign_workspace_claim(
+                        ctx.session_id.as_deref(),
+                        &ctx.workspace,
+                    ) {
+                        return Ok(ToolOutput::error(error));
+                    }
+                }
                 let Some(worktree) = ctx.workspace_services.git_worktree() else {
                     return Ok(ToolOutput::error(
                         "Worktree operations are not supported by this workspace backend",
@@ -223,7 +258,30 @@ impl Tool for GitTool {
             _ => Ok(ToolOutput::error(format!(
                 "Unknown command: {command}. Use: status, log, branch, checkout, diff, stash, remote, worktree"
             ))),
+        }?;
+        if output.success {
+            let paths = crate::porcelain::delta(ctx.workspace.as_path(), before)
+                .await
+                .paths;
+            claim_dirtied_paths(ctx, &paths);
+            crate::porcelain::attach(&mut output.metadata, &paths);
         }
+        Ok(output)
+    }
+}
+
+/// A successful git mutation owns the paths the workspace delta actually
+/// changed. The refspec is not parsed. A failed command does not take a claim.
+fn claim_dirtied_paths(ctx: &ToolContext, paths: &[String]) {
+    let Some(session_id) = ctx.session_id.as_deref().filter(|id| !id.trim().is_empty()) else {
+        return;
+    };
+    for path in paths {
+        let _ = crate::external_observation::claim_bound_write(
+            Some(session_id),
+            ctx.workspace.as_path(),
+            path,
+        );
     }
 }
 
@@ -829,6 +887,17 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    fn current_branch(path: &std::path::Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
     fn run_git(path: &std::path::Path, args: &[&str]) {
         let mut command = Command::new("git");
         command.arg("-C").arg(path).args(args);
@@ -948,6 +1017,260 @@ mod tests {
             next
         );
         assert!(!second.content.contains("diff --git"));
+    }
+
+    #[tokio::test]
+    async fn checkout_records_changed_paths_from_the_workspace_not_the_ref() {
+        let repository = repository_with_commits(1);
+        let base = current_branch(repository.path());
+        run_git(repository.path(), &["checkout", "-q", "-b", "other"]);
+        std::fs::write(repository.path().join("guest.txt"), "changed\n").unwrap();
+        run_git(repository.path(), &["add", "guest.txt"]);
+        run_git(repository.path(), &["commit", "-q", "-m", "guest"]);
+        run_git(repository.path(), &["checkout", "-q", &base]);
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf()).with_session_id("git-checkout");
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "checkout", "ref": "other"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        let metadata = result.metadata.unwrap();
+        let paths = metadata["changed_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|path| path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"guest.txt"), "{paths:?}");
+        assert!(!paths.iter().any(|path| path.contains("other")));
+        crate::external_observation::release_session("git-checkout");
+    }
+
+    #[tokio::test]
+    async fn checkout_owns_a_path_it_changed_so_another_session_cannot_overwrite_it() {
+        let repository = repository_with_commits(1);
+        let base = current_branch(repository.path());
+        run_git(repository.path(), &["checkout", "-q", "-b", "other"]);
+        std::fs::write(repository.path().join("guest.txt"), "owned-by-checkout\n").unwrap();
+        run_git(repository.path(), &["add", "guest.txt"]);
+        run_git(repository.path(), &["commit", "-q", "-m", "guest"]);
+        run_git(repository.path(), &["checkout", "-q", &base]);
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf()).with_session_id("git-writer");
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "checkout", "ref": "other"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            std::fs::read_to_string(repository.path().join("guest.txt")).unwrap(),
+            "owned-by-checkout\n"
+        );
+        let blocked = crate::external_observation::claim_bound_write(
+            Some("git-late"),
+            repository.path(),
+            "guest.txt",
+        );
+        assert!(
+            blocked.is_err(),
+            "checkout must own the path it changed, not leave it for another session"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repository.path().join("guest.txt")).unwrap(),
+            "owned-by-checkout\n"
+        );
+        crate::external_observation::release_session("git-writer");
+        crate::external_observation::release_session("git-late");
+    }
+
+    #[tokio::test]
+    async fn checkout_without_a_session_does_not_apply() {
+        let repository = repository_with_commits(1);
+        let before = std::fs::read_to_string(repository.path().join("history.txt")).unwrap();
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf());
+        let branch = current_branch(repository.path());
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "checkout", "ref": branch}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("session id"));
+        assert_eq!(
+            std::fs::read_to_string(repository.path().join("history.txt")).unwrap(),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn checkout_does_not_overwrite_another_sessions_dirty_path() {
+        let repository = repository_with_commits(1);
+        crate::external_observation::claim_write("owner", repository.path(), "history.txt")
+            .unwrap();
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf()).with_session_id("other");
+        let branch = current_branch(repository.path());
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "checkout", "ref": branch}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("already owned"));
+        crate::external_observation::release_session("owner");
+    }
+
+    fn stash_list(path: &std::path::Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["stash", "list"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn writing_stash_without_a_session_does_not_apply() {
+        let repository = repository_with_commits(1);
+        let dirty = "unstashed-token-9f3a\n";
+        std::fs::write(repository.path().join("history.txt"), dirty).unwrap();
+        let tool = GitTool;
+        let unbound = ToolContext::new(repository.path().to_path_buf());
+
+        for (label, ctx, args) in [
+            (
+                "missing",
+                unbound.clone(),
+                serde_json::json!({"command": "stash", "message": "should-not-land"}),
+            ),
+            (
+                "blank",
+                unbound.clone().with_session_id("   "),
+                serde_json::json!({"command": "stash", "include_untracked": true}),
+            ),
+        ] {
+            let result = tool.execute(&args, &ctx).await.unwrap();
+            assert!(!result.success, "{label}: {}", result.content);
+            assert_eq!(
+                std::fs::read_to_string(repository.path().join("history.txt")).unwrap(),
+                dirty,
+                "{label}"
+            );
+            assert!(stash_list(repository.path()).is_empty(), "{label}");
+        }
+
+        let applied = tool
+            .execute(
+                &serde_json::json!({"command": "stash", "message": "bound-session"}),
+                &unbound.with_session_id("stash-owner"),
+            )
+            .await
+            .unwrap();
+        assert!(applied.success, "{}", applied.content);
+        assert_ne!(
+            std::fs::read_to_string(repository.path().join("history.txt")).unwrap(),
+            dirty
+        );
+        assert!(stash_list(repository.path()).contains("bound-session"));
+    }
+
+    #[tokio::test]
+    async fn writing_stash_does_not_hide_another_sessions_dirty_path() {
+        let repository = repository_with_commits(1);
+        let dirty = "owned-token-4c7b\n";
+        std::fs::write(repository.path().join("history.txt"), dirty).unwrap();
+        crate::external_observation::claim_write("owner", repository.path(), "history.txt")
+            .unwrap();
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf()).with_session_id("other");
+        let result = tool
+            .execute(
+                &serde_json::json!({"command": "stash", "message": "stolen"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("already owned"));
+        assert_eq!(
+            std::fs::read_to_string(repository.path().join("history.txt")).unwrap(),
+            dirty
+        );
+        assert!(stash_list(repository.path()).is_empty());
+        crate::external_observation::release_session("owner");
+    }
+
+    #[tokio::test]
+    async fn worktree_mutation_without_a_session_does_not_apply() {
+        let repository = repository_with_commits(1);
+        let tool = GitTool;
+        let unbound = ToolContext::new(repository.path().to_path_buf());
+        let create_path = repository.path().join("wt-unbound");
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "worktree",
+                    "subcommand": "create",
+                    "name": "unbound-branch",
+                    "path": create_path
+                }),
+                &unbound,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success, "{}", result.content);
+        assert!(!create_path.exists());
+
+        let keep = repository.path().join("wt-keep");
+        run_git(
+            repository.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "keep-branch",
+                keep.to_str().unwrap(),
+            ],
+        );
+        assert!(keep.join("history.txt").is_file());
+        let removed = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "worktree",
+                    "subcommand": "remove",
+                    "path": keep
+                }),
+                &unbound.clone().with_session_id("   "),
+            )
+            .await
+            .unwrap();
+        assert!(!removed.success, "{}", removed.content);
+        assert!(keep.join("history.txt").is_file());
+
+        let listed = tool
+            .execute(
+                &serde_json::json!({"command": "worktree", "subcommand": "list"}),
+                &unbound,
+            )
+            .await
+            .unwrap();
+        assert!(listed.success, "{}", listed.content);
+        assert!(listed.content.contains("wt-keep"));
     }
 
     #[test]

@@ -223,7 +223,8 @@ impl SkillRegistry {
     /// - `path/to/skill.md`
     /// - `path/to/skill/SKILL.md`
     ///
-    /// Candidate files are processed in deterministic sorted order. Files that
+    /// Candidate files are processed in deterministic sorted order. A symlink
+    /// whose resolved path leaves this directory is not loaded. Files that
     /// fail to parse are skipped with debug logging; validation failures are
     /// logged as warnings.
     pub fn load_from_dir(&self, dir: impl AsRef<Path>) -> anyhow::Result<usize> {
@@ -284,7 +285,40 @@ impl SkillRegistry {
     }
 
     fn collect_skill_candidates(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
-        fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        /// Bound nested skill trees; symlink cycles are stopped by `seen`.
+        const MAX_DEPTH: usize = 64;
+
+        fn stays_in_root(root: &Path, path: &Path) -> bool {
+            std::fs::canonicalize(path)
+                .map(|canonical| canonical.starts_with(root))
+                .unwrap_or(false)
+        }
+
+        fn visit(
+            dir: &Path,
+            root: &Path,
+            out: &mut Vec<PathBuf>,
+            seen: &mut HashSet<PathBuf>,
+            depth: usize,
+        ) -> anyhow::Result<()> {
+            if depth > MAX_DEPTH {
+                tracing::debug!(
+                    path = %dir.display(),
+                    max_depth = MAX_DEPTH,
+                    "Skipping skill directory past max walk depth"
+                );
+                return Ok(());
+            }
+            if !stays_in_root(root, dir) {
+                return Ok(());
+            }
+
+            // Canonicalize so symlink cycles (a→b→a) share one seen key.
+            let identity = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+            if !seen.insert(identity) {
+                return Ok(());
+            }
+
             let mut entries = std::fs::read_dir(dir)
                 .with_context(|| format!("Failed to read directory: {}", dir.display()))?
                 .collect::<Result<Vec<_>, std::io::Error>>()?;
@@ -292,12 +326,23 @@ impl SkillRegistry {
 
             for entry in entries {
                 let path = entry.path();
+                if !stays_in_root(root, &path) {
+                    continue;
+                }
                 if path.is_dir() {
+                    // Resolve before collecting so `parent/loop -> sibling` does
+                    // not push a second path to the same SKILL.md.
+                    let child_identity =
+                        std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    if !seen.insert(child_identity) {
+                        continue;
+                    }
                     let skill_md = path.join("SKILL.md");
-                    if skill_md.is_file() {
+                    if skill_md.is_file() && stays_in_root(root, &skill_md) {
                         out.push(skill_md);
                     }
-                    visit(&path, out)?;
+                    // Directory already marked seen; walk children only.
+                    visit_children(&path, root, out, seen, depth + 1)?;
                 } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
                     out.push(path);
                 }
@@ -305,8 +350,50 @@ impl SkillRegistry {
             Ok(())
         }
 
+        fn visit_children(
+            dir: &Path,
+            root: &Path,
+            out: &mut Vec<PathBuf>,
+            seen: &mut HashSet<PathBuf>,
+            depth: usize,
+        ) -> anyhow::Result<()> {
+            if depth > MAX_DEPTH || !stays_in_root(root, dir) {
+                return Ok(());
+            }
+
+            let mut entries = std::fs::read_dir(dir)
+                .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+                .collect::<Result<Vec<_>, std::io::Error>>()?;
+            entries.sort_by_key(|entry| entry.path());
+
+            for entry in entries {
+                let path = entry.path();
+                if !stays_in_root(root, &path) {
+                    continue;
+                }
+                if path.is_dir() {
+                    let child_identity =
+                        std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    if !seen.insert(child_identity) {
+                        continue;
+                    }
+                    let skill_md = path.join("SKILL.md");
+                    if skill_md.is_file() && stays_in_root(root, &skill_md) {
+                        out.push(skill_md);
+                    }
+                    visit_children(&path, root, out, seen, depth + 1)?;
+                } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                    out.push(path);
+                }
+            }
+            Ok(())
+        }
+
+        let root = std::fs::canonicalize(dir)
+            .with_context(|| format!("Failed to resolve skill directory: {}", dir.display()))?;
         let mut out = Vec::new();
-        visit(dir, &mut out)?;
+        let mut seen = HashSet::new();
+        visit(dir, &root, &mut out, &mut seen, 0)?;
         out.sort();
         out.dedup();
         Ok(out)

@@ -104,6 +104,33 @@ impl Agent {
         agent_sessions::refresh_mcp_tools(self).await
     }
 
+    /// Hot-sync the shared global MCP manager to match `servers`.
+    ///
+    /// Enabled entries are registered and best-effort connected; disabled or
+    /// omitted entries are removed. The agent tool cache is refreshed so new
+    /// sessions pick up the catalog. Live sessions must call
+    /// [`AgentSession::republish_inherited_mcp_tools`] to update executors
+    /// without rebuilding the session.
+    pub async fn sync_global_mcp_servers(
+        &self,
+        servers: Vec<crate::mcp::McpServerConfig>,
+    ) -> Result<()> {
+        agent_sessions::sync_global_mcp_servers(self, servers).await
+    }
+
+    /// Live status of servers registered on this agent's shared global MCP manager.
+    ///
+    /// Empty when the agent has no global manager. Hosts use this to project
+    /// connection truth into settings UIs (enabled ≠ connected).
+    pub async fn global_mcp_status(
+        &self,
+    ) -> std::collections::HashMap<String, crate::mcp::McpServerStatus> {
+        match self.global_mcp.as_ref() {
+            Some(manager) => manager.get_status().await,
+            None => std::collections::HashMap::new(),
+        }
+    }
+
     /// Start async-first construction of a workspace-bound session.
     pub fn session_builder(&self, workspace: impl Into<String>) -> SessionBuilder<'_> {
         SessionBuilder::new(self, workspace)

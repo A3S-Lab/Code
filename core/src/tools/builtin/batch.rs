@@ -552,6 +552,8 @@ fn compact_child_metadata(metadata: Option<serde_json::Value>) -> Option<serde_j
         ),
     ]);
     for key in [
+        "file_path",
+        "changed_paths",
         "status",
         "engine_selection_source",
         "selected_engines",
@@ -911,6 +913,18 @@ mod tests {
             "files.output_lines.0"
         );
         assert!(examples[0]["invocations"][0].get("name").is_none());
+    }
+
+    #[test]
+    fn compact_child_metadata_keeps_mutation_paths_when_the_body_is_huge() {
+        let metadata = serde_json::json!({
+            "file_path": "src/lib.rs",
+            "changed_paths": ["src/lib.rs"],
+            "after": "x".repeat(8 * 1024)
+        });
+        let compacted = compact_child_metadata(Some(metadata)).expect("compacted metadata");
+        assert_eq!(compacted["file_path"], "src/lib.rs");
+        assert_eq!(compacted["changed_paths"][0], "src/lib.rs");
     }
 
     #[test]

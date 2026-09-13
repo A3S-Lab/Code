@@ -64,6 +64,12 @@ impl AgentLoop {
         seed: Option<super::execution_state::ExecutionSeed>,
     ) -> Result<AgentResult> {
         let mut state = ExecutionLoopState::new_seeded(history, seed);
+        state
+            .bind_run_watch(self.tool_context.workspace.as_path())
+            .await;
+        if state.open_observations.is_empty() {
+            state.open_observations = self.config.external_observations.clone();
+        }
 
         let style_prompt = if effective_prompt.is_empty() {
             msg_prompt
@@ -91,6 +97,15 @@ impl AgentLoop {
         );
 
         let prompt_before_hooks = effective_prompt;
+        // Lock product-visible text from the entry prompt BEFORE PrePrompt can
+        // append model-only context. Wire mutations after this point must not
+        // redefine the user bubble.
+        let entry_product_text = if msg_prompt.is_empty() {
+            None
+        } else {
+            let display = crate::transcript::product_user_text(msg_prompt);
+            (!display.is_empty()).then_some(display)
+        };
         let turn_context = match self
             .prepare_turn_context(
                 &effective_system_prompt,
@@ -124,9 +139,10 @@ impl AgentLoop {
         // still received the original user message, making prompt rewrites and
         // additionalContext observational instead of authoritative.
         if !msg_prompt.is_empty() {
-            state
-                .messages
-                .push(product_or_wire_user_message(effective_prompt));
+            state.messages.push(match entry_product_text.as_deref() {
+                Some(display) => Message::user_for_model_with_transcript(effective_prompt, display),
+                None => product_or_wire_user_message(effective_prompt),
+            });
         } else if effective_prompt != prompt_before_hooks {
             rewrite_latest_user_prompt(&mut state.messages, prompt_before_hooks, effective_prompt);
         }
@@ -165,7 +181,7 @@ impl AgentLoop {
                 // An interrupt is cooperative but should prevent opening a
                 // new provider/capability turn once it has been observed.
                 if cancel_token.is_cancelled() {
-                    return Ok(state.finish_interrupted());
+                    return self.finish_cancel(state, cancel_token).await;
                 }
             }
             let capability_turn = match self
@@ -189,6 +205,8 @@ impl AgentLoop {
                         .with_capability_context(scope.tool_context())
                 },
             );
+            self.inject_turn_scoped_evidence(augmented_system.as_deref().unwrap_or(""), &mut state);
+            let verifier_role = state.next_turn_is_verifier;
             let llm_turn = match self
                 .execute_llm_turn(
                     &mut state,
@@ -200,6 +218,7 @@ impl AgentLoop {
                         event_tx: &event_tx,
                         cancel_token: &scoped_cancellation,
                         force_no_tools: force_finalization,
+                        verifier_role,
                     },
                 )
                 .await
@@ -225,7 +244,8 @@ impl AgentLoop {
                     if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                         return Err(state.finish_failed(error));
                     }
-                    return Ok(state.finish_interrupted());
+                    release_session_shell(session_id);
+                    return self.finish_cancel(state, &scoped_cancellation).await;
                 }
                 Err(error) => {
                     if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await
@@ -279,15 +299,30 @@ impl AgentLoop {
                         }
                         continue;
                     }
-                    CompletionFlow::Finished(final_text) => {
+                    CompletionFlow::Finished {
+                        text,
+                        completion,
+                        run_admission,
+                    } => {
                         if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                             return Err(state.finish_failed(error));
                         }
-                        return Ok(state.finish(final_text));
+                        return Ok(state.finish_with(text, completion, run_admission));
+                    }
+                    CompletionFlow::Blocked(message) => {
+                        if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
+                            return Err(state.finish_failed(error));
+                        }
+                        return Err(state.finish_failed(anyhow::anyhow!(message)));
                     }
                 }
             }
 
+            let tool_dispatch_context = if verifier_role {
+                scoped_tool_context.clone().with_verifier_read_only(true)
+            } else {
+                scoped_tool_context.clone()
+            };
             if let Err(e) = self
                 .execute_tool_turn(
                     tool_calls,
@@ -295,7 +330,7 @@ impl AgentLoop {
                     &event_tx,
                     session_id,
                     &scoped_cancellation,
-                    &scoped_tool_context,
+                    &tool_dispatch_context,
                 )
                 .await
             {
@@ -316,7 +351,8 @@ impl AgentLoop {
                     if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                         return Err(state.finish_failed(error));
                     }
-                    return Ok(state.finish_interrupted());
+                    release_session_shell(session_id);
+                    return self.finish_cancel(state, &scoped_cancellation).await;
                 }
                 if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await {
                     tracing::warn!(
@@ -330,6 +366,7 @@ impl AgentLoop {
             if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                 return Err(state.finish_failed(error));
             }
+            state.next_turn_is_verifier = false;
             // Quiescent boundary: all tools and capability-owned effects have
             // settled, and `state.messages` is consistent. The runtime sink
             // drains every preceding event before acknowledging persistence.
@@ -419,6 +456,77 @@ impl AgentLoop {
         };
         sink.save_checkpoint(&checkpoint).await;
     }
+
+    fn inject_turn_scoped_evidence(&self, system_prompt: &str, state: &mut ExecutionLoopState) {
+        let injection = crate::path_instructions::inject(
+            system_prompt,
+            &self.config.path_rules,
+            &state.targeted_paths,
+        );
+        if let Some(fragment) = injection.model_input_fragment() {
+            if !state
+                .messages
+                .iter()
+                .any(|message| message.text().contains(&injection.injected_digest))
+            {
+                state.messages.push(Message::user_wire(&fragment));
+            }
+        }
+        for observation in &state.open_observations {
+            let fragment = observation.model_input_fragment();
+            if !state
+                .messages
+                .iter()
+                .any(|message| message.text().contains(&observation.digest))
+            {
+                state.messages.push(Message::user_wire(&fragment));
+            }
+        }
+    }
+
+    /// Cancellation of a read-only run may keep history. A mutated workspace
+    /// is still incomplete and must not return `AgentResult` success.
+    pub(super) async fn finish_cancel(
+        &self,
+        mut state: ExecutionLoopState,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<AgentResult> {
+        let workspace = self.tool_context.workspace.as_path();
+        let child_unobserved = crate::harness_loop::absorb_open_workspace_children(
+            &mut state.mutations,
+            workspace,
+            cancel,
+        )
+        .await;
+        let unseen = state.unseen_workspace_paths(workspace).await;
+        state
+            .mutations
+            .set_observation_incomplete(child_unobserved || unseen.incomplete);
+        state.mutations.observe_unseen_paths(&unseen.paths);
+        if state.mutations.observation_incomplete() {
+            return Err(state.finish_failed(anyhow::anyhow!(
+                "completion gate: workspace observation is incomplete, so this digest is not the effect. Cancellation does not make that a success."
+            )));
+        }
+        if state.mutations.is_empty() && !state.mutations.has_open_children() {
+            return Ok(state.finish_interrupted());
+        }
+        let message = if state.mutations.has_open_children() {
+            "completion gate: background workspace work is still unobserved. Cancellation does not make that a success.".to_string()
+        } else {
+            format!(
+                "completion gate: workspace mutation {} has no bound Passed verification and no host waiver. Cancellation does not make that a success.",
+                state.mutations.digest()
+            )
+        };
+        Err(state.finish_failed(anyhow::anyhow!(message)))
+    }
+}
+
+fn release_session_shell(session_id: Option<&str>) {
+    if let Some(session_id) = session_id {
+        crate::shell_session::kill_session(session_id);
+    }
 }
 
 async fn close_capability_turn(
@@ -446,9 +554,7 @@ fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacem
     let candidate = messages
         .iter()
         .rposition(|message| {
-            message.role == "user"
-                && message.is_product_transcript()
-                && message.text() == original
+            message.role == "user" && message.is_product_transcript() && message.text() == original
         })
         .or_else(|| {
             messages.iter().rposition(|message| {
@@ -462,12 +568,13 @@ fn rewrite_latest_user_prompt(messages: &mut [Message], original: &str, replacem
         return;
     };
     let message = &mut messages[index];
+    // Freeze product-visible text from the pre-rewrite body only. Never copy
+    // raw wire text when product_user_text cannot recover a human sentence —
+    // that path used to permanently publish hook/planner appendices.
     if message.transcript_text.is_none() {
         let display = crate::transcript::product_user_text(&message.text());
-        if !display.is_empty() && display != message.text() {
+        if !display.is_empty() {
             message.transcript_text = Some(display);
-        } else if !message.text().is_empty() {
-            message.transcript_text = Some(message.text());
         }
     }
 
@@ -494,5 +601,56 @@ fn product_or_wire_user_message(text: &str) -> Message {
         Message::user_wire(text)
     } else {
         Message::user_for_model_with_transcript(text, &display)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::execution_state::ExecutionLoopState;
+    use super::super::tests::MockLlmClient;
+    use super::super::{AgentConfig, AgentLoop};
+    use crate::path_instructions::PathRule;
+    use crate::tools::{ToolContext, ToolExecutor};
+    use std::sync::Arc;
+
+    #[test]
+    fn dotted_tool_path_injects_the_matching_rule_before_the_next_model_call() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
+        let config = AgentConfig {
+            path_rules: vec![
+                PathRule {
+                    glob: "docs/**".into(),
+                    text: "Docs tone.".into(),
+                },
+                PathRule {
+                    glob: "crates/code/**".into(),
+                    text: "Prefer boring harness code.".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let agent = AgentLoop::new(
+            Arc::new(MockLlmClient::new(vec![])),
+            Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
+            ToolContext::new(hermetic_root.clone()),
+            config,
+        );
+        let mut state = ExecutionLoopState::new_seeded(&[], None);
+        state
+            .targeted_paths
+            .push("docs/../crates/code/core/src/lib.rs".into());
+        let system = "# Instructions\nproject AGENTS.md";
+        agent.inject_turn_scoped_evidence(system, &mut state);
+        agent.inject_turn_scoped_evidence(system, &mut state);
+        let text = state
+            .messages
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Prefer boring harness code."));
+        assert!(!text.contains("Docs tone."));
+        assert!(!text.contains("project AGENTS.md"));
+        assert_eq!(state.messages.len(), 1);
     }
 }

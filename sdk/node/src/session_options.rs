@@ -347,6 +347,24 @@ pub struct SessionOptions {
     pub retention_limits: Option<RetentionLimitsObject>,
     /// Automatically save the session to the configured store after each turn (default: false).
     pub auto_save: Option<bool>,
+    /// Extra environment variables merged into Bash / sandbox command execution.
+    pub command_env: Option<serde_json::Value>,
+    /// Host-confirmed completion waivers bound to an effect digest.
+    pub completion_waivers: Option<serde_json::Value>,
+    /// When true, writes bind a git worktree and never fall back to the source tree.
+    pub effect_isolation: Option<bool>,
+    /// Typed external observations bound into the run.
+    pub external_observations: Option<serde_json::Value>,
+    /// Outcome ledger written by the promoting host.
+    pub outcome_ledger: Option<serde_json::Value>,
+    /// Path-scoped instruction fragments. Each item is `{ glob, text }`.
+    pub path_rules: Option<serde_json::Value>,
+    /// Admitted plan digest for an implementation run.
+    pub plan_run: Option<serde_json::Value>,
+    /// A session that cannot write does not get an isolated worktree.
+    pub read_only_session: Option<bool>,
+    /// Opt-in read-only verifier. Default is off.
+    pub verifier_enabled: Option<bool>,
     /// HITL confirmation policy configuration.
     ///
     /// Pass a confirmation policy to enable Human-in-the-Loop confirmation for tool execution.
@@ -659,6 +677,7 @@ pub(super) fn js_session_options_to_rust(
         return Ok(RustSessionOptions::new());
     };
     let mut opts = RustSessionOptions::new();
+    opts = apply_host_contract_options(opts, &o)?;
     if let Some(model) = o.model {
         opts = opts.with_model(model);
     }
@@ -803,7 +822,9 @@ pub(super) fn js_session_options_to_rust(
                             "S3WorkspaceBackend requires the `s3` configuration field",
                         )
                     })?;
-                    a3s_code_core::WorkspaceServices::s3(crate::s3_backend::s3_config_to_core(s3_config))
+                    a3s_code_core::WorkspaceServices::s3(crate::s3_backend::s3_config_to_core(
+                        s3_config,
+                    ))
                 }
                 #[cfg(not(feature = "s3"))]
                 {
@@ -1162,6 +1183,77 @@ pub(super) fn js_worker_agent_spec_to_rust(
         worker = worker.with_confirmation(parse_confirmation_inheritance(&ci)?);
     }
     Ok(worker)
+}
+
+fn apply_host_contract_options(
+    mut opts: RustSessionOptions,
+    options: &SessionOptions,
+) -> napi::Result<RustSessionOptions> {
+    if let Some(env) = &options.command_env {
+        let env: std::collections::HashMap<String, String> = serde_json::from_value(env.clone())
+            .map_err(|error| napi::Error::from_reason(format!("Invalid commandEnv: {error}")))?;
+        opts = opts.with_command_env(env);
+    }
+    if let Some(waivers) = &options.completion_waivers {
+        let waivers = serde_json::from_value(waivers.clone()).map_err(|error| {
+            napi::Error::from_reason(format!("Invalid completionWaivers: {error}"))
+        })?;
+        opts = opts.with_completion_waivers(waivers);
+    }
+    if let Some(enabled) = options.effect_isolation {
+        opts = opts.with_effect_isolation(enabled);
+    }
+    if let Some(observations) = &options.external_observations {
+        let observations = serde_json::from_value(observations.clone()).map_err(|error| {
+            napi::Error::from_reason(format!("Invalid externalObservations: {error}"))
+        })?;
+        opts = opts.with_external_observations(observations);
+    }
+    if let Some(ledger) = &options.outcome_ledger {
+        let ledger = serde_json::from_value(ledger.clone())
+            .map_err(|error| napi::Error::from_reason(format!("Invalid outcomeLedger: {error}")))?;
+        opts = opts.with_outcome_ledger(ledger);
+    }
+    if let Some(rules) = &options.path_rules {
+        opts = opts.with_path_rules(path_rules_from_json(rules)?);
+    }
+    if let Some(plan) = &options.plan_run {
+        let plan = serde_json::from_value(plan.clone())
+            .map_err(|error| napi::Error::from_reason(format!("Invalid planRun: {error}")))?;
+        opts = opts.with_plan_run(plan);
+    }
+    if let Some(read_only) = options.read_only_session {
+        opts = opts.with_read_only_session(read_only);
+    }
+    if let Some(enabled) = options.verifier_enabled {
+        opts = opts.with_verifier(enabled);
+    }
+    Ok(opts)
+}
+
+fn path_rules_from_json(
+    value: &serde_json::Value,
+) -> napi::Result<Vec<a3s_code_core::path_instructions::PathRule>> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| napi::Error::from_reason("pathRules must be an array of { glob, text }"))?;
+    items
+        .iter()
+        .map(|item| {
+            let glob = item
+                .get("glob")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| napi::Error::from_reason("pathRules item requires glob"))?;
+            let text = item
+                .get("text")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| napi::Error::from_reason("pathRules item requires text"))?;
+            Ok(a3s_code_core::path_instructions::PathRule {
+                glob: glob.to_string(),
+                text: text.to_string(),
+            })
+        })
+        .collect()
 }
 
 pub(super) fn parse_worker_agent_kind(kind: Option<&str>) -> napi::Result<RustWorkerAgentKind> {

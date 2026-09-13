@@ -146,13 +146,12 @@ impl AgentSession {
             }
             if role == "user" {
                 let text = history[idx].text();
-                if text.contains("Address each open review finding")
-                    || text.contains("open-reply-review-findings")
+                if (text.contains("Address each open review finding")
+                    || text.contains("open-reply-review-findings"))
+                    && history[idx].transcript_visibility.is_product()
                 {
-                    if history[idx].transcript_visibility.is_product() {
-                        history[idx].transcript_visibility = TranscriptVisibility::Wire;
-                        concealed += 1;
-                    }
+                    history[idx].transcript_visibility = TranscriptVisibility::Wire;
+                    concealed += 1;
                 }
                 break;
             }

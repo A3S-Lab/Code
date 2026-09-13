@@ -98,7 +98,9 @@ impl ImmutableContentAdapter for NodeImmutableContentAdapter {
                 "serialize immutable content write request: {error}"
             ))
         })?;
-        let callback = self.callback.call_async::<Promise<serde_json::Value>>(value);
+        let callback = self
+            .callback
+            .call_async::<Promise<serde_json::Value>>(value);
         let resolved = tokio::time::timeout(self.timeout, callback)
             .await
             .map_err(|_| ImmutableContentError::Provider("immutable content put timed out".into()))?

@@ -264,6 +264,54 @@ async fn forwarder_exposes_delegated_confirmation_lifecycle() {
 }
 
 #[tokio::test]
+async fn forwarder_exposes_structured_user_question() {
+    let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+    let run = run_store.create_run("session-1", "prompt").await;
+    let sink = RuntimeEventSink::new(RuntimeEventSinkConfig {
+        run_store: Arc::clone(&run_store),
+        run_id: run.id.clone(),
+        session_id: "session-1".to_string(),
+        hook_executor: None,
+        security_provider: None,
+        persistence_state: persistence_state(),
+        active_tools: active_tools(),
+        subagent_tasks: Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
+    });
+    let (runtime_tx, runtime_rx) = mpsc::channel(4);
+    let (stream_tx, mut stream_rx) = mpsc::channel(4);
+    let (agent_tx, barrier, agent_rx) = run_agent_event_channel(8);
+    let forwarder = sink.spawn_forwarder(runtime_rx, stream_tx, Some(agent_rx), None);
+
+    let question = AgentEvent::UserQuestion {
+        question_id: "ask-session-1-run-1".to_string(),
+        question: "Which token?".to_string(),
+        options: vec!["left".to_string()],
+    };
+    agent_tx.send(question.clone()).unwrap();
+    barrier.flush().await;
+    drop(agent_tx);
+    drop(runtime_tx);
+    forwarder.await.unwrap();
+
+    let streamed = stream_rx.recv().await.expect("user question");
+    assert_eq!(
+        serde_json::to_value(&streamed).unwrap(),
+        serde_json::to_value(&question).unwrap()
+    );
+    assert!(stream_rx.recv().await.is_none());
+    let persisted = run_store
+        .events(&run.id)
+        .await
+        .into_iter()
+        .map(|record| record.event)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(&persisted).unwrap(),
+        serde_json::to_value(&vec![question]).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn forwarder_exposes_and_persists_only_sanitized_events() {
     let run_store = Arc::new(crate::run::InMemoryRunStore::new());
     let run = run_store.create_run("session-1", "prompt").await;

@@ -258,6 +258,9 @@ pub struct ToolContext {
     model_generation_permit: Option<Arc<ModelGenerationPermitReservation>>,
     /// Trust policy inherited by nested calls of a host-direct orchestrator.
     pub(crate) host_direct_policy: Option<super::invocation::HostDirectPolicy>,
+    /// Verifier turns are read-only. Nested `program` calls inherit this and
+    /// must not reach a mutating tool.
+    verifier_read_only: bool,
     /// Cancellation for the invocation that owns this tool call.
     ///
     /// Session construction installs the session lifetime token. Agent runs
@@ -401,6 +404,7 @@ impl ToolContext {
             model_generation_admission: None,
             model_generation_permit: None,
             host_direct_policy: None,
+            verifier_read_only: false,
             cancellation: CancellationToken::new(),
             capability_context: None,
             invocation_stack: Vec::new(),
@@ -606,6 +610,15 @@ impl ToolContext {
             .as_ref()
             .ok_or(crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable)?;
         context.register_foreground_effect(effect)
+    }
+
+    pub(crate) fn with_verifier_read_only(mut self, read_only: bool) -> Self {
+        self.verifier_read_only = read_only;
+        self
+    }
+
+    pub(crate) fn verifier_read_only(&self) -> bool {
+        self.verifier_read_only
     }
 
     pub(crate) fn with_capability_context(

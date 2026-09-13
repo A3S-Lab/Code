@@ -15,6 +15,30 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         session_id: Option<&str>,
     ) -> anyhow::Result<bool> {
+        if state.next_turn_is_verifier
+            && !crate::read_only_verifier::tool_allowed(&tool_call.name, &tool_call.args)
+        {
+            let error_msg = "verifier role cannot mutate the workspace".to_string();
+            if let Some(tx) = event_tx {
+                tx.send(AgentEvent::ToolEnd {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    args: Some(tool_call.args.clone()),
+                    output: error_msg.clone(),
+                    exit_code: 1,
+                    metadata: Some(serde_json::json!({ "guard": "verifier_read_only" })),
+                    error_kind: None,
+                })
+                .await
+                .ok();
+            }
+            state.messages.push(Message::tool_result_trusted(
+                &tool_call.id,
+                &error_msg,
+                true,
+            ));
+            return Ok(true);
+        }
         if let Some((duplicate_count, error_msg)) = state.duplicate_tool_call(
             &tool_call.name,
             &tool_call.args,

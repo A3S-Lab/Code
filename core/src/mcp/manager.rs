@@ -14,7 +14,9 @@ use crate::mcp::transport::McpTransport;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 
 pub use crate::mcp::result::tool_result_to_string;
 
@@ -81,6 +83,26 @@ impl McpManager {
             }
         }
         result
+    }
+
+    /// Connect with a wall-clock budget.
+    ///
+    /// Outer `tokio::time::timeout` around [`Self::connect`] alone is not enough:
+    /// when the budget elapses the connect future is dropped before it can
+    /// record the connect error, leaving status as "enabled, disconnected, no
+    /// error". Record the timeout here so hosts and settings UIs stay truthful.
+    pub async fn connect_with_timeout(&self, name: &str, budget: Duration) -> Result<()> {
+        match timeout(budget, self.connect(name)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let message = format!("MCP connect timed out after {}s", budget.as_secs().max(1));
+                self.connect_errors
+                    .write()
+                    .await
+                    .insert(name.to_string(), message.clone());
+                Err(anyhow!(message))
+            }
+        }
     }
 
     async fn do_connect(&self, name: &str) -> Result<()> {
@@ -274,14 +296,32 @@ impl McpManager {
         full_name: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<CallToolResult> {
-        // Parse full name
-        let (server_name, tool_name) = Self::parse_tool_name(full_name)?;
+        let servers = self
+            .configs
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let (server_name, tool_name) = Self::resolve_published_name(full_name, &servers)?;
+        self.call_server_tool(&server_name, &tool_name, arguments)
+            .await
+    }
 
-        // Get client
+    /// Call a tool on the server identity already bound to a published wrapper.
+    ///
+    /// This does not reparse `mcp__<server>__<tool>`. A wrapper that stored
+    /// `git__hub` must not be routed to a different registered server named `git`.
+    pub async fn call_server_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<CallToolResult> {
         let client = {
             let clients = self.clients.read().await;
             clients
-                .get(&server_name)
+                .get(server_name)
                 .cloned()
                 .ok_or_else(|| anyhow!("MCP server not connected: {}", server_name))?
         };
@@ -291,10 +331,10 @@ impl McpManager {
         self.last_used_at_ms
             .write()
             .await
-            .insert(server_name.clone(), now_epoch_ms());
+            .insert(server_name.to_string(), now_epoch_ms());
 
         // Call tool
-        client.call_tool(&tool_name, arguments).await
+        client.call_tool(tool_name, arguments).await
     }
 
     /// Resolve an OAuth config into a `(header-name, header-value)` pair.
@@ -326,6 +366,33 @@ impl McpManager {
     }
 
     /// Parse MCP tool full name into (server, tool)
+    fn resolve_published_name(full_name: &str, servers: &[String]) -> Result<(String, String)> {
+        if !full_name.starts_with("mcp__") {
+            return Err(anyhow!("Invalid MCP tool name: {full_name}"));
+        }
+        let rest = &full_name["mcp__".len()..];
+        let matches = servers
+            .iter()
+            .map(String::as_str)
+            .filter(|server| {
+                !server.is_empty()
+                    && rest
+                        .strip_prefix(*server)
+                        .is_some_and(|tail| tail.starts_with("__") && tail.len() > 2)
+            })
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => Self::parse_tool_name(full_name),
+            1 => Ok((
+                matches[0].to_string(),
+                rest[matches[0].len() + 2..].to_string(),
+            )),
+            _ => Err(anyhow!(
+                "MCP tool name '{full_name}' is ambiguous among registered servers"
+            )),
+        }
+    }
+
     fn parse_tool_name(full_name: &str) -> Result<(String, String)> {
         // Format: mcp__<server>__<tool>
         if !full_name.starts_with("mcp__") {

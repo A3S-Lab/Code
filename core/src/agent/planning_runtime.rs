@@ -204,16 +204,16 @@ impl AgentLoop {
         // made a verified goal indistinguishable from an unfinished one.
         if self.config.goal_tracking {
             if let Some(ref g) = goal {
-                let evaluation_state = if result.verification_reports.is_empty() {
-                    result.text.clone()
-                } else {
-                    format!(
-                        "Assistant result:\n{}\n\nStructured verification evidence:\n{}",
-                        result.text,
-                        result.verification_summary_text(),
-                    )
-                };
-                let achieved = self
+                // Always surface the structured verification summary — including
+                // the empty/Skipped case — so the judge cannot treat missing
+                // evidence as invisible. Emission still requires the mechanical
+                // evidence gate below; prose alone cannot authorize GoalAchieved.
+                let evaluation_state = format!(
+                    "Assistant result:\n{}\n\nStructured verification evidence:\n{}",
+                    result.text,
+                    result.verification_summary_text(),
+                );
+                let llm_achieved = self
                     .check_goal_achievement_scoped(
                         g,
                         &evaluation_state,
@@ -222,6 +222,11 @@ impl AgentLoop {
                         cancel_token,
                     )
                     .await?;
+                let achieved = crate::verification::should_emit_goal_achieved_for_workspace(
+                    llm_achieved,
+                    &result.verification_reports,
+                    Some(self.tool_context.workspace.as_path()),
+                );
                 if achieved {
                     if let Some(tx) = &event_tx {
                         tx.send(AgentEvent::GoalAchieved {

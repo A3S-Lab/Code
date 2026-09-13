@@ -54,6 +54,8 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
      or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
      wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
+     and opt-in billed providers tinyfish, bocha, aliyun, tencent, and firecrawl (named only; \
+     they are not in the default cascade), \
      g / google (Google, headless), baidu (Baidu, headless), bing_browser (Bing, headless), \
      brave_browser (Brave, headless). The default headless backend is Moli; Chrome and \
      Lightpanda remain explicit compatibility backends.";
@@ -64,13 +66,15 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      all built-in providers that advertise anonymous access are combined with the public HTTP \
      defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
      or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
-     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), and bing_cn (Bing China RSS).";
+     wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
+     and opt-in billed providers tinyfish, bocha, aliyun, tencent, and firecrawl (named only; \
+     they are not in the default cascade).";
 
 #[cfg(feature = "headless-search")]
 use engines::add_headless_engine;
 use engines::{add_http_engine, default_engine_selection, EngineTier};
 use fallback::{
-    automatic_tier_order, failure_metadata, failure_summary, outcome_metadata, text_notice_note,
+    failure_metadata, failure_summary, outcome_metadata, resolved_tier_order, text_notice_note,
     tier_timeout, tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
 };
 
@@ -465,7 +469,12 @@ async fn execute_network_stage(
     let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
     let mut results = SearchResults::new();
     for shortcut in shortcuts {
-        match add_http_engine(&mut search, shortcut, context.proxy_url) {
+        match add_http_engine(
+            &mut search,
+            shortcut,
+            context.proxy_url,
+            context.tool_context.search_config.as_deref(),
+        ) {
             Ok(true) => {}
             Ok(false) => results.add_failure(EngineFailure::new(
                 shortcut,
@@ -896,7 +905,7 @@ impl Tool for WebSearchTool {
             moli,
         };
 
-        let active_tiers = automatic_tier_order()
+        let active_tiers = resolved_tier_order(config.map(Arc::as_ref))
             .into_iter()
             .filter(|tier| match tier {
                 #[cfg(feature = "headless-search")]

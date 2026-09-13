@@ -50,18 +50,40 @@ pub(super) fn build_session_capabilities(
     input: SessionCapabilityInput<'_>,
     session_lifetime: tokio_util::sync::CancellationToken,
 ) -> Result<SessionCapabilities> {
+    let isolated = match crate::effect_isolation::bind_sync(
+        &input.opts.session_id_hint(),
+        input.workspace,
+        input.opts.effect_isolation,
+        input.opts.can_write_workspace(),
+    ) {
+        Ok(Some(binding)) => Some(binding.worktree_path),
+        Ok(None) => None,
+        Err(error) if input.opts.effect_isolation => {
+            return Err(CodeError::SessionInitialization {
+                resource: SessionBuildResource::Workspace,
+                message: error.to_string(),
+            });
+        }
+        Err(_) => None,
+    };
+    let write_root = isolated.as_deref().unwrap_or(input.workspace);
     let artifact_limits = input.opts.artifact_store_limits.unwrap_or_default();
     let retention_limits = input.opts.retention_limits.unwrap_or_default();
-    let workspace = resolve_workspace_services(&input, session_lifetime)?;
+    let workspace = resolve_workspace_services(&input, write_root, session_lifetime)?;
     let workspace_services = workspace.services;
     let tool_executor = Arc::new(
         ToolExecutor::new_with_workspace_services_artifact_limits_and_immutable_content_adapter(
-            input.workspace.display().to_string(),
+            write_root.display().to_string(),
             workspace_services,
             artifact_limits,
             input.opts.immutable_content_adapter.clone(),
         ),
     );
+    if let Some(command_env) = input.opts.command_env.clone() {
+        tool_executor
+            .registry()
+            .set_command_env(Arc::new(command_env));
+    }
     tool_executor
         .registry()
         .set_tool_result_transform_policy(
@@ -140,6 +162,7 @@ pub(super) fn build_session_capabilities(
 
 fn resolve_workspace_services(
     input: &SessionCapabilityInput<'_>,
+    write_root: &Path,
     session_lifetime: tokio_util::sync::CancellationToken,
 ) -> Result<ResolvedWorkspaceServices> {
     let retrieval_options = input.opts.workspace_retrieval.clone();
@@ -155,9 +178,9 @@ fn resolve_workspace_services(
         });
     }
     let (mut services, owned_workspace_backend) = match &input.opts.workspace_services {
-        Some(services) => (Arc::clone(services), None),
+        Some(services) if !input.opts.effect_isolation => (Arc::clone(services), None),
         None if retrieval_options.is_some() => {
-            let backend = crate::workspace::ManifestWorkspaceBackend::new(input.workspace);
+            let backend = crate::workspace::ManifestWorkspaceBackend::new(write_root);
             if let Some(options) = retrieval_options.as_ref() {
                 if options.has_catalog_configuration() {
                     backend
@@ -180,12 +203,9 @@ fn resolve_workspace_services(
                 Some(backend),
             )
         }
-        None => {
-            // Keep the default Agent path on the same manifest/catalog
-            // authority as explicitly configured retrieval. This makes the
-            // native zvec FTS projection transparent to framework users while
-            // preserving the portable in-memory fallback in minimal builds.
-            let backend = crate::workspace::ManifestWorkspaceBackend::new(input.workspace);
+        Some(_) | None => {
+            // Isolation never reuses a host backend bound to the source tree.
+            let backend = crate::workspace::ManifestWorkspaceBackend::new(write_root);
             (
                 crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
                     &backend,

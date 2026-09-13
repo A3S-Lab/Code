@@ -282,16 +282,7 @@ impl OpenAiClient {
                                                 }
                                             }
                                             if let Some(tcs) = message.tool_calls {
-                                                for (index, tc) in tcs.into_iter().enumerate() {
-                                                    tool_calls.insert(
-                                                        index,
-                                                        (
-                                                            tc.id,
-                                                            tc.function.name,
-                                                            tc.function.arguments,
-                                                        ),
-                                                    );
-                                                }
+                                                apply_tool_call_snapshot(&mut tool_calls, tcs);
                                             }
                                         } else if let Some(delta) = choice.delta {
                                             if let Some(ref rc) = delta.reasoning_content {
@@ -345,6 +336,11 @@ impl OpenAiClient {
                                                                 String::new(),
                                                             )
                                                         });
+                                                    if tool_call_delta_conflicts(
+                                                        &entry.0, &entry.1, &tc,
+                                                    ) {
+                                                        continue;
+                                                    }
 
                                                     if let Some(id) = tc.id {
                                                         entry.0 = id;
@@ -491,12 +487,7 @@ impl OpenAiClient {
                                     }
                                 }
                                 if let Some(tcs) = message.tool_calls {
-                                    for (index, tc) in tcs.into_iter().enumerate() {
-                                        tool_calls.insert(
-                                            index,
-                                            (tc.id, tc.function.name, tc.function.arguments),
-                                        );
-                                    }
+                                    apply_tool_call_snapshot(&mut tool_calls, tcs);
                                 }
                             } else if let Some(delta) = choice.delta {
                                 if let Some(ref rc) = delta.reasoning_content {
@@ -561,12 +552,7 @@ impl OpenAiClient {
                                 reasoning_content_accum.push_str(&reasoning);
                             }
                             if let Some(final_tool_calls) = choice.message.tool_calls {
-                                for tc in final_tool_calls {
-                                    tool_calls.insert(
-                                        tool_calls.len(),
-                                        (tc.id, tc.function.name, tc.function.arguments),
-                                    );
-                                }
+                                apply_tool_call_snapshot(&mut tool_calls, final_tool_calls);
                             }
                         }
                     }
@@ -686,4 +672,56 @@ pub(super) fn openai_logprobs_to_token_logprobs(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A streamed slot is identified by the id and name already bound to its index.
+/// A later delta that names a different call must not replace that identity or
+/// append its arguments onto the call that already started.
+fn apply_tool_call_snapshot(
+    tool_calls: &mut std::collections::BTreeMap<usize, (String, String, String)>,
+    calls: Vec<OpenAiToolCall>,
+) {
+    for (index, call) in calls.into_iter().enumerate() {
+        if let Some((bound_id, bound_name, _)) = tool_calls.get(&index) {
+            if snapshot_conflicts(bound_id, bound_name, &call.id, &call.function.name) {
+                continue;
+            }
+        }
+        tool_calls.insert(
+            index,
+            (call.id, call.function.name, call.function.arguments),
+        );
+    }
+}
+
+fn snapshot_conflicts(
+    bound_id: &str,
+    bound_name: &str,
+    snapshot_id: &str,
+    snapshot_name: &str,
+) -> bool {
+    (!bound_id.is_empty() && snapshot_id != bound_id)
+        || (!bound_name.is_empty() && snapshot_name != bound_name)
+}
+
+fn tool_call_delta_conflicts(
+    bound_id: &str,
+    bound_name: &str,
+    delta: &OpenAiToolCallDelta,
+) -> bool {
+    if let Some(id) = delta.id.as_deref() {
+        if !bound_id.is_empty() && id != bound_id {
+            return true;
+        }
+    }
+    if let Some(name) = delta
+        .function
+        .as_ref()
+        .and_then(|function| function.name.as_deref())
+    {
+        if !bound_name.is_empty() && name != bound_name {
+            return true;
+        }
+    }
+    false
 }

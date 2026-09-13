@@ -24,6 +24,8 @@ struct AutoDelegationPlan {
 pub(super) struct AutoDelegationOutcome {
     pub prompt: String,
     pub tool_calls_count: usize,
+    /// Closures already published by the pre-loop child. Not a new digest.
+    pub completions: Vec<crate::harness_loop::CompletionTerminal>,
 }
 
 impl AgentLoop {
@@ -50,6 +52,17 @@ impl AgentLoop {
             .execute_delegated_plan_tool(tool_name, &args, session_id, event_tx, cancel_token)
             .await;
 
+        if output.contains("completion gate:") {
+            anyhow::bail!(output);
+        }
+        let mut completions = Vec::new();
+        super::plan_execution::push_published_completions(&mut completions, &metadata);
+        if !is_error && super::plan_execution::delegated_mutation_without_closure(&metadata) {
+            anyhow::bail!(
+                "completion gate: automatic delegation changed the workspace without a bound closure. A final answer does not make that narrative."
+            );
+        }
+
         let envelope = json!({
             "type": "auto_delegation_results",
             "tool": tool_name,
@@ -72,6 +85,7 @@ impl AgentLoop {
                 serde_json::to_string(&envelope).unwrap_or_default()
             ),
             tool_calls_count: 1,
+            completions,
         }))
     }
 

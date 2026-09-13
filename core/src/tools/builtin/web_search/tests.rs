@@ -188,6 +188,7 @@ async fn tier_searches_share_the_session_request_coalescer() {
 fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
     SearchConfig {
         timeout: 10,
+        cascade_order: None,
         health: None,
         engines,
         headless: None,
@@ -214,6 +215,8 @@ fn configured_default_engine_selection_can_enable_anysearch_explicitly() {
             enabled: true,
             weight: 1.0,
             timeout: None,
+            api_key: None,
+            project: None,
         },
     )]));
 
@@ -264,6 +267,9 @@ fn automatic_tier_plan_is_stable_and_deduplicated() {
 #[cfg(feature = "headless-search")]
 #[test]
 fn automatic_search_route_prefers_headless_discovery() {
+    use super::engines::EngineTier;
+    use super::fallback::automatic_tier_order;
+
     assert_eq!(
         automatic_tier_order(),
         [EngineTier::Headless, EngineTier::Http, EngineTier::Api]
@@ -279,6 +285,8 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
                 enabled: false,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
         (
@@ -287,6 +295,8 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
                 enabled: false,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
     ]));
@@ -390,6 +400,8 @@ fn default_engine_selection_respects_explicit_configuration() {
                 enabled: true,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
         (
@@ -398,6 +410,8 @@ fn default_engine_selection_respects_explicit_configuration() {
                 enabled: false,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
     ]));
@@ -411,6 +425,8 @@ fn default_engine_selection_respects_explicit_configuration() {
             enabled: false,
             weight: 1.0,
             timeout: None,
+            api_key: None,
+            project: None,
         },
     )]));
     let (engines, source) = default_engine_selection(Some(&config));
@@ -427,6 +443,8 @@ fn configured_default_engine_selection_deduplicates_aliases() {
                 enabled: true,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
         (
@@ -435,6 +453,8 @@ fn configured_default_engine_selection_deduplicates_aliases() {
                 enabled: true,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         ),
     ]));
@@ -447,8 +467,8 @@ fn configured_default_engine_selection_deduplicates_aliases() {
 #[test]
 fn configured_engine_aliases_are_executable() {
     let mut search = Search::new();
-    assert!(add_http_engine(&mut search, "duckduckgo", None).expect("engine setup"));
-    assert!(add_http_engine(&mut search, "wikipedia", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "duckduckgo", None, None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "wikipedia", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 2);
 }
 
@@ -515,6 +535,7 @@ async fn configured_engine_selection_is_identified_in_failure_metadata() {
     let tool = WebSearchTool::new();
     let ctx = ToolContext::new(PathBuf::from("/tmp")).with_search_config(SearchConfig {
         timeout: 10,
+        cascade_order: None,
         health: None,
         engines: HashMap::from([(
             "private-search".to_string(),
@@ -522,6 +543,8 @@ async fn configured_engine_selection_is_identified_in_failure_metadata() {
                 enabled: true,
                 weight: 1.0,
                 timeout: None,
+                api_key: None,
+                project: None,
             },
         )]),
         headless: None,
@@ -849,32 +872,40 @@ fn test_parse_proxy_url_empty() {
 #[test]
 fn test_add_http_engine_valid() {
     let mut search = Search::new();
-    assert!(add_http_engine(&mut search, "ddg", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "ddg", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 1);
 
-    assert!(add_http_engine(&mut search, "wiki", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "wiki", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 2);
 
-    assert!(add_http_engine(&mut search, "brave", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "brave", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 3);
 
-    assert!(add_http_engine(&mut search, "bing", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "bing", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 4);
 
-    assert!(add_http_engine(&mut search, "bing_cn", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "bing_cn", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 5);
 
-    assert!(add_http_engine(&mut search, "anysearch", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "anysearch", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 6);
 
-    assert!(add_http_engine(&mut search, "tavily", None).expect("engine setup"));
+    assert!(add_http_engine(&mut search, "tavily", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 7);
+
+    for provider in ["tinyfish", "bocha", "aliyun", "tencent", "firecrawl"] {
+        assert!(
+            add_http_engine(&mut search, provider, None, None).expect("engine setup"),
+            "{provider} must be constructible when named"
+        );
+    }
+    assert_eq!(search.engine_count(), 12);
 }
 
 #[test]
 fn test_add_http_engine_unknown() {
     let mut search = Search::new();
-    assert!(!add_http_engine(&mut search, "nonexistent", None).expect("engine setup"));
+    assert!(!add_http_engine(&mut search, "nonexistent", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 0);
 }
 

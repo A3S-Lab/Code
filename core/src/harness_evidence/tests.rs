@@ -920,6 +920,69 @@ fn capability_digest_changes_on_readiness_and_generation_drift() {
     ready.validate().unwrap();
 }
 
+#[test]
+fn observation_digest_is_bound_into_the_model_input_snapshot() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let observation = crate::external_observation::ExternalObservationV1::new(
+        "ci",
+        "src/lib.rs",
+        "sha256:abc",
+        "tests failed",
+        crate::external_observation::RequiredAction::WorkspaceChange,
+    )
+    .expect("observation");
+    let system = "# Instructions\nproject AGENTS.md";
+    let unbound = vec![Message::user("explain the module")];
+    let mut bound = unbound.clone();
+    bound.push(Message::user_wire(&observation.model_input_fragment()));
+    let (_, without, _) = source
+        .capture(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &unbound,
+                Some(system),
+                &[],
+                None,
+                8,
+            ),
+        )
+        .unwrap();
+    let (_, with, _) = source
+        .capture(
+            2,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &bound,
+                Some(system),
+                &[],
+                None,
+                8,
+            ),
+        )
+        .unwrap();
+    assert_eq!(without.system_digest, with.system_digest);
+    assert_ne!(without.messages_digest, with.messages_digest);
+    assert!(bound
+        .iter()
+        .any(|message| message.text().contains(&observation.digest)));
+    let (_, again, _) = source
+        .capture(
+            2,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &bound,
+                Some(system),
+                &[],
+                None,
+                8,
+            ),
+        )
+        .unwrap();
+    assert_eq!(with.messages_digest, again.messages_digest);
+}
+
 fn digest_for_test(character: char) -> String {
     format!("sha256:{}", character.to_string().repeat(64))
 }

@@ -222,7 +222,10 @@ fn sdk_capability_batch_fixture_commits_skill_generation() {
     assert_eq!(stamp["generation"], 1);
 }
 
-fn assert_node_middleware_health_fixture(snapshot: &serde_json::Value, fixture: &serde_json::Value) {
+fn assert_node_middleware_health_fixture(
+    snapshot: &serde_json::Value,
+    fixture: &serde_json::Value,
+) {
     let required = fixture["required_snapshot_fields"]
         .as_array()
         .expect("required snapshot fields");
@@ -515,24 +518,26 @@ fn memory_session_store_identity_survives_save_and_resume() {
     let create_options = js_session_options_to_rust(Some(options(true))).unwrap();
     let resume_options = js_session_options_to_rust(Some(options(false))).unwrap();
 
-    fallback_runtime().expect("test runtime builds").block_on(async {
-        let agent = RustAgent::from_config(sdk_test_config()).await.unwrap();
-        let session = agent
-            .session_async(
-                "/tmp/a3s-code-node-memory-session-store",
-                Some(create_options),
-            )
-            .await
-            .unwrap();
-        session.save().await.unwrap();
-        drop(session);
+    fallback_runtime()
+        .expect("test runtime builds")
+        .block_on(async {
+            let agent = RustAgent::from_config(sdk_test_config()).await.unwrap();
+            let session = agent
+                .session_async(
+                    "/tmp/a3s-code-node-memory-session-store",
+                    Some(create_options),
+                )
+                .await
+                .unwrap();
+            session.save().await.unwrap();
+            drop(session);
 
-        let resumed = agent
-            .resume_session_async(&session_id, resume_options)
-            .await
-            .unwrap();
-        assert_eq!(resumed.session_id(), session_id);
-    });
+            let resumed = agent
+                .resume_session_async(&session_id, resume_options)
+                .await
+                .unwrap();
+            assert_eq!(resumed.session_id(), session_id);
+        });
 }
 
 #[test]

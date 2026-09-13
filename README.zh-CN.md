@@ -51,8 +51,17 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **GLM Coding Plan base_url 拼接（8.5.5）。** 聊天 URL 拼接不再重复
   `/paas/v4`，也不会在已带版本根的 Coding Plan base 上再追加 `/v1`
   （closes #136）。
+- **未验证的工作区改动不能完成（8.5.6）。** 工作区变更不能结束一轮，除非有一份
+  Passed 的验证报告绑定该变更 digest，或宿主豁免覆盖该 digest。助手正文不算。
+  宿主豁免不能由模型授予。
+- **Search 3.1.4（8.5.6）。** 具名引擎可以使用可选计费提供方 `tinyfish`、
+  `bocha`、`aliyun`、`tencent`、`firecrawl`。它们不进入默认级联。
+- **SDK 宿主契约（8.5.6）。** Node、Python、Go 暴露
+  `sync_global_mcp_servers` / `global_mcp_status`、会话审查、结果账本，以及
+  Core 上已有的可序列化 SessionOptions 字段。trait object 宿主钩子仍然省略。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5.5`）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5` 文档线；
+包版本 8.5.6）。
 
 ### 更早的版本线
 
@@ -282,7 +291,7 @@ Harness 收口（打包、双轨移除、外部证明门）：
 |状态图|哈希链接事件、类型化对象和关系、乐观补丁、严格重放、分叉、差异和 Flow 0.11 生命周期预测，包括取消、最终结果、进度和子操作 |显式应用程序使用 |
 |代理解除契约|有界 `.a3s/asset.acl` 准入、规范身份、出处绑定和兼容性检查 |基线准入API |
 |无头代理协议 |精确的发布/会话/运行开始、取消、检查点恢复、收据、原子观察的有界 `EventEnvelopeV1` 页面、每个会话分离的 Git 工作树和不可变的 `/v1/agent/changes` 补丁 | `AgentProtocolHarness` 复用普通代码会话，`AgentProtocolHost` 通过每个`AgentSession` 执行； `a3s code` 流程用品服务运输|
-|无头网络搜索 | `a3s-search` v3.1.0，具有惰性 Moli 支持的 Google/Baidu/Bing/Brave 引擎、共享缓存生命周期和类型诊断； Chrome/Chromium 和 Lightpanda 仍可配置 |默认Cargo功能`headless-search`；使用 `default-features = false` 禁用 |
+|无头网络搜索 | `a3s-search` v3.1.4，具有惰性 Moli 支持的 Google/Baidu/Bing/Brave 引擎、共享缓存生命周期和类型诊断； Chrome/Chromium 和 Lightpanda 仍可配置。付费提供方保持显式启用 |默认Cargo功能`headless-search`；使用 `default-features = false` 禁用 |
 | SDK能力合约| Rust、Node.js、Python 和 Go 公开了有序产品功能清单、模式发现、Moli 诊断/配置和状态图 API |在可选集成之前调用每个 SDK 的能力发现功能 |
 | S3 工作区 | S3 兼容对象后端 |Cargo功能`s3` |
 |文件系统代理服务器|代理目录 cron 提供准备后准备、类型化故障状态和有界连接关闭 |Cargo功能`serve` |

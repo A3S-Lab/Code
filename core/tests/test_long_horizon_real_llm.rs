@@ -121,8 +121,8 @@ fn seed_workspace(root: &Path) {
     std::fs::write(root.join("src/stats.mjs"), STATS_BUG).unwrap();
 }
 
-async fn run_task(session: &AgentSession) -> a3s_code_core::AgentResult {
-    tokio::time::timeout(
+async fn run_task(session: &AgentSession) -> Result<a3s_code_core::AgentResult, String> {
+    match tokio::time::timeout(
         REAL_TIMEOUT,
         session.send(
             r#"Repair this small JavaScript project by following every step:
@@ -130,13 +130,16 @@ async fn run_task(session: &AgentSession) -> a3s_code_core::AgentResult {
 2. Read SPEC.md, test.mjs, src/normalize.mjs, and src/stats.mjs.
 3. Fix the implementation in both source files. Do not modify SPEC.md or test.mjs and do not create dependencies.
 4. Run exactly `node test.mjs` again and require it to print LONG_HORIZON_OK.
-5. Review the resulting source against SPEC.md, then reply with exactly LONG_HORIZON_COMPLETE and no other text."#,
+5. Stop after the second test result. Do not claim the task is verified."#,
             None,
         ),
     )
     .await
     .expect("long-horizon scenario timed out")
-    .expect("long-horizon scenario failed")
+    {
+        Ok(result) => Ok(result),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -153,8 +156,13 @@ async fn real_model_completes_evidence_gated_multi_step_coding_task() {
         .await
         .expect("create long-horizon session");
 
-    let result = run_task(&session).await;
-    assert_eq!(result.text.trim(), "LONG_HORIZON_COMPLETE");
+    let sent = run_task(&session).await;
+    assert!(
+        sent.as_ref()
+            .err()
+            .is_some_and(|message| message.contains("completion gate:")),
+        "a source repair was treated as narrative success: {sent:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(workspace.path().join("SPEC.md")).unwrap(),
         SPEC
@@ -189,7 +197,11 @@ async fn real_model_completes_evidence_gated_multi_step_coding_task() {
 
     let runs = session.runs().await;
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].status, RunStatus::Completed);
+    assert_ne!(
+        runs[0].status,
+        RunStatus::Completed,
+        "completion gate must not record a narrative Completed run"
+    );
     let events = session.run_events(&runs[0].id).await;
     assert!(events
         .iter()

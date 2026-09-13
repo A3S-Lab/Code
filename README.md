@@ -54,13 +54,25 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **GLM Coding Plan base_url join (8.5.5).** Chat URL join no longer duplicates
   `/paas/v4` or appends `/v1` onto an already-versioned Coding Plan root
   (closes #136).
+- **Unverified mutations do not complete (8.5.6).** A workspace mutation cannot
+  finish a turn unless a Passed verification report is bound to that mutation
+  digest, or a host waiver covers that digest. Assistant text does not count.
+  A host waiver is not model-grantable.
+- **Search 3.1.4 (8.5.6).** Named engines can use the opt-in billed providers
+  `tinyfish`, `bocha`, `aliyun`, `tencent`, and `firecrawl`. They stay out of
+  the default cascade.
+- **SDK host contract (8.5.6).** Node, Python, and Go expose
+  `sync_global_mcp_servers` / `global_mcp_status`, session review, outcome
+  ledger records, and the serializable SessionOptions fields already on Core.
+  Trait-object host hooks stay omitted.
 - **Session review substrate.** Durable `pending → addressed → accepted |
   reopen | waived` findings live on `SessionSnapshot` with pluggable
   `ReviewScenario` / `ReviewSubject` (no rubrics in Core). Sticky inject
   includes only pending findings whose registered scenario opts into main
   prompt injection.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5.5`).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5` line;
+package 8.5.6).
 
 ### Earlier lines
 
@@ -296,7 +308,7 @@ gates): [`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md).
 | State graph             | Hash-linked events, typed objects and relations, optimistic patches, strict replay, forks, diffs, and Flow 0.11 lifecycle projection including cancellation, terminal outcomes, progress, and child operations                          | Cargo feature `advanced-harness` (opt-in); explicit application use                                                                                              |
 | Agent release contract  | Bounded `.a3s/asset.acl` admission, canonical identity, provenance binding, and compatibility checks                                                                                                                                    | Baseline admission API                                                                                                                                                    |
 | Headless Agent protocol | Exact release/session/run start, cancellation, checkpoint recovery, receipts, atomically observed bounded `EventEnvelopeV1` pages, per-conversation detached Git worktrees, and immutable `/v1/agent/changes` patches                   | `AgentProtocolHarness` multiplexes ordinary Code sessions and `AgentProtocolHost` executes through each `AgentSession`; the `a3s code` process supplies service transport |
-| Headless web search     | `a3s-search` v3.1.0 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable                                                                 | Cargo feature `headless-search` (also via `scientific` / `full`)                                                                                          |
+| Headless web search     | `a3s-search` v3.1.4 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable. Billed providers stay opt-in. | Cargo feature `headless-search` (also via `scientific` / `full`)                                                                                          |
 | SDK capability contract | Ordered product capability inventory, schema discovery, Moli diagnostics/provisioning, and state-graph APIs are exposed by Rust, Node.js, Python, and Go                                                                                 | Call each SDK's capability discovery function before optional integrations                                                                                                 |
 | S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3` (also via SDK `server`)                                                                                                                                |
 | Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve` (also via SDK `server`)                                                                                                                             |

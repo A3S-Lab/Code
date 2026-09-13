@@ -447,10 +447,15 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     assert_eq!(read.exit_code, 0, "{}", read.output);
     assert!(read.output.contains("fn main"));
 
+    let ctx = executor
+        .registry()
+        .context()
+        .with_session_id("virtual-file-tools");
     let write = executor
-        .execute(
+        .execute_with_context(
             "write",
             &json!({ "file_path": "src/generated.rs", "content": "pub const VALUE: u8 = 7;\n" }),
+            &ctx,
         )
         .await
         .expect("write tool");
@@ -462,13 +467,14 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     assert!(!local_placeholder.path().join("src/generated.rs").exists());
 
     let edit = executor
-        .execute(
+        .execute_with_context(
             "edit",
             &json!({
                 "file_path": "src/generated.rs",
                 "old_string": "VALUE: u8 = 7",
                 "new_string": "VALUE: u8 = 8"
             }),
+            &ctx,
         )
         .await
         .expect("edit tool");
@@ -479,12 +485,13 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     );
 
     let patch = executor
-        .execute(
+        .execute_with_context(
             "patch",
             &json!({
                 "file_path": "src/generated.rs",
                 "diff": "@@ -1,1 +1,1 @@\n-pub const VALUE: u8 = 8;\n+pub const VALUE: u8 = 9;"
             }),
+            &ctx,
         )
         .await
         .expect("patch tool");
@@ -501,6 +508,7 @@ async fn custom_workspace_file_tools_do_not_touch_local_filesystem() {
     assert_eq!(listing.exit_code, 0, "{}", listing.output);
     assert!(listing.output.contains("main.rs"));
     assert!(listing.output.contains("generated.rs"));
+    a3s_code_core::external_observation::release_session("virtual-file-tools");
 }
 
 #[tokio::test]
@@ -508,7 +516,7 @@ async fn custom_workspace_path_resolver_blocks_escape_before_backend_access() {
     let fs = Arc::new(MemoryWorkspace::default());
     fs.insert("safe.txt", "ok\n");
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
-        "/server/local-placeholder".to_string(),
+        "/server/workspace-backend-escape".to_string(),
         virtual_services(fs),
         ArtifactStoreLimits::default(),
     );
@@ -536,7 +544,7 @@ async fn custom_workspace_runner_drives_bash_tool() {
     let fs = Arc::new(MemoryWorkspace::default());
     let runner = Arc::new(RecordingRunner::default());
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
-        "/server/local-placeholder".to_string(),
+        "/server/workspace-backend-bash".to_string(),
         virtual_services_with_runner(fs, Arc::clone(&runner)),
         ArtifactStoreLimits::default(),
     );
@@ -560,7 +568,7 @@ async fn custom_workspace_search_provider_drives_search_modes() {
     fs.insert("src/lib.rs", "pub fn helper() {}\n");
     fs.insert("README.md", "hello from docs\n");
     let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
-        "/server/local-placeholder".to_string(),
+        "/server/workspace-backend-search".to_string(),
         virtual_services_with_search(Arc::clone(&fs)),
         ArtifactStoreLimits::default(),
     );
@@ -669,8 +677,9 @@ async fn custom_workspace_git_provider_drives_git_tool() {
         .output
         .contains("origin\tssh://example/repo.git (fetch)"));
 
+    let ctx = executor.registry().context().with_session_id("virtual-git");
     let worktree = executor
-        .execute(
+        .execute_with_context(
             "git",
             &json!({
                 "command": "worktree",
@@ -679,6 +688,7 @@ async fn custom_workspace_git_provider_drives_git_tool() {
                 "path": "branches/feature-y",
                 "new_branch": false
             }),
+            &ctx,
         )
         .await
         .expect("git worktree create");
@@ -702,4 +712,5 @@ async fn custom_workspace_git_provider_drives_git_tool() {
             "create_worktree:feature-y:branches/feature-y:false",
         ]
     );
+    a3s_code_core::external_observation::release_session("virtual-git");
 }

@@ -251,7 +251,7 @@ fn finish_agent_session(
     let base = agent.config.clone();
     let auto_delegation = resolve_auto_delegation_config(&agent.code_config, opts);
     let rl_trajectory_recorder = resolved.rl_trajectory_recorder.clone();
-    let config = AgentConfig {
+    let mut config = AgentConfig {
         prompt_slots,
         tools: tool_defs,
         tool_presentation_profile: opts
@@ -301,6 +301,14 @@ fn finish_agent_session(
             .unwrap_or_else(|| Arc::clone(&base.host_env)),
         ..base
     };
+    if !opts.completion_waivers.is_empty() {
+        config.completion_waivers = opts.completion_waivers.clone();
+    }
+    config.plan_run = opts.plan_run.clone();
+    config.path_rules = opts.path_rules.clone();
+    config.verifier_enabled = opts.verifier_enabled;
+    config.external_observations = opts.external_observations.clone();
+    config.outcome_ledger = opts.outcome_ledger.clone();
 
     // Register Skill after config is built so it can spawn child loops with
     // the same harness configuration while applying skill-local restrictions.
@@ -470,6 +478,7 @@ fn finish_agent_session(
         agent_template_id: opts.agent_template_id.clone(),
         correlation_id: opts.correlation_id.clone(),
         runtime_budget_guard: std::sync::Mutex::new(None),
+        runtime_outcome_ledger: std::sync::Mutex::new(None),
         runtime_agent_style: std::sync::Mutex::new(None),
         runtime_output_language: std::sync::Mutex::new(None),
         session_review,

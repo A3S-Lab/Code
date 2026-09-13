@@ -356,6 +356,16 @@ fn representative_events() -> Vec<EventCase> {
             json!("rejected"),
         ),
         case(
+            "user_question",
+            AgentEvent::UserQuestion {
+                question_id: "q-1".into(),
+                question: "Which file?".into(),
+                options: vec!["a.rs".into()],
+            },
+            "question_id",
+            json!("q-1"),
+        ),
+        case(
             "external_task_pending",
             AgentEvent::ExternalTaskPending {
                 task_id: "task-1".into(),

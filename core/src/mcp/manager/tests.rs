@@ -367,6 +367,46 @@ async fn test_connect_error_recorded_in_status() {
 }
 
 #[tokio::test]
+async fn connect_with_timeout_records_timeout_in_status() {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    let manager = McpManager::new();
+    manager
+        .register_server(McpServerConfig {
+            name: "slow-server".to_string(),
+            transport: McpTransportConfig::Stdio {
+                // Blocks until killed — never speaks MCP, so connect hangs until budget.
+                command: "sleep".to_string(),
+                args: vec!["30".to_string()],
+            },
+            enabled: true,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        })
+        .await;
+
+    let err = manager
+        .connect_with_timeout("slow-server", Duration::from_millis(80))
+        .await
+        .expect_err("sleep transport must time out");
+    assert!(
+        err.to_string().contains("timed out"),
+        "timeout error message, got: {err}"
+    );
+
+    let status = manager.get_status().await;
+    let s = &status["slow-server"];
+    assert!(!s.connected);
+    assert!(
+        s.error.as_deref().is_some_and(|e| e.contains("timed out")),
+        "timeout must be recorded in status, got {:?}",
+        s.error
+    );
+}
+
+#[tokio::test]
 async fn test_get_all_tools_returns_server_name_not_full_name() {
     // get_all_tools() must return (server_name, tool) — not (mcp__server__tool, tool)
     // so that create_mcp_tools() can build the correct full name without double-prefix.
@@ -444,6 +484,49 @@ async fn touch_keeps_timestamp_after_explicit_disconnect_removes_it() {
     // no real client was ever connected (defensive cleanup).
     let _ = manager.disconnect("svc").await;
     assert!(manager.last_used_at_ms("svc").await.is_none());
+}
+
+#[tokio::test]
+async fn call_tool_refuses_a_published_name_that_matches_two_servers() {
+    let manager = McpManager::new();
+    manager.register_server(test_server_config("git")).await;
+    manager
+        .register_server(test_server_config("git__hub"))
+        .await;
+
+    let error = manager
+        .call_tool("mcp__git__hub__create", None)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("ambiguous"),
+        "a published name that matches more than one registered server must not be dispatched: {error}"
+    );
+    assert!(
+        !error.contains("not connected: git"),
+        "the prefix server must not be selected: {error}"
+    );
+}
+
+#[tokio::test]
+async fn call_tool_accepts_a_unique_server_name_that_contains_the_delimiter() {
+    let manager = McpManager::new();
+    manager
+        .register_server(test_server_config("git__hub"))
+        .await;
+
+    let error = manager
+        .call_tool("mcp__git__hub__create", None)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("not connected: git__hub"),
+        "the only registered server must be selected, even when its name contains '__': {error}"
+    );
 }
 
 fn test_server_config(name: &str) -> McpServerConfig {

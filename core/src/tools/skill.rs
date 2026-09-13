@@ -423,6 +423,7 @@ The skill's allowed-tools are granted during execution and revoked after complet
         // scope. Its Subtask token is derived from the invoking Turn, so parent
         // cancellation reaches every provider/tool call without allowing the
         // child to cancel its parent.
+        let watch = crate::porcelain::Watch::start(&ctx.workspace).await;
         let execution = agent_loop
             .execute_with_session(
                 &[],
@@ -434,36 +435,88 @@ The skill's allowed-tools are granted during execution and revoked after complet
             .await;
         let cancelled = cancellation.is_cancelled();
         let close = close_skill_capability_subtask(capability_subtask.as_ref()).await;
+        let changed = watch.finish(&ctx.workspace).await;
         let result = match (execution, close) {
             (Ok(result), Ok(())) => result,
-            (Ok(_), Err(close_error)) => return Err(close_error),
-            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(close_error)) => {
+                return skill_effect_or_error(&skill.name, 0, &close_error.to_string(), &changed);
+            }
+            (Err(error), Ok(())) => {
+                return skill_effect_or_error(&skill.name, 0, &error.to_string(), &changed);
+            }
             (Err(error), Err(close_error)) => {
                 tracing::warn!(
                     error = %close_error,
                     "Capability Skill Subtask close also failed after execution failure"
                 );
-                return Err(error);
+                return skill_effect_or_error(&skill.name, 0, &error.to_string(), &changed);
             }
         };
         if cancelled {
-            anyhow::bail!("Skill '{}' cancelled by caller", skill.name);
+            return skill_effect_or_error(
+                &skill.name,
+                result.tool_calls_count,
+                &format!("Skill '{}' cancelled by caller", skill.name),
+                &changed,
+            );
         }
 
-        // Return the final response as tool output
-        Ok(ToolOutput {
-            content: result.text,
-            success: true,
-            metadata: Some(serde_json::json!({
-                "skill_name": skill.name,
-                "tool_calls": result.tool_calls_count,
-                "usage": result.usage,
-            })),
-            images: Vec::new(),
-            trust: crate::tools::ToolResultTrustV1::WorkspaceData,
-            error_kind: None,
-        })
+        // A child narrative success is not a parent success if the skill
+        // wrote files. Publish the workspace delta so the parent gate opens.
+        Ok(skill_output(
+            &skill.name,
+            result.tool_calls_count,
+            result.text,
+            Some(result.usage),
+            &changed,
+        ))
     }
+}
+
+fn skill_output(
+    skill_name: &str,
+    tool_calls: usize,
+    content: String,
+    usage: Option<crate::llm::TokenUsage>,
+    changed: &[String],
+) -> ToolOutput {
+    let mut metadata = serde_json::json!({
+        "skill_name": skill_name,
+        "tool_calls": tool_calls,
+    });
+    if let Some(usage) = usage {
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("usage".to_string(), serde_json::json!(usage));
+        }
+    }
+    let mut metadata = Some(metadata);
+    crate::porcelain::attach(&mut metadata, changed);
+    ToolOutput {
+        content,
+        success: true,
+        metadata,
+        images: Vec::new(),
+        trust: crate::tools::ToolResultTrustV1::WorkspaceData,
+        error_kind: None,
+    }
+}
+
+fn skill_effect_or_error(
+    skill_name: &str,
+    tool_calls: usize,
+    error: &str,
+    changed: &[String],
+) -> Result<ToolOutput> {
+    if changed.is_empty() {
+        anyhow::bail!("{error}");
+    }
+    Ok(skill_output(
+        skill_name,
+        tool_calls,
+        error.to_string(),
+        None,
+        changed,
+    ))
 }
 
 async fn close_skill_capability_subtask(
@@ -498,7 +551,6 @@ mod tests {
     use crate::tools::ToolContext;
     use anyhow::Result;
     use async_trait::async_trait;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
@@ -938,6 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_skills_tool_returns_matching_skills() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let registry = Arc::new(SkillRegistry::new());
         registry.register_unchecked(Arc::new(Skill {
             name: "code-review".to_string(),
@@ -954,7 +1007,7 @@ mod tests {
         let result = tool
             .execute(
                 &serde_json::json!({"query": "review"}),
-                &ToolContext::new(PathBuf::from("/tmp")),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await
             .unwrap();
@@ -966,6 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_skills_tool_clamps_limit_and_excludes_personas() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let registry = Arc::new(SkillRegistry::new());
         for index in 0..25 {
             registry.register_unchecked(Arc::new(Skill {
@@ -994,7 +1048,7 @@ mod tests {
         let result = tool
             .execute(
                 &serde_json::json!({"query": "review", "limit": 100}),
-                &ToolContext::new(PathBuf::from("/tmp")),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await
             .unwrap();
@@ -1007,9 +1061,10 @@ mod tests {
 
     #[test]
     fn test_skill_tool_schema_enforces_canonical_shape() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let registry = Arc::new(SkillRegistry::new());
         let llm = Arc::new(MockLlmClient::new(vec![]));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
 
         let params = tool.parameters();
@@ -1025,6 +1080,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_skill_tool_execute_runs_skill_and_returns_metadata() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         use crate::prompts::PlanningMode;
 
         let registry = Arc::new(SkillRegistry::new());
@@ -1042,7 +1098,7 @@ mod tests {
         let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
             "skill completed",
         )]));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         // Disable planning mode since the mock only has one response
         let config = AgentConfig {
             planning_mode: PlanningMode::Disabled,
@@ -1057,7 +1113,7 @@ mod tests {
                     "skill_name": "test-skill",
                     "prompt": "verify the skill result"
                 }),
-                &ToolContext::new(PathBuf::from("/tmp")),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await
             .unwrap();
@@ -1067,6 +1123,99 @@ mod tests {
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["skill_name"], "test-skill");
         assert_eq!(metadata["tool_calls"], 0);
+    }
+
+    #[tokio::test]
+    async fn skill_workspace_write_is_a_parent_mutation() {
+        use crate::prompts::PlanningMode;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_unchecked(Arc::new(Skill {
+            name: "writer-skill".to_string(),
+            description: "Write a file then narrate".to_string(),
+            allowed_tools: Some("skill_workspace_writer".to_string()),
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Write the file, then finish.".to_string(),
+            tags: Vec::new(),
+            version: None,
+        }));
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        executor.register_dynamic_tool(Arc::new(SkillWorkspaceWriter));
+        let tool = SkillTool::new(
+            registry,
+            Arc::new(MockLlmClient::new(vec![
+                MockLlmClient::tool_call_response(
+                    "write-call",
+                    "skill_workspace_writer",
+                    serde_json::json!({}),
+                ),
+                MockLlmClient::text_response("done"),
+            ])),
+            executor,
+            AgentConfig {
+                planning_mode: PlanningMode::Disabled,
+                continuation_enabled: false,
+                ..Default::default()
+            },
+        );
+        let result = tool
+            .execute(
+                &serde_json::json!({"skill_name": "writer-skill"}),
+                &ToolContext::new(workspace.path().to_path_buf()).with_session_id("skill-write"),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            workspace.path().join("guest.txt").is_file(),
+            "skill child did not write"
+        );
+        let metadata = result.metadata.expect("skill metadata");
+        let paths = metadata["changed_paths"].as_array().expect("changed_paths");
+        assert!(
+            paths.iter().any(|path| path == "guest.txt"),
+            "skill hid a workspace write: {metadata}"
+        );
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        ledger.observe_tool("skill", 0, Some(&metadata));
+        assert!(
+            !ledger.is_empty(),
+            "parent completion gate did not see the skill write"
+        );
+    }
+
+    struct SkillWorkspaceWriter;
+
+    #[async_trait]
+    impl Tool for SkillWorkspaceWriter {
+        fn name(&self) -> &str {
+            "skill_workspace_writer"
+        }
+
+        fn description(&self) -> &str {
+            "Writes a workspace file without publishing a mutation path"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "additionalProperties": false})
+        }
+
+        fn capabilities(&self, _args: &serde_json::Value) -> crate::tools::ToolCapabilities {
+            crate::tools::ToolCapabilities::parallel_safe_read(1)
+        }
+
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolOutput> {
+            std::fs::write(ctx.workspace.join("guest.txt"), "hello\n")?;
+            Ok(ToolOutput::success("wrote"))
+        }
     }
 
     #[tokio::test]
@@ -1313,6 +1462,7 @@ mod tests {
 
     #[tokio::test]
     async fn skill_child_llm_call_uses_parent_session_budget_scope() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         use crate::prompts::PlanningMode;
 
         let guard = Arc::new(SkillBudgetGuard::default());
@@ -1327,10 +1477,10 @@ mod tests {
             Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
                 "skill completed",
             )])),
-            Arc::new(ToolExecutor::new("/tmp".to_string())),
+            Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
             config,
         );
-        let ctx = ToolContext::new(PathBuf::from("/tmp")).with_session_id("parent-session");
+        let ctx = ToolContext::new(hermetic_root.clone()).with_session_id("parent-session");
 
         let result = tool
             .execute(&serde_json::json!({"skill_name": "test-skill"}), &ctx)
@@ -1348,6 +1498,7 @@ mod tests {
 
     #[tokio::test]
     async fn skill_child_llm_call_stops_on_parent_cancellation() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         use crate::prompts::PlanningMode;
 
         let started = Arc::new(Notify::new());
@@ -1358,7 +1509,7 @@ mod tests {
                 started: Arc::clone(&started),
                 calls: Arc::clone(&calls),
             }),
-            Arc::new(ToolExecutor::new("/tmp".to_string())),
+            Arc::new(ToolExecutor::new(hermetic_root.display().to_string())),
             AgentConfig {
                 planning_mode: PlanningMode::Disabled,
                 continuation_enabled: false,
@@ -1366,7 +1517,7 @@ mod tests {
             },
         );
         let cancellation = CancellationToken::new();
-        let ctx = ToolContext::new(PathBuf::from("/tmp"))
+        let ctx = ToolContext::new(hermetic_root.clone())
             .with_session_id("parent-session")
             .with_cancellation(cancellation.clone());
         let started_wait = started.notified();
@@ -1391,10 +1542,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_skill_tool_execute_errors_for_unknown_skill() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
             "unused",
         )]));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         let tool = SkillTool::new(
             Arc::new(SkillRegistry::new()),
             llm,
@@ -1405,7 +1557,7 @@ mod tests {
         let err = tool
             .execute(
                 &serde_json::json!({"skill_name": "missing-skill"}),
-                &ToolContext::new(PathBuf::from("/tmp")),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await
             .unwrap_err();
@@ -1415,6 +1567,7 @@ mod tests {
 
     #[tokio::test]
     async fn skill_tool_rejects_disable_model_invocation_skills() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
         let registry = Arc::new(SkillRegistry::new());
         registry.register_unchecked(Arc::new(Skill {
             name: "host-only".to_string(),
@@ -1430,13 +1583,13 @@ mod tests {
         let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
             "unused",
         )]));
-        let executor = Arc::new(ToolExecutor::new("/tmp".to_string()));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
         let tool = SkillTool::new(registry, llm, executor, AgentConfig::default());
 
         let err = tool
             .execute(
                 &serde_json::json!({"skill_name": "host-only"}),
-                &ToolContext::new(PathBuf::from("/tmp")),
+                &ToolContext::new(hermetic_root.clone()),
             )
             .await
             .unwrap_err();
