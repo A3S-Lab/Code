@@ -1,15 +1,16 @@
 //! End-to-end integration test for [`a3s_code_core::S3WorkspaceBackend`].
 //!
-//! Gated on `A3S_S3_TEST_ENDPOINT` so it does not run in default CI. To
-//! exercise it locally, point at a MinIO / RustFS / real S3 endpoint:
+//! Gated on `A3S_S3_TEST_ENDPOINT` so it does not run in default CI. The
+//! hermetic release gate starts `fixtures/s3-compat` and points this test at
+//! it. Locally, any S3-compatible endpoint works:
 //!
 //! ```sh
 //! export A3S_S3_TEST_ENDPOINT=http://127.0.0.1:9000
 //! export A3S_S3_TEST_REGION=us-east-1
-//! export A3S_S3_TEST_ACCESS_KEY_ID=minioadmin
-//! export A3S_S3_TEST_SECRET_ACCESS_KEY=minioadmin
+//! export A3S_S3_TEST_ACCESS_KEY_ID=a3s-code-test
+//! export A3S_S3_TEST_SECRET_ACCESS_KEY=a3s-code-test-secret
 //! export A3S_S3_TEST_BUCKET=a3s-code-tests
-//! export A3S_S3_TEST_FORCE_PATH_STYLE=true       # for MinIO/RustFS
+//! export A3S_S3_TEST_FORCE_PATH_STYLE=true
 //! cargo test -p a3s-code-core --features s3 --test test_s3_backend -- --ignored
 //! ```
 //!
@@ -99,11 +100,16 @@ async fn s3_backend_roundtrips_via_session_executor() {
         "git must NOT be registered for S3 backend"
     );
 
+    // Writes are bound to a session. An unbound executor cannot claim a dirty
+    // path, so this qualification never reaches the S3 API without one.
+    let ctx = executor.registry().context().with_session_id("s3-hermetic");
+
     // write
     let write = executor
-        .execute(
+        .execute_with_context(
             "write",
             &json!({ "file_path": "notes/hello.txt", "content": "one\ntwo\n" }),
+            &ctx,
         )
         .await
         .expect("write tool dispatched");
@@ -111,7 +117,7 @@ async fn s3_backend_roundtrips_via_session_executor() {
 
     // read
     let read = executor
-        .execute("read", &json!({ "file_path": "notes/hello.txt" }))
+        .execute_with_context("read", &json!({ "file_path": "notes/hello.txt" }), &ctx)
         .await
         .expect("read tool dispatched");
     assert_eq!(read.exit_code, 0, "{}", read.output);
@@ -123,7 +129,7 @@ async fn s3_backend_roundtrips_via_session_executor() {
 
     // ls — root should contain "notes" subdirectory
     let ls_root = executor
-        .execute("ls", &json!({ "path": "." }))
+        .execute_with_context("ls", &json!({ "path": "." }), &ctx)
         .await
         .expect("ls root");
     assert_eq!(ls_root.exit_code, 0, "{}", ls_root.output);
@@ -135,7 +141,7 @@ async fn s3_backend_roundtrips_via_session_executor() {
 
     // ls notes — should contain hello.txt
     let ls_notes = executor
-        .execute("ls", &json!({ "path": "notes" }))
+        .execute_with_context("ls", &json!({ "path": "notes" }), &ctx)
         .await
         .expect("ls notes");
     assert_eq!(ls_notes.exit_code, 0, "{}", ls_notes.output);
@@ -147,20 +153,21 @@ async fn s3_backend_roundtrips_via_session_executor() {
 
     // edit — replace "one" with "uno"
     let edit = executor
-        .execute(
+        .execute_with_context(
             "edit",
             &json!({
                 "file_path": "notes/hello.txt",
                 "old_string": "one",
                 "new_string": "uno"
             }),
+            &ctx,
         )
         .await
         .expect("edit tool dispatched");
     assert_eq!(edit.exit_code, 0, "{}", edit.output);
 
     let read_after_edit = executor
-        .execute("read", &json!({ "file_path": "notes/hello.txt" }))
+        .execute_with_context("read", &json!({ "file_path": "notes/hello.txt" }), &ctx)
         .await
         .expect("read after edit");
     assert!(
@@ -171,19 +178,20 @@ async fn s3_backend_roundtrips_via_session_executor() {
 
     // patch — apply a unified diff
     let patch = executor
-        .execute(
+        .execute_with_context(
             "patch",
             &json!({
                 "file_path": "notes/hello.txt",
                 "diff": "@@ -1,2 +1,2 @@\n uno\n-two\n+dos"
             }),
+            &ctx,
         )
         .await
         .expect("patch tool dispatched");
     assert_eq!(patch.exit_code, 0, "{}", patch.output);
 
     let final_content = executor
-        .execute("read", &json!({ "file_path": "notes/hello.txt" }))
+        .execute_with_context("read", &json!({ "file_path": "notes/hello.txt" }), &ctx)
         .await
         .expect("read after patch")
         .output;

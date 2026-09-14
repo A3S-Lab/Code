@@ -124,14 +124,21 @@ async fn test_bash_delegates_to_sandbox() {
         stderr: String::new(),
         exit_code: 0,
     });
-    let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+    // `/tmp` is not an isolated workspace: other tests claim dirty paths under
+    // it, and a workspace of `/tmp` treats every one of those claims as foreign.
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf()).with_sandbox(sandbox);
 
     let result = tool
         .execute(&serde_json::json!({"command": "echo ignored"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.success);
+    assert!(
+        result.success,
+        "sandbox delegation should succeed: {}",
+        result.content
+    );
     assert!(result.content.contains("sandbox output"));
     let metadata = result.metadata.unwrap();
     assert_eq!(metadata["exit_code"], 0);
@@ -452,14 +459,19 @@ async fn test_bash_sandbox_combines_stderr() {
         stderr: "err\n".into(),
         exit_code: 0,
     });
-    let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf()).with_sandbox(sandbox);
 
     let result = tool
         .execute(&serde_json::json!({"command": "ls"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.content.contains("out"));
+    assert!(
+        result.content.contains("out"),
+        "sandbox stdout should be returned: {}",
+        result.content
+    );
     assert!(result.content.contains("err"));
 }
 
@@ -471,7 +483,8 @@ async fn test_bash_sandbox_nonzero_exit() {
         stderr: "not found\n".into(),
         exit_code: 127,
     });
-    let ctx = ToolContext::new(PathBuf::from("/tmp")).with_sandbox(sandbox);
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf()).with_sandbox(sandbox);
 
     let result = tool
         .execute(&serde_json::json!({"command": "nonexistent"}), &ctx)

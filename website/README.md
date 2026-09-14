@@ -32,7 +32,7 @@ configuration, wire behavior, or SDK surface to remain reproducible. Required
 parameter or function-signature breaks must use the appropriate minor or major
 product version rather than being hidden inside a documentation patch.
 
-The active `v8.5` line lives under `docs/v8.5.5`. Package 8.5.6 is a patch on
+The active `v8.5` line lives under `docs/v8.5.5`. Package 8.5.7 is a patch on
 that line: it updates the current pages and `CHANGELOG.md` and does not add a
 second full-site copy. The `v8.4.0`, `v8.3.0`,
 `v8.2.0`, `v8.1.0`, `v8.0.0`, `v7.0.1`, `v6.9.0`, `v6.8.0`, `v6.7.0`, `v6.6.0`,

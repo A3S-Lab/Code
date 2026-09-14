@@ -71,8 +71,12 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   includes only pending findings whose registered scenario opts into main
   prompt injection.
 
+- **Release gate (8.5.7).** Windows checks compile, child writes stay
+  behind the completion gate, and hermetic S3 qualification uses an in-repo
+  fixture instead of a withdrawn MinIO image.
+
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5` line;
-package 8.5.6).
+package 8.5.7).
 
 ### Earlier lines
 
@@ -1740,9 +1744,9 @@ latency is reported separately rather than treated as a stable Core speed
 measurement.
 
 Real-provider and public search-engine tests are ignored unless their external
-prerequisites are configured. Required hermetic CI separately drives pinned
-MinIO, workflow-managed Chrome/CDP, and a local OpenTelemetry Collector through
-the production integration boundaries.
+prerequisites are configured. Required hermetic CI separately drives an in-repo
+S3-compatible fixture, workflow-managed Chrome/CDP, and a local OpenTelemetry
+Collector through the production integration boundaries.
 
 Run the context-tool real-LLM suite through a local Codex login:
 

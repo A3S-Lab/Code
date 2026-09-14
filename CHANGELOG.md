@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.7] - 2026-09-14
+
+### Fixed
+
+- Windows release checks no longer fail on a process id that only the Unix
+  process-group kill uses, or on symlink tests that call `std::os::unix`.
+- Sandbox bash tests use an isolated workspace. A workspace of `/tmp` treated
+  every other test's dirty-path claim as a foreign write.
+- Child-task tests that write a file assert the completion gate. An
+  auto-approved or inherited write is not a successful completion.
+- Worktree tests create the `main` branch themselves instead of assuming the
+  runner's `init.defaultBranch`.
+- Hermetic S3 qualification runs an in-repo S3-compatible fixture and binds
+  a session id, which writes now require. Official MinIO container images
+  are no longer published, so the gate does not depend on them.
+
+
 ## [8.5.6] - 2026-09-13
 
 ### Changed

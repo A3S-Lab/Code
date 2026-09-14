@@ -105,7 +105,17 @@ impl S3WorkspaceBackend {
             .force_path_style(config.force_path_style);
 
         if let Some(endpoint) = config.endpoint {
-            builder = builder.endpoint_url(endpoint);
+            // Custom endpoints (RustFS, R2, self-hosted S3) are not AWS.
+            // The SDK's default flexible checksums are an AWS extension and
+            // break otherwise compatible servers. Required checksums still apply.
+            builder = builder
+                .endpoint_url(endpoint)
+                .request_checksum_calculation(
+                    aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired,
+                )
+                .response_checksum_validation(
+                    aws_sdk_s3::config::ResponseChecksumValidation::WhenRequired,
+                );
         }
 
         let client = Client::from_conf(builder.build());

@@ -43,12 +43,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p hermetic-results
-          docker run --detach --name a3s-code-minio \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER=minioadmin \
-            --env MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z \
-            server /data --address :9000
           docker run --detach --name a3s-code-otel \
             --publish 4317:4317 \
             --publish 13133:13133 \
@@ -56,9 +50,24 @@ jobs:
             otel/opentelemetry-collector:0.123.0 \
             --config=/etc/otelcol/config.yaml
 
+          # Official MinIO images are no longer published. The product needs an
+          # S3 API, not MinIO. Build the in-repo fixture instead of pulling one.
+          cargo build --locked --manifest-path fixtures/s3-compat/Cargo.toml
+          fixtures/s3-compat/target/debug/a3s-code-s3-compat \
+            --bind 127.0.0.1:9000 \
+            --bucket a3s-code-tests \
+            > hermetic-results/s3-compat.log 2>&1 &
+          echo $! > hermetic-results/s3-compat.pid
+
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+            if grep -q 's3-compat ready' hermetic-results/s3-compat.log \
+              && curl --silent --output /dev/null --max-time 1 http://127.0.0.1:9000/; then
               break
+            fi
+            if ! kill -0 "$(cat hermetic-results/s3-compat.pid)" 2>/dev/null; then
+              echo "s3-compat fixture exited" >&2
+              cat hermetic-results/s3-compat.log >&2
+              exit 1
             fi
             test "$attempt" -lt 60
             sleep 1
@@ -71,19 +80,13 @@ jobs:
             sleep 1
           done
 
-          docker run --rm --network host --entrypoint /bin/sh \
-            --env MINIO_ROOT_USER=minioadmin \
-            --env MINIO_ROOT_PASSWORD=minioadmin \
-            minio/mc:RELEASE.2025-04-16T18-13-26Z \
-            -c 'mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing local/a3s-code-tests'
-
-      - name: Qualify S3 workspace against MinIO
+      - name: Qualify S3 workspace against local S3
         shell: bash
         env:
           A3S_S3_TEST_ENDPOINT: http://127.0.0.1:9000
           A3S_S3_TEST_REGION: us-east-1
-          A3S_S3_TEST_ACCESS_KEY_ID: minioadmin
-          A3S_S3_TEST_SECRET_ACCESS_KEY: minioadmin
+          A3S_S3_TEST_ACCESS_KEY_ID: a3s-code-test
+          A3S_S3_TEST_SECRET_ACCESS_KEY: a3s-code-test-secret
           A3S_S3_TEST_BUCKET: a3s-code-tests
           A3S_S3_TEST_FORCE_PATH_STYLE: "true"
         run: |
@@ -93,12 +96,12 @@ jobs:
             -- --ignored --exact --nocapture
           jq -n '{
             schemaVersion: 1,
-            profile: "s3-minio-hermetic-v1",
-            endpoint: "controlled-local-minio",
+            profile: "s3-compat-hermetic-v1",
+            endpoint: "in-repo-s3-compat",
             roundtrip: ["write", "read", "list", "edit", "patch", "cleanup"],
             providerNetworkIncluded: false,
             passed: true
-          }' > hermetic-results/s3-minio.json
+          }' > hermetic-results/s3-compat.json
 
       - name: Qualify controlled local Chrome CDP path
         shell: bash
@@ -193,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           for report in \
-            hermetic-results/s3-minio.json \
+            hermetic-results/s3-compat.json \
             hermetic-results/headless-cdp.json \
             hermetic-results/opentelemetry.json; do
             jq -e '.passed == true' "$report" >/dev/null
@@ -212,5 +215,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          docker rm --force a3s-code-minio >/dev/null 2>&1 || true
+          if test -f hermetic-results/s3-compat.pid; then
+            kill "$(cat hermetic-results/s3-compat.pid)" >/dev/null 2>&1 || true
+          fi
           docker rm --force a3s-code-otel >/dev/null 2>&1 || true

@@ -3799,7 +3799,7 @@ async fn task_child_run_confirmation_auto_approve() {
             "t1",
             "write",
             serde_json::json!({
-                "file_path": workspace.path().join("auto.txt").to_string_lossy(),
+                "file_path": "auto.txt",
                 "content": "AUTO_APPROVED"
             }),
         ),
@@ -3829,14 +3829,24 @@ async fn task_child_run_confirmation_auto_approve() {
         .unwrap();
 
     assert!(
-        result.success,
-        "Ask should be auto-approved: {}",
+        !result.success,
+        "an auto-approved write is still an unverified mutation: {}",
         result.output
     );
     assert!(
-        !result.output.contains("MissingConfirmationManager"),
-        "no MissingConfirmationManager: {}",
+        result.output.contains("completion gate:"),
+        "Ask must be approved, then stopped by the completion gate: {}",
         result.output
+    );
+    assert!(
+        !result.output.contains("Permission denied")
+            && !result.output.contains("MissingConfirmationManager"),
+        "confirmation must not deny the write: {}",
+        result.output
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("auto.txt")).unwrap(),
+        "AUTO_APPROVED"
     );
 }
 
@@ -5738,7 +5748,7 @@ async fn parallel_task_both_inherit_permissions() {
             "t1",
             "write",
             serde_json::json!({
-                "file_path": workspace.path().join("p1.txt").to_string_lossy(),
+                "file_path": "p1.txt",
                 "content": "P1"
             }),
         ),
@@ -5748,7 +5758,7 @@ async fn parallel_task_both_inherit_permissions() {
             "t2",
             "write",
             serde_json::json!({
-                "file_path": workspace.path().join("p2.txt").to_string_lossy(),
+                "file_path": "p2.txt",
                 "content": "P2"
             }),
         ),
@@ -5783,11 +5793,25 @@ async fn parallel_task_both_inherit_permissions() {
     let results = executor.execute_parallel(tasks, None, None).await;
     assert_eq!(results.len(), 2);
 
-    for result in &results {
+    for (result, name) in results.iter().zip(["p1.txt", "p2.txt"]) {
         assert!(
-            result.success,
-            "parallel child should succeed: {}",
+            !result.success,
+            "an inherited write is still an unverified mutation: {}",
             result.output
+        );
+        assert!(
+            result.output.contains("completion gate:"),
+            "inherited write must pass permission and fail the completion gate: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("Permission denied"),
+            "both children must inherit write permission: {}",
+            result.output
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(name)).unwrap(),
+            name.trim_end_matches(".txt").to_ascii_uppercase()
         );
     }
 }

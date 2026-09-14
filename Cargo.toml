@@ -9,6 +9,7 @@ members = [
 exclude = [
     "sdk/node",
     "sdk/python",
+    "fixtures/s3-compat",
 ]
 
 [profile.release]

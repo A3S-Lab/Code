@@ -451,6 +451,7 @@ mod cancellation_tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn personal_kb_scan_does_not_follow_a_symlink_out_of_the_workspace() {
         let parent = tempfile::tempdir().unwrap();

@@ -258,6 +258,9 @@ fn spawn(session_id: &str, admitted: &AdmittedCommand) -> Result<Child> {
 }
 
 fn kill_child(child: &mut Child) -> Result<()> {
+    // The process id is only an input to the Unix process-group kill. Binding
+    // it on Windows is an unused variable under `-D warnings`.
+    #[cfg(unix)]
     let pid = child.id();
     #[cfg(unix)]
     unsafe {

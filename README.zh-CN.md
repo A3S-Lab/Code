@@ -60,8 +60,11 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   `sync_global_mcp_servers` / `global_mcp_status`、会话审查、结果账本，以及
   Core 上已有的可序列化 SessionOptions 字段。trait object 宿主钩子仍然省略。
 
+- **发布门禁（8.5.7）。** Windows 检查可以编译，子任务写入仍受完成门禁约束，
+  封闭 S3 验证改用仓库内夹具，不再依赖已下架的 MinIO 镜像。
+
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5` 文档线；
-包版本 8.5.6）。
+包版本 8.5.7）。
 
 ### 更早的版本线
 
@@ -1723,9 +1726,9 @@ cargo run --release -p a3s-code-core --example workspace_retrieval_benchmark
 测量。
 
 真实提供商和公共搜索引擎测试将被忽略，除非它们的外部测试
-先决条件已配置。所需的密封 CI 单独驱动器固定
-MinIO、工作流管理的 Chrome/CDP 和本地 OpenTelemetry Collector
-生产集成边界。
+先决条件已配置。所需的密封 CI 单独驱动仓库内的
+S3 兼容夹具、工作流管理的 Chrome/CDP 和本地 OpenTelemetry Collector
+穿过生产集成边界。
 
 通过本地 Codex 登录运行 context-tool real-LLM 套件：
 

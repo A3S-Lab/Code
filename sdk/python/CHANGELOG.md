@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.7] - 2026-09-14
+
+- Bundled Core 8.5.7: Windows release checks compile, child writes stay
+  behind the completion gate, and hermetic S3 qualification no longer
+  depends on a MinIO image.
+
 ## [8.5.6] - 2026-09-13
 
 - Bundled Core 8.5.6: unverified workspace mutations cannot complete; Node,

@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "a3s-code-s3-compat"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Local S3-compatible server for hermetic workspace qualification"
+
+[[bin]]
+name = "a3s-code-s3-compat"
+path = "src/main.rs"
+
+[dependencies]
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+s3s = "0.16"
+s3s-fs = "0.16"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }

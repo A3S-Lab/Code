@@ -2337,7 +2337,9 @@ mod tests {
     }
 
     fn init_worktree_repo(root: &Path) {
-        assert!(run_test_git(root, &["init"]));
+        // Name the branch explicitly. `git init` follows the runner's
+        // `init.defaultBranch`, which is not always `main`.
+        assert!(run_test_git(root, &["init", "-b", "main"]));
         assert!(run_test_git(
             root,
             &["config", "user.email", "a3s@example.com"]

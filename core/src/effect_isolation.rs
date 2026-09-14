@@ -667,6 +667,7 @@ mod tests {
         assert!(!root.path().join("noise.txt").exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn bind_does_not_reuse_a_symlink_as_the_isolation_worktree() {
         let parent = tempfile::tempdir().unwrap();
