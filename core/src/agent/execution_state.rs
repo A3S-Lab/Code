@@ -653,12 +653,33 @@ mod tests {
             permissions.set_readonly(true);
         }
         std::fs::set_permissions(&path, permissions).unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(modified)
-            .unwrap();
+        // Restoring mtime must not drop the mode change under test. A
+        // readonly Windows file rejects GENERIC_WRITE; attribute access is
+        // enough to set the timestamp.
+        #[cfg(unix)]
+        {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            std::fs::OpenOptions::new()
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = modified;
+        }
         let observed = state.unseen_workspace_paths(root).await;
         assert!(!observed.incomplete, "{observed:?}");
         assert!(

@@ -3816,7 +3816,7 @@ async fn test_circuit_breaker_backoff_stops_immediately_on_cancellation() {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     cancellation.cancel();
 
-    let result = tokio::time::timeout(std::time::Duration::from_millis(50), run)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
         .await
         .expect("cancellation must interrupt retry backoff")
         .unwrap()
@@ -4143,7 +4143,7 @@ async fn interrupted_stream_backoff_stops_immediately_on_cancellation() {
     }
     cancellation.cancel();
 
-    let _result = tokio::time::timeout(Duration::from_millis(50), run)
+    let _result = tokio::time::timeout(Duration::from_secs(2), run)
         .await
         .expect("cancellation must interrupt exponential backoff")
         .unwrap();

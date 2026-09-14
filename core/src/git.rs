@@ -797,6 +797,22 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeInfo>> {
     Ok(worktrees)
 }
 
+/// Git on Windows rejects worktree paths that still carry Rust's verbatim
+/// `\\?\` prefix (`could not create leading directories of '//?/'`).
+fn git_subprocess_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{stripped}");
+        }
+        if let Some(stripped) = text.strip_prefix(r"\\?\") {
+            return stripped.to_string();
+        }
+    }
+    text
+}
+
 /// Create a new worktree.
 pub fn create_worktree(
     repo_path: &Path,
@@ -804,7 +820,7 @@ pub fn create_worktree(
     path: &Path,
     new_branch: bool,
 ) -> Result<()> {
-    let path_str = path.display().to_string();
+    let path_str = git_subprocess_path(path);
     let args: Vec<&str> = if new_branch {
         vec![
             "worktree",
@@ -827,7 +843,7 @@ pub fn create_worktree(
 
 /// Remove a worktree.
 pub fn remove_worktree(repo_path: &Path, path: &Path, force: bool) -> Result<()> {
-    let path_str = path.display().to_string();
+    let path_str = git_subprocess_path(path);
     let args: Vec<&str> = if force {
         vec![
             "worktree",

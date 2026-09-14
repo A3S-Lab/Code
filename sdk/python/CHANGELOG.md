@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.8] - 2026-09-14
+
+- Bundled Core 8.5.8: Windows release tests no longer inherit autocrlf or
+  pass verbatim `\\?\` paths to Git.
+
 ## [8.5.7] - 2026-09-14
 
 - Bundled Core 8.5.7: Windows release checks compile, child writes stay

@@ -439,11 +439,15 @@ fn refuse_symlink_components(root: &Path, relative: &Path) -> Result<()> {
 
 fn safe_relative_path(path: &str) -> Result<PathBuf> {
     let path = Path::new(path);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-    {
+    // `is_absolute()` is not enough. On Windows `/tmp/escape` is not absolute,
+    // but a root or drive prefix is still not a workspace-relative path.
+    let escapes = path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if path.is_absolute() || escapes {
         return Err(anyhow!("refusing to promote unsafe path {path:?}"));
     }
     Ok(path.to_path_buf())

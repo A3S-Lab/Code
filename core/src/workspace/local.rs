@@ -1576,8 +1576,16 @@ mod tests {
                 "user.email=test@a3s.local",
             ])
             .args(args);
-        crate::tools::process::status_std_with_native_gate(&mut command)
-            .is_ok_and(|status| status.success())
+        let started = crate::tools::process::status_std_with_native_gate(&mut command)
+            .is_ok_and(|status| status.success());
+        if started && args.first() == Some(&"init") {
+            // Do not inherit the runner's `core.autocrlf`. A Windows checkout
+            // that rewrites `\n` to `\r\n` dirties ordinary files and makes a
+            // preserved credential file look overwritten.
+            let _ = run_test_git(root, &["config", "core.autocrlf", "false"]);
+            let _ = run_test_git(root, &["config", "core.eol", "lf"]);
+        }
+        started
     }
 
     #[cfg(any(unix, windows))]

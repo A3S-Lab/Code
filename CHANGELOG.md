@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.8] - 2026-09-14
+
+### Fixed
+
+- Windows release tests no longer depend on the runner's `core.autocrlf`,
+  Git's rejection of verbatim `\\?\` worktree paths, or a Unix-only reading
+  of `/tmp` as an absolute promote path.
+- A readonly Windows file can restore its timestamp through attribute
+  access, so a mode-only mutation is still observable.
+- Cancellation tests wait long enough for a loaded runner to observe the
+  cancel, and still fail if the backoff sequence actually runs.
+
+
 ## [8.5.7] - 2026-09-14
 
 ### Fixed

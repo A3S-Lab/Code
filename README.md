@@ -74,9 +74,12 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 - **Release gate (8.5.7).** Windows checks compile, child writes stay
   behind the completion gate, and hermetic S3 qualification uses an in-repo
   fixture instead of a withdrawn MinIO image.
+- **Windows test isolation (8.5.8).** Credential-boundary tests do not inherit
+  the runner's line-ending policy, and Git worktrees are not given verbatim
+  `\\?\` paths.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5` line;
-package 8.5.7).
+package 8.5.8).
 
 ### Earlier lines
 
