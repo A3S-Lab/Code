@@ -1,8 +1,9 @@
-//! Live E2E coverage for first-principles issue fixes #139 / #137 / #138.
+//! Live E2E coverage for first-principles issue fixes #139 / #137 / #138 / #140.
 //!
 //! Pins `boyue/bailian/deepseek-v4.1-flash` from monorepo `.a3s/config.acl`.
 //! Passes require kernel effects (tool names, MCP progress delivery, event-page
-//! projection). Assistant wording is never a pass criterion.
+//! projection, process-host bash under live tool use). Assistant wording is
+//! never a pass criterion.
 //!
 //! ```bash
 //! A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
@@ -18,6 +19,7 @@ use std::time::Duration;
 use a3s_code_core::mcp::manager::McpManager;
 use a3s_code_core::mcp::protocol::{McpNotification, McpServerConfig, McpTransportConfig};
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
+use a3s_code_core::sandbox::ProcessHostBashSandbox;
 use a3s_code_core::tools::{ToolResultTransformPolicyV1, MAX_OUTPUT_SIZE};
 use a3s_code_core::{
     Agent, AgentEvent, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1, RunStatus,
@@ -29,6 +31,7 @@ const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const WRITE_TOKEN: &str = "issue139-write-token-c4e1";
 const MCP_TOKEN: &str = "issue137-mcp-token-9b2f";
 const LARGE_MARKER: &str = "issue138-large-marker-7d01";
+const HOST_TOKEN: &str = "issue140-host-token-a8c3";
 
 async fn configured_agent() -> Agent {
     let config = load_pinned_layer_c_config();
@@ -448,6 +451,75 @@ async fn live_oversized_tool_end_still_projects_event_page() {
             .iter()
             .any(|event| event.event.event_type == "tool_end"),
         "projected page must include tool_end"
+    );
+}
+
+/// #140: Harbor / Terminal-Bench path — live Flash must drive bash through an
+/// explicit process-host sandbox (outer isolation already present). Native
+/// Seatbelt/bwrap success must not mask this path; inject the Harbor runner.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+async fn live_process_host_bash_runs_under_flash_tool_use() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = Arc::new(ProcessHostBashSandbox::new(
+        workspace.path().to_path_buf(),
+        None,
+    ));
+
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(
+                options("issue-140-process-host", &["bash(**)", "write(**)", "read(**)"])
+                    .with_allow_process_host_sandbox(true)
+                    .with_sandbox_handle(sandbox),
+            ),
+        )
+        .await
+        .expect("session");
+
+    let observed = observe(
+        &session,
+        &format!(
+            "Using the bash tool only, write exactly `{HOST_TOKEN}` into host_token.txt \
+             in the workspace root (printf/redirection is fine). Then stop. Do not invent \
+             the token in prose without creating the file."
+        ),
+    )
+    .await;
+    assert!(
+        observed
+            .errors
+            .iter()
+            .all(|message| !looks_like_empty_tool_name_poison(message)),
+        "process-host turn must not poison tool names: {:?}",
+        observed.errors
+    );
+    assert!(
+        observed
+            .tool_starts
+            .iter()
+            .all(|(id, name)| !id.is_empty() && !name.is_empty()),
+        "ToolStart names must stay non-empty on process-host path: {:?}",
+        observed.tool_starts
+    );
+    let bash_ok = observed
+        .tool_ends
+        .iter()
+        .any(|(name, code, _, _)| name == "bash" && *code == 0);
+    let on_disk = std::fs::read_to_string(workspace.path().join("host_token.txt"))
+        .unwrap_or_default()
+        .contains(HOST_TOKEN);
+    assert!(
+        bash_ok && on_disk,
+        "Flash must create host_token.txt via process-host bash: ends={:?} disk={}",
+        observed
+            .tool_ends
+            .iter()
+            .map(|(n, c, o, _)| (n.as_str(), *c, o.as_str()))
+            .collect::<Vec<_>>(),
+        on_disk
     );
 }
 

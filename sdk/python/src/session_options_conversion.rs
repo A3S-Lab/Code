@@ -479,6 +479,9 @@ fn apply_py_host_contract_options(
     if let Some(read_only) = source.read_only_session {
         options = options.with_read_only_session(read_only);
     }
+    if let Some(allow) = source.allow_process_host_sandbox {
+        options = options.with_allow_process_host_sandbox(allow);
+    }
     if let Some(enabled) = source.verifier_enabled {
         options = options.with_verifier(enabled);
     }

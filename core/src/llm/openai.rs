@@ -465,9 +465,14 @@ impl OpenAiClient {
             }
 
             if let Some(tool_calls) = choice.message.tool_calls {
-                for tc in tool_calls {
+                for (index, tc) in tool_calls.into_iter().enumerate() {
+                    let id = if tc.id.trim().is_empty() {
+                        format!("call_{index}")
+                    } else {
+                        tc.id
+                    };
                     content.push(ContentBlock::ToolUse {
-                        id: tc.id,
+                        id,
                         name: tc.function.name.clone(),
                         input: Self::parse_tool_arguments(
                             &tc.function.name,

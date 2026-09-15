@@ -1013,6 +1013,7 @@ fn digest_validated<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentEvent;
     use serde_json::json;
 
     fn identity() -> AgentProtocolRunIdentityV1 {
@@ -1070,6 +1071,56 @@ mod tests {
             noise.ends_with(AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK)
                 || !metadata.contains_key("noise"),
             "oversized metadata must truncate or drop non-identity keys"
+        );
+    }
+
+    #[test]
+    fn from_run_page_projects_oversized_tool_end_instead_of_400() {
+        let identity = identity();
+        let oversized = "x".repeat(AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES + 8_192);
+        let page = RunEventPage {
+            events: vec![RunEventRecord {
+                sequence: 0,
+                timestamp_ms: 1,
+                event: AgentEvent::ToolEnd {
+                    id: "tool-1".into(),
+                    name: "read".into(),
+                    args: None,
+                    exit_code: 0,
+                    output: oversized,
+                    metadata: None,
+                    error_kind: None,
+                },
+            }],
+            first_available_sequence: Some(0),
+            latest_sequence_exclusive: 1,
+            next_after_sequence: Some(0),
+            retention_gap: false,
+            has_more: false,
+        };
+
+        let projected = AgentProtocolEventPageV1::from_run_page(
+            identity.clone(),
+            RunStatus::Completed,
+            1,
+            None,
+            &page,
+        )
+        .expect("oversized tool_end must still project a page");
+        projected.validate().expect("projected page must validate");
+        assert_eq!(projected.events.len(), 1);
+        assert_eq!(projected.events[0].event.event_type, "tool_end");
+        let payload = &projected.events[0].event.payload;
+        let encoded = serde_json::to_vec(payload).expect("encode payload");
+        assert!(
+            encoded.len() <= AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
+            "bounded payload must fit protocol limit (got {})",
+            encoded.len()
+        );
+        assert_eq!(
+            payload.get("name").and_then(|value| value.as_str()),
+            Some("read"),
+            "identity fields must survive bounding"
         );
     }
 }

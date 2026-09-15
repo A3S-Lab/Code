@@ -311,6 +311,7 @@ type SessionOptions struct {
 	PathRules                  []PathRule                      `json:"path_rules,omitempty"`
 	PlanRun                    *PlanRunAdmission               `json:"plan_run,omitempty"`
 	ReadOnlySession            *bool                           `json:"read_only_session,omitempty"`
+	AllowProcessHostSandbox    *bool                           `json:"allow_process_host_sandbox,omitempty"`
 	VerifierEnabled            *bool                           `json:"verifier_enabled,omitempty"`
 }
 

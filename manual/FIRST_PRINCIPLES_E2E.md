@@ -41,7 +41,7 @@ Orchestration: `just harness-convergence-check` covers A1–A4.
 | C4 | Orchestration / long-horizon / structured JSON / run-control real LLM | Multi-mechanism live |
 | C5 | `test_harness_loop_live_e2e` / `test_harness_capabilities_live_e2e` | Gate + baseline tools (incl. download/web_fetch) |
 | C6 | `test_workspace_retrieval_real_llm` / search / memory | Retrieval + `context_memory` live |
-| C7 | `test_issue_fix_live_e2e` | `#139` streaming tool names, `#137` MCP stdio progress, `#138` oversized event page |
+| C7 | `test_issue_fix_live_e2e` | `#139` streaming tool names, `#137` MCP stdio progress, `#138` oversized event page, `#140` process-host bash under live Flash |
 | C8 | `test_agent_protocol_live_e2e` | Harness Start/replay, live tool→change set, protocol Cancel |
 
 Run the full serial matrix with `just layer-c-live-e2e` (pins
@@ -76,8 +76,49 @@ Clean Layer C matrix against `A3S_CONFIG_FILE=./.a3s/config.acl` with
 `support/layer_c_model.rs` in-process pin (not env-only). Recipe:
 `just layer-c-live-e2e`.
 
+Evidence `/tmp/a3s-issue-fix-live-r10/`:
+- `test_issue_fix_live_e2e` **4/4 PASS** on `boyue/bailian/deepseek-v4.1-flash`
+  (`FINAL.txt`: `ISSUE_FIX_LIVE_PASS`). Kernel checks only: non-empty streamed
+  tool names across write→read turns; ≥2 MCP `notifications/progress` during
+  live `tools/call`; oversized `tool_end` still projects via
+  `AgentProtocolEventPageV1::from_run_page`; `#140` live Flash bash through an
+  injected `ProcessHostBashSandbox` writes `host_token.txt` (Harbor path, not
+  native Seatbelt success masking).
+
+Evidence `/tmp/a3s-agent-protocol-live-r10/`:
+- `test_agent_protocol_live_e2e` **3/3 PASS** on `boyue/bailian/deepseek-v4.1-flash`
+  (`FINAL.txt`: `AGENT_PROTOCOL_LIVE_PASS`). Kernel checks only: Harness Start
+  receipt + terminal event page + replayed Start; live `write` projects
+  non-empty tool names and a validating change set; protocol Cancel reaches
+  `Cancelled` without the late leak file.
+
+Hermetic coverage deltas (non-overfit, kernel branches of the same fixes):
+- `streaming_empty_continuation_name_does_not_wipe_tool_name` + snapshot/delta
+  empty-name unit tests (`#139`)
+- `streaming_empty_or_missing_id_still_emits_usable_tool_call` synthesizes
+  `call_{index}` when the gateway never provides a tool-call id (`#139` class)
+- `from_run_page_projects_oversized_tool_end_instead_of_400` (`#138`)
+- Prompt contract updated to native-default / process-host opt-in wording (`#140`)
+- llvm-cov `--tests` `/tmp/a3s-fix-cov-r10b/`: `agent_protocol` **85.9%**,
+  `agent_protocol_host` **89.4%**, `agent_protocol_harness` **79.6%**, weighted
+  protocol ≈ **85.2%** (prior ≈ **82.8%**); `stdio` **92.5%**, `process_host`
+  **89.7%**, `session_sandbox` **89.8%**, `streaming` **69.3%**.
+
+Evidence `/tmp/a3s-layer-c-boyue-r10/`:
+- Full serial matrix via `just layer-c-live-e2e` on
+  `boyue/bailian/deepseek-v4.1-flash`. First pass failed only
+  `test_workspace_retrieval_real_llm` (3/3) with kernel evidence
+  `tool call id must not be empty` — Flash/gateway streamed empty
+  `tool_calls[].id` deltas that wiped accumulated ids (same class as `#139`
+  empty names). Fixed by ignoring empty id continuations and synthesizing
+  `call_{index}` when the stream never provides an id.
+- After the empty-id fix: retrieval **3/3 PASS**
+  (`/tmp/a3s-layer-c-boyue-r10/retry2/`); issue-fix reconfirmed **4/4**
+  (`/tmp/a3s-issue-fix-live-r10b/`). `FINAL.txt`:
+  `LAYER_C_PASS … (retrieval-retry after empty tool-call id fix)`.
+
 Evidence `/tmp/a3s-issue-fix-live/`:
-- `test_issue_fix_live_e2e` 3/3 PASS on `boyue/bailian/deepseek-v4.1-flash`
+- Prior `test_issue_fix_live_e2e` 3/3 PASS on `boyue/bailian/deepseek-v4.1-flash`
   (`FINAL.txt`: `ISSUE_FIX_LIVE_PASS`). Kernel checks only: non-empty streamed
   tool names across write→read turns; ≥2 MCP `notifications/progress` during
   live `tools/call`; oversized `tool_end` still projects via
@@ -108,10 +149,10 @@ Evidence `/tmp/a3s-layer-c-boyue-v858-r9/`:
 
 | Suite | Result |
 | --- | --- |
-| `test_issue_fix_live_e2e` | 3/3 |
+| `test_issue_fix_live_e2e` | 4/4 (r10 / r10b) |
 | `test_agent_protocol_live_e2e` | 3/3 |
-| `test_harness_loop_live_e2e` | 8/8 (+ verify_commands) |
-| `test_harness_capabilities_live_e2e` | 23/23 (retry after DNS flake) |
+| `test_harness_loop_live_e2e` | 8/8 |
+| `test_harness_capabilities_live_e2e` | 23/23 |
 | `test_deepseek_adversarial_e2e` | 3/3 |
 | `test_update_plan_live_e2e` | 1/1 |
 | `test_prompt_capability_real_llm` | 2/2 |
@@ -120,7 +161,7 @@ Evidence `/tmp/a3s-layer-c-boyue-v858-r9/`:
 | `test_structured_json_real_llm` | 6/6 |
 | `test_run_control_real_llm` | 2/2 |
 | `test_workspace_search_real_llm` | 1/1 |
-| `test_workspace_retrieval_real_llm` | 3/3 |
+| `test_workspace_retrieval_real_llm` | 3/3 (retry2 after empty-id fix) |
 | `test_context_tools_real_llm` | 4/4 |
 | `test_workflow_facade_real_llm` | 4/4 |
 | `test_auto_delegation_real_parallel` | 2/2 |

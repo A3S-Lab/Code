@@ -35,9 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `just layer-c-live-e2e`. Hermetic unit coverage for oversized non-identity
   event metadata bounding in `agent_protocol`.
 - Live issue-fix E2E suite `test_issue_fix_live_e2e` for `#139` / `#137` / `#138`
-  on pinned `boyue/bailian/deepseek-v4.1-flash` (streaming tool names across turns,
-  MCP stdio progress delivery during live tools/call, oversized tool_end event-page
-  projection). Included first in `just layer-c-live-e2e`.
+  / `#140` on pinned `boyue/bailian/deepseek-v4.1-flash` (streaming tool names
+  across turns, MCP stdio progress delivery during live tools/call, oversized
+  tool_end event-page projection, process-host bash under live Flash). Included
+  first in `just layer-c-live-e2e`.
+- Session SDK: `set_planning_mode` / `clear_planning_mode_override` on Node and
+  Python Session; `allow_process_host_sandbox` on Node/Python/Go SessionOptions.
 - Live capability coverage for baseline `bash`, `write`, `program`, and
   `web_search` kernel side effects (`test_harness_capabilities_live_e2e`).
 - Live loop coverage for `Allow(Verified)` after write + `test -f` host check
@@ -60,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `require_escalated` trial round inside task containers without bubblewrap.
 - OpenAI-compatible streaming no longer overwrites a valid `tool_calls[].function.name`
   with empty continuation deltas (`#139`); empty names are ignored and arguments still append.
+- OpenAI-compatible streaming likewise ignores empty `tool_calls[].id` continuation
+  deltas and synthesizes `call_{index}` when the stream never provides an id, so
+  Flash/gateway quirks cannot refuse every tool with `tool call id must not be empty`.
 - MCP stdio `reader_task` no longer treats id-less notification frames as responses and
   drops them (`#137`); `notifications/progress` reaches `McpClient::notifications()`.
 - Agent protocol event pages bound oversized `tool_end` payloads instead of failing the

@@ -149,9 +149,14 @@ impl OpenAiClient {
                                             text: text_content.clone(),
                                         });
                                     }
-                                    for (id, name, args) in tool_calls.values() {
+                                    for (index, (id, name, args)) in tool_calls.iter() {
+                                        let id = if id.is_empty() {
+                                            format!("call_{index}")
+                                        } else {
+                                            id.clone()
+                                        };
                                         content_blocks.push(ContentBlock::ToolUse {
-                                            id: id.clone(),
+                                            id,
                                             name: name.clone(),
                                             input: Self::parse_tool_arguments(name, args),
                                         });
@@ -343,7 +348,12 @@ impl OpenAiClient {
                                                     }
 
                                                     if let Some(id) = tc.id {
-                                                        entry.0 = id;
+                                                        // Same gateway quirk as empty
+                                                        // function names: never wipe a
+                                                        // previously accumulated id.
+                                                        if !id.is_empty() {
+                                                            entry.0 = id;
+                                                        }
                                                     }
                                                     if let Some(func) = tc.function {
                                                         if let Some(name) = func.name {
@@ -603,9 +613,14 @@ impl OpenAiClient {
                             text: text_content.clone(),
                         });
                     }
-                    for (id, name, args) in tool_calls.values() {
+                    for (index, (id, name, args)) in tool_calls.iter() {
+                        let id = if id.is_empty() {
+                            format!("call_{index}")
+                        } else {
+                            id.clone()
+                        };
                         content_blocks.push(ContentBlock::ToolUse {
-                            id: id.clone(),
+                            id,
                             name: name.clone(),
                             input: Self::parse_tool_arguments(name, args),
                         });
@@ -748,4 +763,55 @@ fn tool_call_delta_conflicts(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod empty_name_tests {
+    use super::*;
+
+    #[test]
+    fn apply_tool_call_snapshot_keeps_bound_name_when_snapshot_name_empty() {
+        let mut tool_calls = std::collections::BTreeMap::new();
+        tool_calls.insert(0, ("call_1".into(), "write".into(), String::new()));
+        apply_tool_call_snapshot(
+            &mut tool_calls,
+            vec![OpenAiToolCall {
+                id: String::new(),
+                function: OpenAiFunction {
+                    name: String::new(),
+                    arguments: r#"{"path":"t.txt"}"#.into(),
+                },
+            }],
+        );
+        let (id, name, args) = tool_calls.get(&0).expect("slot 0");
+        assert_eq!(id, "call_1");
+        assert_eq!(name, "write");
+        assert!(args.contains("t.txt"));
+    }
+
+    #[test]
+    fn tool_call_delta_empty_name_is_not_a_conflict() {
+        let delta = OpenAiToolCallDelta {
+            index: 0,
+            id: None,
+            function: Some(OpenAiFunctionDelta {
+                name: Some(String::new()),
+                arguments: Some(r#"{"x":1}"#.into()),
+            }),
+        };
+        assert!(!tool_call_delta_conflicts("call_1", "write", &delta));
+    }
+
+    #[test]
+    fn tool_call_delta_empty_id_is_not_a_conflict() {
+        let delta = OpenAiToolCallDelta {
+            index: 0,
+            id: Some(String::new()),
+            function: Some(OpenAiFunctionDelta {
+                name: None,
+                arguments: Some(r#"{"x":1}"#.into()),
+            }),
+        };
+        assert!(!tool_call_delta_conflicts("call_1", "write", &delta));
+    }
 }
