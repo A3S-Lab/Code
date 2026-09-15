@@ -2161,7 +2161,10 @@ impl LlmClient for LimitedConcurrencyLlmClient {
         let prompt = last_text(messages);
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.record_active();
-        tokio::time::sleep(Duration::from_millis(40)).await;
+        // Hold long enough that concurrent batches can saturate the shared
+        // provider window under loaded CI (Windows runners were peaking at 7/8
+        // with a 40ms hold).
+        tokio::time::sleep(Duration::from_millis(150)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
         Ok(text_response(format!("completed: {prompt}")))
     }

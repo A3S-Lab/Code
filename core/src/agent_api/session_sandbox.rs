@@ -102,6 +102,7 @@ impl BashSandbox for UnavailableDefaultSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::sandbox::SandboxCommandRequest;
 
     struct CustomSandbox;
@@ -156,6 +157,10 @@ mod tests {
             .contains("the default A3S native sandbox is unavailable"));
     }
 
+    // Harbor / Terminal-Bench process-host bash is a Unix outer-isolation path.
+    // Windows product bash uses PowerShell; Git Bash spawned from MSVC is not
+    // the supported process-host contract.
+    #[cfg(unix)]
     #[tokio::test]
     async fn process_host_fallback_runs_when_native_fails_and_host_opts_in() {
         let workspace = tempfile::tempdir().unwrap();
@@ -176,8 +181,8 @@ mod tests {
             .expect("process-host sandbox must execute");
         assert_eq!(
             output.exit_code, 0,
-            "process-host bash exit={}; stderr={}",
-            output.exit_code, output.stderr
+            "process-host bash exit={}; stdout={:?} stderr={}",
+            output.exit_code, output.stdout, output.stderr
         );
         assert!(
             output.stdout.contains("process-host-ok"),

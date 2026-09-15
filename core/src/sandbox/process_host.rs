@@ -446,6 +446,9 @@ mod tests {
             .contains("command output truncated"));
     }
 
+    // Real bash pipelines are Harbor/Unix. BoundedCapture itself is covered
+    // hermetically above; Windows product bash is PowerShell.
+    #[cfg(unix)]
     #[tokio::test]
     async fn high_volume_output_is_bounded_before_returning_to_the_tool() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -453,11 +456,9 @@ mod tests {
             directory.path().to_path_buf(),
             Some(Instant::now() + Duration::from_secs(5)),
         );
-        // Portable generator: avoid GNU-only `yes | head -c`, which is missing or
-        // broken on Windows Git Bash while still exceeding MAX_CAPTURE_BYTES.
         let output = sandbox
             .exec(SandboxCommandRequest {
-                command: "awk 'BEGIN{while(n++<200000)printf \"x\"}'".to_string(),
+                command: "yes x | head -c 200000".to_string(),
                 guest_workspace: directory.path().to_string_lossy().into_owned(),
                 timeout_ms: 5_000,
                 output_observer: None,
