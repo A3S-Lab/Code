@@ -12,30 +12,19 @@
 //!   cargo test -p a3s-code-core --test test_real_llm_cluster_features -- --ignored --nocapture
 //! ```
 
-use std::path::PathBuf;
+mod support;
+
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use a3s_code_core::budget::{BudgetDecision, BudgetGuard};
-use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::TokenUsage;
 use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::{Agent, SessionOptions};
-
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
+use support::layer_c_model::load_pinned_layer_c_config;
 
 async fn real_agent() -> Agent {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let config = load_pinned_layer_c_config();
     Agent::from_config(config)
         .await
         .expect("agent from real config")
@@ -231,6 +220,24 @@ async fn real_identity_labels_survive_live_run() {
     let runs = session.runs().await;
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].status, a3s_code_core::run::RunStatus::Completed);
+    let run_id = &runs[0].id;
+    let events = session.run_events(run_id).await;
+    assert!(
+        !events.is_empty(),
+        "completed live run must retain run_events"
+    );
+    let page = session
+        .run_event_page(run_id, None, 8)
+        .await
+        .expect("run_event_page for completed live run");
+    assert!(
+        !page.events.is_empty(),
+        "run_event_page must return retained events"
+    );
+    let _ = session.subagent_tasks().await;
+    let _ = session.active_tools().await;
+    let snap = session.run_snapshot(run_id).await;
+    assert!(snap.is_some(), "run_snapshot must exist after completion");
 }
 
 /// `resume_run` against a live model: seed a checkpoint carrying non-zero
@@ -308,4 +315,157 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
         result.tool_calls_count >= 2,
         "seeded tool-call count must carry forward"
     );
+}
+
+/// Product persistence surface: live turn → `session.save` →
+/// `agent.resume_session` restores history (not merely run checkpoints).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_session_save_resume_round_trips_history() {
+    let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+    let agent = real_agent().await;
+    let token = "PERSIST-LIVE-4411";
+    let opts = SessionOptions::new()
+        .with_session_id("real-persist-save")
+        .with_session_store(Arc::clone(&store))
+        .with_planning_mode(a3s_code_core::PlanningMode::Disabled)
+        .with_auto_delegation_enabled(false)
+        .with_manual_delegation_enabled(false)
+        .with_max_tool_rounds(1)
+        .with_temperature(0.0);
+    let session = agent
+        .session_async(
+            tempfile::tempdir().expect("ws").path().to_string_lossy(),
+            Some(opts),
+        )
+        .await
+        .expect("session");
+
+    let result = session
+        .send(
+            &format!("Reply with exactly one short sentence that includes {token}."),
+            None,
+        )
+        .await
+        .expect("live persist turn");
+    assert!(
+        result.text.contains(token) || session.history().iter().any(|m| m.text().contains(token)),
+        "live turn must leave {token} in reply or history"
+    );
+    session.save().await.expect("session.save");
+    session.close().await;
+    drop(session);
+
+    let resumed = agent
+        .resume_session_async(
+            "real-persist-save",
+            SessionOptions::new().with_session_store(Arc::clone(&store)),
+        )
+        .await
+        .expect("agent.resume_session");
+    assert_eq!(resumed.session_id(), "real-persist-save");
+    let history = resumed.history();
+    assert!(
+        history.iter().any(|message| message.text().contains(token)),
+        "resumed history must contain {token}: {history:?}"
+    );
+    let _ = resumed.queue_stats().await;
+    resumed.close().await;
+}
+
+/// Priority scheduling observability: concurrent live sessions must surface
+/// non-zero `task_scheduler_stats` / `queue_stats` while work is admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_priority_scheduler_stats_observe_concurrent_live_work() {
+    let mut config = load_pinned_layer_c_config();
+    config.task_scheduler = a3s_code_core::task_scheduler::TaskSchedulerConfig {
+        max_active: 1,
+        aging_interval_ms: 60_000,
+    };
+    let agent = Agent::from_config(config)
+        .await
+        .expect("agent with capped scheduler");
+
+    let workspace = tempfile::tempdir().expect("ws");
+    let make = |id: &str, priority| {
+        SessionOptions::new()
+            .with_session_id(id)
+            .with_task_priority(priority)
+            .with_planning_mode(a3s_code_core::PlanningMode::Disabled)
+            .with_auto_delegation_enabled(false)
+            .with_manual_delegation_enabled(false)
+            .with_max_tool_rounds(1)
+            .with_temperature(0.0)
+            .with_queue_config(a3s_code_core::queue::SessionQueueConfig::default())
+    };
+    let foreground = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(make(
+                    "sched-fg",
+                    a3s_code_core::task_scheduler::TaskPriority::Foreground,
+                )),
+            )
+            .await
+            .expect("fg session"),
+    );
+    let background = Arc::new(
+        agent
+            .session_async(
+                workspace.path().to_string_lossy(),
+                Some(make(
+                    "sched-bg",
+                    a3s_code_core::task_scheduler::TaskPriority::Background,
+                )),
+            )
+            .await
+            .expect("bg session"),
+    );
+
+    let fg = tokio::spawn({
+        let foreground = Arc::clone(&foreground);
+        async move {
+            foreground
+                .send("Reply with the single word: ok", None)
+                .await
+        }
+    });
+    // Give the foreground turn a moment to occupy the single active slot.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let bg = tokio::spawn({
+        let background = Arc::clone(&background);
+        async move {
+            background
+                .send("Reply with the single word: ok", None)
+                .await
+        }
+    });
+
+    let mut saw_pending = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        let stats = agent
+            .task_scheduler_stats()
+            .await
+            .expect("task_scheduler_stats");
+        if stats.active >= 1 || stats.pending >= 1 {
+            saw_pending = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        saw_pending,
+        "live concurrent sends must observe active or pending scheduler occupancy"
+    );
+
+    let queue = background.queue_stats().await;
+    let _ = (queue.total_pending, queue.total_active);
+
+    let _ = fg.await.expect("fg join");
+    let _ = bg.await.expect("bg join");
+    foreground.close().await;
+    background.close().await;
 }

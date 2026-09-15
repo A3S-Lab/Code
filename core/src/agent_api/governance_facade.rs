@@ -127,6 +127,37 @@ impl AgentSession {
         })?
     }
 
+    /// Override planning mode for subsequent turns without rebuilding the
+    /// session. Durable `/goal` hosts use this to keep maker planning Enabled
+    /// while forcing verifier turns onto Disabled so Flash cannot stall in a
+    /// plan-only wave. Takes effect on the next `send` / `stream`.
+    pub fn set_planning_mode(
+        &self,
+        mode: crate::prompts::PlanningMode,
+    ) -> crate::error::Result<()> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_planning_mode
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *slot = Some(mode);
+            Ok(())
+        })?
+    }
+
+    /// Clear a prior [`Self::set_planning_mode`] override so the next loop
+    /// uses the session-built `config.planning_mode` again.
+    pub fn clear_planning_mode_override(&self) -> crate::error::Result<()> {
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_planning_mode
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *slot = None;
+            Ok(())
+        })?
+    }
+
     /// Pin or clear the user-facing reply language for subsequent turns without
     /// rebuilding the session. Pass `Some("zh-CN")` to pin; pass `None` to clear
     /// the runtime override so `prompt_slots.output_language` applies again.
@@ -156,6 +187,14 @@ impl AgentSession {
     ) -> Option<Option<crate::prompts::AgentStyle>> {
         *self
             .runtime_agent_style
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Runtime planning-mode override. `None` means unset.
+    pub(crate) fn runtime_planning_mode_override(&self) -> Option<crate::prompts::PlanningMode> {
+        *self
+            .runtime_planning_mode
             .lock()
             .unwrap_or_else(|p| p.into_inner())
     }

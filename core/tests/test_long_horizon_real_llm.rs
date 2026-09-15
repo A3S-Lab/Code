@@ -6,16 +6,18 @@
 //! quota. Select a model declared in the same ACL with
 //! `A3S_TEST_MODEL=provider/model`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
-    Agent, AgentEvent, AgentSession, CodeConfig, PlanningMode, RunStatus, SessionOptions,
-    SystemPromptSlots,
+    Agent, AgentEvent, AgentSession, PlanningMode, RunStatus, SessionOptions, SystemPromptSlots,
 };
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const REAL_TIMEOUT: Duration = Duration::from_secs(420);
 const SPEC: &str = r#"# Label summary contract
@@ -47,33 +49,12 @@ export function summarize(values) {
 }
 "#;
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn configured_agent_and_model() -> (Agent, String) {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("real config must declare default_model");
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in {}",
-        path.display()
-    );
+    let config = load_pinned_layer_c_config();
+    let model = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
     eprintln!("[long-horizon-real] model={model}");
     (
         Agent::from_config(config)

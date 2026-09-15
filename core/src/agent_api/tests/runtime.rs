@@ -157,6 +157,33 @@ async fn test_runtime_agent_style_overrides_session_prompt_slots() {
 }
 
 #[tokio::test]
+async fn test_runtime_planning_mode_overrides_session_config() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_id("runtime-planning-mode")
+        .with_planning_mode(crate::prompts::PlanningMode::Enabled);
+    let session = agent
+        .build_session(
+            "/tmp/test-runtime-planning-mode".into(),
+            Arc::new(StaticStreamingClient::new("ok")),
+            &opts,
+        )
+        .unwrap();
+    assert!(session.runtime_planning_mode_override().is_none());
+    session
+        .set_planning_mode(crate::prompts::PlanningMode::Disabled)
+        .expect("disable planning");
+    assert_eq!(
+        session.runtime_planning_mode_override(),
+        Some(crate::prompts::PlanningMode::Disabled)
+    );
+    session
+        .clear_planning_mode_override()
+        .expect("clear planning override");
+    assert!(session.runtime_planning_mode_override().is_none());
+}
+
+#[tokio::test]
 async fn test_runtime_output_language_overrides_session_prompt_slots() {
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_session_id("runtime-output-language");

@@ -10,45 +10,20 @@
 //! it spends one real provider request and requires the configured ACL.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::workspace::WorkspaceServices;
-use a3s_code_core::{
-    Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions, SystemPromptSlots,
-};
+use a3s_code_core::{Agent, AgentEvent, PlanningMode, SessionOptions, SystemPromptSlots};
 use serde_json::Value;
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 const EXPECTED_FUNCTION: &str = "suppress_replayed_envelopes";
-
-fn config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
-fn configured_model(config: &CodeConfig) -> String {
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("config must declare default_model or A3S_TEST_MODEL");
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in the ACL"
-    );
-    model
-}
 
 fn write_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("src")).expect("create fixture source directory");
@@ -197,9 +172,11 @@ Use exactly one call to the `search` tool and no other tool. Choose the search m
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the model and credentials from .a3s/config.acl"]
 async fn real_model_selects_bm25_and_uses_native_workspace_index() {
-    let config_file = config_path();
-    let config = CodeConfig::from_file(&config_file).expect("load .a3s/config.acl");
-    let selected_model = configured_model(&config);
+    let config = load_pinned_layer_c_config();
+    let selected_model = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
     let agent = Agent::from_config(config)
         .await
         .expect("create agent from configured model");

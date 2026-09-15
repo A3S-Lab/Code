@@ -1202,3 +1202,56 @@ async fn bash_does_not_hide_another_sessions_dirty_path() {
     );
     crate::external_observation::release_session("bash-owner");
 }
+
+#[tokio::test]
+async fn bash_existence_check_metadata_enables_verified_completion() {
+    use crate::harness_loop::{
+        decide_completion, CompletionGate, CompletionTerminal, MutationLedger,
+    };
+    use crate::verification::host_report_for_verified_mutation_path_with_content;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("guest.txt"), "hello\n").unwrap();
+    let output = BashTool
+        .execute(
+            &serde_json::json!({ "command": "test -f guest.txt" }),
+            &ToolContext::new(root.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(output.success, "existence check failed: {output:#?}");
+    let metadata = output.metadata.expect("bash metadata");
+    assert_eq!(
+        metadata
+            .get("verification_shell_command")
+            .and_then(|v| v.as_str()),
+        Some("test -f guest.txt"),
+        "bash must retain the exact host check command for gate binding: {metadata}"
+    );
+
+    let mut ledger = MutationLedger::default();
+    ledger.observe_tool(
+        "write",
+        0,
+        Some(&serde_json::json!({"file_path": "guest.txt", "after": "hello\n"})),
+    );
+    let digest = ledger.digest().to_string();
+    let expected = ledger
+        .content_digest_for_path("guest.txt")
+        .expect("write records content digest")
+        .to_string();
+    let report = host_report_for_verified_mutation_path_with_content(
+        metadata["verification_shell_command"].as_str().unwrap(),
+        0,
+        &["guest.txt".to_string()],
+        &digest,
+        Some((expected.as_str(), expected.as_str())),
+    )
+    .expect("mutated-path existence check should synthesize a host report");
+    match decide_completion(&ledger, &[report], &[], false) {
+        CompletionGate::Allow(CompletionTerminal::Verified { effect_digest }) => {
+            assert_eq!(effect_digest, digest);
+        }
+        other => panic!("expected Allow(Verified), got {other:?}"),
+    }
+}

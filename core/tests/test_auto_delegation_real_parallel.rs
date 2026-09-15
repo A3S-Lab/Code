@@ -4,38 +4,26 @@
 //!   A3S_CONFIG_FILE=/Users/roylin/code/a3s/.a3s/config.acl \
 //!     cargo test -p a3s-code-core --test test_auto_delegation_real_parallel -- --ignored --nocapture
 
-use std::path::PathBuf;
+mod support;
+
 use std::time::Duration;
 
-use a3s_code_core::{Agent, AgentEvent, AutoDelegationConfig, CodeConfig, SessionOptions};
-
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
+use a3s_code_core::{Agent, AgentEvent, AutoDelegationConfig, SessionOptions};
 
 async fn configured_agent_and_model() -> (Agent, String) {
-    let config_path = repo_config_path();
-    let config = CodeConfig::from_file(&config_path)
-        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
+    let mut config = support::layer_c_model::load_pinned_layer_c_config();
     let model = std::env::var("A3S_TEST_MODEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("real config must declare default_model");
+        .unwrap_or_else(|| support::layer_c_model::REQUIRED_DEFAULT_MODEL.to_string());
     let (provider, model_id) = model
         .split_once('/')
         .expect("selected model must use provider/model syntax");
     assert!(
         config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in {}",
-        config_path.display()
+        "selected model {model} is not declared in Layer C config"
     );
+    config.default_model = Some(model.clone());
     eprintln!("[subagents-real] model={model}");
     (
         Agent::from_config(config)

@@ -3257,6 +3257,7 @@ struct BridgeSessionOptions {
     path_rules: Vec<BridgePathRule>,
     plan_run: Option<a3s_code_core::harness_loop::PlanRunAdmission>,
     read_only_session: Option<bool>,
+    allow_process_host_sandbox: Option<bool>,
     verifier_enabled: Option<bool>,
 }
 
@@ -3499,6 +3500,9 @@ impl BridgeSessionOptions {
         }
         if let Some(read_only) = self.read_only_session {
             options = options.with_read_only_session(read_only);
+        }
+        if let Some(allow) = self.allow_process_host_sandbox {
+            options = options.with_allow_process_host_sandbox(allow);
         }
         if let Some(enabled) = self.verifier_enabled {
             options = options.with_verifier(enabled);

@@ -921,6 +921,12 @@ pub fn merge_shell_verification_metadata(
     execution_error: Option<&str>,
 ) -> Option<serde_json::Value> {
     let mut metadata = metadata.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert(
+            "verification_shell_command".to_string(),
+            serde_json::Value::String(command.to_string()),
+        );
+    }
     let Some(workspace) = workspace else {
         return Some(metadata);
     };
@@ -940,6 +946,194 @@ pub fn merge_shell_verification_metadata(
         object.insert("verification_report".to_string(), report.to_value());
     }
     Some(metadata)
+}
+
+/// Extract the path from a successful existence check: `test -f PATH`,
+/// `test -e PATH`, or `[ -f PATH ]` / `[ -e PATH ]`.
+pub fn path_from_existence_check_command(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let rest = if let Some(rest) = trimmed.strip_prefix("test") {
+        let rest = rest.trim_start();
+        let rest = rest
+            .strip_prefix("-f")
+            .or_else(|| rest.strip_prefix("-e"))?
+            .trim_start();
+        rest
+    } else {
+        let rest = trimmed.strip_prefix('[')?;
+        let rest = rest.trim_start();
+        let rest = rest
+            .strip_prefix("-f")
+            .or_else(|| rest.strip_prefix("-e"))?
+            .trim_start();
+        rest.trim_end()
+            .trim_end_matches(']')
+            .trim_end()
+            .trim_start()
+    };
+    unquote_shell_token(rest)
+}
+
+fn unquote_shell_token(token: &str) -> Option<String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    if let Some(inner) = token.strip_prefix('\'') {
+        let end = inner.find('\'')?;
+        return Some(inner[..end].replace("'\\''", "'"));
+    }
+    if let Some(inner) = token.strip_prefix('"') {
+        let end = inner.find('"')?;
+        return Some(inner[..end].to_string());
+    }
+    Some(token.split_whitespace().next()?.to_string())
+}
+
+/// Path-boundary match for mutation verification (not basename-only).
+pub(crate) fn mutation_path_matches(mutated: &str, verified: &str) -> bool {
+    let mutated = mutated.trim_start_matches("./");
+    let verified = verified.trim_start_matches("./");
+    if mutated.is_empty() || verified.is_empty() {
+        return false;
+    }
+    if mutated == verified {
+        return true;
+    }
+    // Require a path-boundary suffix match. Basename-only equality across
+    // different directories would overfit the gate to false verification.
+    mutated.ends_with(&format!("/{verified}")) || verified.ends_with(&format!("/{mutated}"))
+}
+
+fn report_is_required_pass(report: &VerificationReport) -> bool {
+    matches!(report.status, VerificationStatus::Passed)
+        && report.checks.iter().any(|check| check.required)
+        && report
+            .checks
+            .iter()
+            .filter(|check| check.required)
+            .all(|check| matches!(check.status, VerificationStatus::Passed))
+}
+
+/// When a Host shell check proves a mutated path still exists (`test -f` /
+/// ACCEPTANCE `kind:file_exists` synthesized to `test -f`), bind the current
+/// mutation ledger digest so the completion gate can Allow(Verified). Bare
+/// `true` / unrelated presets do not bind — that would overfit the gate.
+///
+/// Prefer [`bind_host_shell_reports_to_mutations_with_content`] for write-backed
+/// mutations so wrong on-disk bytes cannot Verify.
+pub fn bind_host_shell_reports_to_mutations(
+    reports: &mut [VerificationReport],
+    shell_command: Option<&str>,
+    mutation_paths: &[String],
+    effect_digest: &str,
+) {
+    bind_host_shell_reports_to_mutations_with_content(
+        reports,
+        shell_command,
+        mutation_paths,
+        effect_digest,
+        None,
+    );
+}
+
+/// Like [`bind_host_shell_reports_to_mutations`], optionally requiring
+/// `content_match = Some((expected_ledger_digest, on_disk_digest))`.
+pub fn bind_host_shell_reports_to_mutations_with_content(
+    reports: &mut [VerificationReport],
+    shell_command: Option<&str>,
+    mutation_paths: &[String],
+    effect_digest: &str,
+    content_match: Option<(&str, &str)>,
+) {
+    if mutation_paths.is_empty() || effect_digest.trim().is_empty() {
+        return;
+    }
+    let Some(path) = path_from_existence_check_command(shell_command.unwrap_or("")) else {
+        return;
+    };
+    if !mutation_paths
+        .iter()
+        .any(|mutated| mutation_path_matches(mutated, &path))
+    {
+        return;
+    }
+    if let Some((expected, on_disk)) = content_match {
+        if expected.trim().is_empty() || expected != on_disk {
+            return;
+        }
+    }
+    for report in reports.iter_mut() {
+        if report.effect_digest.is_some() {
+            continue;
+        }
+        if !report_is_required_pass(report) {
+            continue;
+        }
+        report.effect_digest = Some(effect_digest.to_string());
+    }
+}
+
+/// Synthesize a Host Passed report when bash successfully runs `test -f` /
+/// `test -e` on a path that is already on the mutation ledger.
+///
+/// Existence-only form for ACCEPTANCE predicates. Write-backed mutations should
+/// use [`host_report_for_verified_mutation_path_with_content`].
+pub fn host_report_for_verified_mutation_path(
+    command: &str,
+    exit_code: i32,
+    mutation_paths: &[String],
+    effect_digest: &str,
+) -> Option<VerificationReport> {
+    host_report_for_verified_mutation_path_with_content(
+        command,
+        exit_code,
+        mutation_paths,
+        effect_digest,
+        None,
+    )
+}
+
+/// Like [`host_report_for_verified_mutation_path`] with optional content match.
+pub fn host_report_for_verified_mutation_path_with_content(
+    command: &str,
+    exit_code: i32,
+    mutation_paths: &[String],
+    effect_digest: &str,
+    content_match: Option<(&str, &str)>,
+) -> Option<VerificationReport> {
+    if exit_code != 0 || effect_digest.trim().is_empty() {
+        return None;
+    }
+    let path = path_from_existence_check_command(command)?;
+    if !mutation_paths
+        .iter()
+        .any(|mutated| mutation_path_matches(mutated, &path))
+    {
+        return None;
+    }
+    if let Some((expected, on_disk)) = content_match {
+        if expected.trim().is_empty() || expected != on_disk {
+            return None;
+        }
+    }
+    let description = if content_match.is_some() {
+        format!("Host verified mutated path exists with matching content digest: {path}")
+    } else {
+        format!("Host verified mutated path still exists: {path}")
+    };
+    Some(
+        VerificationReport::new(
+            format!("shell:mutation_path_verify:{path}"),
+            vec![VerificationCheck::required(
+                format!("mutation_path_verify:{path}"),
+                "mutation_path_verify",
+                description,
+            )
+            .with_status(VerificationStatus::Passed)],
+        )
+        .with_effect_digest(effect_digest),
+    )
 }
 
 /// Combine an LLM achievement judgment with structured verification evidence.

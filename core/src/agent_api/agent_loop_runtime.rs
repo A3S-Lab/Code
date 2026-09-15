@@ -573,6 +573,9 @@ fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     if let Some(style) = session.runtime_agent_style_override() {
         config.prompt_slots.style = style;
     }
+    if let Some(mode) = session.runtime_planning_mode_override() {
+        config.planning_mode = mode;
+    }
     if let Some(language) = session.runtime_output_language_override() {
         config.prompt_slots.output_language = language;
     }

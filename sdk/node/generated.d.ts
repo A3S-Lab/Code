@@ -749,6 +749,11 @@ export interface SessionOptions {
   planRun?: { claims_implementation: boolean, plan_digest?: string }
   /** A session that cannot write does not get an isolated worktree. */
   readOnlySession?: boolean
+  /**
+   * When the native sandbox cannot initialize, allow process-host bash
+   * (Harbor / Terminal-Bench outer isolation). Default remains fail-closed.
+   */
+  allowProcessHostSandbox?: boolean
   /** Opt-in read-only verifier. Default is off. */
   verifierEnabled?: boolean
   /**
@@ -1858,6 +1863,20 @@ export declare class Session {
    * Takes effect on the next `send` / `stream`.
    */
   setOutputLanguage(language?: string | null): void
+  /**
+   * Override planning mode for subsequent turns without rebuilding the session.
+   *
+   * Accepts `"auto"`, `"enabled"`, or `"disabled"` (plus the same aliases as
+   * `SessionOptions.planningMode`). Durable `/goal` hosts use this to keep
+   * maker planning enabled while forcing verifier turns onto disabled.
+   * Takes effect on the next `send` / `stream`.
+   */
+  setPlanningMode(mode: string): void
+  /**
+   * Clear a prior `setPlanningMode` override so the next loop uses the
+   * session-built `planningMode` again.
+   */
+  clearPlanningModeOverride(): void
   /**
    * Install a host-owned live checkpoint export sink (SDK-CP1).
    *

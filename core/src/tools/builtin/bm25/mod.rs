@@ -31,7 +31,7 @@ const MAX_RESULTS_PER_FILE: usize = 2;
 const READ_CONCURRENCY: usize = 8;
 const MAX_RENDERED_LINE_BYTES: usize = 500;
 
-pub struct Bm25Tool;
+pub(super) struct Bm25Tool;
 
 #[derive(Debug)]
 struct CandidateSelection {

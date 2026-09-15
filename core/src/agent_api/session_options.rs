@@ -79,6 +79,10 @@ impl std::fmt::Debug for SessionOptions {
                 &self.duplicate_tool_call_threshold,
             )
             .field("sandbox_handle", &self.sandbox_handle.is_some())
+            .field(
+                "allow_process_host_sandbox",
+                &self.allow_process_host_sandbox,
+            )
             .field("workspace_services", &self.workspace_services.is_some())
             .field("workspace_retrieval", &self.workspace_retrieval)
             .field("auto_compact", &self.auto_compact)
@@ -334,10 +338,12 @@ impl SessionOptions {
 
     /// Install an exact, typed durable-memory repository binding.
     ///
-    /// The binding selects either candidate-only shadowing or bounded
-    /// active-only recall. Its live repository is runtime-only, while its
-    /// secret-free typed identity is persisted; hosts restoring a session must
-    /// inject the exact same visible binding again.
+    /// Serving mode is **active-only recall** (`HARNESS-CONV4` / `CAP-GA1`).
+    /// Candidate rows may still be written inactive until a host activates
+    /// them; there is no model-visible shadow-candidates serving mode.
+    /// The live repository is runtime-only, while its secret-free typed
+    /// identity is persisted; hosts restoring a session must inject the exact
+    /// same visible binding again.
     pub fn with_durable_memory(
         mut self,
         binding: crate::durable_memory::DurableMemorySession,
@@ -615,6 +621,18 @@ impl SessionOptions {
     /// [`BashSandbox`]: crate::sandbox::BashSandbox
     pub fn with_sandbox_handle(mut self, handle: Arc<dyn crate::sandbox::BashSandbox>) -> Self {
         self.sandbox_handle = Some(handle);
+        self
+    }
+
+    /// Allow a process-host Bash runner when the native sandbox cannot start.
+    ///
+    /// This does **not** weaken the native fail-closed default on developer
+    /// machines. It only applies when native initialization fails and the host
+    /// already provides an outer isolation boundary (Harbor task containers).
+    /// Equivalent environment opt-in:
+    /// `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX=1`.
+    pub fn with_allow_process_host_sandbox(mut self, allow: bool) -> Self {
+        self.allow_process_host_sandbox = allow;
         self
     }
 

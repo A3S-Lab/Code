@@ -66,7 +66,7 @@ fn has_non_neutral_page_controls(args: &serde_json::Value) -> bool {
     limit_is_non_neutral || cursor_is_non_neutral
 }
 
-pub struct GrepTool;
+pub(super) struct GrepTool;
 
 #[async_trait]
 impl Tool for GrepTool {

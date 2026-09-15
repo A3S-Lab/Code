@@ -397,11 +397,17 @@ impl AgentProtocolEventRecordV1 {
             .map_err(|_| AgentProtocolError::InvalidField("sequence"))?;
         let event = run_event_envelope_v1(record, &identity.run_id, &identity.session_id)
             .map_err(|_| AgentProtocolError::Encoding)?;
-        let projected = Self {
+        let mut projected = Self {
             sequence,
             occurred_at_ms: record.timestamp_ms,
             event,
         };
+        if projected.validate_for(identity).is_ok() {
+            return Ok(projected);
+        }
+        // Oversized tool_end / text payloads must still project: failing the
+        // whole page bricks host observation of terminal run state.
+        bound_projected_event_record(&mut projected)?;
         projected.validate_for(identity)?;
         Ok(projected)
     }
@@ -795,6 +801,206 @@ fn validate_json_size(
     }
 }
 
+const AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK: &str = "\n…[a3s.code.agent-protocol.truncated]";
+
+/// Shrink oversized payload / non-identity metadata strings until the record
+/// validates. Prefer truncating the largest string leaves; if that cannot fit,
+/// replace the payload with a bounded stub that preserves small identity fields
+/// and a digest of the original payload.
+fn bound_projected_event_record(
+    projected: &mut AgentProtocolEventRecordV1,
+) -> Result<(), AgentProtocolError> {
+    let original_payload = projected.event.payload.clone();
+    let original_digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&original_payload).map_err(|_| AgentProtocolError::Encoding)?
+        )
+    );
+
+    for _ in 0..128 {
+        if projected_record_fits_limits(projected) {
+            return Ok(());
+        }
+        let payload_too_big = validate_json_size(
+            "event.payload",
+            &projected.event.payload,
+            AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
+        )
+        .is_err();
+        if payload_too_big {
+            if !shrink_largest_json_string(
+                &mut projected.event.payload,
+                AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK,
+            ) {
+                projected.event.payload =
+                    bounded_event_payload_stub(&original_payload, &original_digest)?;
+            }
+            continue;
+        }
+        if let Some(metadata) = projected.event.metadata.as_mut() {
+            if !shrink_largest_json_string_excluding(
+                metadata,
+                AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK,
+                &["session_id", "run_id", "sequence", "timestamp_ms"],
+            ) {
+                // Metadata should stay small; strip non-identity keys.
+                if let Some(obj) = metadata.as_object_mut() {
+                    obj.retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "session_id" | "run_id" | "sequence" | "timestamp_ms"
+                        )
+                    });
+                }
+            }
+            continue;
+        }
+        projected.event.payload = bounded_event_payload_stub(&original_payload, &original_digest)?;
+    }
+
+    if projected_record_fits_limits(projected) {
+        Ok(())
+    } else {
+        projected.event.payload = bounded_event_payload_stub(&original_payload, &original_digest)?;
+        if projected_record_fits_limits(projected) {
+            Ok(())
+        } else {
+            Err(AgentProtocolError::InvalidField("event"))
+        }
+    }
+}
+
+fn projected_record_fits_limits(projected: &AgentProtocolEventRecordV1) -> bool {
+    validate_json_size(
+        "event.payload",
+        &projected.event.payload,
+        AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
+    )
+    .is_ok()
+        && projected
+            .event
+            .metadata
+            .as_ref()
+            .map(|metadata| {
+                validate_json_size(
+                    "event.metadata",
+                    metadata,
+                    AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES,
+                )
+                .is_ok()
+            })
+            .unwrap_or(true)
+        && serde_json::to_vec(projected)
+            .map(|encoded| encoded.len() <= AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES)
+            .unwrap_or(false)
+}
+
+fn bounded_event_payload_stub(
+    original: &serde_json::Value,
+    original_digest: &str,
+) -> Result<serde_json::Value, AgentProtocolError> {
+    let mut stub = serde_json::json!({
+        "bounded": true,
+        "reason": "agent_protocol_event_payload_limit",
+        "original_payload_sha256": original_digest,
+    });
+    if let Some(obj) = original.as_object() {
+        for key in ["id", "name", "exit_code", "tool_id", "tool_name", "turn"] {
+            if let Some(value) = obj.get(key) {
+                let encoded =
+                    serde_json::to_vec(value).map_err(|_| AgentProtocolError::Encoding)?;
+                if encoded.len() <= 512 {
+                    stub[key] = value.clone();
+                }
+            }
+        }
+    }
+    Ok(stub)
+}
+
+fn shrink_largest_json_string(value: &mut serde_json::Value, mark: &str) -> bool {
+    shrink_largest_json_string_excluding(value, mark, &[])
+}
+
+fn shrink_largest_json_string_excluding(
+    value: &mut serde_json::Value,
+    mark: &str,
+    excluded_object_keys: &[&str],
+) -> bool {
+    let mut largest = 0usize;
+    largest_string_len(value, excluded_object_keys, &mut largest);
+    if largest == 0 {
+        return false;
+    }
+    shrink_first_string_of_len(value, largest, mark, excluded_object_keys)
+}
+
+fn largest_string_len(
+    value: &serde_json::Value,
+    excluded_object_keys: &[&str],
+    largest: &mut usize,
+) {
+    match value {
+        serde_json::Value::String(text) => {
+            *largest = (*largest).max(text.len());
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                largest_string_len(item, excluded_object_keys, largest);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                if excluded_object_keys.iter().any(|excluded| *excluded == key) {
+                    continue;
+                }
+                largest_string_len(item, excluded_object_keys, largest);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn shrink_first_string_of_len(
+    value: &mut serde_json::Value,
+    target_len: usize,
+    mark: &str,
+    excluded_object_keys: &[&str],
+) -> bool {
+    match value {
+        serde_json::Value::String(text) if text.len() == target_len => {
+            // Halve the largest leaf each pass so oversized tool_end output/args
+            // converge under the protocol payload bound without many tiny cuts.
+            let keep = (target_len / 2).min(target_len.saturating_sub(mark.len()));
+            let boundary = crate::text::truncate_utf8(text, keep).len();
+            text.truncate(boundary);
+            text.push_str(mark);
+            true
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if shrink_first_string_of_len(item, target_len, mark, excluded_object_keys) {
+                    return true;
+                }
+            }
+            false
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map.iter_mut() {
+                if excluded_object_keys.iter().any(|excluded| *excluded == key) {
+                    continue;
+                }
+                if shrink_first_string_of_len(item, target_len, mark, excluded_object_keys) {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 fn digest_validated<T: Serialize>(
     value: &T,
     validate: impl FnOnce() -> Result<(), AgentProtocolError>,
@@ -802,4 +1008,119 @@ fn digest_validated<T: Serialize>(
     validate()?;
     let encoded = serde_json::to_vec(value).map_err(|_| AgentProtocolError::Encoding)?;
     Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentEvent;
+    use serde_json::json;
+
+    fn identity() -> AgentProtocolRunIdentityV1 {
+        AgentProtocolRunIdentityV1 {
+            schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+            protocol: AGENT_PROTOCOL_V1.into(),
+            agent_release_identity: format!("sha256:{}", "a".repeat(64)),
+            session_id: "conversation-bound-meta".into(),
+            run_id: "run-bound-meta".into(),
+        }
+    }
+
+    #[test]
+    fn bound_projected_event_record_strips_oversized_non_identity_metadata() {
+        let identity = identity();
+        let mut projected = AgentProtocolEventRecordV1 {
+            sequence: 0,
+            occurred_at_ms: 1,
+            event: EventEnvelopeV1::new("text_delta", json!({"text": "ok"})).with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": 0u64,
+                "timestamp_ms": 1u64,
+                "noise": "n".repeat(AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES),
+            })),
+        };
+
+        bound_projected_event_record(&mut projected).expect("metadata must shrink");
+        projected
+            .validate_for(&identity)
+            .expect("bounded metadata record must validate");
+        let metadata = projected
+            .event
+            .metadata
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .expect("metadata object");
+        assert_eq!(
+            metadata.get("session_id").and_then(|value| value.as_str()),
+            Some(identity.session_id.as_str())
+        );
+        assert_eq!(
+            metadata.get("run_id").and_then(|value| value.as_str()),
+            Some(identity.run_id.as_str())
+        );
+        let noise = metadata
+            .get("noise")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        assert!(
+            noise.len() < AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES,
+            "non-identity metadata must shrink below the protocol bound"
+        );
+        assert!(
+            noise.ends_with(AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK)
+                || !metadata.contains_key("noise"),
+            "oversized metadata must truncate or drop non-identity keys"
+        );
+    }
+
+    #[test]
+    fn from_run_page_projects_oversized_tool_end_instead_of_400() {
+        let identity = identity();
+        let oversized = "x".repeat(AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES + 8_192);
+        let page = RunEventPage {
+            events: vec![RunEventRecord {
+                sequence: 0,
+                timestamp_ms: 1,
+                event: AgentEvent::ToolEnd {
+                    id: "tool-1".into(),
+                    name: "read".into(),
+                    args: None,
+                    exit_code: 0,
+                    output: oversized,
+                    metadata: None,
+                    error_kind: None,
+                },
+            }],
+            first_available_sequence: Some(0),
+            latest_sequence_exclusive: 1,
+            next_after_sequence: Some(0),
+            retention_gap: false,
+            has_more: false,
+        };
+
+        let projected = AgentProtocolEventPageV1::from_run_page(
+            identity.clone(),
+            RunStatus::Completed,
+            1,
+            None,
+            &page,
+        )
+        .expect("oversized tool_end must still project a page");
+        projected.validate().expect("projected page must validate");
+        assert_eq!(projected.events.len(), 1);
+        assert_eq!(projected.events[0].event.event_type, "tool_end");
+        let payload = &projected.events[0].event.payload;
+        let encoded = serde_json::to_vec(payload).expect("encode payload");
+        assert!(
+            encoded.len() <= AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES,
+            "bounded payload must fit protocol limit (got {})",
+            encoded.len()
+        );
+        assert_eq!(
+            payload.get("name").and_then(|value| value.as_str()),
+            Some("read"),
+            "identity fields must survive bounding"
+        );
+    }
 }

@@ -56,9 +56,10 @@ requested work; continue until the user's request is genuinely complete.
   Prefer workspace-relative paths; do not use traversal, symlinks, or path
   tricks to reach data outside the authorized workspace.
 - For local sessions, `bash` with `sandbox_permissions` omitted or set to
-  `use_default` runs through the configured A3S native workspace sandbox. Treat
-  a missing/denied sandbox as a hard boundary: do not retry the same operation
-  on the host or claim that it ran.
+  `use_default` runs through the configured workspace sandbox (native by
+  default; process-host only when the host opts in for an already-isolated
+  container). Treat a missing/denied sandbox as a hard boundary: do not retry
+  the same operation on the host or claim that it ran.
 - `sandbox_permissions="require_escalated"` requests the host runner for the
   exact command and requires a short `justification` plus the host's permission
   decision. Use it only for a necessary host-only operation after considering a

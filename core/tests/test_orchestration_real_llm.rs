@@ -7,14 +7,14 @@
 //!   cargo test -p a3s-code-core --test test_orchestration_real_llm -- --ignored --nocapture
 //! ```
 
+mod support;
+
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::create_client_with_config;
 use a3s_code_core::orchestration::{
     execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable, AgentExecutor,
@@ -23,23 +23,12 @@ use a3s_code_core::orchestration::{
 use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::subagent::AgentRegistry;
 use a3s_code_core::tools::TaskExecutor;
-
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
+use support::layer_c_model::load_pinned_layer_c_config;
 
 /// Returns the executor plus the workspace guard — keep the guard in scope so
 /// the temp dir is cleaned up when the test ends (no stray temp files).
 fn local_executor() -> (TaskExecutor, tempfile::TempDir) {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let config = load_pinned_layer_c_config();
     let llm_client =
         create_client_with_config(config.default_llm_config().expect("default llm config"));
     let workspace = tempfile::tempdir().expect("temp workspace");

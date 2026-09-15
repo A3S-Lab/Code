@@ -10,10 +10,10 @@
 //!   cargo test -p a3s-code-core --test test_workflow_facade_real_llm -- --ignored --nocapture
 //! ```
 
-use std::path::PathBuf;
+mod support;
+
 use std::sync::Arc;
 
-use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::create_client_with_config;
 use a3s_code_core::orchestration::{
     execute_loop, AgentExecutor, AgentStepSpec, LoopDecision, Workflow, WorkflowEvent,
@@ -21,23 +21,12 @@ use a3s_code_core::orchestration::{
 use a3s_code_core::subagent::AgentRegistry;
 use a3s_code_core::tools::TaskExecutor;
 use a3s_code_core::{Agent, AgentSession};
-
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
+use support::layer_c_model::load_pinned_layer_c_config;
 
 /// A bare real-LLM executor over a throwaway workspace. Keep the returned guard
 /// in scope so the temp dir is cleaned up (no stray temp files).
 fn real_executor() -> (Arc<dyn AgentExecutor>, tempfile::TempDir) {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let config = load_pinned_layer_c_config();
     let llm_client =
         create_client_with_config(config.default_llm_config().expect("default llm config"));
     let workspace = tempfile::tempdir().expect("temp workspace");
@@ -51,9 +40,7 @@ fn real_executor() -> (Arc<dyn AgentExecutor>, tempfile::TempDir) {
 
 /// A real-LLM session built from the repo config, over a throwaway workspace.
 async fn real_session() -> (AgentSession, tempfile::TempDir) {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let config = load_pinned_layer_c_config();
     let agent = Agent::from_config(config)
         .await
         .expect("build agent from real config");

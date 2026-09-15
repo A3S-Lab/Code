@@ -12,7 +12,9 @@
 //!
 //! ## Custom Backends
 //!
-//! Implement `SessionStore` trait for custom backends (Redis, PostgreSQL, etc.):
+//! Prefer snapshot APIs (`save_snapshot` / `load_snapshot`). Legacy fragment
+//! `save` / `load` of [`SessionData`] remain for migration compatibility only
+//! — new backends must not treat fragments as the primary authority.
 //!
 //! ```ignore
 //! use a3s_code::store::{
@@ -31,7 +33,7 @@
 //!         SessionStoreCapabilities { atomic_session_snapshots: true }
 //!     }
 //!
-//!     // Legacy fragment APIs remain available for migration compatibility.
+//!     // Legacy fragment APIs: migration compatibility only.
 //!     async fn save(&self, session: &SessionData) -> Result<()> { /* ... */ }
 //!     async fn load(&self, id: &str) -> Result<Option<SessionData>> { /* ... */ }
 //!     async fn delete(&self, id: &str) -> Result<()> { /* ... */ }

@@ -150,6 +150,9 @@ pub(super) struct PySessionOptions {
     pub(super) plan_run: Option<PyObject>,
     /// A session that cannot write does not get an isolated worktree.
     pub(super) read_only_session: Option<bool>,
+    /// When the native sandbox cannot initialize, allow process-host bash
+    /// (Harbor / Terminal-Bench outer isolation). Default remains fail-closed.
+    pub(super) allow_process_host_sandbox: Option<bool>,
     /// Opt-in read-only verifier. Default is off.
     pub(super) verifier_enabled: Option<bool>,
     /// Optional Python-side BudgetGuard. The framework calls
@@ -282,6 +285,7 @@ impl Clone for PySessionOptions {
             }),
             plan_run: pyo3::Python::with_gil(|py| self.plan_run.as_ref().map(|o| o.clone_ref(py))),
             read_only_session: self.read_only_session,
+            allow_process_host_sandbox: self.allow_process_host_sandbox,
             verifier_enabled: self.verifier_enabled,
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
@@ -372,6 +376,7 @@ impl PySessionOptions {
             path_rules: None,
             plan_run: None,
             read_only_session: None,
+            allow_process_host_sandbox: None,
             verifier_enabled: None,
             budget_guard: None,
             budget_guard_timeout_ms: DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
@@ -1056,6 +1061,18 @@ impl PySessionOptions {
     #[setter]
     fn set_auto_save(&mut self, value: bool) {
         self.auto_save = value;
+    }
+
+    /// When the native sandbox cannot initialize, allow process-host bash
+    /// (Harbor / Terminal-Bench outer isolation). Default remains fail-closed.
+    #[getter]
+    fn get_allow_process_host_sandbox(&self) -> Option<bool> {
+        self.allow_process_host_sandbox
+    }
+
+    #[setter]
+    fn set_allow_process_host_sandbox(&mut self, value: Option<bool>) {
+        self.allow_process_host_sandbox = value;
     }
 
     /// Host-supplied BudgetGuard. Any Python object implementing some

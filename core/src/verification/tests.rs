@@ -732,3 +732,104 @@ fn acceptance_file_exists_skips_paths_that_escape_workspace() {
         "escaping file_exists must not become Core shell evidence: {commands:?}"
     );
 }
+
+#[test]
+fn path_from_existence_check_command_parses_common_forms() {
+    assert_eq!(
+        path_from_existence_check_command("test -f answer.txt").as_deref(),
+        Some("answer.txt")
+    );
+    assert_eq!(
+        path_from_existence_check_command("test -e './docs/a.md'").as_deref(),
+        Some("./docs/a.md")
+    );
+    assert_eq!(
+        path_from_existence_check_command("[ -f 'my file.txt' ]").as_deref(),
+        Some("my file.txt")
+    );
+    assert!(path_from_existence_check_command("true").is_none());
+    assert!(path_from_existence_check_command("cargo test").is_none());
+}
+
+#[test]
+fn host_report_for_verified_mutation_path_binds_digest_for_completion_gate() {
+    use crate::harness_loop::{
+        decide_completion, CompletionGate, CompletionTerminal, MutationLedger,
+    };
+
+    let mut ledger = MutationLedger::default();
+    ledger.observe_tool(
+        "write",
+        0,
+        Some(&serde_json::json!({"file_path": "answer.txt", "after": "42\n"})),
+    );
+    let digest = ledger.digest().to_string();
+    let expected = ledger
+        .content_digest_for_path("answer.txt")
+        .expect("write records content digest")
+        .to_string();
+    let report = host_report_for_verified_mutation_path_with_content(
+        "test -f answer.txt",
+        0,
+        &["answer.txt".to_string()],
+        &digest,
+        Some((expected.as_str(), expected.as_str())),
+    )
+    .expect("mutated path verify should synthesize a host report");
+    assert_eq!(report.effect_digest.as_deref(), Some(digest.as_str()));
+    assert_eq!(report.status, VerificationStatus::Passed);
+    match decide_completion(&ledger, &[report], &[], false) {
+        CompletionGate::Allow(CompletionTerminal::Verified { effect_digest }) => {
+            assert_eq!(effect_digest, digest);
+        }
+        other => panic!("expected verified terminal, got {other:?}"),
+    }
+
+    assert!(
+        host_report_for_verified_mutation_path_with_content(
+            "test -f answer.txt",
+            0,
+            &["answer.txt".to_string()],
+            &digest,
+            Some((expected.as_str(), "wrong-content-digest")),
+        )
+        .is_none(),
+        "wrong on-disk content must not Verify"
+    );
+
+    assert!(
+        host_report_for_verified_mutation_path("true", 0, &["answer.txt".to_string()], &digest,)
+            .is_none(),
+        "bare true must not bind a mutation digest"
+    );
+    assert!(
+        host_report_for_verified_mutation_path(
+            "test -f other.txt",
+            0,
+            &["answer.txt".to_string()],
+            &digest,
+        )
+        .is_none(),
+        "unrelated path must not bind"
+    );
+    assert!(
+        host_report_for_verified_mutation_path(
+            "test -f other/answer.txt",
+            0,
+            &["src/answer.txt".to_string()],
+            &digest,
+        )
+        .is_none(),
+        "same basename in a different directory must not bind"
+    );
+    assert!(
+        host_report_for_verified_mutation_path(
+            "test -f answer.txt",
+            0,
+            &["nested/answer.txt".to_string()],
+            &digest,
+        )
+        .is_some(),
+        "workspace-relative suffix with a path boundary may bind"
+    );
+}

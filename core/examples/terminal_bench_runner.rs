@@ -30,7 +30,7 @@ use result::{
     TerminalReason, DEFAULT_EXECUTION_BUDGET_MS,
 };
 
-use sandbox::ContainerBashSandbox;
+use sandbox::ProcessHostBashSandbox;
 
 #[derive(Debug)]
 struct Args {
@@ -129,12 +129,15 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
         // valid solution after a short fixed number of tool turns.
         .with_max_tool_rounds(256)
         .with_max_continuation_turns(8)
-        .with_sandbox_handle(Arc::new(ContainerBashSandbox::new(
+        .with_allow_process_host_sandbox(true)
+        .with_sandbox_handle(Arc::new(ProcessHostBashSandbox::new(
             args.workspace.clone(),
-            progress
-                .started_at
-                .checked_add(Duration::from_millis(args.max_execution_time_ms))
-                .unwrap_or_else(Instant::now),
+            Some(
+                progress
+                    .started_at
+                    .checked_add(Duration::from_millis(args.max_execution_time_ms))
+                    .unwrap_or_else(Instant::now),
+            ),
         )));
     // `max_execution_time_ms` is an existing public SessionOptions field. Set
     // it after the builder chain so this benchmark-only deadline change does
@@ -275,9 +278,9 @@ mod tests {
     #[tokio::test]
     async fn sandbox_timeout_terminates_the_command_process_group() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let sandbox = ContainerBashSandbox::new(
+        let sandbox = ProcessHostBashSandbox::new(
             directory.path().to_path_buf(),
-            Instant::now() + Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(5)),
         );
         let output = sandbox
             .exec(SandboxCommandRequest {

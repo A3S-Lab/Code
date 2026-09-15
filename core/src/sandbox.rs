@@ -19,10 +19,12 @@ use std::sync::Arc;
 use crate::workspace::CommandOutputObserver;
 
 pub mod native;
+pub mod process_host;
 
 pub use a3s_sandbox::{
     is_protected_workspace_path, PROTECTED_WORKSPACE_DIRECTORIES, PROTECTED_WORKSPACE_FILES,
 };
+pub use process_host::ProcessHostBashSandbox;
 
 /// Output from running a command inside a sandbox.
 pub struct SandboxOutput {

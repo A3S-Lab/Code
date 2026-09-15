@@ -1238,6 +1238,26 @@ impl PySession {
             .map_err(py_code_error)
     }
 
+    /// Override planning mode for subsequent turns without rebuilding the session.
+    ///
+    /// Accepts ``"auto"``, ``"enabled"``, or ``"disabled"`` (plus the same
+    /// aliases as ``SessionOptions.planning_mode``). Takes effect on the next
+    /// ``send`` / ``stream``.
+    fn set_planning_mode(&self, mode: String) -> PyResult<()> {
+        let mode = crate::session_options_conversion::parse_planning_mode(&mode)?;
+        self.inner
+            .set_planning_mode(mode)
+            .map_err(py_code_error)
+    }
+
+    /// Clear a prior ``set_planning_mode`` override so the next loop uses the
+    /// session-built ``planning_mode`` again.
+    fn clear_planning_mode_override(&self) -> PyResult<()> {
+        self.inner
+            .clear_planning_mode_override()
+            .map_err(py_code_error)
+    }
+
     /// Install or clear a host-owned live checkpoint export sink (SDK-CP1).
     ///
     /// ``handler`` receives one dict with ``descriptor`` and ``contentBase64``.

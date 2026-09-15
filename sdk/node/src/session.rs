@@ -1112,6 +1112,29 @@ impl Session {
             .map_err(node_code_error)
     }
 
+    /// Override planning mode for subsequent turns without rebuilding the session.
+    ///
+    /// Accepts `"auto"`, `"enabled"`, or `"disabled"` (plus the same aliases as
+    /// `SessionOptions.planningMode`). Durable `/goal` hosts use this to keep
+    /// maker planning enabled while forcing verifier turns onto disabled.
+    /// Takes effect on the next `send` / `stream`.
+    #[napi(js_name = "setPlanningMode")]
+    pub fn set_planning_mode(&self, mode: String) -> napi::Result<()> {
+        let mode = crate::session_options::parse_planning_mode(&mode)?;
+        self.inner
+            .set_planning_mode(mode)
+            .map_err(node_code_error)
+    }
+
+    /// Clear a prior `setPlanningMode` override so the next loop uses the
+    /// session-built `planningMode` again.
+    #[napi(js_name = "clearPlanningModeOverride")]
+    pub fn clear_planning_mode_override(&self) -> napi::Result<()> {
+        self.inner
+            .clear_planning_mode_override()
+            .map_err(node_code_error)
+    }
+
     /// Install a host-owned live checkpoint export sink (SDK-CP1).
     ///
     /// The callback receives one JSON object:

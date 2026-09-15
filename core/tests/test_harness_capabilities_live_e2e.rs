@@ -10,11 +10,14 @@
 //!   -- --ignored --test-threads=1 --nocapture
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
-use a3s_code_core::{Agent, AgentEvent, CodeConfig, SessionOptions};
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 const MCP_TOKEN: &str = "mcp-live-token-7f3a";
@@ -31,6 +34,15 @@ const GREP_TOKEN: &str = "grep-live-token-3b9f";
 const GREP_FILE: &str = "zeta-grep-archive.md";
 const GIT_DIFF_TOKEN: &str = "git-diff-token-8a2e";
 const ASK_HOST_ANSWER: &str = "host-answer-token-4c7b";
+const BASH_TOKEN: &str = "bash-live-token-2e9c";
+const WRITE_TOKEN: &str = "write-live-token-7d1a";
+const PROGRAM_TOKEN: &str = "program-live-token-55aa";
+const WEB_QUERY_MARKER: &str = "A3S harness web_search live probe";
+const WEB_FETCH_URL: &str = "https://example.com/";
+const DOWNLOAD_URL: &str = "https://example.com/";
+const DOWNLOAD_FILE: &str = "example-download.html";
+const BATCH_TOKEN_A: &str = "batch-live-token-a91";
+const BATCH_TOKEN_B: &str = "batch-live-token-b27";
 
 struct Observed {
     tools: Vec<ToolSeen>,
@@ -52,29 +64,8 @@ struct ToolSeen {
     metadata: Option<serde_json::Value>,
 }
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn configured_agent() -> Agent {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let default_model = config
-        .default_model
-        .as_deref()
-        .expect("config must declare default_model");
-    assert!(
-        default_model.contains("deepseek"),
-        "expected the configured DeepSeek Flash default_model, got {default_model}"
-    );
-    eprintln!("using default_model={default_model}");
+    let config = load_pinned_layer_c_config();
     Agent::from_config(config)
         .await
         .expect("build agent from .a3s/config.acl")
@@ -999,6 +990,326 @@ async fn deepseek_flash_patch_applies_the_given_hunk() {
             .any(|message| message.starts_with("completion gate:")),
         "a committed patch was treated as narrative success: {:?}",
         observed.errors
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_bash_echoes_the_token() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-bash", &["bash(**)"]).with_read_only_session(true)),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        &format!("Run exactly `echo {BASH_TOKEN}` with the bash tool, then stop. Do not invent the token."),
+    )
+    .await;
+    let bashes = tool_outputs(&observed, "bash");
+    assert!(
+        bashes
+            .iter()
+            .any(|tool| tool.exit_code == 0 && tool.output.contains(BASH_TOKEN)),
+        "bash tool did not echo the fixture token: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.output.chars().take(160).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_write_creates_the_fixture_file() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let path = workspace.path().join("out.txt");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-write", &["write(**)"])),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        &format!(
+            "Create out.txt with the write tool so its contents are exactly `{WRITE_TOKEN}` and a trailing newline, then stop."
+        ),
+    )
+    .await;
+    let writes = tool_outputs(&observed, "write");
+    assert!(
+        writes.iter().any(|tool| tool.exit_code == 0),
+        "write tool did not succeed: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (tool.name.as_str(), tool.exit_code))
+            .collect::<Vec<_>>()
+    );
+    let body = std::fs::read_to_string(&path).expect("out.txt");
+    assert!(
+        body.contains(WRITE_TOKEN),
+        "write did not create the fixture token: {body:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_program_returns_the_script_marker() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-program", &["program(*)"]).with_read_only_session(true)),
+        )
+        .await
+        .expect("session");
+    let source =
+        format!("async function run(ctx, inputs) {{ return {{ marker: {PROGRAM_TOKEN:?} }}; }}");
+    let observed = observe(
+        &session,
+        &format!(
+            "Call the program tool exactly once with type=\"script\", language=\"javascript\", and this exact source, then stop:\n{source}"
+        ),
+    )
+    .await;
+    let programs = tool_outputs(&observed, "program");
+    assert!(
+        programs.iter().any(|tool| {
+            tool.exit_code == 0
+                && tool
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.pointer("/script_result/marker"))
+                    .and_then(|value| value.as_str())
+                    == Some(PROGRAM_TOKEN)
+        }),
+        "program tool did not return the script marker: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.metadata.clone(),
+                tool.output.chars().take(180).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_web_search_invokes_the_baseline_engine() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-web-search", &["web_search(**)"]).with_read_only_session(true)),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        &format!(
+            "Use the web_search tool once with query `{WEB_QUERY_MARKER}`, then stop. Do not invent results without calling the tool."
+        ),
+    )
+    .await;
+    let searches = tool_outputs(&observed, "web_search");
+    assert!(
+        searches.iter().any(|tool| {
+            let has_query_effect = tool.output.contains(WEB_QUERY_MARKER)
+                || tool
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("query"))
+                    .and_then(|query| query.as_str())
+                    .is_some_and(|query| query.contains(WEB_QUERY_MARKER));
+            let result_count = tool
+                .metadata
+                .as_ref()
+                .and_then(|meta| {
+                    meta.get("returned_result_count")
+                        .or_else(|| meta.get("available_result_count"))
+                })
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let engine_success = tool
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.get("engine_outcomes"))
+                .and_then(|outcomes| outcomes.as_array())
+                .is_some_and(|outcomes| {
+                    outcomes.iter().any(|outcome| {
+                        outcome.get("kind").and_then(|kind| kind.as_str()) == Some("success")
+                    })
+                });
+            // Structural retrieval requirements may mark exit_code != 0 while
+            // still proving the baseline engine path ran and returned candidates.
+            !tool.output.trim().is_empty()
+                && (has_query_effect || result_count > 0 || engine_success)
+        }),
+        "baseline web_search must return kernel effect for query `{WEB_QUERY_MARKER}`: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.metadata.clone(),
+                tool.output.chars().take(240).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_web_fetch_returns_remote_content() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-web-fetch", &["web_fetch(**)"]).with_read_only_session(true)),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        &format!(
+            "Use the web_fetch tool once with url `{WEB_FETCH_URL}` and format text, then stop. Do not invent page content without calling the tool."
+        ),
+    )
+    .await;
+    let fetches = tool_outputs(&observed, "web_fetch");
+    assert!(
+        fetches
+            .iter()
+            .any(|tool| tool.exit_code == 0 && tool.output.to_ascii_lowercase().contains("example")),
+        "baseline web_fetch did not return remote content: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.output.chars().take(200).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_download_writes_a_workspace_file() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let dest = workspace.path().join(DOWNLOAD_FILE);
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-download", &["download(**)"])),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        &format!(
+            "Use the download tool once with url `{DOWNLOAD_URL}` and file_path `{DOWNLOAD_FILE}`, then stop. Do not invent the file."
+        ),
+    )
+    .await;
+    let downloads = tool_outputs(&observed, "download");
+    assert!(
+        downloads.iter().any(|tool| tool.exit_code == 0),
+        "download tool did not succeed: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.output.chars().take(200).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        dest.is_file() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false),
+        "download did not create a non-empty workspace file at {}",
+        dest.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_batch_reads_two_fixture_files() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(
+        workspace.path().join("alpha-batch.txt"),
+        format!("{BATCH_TOKEN_A}\n"),
+    )
+    .expect("alpha");
+    std::fs::write(
+        workspace.path().join("beta-batch.txt"),
+        format!("{BATCH_TOKEN_B}\n"),
+    )
+    .expect("beta");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(
+                options("live-batch", &["batch(*)", "read(**)"])
+                    .with_read_only_session(true)
+                    .with_max_tool_rounds(4),
+            ),
+        )
+        .await
+        .expect("session");
+    let observed = observe(
+        &session,
+        "Call the batch tool exactly once with two read invocations in the same step: \
+         read alpha-batch.txt and beta-batch.txt. Do not call read outside batch. Then stop.",
+    )
+    .await;
+    let batches = tool_outputs(&observed, "batch");
+    assert!(
+        batches.iter().any(|tool| tool.exit_code == 0),
+        "batch tool must succeed: {:?}",
+        observed
+            .tools
+            .iter()
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.exit_code,
+                tool.output.chars().take(240).collect::<String>()
+            ))
+            .collect::<Vec<_>>()
+    );
+    let batch_blob = batches
+        .iter()
+        .map(|tool| tool.output.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        batch_blob.contains(BATCH_TOKEN_A) && batch_blob.contains(BATCH_TOKEN_B),
+        "batch must return both fixture tokens ({BATCH_TOKEN_A}, {BATCH_TOKEN_B}): {batch_blob}"
     );
 }
 

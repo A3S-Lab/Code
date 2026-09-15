@@ -56,6 +56,7 @@ impl AgentLoop {
         self.attach_mutation_observation(tool_call, &mut normalized)
             .await;
         Self::collect_verification_report(&mut state.verification_reports, &normalized.metadata);
+        self.bind_or_synthesize_mutation_path_verification(state, tool_call, &normalized);
 
         let output = normalized.output.clone();
 
@@ -99,6 +100,80 @@ impl AgentLoop {
             normalized.trust,
             normalized.redaction_reviewed,
         );
+    }
+
+    fn bind_or_synthesize_mutation_path_verification(
+        &self,
+        state: &mut ExecutionLoopState,
+        tool_call: &ToolCall,
+        normalized: &NormalizedToolResult,
+    ) {
+        if state.mutations.is_empty() {
+            return;
+        }
+        let mutation_paths: Vec<String> = state.mutations.paths().map(str::to_string).collect();
+        let digest = state.mutations.digest().to_string();
+        let shell_command = normalized
+            .metadata
+            .as_ref()
+            .and_then(|metadata| {
+                metadata
+                    .get("verification_shell_command")
+                    .or_else(|| metadata.get("command"))
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| {
+                tool_call
+                    .args
+                    .get("command")
+                    .and_then(|value| value.as_str())
+            });
+
+        let content_match = shell_command.and_then(|command| {
+            let path = crate::verification::path_from_existence_check_command(command)?;
+            let expected = state.mutations.content_digest_for_path(&path)?.to_string();
+            let on_disk = on_disk_content_digest(&self.tool_context.workspace, &path)?;
+            Some((expected, on_disk))
+        });
+        let content_match_refs = content_match
+            .as_ref()
+            .map(|(expected, on_disk)| (expected.as_str(), on_disk.as_str()));
+
+        crate::verification::bind_host_shell_reports_to_mutations_with_content(
+            &mut state.verification_reports,
+            shell_command,
+            &mutation_paths,
+            &digest,
+            content_match_refs,
+        );
+
+        if tool_call.name.eq_ignore_ascii_case("bash") {
+            if let Some(command) = shell_command {
+                if state
+                    .verification_reports
+                    .iter()
+                    .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()))
+                {
+                    return;
+                }
+                // Write-backed mutations require a readable on-disk content match.
+                // Existence-only Verify would allow wrong-content files through.
+                let Some((expected, on_disk)) = content_match_refs else {
+                    return;
+                };
+                if let Some(report) =
+                    crate::verification::host_report_for_verified_mutation_path_with_content(
+                        command,
+                        normalized.exit_code,
+                        &mutation_paths,
+                        &digest,
+                        Some((expected, on_disk)),
+                    )
+                {
+                    state.verification_reports.push(report);
+                }
+            }
+        }
     }
 
     async fn attach_mutation_observation(
@@ -206,6 +281,16 @@ fn mutation_observation_paths(
     }
     paths.truncate(8);
     paths
+}
+
+fn on_disk_content_digest(workspace: &std::path::Path, relative: &str) -> Option<String> {
+    let relative = relative.trim_start_matches("./");
+    if relative.is_empty() {
+        return None;
+    }
+    let path = workspace.join(relative);
+    let bytes = std::fs::read(&path).ok()?;
+    Some(sha256::digest(bytes))
 }
 
 #[cfg(test)]

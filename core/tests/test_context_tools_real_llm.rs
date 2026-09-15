@@ -15,7 +15,7 @@
 mod support;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,16 +49,6 @@ struct Trace {
     terminal_error: Option<String>,
 }
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn real_agent() -> Agent {
     let config = if use_codex_login() {
         CodeConfig::from_acl(
@@ -72,9 +62,7 @@ async fn real_agent() -> Agent {
         )
         .expect("valid Codex-login test config")
     } else {
-        let path = repo_config_path();
-        CodeConfig::from_file(&path)
-            .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()))
+        support::layer_c_model::load_pinned_layer_c_config()
     };
     Agent::from_config(config)
         .await

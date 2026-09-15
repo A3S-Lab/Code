@@ -1717,10 +1717,12 @@ impl Tool for TaskTool {
 }
 
 mod parallel_params;
-pub use parallel_params::{parallel_task_params_schema, ParallelTaskParams};
+#[cfg(test)]
+pub(crate) use parallel_params::parallel_task_params_schema;
+pub(crate) use parallel_params::ParallelTaskParams;
 
 mod parallel_task;
-pub use parallel_task::ParallelTaskTool;
+pub(crate) use parallel_task::ParallelTaskTool;
 
 fn adopt_dirtied_paths(
     parent_session: Option<&str>,

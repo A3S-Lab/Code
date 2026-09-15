@@ -3,7 +3,7 @@ use super::*;
 /// Parameters for parallel task execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ParallelTaskParams {
+pub(crate) struct ParallelTaskParams {
     /// List of tasks to execute concurrently
     pub tasks: Vec<TaskParams>,
     /// When true, return a successful tool result if at least one child task
@@ -29,7 +29,8 @@ pub struct ParallelTaskParams {
 }
 
 /// Get the JSON schema for ParallelTaskParams using the built-in agent catalog.
-pub fn parallel_task_params_schema() -> serde_json::Value {
+#[cfg(test)]
+pub(crate) fn parallel_task_params_schema() -> serde_json::Value {
     parallel_task_params_schema_for_agents(&AgentRegistry::new().list_visible())
 }
 

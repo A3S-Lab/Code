@@ -71,10 +71,7 @@ pub use result_transform::{
 };
 pub(crate) use selector::is_standalone_conversation;
 pub use selector::{select_tools_for_messages, select_tools_for_prompt};
-pub use task::{
-    parallel_task_params_schema, task_params_schema, ParallelTaskParams, ParallelTaskTool,
-    TaskExecutor, TaskParams, TaskResult, TaskTool,
-};
+pub use task::{task_params_schema, TaskExecutor, TaskParams, TaskResult, TaskTool};
 pub(crate) use types::{AgentEventBarrier, AgentEventBarrierReceiver};
 pub use types::{
     InvocationRuntime, Tool, ToolCapabilities, ToolContext, ToolErrorKind, ToolEventSender,

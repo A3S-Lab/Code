@@ -530,6 +530,59 @@ async fn streaming_accepts_sse_data_without_space_after_colon() {
     assert_eq!(resp.stop_reason.as_deref(), Some("stop"));
 }
 
+/// Gateways commonly re-send `"name":""` on argument-only deltas. The accumulated
+/// name must survive so the next request does not poison with an empty function.name.
+#[tokio::test]
+async fn streaming_empty_continuation_name_does_not_wipe_tool_name() {
+    let chunks = vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"function\":{\"name\":\"write\",\"arguments\":\"\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"t.txt\\\"}\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n".to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let resp = drain_to_done(&glm_client(chunks)).await;
+    let calls = resp.message.tool_calls();
+    assert_eq!(calls.len(), 1, "expected one accumulated tool call");
+    assert_eq!(calls[0].id, "call_write");
+    assert_eq!(
+        calls[0].name, "write",
+        "empty continuation name must not wipe the accumulated tool name"
+    );
+    assert!(
+        calls[0].args.to_string().contains("t.txt"),
+        "argument fragments must still accumulate: {}",
+        calls[0].args
+    );
+}
+
+/// Gateways may omit a tool-call id or re-send `"id":""` on later deltas. Never
+/// wipe a bound id, and synthesize a stable id when the stream never provided one.
+#[tokio::test]
+async fn streaming_empty_or_missing_id_still_emits_usable_tool_call() {
+    let chunks = vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"function\":{\"name\":\"search\",\"arguments\":\"\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"function\":{\"arguments\":\"{\\\"mode\\\":\\\"semantic\\\"}\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n".to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let resp = drain_to_done(&glm_client(chunks)).await;
+    let calls = resp.message.tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "search");
+    assert!(
+        !calls[0].id.trim().is_empty(),
+        "finalized tool call must carry a non-empty id (got {:?})",
+        calls[0].id
+    );
+    assert_eq!(calls[0].id, "call_0");
+}
+
 #[test]
 fn test_apply_directive_forced_function_tool_choice() {
     let mut req = serde_json::json!({ "model": "m" });

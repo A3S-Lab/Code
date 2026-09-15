@@ -6,7 +6,7 @@ use crate::workspace::WorkspaceGlobRequest;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub struct GlobTool;
+pub(super) struct GlobTool;
 
 #[async_trait]
 impl Tool for GlobTool {

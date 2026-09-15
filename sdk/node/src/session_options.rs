@@ -363,6 +363,9 @@ pub struct SessionOptions {
     pub plan_run: Option<serde_json::Value>,
     /// A session that cannot write does not get an isolated worktree.
     pub read_only_session: Option<bool>,
+    /// When the native sandbox cannot initialize, allow process-host bash
+    /// (Harbor / Terminal-Bench outer isolation). Default remains fail-closed.
+    pub allow_process_host_sandbox: Option<bool>,
     /// Opt-in read-only verifier. Default is off.
     pub verifier_enabled: Option<bool>,
     /// HITL confirmation policy configuration.
@@ -1224,6 +1227,9 @@ fn apply_host_contract_options(
     }
     if let Some(read_only) = options.read_only_session {
         opts = opts.with_read_only_session(read_only);
+    }
+    if let Some(allow) = options.allow_process_host_sandbox {
+        opts = opts.with_allow_process_host_sandbox(allow);
     }
     if let Some(enabled) = options.verifier_enabled {
         opts = opts.with_verifier(enabled);

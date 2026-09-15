@@ -161,15 +161,18 @@ impl StdioTransport {
                             continue;
                         }
 
-                        // Try to parse as response
+                        // Try to parse as response. Notifications have no `id`
+                        // but still deserialize as JsonRpcResponse (unknown
+                        // `method`/`params` ignored). Only treat frames with an
+                        // id as responses; fall through otherwise.
                         if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
                             if let Some(id) = response.id {
                                 let mut pending = pending_clone.write().await;
                                 if let Some(tx) = pending.remove(&id) {
                                     let _ = tx.send(response);
                                 }
+                                continue;
                             }
-                            continue;
                         }
 
                         // Try to parse as notification
@@ -547,6 +550,93 @@ mod tests {
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("not connected"));
         }
+    }
+
+    #[test]
+    fn notification_wire_must_not_be_consumed_as_id_less_response() {
+        // Pin the serde ambiguity that previously made reader_task drop
+        // notifications: JsonRpcResponse accepts frames with a `method` field
+        // because unknown fields are ignored and `id` is Optional.
+        let wire = r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"t","progress":1.0}}"#;
+        let as_response =
+            serde_json::from_str::<JsonRpcResponse>(wire).expect("parses as response");
+        assert!(as_response.id.is_none());
+        let as_notification =
+            serde_json::from_str::<JsonRpcNotification>(wire).expect("parses as notification");
+        assert_eq!(as_notification.method, "notifications/progress");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stdio_reader_delivers_server_progress_notifications() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = directory.path().join("progress_server.py");
+        std::fs::write(
+            &server,
+            r#"
+import json, sys, time
+for raw in sys.stdin:
+    msg = json.loads(raw)
+    method = msg.get("method")
+    ident = msg.get("id")
+    if method == "initialize":
+        out = {"jsonrpc":"2.0","id":ident,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"probe","version":"1"}}}
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        out = {"jsonrpc":"2.0","id":ident,"result":{"tools":[{"name":"progress_tool","description":"p","inputSchema":{"type":"object"}}]}}
+    elif method == "tools/call":
+        print(json.dumps({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"t","progress":1.0,"total":2.0}}), flush=True)
+        time.sleep(0.05)
+        print(json.dumps({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"t","progress":2.0,"total":2.0}}), flush=True)
+        out = {"jsonrpc":"2.0","id":ident,"result":{"content":[{"type":"text","text":"ok"}]}}
+    else:
+        continue
+    print(json.dumps(out), flush=True)
+"#,
+        )
+        .unwrap();
+
+        let transport = Arc::new(
+            StdioTransport::spawn_with_timeout(
+                "python3",
+                &[server.to_string_lossy().into_owned()],
+                &HashMap::new(),
+                5,
+            )
+            .await
+            .expect("spawn progress MCP server"),
+        );
+        let mut rx = {
+            let transport = Arc::clone(&transport);
+            tokio::task::spawn_blocking(move || transport.notifications())
+                .await
+                .expect("take notification receiver")
+        };
+        let client = crate::mcp::client::McpClient::new("probe".into(), transport);
+        client.initialize().await.expect("initialize");
+        client.list_tools().await.expect("list tools");
+        let call = client.call_tool("progress_tool", Some(serde_json::json!({})));
+        let received = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut n = 0;
+            while let Some(notification) = rx.recv().await {
+                if matches!(notification, McpNotification::Progress { .. }) {
+                    n += 1;
+                    if n == 2 {
+                        break;
+                    }
+                }
+            }
+            n
+        });
+        let (result, received) = tokio::join!(call, received);
+        assert!(result.is_ok(), "tool call failed: {result:?}");
+        assert_eq!(
+            received.expect("timed out waiting for progress notifications"),
+            2,
+            "stdio reader must deliver notifications/progress frames"
+        );
+        client.close().await.ok();
     }
 
     #[test]
