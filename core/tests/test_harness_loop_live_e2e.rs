@@ -19,34 +19,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use a3s_code_core::harness_loop::CompletionTerminal;
 use a3s_code_core::permissions::{InteractiveToolGuardrail, PermissionDecision, PermissionPolicy};
-use a3s_code_core::{Agent, AgentEvent, CodeConfig, SessionOptions};
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn configured_agent() -> Agent {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let default_model = config
-        .default_model
-        .as_deref()
-        .expect("config must declare default_model");
-    assert!(
-        default_model.contains("deepseek"),
-        "expected the configured DeepSeek Flash default_model, got {default_model}"
-    );
-    eprintln!("using default_model={default_model}");
+    let config = load_pinned_layer_c_config();
     Agent::from_config(config)
         .await
         .expect("build agent from .a3s/config.acl")
@@ -365,6 +348,120 @@ async fn deepseek_flash_write_attaches_a_mutation_observation() {
     assert!(
         gate.contains("completion gate:"),
         "expected completion gate rejection, got {gate}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_verified_mutation_can_complete() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-verified-mutation", true).with_max_tool_rounds(8)),
+        )
+        .await
+        .expect("session");
+    let result = tokio::time::timeout(
+        MODEL_TIMEOUT,
+        session.send(
+            "Create hello.txt containing exactly the word hello using the write tool. \
+Then run exactly `test -f hello.txt` with the bash tool (no other command). \
+Then stop. Do not invent verification; the host check must be that bash call.",
+            None,
+        ),
+    )
+    .await
+    .expect("verified mutation run timed out");
+    assert!(
+        workspace.path().join("hello.txt").is_file(),
+        "model did not create hello.txt; this is not a verified-completion pass"
+    );
+    let contents = std::fs::read_to_string(workspace.path().join("hello.txt"))
+        .expect("read hello.txt after verified completion");
+    assert!(
+        contents.trim() == "hello",
+        "Allow(Verified) requires matching write content, got {contents:?}"
+    );
+    let ok = result.expect("verified host check after a write must Allow(Verified)");
+    assert!(
+        matches!(ok.completion, CompletionTerminal::Verified { .. }),
+        "expected CompletionTerminal::Verified, got {:?}",
+        ok.completion
+    );
+    assert!(
+        !ok.verification_reports.is_empty(),
+        "verified completion must retain host verification reports"
+    );
+}
+
+/// SDK governance path: after a live write, `session.verify_commands` must
+/// report host shell effect (Passed/Failed), not assistant narrative.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
+async fn deepseek_flash_verify_commands_reports_host_shell_effect() {
+    let agent = configured_agent().await;
+    let workspace = tempfile::tempdir().expect("workspace");
+    let session = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(options("live-verify-commands", true).with_max_tool_rounds(6)),
+        )
+        .await
+        .expect("session");
+    // Live write may trip the completion gate when no bash verify is bound;
+    // this probe only needs the on-disk effect before SDK verify_commands.
+    let _ = tokio::time::timeout(
+        MODEL_TIMEOUT,
+        session.send(
+            "Create verify-me.txt containing exactly the word verified using the write tool. Then stop. Do not run tests.",
+            None,
+        ),
+    )
+    .await
+    .expect("write turn timed out");
+    assert!(
+        workspace.path().join("verify-me.txt").is_file(),
+        "live write must create verify-me.txt before verify_commands"
+    );
+
+    let commands = vec![
+        a3s_code_core::verification::VerificationCommand::required(
+            "check:exists",
+            "smoke",
+            "Host existence check",
+            "test -f verify-me.txt",
+        ),
+        a3s_code_core::verification::VerificationCommand::required(
+            "check:content",
+            "smoke",
+            "Host content check",
+            "grep -q '^verified$' verify-me.txt",
+        ),
+    ];
+    let report = session
+        .verify_commands("live-verify-commands", &commands)
+        .await
+        .expect("session.verify_commands");
+    assert_eq!(
+        report.status,
+        a3s_code_core::verification::VerificationStatus::Passed,
+        "verify_commands must Pass on host shell effect: {report:?}"
+    );
+    assert!(
+        report.checks.iter().all(|check| {
+            check.status == a3s_code_core::verification::VerificationStatus::Passed
+        }),
+        "every verify_commands check must Pass: {:?}",
+        report.checks
+    );
+    assert!(
+        session
+            .verification_reports()
+            .iter()
+            .any(|item| item.subject == "live-verify-commands"),
+        "session must retain the verify_commands report"
     );
 }
 

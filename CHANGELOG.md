@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Capability inventory tells the truth for the thin default: baseline
+  `web_search` no longer claims JavaScript/headless engines; those stay under
+  Advanced `moli_runtime` / Cargo `headless-search`.
+- Split baseline `program` (QuickJS tool) from Advanced
+  `programmable_workflows` (host parallel Workflow / Flow).
+- `ParallelTaskTool` and `parallel_task` params are crate-internal only
+  (`HARNESS-CONV4` quarantine); model fan-out remains unified `task`.
+- Durable-memory `with_durable_memory` docs describe active-only serving
+  (inactive candidate writes may still exist; shadow serving mode does not).
+- SDK capability matrix documents `tier` + Cargo/feature gates next to each ID.
+- Layer C live harness pins evidence to
+  `boyue/bailian/deepseek-v4.1-flash` from monorepo `.a3s/config.acl` (provider
+  slug is not hard-coded to `deepseek`).
+
+### Added
+
+- Live Agent Protocol E2E suite `test_agent_protocol_live_e2e` (Layer C8) driving
+  `AgentProtocolHarness` on pinned `boyue/bailian/deepseek-v4.1-flash`: Start +
+  event-page projection + idempotent replay, live write → digest-bound change
+  set, and protocol Cancel of an in-flight tool. Wired into
+  `just layer-c-live-e2e`. Hermetic unit coverage for oversized non-identity
+  event metadata bounding in `agent_protocol`.
+- Live issue-fix E2E suite `test_issue_fix_live_e2e` for `#139` / `#137` / `#138`
+  on pinned `boyue/bailian/deepseek-v4.1-flash` (streaming tool names across turns,
+  MCP stdio progress delivery during live tools/call, oversized tool_end event-page
+  projection). Included first in `just layer-c-live-e2e`.
+- Live capability coverage for baseline `bash`, `write`, `program`, and
+  `web_search` kernel side effects (`test_harness_capabilities_live_e2e`).
+- Live loop coverage for `Allow(Verified)` after write + `test -f` host check
+  (`deepseek_flash_verified_mutation_can_complete`).
+- Hermetic bash coverage: `test -f` metadata retains
+  `verification_shell_command` and unlocks `Allow(Verified)` with a matching
+  mutation ledger digest.
+- `just layer-c-live-e2e` serial runner for the full Layer C matrix.
+- Host shell existence checks (`test -f` / `test -e`) can bind the mutation
+  ledger digest so the completion gate can Allow(Verified) without overfitting
+  to bare `true` or unrelated paths.
+
+### Fixed
+
+- Harbor / Terminal-Bench (#140): when the native sandbox cannot initialize,
+  hosts may opt into `ProcessHostBashSandbox` via
+  `SessionOptions::with_allow_process_host_sandbox(true)` or
+  `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX=1`. Default remains fail-closed. The TB
+  runner and Harbor adapter both opt in so default `bash` no longer requires a
+  `require_escalated` trial round inside task containers without bubblewrap.
+- OpenAI-compatible streaming no longer overwrites a valid `tool_calls[].function.name`
+  with empty continuation deltas (`#139`); empty names are ignored and arguments still append.
+- MCP stdio `reader_task` no longer treats id-less notification frames as responses and
+  drops them (`#137`); `notifications/progress` reaches `McpClient::notifications()`.
+- Agent protocol event pages bound oversized `tool_end` payloads instead of failing the
+  whole page with 400 (`#138`); large tool output/args still project under the 64 KiB limit.
+- README “Web evidence” row no longer presents headless as the default cascade.
+- Adversarial live suite no longer rejects a Flash default routed through a
+  non-`deepseek` provider id (e.g. boyue).
+- Workspace-retrieval live evaluation no longer hard-requires `deepseek/`
+  provider slug, bilingual query asymmetry, or a stale `selected_candidates==10`
+  constant (default rerank max is 100; selected means returned hits).
+- Layer C helpers pin `boyue/bailian/deepseek-v4.1-flash` when that model exists
+  under `providers "boyue"`, so an external mid-suite `default_model` edit cannot
+  derail the matrix. Shared loader: `core/tests/support/layer_c_model.rs`;
+  `just layer-c-live-e2e` also exports `A3S_TEST_MODEL` and writes `FINAL.txt`.
+- Extensibility skill live assert checks the planted marker token is present
+  instead of exact whole-text equality (Flash may echo `SKILL_MARKER=…`).
+- Write-backed `Allow(Verified)` now requires the on-disk content digest to
+  match the mutation ledger (existence-only `test -f` is not enough).
+- Layer C adds live `web_fetch` / `download` capability probes and includes
+  `test_memory_store_real_llm` in `just layer-c-live-e2e`.
+- SDK capability inventory names baseline `web_fetch` and `download`.
+- Memory extract live gate hard-fails when the durable store stays empty
+  (soft-skip Pass removed). Cluster Layer C adds `session.save` /
+  `resume_session` history round-trip and live `task_scheduler_stats` occupancy.
+- Additional Layer C suites pin via `load_pinned_layer_c_config` (run_control,
+  long_horizon, structured_json, workspace_search, ultracode).
+- `README.zh-CN.md` matches HARNESS-CONV4: no hidden `parallel_task` alias.
+- Layer C adds live `session.verify_commands` (host shell effect after write),
+  model-visible `batch` dual-read, stronger `web_search` kernel-effect asserts,
+  and `run_event_page` / observability checks on a live completed run.
+- Loop/capabilities suites share `load_pinned_layer_c_config`.
+
+### Notes
+
+- Physical feature-gating of always-compiled Advanced modules (`agent_protocol`,
+  `rl_trajectory`, …) and hard cutover of `SessionData` fragments remain
+  follow-ups. This release tells the truth and quarantines zombies without
+  overfitting a big-bang default-tree split.
+
 ## [8.5.8] - 2026-09-14
 
 ### Fixed

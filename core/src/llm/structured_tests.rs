@@ -1529,7 +1529,7 @@ fn extract_acl_field(content: &str, section: &str, field: &str) -> Option<String
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires MiniMax (or compatible) credentials in .a3s/config.acl"]
 async fn test_integration_generate_blocking_tool_mode() {
     let Some((base_url, api_key, model)) = load_minimax_config() else {
         eprintln!("Skipping: .a3s/config.acl not found or missing MiniMax config");
@@ -1584,7 +1584,7 @@ async fn test_integration_generate_blocking_tool_mode() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires MiniMax (or compatible) credentials in .a3s/config.acl"]
 async fn test_integration_generate_blocking_prompt_mode() {
     let Some((base_url, api_key, model)) = load_minimax_config() else {
         eprintln!("Skipping: .a3s/config.acl not found");
@@ -1631,7 +1631,7 @@ async fn test_integration_generate_blocking_prompt_mode() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires MiniMax (or compatible) credentials in .a3s/config.acl"]
 async fn test_integration_generate_streaming_tool_mode() {
     let Some((base_url, api_key, model)) = load_minimax_config() else {
         eprintln!("Skipping: .a3s/config.acl not found");
@@ -1708,7 +1708,7 @@ async fn test_integration_generate_streaming_tool_mode() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires MiniMax (or compatible) credentials in .a3s/config.acl"]
 async fn test_integration_generate_complex_nested_schema() {
     let Some((base_url, api_key, model)) = load_minimax_config() else {
         eprintln!("Skipping: .a3s/config.acl not found");

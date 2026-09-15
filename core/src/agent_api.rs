@@ -383,6 +383,14 @@ pub struct SessionOptions {
     /// application constructs and owns the custom implementation (for example,
     /// an A3S Box-backed handle).
     pub sandbox_handle: Option<Arc<dyn crate::sandbox::BashSandbox>>,
+    /// When the native sandbox cannot initialize, allow installing the
+    /// process-host Bash runner instead of an error-only handle.
+    ///
+    /// Default is `false` (fail-closed). Harbor / Terminal-Bench containers
+    /// that already isolate the job set this (or
+    /// `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX=1`) so default `bash` does not
+    /// require a `require_escalated` trial round.
+    pub allow_process_host_sandbox: bool,
     /// Optional host-provided workspace backend.
     ///
     /// When set, built-in tools such as `read`, `write`, `ls`, and `bash`
@@ -619,6 +627,11 @@ pub struct AgentSession {
     /// replaces the style for the next agent-loop build so hosts can hot-switch
     /// Plan/GeneralPurpose without rebuilding the session.
     runtime_agent_style: std::sync::Mutex<Option<Option<crate::prompts::AgentStyle>>>,
+    /// Runtime override for [`PlanningMode`]. Outer `None` means unset (use the
+    /// session-built `config.planning_mode`). `Some(mode)` replaces planning for
+    /// the next agent-loop build so hosts can disable forced planning on a
+    /// verifier turn without rebuilding the session.
+    runtime_planning_mode: std::sync::Mutex<Option<PlanningMode>>,
     /// Runtime override for user-facing reply language. Outer `None` means unset
     /// (use `prompt_slots.output_language`). `Some(None)` clears an earlier pin.
     /// `Some(Some(tag))` pins replies for the next agent-loop build.

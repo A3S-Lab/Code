@@ -11,33 +11,21 @@
 //! schedule firing a FULL harness turn through a real `AgentSession::send`.
 #![cfg(feature = "serve")]
 
-use std::path::PathBuf;
+mod support;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use a3s_code_core::config::{AgentDir, CodeConfig, ScheduleSpec};
+use a3s_code_core::config::{AgentDir, ScheduleSpec};
 use a3s_code_core::serve::{serve_agent_dir, ScheduleSink, Scheduler};
 use a3s_code_core::{Agent, AgentSession};
-
-/// Same resolution as the other `*_real_llm` tests: `A3S_CONFIG_FILE` or the repo
-/// root `.a3s/config.acl`.
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
+use support::layer_c_model::load_pinned_layer_c_config;
 
 async fn real_agent() -> Agent {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let config = load_pinned_layer_c_config();
     Agent::from_config(config)
         .await
         .expect("build agent from real config")

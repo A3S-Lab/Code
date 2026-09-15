@@ -104,6 +104,10 @@ class A3SCodeAgent(BaseAgent):
             command,
             cwd=workdir,
             env={
+                # Harbor's task container is the isolation boundary. Opt into
+                # process-host bash when bubblewrap is absent so default bash
+                # does not require a require_escalated trial round (#140).
+                "A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX": "1",
                 "A3S_CODE_TRAJECTORY_PATH": str(
                     self.environment_logs_dir / "a3s-code.trajectory.jsonl"
                 ),

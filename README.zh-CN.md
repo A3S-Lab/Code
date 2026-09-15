@@ -536,9 +536,9 @@ A3S Use能力快照。嵌入主机提供
 |文件和目录|预算单/多文件 `read`、`write`、可预览 CAS `edit`、`patch`、`ls`，以及统一的 `search` 与 `grep`、`glob`、zvec-rust FTS/BM25、语义诊断和混合检索模式|
 |命令和源代码控制|有界 `bash` 加上类型化 `git` 操作、取消和 Unix 进程组终止 |
 |代码情报 | `code_symbols`、`code_navigation`、`code_diagnostics`；源代码读取和突变保留在文件工具中|
-|网络证据|质量门控无头 → HTTP/RSS → API `web_search` 具有共享准入、会话电路和请求合并；加上有界 `web_fetch`、源标准化和 SSRF 保护 |
+|网络证据|基线 `web_search` 走 HTTP/RSS/API，具有共享准入、会话电路和请求合并（无头/Moli 仅在 `headless-search`）；加上有界 `web_fetch`、源标准化和 SSRF 保护 |
 |下载 |工作空间限制的二进制`download`，具有严格的范围验证、有限并行性、重试、校验和和原子发布 |
-|成分|安全`batch`、沙盒化QuickJS`program`、结构化`generate_object`、统一`task`委托；隐藏的 `parallel_task` 别名保持主机兼容 |
+|成分|安全`batch`、沙盒化QuickJS`program`、结构化`generate_object`、统一`task`委托（多条目扇出）；模型可见的 `parallel_task` 已移除。宿主 API 使用 `session.task` / `session.tasks` |
 |可扩展性| `Skill`、`search_skills`、命名空间 `mcp__<server>__<tool>` 和显式 `dynamic_workflow` |
 
 每次调用都声明`ToolCapabilities`，包括只读，
@@ -1459,12 +1459,11 @@ N+1；取消、关闭、准备失败和名称冲突不暴露
 交付的`HOST-AGENT1`将该批次扩展到类型化的代理定义，而无需
 将包权限移至代码中。每次运行都融合了兼容性和
 共享时将代理投影到独立的`AgentRegistry`名称映射中
-它们确切的不可变 `Arc<AgentDefinition>` 值；自动选择，
-`task` 和 `parallel_task` 绑定到同一注册表。规范别名
-无法跨越兼容性边界互相影响，以及后来的工作人员
-或代理目录注册无法替换已发布的代理。安承认
-N Run 在 N+1 发布后继续通过 N 进行委托并保留 N 的
-精确的 A3S 通过前台子完成使用租约。
+它们确切的不可变 `Arc<AgentDefinition>` 值；自动选择与
+`task` 绑定到同一注册表。规范别名无法跨越兼容性边界互相
+影响，以及后来的工作人员或代理目录注册无法替换已发布的
+代理。已承认的 N Run 在 N+1 发布后继续通过 N 进行委托并
+保留 N 的精确的 A3S 通过前台子完成使用租约。
 
 已交付 `HOST-COMMAND1` 扩展同一批并运行准入边界至
 斜线命令。每个阻塞或流式调度都会冻结兼容性

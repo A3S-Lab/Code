@@ -388,14 +388,20 @@ impl Tool for BashTool {
                 return Ok(ToolOutput {
                     content: output,
                     success: result.exit_code == 0,
-                    metadata: Some(with_changed_paths(
-                        serde_json::json!({
-                            "exit_code": result.exit_code,
-                            "sandboxed": true,
-                            "output": capture_metadata,
-                        }),
-                        &changed_paths,
-                    )),
+                    metadata: crate::verification::merge_shell_verification_metadata(
+                        Some(with_changed_paths(
+                            serde_json::json!({
+                                "exit_code": result.exit_code,
+                                "sandboxed": true,
+                                "output": capture_metadata,
+                            }),
+                            &changed_paths,
+                        )),
+                        Some(ctx.workspace.as_path()),
+                        command,
+                        result.exit_code,
+                        None,
+                    ),
                     images: vec![],
                     error_kind: None,
                     trust: crate::tools::ToolResultTrustV1::WorkspaceData,

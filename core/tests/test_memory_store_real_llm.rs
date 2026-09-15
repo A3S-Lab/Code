@@ -1,9 +1,8 @@
 //! Live Memory gates against `.a3s/config.acl`.
 //!
 //! - Durability: store → reopen → `AgentMemory.recall_similar` (always assert).
-//! - Extract (optional): real-model turn → LLM extraction → reopen → recall.
-//!   Soft-skips when the live judge declines to extract (flaky product path);
-//!   hermetic Core extract suites remain the effectiveness contract.
+//! - Extract: real-model turn → LLM extraction → reopen → recall (hard fail;
+//!   soft-skip would green Layer C without proving durable extract effect).
 //!
 //! ```bash
 //! A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
@@ -11,35 +10,24 @@
 //!   -- --ignored --nocapture --test-threads=1
 //! ```
 
-use std::path::PathBuf;
+mod support;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use a3s_code_core::memory::AgentMemory;
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
-use a3s_code_core::{
-    Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions, SystemPromptSlots,
-};
+use a3s_code_core::{Agent, AgentEvent, PlanningMode, SessionOptions, SystemPromptSlots};
 use a3s_memory::{FileMemoryStore, MemoryItem, MemoryStore, MemoryType};
+use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 
-fn config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
-fn configured_model(config: &CodeConfig) -> String {
+fn configured_model(config: &a3s_code_core::CodeConfig) -> String {
     let model = std::env::var("A3S_TEST_MODEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("config must declare default_model or A3S_TEST_MODEL");
+        .unwrap_or_else(|| REQUIRED_DEFAULT_MODEL.to_string());
     let (provider, model_id) = model
         .split_once('/')
         .expect("selected model must use provider/model syntax");
@@ -48,16 +36,6 @@ fn configured_model(config: &CodeConfig) -> String {
         "selected model {model} is not declared in the ACL"
     );
     model
-}
-
-fn is_transient_provider_block(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("403")
-        || lower.contains("timeout")
-        || lower.contains("timed out")
-        || lower.contains("connection reset")
-        || lower.contains("temporarily unavailable")
-        || lower.contains("rate limit")
 }
 
 async fn run_text_turn(
@@ -97,9 +75,9 @@ async fn run_text_turn(
 #[ignore = "requires the model and credentials from .a3s/config.acl"]
 async fn real_config_memory_store_survives_reopen_and_agent_recall() {
     let started = Instant::now();
-    let config_file = config_path();
-    let config = CodeConfig::from_file(&config_file).expect("load .a3s/config.acl");
+    let mut config = load_pinned_layer_c_config();
     let selected_model = configured_model(&config);
+    config.default_model = Some(selected_model.clone());
     let agent = Agent::from_config(config)
         .await
         .expect("create agent from configured model");
@@ -176,11 +154,16 @@ async fn real_config_memory_store_survives_reopen_and_agent_recall() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the model and credentials from .a3s/config.acl"]
-async fn real_model_memory_extract_survives_reopen_or_soft_skips() {
+async fn real_model_memory_extract_survives_reopen() {
     let started = Instant::now();
-    let config_file = config_path();
-    let config = CodeConfig::from_file(&config_file).expect("load .a3s/config.acl");
+    let mut config = load_pinned_layer_c_config();
     let selected_model = configured_model(&config);
+    config.default_model = Some(selected_model.clone());
+    // Layer C requires extract effect, not a soft narrative acknowledgement.
+    config.memory = Some(a3s_code_core::memory::MemoryConfig {
+        llm_extraction: true,
+        ..Default::default()
+    });
     let agent = Agent::from_config(config)
         .await
         .expect("create agent from configured model");
@@ -207,7 +190,8 @@ async fn real_model_memory_extract_survives_reopen_or_soft_skips() {
         .with_temperature(0.0)
         .with_max_tool_rounds(1)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(
-            "Do not call tools. Acknowledge the durable workspace preference clearly.",
+            "Do not call tools. Acknowledge the durable workspace preference clearly \
+             and treat the verification codename as durable memory for future sessions.",
         ));
     let session = agent
         .session_async(workspace.path().display().to_string(), Some(options))
@@ -219,18 +203,9 @@ async fn real_model_memory_extract_survives_reopen_or_soft_skips() {
          always use the verification codename {token} when referring to the \
          memory-extract live gate. Confirm you understood the preference."
     );
-    let (final_text, tokens) = match run_text_turn(&session, &prompt).await {
-        Ok(outcome) => outcome,
-        Err(message) if is_transient_provider_block(&message) => {
-            eprintln!("memory-extract-real-llm soft-skip: provider unavailable ({message})");
-            session.close().await;
-            return;
-        }
-        Err(message) => {
-            session.close().await;
-            panic!("live extract turn failed: {message}");
-        }
-    };
+    let (final_text, tokens) = run_text_turn(&session, &prompt)
+        .await
+        .unwrap_or_else(|message| panic!("live extract turn failed: {message}"));
     // Close drains pending LLM extraction before we reopen the file store.
     session.close().await;
     drop(store);
@@ -241,16 +216,13 @@ async fn real_model_memory_extract_survives_reopen_or_soft_skips() {
     let hits = MemoryStore::search(&reopened, token, 5)
         .await
         .expect("search after reopen");
-    if hits.is_empty() {
-        eprintln!(
-            "memory-extract-real-llm soft-skip: live judge did not persist {token} \
-             (model={selected_model} tokens={tokens} reply_chars={} turn_ms={}). \
-             Hermetic Core extract suites remain the effectiveness contract.",
-            final_text.chars().count(),
-            started.elapsed().as_millis()
-        );
-        return;
-    }
+    assert!(
+        !hits.is_empty(),
+        "Layer C extract must persist {token} (model={selected_model} tokens={tokens} \
+         reply_chars={} turn_ms={}); empty store is a failed effect, not a soft-skip",
+        final_text.chars().count(),
+        started.elapsed().as_millis()
+    );
     assert!(
         hits.iter().any(|item| item.content.contains(token)),
         "extracted durable memory must mention {token}: {hits:?}"

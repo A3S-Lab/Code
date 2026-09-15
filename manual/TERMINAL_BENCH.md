@@ -6,6 +6,12 @@ instruction delivery, time limits, artifacts, and verifier. The adapter does
 not provide MCP tools, alter a task, install a solution, or replace the
 verifier.
 
+Harbor task images typically lack bubblewrap. The runner injects Core's
+`ProcessHostBashSandbox` and sets `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX=1` so
+default `bash` (`use_default`) executes inside the already-isolated task
+container without a `require_escalated` trial round. Native fail-closed
+behavior on developer machines is unchanged.
+
 The benchmark task instruction is uploaded byte-for-byte to
 `/run/a3s/instruction.md`. The runner explicitly pins the general writable
 agent style and disables planning pre-analysis, so the model receives that

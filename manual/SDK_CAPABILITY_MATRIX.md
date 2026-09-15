@@ -29,37 +29,45 @@ or external lifecycle owner; it is not an SDK availability flag. An operation
 can still return a typed unavailable/policy error when the host has not
 enabled its required resource.
 
+Every record also has a `tier` (`baseline` | `advanced`). Use
+`sdk_baseline_capabilities()` for the thin coding harness, and treat Advanced
+IDs as requiring an explicit Cargo profile (`advanced-harness`,
+`headless-search`, `server`, …) or host injection.
+
 ## Product capabilities
 
-| ID | SDK entrypoint shape | Host-owned boundary |
-| --- | --- | --- |
-| `agent_runtime` | `Agent.create` / `Agent.createFromConfig`, session factories, close | No |
-| `governed_tools` | `Session.tool`, `governedTool` / `governed_tool`, Go `Tool` / `GovernedTool` | Policy and confirmation are host decisions |
-| `code_intelligence` | `Session.tool("code_symbols" …)` and the built-in tool definitions | Workspace language service |
-| `workspace_retrieval` | `workspaceRetrievalStatus`, `semanticSearch`, `hybridSearch` | Embedding callback and workspace source |
-| `context_memory` | Memory record/recall/health methods | Memory store and retention policy |
-| `cognitive_packages` | Exact binding inspection and run evidence | A3S Use/Knowledge host supplies the package |
-| `use_runtime_tasks` | Governed runtime task tool | A3S Use owns grants and package lifecycle |
-| `model_adapters` | ACL or typed `CodeConfig` construction | Provider credentials and network policy |
-| `structured_output` | Request/task/program object options | Model/provider schema support |
-| `mcp_and_skills` | MCP and Skill discovery/mutation methods | Child process, URL, and credential policy |
-| `planning_delegation` | `task`, `tasks`, workers, parallel orchestration | Worker model and execution budget |
-| `priority_scheduling` | Scheduler options, stats, queue APIs | Host chooses capacity and priority |
-| `programmable_workflows` | `program`, `parallel`, resumable workflow methods | Script and Flow policy |
-| `persistence` | Save, resume, artifacts, traces, snapshots | Store location and retention |
-| `state_graph` | Node/Python `StateGraphRuntime`; Go `StateGraphRuntime` over the versioned bridge | Graph persistence owner |
-| `agent_release_contract` | Release admission/verification through host runtime | Artifact publication and provenance |
-| `agent_protocol` | Versioned harness/bridge event and recovery operations | Service transport owner |
-| `web_search` | `webSearch` / `web_search` and generic `Tool` | Network, proxy, and engine policy |
-| `moli_runtime` | Default Moli provisioning via web search; packaged/cache diagnostics | Shared cache and executable ownership |
-| `s3_workspace` | Typed S3 workspace provider options | Object-store credentials and endpoint |
-| `filesystem_agent_server` | `serveAgentDir` / `serve_agent_dir` / `ServeAgentDir` | Daemon lifecycle and schedule policy |
-| `opentelemetry` | Core telemetry configuration and trace inspection | Collector endpoint and export policy |
-| `conversation` | `send`, `run`, `stream`, attachments, history, cancel | User identity and interaction policy |
-| `run_control` | `steer`, `interrupt`, `runControlSnapshot` / `run_control_snapshot` | Host approval, run identity, and lifecycle policy |
-| `workspace_tools` | File, shell, glob, grep, and Git helpers | Workspace boundary and authorization |
-| `run_observability` | Run snapshots, pages, active tools, child tasks, traces | Evidence retention policy |
-| `governance` | Confirmations, permissions, hooks, budgets, verification | Host authorization and trust decisions |
+| ID | Tier | Feature / gate | SDK entrypoint shape | Host-owned boundary |
+| --- | --- | --- | --- | --- |
+| `agent_runtime` | baseline | `local-code` | `Agent.create` / `Agent.createFromConfig`, session factories, close | No |
+| `conversation` | baseline | `local-code` | `send`, `run`, `stream`, attachments, history, cancel | User identity and interaction policy |
+| `governed_tools` | baseline | `local-code` | `Session.tool`, `governedTool` / `governed_tool`, Go `Tool` / `GovernedTool` | Policy and confirmation are host decisions |
+| `workspace_tools` | baseline | `local-code` | File, shell, glob, grep, Git, `download`, and `batch` helpers | Workspace boundary and authorization |
+| `web_search` | baseline | `local-code` (HTTP/RSS/API) | `webSearch` / `web_search` and generic `Tool` | Network, proxy, and engine policy |
+| `web_fetch` | baseline | `local-code` | Governed `web_fetch` URL → text/markdown | Network, size, and redirect bounds |
+| `workspace_retrieval` | baseline | `local-code` (+ host embedding for semantic/hybrid) | `workspaceRetrievalStatus`, `semanticSearch`, `hybridSearch` | Embedding callback and workspace source |
+| `context_memory` | baseline | host memory store | Memory record/recall/health methods | Memory store and retention policy |
+| `planning_delegation` | baseline | `local-code` | Unified `task` / `tasks` (multi-item fan-out); `parallel_task` removed | Worker model and execution budget |
+| `program` | baseline | `local-code` | Bounded QuickJS `program` tool | Script policy |
+| `priority_scheduling` | baseline | `local-code` | Scheduler options, stats, queue APIs | Host chooses capacity and priority |
+| `persistence` | baseline | `local-code` | Save, resume, artifacts, traces, snapshots | Store location and retention |
+| `governance` | baseline | `local-code` | Confirmations, permissions, hooks, budgets, verification | Host authorization and trust decisions |
+| `run_control` | baseline | `local-code` | `steer`, `interrupt`, `runControlSnapshot` | Host approval, run identity, and lifecycle policy |
+| `model_adapters` | baseline | `local-code` | ACL or typed `CodeConfig` construction | Provider credentials and network policy |
+| `structured_output` | baseline | `local-code` | Request/task/program object options | Model/provider schema support |
+| `mcp_and_skills` | baseline | `local-code` | MCP and Skill discovery/mutation methods | Child process, URL, and credential policy |
+| `run_observability` | baseline | `local-code` | Run snapshots, pages, active tools, child tasks, traces | Evidence retention policy |
+| `code_intelligence` | advanced | host language service | `Session.tool("code_symbols" …)` | Workspace language service |
+| `cognitive_packages` | advanced | host injection | Exact binding inspection and run evidence | A3S Use/Knowledge host supplies the package |
+| `use_runtime_tasks` | advanced | host injection | Governed runtime task tool | A3S Use owns grants and package lifecycle |
+| `programmable_workflows` | advanced | host Workflow APIs; Flow needs `advanced-harness` | `parallel`, resumable workflow methods (not baseline `program`) | Script and Flow policy |
+| `state_graph` | advanced | `advanced-harness` | Node/Python/Go `StateGraphRuntime` | Graph persistence owner |
+| `agent_release_contract` | advanced | always compiled helpers | Release admission/verification through host runtime | Artifact publication and provenance |
+| `agent_protocol` | advanced | always compiled helpers | Versioned harness/bridge event and recovery operations | Service transport owner |
+| `evaluation_substrate` | advanced | `advanced-harness` | Bounded evidence / auxiliary / dispatch / result wire | Evaluation host policy |
+| `moli_runtime` | advanced | `headless-search` | Default Moli provisioning via web search; packaged/cache diagnostics | Shared cache and executable ownership |
+| `s3_workspace` | advanced | `s3` / `server` | Typed S3 workspace provider options | Object-store credentials and endpoint |
+| `filesystem_agent_server` | advanced | `serve` / `server` | `serveAgentDir` / `serve_agent_dir` / `ServeAgentDir` | Daemon lifecycle and schedule policy |
+| `opentelemetry` | advanced | `telemetry` / `server` | Core telemetry configuration and trace inspection | Collector endpoint and export policy |
 
 The exact set and order are tested by Core, Node, Python, and Go bridge
 qualification. Use the discovery endpoint for optional-feature checks; do not

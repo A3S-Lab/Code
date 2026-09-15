@@ -1,9 +1,14 @@
 //! Default process-isolation binding for local sessions.
 
 use super::SessionOptions;
+use crate::sandbox::process_host::ProcessHostBashSandbox;
 use crate::sandbox::{BashSandbox, SandboxOutput};
 use std::path::Path;
 use std::sync::Arc;
+
+/// Environment opt-in for process-host fallback when the native sandbox cannot
+/// initialize (Harbor / Terminal-Bench containers without bubblewrap).
+pub const ALLOW_PROCESS_HOST_SANDBOX_ENV: &str = "A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX";
 
 /// Bind the built-in native sandbox before capabilities are assembled so the
 /// top-level Bash tool, workflows, and delegated child runs all inherit the
@@ -11,8 +16,11 @@ use std::sync::Arc;
 ///
 /// A host-provided sandbox remains authoritative. Non-local workspace services
 /// retain their own command runner because they do not expose a local root. If
-/// the native backend cannot initialize, an error-only handle is installed so
-/// no direct or governed Bash path can fall back to the host runner.
+/// the native backend cannot initialize, the default remains fail-closed
+/// (`UnavailableDefaultSandbox`) unless the host opts into
+/// [`SessionOptions::with_allow_process_host_sandbox`] /
+/// [`ALLOW_PROCESS_HOST_SANDBOX_ENV`], which installs a process-host runner
+/// suitable when an outer container already isolates the job.
 pub(super) fn install_default_local_sandbox(workspace: &Path, opts: &mut SessionOptions) {
     if opts.sandbox_handle.is_some() {
         return;
@@ -26,10 +34,42 @@ pub(super) fn install_default_local_sandbox(workspace: &Path, opts: &mut Session
         None => workspace,
     };
 
-    let sandbox: Arc<dyn BashSandbox> = match crate::sandbox::native::NativeBashSandbox::new(
+    let allow_process_host = allow_process_host_sandbox(opts);
+    let sandbox = select_default_local_sandbox(
         local_root,
-    ) {
+        allow_process_host,
+        crate::sandbox::native::NativeBashSandbox::new(local_root),
+    );
+    opts.sandbox_handle = Some(sandbox);
+}
+
+fn allow_process_host_sandbox(opts: &SessionOptions) -> bool {
+    if opts.allow_process_host_sandbox {
+        return true;
+    }
+    std::env::var_os(ALLOW_PROCESS_HOST_SANDBOX_ENV).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn select_default_local_sandbox(
+    local_root: &Path,
+    allow_process_host: bool,
+    native: anyhow::Result<crate::sandbox::native::NativeBashSandbox>,
+) -> Arc<dyn BashSandbox> {
+    match native {
         Ok(sandbox) => Arc::new(sandbox),
+        Err(error) if allow_process_host && local_root.is_dir() => {
+            tracing::warn!(
+                workspace = %local_root.display(),
+                error = %error,
+                "default native Bash sandbox is unavailable; using process-host sandbox because the host opted in"
+            );
+            Arc::new(ProcessHostBashSandbox::new(local_root.to_path_buf(), None))
+        }
         Err(error) => {
             let message = format!(
                 "the default A3S native sandbox is unavailable for '{}': {error:#}",
@@ -38,8 +78,7 @@ pub(super) fn install_default_local_sandbox(workspace: &Path, opts: &mut Session
             tracing::warn!(workspace = %local_root.display(), error = %error, "default native Bash sandbox is unavailable; Bash remains denied");
             Arc::new(UnavailableDefaultSandbox { message })
         }
-    };
-    opts.sandbox_handle = Some(sandbox);
+    }
 }
 
 #[derive(Debug)]
@@ -63,6 +102,7 @@ impl BashSandbox for UnavailableDefaultSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::SandboxCommandRequest;
 
     struct CustomSandbox;
 
@@ -114,5 +154,53 @@ mod tests {
         assert!(error
             .to_string()
             .contains("the default A3S native sandbox is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn process_host_fallback_runs_when_native_fails_and_host_opts_in() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = select_default_local_sandbox(
+            workspace.path(),
+            true,
+            Err(anyhow::anyhow!("Linux native sandbox requires bubblewrap")),
+        );
+        let output = sandbox
+            .exec(SandboxCommandRequest {
+                command: "printf process-host-ok".into(),
+                guest_workspace: workspace.path().display().to_string(),
+                timeout_ms: 5_000,
+                output_observer: None,
+                env: None,
+            })
+            .await
+            .expect("process-host sandbox must execute");
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stdout.contains("process-host-ok"));
+    }
+
+    #[tokio::test]
+    async fn process_host_fallback_stays_fail_closed_without_opt_in() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = select_default_local_sandbox(
+            workspace.path(),
+            false,
+            Err(anyhow::anyhow!("Linux native sandbox requires bubblewrap")),
+        );
+        let error = match sandbox
+            .exec_command("printf should-not-run", "/workspace")
+            .await
+        {
+            Ok(_) => panic!("without opt-in the default remains unavailable"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("the default A3S native sandbox is unavailable"));
+    }
+
+    #[test]
+    fn session_option_enables_process_host_opt_in() {
+        let opts = SessionOptions::new().with_allow_process_host_sandbox(true);
+        assert!(allow_process_host_sandbox(&opts));
     }
 }

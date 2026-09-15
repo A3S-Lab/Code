@@ -233,6 +233,65 @@ fn event_records_fit_one_bounded_durable_projection() {
 }
 
 #[test]
+fn from_run_event_bounds_oversized_tool_end_instead_of_failing() {
+    use a3s_code_core::run::RunEventPage;
+    use a3s_code_core::tools::MAX_OUTPUT_SIZE;
+    use a3s_code_core::{RunEventRecord, RunStatus, AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES};
+
+    let identity = identity("run-execution-018f4f86-attempt-1");
+    let record = RunEventRecord {
+        sequence: 0,
+        timestamp_ms: 1,
+        event: AgentEvent::ToolEnd {
+            id: "c1".into(),
+            name: "write".into(),
+            args: Some(json!({
+                "file_path": "x.py",
+                "content": "w".repeat(40 * 1024),
+            })),
+            output: "x".repeat(32 * 1024),
+            exit_code: 0,
+            metadata: None,
+            error_kind: None,
+        },
+    };
+
+    assert!(
+        AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES < MAX_OUTPUT_SIZE,
+        "protocol payload bound must stay below tool output max so this projection path stays necessary"
+    );
+
+    let projected = AgentProtocolEventRecordV1::from_run_event(&record, &identity)
+        .expect("oversized tool_end must project as a bounded record");
+    projected
+        .validate_for(&identity)
+        .expect("bounded projection must validate");
+    assert_eq!(projected.event.event_type, "tool_end");
+    assert_eq!(projected.event.payload["id"], "c1");
+    assert_eq!(projected.event.payload["name"], "write");
+    assert_eq!(projected.event.payload["exit_code"], 0);
+
+    let page = RunEventPage {
+        events: vec![record],
+        first_available_sequence: Some(0),
+        latest_sequence_exclusive: 1,
+        next_after_sequence: Some(0),
+        retention_gap: false,
+        has_more: false,
+    };
+    let projected_page = AgentProtocolEventPageV1::from_run_page(
+        identity.clone(),
+        RunStatus::Completed,
+        1,
+        None,
+        &page,
+    )
+    .expect("page must stay readable when one tool_end is oversized");
+    assert_eq!(projected_page.events.len(), 1);
+    assert_eq!(projected_page.state, AgentProtocolRunStateV1::Completed);
+}
+
+#[test]
 fn event_page_queries_and_http_paths_are_code_owned() {
     assert_eq!(AGENT_PROTOCOL_COMMAND_HTTP_PATH_V1, "/v1/agent/commands");
     assert_eq!(

@@ -295,8 +295,8 @@ fn register_task_internal(
     let executor = Arc::new(executor);
     registry.register_builtin(Arc::new(TaskTool::new(Arc::clone(&executor))));
     // `parallel_task` is removed from the model-visible registry (`HARNESS-CONV4`).
-    // Fan-out uses the unified `task` tool; ParallelTaskTool remains available for
-    // focused unit tests that construct it directly.
+    // Fan-out uses the unified `task` tool; the historical ParallelTaskTool type
+    // stays crate-internal for unit tests only.
 }
 
 /// Register the Skill tool for skill-based tool access control.

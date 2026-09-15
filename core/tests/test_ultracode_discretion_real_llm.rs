@@ -19,13 +19,15 @@
 //!     cargo test -p a3s-code-core --test test_ultracode_discretion_real_llm \
 //!     -- --ignored --nocapture
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use a3s_code_core::{
-    hitl::AutoApproveConfirmation, Agent, AgentEvent, CodeConfig, PlanningMode, SessionOptions,
+    hitl::AutoApproveConfirmation, Agent, AgentEvent, PlanningMode, SessionOptions,
     SystemPromptSlots,
 };
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 /// Conditional guideline injected in ultracode (kept in sync with the cli's
 /// `ULTRACODE_GUIDELINES`). The point under test is that it *grants* the workflow
@@ -39,33 +41,12 @@ run those branches as one `task` call with multiple independent `tasks` items \
 (keep each child prompt bounded and evidence-oriented), then synthesize their \
 results before continuing dependent work.";
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn real_agent() -> (Agent, String) {
-    let config_path = repo_config_path();
-    let config = CodeConfig::from_file(&config_path)
-        .unwrap_or_else(|err| panic!("failed to load {}: {err}", config_path.display()));
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("real config must declare default_model");
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in {}",
-        config_path.display()
-    );
+    let config = load_pinned_layer_c_config();
+    let model = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
     eprintln!("[ultracode-real] model={model}");
     (
         Agent::from_config(config)

@@ -555,3 +555,93 @@ harness-convergence-check:
     cargo test -p a3s-code-core --lib parallel_task -- --nocapture
     cargo test -p a3s-code-core --lib candidate_write_stays_inactive -- --nocapture
     node scripts/sdk_api_alignment_check.mjs
+
+# Full Layer C live E2E against monorepo `.a3s/config.acl` (serial; quota + network).
+# Evidence dir: set A3S_LAYER_C_EVIDENCE or defaults to /tmp/a3s-layer-c-live.
+# Pins A3S_TEST_MODEL to boyue/bailian/deepseek-v4.1-flash unless already set.
+layer-c-live-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    # Prefer monorepo root config when invoked from crates/code submodule.
+    if [[ -f "${ROOT}/../../.a3s/config.acl" ]]; then
+      CONFIG="$(cd "${ROOT}/../.." && pwd)/.a3s/config.acl"
+    elif [[ -f "${ROOT}/.a3s/config.acl" ]]; then
+      CONFIG="${ROOT}/.a3s/config.acl"
+    else
+      CONFIG="${A3S_CONFIG_FILE:?set A3S_CONFIG_FILE to an ACL with boyue Flash}"
+    fi
+    EVIDENCE="${A3S_LAYER_C_EVIDENCE:-/tmp/a3s-layer-c-live}"
+    mkdir -p "${EVIDENCE}"
+    : >"${EVIDENCE}/summary.txt"
+    export A3S_CONFIG_FILE="${CONFIG}"
+    export A3S_TEST_MODEL="${A3S_TEST_MODEL:-boyue/bailian/deepseek-v4.1-flash}"
+    echo "A3S_CONFIG_FILE=${A3S_CONFIG_FILE}" | tee "${EVIDENCE}/env.txt"
+    echo "A3S_TEST_MODEL=${A3S_TEST_MODEL}" | tee -a "${EVIDENCE}/env.txt"
+    rg -n '^default_model' "${A3S_CONFIG_FILE}" | tee -a "${EVIDENCE}/env.txt"
+    rg -n 'bailian/deepseek-v4\.1-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
+    suites=(
+      test_issue_fix_live_e2e
+      test_agent_protocol_live_e2e
+      test_harness_loop_live_e2e
+      test_harness_capabilities_live_e2e
+      test_deepseek_adversarial_e2e
+      test_update_plan_live_e2e
+      test_prompt_capability_real_llm
+      test_orchestration_real_llm
+      test_long_horizon_real_llm
+      test_structured_json_real_llm
+      test_run_control_real_llm
+      test_workspace_search_real_llm
+      test_workspace_retrieval_real_llm
+      test_context_tools_real_llm
+      test_workflow_facade_real_llm
+      test_auto_delegation_real_parallel
+      test_ultracode_discretion_real_llm
+      test_real_config_env_integration
+      test_real_llm_cluster_features
+      test_memory_store_real_llm
+    )
+    fail=0
+    for suite in "${suites[@]}"; do
+      echo "=== ${suite} ===" | tee -a "${EVIDENCE}/summary.txt"
+      if cargo test -p a3s-code-core --test "${suite}" -- --ignored --test-threads=1 --nocapture \
+          >"${EVIDENCE}/${suite}.log" 2>&1; then
+        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+      else
+        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+        fail=1
+      fi
+      rg -n 'test result:|using default_model=|pinning default_model' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
+    done
+    # Feature-gated live suites (optional when features compile).
+    if cargo test -p a3s-code-core --features advanced-harness --test test_extensibility_real_llm -- --list >/dev/null 2>&1; then
+      suite=test_extensibility_real_llm
+      echo "=== ${suite} (advanced-harness) ===" | tee -a "${EVIDENCE}/summary.txt"
+      if cargo test -p a3s-code-core --features advanced-harness --test "${suite}" -- --ignored --test-threads=1 --nocapture \
+          >"${EVIDENCE}/${suite}.log" 2>&1; then
+        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+      else
+        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+        fail=1
+      fi
+      rg -n 'test result:|using default_model=' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
+    fi
+    if cargo test -p a3s-code-core --features serve --test test_serve_agent_dir_real_llm -- --list >/dev/null 2>&1; then
+      suite=test_serve_agent_dir_real_llm
+      echo "=== ${suite} (serve) ===" | tee -a "${EVIDENCE}/summary.txt"
+      if cargo test -p a3s-code-core --features serve --test "${suite}" -- --ignored --test-threads=1 --nocapture \
+          >"${EVIDENCE}/${suite}.log" 2>&1; then
+        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+      else
+        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+        fail=1
+      fi
+      rg -n 'test result:|using default_model=' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
+    fi
+    if [[ "${fail}" -eq 0 ]]; then
+      echo "LAYER_C_PASS model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
+    else
+      echo "LAYER_C_FAIL model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
+    fi
+    exit "${fail}"

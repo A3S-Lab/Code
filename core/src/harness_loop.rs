@@ -176,6 +176,17 @@ impl MutationLedger {
         self.records.iter().map(|record| record.path.as_str())
     }
 
+    /// Latest content digest recorded for a mutated path (path-boundary match).
+    pub fn content_digest_for_path(&self, path: &str) -> Option<&str> {
+        self.records.iter().rev().find_map(|record| {
+            if crate::verification::mutation_path_matches(record.path.as_str(), path) {
+                Some(record.content_digest.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
     /// Record a workspace mutation. Ignores reads and tools that did not
     /// publish a path. `changed_paths` means the workspace already differed,
     /// including a failed or timed-out wrapper. Command text is not parsed.
@@ -504,12 +515,13 @@ pub fn decide_with_observations(
     let message = format!(
         "completion gate: workspace mutation {digest} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
     );
-    // A host waiver is not model-grantable, editor-authored reports are
-    // rejected, and no built-in tool attaches a bound effect digest. The
-    // optional verifier turn already ran or was skipped before this decision.
-    // Spending the one continuation here cannot close the gate; it only
-    // invites another tool call. An open external observation still continues,
-    // because a workspace write can satisfy that subject.
+    // A host waiver is not model-grantable, and editor-authored reports are
+    // rejected. Built-in bash may bind a digest only when an existence check
+    // matches a mutated path *and* on-disk content matches the ledger digest.
+    // The optional verifier turn already ran or was skipped before this
+    // decision. Spending the one continuation here cannot close the gate; it
+    // only invites another tool call. An open external observation still
+    // continues, because a workspace write can satisfy that subject.
     CompletionGate::Incomplete { message }
 }
 

@@ -347,7 +347,13 @@ impl OpenAiClient {
                                                     }
                                                     if let Some(func) = tc.function {
                                                         if let Some(name) = func.name {
-                                                            entry.1 = name;
+                                                            // Gateways often re-send
+                                                            // `"name":""` on argument-only
+                                                            // continuation deltas. Never wipe
+                                                            // a previously accumulated name.
+                                                            if !name.is_empty() {
+                                                                entry.1 = name;
+                                                            }
                                                         }
                                                         if let Some(args) = func.arguments {
                                                             entry.2.push_str(&args);
@@ -682,10 +688,27 @@ fn apply_tool_call_snapshot(
     calls: Vec<OpenAiToolCall>,
 ) {
     for (index, call) in calls.into_iter().enumerate() {
-        if let Some((bound_id, bound_name, _)) = tool_calls.get(&index) {
+        if let Some((bound_id, bound_name, bound_args)) = tool_calls.get(&index) {
             if snapshot_conflicts(bound_id, bound_name, &call.id, &call.function.name) {
                 continue;
             }
+            let id = if call.id.is_empty() {
+                bound_id.clone()
+            } else {
+                call.id
+            };
+            let name = if call.function.name.is_empty() {
+                bound_name.clone()
+            } else {
+                call.function.name
+            };
+            let arguments = if call.function.arguments.is_empty() {
+                bound_args.clone()
+            } else {
+                call.function.arguments
+            };
+            tool_calls.insert(index, (id, name, arguments));
+            continue;
         }
         tool_calls.insert(
             index,
@@ -700,8 +723,8 @@ fn snapshot_conflicts(
     snapshot_id: &str,
     snapshot_name: &str,
 ) -> bool {
-    (!bound_id.is_empty() && snapshot_id != bound_id)
-        || (!bound_name.is_empty() && snapshot_name != bound_name)
+    (!bound_id.is_empty() && !snapshot_id.is_empty() && snapshot_id != bound_id)
+        || (!bound_name.is_empty() && !snapshot_name.is_empty() && snapshot_name != bound_name)
 }
 
 fn tool_call_delta_conflicts(
@@ -710,7 +733,7 @@ fn tool_call_delta_conflicts(
     delta: &OpenAiToolCallDelta,
 ) -> bool {
     if let Some(id) = delta.id.as_deref() {
-        if !bound_id.is_empty() && id != bound_id {
+        if !id.is_empty() && !bound_id.is_empty() && id != bound_id {
             return true;
         }
     }
@@ -719,7 +742,8 @@ fn tool_call_delta_conflicts(
         .as_ref()
         .and_then(|function| function.name.as_deref())
     {
-        if !bound_name.is_empty() && name != bound_name {
+        // Empty continuation names are ignored, not treated as a new call.
+        if !name.is_empty() && !bound_name.is_empty() && name != bound_name {
             return true;
         }
     }

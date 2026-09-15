@@ -3,16 +3,17 @@
 //! Ignored by default because it consumes provider quota. Select a model from
 //! the same ACL with `A3S_TEST_MODEL=provider/model`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
-    Agent, AgentEvent, AgentSession, CodeConfig, InterruptRequest, PlanningMode,
-    RunControlOperation, RunControlReceiptState, RunStatus, SessionOptions, SteerRequest,
-    SystemPromptSlots,
+    Agent, AgentEvent, AgentSession, InterruptRequest, PlanningMode, RunControlOperation,
+    RunControlReceiptState, RunStatus, SessionOptions, SteerRequest, SystemPromptSlots,
 };
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(240);
 #[cfg(not(windows))]
@@ -26,33 +27,12 @@ const INTERRUPT_COMMAND: &str =
 #[cfg(windows)]
 const INTERRUPT_COMMAND: &str = "[System.IO.File]::WriteAllText('interrupt-started.txt','STARTED'); Start-Sleep -Seconds 10; [System.IO.File]::WriteAllText('interrupt-leak.txt','LEAK')";
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn configured_agent_and_model() -> (Agent, String) {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| config.default_model.clone())
-        .expect("real config must declare default_model");
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in {}",
-        path.display()
-    );
+    let config = load_pinned_layer_c_config();
+    let model = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
     eprintln!("[run-control-real] model={model}");
     (
         Agent::from_config(config)

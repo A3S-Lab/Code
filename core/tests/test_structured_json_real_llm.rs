@@ -16,11 +16,9 @@
 //!   cargo test -p a3s-code-core --test test_structured_json_real_llm -- --ignored --nocapture
 //! ```
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use a3s_code_core::config::CodeConfig;
 use a3s_code_core::llm::structured::{
     generate_blocking, generate_streaming, PartialObjectCallback, StructuredMode,
     StructuredRequest, StructuredResult,
@@ -30,46 +28,28 @@ use a3s_code_core::planning::LlmPlanner;
 use a3s_code_core::tools::{register_generate_object, ToolContext, ToolRegistry, ToolStreamEvent};
 use serde_json::{json, Value};
 
+mod support;
+use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+
 /// Hard ceiling per LLM call so a flaky/hung endpoint fails the test fast
 /// instead of stalling for minutes.
 const CALL_TIMEOUT: Duration = Duration::from_secs(90);
 const PRE_ANALYZE_TIMEOUT: Duration = Duration::from_secs(180);
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
-/// Build a client from `.a3s/config.acl`. By default uses the config's
-/// `default_model`; set `A3S_TEST_MODEL=provider/model` to target a specific
-/// model (e.g. a tool-capable one for structured-output tests).
+/// Build a client pinned to Layer C Flash (`boyue/bailian/deepseek-v4.1-flash`).
 fn real_client() -> Arc<dyn LlmClient> {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
-
-    let llm_config = match std::env::var("A3S_TEST_MODEL") {
-        Ok(spec) => {
-            let (provider, model) = spec
-                .split_once('/')
-                .expect("A3S_TEST_MODEL must be 'provider/model'");
-            eprintln!("[real-llm] model = {spec} (from {})", path.display());
-            config
-                .llm_config(provider, model)
-                .unwrap_or_else(|| panic!("model {spec} not found in {}", path.display()))
-        }
-        Err(_) => {
-            eprintln!("[real-llm] model = <default> (from {})", path.display());
-            config
-                .default_llm_config()
-                .expect("default llm config in .a3s/config.acl")
-        }
-    };
+    let config = load_pinned_layer_c_config();
+    let model = config
+        .default_model
+        .as_deref()
+        .unwrap_or(REQUIRED_DEFAULT_MODEL);
+    let (provider, model_id) = model
+        .split_once('/')
+        .expect("selected model must use provider/model syntax");
+    eprintln!("[real-llm] model = {model}");
+    let llm_config = config
+        .llm_config(provider, model_id)
+        .unwrap_or_else(|| panic!("model {model} not found in pinned Layer C ACL"));
     create_client_with_config(llm_config)
 }
 

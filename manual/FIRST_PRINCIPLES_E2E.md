@@ -39,8 +39,13 @@ Orchestration: `just harness-convergence-check` covers A1–A4.
 | C2 | `test_deepseek_adversarial_e2e` | Cancel / hostile tools / secret hygiene |
 | C3 | `test_update_plan_live_e2e` | Checklist tool live path |
 | C4 | Orchestration / long-horizon / structured JSON / run-control real LLM | Multi-mechanism live |
+| C5 | `test_harness_loop_live_e2e` / `test_harness_capabilities_live_e2e` | Gate + baseline tools (incl. download/web_fetch) |
+| C6 | `test_workspace_retrieval_real_llm` / search / memory | Retrieval + `context_memory` live |
+| C7 | `test_issue_fix_live_e2e` | `#139` streaming tool names, `#137` MCP stdio progress, `#138` oversized event page |
+| C8 | `test_agent_protocol_live_e2e` | Harness Start/replay, live tool→change set, protocol Cancel |
 
-Point `A3S_CONFIG_FILE` at a secret-bearing ACL; never commit keys.
+Run the full serial matrix with `just layer-c-live-e2e` (pins
+`boyue/bailian/deepseek-v4.1-flash`).
 
 ## Layer D — External qualification (not substituted by A–C)
 
@@ -66,32 +71,72 @@ See [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md) evidence templates.
 Filled as this goal progresses; do not mark complete without requirement-level
 evidence.
 
-Fresh live pass against `A3S_CONFIG_FILE=./.a3s/config.acl`
-(`default_model=deepseek/deepseek-v4-pro`), serial `--ignored --test-threads=1`:
+Clean Layer C matrix against `A3S_CONFIG_FILE=./.a3s/config.acl` with
+`A3S_TEST_MODEL=boyue/bailian/deepseek-v4.1-flash`. Suites load via
+`support/layer_c_model.rs` in-process pin (not env-only). Recipe:
+`just layer-c-live-e2e`.
+
+Evidence `/tmp/a3s-issue-fix-live/`:
+- `test_issue_fix_live_e2e` 3/3 PASS on `boyue/bailian/deepseek-v4.1-flash`
+  (`FINAL.txt`: `ISSUE_FIX_LIVE_PASS`). Kernel checks only: non-empty streamed
+  tool names across write→read turns; ≥2 MCP `notifications/progress` during
+  live `tools/call`; oversized `tool_end` still projects via
+  `AgentProtocolEventPageV1::from_run_page`.
+
+Evidence `/tmp/a3s-agent-protocol-live/`:
+- `test_agent_protocol_live_e2e` **3/3 PASS** on `boyue/bailian/deepseek-v4.1-flash`
+  (`FINAL.txt`: `AGENT_PROTOCOL_LIVE_PASS`). Kernel checks only: Harness Start
+  receipt + terminal event page + replayed Start; live `write` projects
+  non-empty tool names and a validating change set; protocol Cancel reaches
+  `Cancelled` without the late leak file.
+- Measurement note: `--lib` llvm-cov under-reports this surface (integration
+  suites own most of it). With `--tests` after C8 hermetic metadata bound:
+  `agent_protocol` **84.0%**, `agent_protocol_host` **89.1%**,
+  `agent_protocol_harness` **74.6%** (remaining misses are mostly exact-recovery
+  / capacity / closed error arms — not live LLM paths). Weighted protocol
+  surface ≈ **82.8%** lines.
+
+Evidence `/tmp/a3s-layer-c-boyue-v858-r9/`:
+- Full serial matrix green on `boyue/bailian/deepseek-v4.1-flash`
+  (`FINAL.txt`: `LAYER_C_PASS … (capabilities-retry)`).
+- Initial capabilities fail was DNS lookup for `example.com` on `download`;
+  retry 23/23. Loop 8/8 includes live `verify_commands`. Cluster 7/7 includes
+  save/resume + scheduler + `run_event_page`. Memory extract hard-fail 2/2.
+- `web_search` asserts kernel effect (query/results/engine success), not
+  structural exit_code alone. `batch` live dual-read covered. Shared pin loader
+  for loop/capabilities.
 
 | Suite | Result |
 | --- | --- |
-| `test_prompt_capability_real_llm` | 2/2 |
+| `test_issue_fix_live_e2e` | 3/3 |
+| `test_agent_protocol_live_e2e` | 3/3 |
+| `test_harness_loop_live_e2e` | 8/8 (+ verify_commands) |
+| `test_harness_capabilities_live_e2e` | 23/23 (retry after DNS flake) |
 | `test_deepseek_adversarial_e2e` | 3/3 |
 | `test_update_plan_live_e2e` | 1/1 |
+| `test_prompt_capability_real_llm` | 2/2 |
 | `test_orchestration_real_llm` | 7/7 |
 | `test_long_horizon_real_llm` | 1/1 |
 | `test_structured_json_real_llm` | 6/6 |
 | `test_run_control_real_llm` | 2/2 |
-| `test_workspace_search_real_llm` | 1/1 (warm durable index via `local_with_indexed_retrieval`) |
+| `test_workspace_search_real_llm` | 1/1 |
 | `test_workspace_retrieval_real_llm` | 3/3 |
 | `test_context_tools_real_llm` | 4/4 |
 | `test_workflow_facade_real_llm` | 4/4 |
 | `test_auto_delegation_real_parallel` | 2/2 |
-| `test_extensibility_real_llm` (`advanced-harness`) | 4/4 |
 | `test_ultracode_discretion_real_llm` | 3/3 |
-| `test_real_config_env_integration` | 3/3 (no longer hard-requires MiniMax `A3S_OPENAI_*`) |
-| `test_real_llm_cluster_features` | 5/5 |
+| `test_real_config_env_integration` | 3/3 |
+| `test_real_llm_cluster_features` | 7/7 |
+| `test_memory_store_real_llm` | 2/2 |
+| `test_extensibility_real_llm` (`advanced-harness`) | 4/4 |
 | `test_serve_agent_dir_real_llm` (`serve`) | 2/2 |
+
+Prior r6 under `/tmp/a3s-layer-c-boyue-v858-r6/` is the last clean pass before
+these coverage deltas. r7/r8 aborted mid-matrix after probe fixes.
 
 | Layer | Status | Evidence |
 | --- | --- | --- |
-| A | Pass | `just harness-convergence-check` green after SDK `set_output_language` / `outputLanguage` alignment (Node/Python/Go) + prior local-code lib fixes (3138+ lib tests under `local-code`) |
-| B | Pass (hermetic) | `advanced-harness` lib: evaluation 52 / research 45 / state_graph 23 / dynamic_workflow 35; integration eval+research suites green; `s3` lib 75 green; live S3 ignored without endpoint |
-| C | Pass (config.acl model) | Table above; fixes: Active-only task fan-out, config ACL without OpenAI env gate, workspace-search index warm for lazy zvec |
+| A | Pass | content-bind Verify + hermetic + SDK matrix (+ batch) + zh-CN honesty |
+| B | Prior hermetic pass | Advanced feature suites unchanged this pass |
+| C | Pass (boyue bailian Flash) | r9 table; ~93 live ignored tests; no V9 on main |
 | D | Blocked externally until Harbor/host/CAR reports | |

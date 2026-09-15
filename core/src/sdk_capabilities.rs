@@ -125,6 +125,8 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
             "session.glob",
             "session.grep",
             "session.git",
+            "session.tool:download",
+            "session.tool:batch",
         ],
         host_owned: true,
         tier: CapabilityTier::Baseline,
@@ -174,7 +176,7 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "planning_delegation",
         category: "orchestration",
-        description: "Run plans, worker agents, and unified `task` delegation with bounded fan-out and cancellation. Model-visible `parallel_task` is removed (`HARNESS-CONV4`); use `session.tasks` / multi-item `task`.",
+        description: "Run plans, worker agents, and unified `task` delegation with bounded fan-out and cancellation. Model-visible `parallel_task` is removed (`HARNESS-CONV4`); use `session.tasks` / multi-item `task`. Host `session.parallel` / Flow workflows are Advanced `programmable_workflows`, not this baseline surface.",
         operations: &["session.task", "session.tasks", "session.register_worker_agent"],
         host_owned: true,
         tier: CapabilityTier::Baseline,
@@ -182,7 +184,7 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "priority_scheduling",
         category: "orchestration",
-        description: "Share bounded priority/FIFO admission and observe scheduler occupancy, fairness, and lifecycle counters.",
+        description: "Host capacity plumbing: share bounded priority/FIFO admission and observe scheduler occupancy, fairness, and lifecycle counters. Not required for ordinary coding-loop correctness.",
         operations: &[
             "session.task_scheduler_stats",
             "session.task_scheduler_health",
@@ -247,8 +249,16 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
     CapabilitySpec {
         id: "web_search",
         category: "web",
-        description: "Search HTTP, native, RSS, and JavaScript-rendered engines through a3s-search v3.1.4. Billed providers stay opt-in.",
+        description: "Baseline web search through a3s-search v3.1.4 over HTTP, native API, and RSS engines. JavaScript/headless engines require the Advanced `moli_runtime` / Cargo `headless-search` profile. Billed providers stay opt-in.",
         operations: &["session.web_search", "session.tool:web_search"],
+        host_owned: true,
+        tier: CapabilityTier::Baseline,
+    },
+    CapabilitySpec {
+        id: "web_fetch",
+        category: "web",
+        description: "Fetch a public HTTP(S) URL into text or markdown through the governed `web_fetch` tool (size and redirect bounded).",
+        operations: &["session.tool:web_fetch"],
         host_owned: true,
         tier: CapabilityTier::Baseline,
     },
@@ -284,11 +294,18 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
         tier: CapabilityTier::Advanced,
     },
     CapabilitySpec {
+        id: "program",
+        category: "composition",
+        description: "Execute a bounded in-process QuickJS `program` tool as part of the coding harness. Prefer unified `task` for model-driven fan-out; this is an escape hatch, not a second workflow engine.",
+        operations: &["session.program", "session.tool:program"],
+        host_owned: false,
+        tier: CapabilityTier::Baseline,
+    },
+    CapabilitySpec {
         id: "programmable_workflows",
         category: "orchestration",
-        description: "Execute bounded QuickJS programs and resumable parallel or Flow-backed workflows. Prefer unified `task` for model-driven coding fan-out; treat this surface as host-authored Advanced orchestration.",
+        description: "Host-authored resumable parallel Workflow APIs and Flow-backed dynamic workflows (`advanced-harness`). Prefer unified `task` for model-driven coding fan-out. Does not include the baseline `program` tool.",
         operations: &[
-            "session.program",
             "session.parallel",
             "session.parallel_resumable",
             "session.workflow_step",
@@ -445,6 +462,8 @@ mod tests {
             "governance",
             "run_control",
             "web_search",
+            "web_fetch",
+            "program",
         ];
         for id in required_baseline {
             let capability = capabilities
@@ -477,6 +496,29 @@ mod tests {
                 "{id} must be advanced"
             );
         }
+        let programmable = capabilities
+            .iter()
+            .find(|item| item.id == "programmable_workflows")
+            .expect("programmable_workflows");
+        assert!(
+            !programmable
+                .operations
+                .iter()
+                .any(|operation| operation.contains("program")),
+            "baseline program must not be mixed into Advanced programmable_workflows"
+        );
+        let web_search = capabilities
+            .iter()
+            .find(|item| item.id == "web_search")
+            .expect("web_search");
+        assert!(
+            !web_search
+                .description
+                .to_ascii_lowercase()
+                .contains("javascript-rendered")
+                || web_search.description.contains("headless-search"),
+            "baseline web_search must not claim JS engines without naming the Advanced gate"
+        );
     }
 
     #[test]

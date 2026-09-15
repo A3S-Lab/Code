@@ -480,6 +480,7 @@ fn finish_agent_session(
         runtime_budget_guard: std::sync::Mutex::new(None),
         runtime_outcome_ledger: std::sync::Mutex::new(None),
         runtime_agent_style: std::sync::Mutex::new(None),
+        runtime_planning_mode: std::sync::Mutex::new(None),
         runtime_output_language: std::sync::Mutex::new(None),
         session_review,
         review_scenarios,

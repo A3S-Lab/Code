@@ -10,31 +10,21 @@
 //!   -- --ignored --test-threads=1 --nocapture
 //! ```
 
-use std::path::PathBuf;
+mod support;
+
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
-    Agent, AgentEvent, AgentStyle, CodeConfig, PlanningMode, SessionOptions, SystemPromptSlots,
+    Agent, AgentEvent, AgentStyle, PlanningMode, SessionOptions, SystemPromptSlots,
 };
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 const GP_GUIDELINES: &str = "This is a deterministic capability gate. Use the write tool with canonical arguments to create the requested file. Do not replace the required write with prose.";
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn real_agent() -> Agent {
-    let path = repo_config_path();
-    let config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
+    let config = load_pinned_layer_c_config();
     Agent::from_config(config)
         .await
         .expect("build agent from real config")

@@ -1,17 +1,19 @@
 use super::*;
 
-const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "REMOVED from the model-visible registry (`HARNESS-CONV4`). Prefer `task` with multiple `tasks[]` items. This type remains for focused unit tests that construct ParallelTaskTool directly.";
+const PARALLEL_TASK_TOOL_DESCRIPTION: &str = "REMOVED from the model-visible registry (`HARNESS-CONV4`). Prefer `task` with multiple `tasks[]` items. Crate-internal only for unit tests that exercise the historical fan-out executor.";
 
-/// ParallelTaskTool allows the LLM to fan out multiple delegated tasks concurrently.
+/// Historical fan-out executor used by focused unit tests.
 ///
-/// All tasks execute in parallel and the tool returns when all complete.
-pub struct ParallelTaskTool {
+/// Not registered for models (`HARNESS-CONV4`). Production fan-out uses the
+/// unified `task` tool with multiple `tasks[]` items. Keep this type
+/// `pub(crate)` so hosts and SDKs cannot reintroduce a dual tool surface.
+pub(crate) struct ParallelTaskTool {
     executor: Arc<TaskExecutor>,
 }
 
 impl ParallelTaskTool {
-    /// Create a new ParallelTaskTool
-    pub fn new(executor: Arc<TaskExecutor>) -> Self {
+    /// Construct the historical fan-out executor for in-crate tests.
+    pub(crate) fn new(executor: Arc<TaskExecutor>) -> Self {
         Self { executor }
     }
 

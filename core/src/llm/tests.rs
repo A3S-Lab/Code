@@ -1732,6 +1732,62 @@ mod extra_llm_tests2 {
     }
 
     #[tokio::test]
+    async fn stream_tool_delta_empty_continuation_name_does_not_wipe_or_drop_arguments() {
+        // Gateways re-send `"name":""` on argument-only deltas. Empty name must
+        // be ignored so the accumulated name stays valid and arguments append.
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"compose_plan","arguments":""}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"","parameters":null,"arguments":"{\"a\":1}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("plan")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let mut final_response = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                final_response = Some(response);
+                break;
+            }
+        }
+
+        let response = final_response.expect("expected final response");
+        let calls = response.tool_calls();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(
+            calls[0].name, "compose_plan",
+            "empty continuation name must not wipe the accumulated tool name"
+        );
+        assert_eq!(calls[0].args["a"], 1);
+    }
+
+    #[tokio::test]
     async fn stream_message_snapshot_does_not_replace_a_started_tool_call() {
         let sse = vec![
             concat!(
