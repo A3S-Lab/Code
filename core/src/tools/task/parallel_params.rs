@@ -29,6 +29,7 @@ pub(crate) struct ParallelTaskParams {
 }
 
 /// Get the JSON schema for ParallelTaskParams using the built-in agent catalog.
+#[cfg(test)]
 pub(crate) fn parallel_task_params_schema() -> serde_json::Value {
     parallel_task_params_schema_for_agents(&AgentRegistry::new().list_visible())
 }

@@ -1717,7 +1717,9 @@ impl Tool for TaskTool {
 }
 
 mod parallel_params;
-pub(crate) use parallel_params::{parallel_task_params_schema, ParallelTaskParams};
+#[cfg(test)]
+pub(crate) use parallel_params::parallel_task_params_schema;
+pub(crate) use parallel_params::ParallelTaskParams;
 
 mod parallel_task;
 pub(crate) use parallel_task::ParallelTaskTool;

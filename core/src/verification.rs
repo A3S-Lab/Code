@@ -959,7 +959,8 @@ pub fn path_from_existence_check_command(command: &str) -> Option<String> {
             .or_else(|| rest.strip_prefix("-e"))?
             .trim_start();
         rest
-    } else if let Some(rest) = trimmed.strip_prefix('[') {
+    } else {
+        let rest = trimmed.strip_prefix('[')?;
         let rest = rest.trim_start();
         let rest = rest
             .strip_prefix("-f")
@@ -969,8 +970,6 @@ pub fn path_from_existence_check_command(command: &str) -> Option<String> {
             .trim_end_matches(']')
             .trim_end()
             .trim_start()
-    } else {
-        return None;
     };
     unquote_shell_token(rest)
 }

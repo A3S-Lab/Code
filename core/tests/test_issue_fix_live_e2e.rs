@@ -471,9 +471,12 @@ async fn live_process_host_bash_runs_under_flash_tool_use() {
         .session_async(
             workspace.path().to_string_lossy().to_string(),
             Some(
-                options("issue-140-process-host", &["bash(**)", "write(**)", "read(**)"])
-                    .with_allow_process_host_sandbox(true)
-                    .with_sandbox_handle(sandbox),
+                options(
+                    "issue-140-process-host",
+                    &["bash(**)", "write(**)", "read(**)"],
+                )
+                .with_allow_process_host_sandbox(true)
+                .with_sandbox_handle(sandbox),
             ),
         )
         .await
