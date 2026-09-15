@@ -166,7 +166,7 @@ mod tests {
         );
         let output = sandbox
             .exec(SandboxCommandRequest {
-                command: "printf process-host-ok".into(),
+                command: "printf '%s\\n' 'process-host-ok'".into(),
                 guest_workspace: workspace.path().display().to_string(),
                 timeout_ms: 5_000,
                 output_observer: None,
@@ -174,8 +174,17 @@ mod tests {
             })
             .await
             .expect("process-host sandbox must execute");
-        assert_eq!(output.exit_code, 0);
-        assert!(output.stdout.contains("process-host-ok"));
+        assert_eq!(
+            output.exit_code, 0,
+            "process-host bash exit={}; stderr={}",
+            output.exit_code, output.stderr
+        );
+        assert!(
+            output.stdout.contains("process-host-ok"),
+            "stdout={:?} stderr={:?}",
+            output.stdout,
+            output.stderr
+        );
     }
 
     #[tokio::test]

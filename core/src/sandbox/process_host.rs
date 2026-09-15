@@ -105,9 +105,11 @@ impl BashSandbox for ProcessHostBashSandbox {
             return Ok(output);
         }
 
+        // Non-login `-c`: login shells (`-lc`) source profile scripts that often
+        // exit non-zero on Windows Git Bash / CI images and poison tool exit codes.
         let mut shell = Command::new("bash");
         shell
-            .arg("-lc")
+            .arg("-c")
             .arg(&request.command)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
@@ -451,18 +453,30 @@ mod tests {
             directory.path().to_path_buf(),
             Some(Instant::now() + Duration::from_secs(5)),
         );
+        // Portable generator: avoid GNU-only `yes | head -c`, which is missing or
+        // broken on Windows Git Bash while still exceeding MAX_CAPTURE_BYTES.
         let output = sandbox
             .exec(SandboxCommandRequest {
-                command: "yes x | head -c 200000".to_string(),
+                command: "awk 'BEGIN{while(n++<200000)printf \"x\"}'".to_string(),
                 guest_workspace: directory.path().to_string_lossy().into_owned(),
-                timeout_ms: 1_000,
+                timeout_ms: 5_000,
                 output_observer: None,
                 env: None,
             })
             .await
             .expect("sandbox execution");
-        assert!(!output.timed_out);
-        assert!(output.stdout.contains("command stdout truncated"));
+        assert!(
+            !output.timed_out,
+            "high-volume capture timed out: exit={} stderr={}",
+            output.exit_code, output.stderr
+        );
+        assert!(
+            output.stdout.contains("command stdout truncated"),
+            "expected truncation marker; exit={} stdout_len={} stderr={}",
+            output.exit_code,
+            output.stdout.len(),
+            output.stderr
+        );
         assert!(output.stdout.len() <= MAX_CAPTURE_BYTES + 256);
     }
 
