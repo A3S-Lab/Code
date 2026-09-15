@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.9] - 2026-09-15
+
+
 ### Changed
 
 - Capability inventory tells the truth for the thin default: baseline
@@ -95,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rl_trajectory`, …) and hard cutover of `SessionData` fragments remain
   follow-ups. This release tells the truth and quarantines zombies without
   overfitting a big-bang default-tree split.
+
 
 ## [8.5.8] - 2026-09-14
 

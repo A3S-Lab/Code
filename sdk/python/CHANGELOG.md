@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.9] - 2026-09-15
+
+- Bundled Core 8.5.9: streaming empty tool names, MCP stdio progress,
+  agent_protocol oversized event pages, and Harbor process-host bash opt-in
+  (#137–#140).
+
 ## [8.5.8] - 2026-09-14
 
 - Bundled Core 8.5.8: Windows release tests no longer inherit autocrlf or
