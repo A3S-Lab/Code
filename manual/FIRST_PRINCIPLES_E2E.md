@@ -76,6 +76,18 @@ Clean Layer C matrix against `A3S_CONFIG_FILE=./.a3s/config.acl` with
 `support/layer_c_model.rs` in-process pin (not env-only). Recipe:
 `just layer-c-live-e2e`.
 
+Evidence `/tmp/a3s-layer-c-boyue-r11/`:
+- Full serial matrix on `boyue/bailian/deepseek-v4.1-flash` via
+  `just layer-c-live-e2e`. First pass failed only
+  `test_deepseek_adversarial_e2e` cancel assert when session created a
+  workspace `.a3s/` root (harness-owned, same class as `.a3s-code`). Fixed by
+  ignoring `.a3s` / `.a3s-code` / `.git` in the cancel workspace filter
+  (aligned with harness loop/capabilities live helpers). Adversarial retry
+  **3/3 PASS**; `FINAL.txt`: `LAYER_C_PASS … (adversarial-retry after .a3s
+  harness filter)`.
+- Coverage delta (non-overfit): `store_persists_main_agent_reply_until_reopen`
+  for session-review address reply persistence.
+
 Evidence `/tmp/a3s-issue-fix-live-r10/`:
 - `test_issue_fix_live_e2e` **4/4 PASS** on `boyue/bailian/deepseek-v4.1-flash`
   (`FINAL.txt`: `ISSUE_FIX_LIVE_PASS`). Kernel checks only: non-empty streamed
@@ -179,5 +191,5 @@ these coverage deltas. r7/r8 aborted mid-matrix after probe fixes.
 | --- | --- | --- |
 | A | Pass | content-bind Verify + hermetic + SDK matrix (+ batch) + zh-CN honesty |
 | B | Prior hermetic pass | Advanced feature suites unchanged this pass |
-| C | Pass (boyue bailian Flash) | r9 table; ~93 live ignored tests; no V9 on main |
+| C | Pass (boyue bailian Flash) | r11 `/tmp/a3s-layer-c-boyue-r11/` + adversarial retry 3/3 |
 | D | Blocked externally until Harbor/host/CAR reports | |

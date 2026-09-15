@@ -94,6 +94,16 @@ impl AgentSession {
             .map_err(|error| CodeError::Session(error.to_string()))
     }
 
+    pub fn set_session_review_main_agent_reply(
+        &self,
+        finding_id: &str,
+        reply: impl Into<String>,
+    ) -> Result<()> {
+        write_or_recover(&self.session_review)
+            .set_main_agent_reply(finding_id, reply)
+            .map_err(|error| CodeError::Session(error.to_string()))
+    }
+
     pub fn accept_session_review_finding(
         &self,
         finding_id: &str,

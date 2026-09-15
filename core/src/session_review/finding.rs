@@ -9,7 +9,8 @@
 use super::scenario::SCENARIO_REPLY_TRANSCRIPT;
 use super::subject::ReviewSubjectV1;
 use super::{
-    validate_id, validate_multiline_text, SessionReviewError, SESSION_REVIEW_MAX_TEXT_BYTES,
+    clamp_session_review_text, validate_id, validate_multiline_text, SessionReviewError,
+    SESSION_REVIEW_MAX_TEXT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +151,9 @@ pub struct SessionReviewFindingV1 {
     pub source_review_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addressed_by_run_id: Option<String>,
+    /// Main-agent address reply shown on annotation cards after Address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_agent_reply: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_by_review_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +190,7 @@ impl SessionReviewFindingV1 {
             subject,
             source_review_id: source_review_id.into(),
             addressed_by_run_id: None,
+            main_agent_reply: None,
             accepted_by_review_id: None,
             reopen_reason: None,
             observed_at_ms,
@@ -268,6 +273,9 @@ impl SessionReviewFindingV1 {
         if let Some(suggestion) = &self.suggestion {
             validate_multiline_text("suggestion", suggestion, SESSION_REVIEW_MAX_TEXT_BYTES)?;
         }
+        if let Some(reply) = &self.main_agent_reply {
+            validate_multiline_text("mainAgentReply", reply, SESSION_REVIEW_MAX_TEXT_BYTES)?;
+        }
         self.subject.validate()?;
         validate_id("sourceReviewId", &self.source_review_id)?;
         if self.observed_at_ms == 0 {
@@ -342,6 +350,21 @@ impl SessionReviewFindingV1 {
         self.validate()
     }
 
+    /// Persist the main-agent address reply for UI annotation cards.
+    pub fn set_main_agent_reply(
+        &mut self,
+        reply: impl Into<String>,
+    ) -> Result<(), SessionReviewError> {
+        let reply = clamp_session_review_text(reply.into().trim(), SESSION_REVIEW_MAX_TEXT_BYTES);
+        if reply.is_empty() {
+            self.main_agent_reply = None;
+            return Ok(());
+        }
+        validate_multiline_text("mainAgentReply", &reply, SESSION_REVIEW_MAX_TEXT_BYTES)?;
+        self.main_agent_reply = Some(reply);
+        Ok(())
+    }
+
     /// Reviewer accepted the main-agent address.
     pub fn accept(
         &mut self,
@@ -387,6 +410,7 @@ impl SessionReviewFindingV1 {
         }
         self.status = SessionReviewStatusV1::Pending;
         self.addressed_by_run_id = None;
+        self.main_agent_reply = None;
         self.accepted_by_review_id = None;
         self.reopen_reason = Some(reason);
         self.updated_at_ms = at_ms;
@@ -407,6 +431,7 @@ impl SessionReviewFindingV1 {
         }
         self.status = SessionReviewStatusV1::Waived;
         self.addressed_by_run_id = None;
+        self.main_agent_reply = None;
         self.accepted_by_review_id = None;
         self.reopen_reason = None;
         self.updated_at_ms = at_ms;
@@ -473,6 +498,13 @@ mod tests {
         let mut finding = sample_finding();
         finding.mark_addressed("run-2", 1_100).unwrap();
         finding
+            .set_main_agent_reply("Recomputed the count via tool:1")
+            .unwrap();
+        assert_eq!(
+            finding.main_agent_reply.as_deref(),
+            Some("Recomputed the count via tool:1")
+        );
+        finding
             .reopen("p-value still missing from evidence", 1_200)
             .unwrap();
         assert_eq!(finding.status, SessionReviewStatusV1::Pending);
@@ -482,6 +514,7 @@ mod tests {
             Some("p-value still missing from evidence")
         );
         assert!(finding.addressed_by_run_id.is_none());
+        assert!(finding.main_agent_reply.is_none());
     }
 
     #[test]

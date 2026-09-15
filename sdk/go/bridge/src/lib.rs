@@ -162,6 +162,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_addressed_review_findings",
     "session_upsert_review_finding",
     "session_mark_review_addressed",
+    "session_set_review_main_agent_reply",
     "session_accept_review_finding",
     "session_reopen_review_finding",
     "session_waive_review_finding",
@@ -1741,6 +1742,14 @@ impl BridgeState {
                     .await?
                     .mark_session_review_addressed(&finding_id, run_id, at_ms)?;
                 Ok(json!({ "addressed": true }))
+            }
+            "session_set_review_main_agent_reply" => {
+                let finding_id: String = required(&request.params, "finding_id")?;
+                let reply: String = required(&request.params, "reply")?;
+                self.request_session(&request.params)
+                    .await?
+                    .set_session_review_main_agent_reply(&finding_id, reply)?;
+                Ok(json!({ "updated": true }))
             }
             "session_accept_review_finding" => {
                 let finding_id: String = required(&request.params, "finding_id")?;

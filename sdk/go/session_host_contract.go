@@ -129,6 +129,25 @@ func (session *Session) MarkSessionReviewAddressed(
 	return session.runtime.Request(ctx, op, params, nil)
 }
 
+// SetSessionReviewMainAgentReply persists the main-agent address reply for annotation cards.
+func (session *Session) SetSessionReviewMainAgentReply(
+	ctx context.Context,
+	findingID string,
+	reply string,
+) error {
+	const op = "session_set_review_main_agent_reply"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	if strings.TrimSpace(findingID) == "" {
+		return invalid(op, "finding id cannot be empty")
+	}
+	params := session.params()
+	params["finding_id"] = findingID
+	params["reply"] = reply
+	return session.runtime.Request(ctx, op, params, nil)
+}
+
 // AcceptSessionReviewFinding accepts an addressed finding.
 func (session *Session) AcceptSessionReviewFinding(
 	ctx context.Context,

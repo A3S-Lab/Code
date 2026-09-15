@@ -95,6 +95,15 @@ impl SessionReviewStoreV1 {
         self.validate()
     }
 
+    pub fn set_main_agent_reply(
+        &mut self,
+        finding_id: &str,
+        reply: impl Into<String>,
+    ) -> Result<(), SessionReviewError> {
+        self.get_mut(finding_id)?.set_main_agent_reply(reply)?;
+        self.validate()
+    }
+
     pub fn accept(
         &mut self,
         finding_id: &str,
@@ -258,5 +267,31 @@ mod tests {
             store.waive("missing", 1),
             Err(SessionReviewError::FindingNotFound(_))
         ));
+    }
+
+    #[test]
+    fn store_persists_main_agent_reply_until_reopen() {
+        let mut store = SessionReviewStoreV1::empty("session-1").unwrap();
+        store.upsert(pending_finding("f-1")).unwrap();
+        store.mark_addressed("f-1", "run-9", 1_100).unwrap();
+        store
+            .set_main_agent_reply("f-1", "  Fixed via tool output  ")
+            .unwrap();
+        assert_eq!(
+            store.findings[0].main_agent_reply.as_deref(),
+            Some("Fixed via tool output")
+        );
+        assert_eq!(
+            store.awaiting_acceptance()[0].main_agent_reply.as_deref(),
+            Some("Fixed via tool output")
+        );
+        assert!(matches!(
+            store.set_main_agent_reply("missing", "x"),
+            Err(SessionReviewError::FindingNotFound(_))
+        ));
+        store
+            .reopen("f-1", "evidence still incomplete", 1_200)
+            .unwrap();
+        assert!(store.findings[0].main_agent_reply.is_none());
     }
 }
