@@ -92,3 +92,15 @@ pub(crate) fn validate_multiline_text(
     }
     Ok(())
 }
+
+/// Truncate on a UTF-8 boundary so long address replies still validate.
+pub(crate) fn clamp_session_review_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes.saturating_sub("…".len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}

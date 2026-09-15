@@ -81,6 +81,13 @@ impl PySession {
             .map_err(py_code_error)
     }
 
+    /// Persist the main-agent address reply for annotation cards.
+    fn set_session_review_main_agent_reply(&self, finding_id: &str, reply: &str) -> PyResult<()> {
+        self.inner
+            .set_session_review_main_agent_reply(finding_id, reply)
+            .map_err(py_code_error)
+    }
+
     /// Accept an addressed finding.
     fn accept_session_review_finding(
         &self,

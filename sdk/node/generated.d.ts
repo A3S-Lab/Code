@@ -2199,6 +2199,8 @@ export declare class Session {
   upsertSessionReviewFinding(finding: any): void
   /** Mark a pending finding addressed by a main-agent run. */
   markSessionReviewAddressed(findingId: string, runId: string, atMs: number): void
+  /** Persist the main-agent address reply for annotation cards. */
+  setSessionReviewMainAgentReply(findingId: string, reply: string): void
   /** Accept an addressed finding. */
   acceptSessionReviewFinding(findingId: string, reviewId: string, atMs: number): void
   /** Reopen an addressed finding. */

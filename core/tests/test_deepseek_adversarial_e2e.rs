@@ -551,11 +551,11 @@ fn assert_workspace_contains_only(workspace: &Path, expected: &[&str]) {
         .filter_map(|entry| {
             let entry = entry.expect("read cancellation workspace entry");
             let name = entry.file_name().to_string_lossy().into_owned();
-            // Code-private harness state under `.a3s-code/` is created by
-            // workspace services / default security and is not a shell side
-            // effect. The cancellation gate only cares about user-visible
+            // Code/session private roots (`.a3s`, `.a3s-code`) and VCS state
+            // are created by workspace services / default security — not shell
+            // side effects. The cancellation gate only cares about user-visible
             // artifacts from the cancellable command.
-            if name == ".a3s-code" {
+            if name == ".a3s" || name == ".a3s-code" || name == ".git" {
                 return None;
             }
             Some(name)

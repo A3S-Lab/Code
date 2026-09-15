@@ -91,6 +91,18 @@ impl Session {
             .map_err(node_code_error)
     }
 
+    /// Persist the main-agent address reply for annotation cards.
+    #[napi]
+    pub fn set_session_review_main_agent_reply(
+        &self,
+        finding_id: String,
+        reply: String,
+    ) -> napi::Result<()> {
+        self.inner
+            .set_session_review_main_agent_reply(&finding_id, reply)
+            .map_err(node_code_error)
+    }
+
     /// Accept an addressed finding.
     #[napi]
     pub fn accept_session_review_finding(
