@@ -4,6 +4,11 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.5.10] - 2026-09-16
+
+- Bundled Core 8.5.10: `a3s-sandbox` 0.1.3 native fences, Fake-IP DoH HTTP
+  recovery, and live Flash native-sandbox E2E wiring.
+
 ## [8.5.9] - 2026-09-15
 
 - Bundled Core 8.5.9: streaming empty tool names/ids, MCP stdio progress,

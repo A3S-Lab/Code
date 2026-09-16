@@ -7,18 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.10] - 2026-09-16
+
 ### Changed
 
 - Native Bash sandbox depends on `a3s-sandbox` **0.1.3** (Gate 7 mediation +
   assurance; opt-in `mediated_http` on macOS/Linux/Windows; default profile
   remains network deny-all). Pinned via Git revision matching crates.io 0.1.3
   / tag `v0.1.3`.
+- When the system resolver returns only 198.18/15 Fake-IP answers and no
+  proxy is set, HTTP fetch falls back to Cloudflare DoH then re-applies
+  public-address checks (without weakening SSRF).
+- Flush auto_save session JSON at tool-round checkpoints so crash windows
+  keep durable transcript progress.
 
 ### Added
 
 - Live E2E `test_native_sandbox_live_e2e`: Flash drives bash through
   `a3s-sandbox` native fences (probe + outside-workspace deny + sandboxed
   workspace write). Included first in `just layer-c-live-e2e`.
+
+### Fixed
+
+- Windows check job timeout raised for serial AppContainer lib tests.
+- Hook timeout settle tests wait long enough under loaded Windows CI.
+- Parallel inherit-permissions mocks are prompt-keyed so children cannot
+  race a shared FIFO LLM queue.
+- Native sandbox Linux deny treats host-side absence as fence success.
+- Fake LSP integration binaries are fsync'd before spawn to avoid ETXTBSY.
+
 
 ## [8.5.9] - 2026-09-15
 
