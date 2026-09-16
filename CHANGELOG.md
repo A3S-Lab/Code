@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remains network deny-all). Pinned via Git revision matching crates.io 0.1.3
   / tag `v0.1.3`.
 
+### Added
+
+- Live E2E `test_native_sandbox_live_e2e`: Flash drives bash through
+  `a3s-sandbox` native fences (probe + outside-workspace deny + sandboxed
+  workspace write). Included first in `just layer-c-live-e2e`.
+
 ## [8.5.9] - 2026-09-15
 
 
