@@ -71,6 +71,21 @@ See [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md) evidence templates.
 Filled as this goal progresses; do not mark complete without requirement-level
 evidence.
 
+Evidence `/tmp/a3s-layer-c-sandbox013-r12/` (2026-09-16):
+- Model pin: `boyue/bailian/deepseek-v4.1-flash` via `./.a3s/config.acl`.
+- Fake-IP LAN (`example.com` → `198.18.0.95`) blocked direct `web_fetch` /
+  `download`. Product fix: when every local answer is Clash/Surge Fake-IP
+  (`198.18.0.0/15`) and no proxy is configured, resolve via Cloudflare DoH
+  (`https://1.1.1.1/dns-query`) then re-apply the same public-address SSRF
+  checks. Loopback / RFC1918 answers still fail closed (no DoH escape).
+- Hermetic: `safe_http` DoH JSON parse + Fake-IP detection + proxy redirect
+  wiremock tests; `test_stream_tool_round_checkpoint_flushes_session_before_end`
+  for mid-run `auto_save` flush.
+- Live reconfirmed: capabilities **23/23** (incl. web_fetch + download),
+  native sandbox Flash write **1/1**, harness loop **8/8**, issue-fix **4/4**,
+  agent protocol **3/3**, update_plan / prompt / structured_json / run_control
+  PASS. CI: Windows check timeout raised to 45m for serial lib tests.
+
 Clean Layer C matrix against `A3S_CONFIG_FILE=./.a3s/config.acl` with
 `A3S_TEST_MODEL=boyue/bailian/deepseek-v4.1-flash`. Suites load via
 `support/layer_c_model.rs` in-process pin (not env-only). Recipe:
