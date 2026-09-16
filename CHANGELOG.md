@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Native Bash sandbox depends on `a3s-sandbox` **0.1.3** (Gate 7 mediation +
   assurance; opt-in `mediated_http` on macOS/Linux/Windows; default profile
-  remains network deny-all).
+  remains network deny-all). Pinned via Git revision matching crates.io 0.1.3
+  / tag `v0.1.3`.
 
 ## [8.5.9] - 2026-09-15
 
