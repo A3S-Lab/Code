@@ -93,9 +93,7 @@ async fn observe(session: &a3s_code_core::AgentSession, prompt: &str) -> Observe
                     metadata,
                     ..
                 } => {
-                    observed
-                        .tools
-                        .push((name, exit_code, output, metadata));
+                    observed.tools.push((name, exit_code, output, metadata));
                 }
                 AgentEvent::Error { message, .. } => observed.errors.push(message),
                 AgentEvent::End { text, .. } => observed.end_text = text,
@@ -123,10 +121,8 @@ async fn a3s_sandbox_0_1_3_denies_outside_workspace_write_on_this_host() {
         .await
         .expect("native sandbox probe must succeed before claiming integration");
 
-    let outside = PathBuf::from(std::env::temp_dir()).join(format!(
-        "a3s-sandbox-escape-{}.txt",
-        std::process::id()
-    ));
+    let outside = PathBuf::from(std::env::temp_dir())
+        .join(format!("a3s-sandbox-escape-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&outside);
     let command = format!(
         "printf 'escaped\\n' > '{}'",
