@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Native Bash sandbox depends on `a3s-sandbox` **0.1.3** (Gate 7 mediation +
+  assurance; opt-in `mediated_http` on macOS/Linux/Windows; default profile
+  remains network deny-all).
+
 ## [8.5.9] - 2026-09-15
 
 
