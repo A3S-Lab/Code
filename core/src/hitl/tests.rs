@@ -649,3 +649,23 @@ async fn test_no_timeout_when_confirmed() {
     assert!(response.approved);
     assert!(response.reason.is_none());
 }
+
+#[tokio::test]
+async fn auto_approve_confirmation_provider_never_blocks() {
+    let provider = AutoApproveConfirmation;
+    assert!(!provider.requires_confirmation("bash").await);
+    let rx = provider
+        .request_confirmation("t1", "bash", &serde_json::json!({}))
+        .await;
+    let response = rx.await.unwrap();
+    assert!(response.approved);
+    assert!(response.reason.is_none());
+    assert!(!provider.confirm("t1", true, None).await.unwrap());
+    let policy = provider.policy().await;
+    assert!(!policy.enabled);
+    provider.set_policy(ConfirmationPolicy::enabled()).await;
+    assert_eq!(provider.check_timeouts().await, 0);
+    assert!(!provider.cancel("t1").await);
+    assert!(!provider.expire("t1", TimeoutAction::Reject).await);
+    assert_eq!(provider.cancel_all().await, 0);
+}

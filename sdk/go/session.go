@@ -9,6 +9,7 @@ import (
 
 type SessionInfo struct {
 	SessionID       string  `json:"session_id"`
+	ModelName       string  `json:"model_name"`
 	Workspace       string  `json:"workspace"`
 	InitWarning     *string `json:"init_warning"`
 	TenantID        *string `json:"tenant_id"`
@@ -24,6 +25,7 @@ type Session struct {
 	owner           *Agent
 	handle          string
 	id              string
+	modelName       string
 	workspace       string
 	initWarning     *string
 	tenantID        *string
@@ -51,6 +53,13 @@ func (session *Session) ID() string {
 
 func (session *Session) SessionID() string {
 	return session.ID()
+}
+
+func (session *Session) ModelName() string {
+	if session == nil {
+		return ""
+	}
+	return session.modelName
 }
 
 func (session *Session) Workspace() string {

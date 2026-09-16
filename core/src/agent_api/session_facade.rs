@@ -469,6 +469,12 @@ impl AgentSession {
         SessionView::from_session(self).id()
     }
 
+    /// Return the model identifier bound to this session
+    /// (for example `boyue/deepseek-v4-flash`).
+    pub fn model_name(&self) -> &str {
+        self.model_name.as_str()
+    }
+
     /// The session's persistence store, if one is configured — needed by the
     /// resumable orchestration combinator to journal workflow progress.
     pub fn session_store(&self) -> Option<Arc<dyn crate::store::SessionStore>> {

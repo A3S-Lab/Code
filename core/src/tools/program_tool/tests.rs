@@ -566,6 +566,111 @@ fn program_tool_accepts_plain_function_run_entrypoint() {
 }
 
 #[test]
+fn program_tool_rejects_forbidden_script_constructs() {
+    for (source, needle) in [
+        ("import fs from 'fs';", "imports are not allowed"),
+        ("const m = import('fs');", "dynamic imports are not allowed"),
+        ("eval('1');", "eval is not allowed"),
+        (
+            "new Function('return 1');",
+            "Function constructor is not allowed",
+        ),
+        ("new Worker('x.js');", "Worker is not allowed"),
+        ("new WebSocket('ws://x');", "WebSocket is not allowed"),
+        ("fetch('/');", "fetch is not allowed"),
+    ] {
+        let err = validate_script_source(source).unwrap_err();
+        assert!(
+            err.contains(needle),
+            "source={source:?} err={err} expected={needle}"
+        );
+    }
+    assert!(validate_script_source("async function run() { return {}; }").is_ok());
+}
+
+#[test]
+fn script_limits_defaults_when_missing_or_invalid() {
+    let defaults = script_limits(&serde_json::json!({}));
+    assert!(defaults.timeout_ms.is_none());
+    assert!(defaults.max_tool_calls.is_none());
+    assert!(defaults.max_output_bytes.is_none());
+
+    let invalid = script_limits(&serde_json::json!({ "limits": "nope" }));
+    assert!(invalid.timeout_ms.is_none());
+
+    let parsed = script_limits(&serde_json::json!({
+        "limits": { "timeoutMs": 1500, "maxToolCalls": 3, "maxOutputBytes": 99 }
+    }));
+    assert_eq!(parsed.timeout_ms, Some(1500));
+    assert_eq!(parsed.max_tool_calls, Some(3));
+    assert_eq!(parsed.max_output_bytes, Some(99));
+}
+
+#[test]
+fn script_allowed_tools_strips_orchestrators_even_when_explicit() {
+    let allowed = script_allowed_tools(
+        &serde_json::json!({
+            "allowed_tools": ["echo", "program", "dynamic_workflow", "parallel_task", "task"]
+        }),
+        vec!["echo".into(), "program".into()],
+    );
+    assert!(allowed.contains("echo"));
+    assert!(allowed.contains("task"));
+    assert!(!allowed.contains("program"));
+    assert!(!allowed.contains("dynamic_workflow"));
+    assert!(!allowed.contains("parallel_task"));
+}
+
+#[tokio::test]
+async fn program_tool_loads_script_from_workspace_js_path() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("run.js");
+    std::fs::write(
+        &script,
+        r#"
+            async function run(ctx) {
+                return { summary: "from-path" };
+            }
+        "#,
+    )
+    .unwrap();
+    let registry = Arc::new(ToolRegistry::new(root.path().to_path_buf()));
+    let tool = ProgramTool::new(Arc::clone(&registry));
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "type": "script",
+                "path": "run.js"
+            }),
+            &ToolContext::new(root.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(output.success, "{output:?}");
+    assert!(output.content.contains("from-path"), "{output:?}");
+}
+
+#[test]
+fn program_read_text_rejects_malformed_anchors_and_none_metadata() {
+    assert_eq!(program_read_text("plain", None), None);
+    assert_eq!(
+        program_read_text(
+            "bad\tline\n",
+            Some(&serde_json::json!({ "range": { "returned_lines": 1 } }))
+        ),
+        None
+    );
+    assert_eq!(
+        program_read_text(
+            "000001\tok\n",
+            Some(&serde_json::json!({ "range": { "returned_lines": 0 } }))
+        )
+        .as_deref(),
+        Some("")
+    );
+}
+
+#[test]
 fn program_tool_renders_result_summary_and_tool_records() {
     let output = render_script_output(
         &serde_json::json!({ "summary": "done", "items": [1] }),
@@ -578,7 +683,6 @@ fn program_tool_renders_result_summary_and_tool_records() {
         }],
         "",
     );
-
     assert!(output.contains("Program script completed."));
     assert!(output.contains("done"));
     assert!(output.contains("echo (ok"));

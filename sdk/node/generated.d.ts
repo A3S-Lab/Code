@@ -624,10 +624,7 @@ export interface SessionOptions {
   guidelines?: string
   /** Custom response style (replaces default Response Format section). */
   responseStyle?: string
-  /**
-   * Pin user-facing replies to a BCP-47 language tag (for example `zh-CN`).
-   * Prefer `session.setOutputLanguage` for per-turn overrides after create.
-   */
+  /** Pin user-facing replies to a BCP-47 tag (for example `zh-CN` or `en-US`). */
   outputLanguage?: string
   /** Freeform extra instructions appended at the end. */
   extra?: string
@@ -648,9 +645,7 @@ export interface SessionOptions {
    * Manual `task` fan-out remains available when this is false.
    */
   autoParallel?: boolean
-  /**
-   * Session-level switch for the model-visible `task` tool.
-   */
+  /** Session-level switch for the model-visible `task` tool. */
   manualDelegationEnabled?: boolean
   /**
    * Sampling temperature (0.0–1.0). Overrides the provider default.
@@ -734,9 +729,9 @@ export interface SessionOptions {
   /** Automatically save the session to the configured store after each turn (default: false). */
   autoSave?: boolean
   /** Extra environment variables merged into Bash / sandbox command execution. */
-  commandEnv?: Record<string, string>
+  commandEnv?: any
   /** Host-confirmed completion waivers bound to an effect digest. */
-  completionWaivers?: Array<{ effect_digest: string, reason: string }>
+  completionWaivers?: any
   /** When true, writes bind a git worktree and never fall back to the source tree. */
   effectIsolation?: boolean
   /** Typed external observations bound into the run. */
@@ -744,9 +739,9 @@ export interface SessionOptions {
   /** Outcome ledger written by the promoting host. */
   outcomeLedger?: any
   /** Path-scoped instruction fragments. Each item is `{ glob, text }`. */
-  pathRules?: Array<{ glob: string, text: string }>
+  pathRules?: any
   /** Admitted plan digest for an implementation run. */
-  planRun?: { claims_implementation: boolean, plan_digest?: string }
+  planRun?: any
   /** A session that cannot write does not get an isolated worktree. */
   readOnlySession?: boolean
   /**
@@ -862,22 +857,6 @@ export interface QueueStats {
   totalActive: number
   externalPending: number
 }
-/** Secret-free Moli runtime diagnostics. */
-export interface MoliRuntimeInfo {
-  schema: string
-  version: string
-  target?: string
-  executable?: string
-  packaged: boolean
-  cacheDir?: string
-  autoDownload: boolean
-}
-/** Return the current Moli resolution path without downloading anything. */
-export declare function moliRuntimeInfo(config?: HeadlessConfig | undefined | null): MoliRuntimeInfo
-/** Ensure a verified Moli executable is available and return its path. */
-export declare function ensureMoli(config?: HeadlessConfig | undefined | null): Promise<string>
-/** Return the pinned Moli release version used by this Code build. */
-export declare function moliDefaultVersion(): string
 /** Configuration for a search engine. */
 export interface SearchEngineConfig {
   /** Whether the engine is enabled. Omission keeps Core's default (`true`). */
@@ -1410,6 +1389,35 @@ export declare class EventStream {
   next(): Promise<NextResult>
 }
 /**
+ * S3-compatible object-storage workspace backend.
+ *
+ * Points built-in file tools (`read`, `write`, `edit`, `patch`, `ls`) at an
+ * S3-compatible bucket. Works with AWS S3, MinIO, RustFS, Cloudflare R2,
+ * Backblaze B2, and other S3-API-compatible services.
+ *
+ * `bash`, `git`, `grep`, and `glob` are intentionally **not** registered
+ * when this backend is in use — object storage cannot service them.
+ *
+ * ```js
+ * const backend = new S3WorkspaceBackend({
+ *   endpoint: 'https://minio.local:9000',
+ *   region: 'us-east-1',
+ *   accessKeyId: 'AKIA...',
+ *   secretAccessKey: '...',
+ *   bucket: 'workspace',
+ *   prefix: 'users/u1/sessions/s1',
+ *   forcePathStyle: true,
+ * });
+ * agent.session('s3://workspace/users/u1/sessions/s1', { workspaceBackend: backend });
+ * ```
+ */
+export declare class S3WorkspaceBackend {
+  kind: string
+  s3: JsS3BackendConfig
+  /** Create an S3-compatible workspace backend. */
+  constructor(config: JsS3BackendConfig)
+}
+/**
  * File-backed long-term memory store.
  *
  * ```js
@@ -1486,35 +1494,6 @@ export declare class LocalWorkspaceBackend {
   root: string
   /** Create a local filesystem workspace backend rooted at `root`. */
   constructor(root: string)
-}
-/**
- * S3-compatible object-storage workspace backend.
- *
- * Points built-in file tools (`read`, `write`, `edit`, `patch`, `ls`) at an
- * S3-compatible bucket. Works with AWS S3, MinIO, RustFS, Cloudflare R2,
- * Backblaze B2, and other S3-API-compatible services.
- *
- * `bash`, `git`, `grep`, and `glob` are intentionally **not** registered
- * when this backend is in use — object storage cannot service them.
- *
- * ```js
- * const backend = new S3WorkspaceBackend({
- *   endpoint: 'https://minio.local:9000',
- *   region: 'us-east-1',
- *   accessKeyId: 'AKIA...',
- *   secretAccessKey: '...',
- *   bucket: 'workspace',
- *   prefix: 'users/u1/sessions/s1',
- *   forcePathStyle: true,
- * });
- * agent.session('s3://workspace/users/u1/sessions/s1', { workspaceBackend: backend });
- * ```
- */
-export declare class S3WorkspaceBackend {
-  kind: string
-  s3: JsS3BackendConfig
-  /** Create an S3-compatible workspace backend. */
-  constructor(config: JsS3BackendConfig)
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
@@ -1741,6 +1720,8 @@ export declare class Session {
   hookCount(): number
   /** Return the session ID. */
   get sessionId(): string
+  /** Return the model identifier bound to this session. */
+  get modelName(): string
   /** Return the workspace path. */
   get workspace(): string
   /** Return any deferred init warning (e.g. memory store failed to initialize). */
@@ -1858,11 +1839,11 @@ export declare class Session {
   /**
    * Pin or clear the user-facing reply language for subsequent turns.
    *
-   * Pass a BCP-47 tag such as `zh-CN` to pin; pass `null`/`undefined` to clear
-   * the runtime override so session `outputLanguage` / prompt slots apply again.
+   * Pass a BCP-47 tag such as `zh-CN` to pin; pass `null` to clear the
+   * runtime override so session `outputLanguage` / prompt slots apply again.
    * Takes effect on the next `send` / `stream`.
    */
-  setOutputLanguage(language?: string | null): void
+  setOutputLanguage(language?: string | undefined | null): void
   /**
    * Override planning mode for subsequent turns without rebuilding the session.
    *
@@ -2082,6 +2063,50 @@ export declare class Session {
    * @returns Object with `counters`, `gauges`, and `histograms` maps, or null
    */
   queueMetrics(): Promise<any>
+  /** Current durable session-review store. */
+  sessionReviewStore(): any
+  /** Registered scenario ids, sorted. */
+  reviewScenarioIds(): Array<string>
+  /** Pending findings whose registered scenario injects into the next main turn. */
+  pendingSessionReviewFindings(): any
+  /** Pending findings for one scenario. Empty when that scenario does not inject. */
+  pendingSessionReviewFindingsForScenario(scenarioId: string): any
+  /** Findings waiting for reviewer acceptance. */
+  addressedSessionReviewFindings(): any
+  /** Insert or replace a finding. New findings must be pending. */
+  upsertSessionReviewFinding(finding: any): void
+  /** Mark a pending finding addressed by a main-agent run. */
+  markSessionReviewAddressed(findingId: string, runId: string, atMs: number): void
+  /** Persist the main-agent address reply for annotation cards. */
+  setSessionReviewMainAgentReply(findingId: string, reply: string): void
+  /** Accept an addressed finding. */
+  acceptSessionReviewFinding(findingId: string, reviewId: string, atMs: number): void
+  /** Reopen an addressed finding. */
+  reopenSessionReviewFinding(findingId: string, reason: string, atMs: number): void
+  /** Waive a pending finding. */
+  waiveSessionReviewFinding(findingId: string, atMs: number): void
+  /** Demote a mistaken product-visible address user prompt to wire-only. */
+  concealLatestFindingsAddressTurn(): number
+  /**
+   * Record a kept, reverted, or rejected constraint against a change-set digest.
+   *
+   * `outcome` is `accept`, `revert`, or `reject`. A secret-shaped constraint
+   * is not stored. Returns whether the ledger kept the record.
+   */
+  recordOutcome(outcome: string, changeDigest: string, constraint: string): boolean
+  /** Remember the promoted isolation digest without activating recall. */
+  notePromotedDigest(digest: string): boolean
+  /** Ledger the next turn will serve, including host records since construction. */
+  outcomeLedgerSnapshot(): any
+  /**
+   * Rebuild executor tool registrations from inherited MCP managers.
+   *
+   * Call after `Agent.syncGlobalMcpServers` so a live session picks up
+   * global connector changes without a restart. Session-local servers stay.
+   */
+  republishInheritedMcpTools(): Promise<void>
+  /** Whether this session inherits at least one shared MCP manager. */
+  inheritsMcpManagers(): boolean
   /**
    * Add or replace a Skill in this live session.
    *
@@ -2185,50 +2210,6 @@ export declare class Session {
   mcpStatus(): Promise<Array<McpServerStatusEntry>>
   /** Return MCP server status with the compact API. */
   mcps(): Promise<Array<McpServerStatusEntry>>
-  /** Current durable session-review store. */
-  sessionReviewStore(): any
-  /** Registered scenario ids, sorted. */
-  reviewScenarioIds(): Array<string>
-  /** Pending findings whose registered scenario injects into the next main turn. */
-  pendingSessionReviewFindings(): any
-  /** Pending findings for one scenario. Empty when that scenario does not inject. */
-  pendingSessionReviewFindingsForScenario(scenarioId: string): any
-  /** Findings waiting for reviewer acceptance. */
-  addressedSessionReviewFindings(): any
-  /** Insert or replace a finding. New findings must be pending. */
-  upsertSessionReviewFinding(finding: any): void
-  /** Mark a pending finding addressed by a main-agent run. */
-  markSessionReviewAddressed(findingId: string, runId: string, atMs: number): void
-  /** Persist the main-agent address reply for annotation cards. */
-  setSessionReviewMainAgentReply(findingId: string, reply: string): void
-  /** Accept an addressed finding. */
-  acceptSessionReviewFinding(findingId: string, reviewId: string, atMs: number): void
-  /** Reopen an addressed finding. */
-  reopenSessionReviewFinding(findingId: string, reason: string, atMs: number): void
-  /** Waive a pending finding. */
-  waiveSessionReviewFinding(findingId: string, atMs: number): void
-  /** Demote a mistaken product-visible address user prompt to wire-only. */
-  concealLatestFindingsAddressTurn(): number
-  /**
-   * Record a kept, reverted, or rejected constraint against a change-set digest.
-   *
-   * `outcome` is `accept`, `revert`, or `reject`. A secret-shaped constraint
-   * is not stored. Returns whether the ledger kept the record.
-   */
-  recordOutcome(outcome: string, changeDigest: string, constraint: string): boolean
-  /** Remember the promoted isolation digest without activating recall. */
-  notePromotedDigest(digest: string): boolean
-  /** Ledger the next turn will serve, including host records since construction. */
-  outcomeLedgerSnapshot(): any
-  /**
-   * Rebuild executor tool registrations from inherited MCP managers.
-   *
-   * Call after `Agent.syncGlobalMcpServers` so a live session picks up
-   * global connector changes without a restart. Session-local servers stay.
-   */
-  republishInheritedMcpTools(): Promise<void>
-  /** Whether this session inherits at least one shared MCP manager. */
-  inheritsMcpManagers(): boolean
   /**
    * Return the names of all tools currently registered on this session.
    *
@@ -2327,6 +2308,36 @@ export declare class ImmutableContentAdapterOptions {
 }
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
+  /**
+   * Serve a filesystem-first agent directory's cron schedules until stopped.
+   *
+   * Loads the directory by convention: `instructions.md` (required), optional
+   * `agent.acl`, `skills/`, `schedules/*.md` (cron jobs), and `tools/*.md`
+   * (`kind: mcp` servers or `kind: script` sandboxed QuickJS tools). It starts
+   * one durable session per enabled schedule (stable id `schedule:<name>`) with
+   * the agent dir's tools installed; each schedule fires as a FULL harness turn
+   * (context, tool visibility, safety gate, verification), never a raw model call.
+   *
+   * Resolves with a {@link ServeHandle} only after all enabled schedule
+   * sessions and tools have been prepared. Startup failures reject this call,
+   * so the returned handle is ready to accept scheduled work. The daemon then
+   * runs in the background until `handle.stop()` is called. The handle MUST be
+   * kept and stopped explicitly — dropping it does NOT cancel the daemon.
+   *
+   * ```js
+   * const handle = await agent.serveAgentDir('./my-agent', '/my-project');
+   * // ... later ...
+   * await handle.stop();
+   * ```
+   *
+   * @param dir - Path to the agent directory (prompt/skills/schedules/tools)
+   * @param workspace - Workspace directory each scheduled turn operates in
+   * @param options - Optional session overrides merged into every schedule session
+   *   (model, llmClient, sessionStore, …). `promptSlots` is honored when
+   *   provided; otherwise the AgentDir `instructions.md` slot is used.
+   *   `sessionId` is always owned by the daemon and set to `schedule:<name>`.
+   */
+  serveAgentDir(dir: string, workspace: string, options?: SessionOptions | undefined | null): Promise<ServeHandle>
   /**
    * Create an Agent from a config file path or inline config string.
    *
@@ -2491,36 +2502,6 @@ export declare class Agent {
    * deployments.
    */
   disconnectIdleMcp(idleThresholdMs: number): Promise<Array<string>>
-  /**
-   * Serve a filesystem-first agent directory's cron schedules until stopped.
-   *
-   * Loads the directory by convention: `instructions.md` (required), optional
-   * `agent.acl`, `skills/`, `schedules/*.md` (cron jobs), and `tools/*.md`
-   * (`kind: mcp` servers or `kind: script` sandboxed QuickJS tools). It starts
-   * one durable session per enabled schedule (stable id `schedule:<name>`) with
-   * the agent dir's tools installed; each schedule fires as a FULL harness turn
-   * (context, tool visibility, safety gate, verification), never a raw model call.
-   *
-   * Resolves with a {@link ServeHandle} only after all enabled schedule
-   * sessions and tools have been prepared. Startup failures reject this call,
-   * so the returned handle is ready to accept scheduled work. The daemon then
-   * runs in the background until `handle.stop()` is called. The handle MUST be
-   * kept and stopped explicitly — dropping it does NOT cancel the daemon.
-   *
-   * ```js
-   * const handle = await agent.serveAgentDir('./my-agent', '/my-project');
-   * // ... later ...
-   * await handle.stop();
-   * ```
-   *
-   * @param dir - Path to the agent directory (prompt/skills/schedules/tools)
-   * @param workspace - Workspace directory each scheduled turn operates in
-   * @param options - Optional session overrides merged into every schedule session
-   *   (model, llmClient, sessionStore, …). `promptSlots` is honored when
-   *   provided; otherwise the AgentDir `instructions.md` slot is used.
-   *   `sessionId` is always owned by the daemon and set to `schedule:<name>`.
-   */
-  serveAgentDir(dir: string, workspace: string, options?: SessionOptions | undefined | null): Promise<ServeHandle>
 }
 /**
  * Lifetime handle for a running serve daemon (see {@link Agent.serveAgentDir}).

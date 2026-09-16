@@ -19,23 +19,12 @@ use a3s_code_core::memory::AgentMemory;
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{Agent, AgentEvent, PlanningMode, SessionOptions, SystemPromptSlots};
 use a3s_memory::{FileMemoryStore, MemoryItem, MemoryStore, MemoryType};
-use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+use support::layer_c_model::{load_pinned_layer_c_config, pinned_layer_c_model};
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn configured_model(config: &a3s_code_core::CodeConfig) -> String {
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| REQUIRED_DEFAULT_MODEL.to_string());
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in the ACL"
-    );
-    model
+    pinned_layer_c_model(config)
 }
 
 async fn run_text_turn(

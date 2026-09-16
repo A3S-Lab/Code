@@ -376,3 +376,286 @@ impl SdkSessionCheckpointExportV1 {
 pub trait SessionCheckpointExportSink: Send + Sync {
     async fn export_checkpoint(&self, checkpoint: SessionCheckpointExportV1) -> anyhow::Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loop_checkpoint::{LoopCheckpoint, LOOP_CHECKPOINT_SCHEMA_VERSION};
+    use crate::store::{
+        SessionConfig, SessionData, SessionSnapshotV1, SessionState,
+        SESSION_SNAPSHOT_SCHEMA_VERSION,
+    };
+    use base64::Engine;
+
+    fn minimal_snapshot(session_id: &str) -> SessionSnapshotV1 {
+        SessionSnapshotV1::session_only(SessionData {
+            id: session_id.into(),
+            config: SessionConfig {
+                name: "checkpoint-test".into(),
+                workspace: "/tmp/checkpoint-test".into(),
+                max_context_length: 8_192,
+                ..SessionConfig::default()
+            },
+            state: SessionState::Active,
+            messages: Vec::new(),
+            context_usage: Default::default(),
+            total_usage: Default::default(),
+            total_cost: 0.0,
+            model_name: None,
+            cost_records: Vec::new(),
+            tool_names: Vec::new(),
+            thinking_enabled: false,
+            thinking_budget: None,
+            created_at: 1_724_000_000,
+            updated_at: 1_724_000_001,
+            llm_config: None,
+            tasks: Vec::new(),
+            parent_id: None,
+            tenant_id: None,
+            principal: None,
+            agent_template_id: None,
+            correlation_id: None,
+            durable_memory_binding: None,
+            cognitive_package_binding: None,
+            immutable_content_adapter_binding: None,
+        })
+    }
+
+    fn sample_loop_checkpoint(session_id: &str) -> LoopCheckpoint {
+        LoopCheckpoint {
+            schema_version: LOOP_CHECKPOINT_SCHEMA_VERSION,
+            run_id: "run-checkpoint-test".into(),
+            session_id: session_id.into(),
+            capability_binding: None,
+            turn: 1,
+            messages: Vec::new(),
+            total_usage: Default::default(),
+            tool_calls_count: 1,
+            verification_reports: Vec::new(),
+            convergence: Default::default(),
+            checkpoint_ms: 1_724_000_000_000,
+        }
+    }
+
+    #[test]
+    fn checkpoint_error_codes_are_stable() {
+        assert_eq!(
+            SessionCheckpointError::InvalidDescriptor("x".into()).code(),
+            "a3s.code.session_checkpoint.invalid_descriptor"
+        );
+        assert_eq!(
+            SessionCheckpointError::InvalidPayload("x".into()).code(),
+            "a3s.code.session_checkpoint.invalid_payload"
+        );
+        assert_eq!(
+            SessionCheckpointError::ContentDrift("x".into()).code(),
+            "a3s.code.session_checkpoint.content_drift"
+        );
+        assert_eq!(
+            SessionCheckpointError::Encoding("x".into()).code(),
+            "a3s.code.session_checkpoint.encoding"
+        );
+    }
+
+    #[test]
+    fn snapshot_evidence_validate_rejects_bad_fields() {
+        let snapshot = minimal_snapshot("session-evidence");
+        let mut evidence = SessionSnapshotEvidenceV1::from_snapshot(&snapshot).unwrap();
+
+        evidence.schema = "bad.schema".into();
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionSnapshotEvidenceV1::from_snapshot(&snapshot).unwrap();
+        evidence.encoding = "bad-encoding".into();
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionSnapshotEvidenceV1::from_snapshot(&snapshot).unwrap();
+        evidence.snapshot_schema_version = SESSION_SNAPSHOT_SCHEMA_VERSION + 1;
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionSnapshotEvidenceV1::from_snapshot(&snapshot).unwrap();
+        evidence.evidence_digest = "sha256:".to_string() + &"0".repeat(64);
+        assert!(evidence.validate().is_err());
+    }
+
+    #[test]
+    fn logical_resume_evidence_validate_rejects_invalid_boundary() {
+        let checkpoint = sample_loop_checkpoint("session-logical");
+        let mut evidence = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+
+        evidence.schema = "bad.schema".into();
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+        evidence.completed_tool_rounds = 0;
+        assert!(evidence.validate().is_err());
+    }
+
+    #[test]
+    fn descriptor_validate_rejects_bad_envelope() {
+        let export =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-desc"), None).unwrap();
+        let mut descriptor = export.descriptor().clone();
+
+        descriptor.schema = "bad.schema".into();
+        assert!(descriptor.validate().is_err());
+
+        descriptor = export.descriptor().clone();
+        descriptor.format = "bad-format".into();
+        assert!(descriptor.validate().is_err());
+
+        descriptor = export.descriptor().clone();
+        descriptor.media_type = "application/json".into();
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn sdk_export_round_trips_minimal_checkpoint() {
+        let export = SessionCheckpointExportV1::new(minimal_snapshot("session-sdk"), None).unwrap();
+        let sdk = SdkSessionCheckpointExportV1::from_export(&export);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&sdk.content_base64)
+            .unwrap();
+        let restored = SessionCheckpointExportV1::from_parts(sdk.descriptor, decoded).unwrap();
+
+        assert_eq!(restored.descriptor(), export.descriptor());
+        assert_eq!(restored.content(), export.content());
+        assert_eq!(restored.open().unwrap().snapshot.session.id, "session-sdk");
+    }
+
+    #[test]
+    fn snapshot_and_logical_resume_validate_for_detect_content_drift() {
+        let snapshot = minimal_snapshot("session-drift");
+        let evidence = SessionSnapshotEvidenceV1::from_snapshot(&snapshot).unwrap();
+        evidence.validate_for(&snapshot).unwrap();
+
+        let other = minimal_snapshot("session-other");
+        assert!(matches!(
+            evidence.validate_for(&other),
+            Err(SessionCheckpointError::ContentDrift(_))
+        ));
+
+        let checkpoint = sample_loop_checkpoint("session-drift");
+        let logical = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+        logical.validate_for(&checkpoint).unwrap();
+
+        let mut drifted = logical.clone();
+        drifted.completed_tool_rounds = logical.completed_tool_rounds + 1;
+        assert!(matches!(
+            drifted.validate_for(&checkpoint),
+            Err(SessionCheckpointError::ContentDrift(_))
+                | Err(SessionCheckpointError::InvalidDescriptor(_))
+        ));
+    }
+
+    #[test]
+    fn logical_resume_validate_rejects_semantics_and_digest_drift() {
+        let checkpoint = sample_loop_checkpoint("session-logical-2");
+        let mut evidence = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+
+        evidence.resume_semantics = "bad-semantics".into();
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+        evidence.checkpoint_schema_version = LOOP_CHECKPOINT_SCHEMA_VERSION + 1;
+        assert!(evidence.validate().is_err());
+
+        evidence = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+        evidence.evidence_digest = format!("sha256:{}", "a".repeat(64));
+        assert!(evidence.validate().is_err());
+    }
+
+    #[test]
+    fn export_with_logical_resume_validates_descriptor_components() {
+        use crate::run::{RunRecord, RunSnapshot, RunStatus};
+
+        let mut snapshot = minimal_snapshot("session-with-resume");
+        let checkpoint = sample_loop_checkpoint("session-with-resume");
+        snapshot.run_records.push(RunRecord {
+            snapshot: RunSnapshot {
+                id: checkpoint.run_id.clone(),
+                session_id: "session-with-resume".into(),
+                status: RunStatus::Executing,
+                prompt: "continue".into(),
+                cognitive_package_binding: None,
+                capability_binding: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                result_text: None,
+                error: None,
+                event_count: 0,
+                workspace_change_set: None,
+            },
+            events: Vec::new(),
+        });
+        let export = SessionCheckpointExportV1::new(snapshot, Some(checkpoint)).unwrap();
+        export.descriptor().validate().unwrap();
+        assert!(export.descriptor().logical_resume.is_some());
+        assert_eq!(
+            export.open().unwrap().logical_resume.map(|cp| cp.run_id),
+            Some("run-checkpoint-test".to_string())
+        );
+    }
+
+    #[test]
+    fn export_from_parts_rejects_descriptor_content_drift() {
+        let export =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-bytes"), None).unwrap();
+        let (descriptor, mut content) = export.into_parts();
+        content.push(b' ');
+        assert!(matches!(
+            SessionCheckpointExportV1::from_parts(descriptor, content),
+            Err(SessionCheckpointError::ContentDrift(_))
+        ));
+    }
+
+    #[test]
+    fn export_into_open_matches_open() {
+        let export =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-open"), None).unwrap();
+        let opened = export.clone().into_open().unwrap();
+        assert_eq!(
+            export.open().unwrap().snapshot.session.id,
+            opened.snapshot.session.id
+        );
+    }
+
+    #[test]
+    fn export_from_parts_rejects_non_canonical_json_whitespace() {
+        let export =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-canonical"), None).unwrap();
+        let (descriptor, mut content) = export.into_parts();
+        content.insert(1, b' ');
+        assert!(matches!(
+            SessionCheckpointExportV1::from_parts(descriptor, content),
+            Err(SessionCheckpointError::ContentDrift(_))
+        ));
+    }
+
+    #[test]
+    fn descriptor_rejects_logical_resume_session_mismatch() {
+        let checkpoint = sample_loop_checkpoint("session-mismatch");
+        let mut resume = SessionLogicalResumeEvidenceV1::from_checkpoint(&checkpoint).unwrap();
+        resume.session_id = "other-session".into();
+        let mut descriptor =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-mismatch"), None)
+                .unwrap()
+                .descriptor()
+                .clone();
+        descriptor.logical_resume = Some(resume);
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn payload_into_parts_preserves_snapshot_and_resume() {
+        let checkpoint = sample_loop_checkpoint("session-parts");
+        let payload = SessionCheckpointPayloadV1 {
+            schema: SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1.to_string(),
+            snapshot: minimal_snapshot("session-parts"),
+            logical_resume: Some(checkpoint.clone()),
+        };
+        let (snapshot, resume) = payload.into_parts();
+        assert_eq!(snapshot.session.id, "session-parts");
+        assert_eq!(resume.map(|cp| cp.run_id), Some(checkpoint.run_id));
+    }
+}

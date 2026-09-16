@@ -18,7 +18,7 @@ use a3s_code_core::{
     SessionOptions, SystemPromptSlots,
 };
 use serde_json::{json, Value};
-use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+use support::layer_c_model::{load_pinned_layer_c_config, pinned_layer_c_model};
 
 #[derive(Debug, Default)]
 struct RewritingReadHook {
@@ -42,19 +42,8 @@ const REAL_TIMEOUT: Duration = Duration::from_secs(300);
 const CONFORMANCE_GUIDELINES: &str = "This is a deterministic integration test. Follow the numbered protocol exactly, use the named tools with their canonical schemas, inspect every result, do not replace a required tool call with prose, and stop after reporting the requested marker.";
 
 async fn real_agent() -> (Agent, String) {
-    let mut config = load_pinned_layer_c_config();
-    let model = std::env::var("A3S_TEST_MODEL")
-        .ok()
-        .filter(|model| !model.trim().is_empty())
-        .unwrap_or_else(|| REQUIRED_DEFAULT_MODEL.to_string());
-    let (provider, model_id) = model
-        .split_once('/')
-        .expect("selected model must use provider/model syntax");
-    assert!(
-        config.llm_config(provider, model_id).is_some(),
-        "selected model {model} is not declared in Layer C config"
-    );
-    config.default_model = Some(model.clone());
+    let config = load_pinned_layer_c_config();
+    let model = pinned_layer_c_model(&config);
     eprintln!("[extensibility-real] model={model}");
     (
         Agent::from_config(config)

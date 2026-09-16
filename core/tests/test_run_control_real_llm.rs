@@ -254,3 +254,91 @@ async fn real_model_interrupt_cancels_an_in_flight_tool_without_late_effects() {
         "cancelled command produced a late side effect"
     );
 }
+
+/// After an interrupt settles a Cancelled run, the same session must still
+/// accept a follow-up turn (session continue), not stay wedged.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real provider configured in .a3s/config.acl"]
+async fn real_model_session_continues_after_interrupt() {
+    let workspace = tempfile::tempdir().expect("continue workspace");
+    let (agent, model) = configured_agent_and_model().await;
+    let session = agent
+        .session_async(
+            workspace.path().display().to_string(),
+            Some(options(
+                &model,
+                "real-continue-after-interrupt",
+                INTERRUPT_COMMAND,
+            )),
+        )
+        .await
+        .expect("create continue session");
+    let prompt = format!(
+        "Invoke bash exactly once with this command: `{INTERRUPT_COMMAND}`. Reply only after it finishes."
+    );
+    let (mut events, worker) = session
+        .stream(&prompt, None)
+        .await
+        .expect("start interrupt-then-continue stream");
+
+    let snapshot = tokio::time::timeout(MODEL_TIMEOUT, async {
+        loop {
+            match events.recv().await {
+                Some(AgentEvent::ToolExecutionStart { name, args, .. }) if name == "bash" => {
+                    assert_eq!(args["command"], INTERRUPT_COMMAND);
+                    return active_snapshot(&session).await;
+                }
+                Some(AgentEvent::PermissionDenied {
+                    tool_name, reason, ..
+                }) => {
+                    panic!("model selected an unauthorized tool {tool_name}: {reason}")
+                }
+                Some(AgentEvent::Error { message }) => panic!("stream failed: {message}"),
+                Some(AgentEvent::End { .. }) | None => panic!("run ended before bash started"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("model did not start interrupt command");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !workspace.path().join("interrupt-started.txt").is_file() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("interrupt command did not publish its start marker");
+    session
+        .interrupt(
+            InterruptRequest::new()
+                .with_reason("continue-after-interrupt")
+                .with_run_id(snapshot.run_id.clone())
+                .with_expected_turn(snapshot.turn_id.clone().unwrap(), snapshot.turn_revision),
+        )
+        .await
+        .expect("accept interrupt");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while events.recv().await.is_some() {}
+    })
+    .await
+    .expect("interrupted run did not settle");
+    worker.await.expect("interrupt worker join");
+    assert_eq!(
+        session.run_snapshot(&snapshot.run_id).await.unwrap().status,
+        RunStatus::Cancelled
+    );
+
+    let continued = session
+        .send("Reply with exactly CONTINUE_OK and nothing else.", None)
+        .await
+        .expect("session must accept a follow-up turn after interrupt");
+    assert!(
+        continued.text.contains("CONTINUE_OK")
+            || session
+                .history()
+                .iter()
+                .any(|message| message.text().contains("CONTINUE_OK")),
+        "continued turn must produce CONTINUE_OK: {}",
+        continued.text
+    );
+}

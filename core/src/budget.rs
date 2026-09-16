@@ -168,5 +168,68 @@ mod tests {
             BudgetDecision::Deny { resource, .. } => assert_eq!(resource, "llm_tokens"),
             other => panic!("expected Deny, got {other:?}"),
         }
+        let concrete = CountingGuard::default();
+        concrete.record_after_llm("s", &TokenUsage::default()).await;
+        assert_eq!(concrete.records.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Debug, Default)]
+    struct SoftThenToolDenyGuard {
+        tool_checks: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl BudgetGuard for SoftThenToolDenyGuard {
+        async fn check_before_llm(&self, _: &str, _: usize) -> BudgetDecision {
+            BudgetDecision::SoftLimit {
+                resource: "usd_cost".into(),
+                consumed: 9.5,
+                limit: 10.0,
+                message: Some("approaching daily cap".into()),
+            }
+        }
+
+        async fn check_before_tool(&self, _: &str, tool_name: &str) -> BudgetDecision {
+            self.tool_checks.fetch_add(1, Ordering::SeqCst);
+            if tool_name == "bash" {
+                BudgetDecision::Deny {
+                    resource: "tool_calls".into(),
+                    reason: "bash capped".into(),
+                }
+            } else {
+                BudgetDecision::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn soft_limit_and_tool_deny_variants_are_exercised() {
+        let guard = SoftThenToolDenyGuard::default();
+        match guard.check_before_llm("s", 10).await {
+            BudgetDecision::SoftLimit {
+                resource,
+                consumed,
+                limit,
+                message,
+            } => {
+                assert_eq!(resource, "usd_cost");
+                assert_eq!(consumed, 9.5);
+                assert_eq!(limit, 10.0);
+                assert_eq!(message.as_deref(), Some("approaching daily cap"));
+            }
+            other => panic!("expected SoftLimit, got {other:?}"),
+        }
+        assert!(matches!(
+            guard.check_before_tool("s", "read").await,
+            BudgetDecision::Allow
+        ));
+        match guard.check_before_tool("s", "bash").await {
+            BudgetDecision::Deny { resource, reason } => {
+                assert_eq!(resource, "tool_calls");
+                assert_eq!(reason, "bash capped");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+        assert_eq!(guard.tool_checks.load(Ordering::SeqCst), 2);
     }
 }

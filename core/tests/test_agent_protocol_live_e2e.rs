@@ -28,7 +28,7 @@ use a3s_code_core::{
     AGENT_PROTOCOL_V1,
 };
 use base64::Engine as _;
-use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_config};
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const WRITE_TOKEN: &str = "ap-live-write-token-c8e2";
@@ -74,11 +74,7 @@ fn initialize_git_workspace(workspace: &std::path::Path) {
 
 async fn live_agent() -> Agent {
     let config = load_pinned_layer_c_config();
-    assert_eq!(
-        config.default_model.as_deref(),
-        Some(REQUIRED_DEFAULT_MODEL),
-        "protocol live suite must pin {REQUIRED_DEFAULT_MODEL}"
-    );
+    assert_pinned_layer_c_flash(&config, "protocol live suite");
     Agent::from_config(config)
         .await
         .expect("build agent from .a3s/config.acl")
@@ -213,7 +209,7 @@ fn non_empty_tool_names(page: &AgentProtocolEventPageV1) -> Vec<String> {
 
 /// C8a: Start → receipt → event page → idempotent replay through the Harness.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash via .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash via .a3s/config.acl"]
 async fn live_harness_start_projects_events_and_replays() {
     let workspace = tempfile::tempdir().expect("workspace");
     let manifest = release_manifest();
@@ -265,7 +261,7 @@ async fn live_harness_start_projects_events_and_replays() {
 
 /// C8b: Live write through Harness must project tool names and a digest-bound change set.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash via .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash via .a3s/config.acl"]
 async fn live_harness_tool_mutation_exports_change_set() {
     let workspace = tempfile::tempdir().expect("workspace");
     initialize_git_workspace(workspace.path());
@@ -321,7 +317,7 @@ async fn live_harness_tool_mutation_exports_change_set() {
 
 /// C8c: Protocol Cancel must terminate an in-flight live tool without late effects.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash via .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash via .a3s/config.acl"]
 async fn live_harness_cancel_stops_in_flight_tool() {
     let workspace = tempfile::tempdir().expect("workspace");
     let manifest = release_manifest();

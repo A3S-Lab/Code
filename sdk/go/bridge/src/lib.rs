@@ -2092,6 +2092,7 @@ impl BridgeState {
         let result = json!({
             "session_handle": handle,
             "session_id": session.id(),
+            "model_name": session.model_name(),
             "workspace": session.workspace().display().to_string(),
             "init_warning": session.init_warning(),
             "tenant_id": session.tenant_id(),
@@ -3735,6 +3736,7 @@ fn empty_object() -> Value {
 fn session_info(session: &AgentSession) -> Value {
     json!({
         "session_id": session.id(),
+        "model_name": session.model_name(),
         "workspace": session.workspace().display().to_string(),
         "init_warning": session.init_warning(),
         "tenant_id": session.tenant_id(),

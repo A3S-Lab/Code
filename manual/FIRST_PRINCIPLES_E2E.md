@@ -45,7 +45,7 @@ Orchestration: `just harness-convergence-check` covers A1–A4.
 | C8 | `test_agent_protocol_live_e2e` | Harness Start/replay, live tool→change set, protocol Cancel |
 
 Run the full serial matrix with `just layer-c-live-e2e` (pins
-`boyue/bailian/deepseek-v4.1-flash`).
+`boyue/deepseek-v4-flash`; override with `A3S_TEST_MODEL`).
 
 ## Layer D — External qualification (not substituted by A–C)
 
@@ -56,6 +56,9 @@ Run the full serial matrix with `just layer-c-live-e2e` (pins
 | D3 | `CAR-01`…`CAR-05` | Cloud / Box |
 
 See [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md) evidence templates.
+
+Feature → hermetic/live/cov kernel mapping:
+[FIRST_PRINCIPLES_TEST_CASES.md](FIRST_PRINCIPLES_TEST_CASES.md).
 
 ## Efficiency checks
 
@@ -70,6 +73,39 @@ See [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md) evidence templates.
 
 Filled as this goal progresses; do not mark complete without requirement-level
 evidence.
+
+Evidence `/tmp/a3s-session-bailian-r14/` (2026-09-16):
+- Requested id `boyue/bailian/deepseek-v4-flash` is **not** in
+  `./.a3s/config.acl`. Declared bailian Flash is
+  `boyue/bailian/deepseek-v4.1-flash` (Layer C maps the typo → declared id).
+- Live pin: `boyue/bailian/deepseek-v4.1-flash` via `A3S_TEST_MODEL`.
+- Session continue: run_control steer + interrupt **2/2**, plus
+  `real_model_session_continues_after_interrupt` **PASS** (Cancelled →
+  follow-up `CONTINUE_OK`).
+- Session resume: cluster `resume_run` + `save`/`resume_session_async`
+  **PASS**.
+- Session model switch: `real_replace_session_switches_model_and_continues`
+  **PASS** (bailian v4.1 → `boyue/deepseek-v4-flash`).
+- Cluster **8/8**, run_control focus **3/3** under bailian Flash.
+  Hermetic: `replacement_is_atomic`, `resume_run*`, `session_with_model*`.
+
+Evidence `/tmp/a3s-session-flash-r13/` (2026-09-16):
+- Model pin: `boyue/deepseek-v4-flash` via `./.a3s/config.acl` +
+  `support/layer_c_model.rs` (honors `A3S_TEST_MODEL` when declared).
+- WorkBuddy / leaked tool markup: hermetic `llm::text_tool_calls` **9/9**
+  (attribute, WorkBuddy bare, WorkBuddy tagged, Claude invoke, DeepSeek
+  DSML). Product fix recovers bare/tagged/`invoke` into structured
+  tool-use and strips protocol wrappers from prose.
+- Session continue: `test_run_control_real_llm` **2/2** (steer + interrupt)
+  on Flash.
+- Session resume: `test_real_llm_cluster_features` includes
+  `real_resume_run_carries_checkpoint_metrics_forward` +
+  `real_session_save_resume_round_trips_history` PASS.
+- Session model switch: `real_replace_session_switches_model_and_continues`
+  PASS (`boyue/deepseek-v4-flash` → `boyue/bailian/deepseek-v4.1-flash`).
+- Cluster suite overall **8/8** on Flash. Issue-fix **4/4** on Flash
+  (oversized tool_end can flake once under Flash; reconfirmed green).
+  Hermetic: `replacement_is_atomic`, `resume_run*`, `session_with_model*`.
 
 Evidence `/tmp/a3s-layer-c-sandbox013-r12/` (2026-09-16):
 - Model pin: `boyue/bailian/deepseek-v4.1-flash` via `./.a3s/config.acl`.
@@ -87,9 +123,18 @@ Evidence `/tmp/a3s-layer-c-sandbox013-r12/` (2026-09-16):
   PASS. CI: Windows check timeout raised to 45m for serial lib tests.
 
 Clean Layer C matrix against `A3S_CONFIG_FILE=./.a3s/config.acl` with
-`A3S_TEST_MODEL=boyue/bailian/deepseek-v4.1-flash`. Suites load via
-`support/layer_c_model.rs` in-process pin (not env-only). Recipe:
-`just layer-c-live-e2e`.
+`A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` (in-process pin remaps to
+declared `boyue/bailian/deepseek-v4.1-flash` via `support/layer_c_model.rs`).
+Recipe: `just layer-c-live-e2e`.
+
+Evidence `/tmp/a3s-layer-c-bailian-flash-r19-full/` (2026-09-16):
+- Full serial matrix **LAYER_C_PASS** on bailian Flash (`FINAL.txt`).
+- All 23 Layer C suites PASS (21 core + `advanced-harness` extensibility +
+  `serve` agent-dir).
+- llvm-cov `--tests` `/tmp/a3s-llvm-cov-r20/`: E2E surfaces all ≥90% lines —
+  `agent_protocol` **93.50%**, `agent_protocol_host` **90.91%**,
+  `agent_protocol_harness` **90.14%**, `session_sandbox` **95.72%**,
+  `streaming` **92.78%**, `stdio` **92.76%**, `process_host` **95.71%**.
 
 Evidence `/tmp/a3s-layer-c-boyue-r11/`:
 - Full serial matrix on `boyue/bailian/deepseek-v4.1-flash` via
@@ -206,5 +251,5 @@ these coverage deltas. r7/r8 aborted mid-matrix after probe fixes.
 | --- | --- | --- |
 | A | Pass | content-bind Verify + hermetic + SDK matrix (+ batch) + zh-CN honesty |
 | B | Prior hermetic pass | Advanced feature suites unchanged this pass |
-| C | Pass (boyue bailian Flash) | r11 `/tmp/a3s-layer-c-boyue-r11/` + adversarial retry 3/3 |
+| C | Pass (boyue bailian Flash) | r19 `/tmp/a3s-layer-c-bailian-flash-r19-full/` LAYER_C_PASS; llvm-cov r20 E2E surfaces ≥90% |
 | D | Blocked externally until Harbor/host/CAR reports | |

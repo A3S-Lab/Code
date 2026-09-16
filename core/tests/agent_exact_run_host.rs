@@ -1,7 +1,8 @@
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
 use a3s_code_core::llm::{ContentBlock, LlmClient, LlmResponse, Message, StreamEvent, TokenUsage};
 use a3s_code_core::{
-    Agent, AgentProtocolCommandV1, AgentProtocolEventPageRequestV1, AgentProtocolHost,
+    Agent, AgentProtocolChangeSetRequestV1, AgentProtocolCommandV1,
+    AgentProtocolEventPageRequestV1, AgentProtocolHost, AgentProtocolHostError,
     AgentProtocolRunCancelV1, AgentProtocolRunIdentityV1, AgentProtocolRunRecoverV1,
     AgentProtocolRunStartV1, AgentRunSpawn, CodeError, SessionOptions, AGENT_PROTOCOL_V1,
 };
@@ -444,4 +445,361 @@ async fn protocol_recovery_uses_code_checkpoint_semantics_and_a_fresh_exact_run(
 
     let replay = host.execute(&recover).await.unwrap();
     assert!(replay.replayed);
+}
+
+#[tokio::test]
+async fn protocol_host_rejects_invalid_release_digest_and_observation_bounds() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_builder(workspace.path().display().to_string())
+            .options(SessionOptions::new().with_session_id("cloud-conversation-bounds"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    assert!(
+        AgentProtocolHost::new("not-a-digest", Arc::clone(&session)).is_err(),
+        "host must reject a non-sha256 release identity"
+    );
+
+    let release_identity = format!("sha256:{}", "d".repeat(64));
+    let host = AgentProtocolHost::new(release_identity.clone(), Arc::clone(&session)).unwrap();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity.clone(),
+        session_id: session.session_id().into(),
+        run_id: "missing-run".into(),
+    };
+
+    let zero_limit = host.event_page(&identity, None, 0).await.unwrap_err();
+    assert_eq!(
+        zero_limit.code(),
+        a3s_code_core::AgentProtocolError::InvalidField("limit").code()
+    );
+    let oversized = host.event_page(&identity, None, 10_000).await.unwrap_err();
+    assert_eq!(
+        oversized.code(),
+        a3s_code_core::AgentProtocolError::InvalidField("limit").code()
+    );
+    let missing = host.event_page(&identity, None, 8).await.unwrap_err();
+    assert_eq!(missing.code(), AgentProtocolHostError::RunNotFound.code());
+
+    let foreign_release = AgentProtocolRunIdentityV1 {
+        agent_release_identity: format!("sha256:{}", "e".repeat(64)),
+        ..identity.clone()
+    };
+    let start = AgentProtocolCommandV1::Start {
+        request: AgentProtocolRunStartV1 {
+            schema: AgentProtocolRunStartV1::SCHEMA.into(),
+            request_id: "bounds:start".into(),
+            identity: foreign_release,
+            prompt: "nope".into(),
+        },
+    };
+    let release_mismatch = host.execute(&start).await.unwrap_err();
+    assert_eq!(
+        release_mismatch.code(),
+        AgentProtocolHostError::ReleaseMismatch.code()
+    );
+
+    let foreign_session = AgentProtocolRunIdentityV1 {
+        session_id: "other-session".into(),
+        ..identity.clone()
+    };
+    let start_session = AgentProtocolCommandV1::Start {
+        request: AgentProtocolRunStartV1 {
+            schema: AgentProtocolRunStartV1::SCHEMA.into(),
+            request_id: "bounds:start-session".into(),
+            identity: foreign_session,
+            prompt: "nope".into(),
+        },
+    };
+    let session_mismatch = host.execute(&start_session).await.unwrap_err();
+    assert_eq!(
+        session_mismatch.code(),
+        AgentProtocolHostError::SessionMismatch.code()
+    );
+
+    let change_set = host
+        .change_set_for(&AgentProtocolChangeSetRequestV1 {
+            schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+            identity,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        change_set.code() == AgentProtocolHostError::RunNotFound.code()
+            || change_set.code() == AgentProtocolHostError::ChangeSetUnavailable.code()
+            || change_set.code() == AgentProtocolHostError::ChangeSetPending.code(),
+        "unexpected change-set error {}",
+        change_set.code()
+    );
+}
+
+#[tokio::test]
+async fn protocol_host_change_set_pending_until_terminal_without_capture() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_builder(workspace.path().display().to_string())
+            .options(
+                SessionOptions::new()
+                    .with_session_id("cloud-conversation-changeset")
+                    .with_llm_client(Arc::new(PendingStreamingClient)),
+            )
+            .build()
+            .await
+            .unwrap(),
+    );
+    let release_identity = format!("sha256:{}", "f".repeat(64));
+    let host = AgentProtocolHost::new(release_identity.clone(), Arc::clone(&session)).unwrap();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity,
+        session_id: session.session_id().into(),
+        run_id: "changeset-run-1".into(),
+    };
+    let start = AgentProtocolCommandV1::Start {
+        request: AgentProtocolRunStartV1 {
+            schema: AgentProtocolRunStartV1::SCHEMA.into(),
+            request_id: "changeset:start".into(),
+            identity: identity.clone(),
+            prompt: "hang".into(),
+        },
+    };
+    host.execute(&start).await.unwrap();
+
+    let pending = host
+        .change_set_for(&AgentProtocolChangeSetRequestV1 {
+            schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+            identity: identity.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        pending.code(),
+        AgentProtocolHostError::ChangeSetPending.code()
+    );
+
+    let cancel = AgentProtocolCommandV1::Cancel {
+        request: AgentProtocolRunCancelV1 {
+            schema: AgentProtocolRunCancelV1::SCHEMA.into(),
+            request_id: "changeset:cancel".into(),
+            identity: identity.clone(),
+            reason: "done".into(),
+        },
+    };
+    host.execute(&cancel).await.unwrap();
+
+    // After cancel, change-set may be unavailable if no git baseline was captured.
+    let after = host
+        .change_set_for(&AgentProtocolChangeSetRequestV1 {
+            schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+            identity,
+        })
+        .await;
+    match after {
+        Ok(_) => {}
+        Err(error) => assert!(
+            error.code() == AgentProtocolHostError::ChangeSetUnavailable.code()
+                || error.code() == AgentProtocolHostError::ChangeSetPending.code(),
+            "unexpected terminal change-set error {}",
+            error.code()
+        ),
+    }
+}
+
+#[tokio::test]
+async fn protocol_host_event_page_rejects_bad_limit_and_identity_mismatch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_builder(workspace.path().display().to_string())
+            .options(
+                SessionOptions::new()
+                    .with_session_id("cloud-conversation-page-limits")
+                    .with_llm_client(Arc::new(StaticStreamingClient {
+                        text: "page limits".into(),
+                    })),
+            )
+            .build()
+            .await
+            .unwrap(),
+    );
+    let release_identity = format!("sha256:{}", "a".repeat(64));
+    let host = AgentProtocolHost::new(release_identity.clone(), Arc::clone(&session)).unwrap();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity.clone(),
+        session_id: session.session_id().into(),
+        run_id: "page-limit-run".into(),
+    };
+    host.execute(&AgentProtocolCommandV1::Start {
+        request: AgentProtocolRunStartV1 {
+            schema: AgentProtocolRunStartV1::SCHEMA.into(),
+            request_id: "page-limit:start".into(),
+            identity: identity.clone(),
+            prompt: "observe".into(),
+        },
+    })
+    .await
+    .unwrap();
+
+    let zero = host
+        .event_page(&identity, None, 0)
+        .await
+        .expect_err("limit zero must fail");
+    assert_eq!(zero.code(), "a3s.code.agent_protocol.invalid_field");
+
+    let oversized = host
+        .event_page(
+            &identity,
+            None,
+            a3s_code_core::AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE + 1,
+        )
+        .await
+        .expect_err("oversized limit must fail");
+    assert_eq!(oversized.code(), "a3s.code.agent_protocol.invalid_field");
+
+    let mut foreign_release = identity.clone();
+    foreign_release.agent_release_identity = format!("sha256:{}", "b".repeat(64));
+    let release_mismatch = host
+        .event_page(&foreign_release, None, 8)
+        .await
+        .expect_err("foreign release must fail");
+    assert_eq!(
+        release_mismatch.code(),
+        AgentProtocolHostError::ReleaseMismatch.code()
+    );
+
+    let mut foreign_session = identity.clone();
+    foreign_session.session_id = "other-session".into();
+    let session_mismatch = host
+        .event_page(&foreign_session, None, 8)
+        .await
+        .expect_err("foreign session must fail");
+    assert_eq!(
+        session_mismatch.code(),
+        AgentProtocolHostError::SessionMismatch.code()
+    );
+}
+
+#[tokio::test]
+async fn protocol_host_recover_marks_change_set_unavailable_when_spawn_fails() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_builder(workspace.path().display().to_string())
+            .options(
+                SessionOptions::new()
+                    .with_session_id("cloud-conversation-recover-fail")
+                    .with_llm_client(Arc::new(StaticStreamingClient {
+                        text: "unused".into(),
+                    })),
+            )
+            .build()
+            .await
+            .unwrap(),
+    );
+    let release_identity = format!("sha256:{}", "c".repeat(64));
+    let host = AgentProtocolHost::new(release_identity.clone(), Arc::clone(&session)).unwrap();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity,
+        session_id: session.session_id().into(),
+        run_id: "missing-recover-target".into(),
+    };
+    let recover = AgentProtocolCommandV1::Recover {
+        request: AgentProtocolRunRecoverV1 {
+            schema: AgentProtocolRunRecoverV1::SCHEMA.into(),
+            request_id: "recover-missing:request".into(),
+            identity: identity.clone(),
+            checkpoint_run_id: "no-such-checkpoint-run".into(),
+        },
+    };
+    let error = host
+        .execute(&recover)
+        .await
+        .expect_err("missing checkpoint recovery must fail");
+    assert!(
+        error.code() == AgentProtocolHostError::RunNotFound.code()
+            || error.code() == "SESSION_ERROR"
+            || error.code().contains("session")
+            || error.code().contains("checkpoint")
+            || error.code().contains("run")
+            || error.code().contains("SESSION"),
+        "unexpected recover error {}",
+        error.code()
+    );
+
+    // Spawn failure must leave change-set unavailable (not pending/capturing).
+    let change_set = host
+        .change_set_for(&AgentProtocolChangeSetRequestV1 {
+            schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+            identity,
+        })
+        .await
+        .expect_err("failed recover must not invent a change-set");
+    assert!(
+        change_set.code() == AgentProtocolHostError::ChangeSetUnavailable.code()
+            || change_set.code() == AgentProtocolHostError::RunNotFound.code(),
+        "unexpected post-fail change-set error {}",
+        change_set.code()
+    );
+}
+
+#[tokio::test]
+async fn protocol_host_cancel_returns_run_unavailable_when_run_is_missing() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(offline_config()).await.unwrap();
+    let session = Arc::new(
+        agent
+            .session_builder(workspace.path().display().to_string())
+            .options(
+                SessionOptions::new()
+                    .with_session_id("cloud-conversation-cancel-missing")
+                    .with_llm_client(Arc::new(StaticStreamingClient {
+                        text: "unused".into(),
+                    })),
+            )
+            .build()
+            .await
+            .unwrap(),
+    );
+    let release_identity = format!("sha256:{}", "d".repeat(64));
+    let host = AgentProtocolHost::new(release_identity.clone(), Arc::clone(&session)).unwrap();
+    let identity = AgentProtocolRunIdentityV1 {
+        schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+        protocol: AGENT_PROTOCOL_V1.into(),
+        agent_release_identity: release_identity,
+        session_id: session.session_id().into(),
+        run_id: "never-started-run".into(),
+    };
+    let cancel = AgentProtocolCommandV1::Cancel {
+        request: AgentProtocolRunCancelV1 {
+            schema: AgentProtocolRunCancelV1::SCHEMA.into(),
+            request_id: "cancel-missing:request".into(),
+            identity,
+            reason: "gone".into(),
+        },
+    };
+    let error = host
+        .execute(&cancel)
+        .await
+        .expect_err("cancel without a run must fail closed");
+    assert!(
+        error.code() == AgentProtocolHostError::RunNotFound.code()
+            || error.code() == AgentProtocolHostError::RunUnavailable.code(),
+        "unexpected cancel-missing error {}",
+        error.code()
+    );
 }

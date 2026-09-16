@@ -463,6 +463,9 @@ pub fn binding(session_id: &str) -> Option<IsolationBinding> {
 }
 
 /// Remove the conversation worktree. Does not delete source files.
+///
+/// Idempotent when the worktree directory is already gone or Git no longer
+/// lists it as a worktree (for example after an earlier cleanup).
 pub async fn discard(session_id: &str) -> Result<()> {
     let binding = state()
         .lock()
@@ -471,12 +474,31 @@ pub async fn discard(session_id: &str) -> Result<()> {
         .remove(session_id)
         .ok_or_else(|| anyhow!("isolation unavailable: no binding for {session_id}"))?;
     let backend = LocalWorkspaceBackend::new(binding.source_root.clone());
-    backend
+    match backend
         .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
             path: binding.worktree_path.display().to_string(),
             force: true,
         })
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        Err(error) => {
+            let message = error.to_string();
+            let already_gone = !binding.worktree_path.exists()
+                || message.contains("is not a working tree")
+                || message.contains("not a valid path");
+            if !already_gone {
+                // Re-bind so a later discard/retry can still find the session.
+                state()
+                    .lock()
+                    .expect("isolation state")
+                    .bindings
+                    .insert(session_id.to_string(), binding);
+                return Err(error);
+            }
+            let _ = std::fs::remove_dir_all(&binding.worktree_path);
+        }
+    }
     crate::shell_session::drop_session(session_id);
     Ok(())
 }
@@ -658,6 +680,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_adopts_an_existing_worktree_directory_with_git_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let session_id = "adopt-existing-wt";
+        let worktree = worktree_path_for(root.path(), session_id);
+        fs::create_dir_all(&worktree).unwrap();
+        // Pretend a previous process left a worktree directory with git metadata.
+        fs::write(worktree.join(".git"), "gitdir: ../.git/worktrees/adopt\n").unwrap();
+        let binding = bind_sync(session_id, root.path(), true, true)
+            .unwrap()
+            .expect("adopted worktree");
+        assert_eq!(binding.worktree_path, worktree);
+        discard(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn discard_leaves_the_source_tree_unchanged() {
         let root = tempfile::tempdir().unwrap();
         init_repo(root.path());
@@ -669,6 +707,26 @@ mod tests {
             "source\n"
         );
         assert!(!root.path().join("noise.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn discard_is_idempotent_when_worktree_is_already_unregistered() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let binding = bind("discard-gone", root.path(), true).await.unwrap();
+        // Simulate an external cleanup that removed the Git worktree registration
+        // while leaving the binding in process state (live E2E teardown class).
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&binding.worktree_path)
+            .current_dir(root.path())
+            .status();
+        let _ = fs::remove_dir_all(&binding.worktree_path);
+        discard("discard-gone")
+            .await
+            .expect("discard already-gone worktree");
+        assert!(!binding.worktree_path.exists());
+        assert!(crate::effect_isolation::binding("discard-gone").is_none());
     }
 
     #[cfg(unix)]
@@ -1175,5 +1233,223 @@ mod tests {
         let error = bind("ro", root.path(), false).await.unwrap_err();
         assert!(error.to_string().contains("cannot write"));
         assert!(binding("ro").is_none());
+    }
+
+    #[test]
+    fn skip_for_read_only_is_true_when_writes_are_disabled() {
+        assert!(skip_for_read_only(false));
+        assert!(!skip_for_read_only(true));
+    }
+
+    #[test]
+    fn bind_sync_returns_none_when_isolation_is_not_requested() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        assert!(bind_sync("not-requested", root.path(), false, true)
+            .unwrap()
+            .is_none());
+        assert!(binding("not-requested").is_none());
+    }
+
+    #[tokio::test]
+    async fn current_change_digest_and_promote_current_cover_empty_and_dirty_paths() {
+        let missing = current_change_digest("never-bound-digest").unwrap_err();
+        assert!(missing.to_string().contains("not bound"), "{missing}");
+
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let bound = bind("digest-clean", root.path(), true).await.unwrap();
+        assert!(current_change_digest("digest-clean").unwrap().is_none());
+        let nothing = promote_current("digest-clean").unwrap_err();
+        assert!(
+            nothing.to_string().contains("nothing to promote"),
+            "{nothing}"
+        );
+
+        fs::write(bound.worktree_path.join("dirty.txt"), "noise").unwrap();
+        assert!(current_change_digest("digest-clean").unwrap().is_some());
+        discard("digest-clean").await.unwrap();
+    }
+
+    #[test]
+    fn promote_rejects_empty_digest() {
+        let err = promote("missing", "   ", "rev", |_| Ok(())).unwrap_err();
+        assert!(err.to_string().contains("digest"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discard_requires_an_existing_binding() {
+        let missing = discard("never-bound-discard").await.unwrap_err();
+        assert!(missing.to_string().contains("no binding"), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn promote_current_deletes_a_tracked_file_removed_in_the_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        fs::write(root.path().join("gone.txt"), "tracked\n").unwrap();
+        git(root.path(), &["add", "gone.txt"]);
+        git(root.path(), &["commit", "-m", "track gone"]);
+        let binding = bind("promote-delete", root.path(), true).await.unwrap();
+        fs::remove_file(binding.worktree_path.join("gone.txt")).unwrap();
+
+        let outcome = promote_current("promote-delete").unwrap();
+        assert!(matches!(outcome, PromoteOutcome::Applied { .. }));
+        assert!(!root.path().join("gone.txt").exists());
+        discard("promote-delete").await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn promote_current_refuses_a_symlink_as_a_promoted_path() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let session = format!("promote-symlink-{}", std::process::id());
+        let binding = bind(&session, root.path(), true).await.unwrap();
+        std::os::unix::fs::symlink("README.md", binding.worktree_path.join("evil-link")).unwrap();
+
+        let error = promote_current(&session).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("non-regular file")
+                || message.contains("symbolic link")
+                || message.contains("refusing to promote"),
+            "{message}"
+        );
+        discard(&session).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_promoted_file_releases_claim_when_destination_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let session = format!("promote-write-fail-{}", std::process::id());
+        let binding = bind(&session, root.path(), true).await.unwrap();
+        fs::write(binding.worktree_path.join("new-file.txt"), "payload\n").unwrap();
+        // Freeze the source tree so the promote write cannot create the file.
+        let mut perms = fs::metadata(root.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(root.path(), perms).unwrap();
+
+        let error = promote_current(&session).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("failed to promote")
+                || message.contains("failed to create")
+                || message.contains("Permission denied")
+                || message.contains("Read-only"),
+            "{message}"
+        );
+
+        let mut restore = fs::metadata(root.path()).unwrap().permissions();
+        restore.set_mode(0o755);
+        fs::set_permissions(root.path(), restore).unwrap();
+        discard(&session).await.unwrap();
+    }
+
+    #[test]
+    fn refuse_symlink_components_rejects_dot_path_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let error = refuse_symlink_components(root.path(), Path::new("./nested")).unwrap_err();
+        assert!(error.to_string().contains("unsafe path"), "{error}");
+    }
+
+    #[test]
+    fn git_stdout_surfaces_stderr_when_git_fails() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let error = git_stdout(root.path(), &["rev-parse", "missing-ref-xyz"]).unwrap_err();
+        assert!(!error.to_string().is_empty(), "{error}");
+    }
+
+    #[test]
+    fn source_revision_fails_when_head_is_unborn() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path()).unwrap();
+        git(root.path(), &["init"]);
+        let error = source_revision(root.path()).unwrap_err();
+        assert!(error.to_string().contains(ISOLATION_UNAVAILABLE), "{error}");
+    }
+
+    #[tokio::test]
+    async fn bind_reuses_an_existing_live_worktree_binding() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let first = bind("reuse-binding", root.path(), true).await.unwrap();
+        let second = bind_sync("reuse-binding", root.path(), true, true)
+            .unwrap()
+            .expect("existing binding");
+        assert_eq!(first.worktree_path, second.worktree_path);
+        assert_eq!(first.source_revision, second.source_revision);
+        discard("reuse-binding").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn promote_current_overwrites_an_existing_tracked_file() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        fs::write(root.path().join("tracked.txt"), "old\n").unwrap();
+        git(root.path(), &["add", "tracked.txt"]);
+        git(root.path(), &["commit", "-m", "track"]);
+        let binding = bind("promote-overwrite", root.path(), true).await.unwrap();
+        fs::write(binding.worktree_path.join("tracked.txt"), "new\n").unwrap();
+
+        let outcome = promote_current("promote-overwrite").unwrap();
+        assert!(matches!(outcome, PromoteOutcome::Applied { .. }));
+        assert_eq!(
+            fs::read_to_string(root.path().join("tracked.txt")).unwrap(),
+            "new\n"
+        );
+        discard("promote-overwrite").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bind_adopts_a_preexisting_worktree_directory() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let session = "adopt-worktree";
+        let worktree = worktree_path_for(root.path(), session);
+        crate::git::create_worktree(
+            root.path(),
+            &format!("a3s-isolate-{session}"),
+            &worktree,
+            true,
+        )
+        .unwrap();
+        assert!(worktree.join(".git").exists());
+
+        let binding = bind_sync(session, root.path(), true, true)
+            .unwrap()
+            .expect("adopted worktree");
+        assert_eq!(binding.worktree_path, worktree);
+        discard(session).await.unwrap();
+    }
+
+    #[test]
+    fn promote_fails_closed_without_a_session_binding() {
+        let err = promote("never-bound-promote", "digest-x", "rev-1", |_| Ok(())).unwrap_err();
+        assert!(err.to_string().contains("no binding"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn promote_current_delete_is_idempotent_when_source_file_already_gone() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        fs::write(root.path().join("ephemeral.txt"), "tracked\n").unwrap();
+        git(root.path(), &["add", "ephemeral.txt"]);
+        git(root.path(), &["commit", "-m", "track ephemeral"]);
+        let session = format!("promote-delete-gone-{}", std::process::id());
+        let binding = bind(&session, root.path(), true).await.unwrap();
+        fs::remove_file(binding.worktree_path.join("ephemeral.txt")).unwrap();
+        // Source already matches the delete; apply must still succeed.
+        fs::remove_file(root.path().join("ephemeral.txt")).unwrap();
+
+        let outcome = promote_current(&session).unwrap();
+        assert!(matches!(outcome, PromoteOutcome::Applied { .. }));
+        assert!(!root.path().join("ephemeral.txt").exists());
+        discard(&session).await.unwrap();
     }
 }

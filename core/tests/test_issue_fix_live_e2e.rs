@@ -1,6 +1,6 @@
 //! Live E2E coverage for first-principles issue fixes #139 / #137 / #138 / #140.
 //!
-//! Pins `boyue/bailian/deepseek-v4.1-flash` from monorepo `.a3s/config.acl`.
+//! Pins `boyue/deepseek-v4-flash` from monorepo `.a3s/config.acl`.
 //! Passes require kernel effects (tool names, MCP progress delivery, event-page
 //! projection, process-host bash under live tool use). Assistant wording is
 //! never a pass criterion.
@@ -25,7 +25,7 @@ use a3s_code_core::{
     Agent, AgentEvent, AgentProtocolEventPageV1, AgentProtocolRunIdentityV1, RunStatus,
     SessionOptions, AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES, AGENT_PROTOCOL_V1,
 };
-use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_config};
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const WRITE_TOKEN: &str = "issue139-write-token-c4e1";
@@ -35,11 +35,7 @@ const HOST_TOKEN: &str = "issue140-host-token-a8c3";
 
 async fn configured_agent() -> Agent {
     let config = load_pinned_layer_c_config();
-    assert_eq!(
-        config.default_model.as_deref(),
-        Some(REQUIRED_DEFAULT_MODEL),
-        "live issue-fix suite must pin {REQUIRED_DEFAULT_MODEL}"
-    );
+    assert_pinned_layer_c_flash(&config, "live issue-fix suite");
     Agent::from_config(config)
         .await
         .expect("build agent from .a3s/config.acl")
@@ -136,7 +132,7 @@ fn protocol_identity(session_id: &str, run_id: &str) -> AgentProtocolRunIdentity
 /// Gateways that re-send `"name":""` on argument deltas previously wiped the
 /// accumulated name and poisoned the next request with a 400.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_streaming_tool_names_survive_multi_step_rounds() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");
@@ -247,7 +243,7 @@ fn looks_like_empty_tool_name_poison(message: &str) -> bool {
 /// #137: stdio MCP progress notifications must reach the client while a live
 /// model-driven tools/call is outstanding.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_mcp_stdio_progress_notifications_arrive_during_tool_call() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");
@@ -338,7 +334,7 @@ async fn live_mcp_stdio_progress_notifications_arrive_during_tool_call() {
 /// #138: a live large tool_end must still project through agent_protocol event
 /// pages instead of permanently 400-ing the cursor.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_oversized_tool_end_still_projects_event_page() {
     assert!(
         AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES < MAX_OUTPUT_SIZE,
@@ -417,13 +413,17 @@ async fn live_oversized_tool_end_still_projects_event_page() {
     assert!(
         has_large_tool_end,
         "expected a large retained tool_end so the protocol bound is exercised; \
-         sizes={:?}",
+         sizes={:?}; event_kinds={:?}",
         page.events
             .iter()
             .filter_map(|record| match &record.event {
                 AgentEvent::ToolEnd { name, output, .. } => Some((name.as_str(), output.len())),
                 _ => None,
             })
+            .collect::<Vec<_>>(),
+        page.events
+            .iter()
+            .map(|record| format!("{:?}", std::mem::discriminant(&record.event)))
             .collect::<Vec<_>>()
     );
 
@@ -458,7 +458,7 @@ async fn live_oversized_tool_end_still_projects_event_page() {
 /// explicit process-host sandbox (outer isolation already present). Native
 /// Seatbelt/bwrap success must not mask this path; inject the Harbor runner.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_process_host_bash_runs_under_flash_tool_use() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");

@@ -533,3 +533,89 @@ async fn harness_requires_and_consumes_an_exact_capability_recovery_batch() {
     .expect("Harness capability recovery must finish");
     harness.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_rejects_a_capability_batch_that_does_not_match_the_checkpoint_binding() {
+    let source_workspace = tempfile::tempdir().unwrap();
+    let sink = Arc::new(RecordingExportSink::default());
+    let source_agent = Agent::from_config(offline_config()).await.unwrap();
+    let source = source_agent
+        .session_async(
+            source_workspace.path().display().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_session_id("capability-harness-mismatch-session")
+                    .with_llm_client(Arc::new(ScriptedClient::new(vec![
+                        tool_response(),
+                        final_response("harness mismatch source captured"),
+                    ])))
+                    .with_session_checkpoint_export_sink(sink.clone())
+                    .with_permission_policy(PermissionPolicy::new().allow("generation_probe(*)"))
+                    .with_planning_mode(PlanningMode::Disabled)
+                    .with_continuation(false),
+            ),
+        )
+        .await
+        .unwrap();
+    for (generation, surface) in [(1, 'b'), (2, 'c'), (3, 'd')] {
+        source
+            .apply_capability_batch(
+                capability_batch(generation, surface, "harness-generation-three"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+    source
+        .send("capture for harness mismatch", None)
+        .await
+        .unwrap();
+    let export = sink.exports.lock().unwrap().pop().unwrap();
+    source.close().await;
+
+    let harness_workspace = tempfile::tempdir().unwrap();
+    let harness = AgentProtocolHarness::new(
+        release_manifest(),
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        harness_workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_llm_client(Arc::new(ScriptedClient::new(vec![final_response(
+                "should not run",
+            )])))
+            .with_permission_policy(PermissionPolicy::new().allow("generation_probe(*)"))
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_continuation(false),
+    );
+    let request = AgentProtocolRunRecoverExactV1 {
+        schema: AgentProtocolRunRecoverExactV1::SCHEMA.into(),
+        request_id: "harness-capability-mismatch".into(),
+        identity: AgentProtocolRunIdentityV1 {
+            schema: AgentProtocolRunIdentityV1::SCHEMA.into(),
+            protocol: AGENT_PROTOCOL_V1.into(),
+            agent_release_identity: harness.agent_release_identity().into(),
+            session_id: "capability-harness-mismatch-session".into(),
+            run_id: "capability-harness-mismatch-target".into(),
+        },
+        checkpoint: export.descriptor().clone(),
+    };
+
+    let error = harness
+        .execute_checkpoint_recovery_with_capability_batch(
+            &request,
+            export,
+            capability_batch(4, 'e', "wrong-generation"),
+        )
+        .await
+        .expect_err("mismatched recovery batch must fail closed");
+    assert!(matches!(
+        error,
+        a3s_code_core::AgentProtocolCheckpointRecoveryError::Harness(
+            a3s_code_core::AgentProtocolHarnessError::Code(_)
+        )
+    ));
+    assert_eq!(harness.session_count().await, 0);
+    harness.close().await;
+}

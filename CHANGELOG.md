@@ -7,18 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.10] - 2026-09-16
+
 ### Changed
 
 - Native Bash sandbox depends on `a3s-sandbox` **0.1.3** (Gate 7 mediation +
   assurance; opt-in `mediated_http` on macOS/Linux/Windows; default profile
   remains network deny-all). Pinned via Git revision matching crates.io 0.1.3
   / tag `v0.1.3`.
+- When the system resolver returns only 198.18/15 Fake-IP answers and no
+  proxy is set, HTTP fetch falls back to Cloudflare DoH then re-applies
+  public-address checks (without weakening SSRF).
+- Flush auto_save session JSON at tool-round checkpoints so crash windows
+  keep durable transcript progress.
+- Layer C live E2E pin follows monorepo `.a3s/config.acl`
+  `default_model` (`boyue/deepseek-v4-flash`). `A3S_TEST_MODEL` overrides
+  when the named route exists in the ACL. The common typo
+  `boyue/bailian/deepseek-v4-flash` maps to the declared
+  `boyue/bailian/deepseek-v4.1-flash`. `just layer-c-live-e2e` defaults
+  to the config Flash route. Model-switch E2E picks the other declared
+  Flash peer when the pin is already the bailian route.
 
 ### Added
 
 - Live E2E `test_native_sandbox_live_e2e`: Flash drives bash through
   `a3s-sandbox` native fences (probe + outside-workspace deny + sandboxed
   workspace write). Included first in `just layer-c-live-e2e`.
+- Text-tool recovery for WorkBuddy bare
+  (`<tool_call>name>…</name>`), tagged hy3/`auto`
+  (`<tool_call:id>name">…</invoke>`), Claude `<invoke>`, and DeepSeek DSML
+  (`<｜DSML｜invoke>…`, ASCII `||DSML||` fallback) dialects in addition to the
+  attribute form — so leaked markup becomes structured tool-use instead of
+  transcript prose.
+- Public `strip_leaked_tool_protocol` to strip tool-protocol markup from
+  streamed assistant text before recovery (hosts / Auto-review hygiene).
+- Live E2E `real_replace_session_switches_model_and_continues`: Flash turn →
+  atomic `replace_session_async` onto the alternate Flash route → continued
+  turn with retained history.
+- Live E2E `real_model_session_continues_after_interrupt`: interrupt settles
+  Cancelled, then the same session accepts a follow-up turn.
+- Public `AgentSession::model_name()` (Rust / Node / Python / Go) for session
+  model-switch inspection.
+- First-principles F01–F30 hermetic + Layer C matrix and F-table kernel line
+  coverage gate (≥90%) documented in
+  `manual/FIRST_PRINCIPLES_TEST_CASES.md`.
+
+### Fixed
+
+- Local `release_preflight.sh` stages the verified zvec sidecar and sets
+  relocatable `RUSTFLAGS` before cargo tests (aligned with CI), so macOS
+  `@rpath` test binaries can load `libzvec_c_api`.
+- Windows check job timeout raised for serial AppContainer lib tests.
+- Hook timeout settle tests wait long enough under loaded Windows CI.
+- Parallel inherit-permissions mocks are prompt-keyed so children cannot
+  race a shared FIFO LLM queue.
+- Native sandbox Linux deny treats host-side absence as fence success.
+- Fake LSP integration binaries are fsync'd before spawn to avoid ETXTBSY.
+- OpenAI-compatible streaming falls back to MiniMax `total_characters` when
+  `total_tokens` is zero so usage accounting is not silently empty.
+
 
 ## [8.5.9] - 2026-09-15
 

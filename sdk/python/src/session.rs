@@ -1020,6 +1020,12 @@ impl PySession {
         self.inner.session_id().to_string()
     }
 
+    /// Return the model identifier bound to this session.
+    #[getter]
+    fn model_name(&self) -> String {
+        self.inner.model_name().to_string()
+    }
+
     /// Return the workspace path.
     #[getter]
     fn workspace(&self) -> String {

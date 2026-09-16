@@ -437,3 +437,284 @@ impl TryFrom<AgentEvent> for AgentEventProjectionV1 {
         Self::try_from(&event)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::TokenUsage;
+    use crate::run::RunEventRecord;
+    use crate::verification::VerificationSummary;
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    #[test]
+    fn envelope_rejects_unsupported_version_and_projects_confirmation_arms() {
+        let err = serde_json::from_value::<EventEnvelopeV1>(json!({
+            "version": 99,
+            "type": "text_delta",
+            "payload": { "text": "x" }
+        }))
+        .expect_err("unsupported version");
+        assert!(err
+            .to_string()
+            .contains("unsupported event envelope version"));
+
+        let required = AgentEventProjectionV1::try_from(&AgentEvent::ConfirmationRequired {
+            tool_id: "t1".into(),
+            tool_name: "bash".into(),
+            args: json!({}),
+            timeout_ms: 30_000,
+        })
+        .expect("project");
+        assert_eq!(required.tool_id.as_deref(), Some("t1"));
+        assert_eq!(required.tool_name.as_deref(), Some("bash"));
+        assert!(required.data_json.is_some());
+
+        let received = AgentEventProjectionV1::try_from(&AgentEvent::ConfirmationReceived {
+            tool_id: "t1".into(),
+            approved: true,
+            reason: Some("ok".into()),
+        })
+        .expect("project");
+        assert_eq!(received.tool_id.as_deref(), Some("t1"));
+
+        let timeout = AgentEventProjectionV1::try_from(&AgentEvent::ConfirmationTimeout {
+            tool_id: "t1".into(),
+            action_taken: "rejected".into(),
+        })
+        .expect("project");
+        assert_eq!(timeout.tool_id.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn projection_covers_subagent_and_agent_end_verification_summary() {
+        let start = AgentEventProjectionV1::try_from(&AgentEvent::SubagentStart {
+            task_id: "task-1".into(),
+            agent: "worker".into(),
+            session_id: "child-sess".into(),
+            parent_session_id: "parent".into(),
+            description: "fix it".into(),
+            started_ms: 1,
+        })
+        .expect("start");
+        assert_eq!(start.tool_id.as_deref(), Some("task-1"));
+        assert_eq!(start.tool_name.as_deref(), Some("worker"));
+        assert_eq!(start.text.as_deref(), Some("child-sess"));
+        assert_eq!(start.prompt.as_deref(), Some("fix it"));
+
+        let progress = AgentEventProjectionV1::try_from(&AgentEvent::SubagentProgress {
+            task_id: "task-1".into(),
+            session_id: "child-sess".into(),
+            status: "running".into(),
+            metadata: json!({ "percent": 10 }),
+        })
+        .expect("progress");
+        assert_eq!(progress.text.as_deref(), Some("child-sess: running"));
+
+        let end = AgentEventProjectionV1::try_from(&AgentEvent::SubagentEnd {
+            task_id: "task-1".into(),
+            agent: "worker".into(),
+            session_id: "child-sess".into(),
+            success: false,
+            output: "failed".into(),
+            finished_ms: 2,
+        })
+        .expect("end");
+        assert_eq!(end.exit_code, Some(1));
+        assert_eq!(end.tool_output.as_deref(), Some("failed"));
+
+        let agent_end = AgentEventProjectionV1::try_from(&AgentEvent::End {
+            text: "done".into(),
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            },
+            verification_summary: Box::new(VerificationSummary::from_reports(&[])),
+            meta: None,
+        })
+        .expect("agent end");
+        assert_eq!(agent_end.text.as_deref(), Some("done"));
+        assert_eq!(agent_end.total_tokens, Some(2));
+        assert!(agent_end.verification_summary_json.is_some());
+        assert!(agent_end.verification_summary_text.is_some());
+    }
+
+    #[test]
+    fn run_event_envelope_attaches_replay_metadata() {
+        let record = RunEventRecord {
+            sequence: 3,
+            timestamp_ms: 42,
+            event: AgentEvent::TextDelta {
+                text: "hello".into(),
+            },
+        };
+        let envelope = run_event_envelope_v1(&record, "run-1", "session-1").expect("envelope");
+        assert_eq!(envelope.event_type, AgentEventTypeV1::TEXT_DELTA);
+        let metadata = envelope.metadata.expect("metadata");
+        assert_eq!(metadata["run_id"], "run-1");
+        assert_eq!(metadata["session_id"], "session-1");
+        assert_eq!(metadata["sequence"], 3);
+        assert_eq!(metadata["timestamp_ms"], 42);
+    }
+
+    #[test]
+    fn event_type_catalog_is_non_empty_and_stable() {
+        assert!(!AGENT_EVENT_TYPES_V1.is_empty());
+        let unique: HashSet<_> = AGENT_EVENT_TYPES_V1.iter().copied().collect();
+        assert_eq!(unique.len(), AGENT_EVENT_TYPES_V1.len());
+        assert!(AGENT_EVENT_TYPES_V1.contains(&AgentEventTypeV1::TEXT_DELTA));
+        assert_eq!(
+            AgentEvent::TextDelta { text: "x".into() }.event_type_v1(),
+            AgentEventTypeV1::TEXT_DELTA
+        );
+    }
+
+    #[test]
+    fn envelope_round_trips_and_projects_streaming_tool_and_turn_events() {
+        let envelope = EventEnvelopeV1::new("future.event", json!({"k": 1}))
+            .with_metadata(json!({"run_id": "r1"}));
+        let wire = serde_json::to_value(&envelope).unwrap();
+        let decoded: EventEnvelopeV1 = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, envelope);
+
+        let future = AgentEventProjectionV1::from(EventEnvelopeV1::new(
+            "future.custom",
+            json!({"keep": true}),
+        ));
+        assert!(future.data_json.is_some());
+
+        let start = AgentEventProjectionV1::try_from(&AgentEvent::Start {
+            prompt: "build".into(),
+        })
+        .unwrap();
+        assert_eq!(start.prompt.as_deref(), Some("build"));
+        assert!(start.data_json.is_none());
+
+        let turn = AgentEventProjectionV1::try_from(&AgentEvent::TurnStart { turn: 4 }).unwrap();
+        assert_eq!(turn.turn, Some(4));
+
+        let text =
+            AgentEventProjectionV1::try_from(&AgentEvent::TextDelta { text: "hi".into() }).unwrap();
+        assert_eq!(text.text.as_deref(), Some("hi"));
+
+        let reasoning = AgentEventProjectionV1::try_from(&AgentEvent::ReasoningDelta {
+            text: "think".into(),
+        })
+        .unwrap();
+        assert_eq!(reasoning.text.as_deref(), Some("think"));
+
+        let tool_start = AgentEventProjectionV1::try_from(&AgentEvent::ToolStart {
+            id: "c1".into(),
+            name: "bash".into(),
+        })
+        .unwrap();
+        assert_eq!(tool_start.tool_id.as_deref(), Some("c1"));
+        assert_eq!(tool_start.tool_name.as_deref(), Some("bash"));
+
+        let input = AgentEventProjectionV1::try_from(&AgentEvent::ToolInputDelta {
+            id: Some("c1".into()),
+            delta: "{\"a\":1}".into(),
+        })
+        .unwrap();
+        assert_eq!(input.text.as_deref(), Some("{\"a\":1}"));
+
+        let exec = AgentEventProjectionV1::try_from(&AgentEvent::ToolExecutionStart {
+            id: "c1".into(),
+            name: "bash".into(),
+            args: json!({"command": "true"}),
+        })
+        .unwrap();
+        assert!(exec.data_json.is_some());
+
+        let tool_end = AgentEventProjectionV1::try_from(&AgentEvent::ToolEnd {
+            id: "c1".into(),
+            name: "bash".into(),
+            args: None,
+            output: "ok".into(),
+            exit_code: 0,
+            metadata: None,
+            error_kind: Some(crate::tools::ToolErrorKind::Timeout {
+                op: "bash".into(),
+                duration_ms: 10,
+            }),
+        })
+        .unwrap();
+        assert_eq!(tool_end.tool_output.as_deref(), Some("ok"));
+        assert!(tool_end.error_kind_json.is_some());
+
+        let out = AgentEventProjectionV1::try_from(&AgentEvent::ToolOutputDelta {
+            id: "c1".into(),
+            name: "bash".into(),
+            delta: "line".into(),
+        })
+        .unwrap();
+        assert_eq!(out.text.as_deref(), Some("line"));
+
+        let usage = TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 9,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        let turn_end = AgentEventProjectionV1::try_from(&AgentEvent::TurnEnd {
+            turn: 2,
+            usage: usage.clone(),
+        })
+        .unwrap();
+        assert_eq!(turn_end.total_tokens, Some(9));
+
+        let error = AgentEventProjectionV1::try_from(&AgentEvent::Error {
+            message: "boom".into(),
+        })
+        .unwrap();
+        assert_eq!(error.error.as_deref(), Some("boom"));
+
+        let denied = AgentEventProjectionV1::try_from(&AgentEvent::PermissionDenied {
+            tool_id: "t2".into(),
+            tool_name: "write".into(),
+            args: json!({}),
+            reason: "policy".into(),
+        })
+        .unwrap();
+        assert_eq!(denied.tool_name.as_deref(), Some("write"));
+
+        let planning = AgentEventProjectionV1::try_from(&AgentEvent::PlanningStart {
+            prompt: "plan".into(),
+        })
+        .unwrap();
+        assert_eq!(planning.prompt.as_deref(), Some("plan"));
+        assert!(planning.data_json.is_none());
+
+        let alert = AgentEvent::QueueAlert {
+            level: "warn".into(),
+            alert_type: "depth".into(),
+            message: "deep".into(),
+        };
+        let owned = EventEnvelopeV1::try_from(alert.clone()).unwrap();
+        let borrowed = EventEnvelopeV1::try_from(&alert).unwrap();
+        assert_eq!(owned, borrowed);
+        assert!(AgentEventProjectionV1::try_from(alert)
+            .unwrap()
+            .data_json
+            .is_some());
+    }
+
+    #[test]
+    fn tool_request_bound_projection_keeps_ids() {
+        let envelope = EventEnvelopeV1::new(
+            AgentEventTypeV1::TOOL_REQUEST_BOUND,
+            json!({
+                "tool_id": "c9",
+                "tool_name": "bash"
+            }),
+        );
+        let projection = AgentEventProjectionV1::from(envelope);
+        assert_eq!(projection.tool_id.as_deref(), Some("c9"));
+        assert_eq!(projection.tool_name.as_deref(), Some("bash"));
+        assert!(projection.data_json.is_some());
+    }
+}

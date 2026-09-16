@@ -385,3 +385,275 @@ async fn program_executor_stops_after_failed_step() {
         "Program 'fail_fast' stopped after 2/3 steps."
     );
 }
+
+#[test]
+fn program_catalog_register_overwrites_existing_template() {
+    let mut catalog = ProgramCatalog::new();
+    catalog.register(
+        ProgramTemplate::new("search", "First version")
+            .with_parameter(ProgramParameter::required("query", "Query"))
+            .with_step(ProgramStepTemplate::new(
+                "grep",
+                serde_json::json!({ "pattern": "{{query}}" }),
+            )),
+    );
+    catalog.register(
+        ProgramTemplate::new("search", "Second version")
+            .with_parameter(ProgramParameter::required("query", "Query"))
+            .with_step(ProgramStepTemplate::new(
+                "grep",
+                serde_json::json!({ "pattern": "{{query}}", "path": "." }),
+            )),
+    );
+
+    assert_eq!(catalog.list().len(), 1);
+    assert_eq!(catalog.get("search").unwrap().description, "Second version");
+    let program = catalog
+        .instantiate("search", &serde_json::json!({ "query": "needle" }))
+        .unwrap();
+    assert_eq!(program.steps[0].args["path"], ".");
+}
+
+#[test]
+fn program_catalog_instantiate_unknown_program_errors() {
+    let catalog = ProgramCatalog::new();
+    let err = catalog
+        .instantiate("missing_program", &serde_json::json!({}))
+        .unwrap_err();
+    assert!(err.to_string().contains("Unknown program: missing_program"));
+}
+
+#[test]
+fn program_template_renders_whole_value_numeric_placeholders() {
+    let template = ProgramTemplate::new("numeric", "Numeric placeholder")
+        .with_parameter(ProgramParameter::required("count", "Count"))
+        .with_step(ProgramStepTemplate::new(
+            "echo",
+            serde_json::json!({ "limit": "{{count}}" }),
+        ));
+
+    let program = template
+        .instantiate(&serde_json::json!({ "count": 42 }))
+        .unwrap();
+
+    assert_eq!(program.steps[0].args["limit"], 42);
+}
+
+#[tokio::test]
+async fn program_executor_errors_when_tool_is_missing() {
+    let registry = Arc::new(ToolRegistry::new(PathBuf::from("/tmp")));
+    let executor = ProgramExecutor::new(
+        Arc::clone(&registry),
+        ToolContext::new(PathBuf::from("/tmp")),
+    );
+    let program = Program::new("missing_tool", "Uses an unknown tool")
+        .with_step(ProgramStep::new("does_not_exist", serde_json::json!({})));
+
+    let result = executor.execute(&program).await.unwrap();
+    assert!(!result.success);
+    assert_eq!(result.steps.len(), 1);
+    assert!(result.steps[0]
+        .output
+        .contains("Unknown tool: does_not_exist"));
+}
+
+#[test]
+fn program_trace_from_result_counts_failed_steps() {
+    let result = ProgramResult {
+        program_name: "failed_program".to_string(),
+        success: false,
+        summary: "stopped".to_string(),
+        steps: vec![
+            ProgramStepResult {
+                tool_name: "search".to_string(),
+                label: Some("scan".to_string()),
+                success: true,
+                output: "ok".to_string(),
+                metadata: None,
+            },
+            ProgramStepResult {
+                tool_name: "search".to_string(),
+                label: Some("scan_again".to_string()),
+                success: false,
+                output: "failed".to_string(),
+                metadata: None,
+            },
+        ],
+    };
+    let trace = ProgramTrace::from_result(
+        &result,
+        vec![
+            ProgramTraceStep::from_result(0, &result.steps[0], false, None),
+            ProgramTraceStep::from_result(1, &result.steps[1], false, None),
+        ],
+    );
+
+    assert_eq!(trace.failed_steps, 1);
+    assert!(!trace.success);
+}
+
+#[test]
+fn program_verification_hint_to_values_serializes_hints() {
+    let hints = vec![
+        ProgramVerificationHint::new("inspect_matches", "Review matches")
+            .required()
+            .with_suggested_tools(["read"])
+            .with_evidence_uris(["artifact://tool-output/abc"]),
+    ];
+    let values = ProgramVerificationHint::to_values(&hints);
+
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["kind"], "inspect_matches");
+    assert_eq!(values[0]["required"], true);
+    assert_eq!(values[0]["suggested_tools"], serde_json::json!(["read"]));
+}
+
+#[test]
+fn program_template_validation_reports_name_parameter_and_placeholder_issues() {
+    let invalid = ProgramTemplate::new("bad name!", "")
+        .with_parameter(ProgramParameter::required("query!", "Query"))
+        .with_parameter(ProgramParameter::required("query!", "Dup"))
+        .with_parameter({
+            let mut required_with_default = ProgramParameter::required("ok", "Ok");
+            required_with_default.default = Some(serde_json::json!("x"));
+            required_with_default
+        })
+        .with_step(ProgramStepTemplate::new(
+            "",
+            serde_json::json!({ "pattern": "{{missing}}", "nested": ["{{ok}}", {"k": "{{!}}"}] }),
+        ).with_label(""));
+
+    let validation = invalid.validate();
+    assert!(!validation.is_valid());
+    let summary = validation.summary();
+    assert!(summary.contains("invalid"));
+    let codes: Vec<_> = validation.issues.iter().map(|i| i.code.as_str()).collect();
+    assert!(codes.contains(&"invalid_name"));
+    assert!(codes.contains(&"empty_description"));
+    assert!(codes.contains(&"invalid_parameter_name") || codes.contains(&"duplicate_parameter"));
+    assert!(codes
+        .iter()
+        .any(|c| *c == "unknown_placeholder" || *c == "invalid_placeholder"));
+    assert!(codes.contains(&"empty_tool_name"));
+    assert!(codes.contains(&"empty_step_label"));
+    assert!(codes.contains(&"required_parameter_with_default"));
+}
+
+#[test]
+fn program_template_validation_rejects_empty_steps_and_duplicate_labels() {
+    let empty = ProgramTemplate::new("empty_steps", "desc");
+    let empty_validation = empty.validate();
+    assert!(empty_validation
+        .issues
+        .iter()
+        .any(|issue| issue.code == "empty_steps"));
+
+    let dup = ProgramTemplate::new("dup_labels", "desc")
+        .with_step(ProgramStepTemplate::new("search", serde_json::json!({})).with_label("same"))
+        .with_step(ProgramStepTemplate::new("ls", serde_json::json!({})).with_label("same"));
+    let dup_validation = dup.validate();
+    assert!(dup_validation
+        .issues
+        .iter()
+        .any(|issue| issue.code == "duplicate_step_label"));
+    assert!(ProgramTemplateValidation::validate(&program_code_search()).is_valid());
+    assert!(ProgramTemplateValidation::validate(&program_repo_map())
+        .summary()
+        .contains("is valid"));
+}
+
+#[test]
+fn program_template_renders_nested_arrays_objects_and_boolean_placeholders() {
+    let template = ProgramTemplate::new("nested", "Nested render")
+        .with_parameter(ProgramParameter::required("flag", "Flag"))
+        .with_parameter(ProgramParameter::required("name", "Name"))
+        .with_step(ProgramStepTemplate::new(
+            "echo",
+            serde_json::json!({
+                "enabled": "{{flag}}",
+                "payload": {
+                    "items": ["{{name}}", {"inner": "{{name}}"}]
+                },
+                "label": "prefix-{{name}}-suffix"
+            }),
+        ));
+
+    let program = template
+        .instantiate(&serde_json::json!({ "flag": true, "name": "alpha" }))
+        .unwrap();
+    assert_eq!(program.steps[0].args["enabled"], true);
+    assert_eq!(program.steps[0].args["payload"]["items"][0], "alpha");
+    assert_eq!(
+        program.steps[0].args["payload"]["items"][1]["inner"],
+        "alpha"
+    );
+    assert_eq!(program.steps[0].args["label"], "prefix-alpha-suffix");
+}
+
+#[test]
+fn program_executor_summarizes_completed_runs() {
+    let result = ProgramResult {
+        program_name: "done".into(),
+        success: true,
+        summary: String::new(),
+        steps: vec![ProgramStepResult {
+            tool_name: "search".into(),
+            label: None,
+            success: true,
+            output: "ok".into(),
+            metadata: None,
+        }],
+    };
+    // Exercise public summary path via ProgramTrace conversion helpers.
+    let program =
+        Program::new("done", "d").with_step(ProgramStep::new("search", serde_json::json!({})));
+    let summary = summarize_program_result(&program, true, 1);
+    assert_eq!(summary, "Program 'done' completed after 1/1 steps.");
+    let _ = result;
+}
+
+#[test]
+fn program_template_optional_parameter_may_be_omitted() {
+    let template = ProgramTemplate::new("optional", "Optional params")
+        .with_parameter(ProgramParameter::required("query", "Query"))
+        .with_parameter(ProgramParameter {
+            name: "limit".into(),
+            description: "Limit".into(),
+            required: false,
+            default: None,
+        })
+        .with_step(ProgramStepTemplate::new(
+            "search",
+            serde_json::json!({ "pattern": "{{query}}" }),
+        ));
+    let program = template
+        .instantiate(&serde_json::json!({ "query": "main" }))
+        .unwrap();
+    assert_eq!(program.steps[0].args["pattern"], "main");
+}
+
+#[test]
+fn program_verification_hints_cover_failed_run_without_failed_steps() {
+    let result = ProgramResult {
+        program_name: "program_code_search".into(),
+        success: false,
+        summary: "failed".into(),
+        steps: Vec::new(),
+    };
+    let hints = program_verification_hints(&result, None);
+    assert!(hints.iter().any(|hint| hint.kind == "inspect_matches"));
+    assert!(hints.iter().any(|hint| hint
+        .message
+        .contains("Investigate the failed program execution")));
+}
+
+#[test]
+fn program_template_validation_rejects_empty_name_and_empty_parameter() {
+    let invalid = ProgramTemplate::new("   ", "desc")
+        .with_parameter(ProgramParameter::required("   ", "blank"))
+        .with_step(ProgramStepTemplate::new("search", serde_json::json!({})));
+    let validation = invalid.validate();
+    let codes: Vec<_> = validation.issues.iter().map(|i| i.code.as_str()).collect();
+    assert!(codes.contains(&"empty_name"));
+    assert!(codes.contains(&"empty_parameter_name"));
+}

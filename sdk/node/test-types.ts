@@ -176,6 +176,7 @@ void _session.governedTool('read', { file_path: 'notes.txt' })
 void _session.registerDynamicWorkflowRuntime()
 void _session.unregisterDynamicTool('dynamic_workflow')
 void _session.sessionId
+void _session.modelName
 void _session.workspace
 void _session.initWarning
 void _session.tenantId
