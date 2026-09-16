@@ -334,4 +334,99 @@ mod tests {
         let session_error = cp.ensure_owned_by("run-1", "session-2").unwrap_err();
         assert!(session_error.to_string().contains("ownership mismatch"));
     }
+
+    #[test]
+    fn ensure_loadable_rejects_future_schema_and_accepts_current() {
+        let mut cp = sample("run-future", 1);
+        assert!(cp.ensure_loadable().is_ok());
+        assert!(cp.ensure_addressed_by("run-future").is_ok());
+        assert!(cp
+            .ensure_addressed_by("other")
+            .unwrap_err()
+            .to_string()
+            .contains("key mismatch"));
+
+        cp.schema_version = LOOP_CHECKPOINT_SCHEMA_VERSION + 1;
+        let err = cp.ensure_loadable().unwrap_err().to_string();
+        assert!(err.contains("schema version"));
+        assert!(err.contains("refusing to resume"));
+    }
+
+    #[tokio::test]
+    async fn session_store_checkpoint_sink_round_trips_and_survives_store_errors() {
+        use crate::store::MemorySessionStore;
+        use std::sync::Arc;
+
+        let cp = sample("run-sink", 2);
+        let ok_store = Arc::new(MemorySessionStore::new());
+        let sink = SessionStoreCheckpointSink::new(ok_store);
+        sink.save_checkpoint(&cp).await;
+        let loaded = sink.load_latest("run-sink").await;
+        assert_eq!(
+            loaded.as_ref().map(|value| value.run_id.as_str()),
+            Some("run-sink")
+        );
+        assert_eq!(loaded.unwrap().turn, 2);
+        assert!(sink.load_latest("missing-run").await.is_none());
+    }
+
+    #[test]
+    fn ensure_loadable_rejects_invalid_capability_binding() {
+        let mut cp = sample("run-cap", 1);
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let binding: crate::capability::RunCapabilityBindingV1 =
+            serde_json::from_value(serde_json::json!({
+                "schema": "bad.schema",
+                "capabilitySetSchema": "a3s.code.capability-set.v1",
+                "codeCatalogGeneration": 1,
+                "catalogDigest": digest,
+                "capabilityCeilingSchema": "a3s.code.capability-ceiling.v1",
+                "capabilityCeilingDigest": digest
+            }))
+            .expect("structurally complete binding with unsupported schema");
+        cp.capability_binding = Some(binding);
+        let err = cp.ensure_loadable().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid capability binding") || err.contains("capability"),
+            "{err}"
+        );
+    }
+
+    /// Minimal store that only fails checkpoint I/O — every override line is hit.
+    struct FailingCheckpointStore;
+
+    #[async_trait]
+    impl crate::store::SessionStore for FailingCheckpointStore {
+        async fn save(&self, _: &crate::store::SessionData) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn load(&self, _: &str) -> anyhow::Result<Option<crate::store::SessionData>> {
+            Ok(None)
+        }
+        async fn delete(&self, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn list(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        async fn exists(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        async fn save_loop_checkpoint(&self, _: &str, _: &LoopCheckpoint) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("checkpoint save failed"))
+        }
+        async fn load_loop_checkpoint(&self, _: &str) -> anyhow::Result<Option<LoopCheckpoint>> {
+            Err(anyhow::anyhow!("checkpoint load failed"))
+        }
+        fn backend_name(&self) -> &str {
+            "failing-checkpoint"
+        }
+    }
+
+    #[tokio::test]
+    async fn session_store_checkpoint_sink_swallows_store_errors() {
+        let sink = SessionStoreCheckpointSink::new(std::sync::Arc::new(FailingCheckpointStore));
+        sink.save_checkpoint(&sample("run-fail", 1)).await;
+        assert!(sink.load_latest("run-fail").await.is_none());
+    }
 }

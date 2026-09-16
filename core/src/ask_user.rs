@@ -222,4 +222,34 @@ mod tests {
             Err(AskUserError::CapExceeded)
         ));
     }
+
+    #[test]
+    fn begin_rejects_empty_question_and_option_overflow() {
+        assert!(matches!(
+            begin("run-invalid", "q-empty", "   ", &[], false),
+            Err(AskUserError::Invalid(_))
+        ));
+        let options: Vec<String> = (0..=MAX_OPTIONS)
+            .map(|index| format!("opt-{index}"))
+            .collect();
+        assert!(matches!(
+            begin("run-invalid", "q-options", "pick one?", &options, false),
+            Err(AskUserError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn answer_and_cancel_return_false_for_unknown_question_ids() {
+        assert!(!answer("missing-question", "nope"));
+        assert!(!cancel("missing-question"));
+    }
+
+    #[test]
+    fn is_permission_grant_honors_legacy_approved_field() {
+        let metadata = serde_json::json!({"approved": true});
+        assert!(is_permission_grant(&metadata));
+        assert!(!is_permission_grant(
+            &serde_json::json!({"permission_grant": false})
+        ));
+    }
 }

@@ -570,3 +570,73 @@ impl AgentProtocolHarness {
         Ok(host)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::CodeError;
+    use crate::release::AgentReleaseError;
+    use crate::session_checkpoint::SessionCheckpointError;
+
+    #[test]
+    fn harness_error_codes_are_stable() {
+        assert_eq!(
+            AgentProtocolHarnessError::Protocol(AgentProtocolError::Encoding).code(),
+            AgentProtocolError::Encoding.code()
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::Release(AgentReleaseError::UnsupportedContract).code(),
+            AgentReleaseError::UnsupportedContract.code()
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::Host(AgentProtocolHostError::RunNotFound).code(),
+            AgentProtocolHostError::RunNotFound.code()
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::Code(CodeError::TaskSchedulerClosed).code(),
+            CodeError::TaskSchedulerClosed.code()
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::SessionNotFound.code(),
+            "a3s.code.agent_protocol.session_not_found"
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::SessionCapacity.code(),
+            "a3s.code.agent_protocol.session_capacity"
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::Closed.code(),
+            "a3s.code.agent_protocol.harness_closed"
+        );
+        assert_eq!(
+            AgentProtocolHarnessError::Workspace("x".into()).code(),
+            "a3s.code.agent_protocol.workspace_isolation"
+        );
+    }
+
+    #[test]
+    fn checkpoint_recovery_error_codes_are_stable() {
+        assert_eq!(
+            AgentProtocolCheckpointRecoveryError::Harness(AgentProtocolHarnessError::Closed).code(),
+            AgentProtocolHarnessError::Closed.code()
+        );
+        assert_eq!(
+            AgentProtocolCheckpointRecoveryError::Exact(AgentProtocolExactRecoveryError::Host(
+                AgentProtocolHostError::RunNotFound
+            ))
+            .code(),
+            AgentProtocolHostError::RunNotFound.code()
+        );
+        assert_eq!(
+            AgentProtocolCheckpointRecoveryError::Checkpoint(
+                SessionCheckpointError::InvalidPayload("x".into())
+            )
+            .code(),
+            SessionCheckpointError::InvalidPayload("x".into()).code()
+        );
+        assert_eq!(
+            AgentProtocolCheckpointRecoveryError::SessionAlreadyActive.code(),
+            "a3s.code.agent_protocol.checkpoint_session_already_active"
+        );
+    }
+}

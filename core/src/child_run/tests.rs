@@ -634,3 +634,197 @@ async fn child_confirmation_does_not_approve_a_parent_request_it_did_not_open() 
         "approving the child must not approve the parent's pending write"
     );
 }
+
+#[test]
+fn compose_permission_checker_without_parent_returns_same_child_arc() {
+    let child = static_checker(PermissionDecision::Allow);
+    let composed = compose_permission_checker(child.clone(), None, None, None);
+    assert!(Arc::ptr_eq(&child, &composed));
+}
+
+#[test]
+fn apply_to_clamps_zero_parallelism_and_duplicate_thresholds() {
+    let parent = ChildRunContext {
+        max_parallel_tasks: Some(0),
+        duplicate_tool_call_threshold: Some(0),
+        ..parent_context(PermissionDecision::Allow, None)
+    };
+    let mut config = AgentConfig::default();
+    parent.apply_to(&mut config);
+
+    assert_eq!(config.max_parallel_tasks, 1);
+    assert_eq!(config.duplicate_tool_call_threshold, 1);
+}
+
+#[test]
+fn apply_to_inherits_parent_permission_checker_when_child_has_none() {
+    let parent_checker = static_checker(PermissionDecision::Deny);
+    let parent = ChildRunContext {
+        permission_checker: Some(parent_checker.clone()),
+        ..parent_context(PermissionDecision::Allow, None)
+    };
+    let mut config = AgentConfig {
+        permission_checker: None,
+        ..AgentConfig::default()
+    };
+
+    parent.apply_to(&mut config);
+
+    assert!(config.permission_checker.is_some());
+    assert_eq!(
+        config
+            .permission_checker
+            .as_ref()
+            .unwrap()
+            .check("read", &serde_json::json!({})),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
+fn with_run_governance_replaces_permission_checker() {
+    let checker = static_checker(PermissionDecision::Ask);
+    let context = parent_context(PermissionDecision::Allow, None)
+        .with_run_governance(Some(checker.clone()), None);
+
+    assert!(Arc::ptr_eq(
+        context.permission_checker.as_ref().unwrap(),
+        &checker
+    ));
+}
+
+#[test]
+fn compose_permission_checker_applies_stricter_parent_and_child_decisions() {
+    let child = static_checker(PermissionDecision::Ask);
+    let parent = static_checker(PermissionDecision::Deny);
+    let composed = compose_permission_checker(
+        child,
+        Some(PermissionPolicy::new().ask("bash(*)")),
+        Some(parent),
+        Some(PermissionPolicy::new().deny("bash(*)")),
+    );
+    assert_eq!(
+        composed.check("bash", &serde_json::json!({"command": "ls"})),
+        PermissionDecision::Deny
+    );
+
+    let allow_both = compose_permission_checker(
+        static_checker(PermissionDecision::Allow),
+        None,
+        Some(static_checker(PermissionDecision::Allow)),
+        None,
+    );
+    assert_eq!(
+        allow_both.check("read", &serde_json::json!({"file_path": "a.rs"})),
+        PermissionDecision::Allow
+    );
+    assert!(allow_both.expose_to_model("read"));
+    assert!(allow_both.snapshot_for_run().is_some());
+}
+
+#[test]
+fn apply_to_inherits_timeouts_budget_and_presentation_ceiling() {
+    let parent = ChildRunContext {
+        tool_timeout_ms: Some(1_500),
+        llm_api_timeout_ms: Some(2_500),
+        max_execution_time_ms: Some(9_000),
+        circuit_breaker_threshold: Some(7),
+        enforce_active_skill_tool_restrictions: Some(true),
+        tool_presentation_profile: Some(crate::tools::ToolPresentationProfileV1::default()),
+        budget_guard: Some(Arc::new(crate::budget::NoopBudgetGuard)),
+        ..parent_context(PermissionDecision::Allow, None)
+    };
+    let mut config = AgentConfig::default();
+    parent.apply_to(&mut config);
+    assert_eq!(config.tool_timeout_ms, Some(1_500));
+    assert_eq!(config.llm_api_timeout_ms, Some(2_500));
+    assert_eq!(config.max_execution_time_ms, Some(9_000));
+    assert_eq!(config.circuit_breaker_threshold, 7);
+    assert!(config.enforce_active_skill_tool_restrictions);
+    assert!(config.budget_guard.is_some());
+}
+
+#[test]
+fn delegated_permission_checker_snapshot_preserves_stricter_parent_decision() {
+    let composed = compose_permission_checker(
+        static_checker(PermissionDecision::Allow),
+        None,
+        Some(static_checker(PermissionDecision::Deny)),
+        None,
+    );
+    let snapshot = composed
+        .snapshot_for_run()
+        .expect("delegated checker exposes a run snapshot");
+    assert_eq!(
+        snapshot.check("read", &serde_json::json!({"file_path": "a.rs"})),
+        PermissionDecision::Deny
+    );
+}
+
+#[tokio::test]
+async fn both_confirmation_scopes_must_approve_when_both_prompt() {
+    let child = recording_provider(true, false, 1_000);
+    let parent = recording_provider(true, true, 1_000);
+    let child_provider: Arc<dyn ConfirmationProvider> = child.clone();
+    let parent_provider: Arc<dyn ConfirmationProvider> = parent.clone();
+    let config = delegated_config(
+        PermissionDecision::Ask,
+        Some(child_provider),
+        Some(ConfirmationInheritance::AutoApprove),
+        PermissionDecision::Ask,
+        Some(parent_provider),
+    );
+    let provider = confirmation(&config);
+    let args = serde_json::json!({"command": "cargo test"});
+    let response = provider
+        .request_confirmation("tool-dual", "bash", &args)
+        .await
+        .await
+        .unwrap();
+    assert!(!response.approved);
+    assert_eq!(child.request_count(), 1);
+    assert_eq!(parent.request_count(), 1);
+}
+
+#[tokio::test]
+async fn delegated_confirmation_snapshot_keeps_parent_forward_semantics() {
+    let parent = recording_provider(true, true, 1_000);
+    let parent_provider: Arc<dyn ConfirmationProvider> = parent.clone();
+    let config = delegated_config(
+        PermissionDecision::Ask,
+        None,
+        Some(ConfirmationInheritance::InheritParent),
+        PermissionDecision::Allow,
+        Some(parent_provider),
+    );
+    let provider = confirmation(&config);
+    let snapshot = provider
+        .snapshot_for_run()
+        .expect("delegated confirmation exposes a run snapshot");
+    let args = serde_json::json!({"file_path": "notes.txt"});
+    assert!(snapshot.confirmation_available_for("write", &args).await);
+}
+
+#[tokio::test]
+async fn delegated_confirmation_requires_confirmation_and_policy_merge() {
+    let child = recording_provider(true, true, 5_000);
+    let parent = recording_provider(true, true, 1_000);
+    let child_provider: Arc<dyn ConfirmationProvider> = child.clone();
+    let parent_provider: Arc<dyn ConfirmationProvider> = parent.clone();
+    let config = delegated_config(
+        PermissionDecision::Ask,
+        Some(child_provider),
+        Some(ConfirmationInheritance::AutoApprove),
+        PermissionDecision::Ask,
+        Some(parent_provider),
+    );
+    let provider = confirmation(&config);
+    assert!(provider.requires_confirmation("bash").await);
+    let policy = provider.policy().await;
+    assert!(policy.enabled);
+    provider
+        .set_policy(ConfirmationPolicy::enabled().with_timeout(2_000, TimeoutAction::Reject))
+        .await;
+    let updated = provider.policy().await;
+    assert_eq!(updated.default_timeout_ms, 2_000);
+}

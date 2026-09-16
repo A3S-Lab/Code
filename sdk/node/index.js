@@ -310,21 +310,18 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, S3WorkspaceBackend, ToolPresentationMode, moliRuntimeInfo, ensureMoli, moliDefaultVersion, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
 module.exports.EventStream = EventStream
+module.exports.S3WorkspaceBackend = S3WorkspaceBackend
 module.exports.FileMemoryStore = FileMemoryStore
 module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
-module.exports.S3WorkspaceBackend = S3WorkspaceBackend
 module.exports.ToolPresentationMode = ToolPresentationMode
-module.exports.moliRuntimeInfo = moliRuntimeInfo
-module.exports.ensureMoli = ensureMoli
-module.exports.moliDefaultVersion = moliDefaultVersion
 module.exports.BrowserBackend = BrowserBackend
 module.exports.Session = Session
 module.exports.LineWorkspaceChunkingStrategy = LineWorkspaceChunkingStrategy

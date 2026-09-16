@@ -809,3 +809,168 @@ async fn harness_rejects_empty_workspace_before_session_admission() {
     .expect_err("an empty workspace must fail closed");
     assert!(matches!(error, AgentProtocolHarnessError::Workspace(_)));
 }
+
+#[tokio::test]
+async fn harness_exposes_release_metadata_and_debug_fields() {
+    let workspace = tempfile::tempdir().unwrap();
+    let manifest = manifest();
+    let digest = manifest.artifact().digest().to_string();
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_max_sessions(8)
+    .unwrap();
+    assert_eq!(harness.agent_release_identity(), digest);
+    assert_eq!(harness.max_sessions(), 8);
+    assert!(!harness.is_closed());
+    assert_eq!(harness.manifest().protocol(), AGENT_PROTOCOL_V1);
+    let debug = format!("{harness:?}");
+    assert!(debug.contains("AgentProtocolHarness"));
+    assert!(debug.contains("workspace"));
+    harness.close().await;
+    assert!(harness.is_closed());
+    // Second close is a no-op.
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn harness_rejects_zero_session_capacity() {
+    let workspace = tempfile::tempdir().unwrap();
+    let error = AgentProtocolHarness::new(
+        manifest(),
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_max_sessions(0)
+    .expect_err("zero capacity must fail closed");
+    assert!(matches!(error, AgentProtocolHarnessError::SessionCapacity));
+}
+
+#[tokio::test]
+async fn competing_session_admission_reuses_the_same_host_entry() {
+    let workspace = tempfile::tempdir().unwrap();
+    let harness = Arc::new(
+        AgentProtocolHarness::new(
+            manifest(),
+            Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+            workspace.path().display().to_string(),
+        )
+        .unwrap()
+        .with_session_options(
+            SessionOptions::new().with_llm_client(Arc::new(StaticStreamingClient)),
+        ),
+    );
+    let first = start(
+        harness.agent_release_identity(),
+        "concurrent-admit-session",
+        "concurrent-admit-run-a",
+    );
+    let second = start(
+        harness.agent_release_identity(),
+        "concurrent-admit-session",
+        "concurrent-admit-run-b",
+    );
+    let left = {
+        let harness = Arc::clone(&harness);
+        tokio::spawn(async move { harness.execute(&first).await })
+    };
+    let right = {
+        let harness = Arc::clone(&harness);
+        tokio::spawn(async move { harness.execute(&second).await })
+    };
+    let (left, right) = tokio::join!(left, right);
+    let left = left.expect("left join");
+    let right = right.expect("right join");
+    match (left, right) {
+        (Ok(_), Ok(_)) => {}
+        (
+            Ok(_),
+            Err(AgentProtocolHarnessError::Code(a3s_code_core::CodeError::SessionBusy { .. })),
+        )
+        | (
+            Err(AgentProtocolHarnessError::Code(a3s_code_core::CodeError::SessionBusy { .. })),
+            Ok(_),
+        )
+        | (
+            Ok(_),
+            Err(AgentProtocolHarnessError::Host(a3s_code_core::AgentProtocolHostError::Code(
+                a3s_code_core::CodeError::SessionBusy { .. },
+            ))),
+        )
+        | (
+            Err(AgentProtocolHarnessError::Host(a3s_code_core::AgentProtocolHostError::Code(
+                a3s_code_core::CodeError::SessionBusy { .. },
+            ))),
+            Ok(_),
+        ) => {}
+        other => panic!("unexpected concurrent admit outcome: {other:?}"),
+    }
+    assert_eq!(harness.session_count().await, 1);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn harness_rejects_release_mismatch_and_closed_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let manifest = manifest();
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(SessionOptions::new().with_llm_client(Arc::new(StaticStreamingClient)));
+
+    let foreign = start(
+        &format!("sha256:{}", "b".repeat(64)),
+        "foreign-session",
+        "foreign-run",
+    );
+    let mismatch = harness
+        .execute(&foreign)
+        .await
+        .expect_err("foreign release must fail");
+    assert!(matches!(
+        mismatch,
+        AgentProtocolHarnessError::Host(a3s_code_core::AgentProtocolHostError::ReleaseMismatch)
+    ));
+
+    harness.close().await;
+    let closed = harness
+        .execute(&start(
+            harness.agent_release_identity(),
+            "after-close",
+            "after-close-run",
+        ))
+        .await
+        .expect_err("closed harness must reject admission");
+    assert!(matches!(closed, AgentProtocolHarnessError::Closed));
+}
+
+#[tokio::test]
+async fn harness_rejects_protocol_mismatch_on_construction() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = include_str!("../../fixtures/agent-release-contract/.a3s/asset.acl")
+        .replace(AGENT_PROTOCOL_V1, "a3s.code.agent.v2");
+    let manifest = a3s_code_core::release::AgentReleaseManifest::parse(&source).unwrap();
+    let error = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .expect_err("v1 harness must reject another protocol");
+    assert!(
+        matches!(
+            error,
+            AgentProtocolHarnessError::Host(
+                a3s_code_core::AgentProtocolHostError::ReleaseProtocolMismatch
+            ) | AgentProtocolHarnessError::Release(_)
+        ),
+        "unexpected construction error: {error:?} code={}",
+        error.code()
+    );
+}

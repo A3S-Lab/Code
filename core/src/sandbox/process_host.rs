@@ -432,6 +432,24 @@ impl Drop for ProcessGroupGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct RecordingObserver {
+        deltas: Mutex<Vec<String>>,
+        completed: Mutex<Option<crate::workspace::CommandOutputSummary>>,
+    }
+
+    #[async_trait]
+    impl crate::workspace::CommandOutputObserver for RecordingObserver {
+        async fn on_output_delta(&self, delta: &str) {
+            self.deltas.lock().await.push(delta.to_string());
+        }
+
+        async fn on_output_complete(&self, summary: &crate::workspace::CommandOutputSummary) {
+            *self.completed.lock().await = Some(summary.clone());
+        }
+    }
 
     #[test]
     fn bounded_capture_keeps_global_memory_with_head_and_tail() {
@@ -444,6 +462,60 @@ mod tests {
         assert!(capture
             .render_combined()
             .contains("command output truncated"));
+    }
+
+    #[test]
+    fn bounded_capture_labels_stderr_truncation() {
+        let mut capture = BoundedCapture::new();
+        let input = vec![b'y'; MAX_CAPTURE_BYTES + 1];
+        capture.push(OutputStream::Stderr, &input);
+        let rendered = capture.render_stream(OutputStream::Stderr);
+        assert!(
+            rendered.contains("command stderr truncated"),
+            "stderr truncation marker missing: {rendered}"
+        );
+    }
+
+    #[test]
+    fn workspace_accessor_returns_configured_root() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let sandbox = ProcessHostBashSandbox::new(directory.path().to_path_buf(), None);
+        assert_eq!(sandbox.workspace(), directory.path());
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_a_noop() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let sandbox = ProcessHostBashSandbox::new(directory.path().to_path_buf(), None);
+        sandbox.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_skips_spawn_and_notifies_observer() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let sandbox = ProcessHostBashSandbox::new(
+            directory.path().to_path_buf(),
+            Some(Instant::now() - Duration::from_secs(1)),
+        );
+        let observer = Arc::new(RecordingObserver {
+            deltas: Mutex::new(Vec::new()),
+            completed: Mutex::new(None),
+        });
+        let output = sandbox
+            .exec(SandboxCommandRequest {
+                command: "printf should-not-run".into(),
+                guest_workspace: directory.path().to_string_lossy().into_owned(),
+                timeout_ms: 5_000,
+                output_observer: Some(observer.clone()),
+                env: None,
+            })
+            .await
+            .expect("deadline skip must succeed");
+        assert!(output.timed_out);
+        assert_eq!(output.exit_code, 124);
+        assert!(output.stderr.contains("run deadline expired"));
+        assert!(!observer.deltas.lock().await.is_empty());
+        assert!(observer.completed.lock().await.is_some());
     }
 
     // Real bash pipelines are Harbor/Unix. BoundedCapture itself is covered
@@ -502,5 +574,41 @@ mod tests {
         assert!(output.timed_out);
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(!directory.path().join("leaked").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_command_and_observer_cover_stream_capture() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let sandbox = ProcessHostBashSandbox::new(directory.path().to_path_buf(), None);
+        let observer = Arc::new(RecordingObserver {
+            deltas: Mutex::new(Vec::new()),
+            completed: Mutex::new(None),
+        });
+        let output = sandbox
+            .exec(SandboxCommandRequest {
+                command: "printf 'out\\n'; printf 'err\\n' >&2".into(),
+                guest_workspace: directory.path().to_string_lossy().into_owned(),
+                timeout_ms: 5_000,
+                output_observer: Some(observer.clone()),
+                env: Some(Arc::new(std::collections::HashMap::from([(
+                    "PROCESS_HOST_COV".into(),
+                    "1".into(),
+                )]))),
+            })
+            .await
+            .expect("process-host exec");
+        assert_eq!(output.exit_code, 0, "stderr={}", output.stderr);
+        assert!(output.stdout.contains("out"));
+        assert!(output.stderr.contains("err"));
+        assert!(!observer.deltas.lock().await.is_empty());
+        assert!(observer.completed.lock().await.is_some());
+
+        let via_exec_command = sandbox
+            .exec_command("printf 'via-exec-command\\n'", "/workspace")
+            .await
+            .expect("exec_command");
+        assert_eq!(via_exec_command.exit_code, 0);
+        assert!(via_exec_command.stdout.contains("via-exec-command"));
     }
 }

@@ -915,6 +915,32 @@ async fn test_bash_workspace_dir() {
 }
 
 #[test]
+fn prefix_session_cwd_without_session_leaves_command_unmodified() {
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+    assert_eq!(prefix_session_cwd("pwd", &ctx), "pwd");
+}
+
+#[test]
+fn shell_admission_denies_when_run_checker_denies() {
+    struct DenyBash;
+
+    impl crate::permissions::PermissionChecker for DenyBash {
+        fn check(&self, _: &str, _: &serde_json::Value) -> crate::permissions::PermissionDecision {
+            crate::permissions::PermissionDecision::Deny
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_run_governance(Some(Arc::new(DenyBash)), None);
+    assert!(matches!(
+        shell_admission(&ctx, "pwd"),
+        crate::shell_session::CommandAdmission::Deny
+    ));
+}
+
+#[test]
 fn porcelain_diff_records_only_paths_that_changed() {
     let before = vec![" M keep.rs".to_string()];
     let after = vec![" M keep.rs".to_string(), "?? src/new.rs".to_string()];
@@ -1254,4 +1280,159 @@ async fn bash_existence_check_metadata_enables_verified_completion() {
         }
         other => panic!("expected Allow(Verified), got {other:?}"),
     }
+}
+
+#[test]
+fn bash_tool_name_and_description_are_stable() {
+    let tool = BashTool;
+    assert_eq!(tool.name(), "bash");
+    assert!(tool.description().contains("shell command"));
+    let params = tool.parameters();
+    assert_eq!(params["required"], serde_json::json!(["command"]));
+    assert!(tool.requires_confirmation(&serde_json::json!({
+        "sandbox_permissions": "require_escalated"
+    })));
+    assert!(!tool.requires_confirmation(&serde_json::json!({
+        "sandbox_permissions": "use_default"
+    })));
+}
+
+#[tokio::test]
+async fn unsupported_sandbox_permissions_value_is_rejected() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf host",
+                "sandbox_permissions": "totally_custom"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result
+        .content
+        .contains("unsupported sandbox_permissions value"));
+}
+
+#[tokio::test]
+async fn unsupported_job_action_requires_bound_shell_session() {
+    let tool = BashTool;
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-unsupported-action-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+
+    let result = tool
+        .execute(&serde_json::json!({"job_action": "restart"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("unsupported job_action"));
+    crate::shell_session::drop_session(&session);
+}
+
+#[tokio::test]
+#[cfg(not(windows))]
+async fn poll_and_kill_job_actions_work_for_detached_jobs() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-poll-kill-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+
+    let detached = tool
+        .execute(
+            &serde_json::json!({
+                "job_action": "detach",
+                "command": "sleep 30"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(detached.success, "{detached:?}");
+    let job_id = detached.metadata.unwrap()["job_id"]
+        .as_str()
+        .expect("job_id")
+        .to_string();
+
+    let polled = tool
+        .execute(
+            &serde_json::json!({"job_action": "poll", "job_id": job_id}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(polled.success, "{polled:?}");
+    assert!(
+        polled.content == "running" || polled.content == "done",
+        "unexpected poll status: {}",
+        polled.content
+    );
+
+    let killed = tool
+        .execute(
+            &serde_json::json!({"job_action": "kill", "job_id": job_id}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(killed.success, "{killed:?}");
+    assert_eq!(killed.content.trim(), "killed");
+
+    crate::shell_session::drop_session(&session);
+}
+
+#[tokio::test]
+async fn require_escalated_without_justification_is_rejected() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "printf host",
+                "sandbox_permissions": "require_escalated",
+                "justification": "   "
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(result
+        .content
+        .contains("justification is required when sandbox_permissions is require_escalated"));
+}
+
+#[tokio::test]
+async fn job_actions_without_bound_session_fail_closed() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+    let result = tool
+        .execute(
+            &serde_json::json!({ "job_action": "poll", "job_id": "missing" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+}
+
+#[tokio::test]
+async fn missing_command_parameter_returns_tool_error() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+    let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
+    assert!(!result.success);
+    assert!(result.content.contains("command parameter is required"));
 }

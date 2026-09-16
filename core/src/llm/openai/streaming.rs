@@ -456,6 +456,10 @@ impl OpenAiClient {
                             usage.prompt_tokens = u.prompt_tokens;
                             usage.completion_tokens = u.completion_tokens;
                             usage.total_tokens = u.total_tokens;
+                            // MiniMax: fall back to total_characters when total_tokens is 0.
+                            if usage.total_tokens == 0 {
+                                usage.total_tokens = u.total_characters.unwrap_or(0);
+                            }
                             usage.cache_read_tokens = u
                                 .prompt_tokens_details
                                 .as_ref()
@@ -813,5 +817,38 @@ mod empty_name_tests {
             }),
         };
         assert!(!tool_call_delta_conflicts("call_1", "write", &delta));
+    }
+
+    #[test]
+    fn apply_tool_call_snapshot_skips_conflicting_identity() {
+        let mut tool_calls = std::collections::BTreeMap::new();
+        tool_calls.insert(0, ("call_1".into(), "write".into(), "{}".into()));
+        apply_tool_call_snapshot(
+            &mut tool_calls,
+            vec![OpenAiToolCall {
+                id: "call_other".into(),
+                function: OpenAiFunction {
+                    name: "read".into(),
+                    arguments: r#"{"path":"x"}"#.into(),
+                },
+            }],
+        );
+        let (id, name, args) = tool_calls.get(&0).expect("slot");
+        assert_eq!(id, "call_1");
+        assert_eq!(name, "write");
+        assert_eq!(args, "{}");
+    }
+
+    #[test]
+    fn tool_call_delta_mismatched_identity_is_a_conflict() {
+        let delta = OpenAiToolCallDelta {
+            index: 0,
+            id: Some("other".into()),
+            function: Some(OpenAiFunctionDelta {
+                name: Some("other_fn".into()),
+                arguments: None,
+            }),
+        };
+        assert!(tool_call_delta_conflicts("call_1", "write", &delta));
     }
 }

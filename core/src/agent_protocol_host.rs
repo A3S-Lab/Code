@@ -545,3 +545,86 @@ fn now_ms() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_protocol::AgentProtocolError;
+    use crate::error::CodeError;
+    use crate::session_checkpoint::SessionCheckpointError;
+
+    #[test]
+    fn host_error_codes_are_stable() {
+        assert_eq!(
+            AgentProtocolHostError::Protocol(AgentProtocolError::Encoding).code(),
+            AgentProtocolError::Encoding.code()
+        );
+        assert_eq!(
+            AgentProtocolHostError::ReleaseMismatch.code(),
+            "a3s.code.agent_protocol.release_mismatch"
+        );
+        assert_eq!(
+            AgentProtocolHostError::ReleaseProtocolMismatch.code(),
+            "a3s.code.agent_protocol.release_protocol_mismatch"
+        );
+        assert_eq!(
+            AgentProtocolHostError::SessionMismatch.code(),
+            "a3s.code.agent_protocol.session_mismatch"
+        );
+        assert_eq!(
+            AgentProtocolHostError::RunNotFound.code(),
+            "a3s.code.agent_protocol.run_not_found"
+        );
+        assert_eq!(
+            AgentProtocolHostError::RunUnavailable.code(),
+            "a3s.code.agent_protocol.run_unavailable"
+        );
+        assert_eq!(
+            AgentProtocolHostError::SequenceOverflow.code(),
+            "a3s.code.agent_protocol.sequence_overflow"
+        );
+        assert_eq!(
+            AgentProtocolHostError::ChangeSetPending.code(),
+            "a3s.code.agent_protocol.change_set_pending"
+        );
+        assert_eq!(
+            AgentProtocolHostError::ChangeSetUnavailable.code(),
+            "a3s.code.agent_protocol.change_set_unavailable"
+        );
+        assert_eq!(
+            AgentProtocolHostError::Code(CodeError::TaskSchedulerClosed).code(),
+            CodeError::TaskSchedulerClosed.code()
+        );
+    }
+
+    #[test]
+    fn exact_recovery_error_codes_and_from_impls_are_stable() {
+        let protocol: AgentProtocolExactRecoveryError = AgentProtocolError::IdentityMismatch.into();
+        assert_eq!(protocol.code(), AgentProtocolError::IdentityMismatch.code());
+        assert_eq!(
+            AgentProtocolExactRecoveryError::Checkpoint(SessionCheckpointError::ContentDrift(
+                "drift".into()
+            ))
+            .code(),
+            SessionCheckpointError::ContentDrift("drift".into()).code()
+        );
+        assert_eq!(
+            AgentProtocolExactRecoveryError::Host(AgentProtocolHostError::RunNotFound).code(),
+            AgentProtocolHostError::RunNotFound.code()
+        );
+        let from_exact = AgentProtocolExactRecoveryError::from(ExactRecoveryError::Checkpoint(
+            SessionCheckpointError::InvalidPayload("x".into()),
+        ));
+        assert!(matches!(
+            from_exact,
+            AgentProtocolExactRecoveryError::Checkpoint(_)
+        ));
+        let from_code = AgentProtocolExactRecoveryError::from(ExactRecoveryError::Code(
+            CodeError::TaskSchedulerClosed,
+        ));
+        assert!(matches!(
+            from_code,
+            AgentProtocolExactRecoveryError::Host(AgentProtocolHostError::Code(_))
+        ));
+    }
+}

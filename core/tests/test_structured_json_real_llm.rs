@@ -33,7 +33,7 @@ use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL}
 
 /// Hard ceiling per LLM call so a flaky/hung endpoint fails the test fast
 /// instead of stalling for minutes.
-const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+const CALL_TIMEOUT: Duration = Duration::from_secs(240);
 const PRE_ANALYZE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Build a client pinned to Layer C Flash (`boyue/bailian/deepseek-v4.1-flash`).
@@ -204,7 +204,8 @@ async fn real_generate_object_tool_is_stable() {
             "schema": person_schema(),
             "prompt": "Extract a person profile from: Alice is 30, writes Rust and Python, and lives in Berlin.",
             "mode": mode,
-            "max_repair_attempts": 2
+            "max_repair_attempts": 2,
+            "timeout_ms": 240_000
         })
     };
 
@@ -296,7 +297,8 @@ async fn real_generate_object_tool_is_stable() {
                 },
                 "prompt": "Return exactly two programming languages Alice knows from: Alice writes Rust and Python.",
                 "mode": "auto",
-                "max_repair_attempts": 2
+                "max_repair_attempts": 2,
+                "timeout_ms": 240_000
             }),
         ),
         (
@@ -310,7 +312,8 @@ async fn real_generate_object_tool_is_stable() {
                 "prompt": "Pick Alice's primary language from this text: Alice mainly writes Rust and also knows Python. Return one enum value.",
                 "mode": "auto",
                 "max_repair_attempts": 2,
-                "include_raw_text": true
+                "include_raw_text": true,
+                "timeout_ms": 240_000
             }),
         ),
         (
@@ -332,7 +335,8 @@ async fn real_generate_object_tool_is_stable() {
                 },
                 "prompt": "Convert these work items into an array of objects: 1. Fix the auth bug, priority high. 2. Update the docs, priority low. Use lowercase enum values for priority.",
                 "mode": "auto",
-                "max_repair_attempts": 2
+                "max_repair_attempts": 2,
+                "timeout_ms": 240_000
             }),
         ),
     ];

@@ -18,7 +18,7 @@
 //!   -- --ignored --test-threads=1 --nocapture
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
@@ -26,14 +26,13 @@ use a3s_code_core::tools::{
     ToolResultTransformBindingV1, ToolResultTransformPolicyV1,
     TOOL_RESULT_TRANSFORM_BINDING_METADATA_KEY,
 };
-use a3s_code_core::{
-    Agent, AgentEvent, CodeConfig, RunStatus, SessionOptions, ToolRequestOriginV1,
-};
+use a3s_code_core::{Agent, AgentEvent, RunStatus, SessionOptions, ToolRequestOriginV1};
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
-/// Pin to monorepo `.a3s/config.acl` Flash default (provider slug may be boyue).
-const REQUIRED_DEFAULT_MODEL: &str = "boyue/bailian/deepseek-v4.1-flash";
 const FAKE_API_KEY: &str = "sk-AAAAAAAAAAAAAAAAAAAAAAAA";
 #[cfg(not(windows))]
 const CANCELLABLE_COMMAND: &str =
@@ -42,41 +41,8 @@ const CANCELLABLE_COMMAND: &str =
 const CANCELLABLE_COMMAND: &str =
     "[System.IO.File]::WriteAllText('cancel-started.txt','STARTED'); Start-Sleep -Seconds 5; [System.IO.File]::WriteAllText('cancel-leak.txt','LEAK')";
 
-fn repo_config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
-}
-
 async fn deepseek_agent() -> Agent {
-    let path = repo_config_path();
-    let mut config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let provider = config
-        .find_provider("boyue")
-        .unwrap_or_else(|| panic!("{} must declare providers \"boyue\"", path.display()));
-    assert!(
-        provider
-            .models
-            .iter()
-            .any(|model| model.id == "bailian/deepseek-v4.1-flash"),
-        "{} must declare boyue models \"bailian/deepseek-v4.1-flash\"",
-        path.display()
-    );
-    if config.default_model.as_deref() != Some(REQUIRED_DEFAULT_MODEL) {
-        eprintln!(
-            "pinning default_model to {REQUIRED_DEFAULT_MODEL} (config had {:?})",
-            config.default_model
-        );
-    }
-    config.default_model = Some(REQUIRED_DEFAULT_MODEL.to_string());
-    eprintln!("using default_model={REQUIRED_DEFAULT_MODEL}");
-
-    Agent::from_config(config)
+    Agent::from_config(load_pinned_layer_c_config())
         .await
         .expect("build agent from the Flash config")
 }

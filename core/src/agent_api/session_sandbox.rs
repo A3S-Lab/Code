@@ -217,4 +217,64 @@ mod tests {
         let opts = SessionOptions::new().with_allow_process_host_sandbox(true);
         assert!(allow_process_host_sandbox(&opts));
     }
+
+    #[test]
+    fn env_opt_in_accepts_common_truthy_values() {
+        let previous = std::env::var_os(ALLOW_PROCESS_HOST_SANDBOX_ENV);
+        let opts = SessionOptions::new();
+        for value in ["1", "true", "YES", " On "] {
+            std::env::set_var(ALLOW_PROCESS_HOST_SANDBOX_ENV, value);
+            assert!(
+                allow_process_host_sandbox(&opts),
+                "expected env value {value:?} to opt in"
+            );
+        }
+        std::env::set_var(ALLOW_PROCESS_HOST_SANDBOX_ENV, "0");
+        assert!(!allow_process_host_sandbox(&opts));
+        match previous {
+            Some(value) => std::env::set_var(ALLOW_PROCESS_HOST_SANDBOX_ENV, value),
+            None => std::env::remove_var(ALLOW_PROCESS_HOST_SANDBOX_ENV),
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_sandbox_shutdown_is_a_noop() {
+        let sandbox = UnavailableDefaultSandbox {
+            message: "denied".into(),
+        };
+        sandbox.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn custom_sandbox_handle_remains_callable() {
+        let workspace = tempfile::tempdir().unwrap();
+        let expected: Arc<dyn BashSandbox> = Arc::new(CustomSandbox);
+        let mut opts = SessionOptions::new().with_sandbox_handle(Arc::clone(&expected));
+        install_default_local_sandbox(workspace.path(), &mut opts);
+        let sandbox = opts.sandbox_handle.as_ref().unwrap();
+        let output = sandbox
+            .exec_command("unused", "/workspace")
+            .await
+            .expect("custom sandbox must run");
+        assert_eq!(output.exit_code, 0);
+        sandbox.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_host_opt_in_selects_process_host_when_native_fails() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = select_default_local_sandbox(
+            workspace.path(),
+            true,
+            Err(anyhow::anyhow!("native unavailable for coverage")),
+        );
+        let output = sandbox
+            .exec_command("printf 'selected-process-host\\n'", "/workspace")
+            .await
+            .expect("process-host selection must execute");
+        assert_eq!(output.exit_code, 0, "stderr={}", output.stderr);
+        assert!(output.stdout.contains("selected-process-host"));
+        sandbox.shutdown().await;
+    }
 }

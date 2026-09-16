@@ -21,7 +21,7 @@ use a3s_code_core::budget::{BudgetDecision, BudgetGuard};
 use a3s_code_core::llm::TokenUsage;
 use a3s_code_core::store::{MemorySessionStore, SessionStore};
 use a3s_code_core::{Agent, SessionOptions};
-use support::layer_c_model::load_pinned_layer_c_config;
+use support::layer_c_model::{alternate_flash_model, load_pinned_layer_c_config};
 
 async fn real_agent() -> Agent {
     let config = load_pinned_layer_c_config();
@@ -468,4 +468,97 @@ async fn real_priority_scheduler_stats_observe_concurrent_live_work() {
     let _ = bg.await.expect("bg join");
     foreground.close().await;
     background.close().await;
+}
+
+/// Session model switch: live turn on the pinned Flash model, atomic
+/// `replace_session_async` onto the alternate Flash route, then another live
+/// turn that proves history survived and the new model can continue.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires real provider credentials and network access"]
+async fn real_replace_session_switches_model_and_continues() {
+    let config = load_pinned_layer_c_config();
+    let primary = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
+    let alternate = alternate_flash_model(&config, &primary).to_string();
+    assert_ne!(
+        primary, alternate,
+        "model-switch E2E needs two distinct Flash routes"
+    );
+
+    let store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+    let agent = Agent::from_config(config)
+        .await
+        .expect("agent from real config");
+    let token = "MODEL-SWITCH-LIVE-4411";
+    let workspace = tempfile::tempdir().expect("ws");
+    let opts = SessionOptions::new()
+        .with_session_id("real-model-switch")
+        .with_session_store(Arc::clone(&store))
+        .with_model(&primary)
+        .with_planning_mode(a3s_code_core::PlanningMode::Disabled)
+        .with_auto_delegation_enabled(false)
+        .with_manual_delegation_enabled(false)
+        .with_max_tool_rounds(1)
+        .with_temperature(0.0);
+
+    let session = agent
+        .session_async(workspace.path().to_string_lossy(), Some(opts))
+        .await
+        .expect("primary session");
+    assert_eq!(session.model_name(), primary);
+
+    let first = session
+        .send(
+            &format!("Reply with exactly one short sentence that includes {token}."),
+            None,
+        )
+        .await
+        .expect("primary live turn");
+    assert!(
+        first.text.contains(token) || session.history().iter().any(|m| m.text().contains(token)),
+        "primary turn must leave {token} in reply or history"
+    );
+    session.save().await.expect("save before replace");
+
+    let switched = agent
+        .replace_session_async(
+            &session,
+            SessionOptions::new()
+                .with_session_store(Arc::clone(&store))
+                .with_model(&alternate)
+                .with_planning_mode(a3s_code_core::PlanningMode::Disabled)
+                .with_auto_delegation_enabled(false)
+                .with_manual_delegation_enabled(false)
+                .with_max_tool_rounds(1)
+                .with_temperature(0.0),
+        )
+        .await
+        .expect("replace_session_async model switch");
+    assert!(session.is_closed());
+    assert_eq!(switched.session_id(), "real-model-switch");
+    assert_eq!(switched.model_name(), alternate);
+    assert!(
+        switched
+            .history()
+            .iter()
+            .any(|message| message.text().contains(token)),
+        "switched session must retain {token} history"
+    );
+
+    let second = switched
+        .send("Reply with exactly SWITCHED_OK and nothing else.", None)
+        .await
+        .expect("alternate model live turn");
+    assert!(
+        second.text.contains("SWITCHED_OK")
+            || switched
+                .history()
+                .iter()
+                .any(|message| message.text().contains("SWITCHED_OK")),
+        "alternate model must produce a continued turn: {}",
+        second.text
+    );
+    switched.close().await;
 }

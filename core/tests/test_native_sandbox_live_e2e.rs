@@ -7,8 +7,8 @@
 //!   side effects, and a real outside-workspace deny. Assistant wording is
 //!   never a pass criterion.
 //! - Model pin comes from monorepo `.a3s/config.acl` Layer C Flash
-//!   (`boyue/bailian/deepseek-v4.1-flash` — the bailian Flash route; there is
-//!   no `boyue/bailian/deepseek-v4-flash` id in that file).
+//!   (`boyue/deepseek-v4-flash`; alternate route
+//!   `boyue/bailian/deepseek-v4.1-flash` remains for model-switch E2E).
 //!
 //! ```bash
 //! A3S_CONFIG_FILE=/abs/path/to/a3s/.a3s/config.acl \
@@ -26,18 +26,14 @@ use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::sandbox::native::{NativeBashSandbox, NATIVE_SANDBOX_BACKEND};
 use a3s_code_core::sandbox::{BashSandbox, SandboxCommandRequest};
 use a3s_code_core::{Agent, AgentEvent, SessionOptions};
-use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL};
+use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_config};
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(240);
 const NATIVE_TOKEN: &str = "native-sandbox-live-token-0a3s";
 
 async fn configured_agent() -> Agent {
     let config = load_pinned_layer_c_config();
-    assert_eq!(
-        config.default_model.as_deref(),
-        Some(REQUIRED_DEFAULT_MODEL),
-        "live native-sandbox suite must pin {REQUIRED_DEFAULT_MODEL}"
-    );
+    assert_pinned_layer_c_flash(&config, "live native-sandbox suite");
     Agent::from_config(config)
         .await
         .expect("build agent from .a3s/config.acl")
@@ -159,7 +155,7 @@ async fn a3s_sandbox_0_1_3_denies_outside_workspace_write_on_this_host() {
 
 /// Live Flash must drive bash through the attached a3s-sandbox native fence.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires boyue/bailian/deepseek-v4.1-flash from .a3s/config.acl"]
+#[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_flash_bash_through_a3s_sandbox_writes_workspace_token() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");

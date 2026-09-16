@@ -1123,4 +1123,611 @@ mod tests {
             "identity fields must survive bounding"
         );
     }
+
+    #[test]
+    fn protocol_error_codes_are_stable() {
+        assert_eq!(
+            AgentProtocolError::UnsupportedSchema.code(),
+            "a3s.code.agent_protocol.unsupported_schema"
+        );
+        assert_eq!(
+            AgentProtocolError::InvalidField("prompt").code(),
+            "a3s.code.agent_protocol.invalid_field"
+        );
+        assert_eq!(
+            AgentProtocolError::IdentityMismatch.code(),
+            "a3s.code.agent_protocol.identity_mismatch"
+        );
+        assert_eq!(
+            AgentProtocolError::Encoding.code(),
+            "a3s.code.agent_protocol.encoding"
+        );
+    }
+
+    #[test]
+    fn identity_rejects_foreign_protocol_and_digests_when_valid() {
+        let mut bad = identity();
+        bad.protocol = "a3s.code.agent.v0".into();
+        assert_eq!(
+            bad.validate(),
+            Err(AgentProtocolError::InvalidField("protocol"))
+        );
+        let good = identity();
+        let digest = good.digest().expect("valid identity digests");
+        assert!(digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn event_page_validation_rejects_inconsistent_cursors_and_flags() {
+        let identity = identity();
+        let make_event = |sequence: u64, occurred_at_ms: u64| AgentProtocolEventRecordV1 {
+            sequence,
+            occurred_at_ms,
+            event: EventEnvelopeV1::new("text_delta", json!({"text": "ok"})).with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": sequence,
+                "timestamp_ms": occurred_at_ms,
+            })),
+        };
+        let mut page = AgentProtocolEventPageV1 {
+            schema: AgentProtocolEventPageV1::SCHEMA.into(),
+            identity: identity.clone(),
+            after_event_sequence: None,
+            first_available_sequence: Some(0),
+            latest_sequence_exclusive: 1,
+            next_after_event_sequence: Some(0),
+            state: AgentProtocolRunStateV1::Completed,
+            observed_at_ms: 10,
+            retention_gap: false,
+            has_more: false,
+            events: vec![make_event(0, 10)],
+        };
+        page.validate()
+            .expect("baseline page with metadata validates");
+        assert_eq!(page.first_sequence(), Some(0));
+        assert_eq!(page.last_sequence(), Some(0));
+        assert!(page.digest().expect("digest").starts_with("sha256:"));
+
+        // after_event_sequence >= latest is invalid.
+        page.after_event_sequence = Some(1);
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("after_event_sequence"))
+        );
+
+        page.after_event_sequence = None;
+        page.first_available_sequence = Some(1);
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("first_available_sequence"))
+        );
+
+        page.first_available_sequence = Some(0);
+        page.retention_gap = true;
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("retention_gap"))
+        );
+
+        page.retention_gap = false;
+        page.next_after_event_sequence = Some(9);
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField(
+                "next_after_event_sequence"
+            ))
+        );
+
+        page.next_after_event_sequence = Some(0);
+        page.has_more = true;
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("has_more"))
+        );
+
+        page.has_more = false;
+        page.latest_sequence_exclusive = 3;
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("has_more"))
+        );
+
+        // Non-contiguous event sequence after a valid cursor.
+        page.latest_sequence_exclusive = 3;
+        page.after_event_sequence = None;
+        page.first_available_sequence = Some(0);
+        page.next_after_event_sequence = Some(1);
+        page.events = vec![make_event(0, 1), make_event(2, 2)];
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("events"))
+        );
+
+        // Empty events with retention_gap + first_available is invalid once the
+        // retention_gap flag itself is consistent with the cursor math.
+        page.events.clear();
+        page.after_event_sequence = None;
+        page.first_available_sequence = Some(1);
+        page.latest_sequence_exclusive = 2;
+        page.next_after_event_sequence = None;
+        page.retention_gap = true;
+        page.has_more = false;
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("events"))
+        );
+    }
+
+    #[test]
+    fn shrink_helpers_walk_arrays_and_objects() {
+        let mut value = json!({
+            "keep": "identity",
+            "items": ["short", "this-string-is-long-enough-to-shrink-aaaaaaaa"],
+            "nested": {"noise": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+        });
+        assert!(shrink_largest_json_string_excluding(
+            &mut value,
+            AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK,
+            &["keep"],
+        ));
+        let mutated = value.to_string();
+        assert!(
+            mutated.contains("a3s.code.agent-protocol.truncated"),
+            "expected truncation mark in {mutated}"
+        );
+
+        let mut empty = json!({"n": 1, "b": true, "z": null});
+        assert!(!shrink_largest_json_string(
+            &mut empty,
+            AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK
+        ));
+    }
+
+    #[test]
+    fn bounded_event_payload_stub_preserves_small_identity_fields() {
+        let original = json!({
+            "id": "tool-1",
+            "name": "read",
+            "exit_code": 0,
+            "tool_id": "t",
+            "tool_name": "read",
+            "turn": 2,
+            "huge": "x".repeat(1024),
+        });
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let stub = bounded_event_payload_stub(&original, &digest).expect("stub");
+        assert_eq!(stub["bounded"], true);
+        assert_eq!(stub["original_payload_sha256"], digest);
+        assert_eq!(stub["id"], "tool-1");
+        assert_eq!(stub["name"], "read");
+        assert!(stub.get("huge").is_none());
+    }
+
+    #[test]
+    fn bound_projected_event_record_falls_back_to_stub_for_non_string_payload() {
+        let identity = identity();
+        let mut projected = AgentProtocolEventRecordV1 {
+            sequence: 0,
+            occurred_at_ms: 1,
+            event: EventEnvelopeV1::new(
+                "tool_end",
+                json!({
+                    "id": "tool-1",
+                    "name": "read",
+                    "exit_code": 0,
+                    "blob": {"n": 1},
+                    "pads": (0..80).map(|i| format!("pad-{i}-{}", "z".repeat(512))).collect::<Vec<_>>(),
+                }),
+            )
+            .with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": 0u64,
+                "timestamp_ms": 1u64,
+                "extra": (0..40).map(|i| format!("meta-{i}-{}", "m".repeat(256))).collect::<Vec<_>>(),
+            })),
+        };
+        bound_projected_event_record(&mut projected).expect("must bound");
+        projected
+            .validate_for(&identity)
+            .expect("bounded record validates");
+    }
+
+    #[test]
+    fn recover_rejects_checkpoint_run_id_equal_to_target_run() {
+        let identity = identity();
+        let recover = AgentProtocolRunRecoverV1 {
+            schema: AgentProtocolRunRecoverV1::SCHEMA.into(),
+            request_id: "req-recover".into(),
+            identity: identity.clone(),
+            checkpoint_run_id: identity.run_id.clone(),
+        };
+        assert_eq!(
+            recover.validate(),
+            Err(AgentProtocolError::InvalidField("checkpoint_run_id"))
+        );
+    }
+
+    #[test]
+    fn run_state_from_covers_every_run_status_variant() {
+        use crate::run::RunStatus;
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Created),
+            AgentProtocolRunStateV1::Created
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Planning),
+            AgentProtocolRunStateV1::Planning
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Executing),
+            AgentProtocolRunStateV1::Executing
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Verifying),
+            AgentProtocolRunStateV1::Verifying
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Completed),
+            AgentProtocolRunStateV1::Completed
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Failed),
+            AgentProtocolRunStateV1::Failed
+        );
+        assert_eq!(
+            AgentProtocolRunStateV1::from(RunStatus::Cancelled),
+            AgentProtocolRunStateV1::Cancelled
+        );
+        assert!(AgentProtocolRunStateV1::Completed.is_terminal());
+        assert!(!AgentProtocolRunStateV1::Executing.is_terminal());
+    }
+
+    #[test]
+    fn receipt_validation_rejects_zero_observed_at_and_nonterminal_cancel() {
+        let command = AgentProtocolCommandV1::Cancel {
+            request: AgentProtocolRunCancelV1 {
+                schema: AgentProtocolRunCancelV1::SCHEMA.into(),
+                request_id: "req-cancel".into(),
+                identity: identity(),
+                reason: "user".into(),
+            },
+        };
+        let mut receipt = AgentProtocolCommandReceiptV1 {
+            schema: AgentProtocolCommandReceiptV1::SCHEMA.into(),
+            action: AgentProtocolCommandActionV1::Cancel,
+            request_id: "req-cancel".into(),
+            identity: identity(),
+            command_digest: command.digest().expect("digest"),
+            state: AgentProtocolRunStateV1::Cancelled,
+            latest_event_sequence_exclusive: 1,
+            observed_at_ms: 0,
+            replayed: false,
+        };
+        assert_eq!(
+            receipt.validate(),
+            Err(AgentProtocolError::InvalidField("observed_at_ms"))
+        );
+        receipt.observed_at_ms = 10;
+        receipt.state = AgentProtocolRunStateV1::Executing;
+        assert_eq!(
+            receipt.validate_for(&command),
+            Err(AgentProtocolError::InvalidField("state"))
+        );
+    }
+
+    #[test]
+    fn event_record_validate_for_rejects_bad_version_type_and_metadata() {
+        let identity = identity();
+        let mut record = AgentProtocolEventRecordV1 {
+            sequence: 0,
+            occurred_at_ms: 1,
+            event: EventEnvelopeV1::new("text_delta", json!({"text": "ok"})).with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": 0u64,
+                "timestamp_ms": 1u64,
+            })),
+        };
+        record.event.version = 99;
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.version"))
+        );
+        record.event.version = EVENT_ENVELOPE_V1_VERSION;
+        record.event.event_type = "bad\ntype".into();
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.type"))
+        );
+        record.event.event_type = "text_delta".into();
+        record.event.metadata = None;
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.metadata"))
+        );
+        record.event.metadata = Some(json!("not-an-object"));
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.metadata"))
+        );
+        record.event.metadata = Some(json!({
+            "session_id": "other",
+            "run_id": identity.run_id,
+            "sequence": 0u64,
+            "timestamp_ms": 1u64,
+        }));
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn event_page_validate_rejects_too_many_events_and_has_more_inconsistency() {
+        let identity = identity();
+        let make_event = |sequence: u64| AgentProtocolEventRecordV1 {
+            sequence,
+            occurred_at_ms: sequence + 1,
+            event: EventEnvelopeV1::new("text_delta", json!({"text": "ok"})).with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": sequence,
+                "timestamp_ms": sequence + 1,
+            })),
+        };
+        let mut page = AgentProtocolEventPageV1 {
+            schema: AgentProtocolEventPageV1::SCHEMA.into(),
+            identity: identity.clone(),
+            after_event_sequence: None,
+            first_available_sequence: Some(0),
+            latest_sequence_exclusive: 1,
+            next_after_event_sequence: Some(0),
+            state: AgentProtocolRunStateV1::Completed,
+            observed_at_ms: 100,
+            retention_gap: false,
+            has_more: false,
+            events: vec![make_event(0)],
+        };
+        page.validate().expect("baseline page validates");
+
+        page.events = (0..=AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE as u64)
+            .map(make_event)
+            .collect();
+        page.latest_sequence_exclusive = page.events.len() as u64;
+        page.next_after_event_sequence = Some(page.events.len() as u64 - 1);
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("events"))
+        );
+
+        // has_more=true requires room after the last event.
+        page.events = vec![make_event(0)];
+        page.latest_sequence_exclusive = 1;
+        page.next_after_event_sequence = Some(0);
+        page.has_more = true;
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField("has_more"))
+        );
+
+        page.has_more = false;
+        page.latest_sequence_exclusive = 1;
+        page.next_after_event_sequence = Some(9);
+        assert_eq!(
+            page.validate(),
+            Err(AgentProtocolError::InvalidField(
+                "next_after_event_sequence"
+            ))
+        );
+    }
+
+    #[test]
+    fn change_set_validate_rejects_format_encoding_and_tree_errors() {
+        let patch = b"diff --git a/x b/x\n";
+        let mut change_set = AgentProtocolChangeSetV1 {
+            schema: AgentProtocolChangeSetV1::SCHEMA.into(),
+            identity: identity(),
+            state: AgentProtocolRunStateV1::Completed,
+            format: AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1.into(),
+            encoding: AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1.into(),
+            base_tree: format!("git-tree:{}", "1".repeat(40)),
+            result_tree: format!("git-tree:{}", "2".repeat(40)),
+            patch_digest: format!("sha256:{:x}", Sha256::digest(patch)),
+            patch_bytes: patch.len() as u64,
+            patch_base64: base64::engine::general_purpose::STANDARD.encode(patch),
+            observed_at_ms: 10,
+        };
+        change_set.validate().expect("valid change set");
+
+        change_set.format = "other".into();
+        assert_eq!(
+            change_set.validate(),
+            Err(AgentProtocolError::InvalidField("format"))
+        );
+        change_set.format = AGENT_PROTOCOL_CHANGE_SET_FORMAT_V1.into();
+        change_set.encoding = "hex".into();
+        assert_eq!(
+            change_set.validate(),
+            Err(AgentProtocolError::InvalidField("encoding"))
+        );
+        change_set.encoding = AGENT_PROTOCOL_CHANGE_SET_ENCODING_V1.into();
+        change_set.base_tree = "not-a-tree".into();
+        assert_eq!(
+            change_set.validate(),
+            Err(AgentProtocolError::InvalidField("base_tree"))
+        );
+        change_set.base_tree = format!("git-tree:{}", "1".repeat(40));
+        change_set.observed_at_ms = 0;
+        assert_eq!(
+            change_set.validate(),
+            Err(AgentProtocolError::InvalidField("patch_base64"))
+        );
+    }
+
+    #[test]
+    fn validators_reject_bad_schema_ids_sha256_and_git_trees() {
+        assert_eq!(
+            validate_schema("wrong", AgentProtocolRunIdentityV1::SCHEMA),
+            Err(AgentProtocolError::UnsupportedSchema)
+        );
+        assert_eq!(
+            validate_id("session_id", ""),
+            Err(AgentProtocolError::InvalidField("session_id"))
+        );
+        assert_eq!(
+            validate_id("session_id", "has\nnewline"),
+            Err(AgentProtocolError::InvalidField("session_id"))
+        );
+        assert_eq!(
+            validate_lower_sha256("digest", "sha256:zzzz"),
+            Err(AgentProtocolError::InvalidField("digest"))
+        );
+        assert_eq!(
+            validate_git_tree("tree", "git-tree:xyz"),
+            Err(AgentProtocolError::InvalidField("tree"))
+        );
+        assert!(validate_git_tree("tree", &format!("git-tree:{}", "a".repeat(64))).is_ok());
+    }
+
+    #[test]
+    fn change_set_request_digest_binds_validated_identity() {
+        let request = AgentProtocolChangeSetRequestV1 {
+            schema: AgentProtocolChangeSetRequestV1::SCHEMA.into(),
+            identity: identity(),
+        };
+        request.validate().expect("valid");
+        assert!(request.digest().expect("digest").starts_with("sha256:"));
+        let mut bad = request.clone();
+        bad.schema = "wrong".into();
+        assert_eq!(bad.validate(), Err(AgentProtocolError::UnsupportedSchema));
+    }
+
+    #[test]
+    fn event_record_rejects_oversized_metadata_and_encoded_record() {
+        let identity = identity();
+        let mut record = AgentProtocolEventRecordV1 {
+            sequence: 0,
+            occurred_at_ms: 1,
+            event: EventEnvelopeV1::new("text_delta", json!({"text": "ok"})).with_metadata(json!({
+                "session_id": identity.session_id,
+                "run_id": identity.run_id,
+                "sequence": 0u64,
+                "timestamp_ms": 1u64,
+                "noise": "n".repeat(AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES + 64),
+            })),
+        };
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.metadata"))
+        );
+
+        // Keep metadata small but inflate the event type so the encoded record
+        // exceeds AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES after identity checks.
+        record.event.metadata = Some(json!({
+            "session_id": identity.session_id,
+            "run_id": identity.run_id,
+            "sequence": 0u64,
+            "timestamp_ms": 1u64,
+        }));
+        record.event.event_type = "t".repeat(AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES + 1);
+        // Oversized event_type is rejected by validate_single_line first.
+        assert_eq!(
+            record.validate_for(&identity),
+            Err(AgentProtocolError::InvalidField("event.type"))
+        );
+    }
+
+    #[test]
+    fn bounded_event_payload_stub_skips_oversized_identity_fields_and_non_objects() {
+        let digest = format!("sha256:{}", "cd".repeat(32));
+        let original = json!({
+            "id": "x".repeat(600),
+            "name": "read",
+        });
+        let stub = bounded_event_payload_stub(&original, &digest).expect("stub");
+        assert!(
+            stub.get("id").is_none(),
+            "fields over 512 bytes are skipped"
+        );
+        assert_eq!(stub["name"], "read");
+
+        let non_object = bounded_event_payload_stub(&json!("plain"), &digest).expect("non-object");
+        assert_eq!(non_object["bounded"], true);
+        assert!(non_object.get("id").is_none());
+    }
+
+    #[test]
+    fn shrink_helpers_return_false_when_no_eligible_string_exists() {
+        let mut value = json!({
+            "session_id": "keep-me-alone",
+            "items": [1, true, null],
+            "nested": {"run_id": "also-excluded"}
+        });
+        assert!(!shrink_largest_json_string_excluding(
+            &mut value,
+            AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK,
+            &["session_id", "run_id"],
+        ));
+        assert!(!shrink_first_string_of_len(
+            &mut value,
+            999,
+            AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK,
+            &["session_id", "run_id"],
+        ));
+    }
+
+    #[test]
+    fn command_action_and_request_id_cover_recover_variant() {
+        let command = AgentProtocolCommandV1::Recover {
+            request: AgentProtocolRunRecoverV1 {
+                schema: AgentProtocolRunRecoverV1::SCHEMA.into(),
+                request_id: "req-recover-variant".into(),
+                identity: identity(),
+                checkpoint_run_id: "checkpoint-source".into(),
+            },
+        };
+        assert_eq!(command.action(), AgentProtocolCommandActionV1::Recover);
+        assert_eq!(command.request_id(), "req-recover-variant");
+        command.validate().expect("recover command validates");
+        assert!(command.digest().expect("digest").starts_with("sha256:"));
+    }
+
+    #[test]
+    fn run_state_as_str_covers_every_variant() {
+        for (state, name) in [
+            (AgentProtocolRunStateV1::Created, "created"),
+            (AgentProtocolRunStateV1::Planning, "planning"),
+            (AgentProtocolRunStateV1::Executing, "executing"),
+            (AgentProtocolRunStateV1::Verifying, "verifying"),
+            (AgentProtocolRunStateV1::Completed, "completed"),
+            (AgentProtocolRunStateV1::Failed, "failed"),
+            (AgentProtocolRunStateV1::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(state.as_str(), name);
+        }
+    }
+
+    #[test]
+    fn event_page_request_rejects_zero_limit_and_digests_when_valid() {
+        let mut request = AgentProtocolEventPageRequestV1 {
+            schema: AgentProtocolEventPageRequestV1::SCHEMA.into(),
+            identity: identity(),
+            after_event_sequence: None,
+            limit: 16,
+        };
+        request.validate().expect("valid");
+        assert!(request.digest().expect("digest").starts_with("sha256:"));
+        request.limit = 0;
+        assert_eq!(
+            request.validate(),
+            Err(AgentProtocolError::InvalidField("limit"))
+        );
+        request.limit = (AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE as u16).saturating_add(1);
+        assert_eq!(
+            request.validate(),
+            Err(AgentProtocolError::InvalidField("limit"))
+        );
+    }
 }

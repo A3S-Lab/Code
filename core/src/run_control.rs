@@ -1138,6 +1138,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_rejects_session_run_deadline_and_queue_limits() {
+        let inbox = inbox();
+
+        let session_mismatch =
+            RunControlRequest::steer("run-1", "hello").with_session_id("other-session");
+        assert!(matches!(
+            inbox.submit(session_mismatch, 1).await,
+            Err(RunControlError::SessionMismatch)
+        ));
+
+        assert!(matches!(
+            inbox
+                .submit(RunControlRequest::steer("other-run", "hello"), 1)
+                .await,
+            Err(RunControlError::RunMismatch { .. })
+        ));
+
+        let expired = RunControlRequest::steer("run-1", "late").with_deadline_ms(5);
+        assert!(matches!(
+            inbox.submit(expired, 10).await,
+            Err(RunControlError::DeadlineExceeded)
+        ));
+
+        for index in 0..RUN_CONTROL_MAX_QUEUE {
+            let mut request = RunControlRequest::steer("run-1", format!("queued-{index}"));
+            request.request_id = format!("queue-{index}");
+            inbox.submit(request, 1).await.unwrap();
+        }
+        assert!(matches!(
+            inbox
+                .submit(RunControlRequest::steer("run-1", "overflow"), 1)
+                .await,
+            Err(RunControlError::QueueFull)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_inbox_rejects_new_controls_and_deactivate_closes() {
+        let inbox = inbox();
+        inbox.cancellation().cancel();
+        assert!(matches!(
+            inbox
+                .submit(RunControlRequest::steer("run-1", "too late"), 1)
+                .await,
+            Err(RunControlError::NoActiveRun)
+        ));
+
+        let active = RunControlInbox::new("session-1", "run-1", CancellationToken::new());
+        active.deactivate(99).await;
+        assert!(!active.snapshot().await.active);
+    }
+
+    #[derive(Debug)]
+    struct PolicyHook {
+        outcome: HookOutcome,
+    }
+
+    #[async_trait]
+    impl HookExecutor for PolicyHook {
+        async fn fire(&self, event: &HookEvent) -> HookResult {
+            if matches!(event, HookEvent::PreRunControl(_)) {
+                self.outcome.clone().into()
+            } else {
+                HookResult::continue_()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hook_retry_never_enqueues_controls() {
+        let inbox = RunControlInbox::new_with_hook_executor(
+            "session-1",
+            "run-1",
+            CancellationToken::new(),
+            Some(Arc::new(PolicyHook {
+                outcome: HookOutcome::Retry {
+                    reason: "backoff".into(),
+                    retry_after_ms: 250,
+                },
+            })),
+        );
+        assert!(matches!(
+            inbox
+                .submit_with_hooks(RunControlRequest::steer("run-1", "blocked"), 1)
+                .await,
+            Err(RunControlError::HookRetry { .. })
+        ));
+        assert_eq!(inbox.snapshot().await.queued_controls, 0);
+    }
+
+    #[tokio::test]
+    async fn hook_escalate_never_enqueues_controls() {
+        let inbox = RunControlInbox::new_with_hook_executor(
+            "session-1",
+            "run-1",
+            CancellationToken::new(),
+            Some(Arc::new(PolicyHook {
+                outcome: HookOutcome::Escalate {
+                    reason: "needs approval".into(),
+                    target: Some("human".into()),
+                },
+            })),
+        );
+        assert!(matches!(
+            inbox
+                .submit_with_hooks(RunControlRequest::steer("run-1", "blocked"), 1)
+                .await,
+            Err(RunControlError::HookDenied { .. })
+        ));
+        assert_eq!(inbox.snapshot().await.queued_controls, 0);
+    }
+
+    #[tokio::test]
     async fn denied_control_never_enters_the_inbox() {
         let hooks = Arc::new(RecordingHook {
             deny: true,
@@ -1163,5 +1276,71 @@ mod tests {
                 ..
             })
         )));
+    }
+
+    #[test]
+    fn request_validate_and_convenience_builders_cover_reject_paths() {
+        let ok = RunControlRequest::steer("run-1", "hello")
+            .with_session_id("session-1")
+            .with_deadline_ms(1_000);
+        assert!(ok.validate().is_ok());
+        assert_eq!(ok.command.operation(), RunControlOperation::Steer);
+
+        let mut bad_schema = ok.clone();
+        bad_schema.schema = "bad.schema".into();
+        assert!(matches!(
+            bad_schema.validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+
+        assert!(matches!(
+            RunControlRequest::steer("run-1", "   ").validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            RunControlRequest::steer("run-1", "x".repeat(RUN_CONTROL_MAX_INPUT_BYTES + 1))
+                .validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            RunControlRequest::interrupt("run-1")
+                .with_session_id("x\ny")
+                .validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+        let mut long_reason = RunControlRequest::interrupt("run-1");
+        if let RunControlCommand::Interrupt { reason, .. } = &mut long_reason.command {
+            *reason = Some("r".repeat(RUN_CONTROL_MAX_REASON_BYTES + 1));
+        }
+        assert!(matches!(
+            long_reason.validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            RunControlRequest::steer("", "hello").validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            RunControlRequest::steer("r".repeat(RUN_CONTROL_MAX_ID_BYTES + 1), "hello").validate(),
+            Err(RunControlError::InvalidRequest(_))
+        ));
+
+        let steer = SteerRequest::new("focus")
+            .with_run_id("run-9")
+            .with_expected_turn("turn-1", 3);
+        let protocol = steer.into_protocol("session-1", "active-run");
+        assert_eq!(protocol.run_id, "run-9");
+        assert_eq!(protocol.session_id.as_deref(), Some("session-1"));
+        assert_eq!(protocol.expected_turn_revision, Some(3));
+        assert_eq!(protocol.command.operation(), RunControlOperation::Steer);
+
+        let interrupt = InterruptRequest::new()
+            .with_reason("stop")
+            .with_run_id("run-8")
+            .with_expected_turn("turn-2", 4);
+        let protocol = interrupt.into_protocol("session-1", "active-run");
+        assert_eq!(protocol.run_id, "run-8");
+        assert_eq!(protocol.command.operation(), RunControlOperation::Interrupt);
+        assert_eq!(InterruptRequest::default().force, false);
     }
 }

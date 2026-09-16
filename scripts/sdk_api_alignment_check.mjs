@@ -613,6 +613,8 @@ assertContainsAll('Go Agent', goAgent, [
 assertContainsAll('Go Session', goSession, [
   'Run',
   'Send',
+  'SessionID',
+  'ModelName',
   'TaskSchedulerStats',
   'MemoryMaintenanceHealth',
   'SpawnRunWithID',

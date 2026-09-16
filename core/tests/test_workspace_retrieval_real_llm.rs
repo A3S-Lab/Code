@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,7 +24,7 @@ use a3s_code_core::embedding::{
 };
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{
-    Agent, AgentEvent, AgentSession, CodeConfig, SessionOptions, SystemPromptSlots,
+    Agent, AgentEvent, AgentSession, SessionOptions, SystemPromptSlots,
     WorkspaceEmbeddingBatchMetrics, WorkspaceRerankOptions, WorkspaceRetrievalOptions,
     WorkspaceRetrievalPhase, WorkspaceRetrievalStatus,
 };
@@ -32,6 +32,9 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+
+mod support;
+use support::layer_c_model::load_pinned_layer_c_config;
 
 #[path = "workspace_retrieval_real_llm/report.rs"]
 mod report;
@@ -278,16 +281,6 @@ struct RunMetric {
     non_text_provider_inputs: usize,
     embedding_batching: WorkspaceEmbeddingBatchMetrics,
     released_after_close: bool,
-}
-
-fn config_path() -> PathBuf {
-    std::env::var_os("A3S_CONFIG_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
-                .join(".a3s/config.acl")
-        })
 }
 
 fn write_fixture(root: &Path) {
@@ -706,34 +699,15 @@ fn answer_contains_expected_identifier(answer: &str, expected: &str) -> bool {
 }
 
 async fn deepseek_agent() -> (Agent, String) {
-    const REQUIRED_DEFAULT_MODEL: &str = "boyue/bailian/deepseek-v4.1-flash";
-    let path = config_path();
-    let mut config = CodeConfig::from_file(&path)
-        .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
-    let provider = config
-        .find_provider("boyue")
-        .unwrap_or_else(|| panic!("{} must declare providers \"boyue\"", path.display()));
-    assert!(
-        provider
-            .models
-            .iter()
-            .any(|model| model.id == "bailian/deepseek-v4.1-flash"),
-        "{} must declare models \"bailian/deepseek-v4.1-flash\" under boyue",
-        path.display()
-    );
-    // Pin the goal model even if an external edit races default_model mid-suite.
-    if config.default_model.as_deref() != Some(REQUIRED_DEFAULT_MODEL) {
-        eprintln!(
-            "pinning default_model to {REQUIRED_DEFAULT_MODEL} (config had {:?})",
-            config.default_model
-        );
-    }
-    config.default_model = Some(REQUIRED_DEFAULT_MODEL.to_string());
-    eprintln!("using default_model={REQUIRED_DEFAULT_MODEL}");
+    let config = load_pinned_layer_c_config();
+    let model = config
+        .default_model
+        .clone()
+        .expect("pinned Layer C config must declare default_model");
     let agent = Agent::from_config(config)
         .await
         .expect("create agent from Flash config");
-    (agent, REQUIRED_DEFAULT_MODEL.to_string())
+    (agent, model)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -33,6 +33,7 @@ pub use http::{
 };
 pub use openai::OpenAiClient;
 pub(crate) use text_tool_calls::recover_text_tool_calls;
+pub use text_tool_calls::strip_leaked_tool_protocol;
 pub(crate) use token_estimation::{
     estimate_message_tokens, estimate_prompt_tokens, estimate_tool_result_contents_tokens,
 };

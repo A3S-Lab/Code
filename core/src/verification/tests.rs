@@ -833,3 +833,599 @@ fn host_report_for_verified_mutation_path_binds_digest_for_completion_gate() {
         "workspace-relative suffix with a path boundary may bind"
     );
 }
+
+#[test]
+fn go_workspace_preset_uses_go_test_and_vet() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module example.com/demo\n").unwrap();
+
+    let presets = verification_presets_for_workspace(dir.path());
+
+    assert_eq!(presets.len(), 1);
+    assert_eq!(presets[0].project_kind, "go");
+    assert!(presets[0]
+        .commands
+        .iter()
+        .any(|command| command.command == "go test ./..."));
+    assert!(presets[0]
+        .commands
+        .iter()
+        .any(|command| command.command == "go vet ./..."));
+}
+
+#[test]
+fn node_workspace_preset_detects_lockfile_package_managers() {
+    for (lockfile, _manager, command) in [
+        ("pnpm-lock.yaml", "pnpm", "pnpm test"),
+        ("yarn.lock", "yarn", "yarn test"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(lockfile), "").unwrap();
+
+        let presets = verification_presets_for_workspace(dir.path());
+
+        assert_eq!(presets.len(), 1, "{lockfile}");
+        assert_eq!(presets[0].commands[0].command, command);
+        assert_eq!(presets[0].project_kind, "node");
+    }
+}
+
+#[test]
+fn verification_command_marks_execution_error_and_exit_mismatch_failed() {
+    let command = VerificationCommand::required("check:test", "test", "Run tests", "cargo test")
+        .with_expect_exit(0);
+
+    let execution_error = command.check_from_execution(0, None, Some("spawn failed"));
+    assert_eq!(execution_error.status, VerificationStatus::Failed);
+    assert_eq!(
+        execution_error.residual_risk.as_deref(),
+        Some("verification command could not run: spawn failed")
+    );
+
+    let exit_mismatch = command.check_from_execution(17, None, None);
+    assert_eq!(exit_mismatch.status, VerificationStatus::Failed);
+    assert!(exit_mismatch
+        .residual_risk
+        .as_deref()
+        .unwrap()
+        .contains("expected 0"));
+}
+
+#[test]
+fn verification_report_empty_is_skipped_and_residual_risk_needs_review() {
+    let empty = VerificationReport::new("turn", vec![]);
+    assert_eq!(empty.status, VerificationStatus::Skipped);
+
+    let with_risk = VerificationReport::new(
+        "turn",
+        vec![
+            VerificationCheck::required("check:build", "build", "Run build")
+                .with_status(VerificationStatus::Passed),
+        ],
+    )
+    .with_residual_risk("integration tests were not executed");
+    assert_eq!(with_risk.status, VerificationStatus::NeedsReview);
+}
+
+#[test]
+fn supports_goal_achievement_rejects_optional_only_and_residual_risk() {
+    let optional_only = VerificationSummary::from_reports(&[VerificationReport::new(
+        "turn",
+        vec![VerificationCheck::optional("opt", "lint", "optional lint")
+            .with_status(VerificationStatus::Passed)],
+    )]);
+    assert!(!optional_only.supports_goal_achievement());
+
+    let residual = VerificationSummary::from_reports(&[VerificationReport::new(
+        "turn",
+        vec![VerificationCheck::required("req", "build", "Run build")
+            .with_status(VerificationStatus::Passed)
+            .with_residual_risk("partial coverage")],
+    )]);
+    assert!(!residual.supports_goal_achievement());
+}
+
+#[test]
+fn normalize_shell_command_and_preset_coverage_handle_semicolons_and_empty() {
+    assert_eq!(normalize_shell_command("  cargo   test  "), "cargo test");
+    assert!(shell_command_covers_preset(
+        "echo prep; cargo test",
+        "cargo test"
+    ));
+    assert!(!shell_command_covers_preset("", "cargo test"));
+    assert!(!shell_command_covers_preset("cargo test", ""));
+}
+
+#[test]
+fn merge_shell_verification_metadata_attaches_rust_preset_report() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Cargo.toml"), "[package]\nname=\"demo\"\n").unwrap();
+
+    let merged =
+        merge_shell_verification_metadata(None, Some(root.path()), "cargo test -p demo", 0, None)
+            .expect("rust workspace should attach a verification report");
+    let report = merged
+        .get("verification_report")
+        .expect("verification_report metadata");
+    assert_eq!(report["subject"], "shell:rust:test");
+    assert_eq!(report["status"], "passed");
+}
+
+#[test]
+fn merge_shell_verification_metadata_without_workspace_keeps_shell_command_only() {
+    let merged = merge_shell_verification_metadata(
+        Some(serde_json::json!({"exit_code": 0})),
+        None,
+        "cargo test",
+        0,
+        None,
+    )
+    .expect("metadata merge should succeed");
+    assert_eq!(
+        merged["verification_shell_command"].as_str(),
+        Some("cargo test")
+    );
+    assert!(merged.get("verification_report").is_none());
+}
+
+#[test]
+fn verification_status_label_covers_all_variants() {
+    assert_eq!(
+        verification_status_label(VerificationStatus::Passed),
+        "passed"
+    );
+    assert_eq!(
+        verification_status_label(VerificationStatus::Failed),
+        "failed"
+    );
+    assert_eq!(
+        verification_status_label(VerificationStatus::NeedsReview),
+        "needs_review"
+    );
+    assert_eq!(
+        verification_status_label(VerificationStatus::Skipped),
+        "skipped"
+    );
+}
+
+#[test]
+fn verification_command_timeout_and_summary_to_value_are_exercised() {
+    let command = VerificationCommand::optional("check:lint", "lint", "Run lint", "npm run lint")
+        .with_timeout_ms(1_500);
+    assert_eq!(command.timeout_ms, Some(1_500));
+    let check = command.check_from_execution(0, None, None);
+    assert_eq!(check.status, VerificationStatus::Passed);
+
+    let summary = VerificationSummary::from_reports(&[VerificationReport::new(
+        "turn",
+        vec![VerificationCheck::required("req", "build", "Run build")
+            .with_status(VerificationStatus::Passed)],
+    )]);
+    let value = summary.to_value();
+    assert_eq!(value["report_count"], 1);
+    assert_eq!(value["status"], "passed");
+}
+
+#[test]
+fn python_workspace_preset_includes_mypy_when_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pytest.ini"), "[pytest]\n").unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[tool.pytest.ini_options]\n[tool.mypy]\n",
+    )
+    .unwrap();
+    let presets = verification_presets_for_workspace(dir.path());
+    assert!(
+        presets.iter().any(|preset| {
+            preset.project_kind == "python"
+                && preset
+                    .commands
+                    .iter()
+                    .any(|command| command.command.contains("mypy"))
+        }),
+        "{presets:?}"
+    );
+}
+
+#[test]
+fn artifact_uri_collection_walks_arrays_and_nested_objects() {
+    let metadata = serde_json::json!({
+        "items": [
+            {"artifact_uri": "a3s://tool-output/a"},
+            {"nested": {"artifact_uri": "a3s://tool-output/b"}}
+        ]
+    });
+    let uris = artifact_uris(Some(&metadata));
+    assert!(uris.contains(&"a3s://tool-output/a".to_string()));
+    assert!(uris.contains(&"a3s://tool-output/b".to_string()));
+}
+
+#[test]
+fn node_package_without_scripts_yields_no_preset() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("package.json"), r#"{"name":"empty"}"#).unwrap();
+    assert!(verification_presets_for_workspace(dir.path()).is_empty());
+}
+
+#[test]
+fn node_package_manager_detection_and_script_commands_cover_lockfile_variants() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path();
+    std::fs::write(
+        workspace.join("package.json"),
+        r#"{"name":"demo","scripts":{"test":"node test.js","lint":"eslint ."}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        detect_node_package_manager(workspace, &serde_json::json!({})),
+        "npm"
+    );
+    assert_eq!(node_script_command("npm", "test"), "npm test");
+    assert_eq!(node_script_command("npm", "lint"), "npm run lint");
+    assert_eq!(node_script_command("pnpm", "lint"), "pnpm lint");
+    assert_eq!(node_script_command("yarn", "lint"), "yarn lint");
+    assert_eq!(node_script_command("bun", "lint"), "bun run lint");
+    assert_eq!(node_script_command("custom", "lint"), "custom run lint");
+
+    std::fs::write(workspace.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
+    assert_eq!(
+        detect_node_package_manager(workspace, &serde_json::json!({})),
+        "pnpm"
+    );
+    std::fs::remove_file(workspace.join("pnpm-lock.yaml")).unwrap();
+    std::fs::write(workspace.join("yarn.lock"), "# yarn\n").unwrap();
+    assert_eq!(
+        detect_node_package_manager(workspace, &serde_json::json!({})),
+        "yarn"
+    );
+    std::fs::remove_file(workspace.join("yarn.lock")).unwrap();
+    std::fs::write(workspace.join("bun.lockb"), "bun").unwrap();
+    assert_eq!(
+        detect_node_package_manager(workspace, &serde_json::json!({})),
+        "bun"
+    );
+
+    for (manager, lockfile) in [("yarn", "yarn.lock"), ("bun", "bun.lock"), ("npm", "")] {
+        let preset_root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            preset_root.path().join("package.json"),
+            r#"{"scripts":{"test":"node test.js","lint":"eslint ."}}"#,
+        )
+        .unwrap();
+        if !lockfile.is_empty() {
+            std::fs::write(preset_root.path().join(lockfile), "x\n").unwrap();
+        }
+        let presets = verification_presets_for_workspace(preset_root.path());
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].project_kind, "node");
+        assert!(
+            presets[0]
+                .commands
+                .iter()
+                .any(|command| command.command.contains(manager)
+                    || (manager == "npm" && command.command.contains("npm"))),
+            "manager={manager} commands={:?}",
+            presets[0].commands
+        );
+    }
+}
+
+#[test]
+fn report_to_value_and_residual_risk_update_status() {
+    let report = VerificationReport::new(
+        "turn",
+        vec![VerificationCheck::optional("opt", "review", "Review")
+            .with_status(VerificationStatus::Passed)],
+    )
+    .with_residual_risk("needs human review");
+    assert_eq!(report.status, VerificationStatus::NeedsReview);
+    let value = report.to_value();
+    assert_eq!(value["schema"], VERIFICATION_REPORT_SCHEMA);
+    assert_eq!(value["subject"], "turn");
+    assert!(!value["residual_risks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn acceptance_subject_helpers_recognize_passing_shell_acceptance() {
+    assert!(is_acceptance_verification_subject(
+        "shell:acceptance:loop-1:1"
+    ));
+    assert!(!is_acceptance_verification_subject(
+        "shell:preset:cargo-test"
+    ));
+
+    let passing = VerificationReport::new(
+        "shell:acceptance:loop-1:1",
+        vec![VerificationCheck::required("check", "exists", "ok")
+            .with_status(VerificationStatus::Passed)],
+    );
+    assert!(reports_include_passing_acceptance(&[passing]));
+
+    let failed = VerificationReport::new(
+        "shell:acceptance:loop-1:1",
+        vec![VerificationCheck::required("check", "exists", "missing")
+            .with_status(VerificationStatus::Failed)],
+    );
+    assert!(!reports_include_passing_acceptance(&[failed]));
+}
+
+#[test]
+fn bind_host_shell_reports_to_mutations_sets_effect_digest_for_matching_path() {
+    let mut reports = vec![VerificationReport::new(
+        "acceptance:loop",
+        vec![
+            VerificationCheck::required("check:file", "exists", "File exists")
+                .with_status(VerificationStatus::Passed),
+        ],
+    )];
+    bind_host_shell_reports_to_mutations(
+        &mut reports,
+        Some("test -f src/main.rs"),
+        &["src/main.rs".into()],
+        "sha256:abc",
+    );
+    assert_eq!(reports[0].effect_digest.as_deref(), Some("sha256:abc"));
+
+    let mut already = vec![VerificationReport::new(
+        "acceptance:loop",
+        vec![
+            VerificationCheck::required("check:file", "exists", "File exists")
+                .with_status(VerificationStatus::Passed),
+        ],
+    )
+    .with_effect_digest("sha256:keep")];
+    bind_host_shell_reports_to_mutations(
+        &mut already,
+        Some("test -f src/main.rs"),
+        &["src/main.rs".into()],
+        "sha256:other",
+    );
+    assert_eq!(already[0].effect_digest.as_deref(), Some("sha256:keep"));
+
+    let mut mismatched = vec![VerificationReport::new(
+        "acceptance:loop",
+        vec![
+            VerificationCheck::required("check:file", "exists", "File exists")
+                .with_status(VerificationStatus::Passed),
+        ],
+    )];
+    bind_host_shell_reports_to_mutations_with_content(
+        &mut mismatched,
+        Some("test -f src/main.rs"),
+        &["src/main.rs".into()],
+        "sha256:abc",
+        Some(("sha256:expected", "sha256:on_disk")),
+    );
+    assert!(mismatched[0].effect_digest.is_none());
+}
+
+#[test]
+fn python_mypy_and_ruff_presets_are_detected_from_config_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname='x'\n").unwrap();
+    std::fs::write(dir.path().join("mypy.ini"), "[mypy]\n").unwrap();
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname='x'\n[tool.ruff]\nline-length=88\n[tool.mypy]\npython_version='3.12'\n",
+    )
+    .unwrap();
+    let presets = verification_presets_for_workspace(dir.path());
+    let python = presets
+        .iter()
+        .find(|preset| preset.project_kind == "python")
+        .expect("python preset");
+    assert!(
+        python
+            .commands
+            .iter()
+            .any(|command| command.id.contains("ruff") || command.command.contains("ruff")),
+        "{:?}",
+        python.commands
+    );
+    assert!(
+        python
+            .commands
+            .iter()
+            .any(|command| command.id.contains("mypy") || command.command.contains("mypy")),
+        "{:?}",
+        python.commands
+    );
+}
+
+#[test]
+fn verification_summary_reports_passed_only_with_required_checks() {
+    let empty = VerificationSummary::from_reports(&[]);
+    assert!(!empty.supports_goal_achievement());
+    let value = empty.to_value();
+    assert!(value.get("status").is_some());
+
+    let report = VerificationReport::new(
+        "turn",
+        vec![VerificationCheck::required("c1", "exists", "File exists")
+            .with_status(VerificationStatus::Passed)],
+    );
+    let summary = VerificationSummary::from_reports(&[report]);
+    assert!(summary.supports_goal_achievement());
+    assert!(summary.is_complete());
+}
+
+#[test]
+fn program_verification_hint_builds_required_and_optional_checks() {
+    let required = crate::program::ProgramVerificationHint::new("inspect", "look")
+        .required()
+        .with_suggested_tools(["read"])
+        .with_evidence_uris(["artifact://a"]);
+    let check = VerificationCheck::from_program_hint("subj", 0, &required);
+    assert!(check.required);
+    assert!(!check.suggested_tools.is_empty());
+
+    let optional = crate::program::ProgramVerificationHint::new("note", "optional note");
+    let check = VerificationCheck::from_program_hint("subj", 1, &optional);
+    assert!(!check.required);
+}
+
+#[test]
+fn verification_command_optional_to_check_and_timeout_builder() {
+    let command = VerificationCommand::optional("python:pytest", "test", "Run pytest", "pytest -q")
+        .with_timeout_ms(12_000)
+        .with_expect_exit(0);
+    assert!(!command.required);
+    assert_eq!(command.timeout_ms, Some(12_000));
+    let check = command.to_check();
+    assert!(!check.required);
+    assert_eq!(check.suggested_tools, vec!["bash"]);
+}
+
+#[test]
+fn python_pytest_ini_and_mypy_markers_produce_presets() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("pytest.ini"), "[pytest]\n").unwrap();
+    let presets = verification_presets_for_workspace(root.path());
+    assert!(
+        presets.iter().any(|preset| preset.project_kind == "python"),
+        "{presets:?}"
+    );
+
+    let mypy_root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        mypy_root.path().join("pyproject.toml"),
+        "[tool.mypy]\npython_version = \"3.12\"\n",
+    )
+    .unwrap();
+    let presets = verification_presets_for_workspace(mypy_root.path());
+    let python = presets
+        .iter()
+        .find(|preset| preset.project_kind == "python")
+        .expect("python preset");
+    assert!(
+        python
+            .commands
+            .iter()
+            .any(|command| command.command.contains("mypy")),
+        "{:?}",
+        python.commands
+    );
+}
+
+#[test]
+fn format_summary_covers_skipped_failed_and_review_without_subjects() {
+    let skipped = VerificationSummary {
+        status: VerificationStatus::Skipped,
+        report_count: 2,
+        required_check_count: 0,
+        pending_required_check_count: 0,
+        failed_check_count: 0,
+        residual_risk_count: 0,
+        failed_subjects: Vec::new(),
+        pending_subjects: Vec::new(),
+    };
+    assert!(
+        format_verification_summary(&skipped).contains("Verification skipped: 2 reports."),
+        "{}",
+        format_verification_summary(&skipped)
+    );
+
+    let failed = VerificationSummary {
+        status: VerificationStatus::Failed,
+        report_count: 1,
+        required_check_count: 0,
+        pending_required_check_count: 0,
+        failed_check_count: 0,
+        residual_risk_count: 0,
+        failed_subjects: Vec::new(),
+        pending_subjects: Vec::new(),
+    };
+    assert!(
+        format_verification_summary(&failed).contains("failed report"),
+        "{}",
+        format_verification_summary(&failed)
+    );
+
+    let review = VerificationSummary {
+        status: VerificationStatus::NeedsReview,
+        report_count: 1,
+        required_check_count: 0,
+        pending_required_check_count: 0,
+        failed_check_count: 0,
+        residual_risk_count: 0,
+        failed_subjects: Vec::new(),
+        pending_subjects: Vec::new(),
+    };
+    assert!(
+        format_verification_summary(&review).contains("review required"),
+        "{}",
+        format_verification_summary(&review)
+    );
+
+    let many = subject_list(&(0..7).map(|i| format!("s{i}")).collect::<Vec<_>>());
+    assert!(many.contains("..."), "{many}");
+}
+
+#[test]
+fn acceptance_helpers_cover_empty_quote_and_absolute_in_workspace_paths() {
+    assert_eq!(shell_quote_acceptance_path(""), "''");
+    assert_eq!(shell_quote_acceptance_path("ok_path.txt"), "ok_path.txt");
+    assert_eq!(shell_quote_acceptance_path("has space"), "'has space'");
+    assert_eq!(shell_quote_acceptance_path("has'quote"), "'has'\\''quote'");
+
+    let root = tempfile::tempdir().unwrap();
+    let inside = root.path().join("inside.txt");
+    std::fs::write(&inside, "x").unwrap();
+    let absolute = inside.display().to_string();
+    let commands = parse_acceptance_shell_commands(
+        &format!(
+            "- [ ] kind:file_exists assert:`./inside.txt`\n\
+             - [ ] kind:file_exists assert:`{absolute}`\n\
+             - [ ] kind:file_exists assert:`../escape.txt`\n\
+             - [ ] kind:file_exists assert:``\n\
+             - [ ] kind:command assert:`true` expect:exit=0\n\
+             - [ ] kind:command assert:``\n"
+        ),
+        "loop-1",
+        root.path(),
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.command.contains("test -f")),
+        "{commands:?}"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.command.trim() == "true" && command.expect_exit == 0),
+        "{commands:?}"
+    );
+    assert!(!acceptance_file_path_allowed_in_workspace(root.path(), ""));
+    assert!(acceptance_file_path_allowed_in_workspace(
+        root.path(),
+        "./inside.txt"
+    ));
+    assert!(!acceptance_file_path_allowed_in_workspace(
+        root.path(),
+        "/tmp/definitely-missing-a3s-coverage-file"
+    ));
+    assert!(acceptance_file_path_allowed_in_workspace(
+        root.path(),
+        &absolute
+    ));
+
+    assert_eq!(extract_acceptance_expect_exit("expect:exit=7"), Some(7));
+    assert_eq!(
+        extract_acceptance_assert_command("assert:`true`"),
+        Some("true".into())
+    );
+    assert_eq!(extract_acceptance_assert_command("assert:``"), None);
+    assert_eq!(
+        acceptance_loop_id_from_command_id("acceptance:loop-a:1"),
+        Some("loop-a")
+    );
+    assert_eq!(acceptance_loop_id_from_command_id("acceptance::1"), None);
+}

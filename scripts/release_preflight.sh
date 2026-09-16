@@ -53,6 +53,46 @@ raise_open_file_limit() {
 
 cd "$WORKSPACE"
 raise_open_file_limit
+# Debug Go-bridge / tokio worker stacks overflow the default on macOS; CI
+# exports the same floor for cargo test --workspace.
+RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+export RUST_MIN_STACK
+
+# Match CI: stage the verified zvec sidecar and compile with a relocatable
+# @loader_path/$ORIGIN rpath before any cargo test that may link zvec-rust.
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+mkdir -p zvec-runtime
+bash scripts/package_zvec.sh "$HOST_TARGET" zvec-runtime
+export ZVEC_LIB_DIR="$WORKSPACE/zvec-runtime"
+export ZVEC_AUTO_BUILD=0
+ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh "$HOST_TARGET" zvec)"
+export RUSTFLAGS="${ZVEC_FLAGS}${RUSTFLAGS:+ $RUSTFLAGS}"
+case "$HOST_TARGET" in
+  *-apple-darwin)
+    export DYLD_LIBRARY_PATH="$ZVEC_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    ;;
+  *-unknown-linux-gnu|*-unknown-linux-musl)
+    export LD_LIBRARY_PATH="$ZVEC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    ;;
+esac
+TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
+if [[ "$TARGET_ROOT" != /* ]]; then
+  TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
+fi
+stage_zvec_sidecars() {
+  # Debug bridge: target/debug/zvec. Cargo test bins: target/debug/deps/zvec.
+  # Flat copies cover already-linked binaries that only search @rpath roots.
+  mkdir -p "$TARGET_ROOT/debug/zvec" "$TARGET_ROOT/debug/deps/zvec"
+  cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/deps/zvec/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/deps/zvec/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/deps/" 2>/dev/null || true
+  cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/deps/" 2>/dev/null || true
+}
+stage_zvec_sidecars
 
 echo "[1/14] Checking patch hygiene"
 git diff --check
@@ -76,9 +116,11 @@ echo "[5/14] Checking rustdoc warnings"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 
 echo "[6/14] Running default Rust test suite"
+stage_zvec_sidecars
 cargo test --workspace
 
 echo "[7/14] Running feature-gated library tests"
+stage_zvec_sidecars
 cargo test --workspace --all-features --lib
 
 echo "[8/14] Building and testing Node SDK"
@@ -95,26 +137,11 @@ PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
 echo "[11/14] Running Go SDK bridge integration"
-HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
-mkdir -p zvec-runtime
-bash scripts/package_zvec.sh "$HOST_TARGET" zvec-runtime
-export ZVEC_LIB_DIR="$WORKSPACE/zvec-runtime"
-export ZVEC_AUTO_BUILD=0
-# Debug bridge binaries carry @loader_path/zvec (or $ORIGIN/zvec). Stage the
-# verified library next to the binary so local macOS runs do not depend on
-# DYLD_LIBRARY_PATH, which SIP often strips from child processes.
-TARGET_ROOT="${CARGO_TARGET_DIR:-$WORKSPACE/target}"
-if [[ "$TARGET_ROOT" != /* ]]; then
-  TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
-fi
-mkdir -p "$TARGET_ROOT/debug/zvec"
-cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
-cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+# Debug bridge binaries carry @loader_path/zvec (or $ORIGIN/zvec). Re-stage
+# after cargo build in case the debug/zvec directory was cleaned.
+stage_zvec_sidecars
 cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
-# Re-stage after cargo build in case the debug/zvec directory was cleaned.
-mkdir -p "$TARGET_ROOT/debug/zvec"
-cp -f "$ZVEC_LIB_DIR"/libzvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
-cp -f "$ZVEC_LIB_DIR"/zvec_c_api.* "$TARGET_ROOT/debug/zvec/" 2>/dev/null || true
+stage_zvec_sidecars
 BRIDGE_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge"
 if [ -f "$BRIDGE_BINARY.exe" ]; then
   BRIDGE_BINARY="$BRIDGE_BINARY.exe"

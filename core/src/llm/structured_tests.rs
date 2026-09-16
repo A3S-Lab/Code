@@ -2295,3 +2295,277 @@ fn test_extract_raw_output_tool_mode_falls_back_to_text() {
     let value = extract_json_value(&candidates[0]).unwrap();
     assert_eq!(value["name"], "Bob");
 }
+
+#[test]
+fn schema_envelope_covers_object_array_scalar_and_ref_shapes() {
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "type": "string" } }
+        })),
+        SchemaEnvelope::Direct
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(
+            &serde_json::json!({ "type": "array", "items": { "type": "string" } })
+        ),
+        SchemaEnvelope::Elements
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "type": "string" })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "const": "ready" })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "enum": [1, 2, 3] })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "$ref": "#/$defs/Person",
+            "$defs": {
+                "Person": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } }
+                }
+            }
+        })),
+        SchemaEnvelope::Direct
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "anyOf": [
+                { "type": "array", "items": { "type": "number" } },
+                { "type": "array", "items": { "type": "integer" } }
+            ]
+        })),
+        SchemaEnvelope::Elements
+    );
+
+    let elements = SchemaEnvelope::Elements;
+    assert!(elements.instruction().contains("`elements`"));
+    assert_eq!(
+        elements.unwrap_final(&serde_json::json!({ "elements": [1, 2] })),
+        Some(serde_json::json!([1, 2]))
+    );
+    assert_eq!(
+        SchemaEnvelope::Value.unwrap_final(&serde_json::json!({ "value": true })),
+        Some(serde_json::json!(true))
+    );
+    assert!(SchemaEnvelope::Value.instruction().contains("`value`"));
+    assert_eq!(
+        SchemaEnvelope::Value.project_partial(&serde_json::json!({ "value": "partial" }), false),
+        Some(serde_json::json!("partial"))
+    );
+}
+
+#[test]
+fn extract_json_candidates_keeps_direct_scalars_when_requested() {
+    let values = extract_json_candidates("42", true);
+    assert_eq!(values, vec![serde_json::json!(42)]);
+    assert!(extract_json_candidates("42", false).is_empty());
+
+    let fenced = extract_all_json_values("```json\n{\"a\":1}\n``` and [2]");
+    assert!(fenced.contains(&serde_json::json!({"a": 1})));
+    assert!(fenced.contains(&serde_json::json!([2])));
+}
+
+#[test]
+fn schema_envelope_covers_keyword_only_refs_and_type_arrays() {
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        })),
+        SchemaEnvelope::Direct
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "type": ["object"] })),
+        SchemaEnvelope::Direct
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "const": {"k": 1} })),
+        SchemaEnvelope::Direct
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({ "const": [1, 2] })),
+        SchemaEnvelope::Elements
+    );
+    assert_eq!(
+        SchemaEnvelope::Direct.unwrap_final(&serde_json::json!({"a": 1})),
+        Some(serde_json::json!({"a": 1}))
+    );
+
+    let wrapped = SchemaEnvelope::Elements.response_schema(&serde_json::json!({
+        "type": "array",
+        "items": { "$ref": "#/$defs/Item" },
+        "$defs": { "Item": { "type": "string" } }
+    }));
+    assert!(wrapped.get("$defs").is_some(), "{wrapped}");
+    assert_eq!(wrapped["required"], serde_json::json!(["elements"]));
+}
+
+#[test]
+fn extract_json_value_recovers_fenced_arrays_and_inline_json_fences() {
+    let array = extract_json_value("prefix [1, 2, 3] suffix").unwrap();
+    assert_eq!(array, serde_json::json!([1, 2, 3]));
+
+    let inline = extract_json_value("```json{\"ok\":true}```").unwrap();
+    assert_eq!(inline, serde_json::json!({"ok": true}));
+
+    let bare_fence = extract_json_value("```\n[9]\n```").unwrap();
+    assert_eq!(bare_fence, serde_json::json!([9]));
+}
+
+#[test]
+fn find_json_start_skips_code_fence_prefixes_and_escaped_quotes() {
+    assert_eq!(find_json_start("```json\n{\"a\":1}"), Some(8));
+    assert_eq!(find_json_start("```\n[1]"), Some(4));
+    assert_eq!(find_json_start("\"no{\" {\"a\":1}"), Some(6));
+    assert!(find_json_start("\"never closes").is_none());
+    assert!(find_json_start("just prose").is_none());
+}
+
+#[test]
+fn build_parse_failure_repair_covers_empty_and_nonempty_raw() {
+    let empty = build_parse_failure_repair("   ");
+    assert!(empty.contains("no JSON"), "{empty}");
+    let nonempty = build_parse_failure_repair("not json at all");
+    assert!(nonempty.contains("could not be parsed"), "{nonempty}");
+}
+
+#[test]
+fn build_repair_message_truncates_large_raw_output() {
+    let raw = "x".repeat(2500);
+    let message = build_repair_message(&raw, &["$: missing".to_string()]);
+    assert!(message.contains("[truncated"), "{message}");
+    assert!(message.contains("Validation errors"), "{message}");
+}
+
+#[test]
+fn schema_envelope_covers_all_of_depth_limit_and_circular_refs() {
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "allOf": [
+                { "type": "object", "properties": { "a": { "type": "string" } } }
+            ]
+        })),
+        SchemaEnvelope::Direct
+    );
+
+    // Circular $ref must not recurse forever; unresolved cycles fall back to Value.
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "$ref": "#/$defs/Loop",
+            "$defs": {
+                "Loop": { "$ref": "#/$defs/Loop" }
+            }
+        })),
+        SchemaEnvelope::Value
+    );
+
+    // Depth guard: a deeply nested allOf chain returns None → Value envelope.
+    let mut nested = serde_json::json!({ "type": "string" });
+    for _ in 0..70 {
+        nested = serde_json::json!({ "allOf": [nested] });
+    }
+    assert_eq!(SchemaEnvelope::for_schema(&nested), SchemaEnvelope::Value);
+}
+
+#[test]
+fn strip_code_fence_and_extract_handle_incomplete_and_inline_fences() {
+    assert!(strip_code_fence("```json\n{\"a\":1}").is_none());
+    assert!(strip_code_fence("```\n[1,2").is_none());
+    assert_eq!(
+        strip_code_fence("```json{\"ok\":true}```").map(str::trim),
+        Some(r#"{"ok":true}"#)
+    );
+    let inline = extract_json_value("```json{\"ok\":true}```").unwrap();
+    assert_eq!(inline, serde_json::json!({"ok": true}));
+}
+
+#[test]
+fn resolve_structured_records_envelope_schema_mismatch_for_repair() {
+    let schema = serde_json::json!({ "type": "string", "minLength": 1 });
+    let resolution = resolve_structured(
+        &[r#"{"value":""}"#.to_string()],
+        &schema,
+        SchemaEnvelope::Value,
+    );
+    assert!(resolution.valid.is_none());
+    let (_, errors) = resolution.invalid.expect("invalid envelope candidate");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("minLength") || error.contains("$")),
+        "{errors:?}"
+    );
+}
+
+struct DropAfterCompleteClient;
+
+#[async_trait]
+impl LlmClient for DropAfterCompleteClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        anyhow::bail!("blocking generation is not used in this test")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            tx.send(StreamEvent::TextDelta(
+                r#"{"color":"blue","count":3}"#.to_string(),
+            ))
+            .await
+            .ok();
+            // Drop the sender without Done so the stream ends with a complete candidate.
+        });
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn test_generate_streaming_accepts_complete_object_when_stream_ends() {
+    let req = StructuredRequest {
+        prompt: "test".to_string(),
+        system: None,
+        schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["color", "count"],
+            "properties": {
+                "color": {"type": "string"},
+                "count": {"type": "integer"}
+            }
+        }),
+        schema_name: "result".to_string(),
+        schema_description: None,
+        mode: StructuredMode::Prompt,
+        max_repair_attempts: 0,
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        generate_streaming(&DropAfterCompleteClient, &req, Box::new(|_| {})),
+    )
+    .await
+    .expect("stream-end complete object must not hang")
+    .expect("complete streamed object on channel close");
+
+    assert_eq!(result.object["color"], "blue");
+    assert_eq!(result.object["count"], 3);
+}

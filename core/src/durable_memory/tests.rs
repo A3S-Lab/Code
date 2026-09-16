@@ -3,6 +3,7 @@ use a3s_memory::repository::{
     EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet, MemoryNodeDraft,
     MemoryOperation, MemoryQuery, MemoryRelation, MemoryRelationKind,
 };
+use tokio_util::sync::CancellationToken;
 
 fn time(offset_seconds: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(1_777_000_000 + offset_seconds, 0).unwrap()
@@ -477,4 +478,370 @@ async fn related_recall_is_bounded_active_only_and_excludes_conflicts() {
         .hits
         .iter()
         .all(|hit| hit.node_id != "zebra-procedure"));
+}
+
+#[test]
+fn activation_try_new_rejects_invalid_revision_and_evidence() {
+    let occurred_at = time(10);
+    let late_evidence = evidence("late", EvidenceKind::Verification, 11);
+
+    assert!(DurableMemoryActivation::try_new(
+        "activate",
+        "node-1",
+        0,
+        evidence("approval", EvidenceKind::Verification, 9),
+        occurred_at,
+    )
+    .is_err());
+
+    assert!(DurableMemoryActivation::try_new(
+        "activate",
+        "node-1",
+        1,
+        evidence("turn", EvidenceKind::SessionTurn, 9),
+        occurred_at,
+    )
+    .is_err());
+
+    assert!(
+        DurableMemoryActivation::try_new("activate", "node-1", 1, late_evidence, occurred_at,)
+            .is_err()
+    );
+}
+
+#[test]
+fn durable_memory_use_rejects_revision_zero() {
+    assert!(DurableMemoryUse::try_new("use-1", "node-1", 0, time(1)).is_err());
+}
+
+#[tokio::test]
+async fn refresh_semantic_recall_requires_attached_semantic_generation() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.2).unwrap(),
+    );
+
+    let err = binding
+        .refresh_semantic_recall(CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("semantic recall"));
+}
+
+#[tokio::test]
+async fn store_shadow_candidate_rejects_working_memory() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.2).unwrap(),
+    );
+    let item = MemoryItem::new("temporary note").with_type(MemoryType::Working);
+    let turn_evidence = DurableTurnEvidence::try_new(
+        "session/working",
+        "turn",
+        "prompt",
+        "response",
+        "transcript",
+        time(1),
+    )
+    .unwrap();
+
+    let err = binding
+        .store_shadow_candidate(&item, &turn_evidence)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("working memory is not durable"));
+}
+
+#[test]
+fn durable_memory_activation_accepts_manual_evidence_and_rejects_empty_ids() {
+    assert!(DurableMemoryActivation::try_new(
+        "activate",
+        "node-1",
+        1,
+        evidence("manual", EvidenceKind::Manual, 1),
+        time(2),
+    )
+    .is_ok());
+    assert!(DurableMemoryActivation::try_new(
+        "   ",
+        "node-1",
+        1,
+        evidence("m", EvidenceKind::Manual, 1),
+        time(2),
+    )
+    .is_err());
+    assert!(DurableMemoryUse::try_new("use", "   ", 1, time(1)).is_err());
+}
+
+#[tokio::test]
+async fn record_use_with_context_id_and_session_accessors() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace.clone(),
+        DurableMemoryRecallPolicy::try_new(4, 0.0).unwrap(),
+    );
+    assert!(matches!(binding.mode(), DurableMemoryMode::ActiveRecall));
+    assert!(binding.recall_policy().is_some());
+    assert!(binding.semantic_recall().is_none());
+    assert_eq!(binding.namespace(), &namespace);
+    let _ = binding.repository();
+    let debug = format!("{binding:?}");
+    assert!(debug.contains("DurableMemorySession"));
+
+    repository
+        .apply(MemoryChangeSet::new(
+            "create-for-use",
+            namespace.clone(),
+            time(1),
+            vec![MemoryOperation::Create {
+                node: MemoryNodeDraft::new(
+                    "used-node",
+                    namespace.clone(),
+                    DurableMemoryKind::Procedural,
+                    MemoryStatus::Candidate,
+                    "Use recording requires an exact active revision",
+                    vec![evidence("proposal", EvidenceKind::SessionTurn, 1)],
+                    time(1),
+                ),
+            }],
+        ))
+        .await
+        .unwrap();
+    binding
+        .activate_candidate(
+            DurableMemoryActivation::try_new(
+                "activate-used-node",
+                "used-node",
+                1,
+                evidence("approval", EvidenceKind::Verification, 2),
+                time(2),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let usage = DurableMemoryUse::try_new("use-event", "used-node", 1, time(3))
+        .unwrap()
+        .with_context_id("ctx-1");
+    binding.record_use(usage).await.unwrap();
+    assert_eq!(
+        binding.binding().schema_version(),
+        DURABLE_MEMORY_BINDING_SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn durable_turn_evidence_binds_percent_encoded_session_and_turn() {
+    let occurred_at = time(12);
+    let evidence = DurableTurnEvidence::try_new(
+        "session/one",
+        "turn one",
+        "remember this",
+        "done",
+        "user: remember this",
+        occurred_at,
+    )
+    .unwrap();
+    assert!(evidence.reference.uri.contains("session%2Fone"));
+    assert!(evidence.reference.uri.contains("turn%20one"));
+    assert_eq!(evidence.reference.kind, EvidenceKind::SessionTurn);
+}
+
+#[tokio::test]
+async fn store_shadow_candidate_accepts_semantic_memory_with_tags() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.0).unwrap(),
+    );
+    let item = MemoryItem::new("Prefer crate-local tests")
+        .with_type(MemoryType::Semantic)
+        .with_metadata("source", "workflow")
+        .with_tags(vec!["testing".into()]);
+    let turn_evidence = DurableTurnEvidence::try_new(
+        "session/tags",
+        "turn",
+        "prompt",
+        "response",
+        "transcript",
+        time(1),
+    )
+    .unwrap();
+    let node = binding
+        .store_shadow_candidate(&item, &turn_evidence)
+        .await
+        .unwrap();
+    assert_eq!(node.kind, DurableMemoryKind::Semantic);
+    assert!(node.labels.contains_key("a3s.extraction.tags"));
+}
+
+#[tokio::test]
+async fn store_shadow_candidate_accepts_episodic_memory() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.0).unwrap(),
+    );
+    let item = MemoryItem::new("Yesterday the crate tests failed on main")
+        .with_type(MemoryType::Episodic)
+        .with_metadata("confidence", "0.7");
+    let turn_evidence = DurableTurnEvidence::try_new(
+        "session/episodic",
+        "turn",
+        "prompt",
+        "response",
+        "transcript",
+        time(1),
+    )
+    .unwrap();
+    let node = binding
+        .store_shadow_candidate(&item, &turn_evidence)
+        .await
+        .unwrap();
+    assert_eq!(node.kind, DurableMemoryKind::Episodic);
+    assert!((node.confidence - 0.7).abs() < f32::EPSILON);
+}
+
+#[test]
+fn durable_memory_use_rejects_oversized_identifiers() {
+    let oversized = "x".repeat(MAX_IDENTIFIER_BYTES + 1);
+    assert!(DurableMemoryUse::try_new(oversized.as_str(), "node-1", 1, time(1)).is_err());
+    assert!(DurableMemoryUse::try_new("use-1", oversized.as_str(), 1, time(1)).is_err());
+}
+
+#[test]
+fn recall_policy_rejects_invalid_bounds() {
+    assert!(DurableMemoryRecallPolicy::try_new(0, 0.0).is_err());
+    assert!(DurableMemoryRecallPolicy::try_new(4, f32::NAN).is_err());
+    assert!(DurableMemoryRecallPolicy::try_new(4, 1.5).is_err());
+    let policy = DurableMemoryRecallPolicy::try_new(4, 0.0).unwrap();
+    assert!(policy.try_with_related_lookups(usize::MAX).is_err());
+}
+
+#[test]
+fn fuse_lexical_semantic_covers_empty_semantic_lexical_and_hybrid() {
+    use super::context::RecallCandidate;
+    use super::fusion::fuse_lexical_semantic;
+    use super::semantic::SemanticRecallCandidate;
+    use a3s_memory::repository::MemoryRevisionKind;
+    use std::collections::BTreeMap;
+
+    fn node(id: &str, updated_offset: i64) -> MemoryNode {
+        MemoryNode {
+            id: id.into(),
+            namespace: MemoryNamespace::try_new("tenant", "principal", "scope").unwrap(),
+            revision: 1,
+            kind: DurableMemoryKind::Procedural,
+            status: MemoryStatus::Active,
+            content: format!("content-{id}"),
+            confidence: 0.5,
+            importance: 0.5,
+            evidence: Vec::new(),
+            relations: Vec::new(),
+            labels: BTreeMap::new(),
+            created_at: time(0),
+            updated_at: time(updated_offset),
+            revision_kind: MemoryRevisionKind::Created,
+            history: Vec::new(),
+        }
+    }
+
+    let lexical_only = fuse_lexical_semantic(
+        vec![RecallCandidate {
+            node: node("lex-1", 1),
+            score: 0.9,
+            channel: DurableMemoryRecallChannel::Lexical,
+            related_from: None,
+        }],
+        Vec::new(),
+    );
+    assert_eq!(lexical_only.len(), 1);
+    assert_eq!(lexical_only[0].channel, DurableMemoryRecallChannel::Lexical);
+
+    let semantic_only = fuse_lexical_semantic(
+        Vec::new(),
+        vec![SemanticRecallCandidate {
+            node: node("sem-1", 2),
+            score: 0.8,
+        }],
+    );
+    assert_eq!(semantic_only.len(), 1);
+    assert_eq!(
+        semantic_only[0].channel,
+        DurableMemoryRecallChannel::Semantic
+    );
+
+    let hybrid = fuse_lexical_semantic(
+        vec![RecallCandidate {
+            node: node("shared", 1),
+            score: 0.4,
+            channel: DurableMemoryRecallChannel::Lexical,
+            related_from: None,
+        }],
+        vec![SemanticRecallCandidate {
+            node: node("shared", 3),
+            score: 0.95,
+        }],
+    );
+    assert_eq!(hybrid.len(), 1);
+    assert_eq!(hybrid[0].channel, DurableMemoryRecallChannel::Hybrid);
+    assert_eq!(hybrid[0].node.updated_at, time(3));
+}
+
+#[test]
+fn oversized_identifier_is_rejected_for_activation() {
+    let too_long = "a".repeat(a3s_memory::repository::MAX_IDENTIFIER_BYTES + 1);
+    let err = DurableMemoryActivation::try_new(
+        too_long,
+        "node-1",
+        1,
+        evidence("decision", EvidenceKind::Manual, 0),
+        time(1),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("must not exceed"), "{err}");
+}
+
+#[tokio::test]
+async fn store_shadow_candidate_accepts_tags_and_clamps_invalid_confidence() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let binding = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
+    let occurred_at = time(0);
+    let turn_evidence = DurableTurnEvidence::try_new(
+        "session-tags",
+        "turn-1",
+        "remember",
+        "done",
+        "user: remember",
+        occurred_at,
+    )
+    .unwrap();
+    let item = MemoryItem::new("candidate with tags")
+        .with_type(MemoryType::Episodic)
+        .with_tags(vec!["alpha".into(), "beta".into()])
+        .with_metadata("confidence", "not-a-number");
+    let node = binding
+        .store_shadow_candidate(&item, &turn_evidence)
+        .await
+        .unwrap();
+    assert_eq!(node.kind, DurableMemoryKind::Episodic);
+    assert_eq!(node.confidence, 0.0);
 }

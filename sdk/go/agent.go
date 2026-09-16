@@ -362,6 +362,7 @@ func (agent *Agent) newSession(
 	var created struct {
 		SessionHandle   string  `json:"session_handle"`
 		SessionID       string  `json:"session_id"`
+		ModelName       string  `json:"model_name"`
 		Workspace       string  `json:"workspace"`
 		InitWarning     *string `json:"init_warning"`
 		TenantID        *string `json:"tenant_id"`
@@ -389,6 +390,7 @@ func (agent *Agent) newSession(
 		owner:             agent,
 		handle:            created.SessionHandle,
 		id:                created.SessionID,
+		modelName:         created.ModelName,
 		workspace:         created.Workspace,
 		initWarning:       created.InitWarning,
 		tenantID:          created.TenantID,

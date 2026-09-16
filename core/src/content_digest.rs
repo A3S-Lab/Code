@@ -63,4 +63,58 @@ mod tests {
         assert!(validate_digest(&digest.to_ascii_uppercase()).is_err());
         assert!(validate_digest("not-a-digest").is_err());
     }
+
+    #[test]
+    fn digest_json_round_trips_structured_values() {
+        #[derive(Serialize)]
+        struct Payload<'a> {
+            name: &'a str,
+            count: u32,
+        }
+        let digest = digest_json(
+            "test.domain",
+            &Payload {
+                name: "alpha",
+                count: 3,
+            },
+        )
+        .unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(digest.len(), "sha256:".len() + 64);
+        assert_eq!(
+            digest,
+            digest_json(
+                "test.domain",
+                &Payload {
+                    name: "alpha",
+                    count: 3
+                }
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            digest,
+            digest_json(
+                "other.domain",
+                &Payload {
+                    name: "alpha",
+                    count: 3
+                }
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn validate_digest_rejects_malformed_hex() {
+        let digest = digest_bytes("a.v1", b"payload");
+        let short = format!("sha256:{}", "a".repeat(63));
+        let long = format!("sha256:{}", "a".repeat(65));
+        let non_hex = format!("sha256:{}", "g".repeat(64));
+        assert!(validate_digest(&digest).is_ok());
+        assert!(validate_digest(&short).is_err());
+        assert!(validate_digest(&long).is_err());
+        assert!(validate_digest(&non_hex).is_err());
+        assert!(validate_digest("sha256:").is_err());
+    }
 }

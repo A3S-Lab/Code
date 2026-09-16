@@ -558,7 +558,7 @@ harness-convergence-check:
 
 # Full Layer C live E2E against monorepo `.a3s/config.acl` (serial; quota + network).
 # Evidence dir: set A3S_LAYER_C_EVIDENCE or defaults to /tmp/a3s-layer-c-live.
-# Pins A3S_TEST_MODEL to boyue/bailian/deepseek-v4.1-flash unless already set.
+# Pins A3S_TEST_MODEL to boyue/deepseek-v4-flash unless already set.
 layer-c-live-e2e:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -575,11 +575,11 @@ layer-c-live-e2e:
     mkdir -p "${EVIDENCE}"
     : >"${EVIDENCE}/summary.txt"
     export A3S_CONFIG_FILE="${CONFIG}"
-    export A3S_TEST_MODEL="${A3S_TEST_MODEL:-boyue/bailian/deepseek-v4.1-flash}"
+    export A3S_TEST_MODEL="${A3S_TEST_MODEL:-boyue/deepseek-v4-flash}"
     echo "A3S_CONFIG_FILE=${A3S_CONFIG_FILE}" | tee "${EVIDENCE}/env.txt"
     echo "A3S_TEST_MODEL=${A3S_TEST_MODEL}" | tee -a "${EVIDENCE}/env.txt"
     rg -n '^default_model' "${A3S_CONFIG_FILE}" | tee -a "${EVIDENCE}/env.txt"
-    rg -n 'bailian/deepseek-v4\.1-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
+    rg -n 'deepseek-v4-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
     suites=(
       test_native_sandbox_live_e2e
       test_issue_fix_live_e2e

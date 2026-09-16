@@ -986,3 +986,329 @@ fn observation_digest_is_bound_into_the_model_input_snapshot() {
 fn digest_for_test(character: char) -> String {
     format!("sha256:{}", character.to_string().repeat(64))
 }
+
+#[test]
+fn capability_validate_rejects_inconsistent_retrieval_and_schema() {
+    let workspace = tempfile::tempdir().unwrap();
+    let baseline = source(workspace.path())
+        .capture(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("hello")],
+                None,
+                &[search_tool()],
+                None,
+                2,
+            ),
+        )
+        .unwrap()
+        .0;
+
+    let mut unsupported_schema = baseline.clone();
+    unsupported_schema.schema = "bad.schema".into();
+    assert!(matches!(
+        unsupported_schema.validate(),
+        Err(HarnessEvidenceError::UnsupportedSchema)
+    ));
+
+    let mut enabled_but_disabled = baseline.clone();
+    enabled_but_disabled.retrieval.enabled = true;
+    enabled_but_disabled.retrieval.phase = WorkspaceRetrievalPhase::Disabled;
+    assert!(matches!(
+        enabled_but_disabled.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut disabled_but_populated = baseline.clone();
+    disabled_but_populated.retrieval.enabled = false;
+    disabled_but_populated.retrieval.catalog_revision = 1;
+    assert!(matches!(
+        disabled_but_populated.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut bad_digest = baseline.clone();
+    bad_digest.model_visible_tools_digest = "not-a-digest".into();
+    assert!(matches!(
+        bad_digest.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+}
+
+#[test]
+fn presentation_validate_rejects_profiled_presentation_that_adds_tools() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut presentation = source_with_profile(
+        workspace.path(),
+        crate::tools::ToolPresentationProfileV1::direct(),
+        vec![search_tool()],
+    )
+    .capture_with_presentation(
+        1,
+        ModelCallObservation::with_presentation_application(
+            ModelInputKindV1::Completion,
+            &[Message::user("hello")],
+            None,
+            &[search_tool()],
+            None,
+            2,
+            ModelPresentationApplicationV1::Profiled,
+        ),
+    )
+    .unwrap()
+    .1;
+    presentation.presented_tool_count = presentation.source_tool_count + 1;
+    assert!(matches!(
+        presentation.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+}
+
+#[test]
+fn capability_and_input_validate_reject_schema_and_invariant_drift() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (capability, input, _) = source
+        .capture(
+            1,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("hello")],
+                None,
+                &[search_tool()],
+                None,
+                2,
+            ),
+        )
+        .unwrap();
+
+    let mut bad_cap = capability.clone();
+    bad_cap.schema = "bad.schema".into();
+    assert!(matches!(
+        bad_cap.validate(),
+        Err(HarnessEvidenceError::UnsupportedSchema)
+    ));
+
+    let mut enabled_disabled = capability.clone();
+    enabled_disabled.retrieval.enabled = true;
+    enabled_disabled.retrieval.phase = WorkspaceRetrievalPhase::Disabled;
+    assert!(matches!(
+        enabled_disabled.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut enabled_missing_model = capability.clone();
+    enabled_missing_model.retrieval.enabled = true;
+    enabled_missing_model.retrieval.phase = WorkspaceRetrievalPhase::Building;
+    enabled_missing_model.retrieval.model_digest = None;
+    assert!(matches!(
+        enabled_missing_model.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut over_bps = capability.clone();
+    over_bps.retrieval.coverage_bps = 10_001;
+    assert!(matches!(
+        over_bps.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut bad_input = input.clone();
+    bad_input.schema = "bad.schema".into();
+    assert!(matches!(
+        bad_input.validate(),
+        Err(HarnessEvidenceError::UnsupportedSchema)
+    ));
+
+    let mut zero_seq = input.clone();
+    zero_seq.call_sequence = 0;
+    assert!(matches!(
+        zero_seq.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut disabled_dirty = capability.clone();
+    disabled_dirty.retrieval.enabled = false;
+    disabled_dirty.retrieval.phase = WorkspaceRetrievalPhase::Disabled;
+    disabled_dirty.retrieval.catalog_revision = 1;
+    disabled_dirty.retrieval.model_digest = None;
+    assert!(matches!(
+        disabled_dirty.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut bad_tools_digest = capability.clone();
+    bad_tools_digest.model_visible_tools_digest = "not-a-digest".into();
+    assert!(matches!(
+        bad_tools_digest.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut bad_permission = capability.clone();
+    bad_permission.policy.permission_policy_digest = Some("sha256:zzzz".into());
+    assert!(matches!(
+        bad_permission.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut bad_confirmation = capability.clone();
+    bad_confirmation.policy.confirmation_policy_digest = Some("bad".into());
+    assert!(matches!(
+        bad_confirmation.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut bad_retrieval_digest = capability.clone();
+    bad_retrieval_digest.retrieval.enabled = true;
+    bad_retrieval_digest.retrieval.phase = WorkspaceRetrievalPhase::Ready;
+    bad_retrieval_digest.retrieval.model_digest = Some("sha256:nothex".into());
+    assert!(matches!(
+        bad_retrieval_digest.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut tool_results_gt_blocks = input.clone();
+    tool_results_gt_blocks.tool_result_count = input.content_block_count + 1;
+    assert!(matches!(
+        tool_results_gt_blocks.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut retrieval_gt_tools = input.clone();
+    retrieval_gt_tools.retrieval_result_count = input.tool_result_count + 1;
+    assert!(matches!(
+        retrieval_gt_tools.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut retrieval_digest_mismatch = input.clone();
+    retrieval_digest_mismatch.retrieval_result_count = 0;
+    retrieval_digest_mismatch.retrieval_result_bytes = 0;
+    retrieval_digest_mismatch.retrieval_results_digest = Some(digest_for_test('9'));
+    assert!(matches!(
+        retrieval_digest_mismatch.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut structured_bytes_without_digest = input.clone();
+    structured_bytes_without_digest.structured_output_digest = None;
+    structured_bytes_without_digest.structured_output_bytes = 12;
+    assert!(matches!(
+        structured_bytes_without_digest.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut structured_digest_without_bytes = input.clone();
+    structured_digest_without_bytes.structured_output_digest = Some(digest_for_test('a'));
+    structured_digest_without_bytes.structured_output_bytes = 0;
+    assert!(matches!(
+        structured_digest_without_bytes.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut empty_components = input.clone();
+    empty_components.message_payload_bytes = 0;
+    assert!(matches!(
+        empty_components.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut tool_count_mismatch = input.clone();
+    tool_count_mismatch.tool_count = capability.model_visible_tool_count + 1;
+    // tool_count participates in snapshot_digest, so self-validate fails first.
+    assert!(matches!(
+        tool_count_mismatch.validate(),
+        Err(HarnessEvidenceError::DigestMismatch(_))
+    ));
+
+    let mut tool_digest_mismatch = input.clone();
+    tool_digest_mismatch.tool_definitions_digest = digest_for_test('b');
+    assert!(matches!(
+        tool_digest_mismatch.validate(),
+        Err(HarnessEvidenceError::DigestMismatch(_))
+    ));
+}
+
+#[test]
+fn presentation_validate_rejects_sequence_count_and_auxiliary_drift() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source_with_profile(
+        workspace.path(),
+        crate::tools::ToolPresentationProfileV1::direct(),
+        vec![search_tool()],
+    );
+    let (_, presentation, input, _) = source
+        .capture_with_presentation(
+            1,
+            ModelCallObservation::with_presentation_application(
+                ModelInputKindV1::Completion,
+                &[Message::user("hello")],
+                None,
+                &[search_tool()],
+                None,
+                2,
+                ModelPresentationApplicationV1::Profiled,
+            ),
+        )
+        .unwrap();
+    let (_, other_presentation, other_input, _) = source
+        .capture_with_presentation(
+            2,
+            ModelCallObservation::with_presentation_application(
+                ModelInputKindV1::Completion,
+                &[Message::user("hello")],
+                None,
+                &[search_tool()],
+                None,
+                2,
+                ModelPresentationApplicationV1::Profiled,
+            ),
+        )
+        .unwrap();
+
+    let mut zero_seq = presentation.clone();
+    zero_seq.call_sequence = 0;
+    assert!(matches!(
+        zero_seq.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut bad_source_digest = presentation.clone();
+    bad_source_digest.source_tool_definitions_digest = "nope".into();
+    assert!(matches!(
+        bad_source_digest.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut bad_presented_digest = presentation.clone();
+    bad_presented_digest.presented_tool_definitions_digest = "nope".into();
+    assert!(matches!(
+        bad_presented_digest.validate(),
+        Err(HarnessEvidenceError::InvalidDigest(_))
+    ));
+
+    let mut aux = presentation.clone();
+    aux.application = ModelPresentationApplicationV1::Auxiliary;
+    aux.presented_tool_count = presentation.source_tool_count + 1;
+    assert!(matches!(
+        aux.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    assert!(matches!(
+        presentation.validate_against(&other_input),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+    assert!(matches!(
+        other_presentation.validate_against(&input),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut digest_drift = presentation.clone();
+    digest_drift.presented_tool_definitions_digest = digest_for_test('c');
+    assert!(matches!(
+        digest_drift.validate(),
+        Err(HarnessEvidenceError::DigestMismatch(_))
+    ));
+}

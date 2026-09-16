@@ -795,6 +795,12 @@ impl Session {
         self.inner.session_id().to_string()
     }
 
+    /// Return the model identifier bound to this session.
+    #[napi(getter)]
+    pub fn model_name(&self) -> String {
+        self.inner.model_name().to_string()
+    }
+
     /// Return the workspace path.
     #[napi(getter)]
     pub fn workspace(&self) -> String {

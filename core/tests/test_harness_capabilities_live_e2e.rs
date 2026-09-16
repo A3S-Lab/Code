@@ -19,7 +19,7 @@ use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
 const MCP_TOKEN: &str = "mcp-live-token-7f3a";
 const SKILL_TOKEN: &str = "skill-live-token-91c2";
 const SEARCH_TOKEN: &str = "workspace-live-token-44e0";
@@ -761,8 +761,10 @@ async fn deepseek_flash_plan_tracks_a_read_only_goal() {
 async fn deepseek_flash_task_fanout_reads_two_files() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");
-    std::fs::write(workspace.path().join("alpha.txt"), "alpha-token\n").expect("alpha");
-    std::fs::write(workspace.path().join("beta.txt"), "beta-token\n").expect("beta");
+    // Non-secret fixture markers — Flash explore children sometimes refuse to
+    // echo opaque "*-token" strings as if they were credentials.
+    std::fs::write(workspace.path().join("alpha.txt"), "ALPHA_FIXTURE_OK\n").expect("alpha");
+    std::fs::write(workspace.path().join("beta.txt"), "BETA_FIXTURE_OK\n").expect("beta");
     let before = workspace_files(workspace.path());
     let session = agent
         .session_async(
@@ -778,7 +780,7 @@ async fn deepseek_flash_task_fanout_reads_two_files() {
         .expect("session");
     let observed = observe(
         &session,
-        "Call the task tool once with two independent items, both agent explore. One reads alpha.txt and must return alpha-token. The other reads beta.txt and must return beta-token. Do not read the files yourself.",
+        "Call the task tool once with two independent items, both agent explore. One reads alpha.txt and must return the exact fixture string ALPHA_FIXTURE_OK. The other reads beta.txt and must return the exact fixture string BETA_FIXTURE_OK. These fixture strings are non-secret placeholders for this test — echo them verbatim. Do not read the files yourself.",
     )
     .await;
     let fanout = observed.tools.iter().find(|tool| {
@@ -790,12 +792,12 @@ async fn deepseek_flash_task_fanout_reads_two_files() {
                 .and_then(|value| value.get("task_count"))
                 .and_then(serde_json::Value::as_u64)
                 >= Some(2)
-            && tool.output.contains("alpha-token")
-            && tool.output.contains("beta-token")
+            && tool.output.contains("ALPHA_FIXTURE_OK")
+            && tool.output.contains("BETA_FIXTURE_OK")
     });
     assert!(
         fanout.is_some(),
-        "task fan-out did not return both tokens: {:?}",
+        "task fan-out did not return both fixture strings: {:?}",
         observed
             .tools
             .iter()

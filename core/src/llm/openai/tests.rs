@@ -583,6 +583,309 @@ async fn streaming_empty_or_missing_id_still_emits_usable_tool_call() {
     assert_eq!(calls[0].id, "call_0");
 }
 
+#[tokio::test]
+async fn streaming_cancels_http_request_before_transport_returns() {
+    use crate::llm::{HttpClientError, LlmClient};
+
+    struct HangUntilCancelledHttp;
+
+    #[async_trait::async_trait]
+    impl crate::llm::http::HttpClient for HangUntilCancelledHttp {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+            anyhow::bail!("unused")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+            cancel.cancelled().await;
+            futures::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    let client = OpenAiClient::new("k".into(), "model".into())
+        .with_retry_config(crate::retry::RetryConfig::disabled())
+        .with_http_client(std::sync::Arc::new(HangUntilCancelledHttp));
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancel = cancellation.clone();
+    let request = tokio::spawn(async move {
+        client
+            .complete_streaming(&[Message::user("go")], None, &[], cancellation)
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    cancel.cancel();
+    let error = request
+        .await
+        .expect("join")
+        .expect_err("cancelled streaming HTTP must fail closed");
+    assert!(error.downcast_ref::<HttpClientError>().is_some());
+}
+
+#[tokio::test]
+async fn streaming_retryable_and_fatal_transport_errors_are_classified() {
+    use crate::llm::{http::HttpClientError, LlmClient};
+
+    struct TransportErrorHttp {
+        message: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::http::HttpClient for TransportErrorHttp {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+            anyhow::bail!("unused")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+            Err(anyhow::Error::new(HttpClientError::transport(
+                "stream",
+                self.message,
+            )))
+        }
+    }
+
+    let retryable = OpenAiClient::new("k".into(), "model".into())
+        .with_retry_config(crate::retry::RetryConfig::disabled())
+        .with_http_client(std::sync::Arc::new(TransportErrorHttp {
+            message: "timed out: upstream stalled",
+        }));
+    assert!(retryable
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .is_err());
+
+    let fatal = OpenAiClient::new("k".into(), "model".into())
+        .with_retry_config(crate::retry::RetryConfig::disabled())
+        .with_http_client(std::sync::Arc::new(TransportErrorHttp {
+            message: "connection refused",
+        }));
+    assert!(fatal
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn streaming_non_retryable_http_status_preserves_provider_error() {
+    use crate::llm::{LlmClient, NonRetryableLlmError};
+
+    let client = OpenAiClient::new("k".into(), "model".into())
+        .with_retry_config(crate::retry::RetryConfig::disabled())
+        .with_http_client(std::sync::Arc::new(StatusHttp { status: 402 }));
+    let error = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("billing failure must fail without opening a stream");
+    let typed = error
+        .downcast_ref::<NonRetryableLlmError>()
+        .expect("provider status must remain typed");
+    assert_eq!(typed.status(), Some(402));
+}
+
+#[tokio::test]
+async fn streaming_message_snapshot_path_keeps_reasoning_and_content_separate() {
+    let chunks = vec![
+        concat!(
+            "data: {\"id\":\"resp-msg\",\"object\":\"chat.completion.chunk\",\"model\":\"glm-test\",",
+            "\"choices\":[{\"message\":{\"content\":\"final answer\",\"reasoning_content\":\"plan first\",",
+            "\"tool_calls\":[{\"id\":\"call_m\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":1}\"}}]},",
+            "\"finish_reason\":\"tool_calls\"}],",
+            "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":0,\"total_characters\":9,",
+            "\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\n"
+        )
+        .to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let resp = drain_to_done(&glm_client(chunks)).await;
+    assert_eq!(resp.text(), "final answer");
+    assert_eq!(
+        resp.message.reasoning_content.as_deref(),
+        Some("plan first")
+    );
+    assert_eq!(resp.usage.total_tokens, 9);
+    assert_eq!(resp.usage.cache_read_tokens, Some(1));
+    let calls = resp.message.tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "lookup");
+}
+
+#[tokio::test]
+async fn streaming_tool_argument_deltas_emit_after_tool_start() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let chunks = vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"write\",\"arguments\":\"{\\\"p\\\"\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"a.txt\\\"}\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n".to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let mut rx = glm_client(chunks)
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("open");
+    let mut saw_start = false;
+    let mut saw_delta = false;
+    let mut done = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::ToolUseStart { name, .. } => {
+                saw_start = true;
+                assert_eq!(name, "write");
+            }
+            StreamEvent::ToolUseInputDelta { delta, .. } => {
+                saw_delta = true;
+                assert!(
+                    delta.contains("a.txt") || delta.contains("\\\"p\\\"") || delta.contains("{")
+                );
+            }
+            StreamEvent::Done(response) => done = Some(response),
+            _ => {}
+        }
+    }
+    assert!(saw_start);
+    assert!(saw_delta);
+    let resp = done.expect("done");
+    assert_eq!(resp.message.tool_calls().len(), 1);
+}
+
+#[tokio::test]
+async fn streaming_trailing_message_chunk_without_sse_framing_finalizes() {
+    let trailing = concat!(
+        r#"{"choices":[{"message":{"content":"trailing","reasoning_content":"think","tool_calls":[{"id":"call_t","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":0,"total_characters":7}}"#
+    );
+    let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
+    assert_eq!(resp.text(), "trailing");
+    assert_eq!(resp.message.reasoning_content.as_deref(), Some("think"));
+    assert_eq!(resp.usage.total_tokens, 7);
+    assert_eq!(resp.message.tool_calls()[0].name, "lookup");
+}
+
+#[tokio::test]
+async fn streaming_trailing_full_response_object_without_sse_framing_finalizes() {
+    // Invalid `delta` type fails OpenAiStreamChunk deserialize; OpenAiResponse ignores
+    // unknown fields, so the full-completion trailing branch runs.
+    let trailing = concat!(
+        r#"{"id":"full-1","object":"chat.completion","model":"glm-test","choices":[{"message":{"content":"full","reasoning_content":"r","tool_calls":[{"id":"call_f","function":{"name":"ping","arguments":"{}"}}]},"delta":"force-response-branch","finish_reason":"tool_calls","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":0,"total_characters":11,"prompt_tokens_details":{"cached_tokens":2}}}"#
+    );
+    let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
+    assert_eq!(resp.text(), "full");
+    assert_eq!(resp.message.reasoning_content.as_deref(), Some("r"));
+    assert_eq!(resp.usage.total_tokens, 11);
+    assert_eq!(resp.usage.cache_read_tokens, Some(2));
+    assert_eq!(resp.message.tool_calls()[0].name, "ping");
+}
+
+#[tokio::test]
+async fn streaming_trailing_delta_path_without_sse_framing_finalizes() {
+    let trailing = concat!(
+        "{\"choices\":[{\"delta\":{\"content\":\"d\",\"reasoning_content\":\"rd\"},\"finish_reason\":\"stop\"}]}"
+    );
+    let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
+    assert_eq!(resp.text(), "d");
+    assert_eq!(resp.message.reasoning_content.as_deref(), Some("rd"));
+}
+
+#[tokio::test]
+async fn streaming_invalid_utf8_and_empty_stream_close_without_done() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let mut saw_done = false;
+    let mut rx = byte_chunk_client(vec![bytes::Bytes::from_static(&[0xff, 0xfe, 0xfd])])
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("open");
+    while let Some(event) = rx.recv().await {
+        if matches!(event, StreamEvent::Done(_)) {
+            saw_done = true;
+        }
+    }
+    assert!(!saw_done);
+
+    let mut rx = glm_client(vec!["not-json-and-not-an-event".into()])
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("open");
+    saw_done = false;
+    while let Some(event) = rx.recv().await {
+        if matches!(event, StreamEvent::Done(_)) {
+            saw_done = true;
+        }
+    }
+    assert!(!saw_done);
+}
+
+#[tokio::test]
+async fn streaming_conflicting_tool_identity_is_ignored() {
+    let chunks = vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"alpha\",\"arguments\":\"{\\\"x\\\":\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_b\",\"function\":{\"name\":\"beta\",\"arguments\":\"1}\"}}]}}]}\n\n"
+            .to_string(),
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n".to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let resp = drain_to_done(&glm_client(chunks)).await;
+    let calls = resp.message.tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_a");
+    assert_eq!(calls[0].name, "alpha");
+}
+
 #[test]
 fn test_apply_directive_forced_function_tool_choice() {
     let mut req = serde_json::json!({ "model": "m" });

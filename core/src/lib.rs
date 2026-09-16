@@ -322,11 +322,11 @@ pub use harness_evidence::{
     RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA, TOOL_REQUEST_SNAPSHOT_V1_SCHEMA,
 };
 pub use llm::{
-    clear_http_metrics_callback, set_http_metrics_callback, AnthropicClient, Attachment,
-    ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource, LlmClient, LlmResponse,
-    Message, ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
-    ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError,
-    ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
+    clear_http_metrics_callback, set_http_metrics_callback, strip_leaked_tool_protocol,
+    AnthropicClient, Attachment, ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource,
+    LlmClient, LlmResponse, Message, ModelGenerationAdmission, ModelGenerationAdmissionError,
+    ModelGenerationConcurrency, ModelGenerationPermit, ModelGenerationPool,
+    ModelGenerationPoolError, ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{
