@@ -124,6 +124,14 @@ impl RuntimeCheckpointReceiver {
             }
         }
 
+        // Mid-run durable session JSON (auto_save). Loop checkpoints alone live
+        // under loop_checkpoints/ and are cleared on terminal success; hosts that
+        // read sessions/*.json (Desktop E2E, resume UX) need the snapshot flushed
+        // at each tool-round boundary so a kill after write still leaves markers.
+        self.persistence
+            .record_messages(checkpoint.messages.clone());
+        self.persistence.auto_save_if_enabled().await;
+
         if let (Some(sink), Some(export)) = (&self.export_sink, export) {
             if let Err(error) = sink.export_checkpoint(export).await {
                 tracing::warn!(

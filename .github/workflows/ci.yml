@@ -181,7 +181,9 @@ jobs:
   windows-check:
     name: Windows check
     runs-on: windows-latest
-    timeout-minutes: 25
+    # Serial `--test-threads=1` lib tests (AppContainer host ACL safety) plus
+    # clippy and Go bridge routinely need more than 25m on windows-latest.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

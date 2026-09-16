@@ -645,7 +645,10 @@ async fn timed_out_handler_settles_under_the_run_supervisor_before_use_lease_rel
         .expect("timed-out hook handler did not start within the test bound")
         .unwrap()
         .forget();
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // timeout_ms is 5; under loaded Windows CI a 20ms wait was not always enough
+    // for the supervisor timeout to win before gate release (handler then returns
+    // block("timed-out"), which does not contain the substring "timed out").
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(!run.is_finished());
     assert_eq!(acquired.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
@@ -656,7 +659,11 @@ async fn timed_out_handler_settles_under_the_run_supervisor_before_use_lease_rel
         .expect("timed-out hook run did not settle after releasing the handler")
         .unwrap()
         .unwrap_err();
-    assert!(error.to_string().contains("timed out"));
+    let msg = error.to_string();
+    assert!(
+        msg.contains("timed out"),
+        "expected hook timeout failure, got: {msg}"
+    );
     assert_eq!(&*executions.lock().unwrap(), &["timed-out"]);
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
@@ -724,7 +731,9 @@ async fn timed_out_observational_handler_settles_inside_its_supervised_task() {
         }
     });
     entered.acquire().await.unwrap().forget();
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Match the gating timeout settle bound: give the 5ms hook timeout room to
+    // fire before releasing the blocked observational handler.
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(!run.is_finished());
     assert_eq!(acquired.load(Ordering::SeqCst), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);

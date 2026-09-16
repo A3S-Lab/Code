@@ -2146,6 +2146,74 @@ impl BlockingCapacityLlmClient {
     }
 }
 
+/// Per-prompt response queues for parallel child tasks that share one LLM.
+///
+/// A single ordered `MockLlmClient` queue races when `execute_parallel` fans
+/// out: one child can drain another child's `Done N.` text turn and skip the
+/// write / completion-gate path.
+struct PromptKeyedMockLlm {
+    queues: Mutex<HashMap<&'static str, Vec<LlmResponse>>>,
+}
+
+impl PromptKeyedMockLlm {
+    fn new(queues: HashMap<&'static str, Vec<LlmResponse>>) -> Self {
+        Self {
+            queues: Mutex::new(queues),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for PromptKeyedMockLlm {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        if is_pre_analysis_system(system) {
+            return Ok(pre_analysis_response(messages));
+        }
+        // Prefer the original user prompt (first user text). After a tool turn,
+        // `last_text` can be empty while the child prompt still identifies the queue.
+        let prompt = messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut queues = self.queues.lock().unwrap();
+        let key = queues
+            .keys()
+            .copied()
+            .find(|needle| prompt.contains(needle))
+            .ok_or_else(|| anyhow::anyhow!("no prompt-keyed mock queue for: {prompt}"))?;
+        let queue = queues.get_mut(key).expect("key just found");
+        if queue.is_empty() {
+            anyhow::bail!("prompt-keyed mock queue exhausted for {key}");
+        }
+        Ok(queue.remove(0))
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let response = self.complete(messages, system, tools).await?;
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
+    }
+}
+
 #[async_trait::async_trait]
 impl LlmClient for LimitedConcurrencyLlmClient {
     async fn complete(
@@ -5745,28 +5813,36 @@ async fn parallel_task_tool_still_fails_when_all_children_fail() {
 #[tokio::test]
 async fn parallel_task_both_inherit_permissions() {
     let workspace = tempfile::tempdir().unwrap();
-    let mock = Arc::new(MockLlmClient::new(vec![
-        // Task 1 responses
-        MockLlmClient::tool_call_response(
-            "t1",
-            "write",
-            serde_json::json!({
-                "file_path": "p1.txt",
-                "content": "P1"
-            }),
+    let mock = Arc::new(PromptKeyedMockLlm::new(HashMap::from([
+        (
+            "p1.txt",
+            vec![
+                MockLlmClient::tool_call_response(
+                    "t1",
+                    "write",
+                    serde_json::json!({
+                        "file_path": "p1.txt",
+                        "content": "P1"
+                    }),
+                ),
+                MockLlmClient::text_response("Done 1."),
+            ],
         ),
-        MockLlmClient::text_response("Done 1."),
-        // Task 2 responses
-        MockLlmClient::tool_call_response(
-            "t2",
-            "write",
-            serde_json::json!({
-                "file_path": "p2.txt",
-                "content": "P2"
-            }),
+        (
+            "p2.txt",
+            vec![
+                MockLlmClient::tool_call_response(
+                    "t2",
+                    "write",
+                    serde_json::json!({
+                        "file_path": "p2.txt",
+                        "content": "P2"
+                    }),
+                ),
+                MockLlmClient::text_response("Done 2."),
+            ],
         ),
-        MockLlmClient::text_response("Done 2."),
-    ]));
+    ])));
 
     let executor = Arc::new(TaskExecutor::new(
         test_registry_with_writer(),

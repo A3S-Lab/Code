@@ -581,6 +581,7 @@ layer-c-live-e2e:
     rg -n '^default_model' "${A3S_CONFIG_FILE}" | tee -a "${EVIDENCE}/env.txt"
     rg -n 'bailian/deepseek-v4\.1-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
     suites=(
+      test_native_sandbox_live_e2e
       test_issue_fix_live_e2e
       test_agent_protocol_live_e2e
       test_harness_loop_live_e2e

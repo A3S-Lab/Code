@@ -3,18 +3,28 @@
 //! Redirects are handled manually so every direct connection is preceded by
 //! public-address validation and DNS pinning. Explicit proxies remain useful
 //! in Fake-IP environments; in that mode the trusted proxy resolves hostnames.
+//! When the system resolver returns only Clash/Surge-style Fake-IP addresses
+//! (`198.18.0.0/15`) and no proxy is configured, resolution falls back to
+//! DNS-over-HTTPS against `1.1.1.1`. DoH answers are still subject to the same
+//! public-address SSRF checks before any connection is opened.
 
 use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_ENCODING, LOCATION, RANGE};
 use reqwest::{redirect::Policy, Url};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(any(target_os = "macos", all(test, unix)))]
 use std::time::Duration;
 
 pub(super) const MAX_REDIRECTS: usize = 10;
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 pub(super) const SYSTEM_PROXY_LOOKUP_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Bound DoH fallback so Fake-IP recovery cannot stall a fetch indefinitely.
+const DOH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Cloudflare DNS-over-HTTPS JSON endpoint addressed by literal IP so the
+/// lookup itself cannot be poisoned by Fake-IP answers for a hostname.
+const DOH_ENDPOINT: &str = "https://1.1.1.1/dns-query";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RedirectQueryPolicy {
@@ -245,6 +255,10 @@ struct ResolvedTarget {
 
 /// Resolve the target and reject the whole result if any address is non-public.
 /// Rejecting mixed public/private answers avoids resolver-order dependent bypasses.
+///
+/// When every local answer is Fake-IP (`198.18.0.0/15`), retry via DoH. Other
+/// non-public answers (loopback, RFC1918, link-local, …) stay hard failures so
+/// DoH cannot turn a poisoned private answer into a public connect.
 async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpError> {
     validate_url_target(url).map_err(SafeHttpError::invalid)?;
 
@@ -258,6 +272,7 @@ async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpErro
     let port = url
         .port_or_known_default()
         .ok_or_else(|| SafeHttpError::invalid("URL must include a valid port"))?;
+    let is_ip_literal = host.parse::<IpAddr>().is_ok();
     let mut addresses: Vec<_> = tokio::net::lookup_host((host, port))
         .await
         .map_err(|error| {
@@ -266,13 +281,123 @@ async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpErro
         .collect();
     addresses.sort_unstable();
     addresses.dedup();
-    validate_resolved_addresses(host, &addresses).map_err(SafeHttpError::invalid)?;
+
+    if let Err(error) = validate_resolved_addresses(host, &addresses) {
+        if !is_ip_literal && addresses_are_exclusively_fake_ip(&addresses) {
+            addresses = resolve_via_dns_over_https(host, port)
+                .await
+                .map_err(|doh_error| {
+                    SafeHttpError::invalid(format!(
+                        "{error}; DNS-over-HTTPS fallback also failed: {doh_error}"
+                    ))
+                })?;
+            addresses.sort_unstable();
+            addresses.dedup();
+            validate_resolved_addresses(host, &addresses).map_err(SafeHttpError::invalid)?;
+        } else {
+            return Err(SafeHttpError::invalid(error));
+        }
+    }
 
     Ok(ResolvedTarget {
         host: serialized_host.to_string(),
         addresses,
-        is_ip_literal: host.parse::<IpAddr>().is_ok(),
+        is_ip_literal,
     })
+}
+
+/// True when every resolved address sits in the Clash/Surge Fake-IP range.
+fn addresses_are_exclusively_fake_ip(addresses: &[SocketAddr]) -> bool {
+    !addresses.is_empty() && addresses.iter().all(|address| is_fake_ip(address.ip()))
+}
+
+fn is_fake_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => is_fake_ipv4(v4),
+        IpAddr::V6(v6) => v6.to_ipv4().is_some_and(is_fake_ipv4),
+    }
+}
+
+fn is_fake_ipv4(address: Ipv4Addr) -> bool {
+    let [a, b, ..] = address.octets();
+    a == 198 && (b == 18 || b == 19)
+}
+
+/// Resolve `host` through Cloudflare DoH JSON. Answers are not trusted until
+/// [`validate_resolved_addresses`] runs on the returned sockets.
+async fn resolve_via_dns_over_https(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .no_proxy()
+        .timeout(DOH_LOOKUP_TIMEOUT)
+        .user_agent(concat!("a3s-code/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("Failed to initialize DoH client: {error}"))?;
+
+    let mut addresses = Vec::new();
+    for record_type in ["A", "AAAA"] {
+        let mut endpoint =
+            Url::parse(DOH_ENDPOINT).map_err(|error| format!("Invalid DoH endpoint: {error}"))?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("name", host)
+            .append_pair("type", record_type);
+        let response = client
+            .get(endpoint)
+            .header(ACCEPT, "application/dns-json")
+            .send()
+            .await
+            .map_err(|error| format!("DoH {record_type} query failed: {}", error.without_url()))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "DoH {record_type} query returned HTTP {}",
+                response.status()
+            ));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("DoH {record_type} body read failed: {error}"))?;
+        addresses.extend(parse_doh_answer_ips(&body, port)?);
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    if addresses.is_empty() {
+        return Err(format!("DoH returned no addresses for host {host}"));
+    }
+    Ok(addresses)
+}
+
+/// Extract A/AAAA addresses from a Cloudflare-style DNS JSON response body.
+fn parse_doh_answer_ips(body: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|error| format!("DoH response is not valid JSON: {error}"))?;
+    let status = value
+        .get("Status")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(u64::MAX);
+    // 0 = NOERROR. Empty Answer with NOERROR is fine (other record type).
+    if status != 0 {
+        return Err(format!("DoH response Status={status} (expected NOERROR)"));
+    }
+    let Some(answers) = value.get("Answer").and_then(|a| a.as_array()) else {
+        return Ok(Vec::new());
+    };
+    let mut addresses = Vec::new();
+    for answer in answers {
+        let record_type = answer.get("type").and_then(|t| t.as_u64());
+        // 1 = A, 28 = AAAA. Ignore CNAME and other types.
+        if !matches!(record_type, Some(1 | 28)) {
+            continue;
+        }
+        let Some(data) = answer.get("data").and_then(|d| d.as_str()) else {
+            continue;
+        };
+        if let Ok(ip) = data.parse::<IpAddr>() {
+            addresses.push(SocketAddr::new(ip, port));
+        }
+    }
+    Ok(addresses)
 }
 
 /// Create a client for one hop only. Redirects are handled manually so the next
@@ -472,6 +597,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fake_ip_detection_covers_clash_surge_range_only() {
+        assert!(is_fake_ip(IpAddr::from([198, 18, 0, 1])));
+        assert!(is_fake_ip(IpAddr::from([198, 19, 255, 255])));
+        assert!(!is_fake_ip(IpAddr::from([127, 0, 0, 1])));
+        assert!(!is_fake_ip(IpAddr::from([93, 184, 216, 34])));
+        assert!(addresses_are_exclusively_fake_ip(&[SocketAddr::from((
+            [198, 18, 0, 95],
+            443
+        ))]));
+        assert!(!addresses_are_exclusively_fake_ip(&[
+            SocketAddr::from(([198, 18, 0, 95], 443)),
+            SocketAddr::from(([93, 184, 216, 34], 443)),
+        ]));
+        assert!(!addresses_are_exclusively_fake_ip(&[]));
+    }
+
+    #[test]
+    fn doh_json_parser_extracts_a_and_aaaa_only() {
+        let body = r#"{
+            "Status": 0,
+            "Answer": [
+                {"name": "example.com.", "type": 1, "TTL": 60, "data": "104.20.23.154"},
+                {"name": "example.com.", "type": 5, "TTL": 60, "data": "cdn.example."},
+                {"name": "example.com.", "type": 28, "TTL": 60, "data": "2606:4700:4700::1111"}
+            ]
+        }"#;
+        let addresses = parse_doh_answer_ips(body, 443).unwrap();
+        assert_eq!(
+            addresses,
+            vec![
+                SocketAddr::from(([104, 20, 23, 154], 443)),
+                SocketAddr::from(("2606:4700:4700::1111".parse::<IpAddr>().unwrap(), 443)),
+            ]
+        );
+        assert!(parse_doh_answer_ips(r#"{"Status":2}"#, 443).is_err());
+        assert!(parse_doh_answer_ips(r#"{"Status":0}"#, 443)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn cross_origin_redirect_keeps_representation_headers_only() {
         let current = Url::parse("https://downloads.example/file").unwrap();
         let next = Url::parse("https://cdn.example/file").unwrap();
@@ -500,5 +666,85 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(reqwest::header::IF_RANGE, "\"v1\"".parse().unwrap());
         assert!(redirect_headers(&current, &next, &headers).contains_key(reqwest::header::IF_RANGE));
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_fetch_returns_body_without_direct_dns() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<title>Example Domain</title>"),
+            )
+            .mount(&server)
+            .await;
+
+        let url = Url::parse("http://example.test/page").unwrap();
+        let fetched = get_with_redirects(
+            url,
+            Some(server.uri().as_str()),
+            HeaderMap::new(),
+            MAX_REDIRECTS,
+            RedirectQueryPolicy::Preserve,
+        )
+        .await
+        .expect("proxy fetch");
+        let body = fetched.response.text().await.expect("body");
+        assert!(body.contains("Example Domain"));
+        assert_eq!(fetched.redirects, 0);
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_follows_same_origin_redirect_chain() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/final"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/final"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("redirected-ok"))
+            .mount(&server)
+            .await;
+
+        let url = Url::parse("http://example.test/start").unwrap();
+        let fetched = get_with_redirects(
+            url,
+            Some(server.uri().as_str()),
+            HeaderMap::new(),
+            MAX_REDIRECTS,
+            RedirectQueryPolicy::Preserve,
+        )
+        .await
+        .expect("redirect fetch");
+        assert_eq!(fetched.redirects, 1);
+        assert!(fetched.final_url.as_str().ends_with("/final"));
+        let body = fetched.response.text().await.expect("body");
+        assert_eq!(body, "redirected-ok");
+    }
+
+    #[tokio::test]
+    async fn direct_mode_rejects_loopback_literal_before_connect() {
+        let url = Url::parse("http://127.0.0.1/admin").unwrap();
+        let err = match get_with_redirects(
+            url,
+            None,
+            HeaderMap::new(),
+            MAX_REDIRECTS,
+            RedirectQueryPolicy::Preserve,
+        )
+        .await
+        {
+            Ok(_) => panic!("loopback must fail closed"),
+            Err(error) => error,
+        };
+        assert!(!err.is_transport());
+        assert!(err.to_string().contains("non-public"));
     }
 }

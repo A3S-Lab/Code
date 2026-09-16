@@ -28,13 +28,25 @@ pub(super) fn compile_fake_server(output: &Path) {
         std::fs::read(binary).expect("read compiled fake language server")
     });
 
-    std::fs::write(output, binary).expect("write fake language server fixture");
+    // Write then fsync before execve. Parallel lib tests can otherwise hit
+    // Linux ETXTBSY ("Text file busy") when the runtime spawns the stub
+    // immediately after write returns.
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(output).expect("create fake language server fixture");
+        file.write_all(binary)
+            .expect("write fake language server fixture");
+        file.sync_all().expect("fsync fake language server fixture");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
         std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o755))
             .expect("make fake language server executable");
+        if let Ok(file) = std::fs::File::open(output) {
+            let _ = file.sync_all();
+        }
     }
 }
 

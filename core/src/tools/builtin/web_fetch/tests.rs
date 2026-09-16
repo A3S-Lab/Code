@@ -225,6 +225,13 @@ fn test_web_fetch_rejects_mixed_public_private_dns_answers() {
     assert!(validate_resolved_addresses("example.com", &addresses).is_err());
     assert!(validate_resolved_addresses("example.com", &addresses[..1]).is_ok());
     assert!(validate_resolved_addresses("example.com", &[]).is_err());
+    // Fake-IP stays blocked at the validation boundary; recovery is DoH in
+    // resolve_public_target, not a relaxation of this predicate.
+    assert!(validate_resolved_addresses(
+        "example.com",
+        &[SocketAddr::from(([198, 18, 0, 95], 443))]
+    )
+    .is_err());
 }
 
 #[test]
