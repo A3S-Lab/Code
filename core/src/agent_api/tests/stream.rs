@@ -66,6 +66,80 @@ async fn test_stream_updates_history_and_auto_saves() {
         .any(|record| matches!(record.event, AgentEvent::End { .. })));
 }
 
+/// After a completed tool round, `auto_save` must flush `sessions` JSON at the
+/// checkpoint boundary — not only on stream `End`. Otherwise a process kill
+/// after `write` leaves the workspace file without a durable session marker.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stream_tool_round_checkpoint_flushes_session_before_end() {
+    let store = Arc::new(crate::store::MemorySessionStore::new());
+    let workspace = std::env::temp_dir().join(format!(
+        "a3s-ckpt-flush-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let marker = "marker-ckpt-flush-xyz";
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "call-write",
+            "write",
+            serde_json::json!({
+                "path": "a3s-ckpt-flush.md",
+                "content": "7"
+            }),
+        ),
+        // Deliberately never consumed: we abort after ToolEnd to prove the
+        // session snapshot does not depend on End autosave.
+        scripted_text_response(marker),
+    ]));
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let opts = SessionOptions::new()
+        .with_session_store(store.clone())
+        .with_session_id("stream-ckpt-flush-test")
+        .with_auto_save(true)
+        .with_confirmation_policy(crate::hitl::ConfirmationPolicy::default())
+        .with_planning_mode(crate::prompts::PlanningMode::Disabled);
+    let session = agent
+        .build_session(workspace.display().to_string(), client, &opts)
+        .unwrap();
+
+    let (mut rx, handle) = session
+        .stream("write a3s-ckpt-flush.md then stop", None)
+        .await
+        .unwrap();
+    let mut flushed_before_end = false;
+    while let Some(event) = rx.recv().await {
+        match &event {
+            AgentEvent::ToolEnd { id, .. } if id == "call-write" => {
+                // Checkpoint commit acks after the event sink drains.
+                for _ in 0..50 {
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                    if let Ok(Some(saved)) = store.load("stream-ckpt-flush-test").await {
+                        let hay = serde_json::to_string(&saved.messages).unwrap_or_default();
+                        if hay.contains("a3s-ckpt-flush.md") || hay.contains("call-write") {
+                            flushed_before_end = true;
+                            break;
+                        }
+                    }
+                }
+                handle.abort();
+                break;
+            }
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+    let _ = handle.await;
+
+    assert!(
+        flushed_before_end,
+        "session JSON must flush at the tool-round checkpoint before stream End"
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stream_bridges_subagent_lifecycle_events() {
     use crate::prompts::PlanningMode;

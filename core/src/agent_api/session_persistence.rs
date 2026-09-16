@@ -163,6 +163,13 @@ impl SessionPersistenceContext {
         }
     }
 
+    /// Replace in-memory history with a loop-checkpoint message view so
+    /// mid-run `auto_save_if_enabled` can flush durable `sessions/*.json`
+    /// before stream End (Desktop E2E / kill-after-write recovery).
+    pub(super) fn record_messages(&self, messages: Vec<Message>) {
+        *write_or_recover(&self.history) = messages;
+    }
+
     pub(super) async fn save(&self) -> Result<()> {
         let store = match &self.session_store {
             Some(store) => store,
