@@ -285,10 +285,9 @@ fn take_workbuddy_bare(at: &str) -> Option<(ParsedCall, usize)> {
     let close_named = format!("</{name}>");
     let (body_end, close_len) = if let Some(end) = body_region.find(&close_named) {
         (end, close_named.len())
-    } else if let Some(end) = body_region.find("</tool_call>") {
-        (end, "</tool_call>".len())
     } else {
-        return None;
+        let end = body_region.find("</tool_call>")?;
+        (end, "</tool_call>".len())
     };
     let body = &body_region[..body_end];
     let consumed = "<tool_call>".len() + body_start + body_end + close_len;
