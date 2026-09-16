@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [8.5.11] - 2026-09-16
+
+### Fixed
+
+- Native Bash sandbox depends on `a3s-sandbox` **0.1.4** (musl-compatible
+  `setrlimit` resource typing). Restores Node SDK
+  `*-unknown-linux-musl` native builds that failed in 8.5.10 against
+  `a3s-sandbox` 0.1.3. Pinned via Git revision matching crates.io 0.1.4
+  / tag `v0.1.4`.
+
 ## [8.5.10] - 2026-09-16
 
 ### Changed
