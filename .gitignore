@@ -58,3 +58,7 @@ logs/
 sdk/node/zvec/
 sdk/python/python/a3s_code/zvec/
 zvec-runtime/
+
+# Local Node SDK test dumps
+sdk/node/output.txt
+sdk/node/ultracode_test.stdout
