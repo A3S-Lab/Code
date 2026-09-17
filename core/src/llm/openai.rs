@@ -199,24 +199,49 @@ impl OpenAiClient {
                             content,
                             ..
                         } => {
-                            let content_str = match content {
-                                ToolResultContentField::Text(s) => s.clone(),
-                                ToolResultContentField::Blocks(blocks) => blocks
-                                    .iter()
-                                    .filter_map(|b| {
-                                        if let ToolResultContent::Text { text } = b {
-                                            Some(text.clone())
-                                        } else {
-                                            None
+                            let content_value = match content {
+                                ToolResultContentField::Text(s) => serde_json::json!(s),
+                                ToolResultContentField::Blocks(blocks) => {
+                                    let mut parts = Vec::new();
+                                    let mut has_image = false;
+                                    for block in blocks {
+                                        match block {
+                                            ToolResultContent::Text { text } => {
+                                                parts.push(serde_json::json!({
+                                                    "type": "text",
+                                                    "text": text,
+                                                }));
+                                            }
+                                            ToolResultContent::Image { source } => {
+                                                has_image = true;
+                                                parts.push(serde_json::json!({
+                                                    "type": "image_url",
+                                                    "image_url": {
+                                                        "url": format!(
+                                                            "data:{};base64,{}",
+                                                            source.media_type, source.data
+                                                        ),
+                                                    }
+                                                }));
+                                            }
                                         }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
+                                    }
+                                    if has_image {
+                                        serde_json::json!(parts)
+                                    } else {
+                                        let text = parts
+                                            .iter()
+                                            .filter_map(|part| part.get("text")?.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        serde_json::json!(text)
+                                    }
+                                }
                             };
                             return serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tool_use_id,
-                                "content": content_str,
+                                "content": content_value,
                             });
                         }
                         _ => serde_json::json!(""),

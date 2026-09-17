@@ -3840,8 +3840,17 @@ mod multimodal_tests {
         }];
         let converted = client.convert_messages(&msgs);
         assert_eq!(converted[0]["role"], "tool");
-        // OpenAI tool results only support text, so images are stripped
-        assert_eq!(converted[0]["content"], "screenshot");
+        let content = converted[0]["content"]
+            .as_array()
+            .expect("multimodal tool content");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "screenshot");
+        assert_eq!(content[1]["type"], "image_url");
+        assert!(content[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     // --- Backward compatibility ---
