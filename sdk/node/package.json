@@ -56,6 +56,5 @@
     "test:fixtures": "node test_workspace_retrieval_real_deepseek.mjs --validate-fixture",
     "test:types": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck test-types.ts",
     "test:helpers": "node test-helpers.mjs"
-  },
-  "optionalDependencies": {}
+  }
 }
