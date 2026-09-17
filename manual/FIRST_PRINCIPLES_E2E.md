@@ -60,6 +60,9 @@ See [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md) evidence templates.
 Feature → hermetic/live/cov kernel mapping:
 [FIRST_PRINCIPLES_TEST_CASES.md](FIRST_PRINCIPLES_TEST_CASES.md).
 
+Full-feature program (capability join, train order, gaps, version pins):
+[FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
+
 ## Efficiency checks
 
 | Check | Pass criteria |

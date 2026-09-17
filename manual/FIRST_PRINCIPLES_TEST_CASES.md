@@ -64,6 +64,9 @@ Live model pin: `A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` against
 Layer A orchestration: `just harness-convergence-check` (A1–A4).  
 Layer C orchestration: `just layer-c-live-e2e` with bailian Flash pin.
 
+Full-feature join across `sdk_capabilities()`, SDKs, and external gates:
+[FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
+
 ---
 
 ## Case design rules
