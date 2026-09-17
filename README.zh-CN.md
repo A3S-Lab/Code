@@ -64,9 +64,15 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   封闭 S3 验证改用仓库内夹具，不再依赖已下架的 MinIO 镜像。
 - **Windows 测试隔离（8.5.8）。** 凭据边界测试不再继承运行器的换行策略，
   Git worktree 也不再收到 `\\?\` 路径。
+- **原生 Bash 沙箱 Gate 7（8.5.10）。** 默认 Bash 配置仍是网络 deny-all；可选
+  `mediated_http` 走 `a3s-sandbox` 0.1.3 围栏。Fake-IP HTTP 可回退 Cloudflare
+  DoH 且不削弱 SSRF。Live E2E 跟随 monorepo `.a3s/config.acl` Flash 路由。
+- **Musl Node 原生包（8.5.11）。** 钉住 `a3s-sandbox` **0.1.4**，使
+  `*-unknown-linux-musl` Node SDK 构建通过。npm 请用 **8.5.11**；crates.io
+  也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5` 文档线；
-包版本 8.5.8）。
+当前包版本 **8.5.11**）。
 
 ### 更早的版本线
 
