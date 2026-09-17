@@ -2,6 +2,8 @@
 
 All notable changes to the A3S Code Python SDK will be documented in this file.
 
+## [Unreleased]
+
 ## [8.5.12] - 2026-09-17
 
 - Bundled Core 8.5.12: `batch` tool schema no longer embeds application `$ref`
@@ -12,8 +14,6 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 - Bundled Core 8.5.11: `a3s-sandbox` 0.1.4 musl rlimit fix (Node musl
   native builds). Public Python API unchanged.
-
-## [Unreleased]
 
 ## [8.5.10] - 2026-09-16
 
