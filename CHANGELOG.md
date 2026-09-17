@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `batch` tool parameters no longer embed application `{"$ref":...}` objects
+  under JSON Schema `examples`. Zhipu GLM Coding returned HTTP 500 for any
+  parameters-tree object whose `$ref` value lacked a `#/` fragment, which
+  broke every turn once `batch` was presented (#147). The wire form is still
+  taught in the tool description; runtime binding is unchanged.
+
 ## [8.5.11] - 2026-09-16
 
 ### Fixed

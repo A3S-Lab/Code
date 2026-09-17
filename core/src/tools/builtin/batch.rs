@@ -62,18 +62,27 @@ impl Tool for BatchTool {
     fn description(&self) -> &str {
         "Execute a bounded set of tool calls in one turn. Put independent calls in the same \
          step to run them concurrently; use a later step when it depends on an earlier result. \
-         Reference an earlier result with an argument value like {\"$ref\":\"id.output\"}. \
-         Each invocation specifies a tool name and its arguments."
+         To bind an earlier result, set an argument value to an object whose only key is the \
+         literal string \"$ref\" and whose value is a path such as \"files.output_lines.0\" \
+         (the earlier invocation's id, then a result path). Do not use JSON Schema fragment \
+         URIs. Example shape: step 1 search with id \"files\", step 2 read with \
+         args.file_path = {\"$ref\":\"files.output_lines.0\"}. Each invocation specifies a \
+         tool name and its arguments."
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // Keep application-level {"$ref":"..."} out of the parameters document.
+        // Some providers (notably Zhipu GLM Coding) scan the entire parameters
+        // tree for JSON-Schema-shaped "$ref" keys and HTTP 500 when the value
+        // is not a fragment URI — which breaks every turn once `batch` is
+        // presented. Teach the wire form in `description` instead of `examples`.
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "invocations": {
                     "type": "array",
-                    "description": "List of tool calls to execute in parallel",
+                    "description": "List of tool calls to execute. Same-step calls run concurrently; later steps may bind earlier results via {\"$ref\":\"<id>.<path>\"} argument values (documented in the tool description, not as JSON Schema $ref).",
                     "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -88,7 +97,7 @@ impl Tool for BatchTool {
                             },
                             "args": {
                                 "type": "object",
-                                "description": "Required. Arguments to pass to the tool as a JSON object."
+                                "description": "Required. Arguments to pass to the tool as a JSON object. Values may be plain JSON or a single-key object {\"$ref\":\"<earlier-id>.<path>\"} that binds an earlier step result (application reference, not JSON Schema)."
                             },
                             "step": {
                                 "type": "integer",
@@ -110,15 +119,7 @@ impl Tool for BatchTool {
                     "description": "Maximum concurrent calls. Default 8; maximum 16. Mutating or non-idempotent tools are automatically serialized."
                 }
             },
-            "required": ["invocations"],
-            "examples": [
-                {
-                    "invocations": [
-                        { "step": 1, "id": "files", "tool": "search", "args": { "mode": "glob", "query": "**/Cargo.toml" } },
-                        { "step": 2, "tool": "read", "args": { "file_path": { "$ref": "files.output_lines.0" } } }
-                    ]
-                }
-            ]
+            "required": ["invocations"]
         })
     }
 
@@ -905,14 +906,31 @@ mod tests {
             params["properties"]["invocations"]["items"]["additionalProperties"],
             false
         );
-        let examples = params["examples"].as_array().unwrap();
-        assert_eq!(examples[0]["invocations"][0]["tool"], "search");
-        assert_eq!(examples[0]["invocations"][0]["step"], 1);
-        assert_eq!(
-            examples[0]["invocations"][1]["args"]["file_path"]["$ref"],
-            "files.output_lines.0"
+        // Application {"$ref":...} must not appear as a JSON object key inside
+        // the parameters document (Zhipu GLM Coding HTTP 500; Code #147).
+        assert!(
+            params.get("examples").is_none(),
+            "batch parameters must not ship examples that embed $ref objects"
         );
-        assert!(examples[0]["invocations"][0].get("name").is_none());
+        assert!(
+            !parameters_json_contains_ref_object_key(&params),
+            "batch parameters must not contain a \"$ref\" object key"
+        );
+        assert!(
+            tool.description().contains("\"$ref\""),
+            "description must still teach the application $ref wire form"
+        );
+    }
+
+    fn parameters_json_contains_ref_object_key(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.contains_key(BATCH_REF_KEY)
+                    || map.values().any(parameters_json_contains_ref_object_key)
+            }
+            Value::Array(items) => items.iter().any(parameters_json_contains_ref_object_key),
+            _ => false,
+        }
     }
 
     #[test]
