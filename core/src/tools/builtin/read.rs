@@ -1,5 +1,6 @@
 //! Read tool - Read file contents with line numbering
 
+use crate::llm::Attachment;
 use crate::text::truncate_utf8;
 use crate::tools::types::{Tool, ToolContext, ToolOutput};
 use crate::tools::{MAX_LINE_LENGTH, MAX_OUTPUT_SIZE, MAX_READ_LINES};
@@ -8,6 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::Path;
 
 const MAX_BATCH_READ_FILES: usize = 32;
 const MIN_BATCH_READ_OUTPUT_BYTES: usize = 1_024;
@@ -169,6 +171,10 @@ impl Tool for ReadTool {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
         };
+
+        if image_media_type(Path::new(file_path)).is_some() {
+            return Ok(read_image_file(file_path, args, ctx));
+        }
 
         let offset = match args.get("offset") {
             Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
@@ -646,6 +652,69 @@ fn batch_budget_too_small(budget: usize) -> ToolOutput {
     ))
 }
 
+fn image_media_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("png") => Some("image/png"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn read_image_file(file_path: &str, args: &serde_json::Value, ctx: &ToolContext) -> ToolOutput {
+    if args.get("offset").is_some() || args.get("limit").is_some() {
+        return ToolOutput::error(
+            "offset and limit apply to text files only; omit them when reading an image",
+        );
+    }
+    let workspace_path = match ctx.resolve_workspace_path(file_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return ToolOutput::error(format!("Failed to resolve path: {error}"));
+        }
+    };
+    let Some(root) = ctx.workspace_services.local_root() else {
+        return ToolOutput::error(
+            "image read requires a local workspace backend; text files still work on remote backends",
+        );
+    };
+    let host_path = root.join(workspace_path.as_str());
+    let attachment = match Attachment::from_file(&host_path) {
+        Ok(attachment) => attachment,
+        Err(error) => {
+            return ToolOutput::error(format!(
+                "Failed to read image {}: {error}",
+                ctx.workspace_services.display_path(&workspace_path)
+            ));
+        }
+    };
+    if !attachment.media_type.starts_with("image/") {
+        return ToolOutput::error(format!(
+            "Failed to read image {}: unsupported media type {}",
+            ctx.workspace_services.display_path(&workspace_path),
+            attachment.media_type
+        ));
+    }
+    let metadata = serde_json::json!({
+        "source_anchors": [workspace_path.as_str()],
+        "media_type": attachment.media_type,
+        "bytes": attachment.data.len(),
+    });
+    ToolOutput::success(format!(
+        "[Image: {} ({} bytes)]",
+        attachment.media_type,
+        attachment.data.len()
+    ))
+    .with_images(vec![attachment])
+    .with_metadata(metadata)
+}
+
 async fn read_range(
     ctx: &ToolContext,
     path: &crate::workspace::WorkspacePath,
@@ -769,6 +838,49 @@ mod tests {
             result.metadata.unwrap()["source_anchors"],
             serde_json::json!(["test.txt"])
         );
+    }
+
+    #[tokio::test]
+    async fn test_read_image_returns_attachment() {
+        // 1x1 PNG
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE,
+            0x02, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("shot.png"), PNG).unwrap();
+
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({"file_path": "shot.png"}),
+                &ToolContext::new(temp.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].media_type, "image/png");
+        assert_eq!(result.images[0].data, PNG);
+        assert!(result.content.contains("image/png"));
+    }
+
+    #[tokio::test]
+    async fn test_read_image_rejects_text_range_args() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("shot.png"), b"not-checked").unwrap();
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({"file_path": "shot.png", "offset": 0}),
+                &ToolContext::new(temp.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("offset and limit"));
     }
 
     #[tokio::test]
