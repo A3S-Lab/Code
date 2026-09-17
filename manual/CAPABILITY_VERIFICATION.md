@@ -8,6 +8,9 @@ runtime behavior, external qualification, and measured performance. A feature
 is not considered verified merely because its source exists or its crate
 compiles.
 
+For the executable full-feature train order, capability join table, and
+program gaps, see [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
+
 The ledger has three jobs:
 
 1. keep every public capability connected to executable evidence;
