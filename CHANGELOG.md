@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Clear empty non-worktree `.a3s-isolate-*` orphan siblings before
+  `create_worktree`, so crashed runs no longer leave bind flakes on the next
+  isolation attempt (#155).
+- Align bailian Flash live Layer C outer budgets for workspace retrieval and
+  harness-loop to 420s (measured P95 latency class) without softening kernel
+  assertions (#155).
+- `read` returns JPEG/PNG/GIF/WebP as `Attachment` image results, and the
+  OpenAI-compatible path keeps multimodal `image_url` parts in tool-result
+  messages instead of flattening them to text (#156 / #152).
+
 ## [8.5.12] - 2026-09-17
 
 ### Fixed
