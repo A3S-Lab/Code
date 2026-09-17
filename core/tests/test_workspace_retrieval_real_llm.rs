@@ -48,7 +48,12 @@ const TEXT_FILE_COUNT: usize = 30;
 const NON_TEXT_FILE_COUNT: usize = 3;
 const EXPECTED_CHUNK_COUNT: usize = 31;
 const QUERY_ID: &str = "workspace-query";
-const TURN_TIMEOUT: Duration = Duration::from_secs(240);
+// Live bailian Flash retrieval turns have measured enabledTurnP95Ms up to
+// ~210s under provider load (see Layer C WSR_DEEPSEEK_EVAL). Keep kernel
+// assertions unchanged; give the harness ~2× P95 headroom so timeouts measure
+// hangs, not slow-but-correct provider latency. Aligned with context-tools'
+// REAL_LLM_TIMEOUT (420s).
+const TURN_TIMEOUT: Duration = Duration::from_secs(420);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const COLLISION_COPIES_PER_TASK: usize = 8;
 const TEST_GUIDELINES: &str = "This is a deterministic repository retrieval evaluation. Follow the requested one-tool protocol exactly. Never guess an identifier that is absent from the tool evidence.";

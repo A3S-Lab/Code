@@ -191,7 +191,8 @@ async fn real_model_uses_ptc_program_for_bounded_parallel_tool_calls() {
 
     let prompt = r#"Use the program tool exactly once to compute a result from files you have not read yet.
 The program arguments must use type="script", allowed_tools=["read"], inputs={"left":"left.txt","right":"right.txt"}, and an inline JavaScript async function run(ctx, inputs).
-Inside the function, call ctx.readFile for both input paths concurrently with Promise.all, trim both strings, and return {"marker":"<left>|<right>"}.
+Inside the function, call ctx.readFile with string paths only (for example ctx.readFile(inputs.left) and ctx.readFile(inputs.right)), never an object like {path: ...}.
+Run both reads concurrently with Promise.all, trim both strings, and return {"marker":"<left>|<right>"}.
 Do not call read outside program. After observing the program result, return exactly its marker and no other text."#;
     let (result, events) = run_and_events(&session, prompt).await;
 

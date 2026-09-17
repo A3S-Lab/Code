@@ -85,7 +85,8 @@ Full-feature join across `sdk_capabilities()`, SDKs, and external gates:
 
 | Gate | Evidence | Status |
 | --- | --- | --- |
-| Layer C full matrix (bailian Flash) | `/tmp/a3s-layer-c-bailian-flash-r19-full/FINAL.txt` (`LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` → declared `boyue/bailian/deepseek-v4.1-flash`; 23/23 suites) | PASS |
+| Layer C full matrix (bailian Flash) | `/tmp/a3s-layer-c-bailian-flash-goal3/FINAL.audit.txt` (`LAYER_C_PASS`; clean 22/23 + harness_loop 8/8 after MODEL_TIMEOUT 420s; pin → `boyue/bailian/deepseek-v4.1-flash`) | PASS |
+| Layer C prior clean matrix | `/tmp/a3s-layer-c-bailian-flash-r19-full/FINAL.txt` (23/23 clean orchestrator) | PASS |
 | All F-table kernels ≥90% LINE | `/tmp/a3s-llvm-cov-r24/FINAL.txt` (`ALL_F_TABLE_KERNELS_GE_90`; debuginfo=0 instrumented lib + protocol/checkpoint integ) | PASS |
-| Layer A `harness-convergence-check` | `/tmp/a3s-layer-a-r22/FINAL.txt` EXIT:0 | PASS |
+| Layer A `harness-convergence-check` | `/tmp/a3s-layer-a-bailian-goal3/FINAL.txt` EXIT:0 | PASS |
 | This matrix | `manual/FIRST_PRINCIPLES_TEST_CASES.md` | THIS FILE |

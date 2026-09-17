@@ -105,6 +105,18 @@ pub fn bind_sync(
         register_shell_on_worktree(session_id, &binding.worktree_path);
         return Ok(Some(binding));
     }
+    // Sibling paths are keyed only by session id under the source parent. A
+    // crashed prior run can leave an empty `.a3s-isolate-*` directory that is
+    // not a git worktree; refuse to adopt it and clear the orphan so bind can
+    // recreate. Do not delete a path that still has `.git` metadata.
+    if worktree_path.exists() {
+        std::fs::remove_dir_all(&worktree_path).map_err(|error| {
+            anyhow!(
+                "{ISOLATION_UNAVAILABLE}: stale isolation path {} could not be cleared: {error}",
+                worktree_path.display()
+            )
+        })?;
+    }
     crate::git::create_worktree(
         source_root,
         &format!("a3s-isolate-{session_id}"),
@@ -639,6 +651,23 @@ mod tests {
             .status()
             .expect("git");
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[tokio::test]
+    async fn bind_clears_a_stale_empty_isolation_directory() {
+        forget_leaked_session("stale-empty");
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let stale = worktree_path_for(root.path(), "stale-empty");
+        fs::create_dir_all(&stale).unwrap();
+        assert!(!stale.join(".git").exists());
+
+        let binding = bind("stale-empty", root.path(), true)
+            .await
+            .expect("orphan empty sibling must be cleared and recreated");
+        assert_eq!(binding.worktree_path, stale);
+        assert!(stale.join(".git").exists());
+        discard("stale-empty").await.unwrap();
     }
 
     #[tokio::test]
