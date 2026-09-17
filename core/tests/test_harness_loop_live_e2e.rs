@@ -26,7 +26,12 @@ use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
+// Live bailian Flash mutating harness turns can exceed 180s wall time under
+// provider load (observed Layer C flake: narrative_mutation gate). Keep kernel
+// assertions unchanged; align outer harness budget with retrieval/context-tools
+// (~2× measured P95 headroom at 420s) so timeouts catch hangs, not slow-correct
+// completions.
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 
 async fn configured_agent() -> Agent {
     let config = load_pinned_layer_c_config();
