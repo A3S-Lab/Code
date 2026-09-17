@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 ## [8.5.11] - 2026-09-16
 
@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*-unknown-linux-musl` native builds that failed in 8.5.10 against
   `a3s-sandbox` 0.1.3. Pinned via Git revision matching crates.io 0.1.4
   / tag `v0.1.4`.
+
+### Notes
+
+- Full multi-channel cut: crates.io `a3s-code-core`, GitHub Release `v8.5.11`,
+  npm `@a3s-lab/code` (including musl optional natives), Python bootstrap /
+  wheels, and Go module tag `sdk/go/v8.5.11`.
 
 ## [8.5.10] - 2026-09-16
 
@@ -37,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `boyue/bailian/deepseek-v4.1-flash`. `just layer-c-live-e2e` defaults
   to the config Flash route. Model-switch E2E picks the other declared
   Flash peer when the pin is already the bailian route.
+
+### Notes
+
+- crates.io `a3s-code-core` **8.5.10** and GitHub Release `v8.5.10` published.
+  The Release workflow **failed** on Node SDK `*-unknown-linux-musl` because
+  `a3s-sandbox` 0.1.3 used a glibc-only rlimit resource type. npm stayed on
+  **8.5.9** until **8.5.11**. Do not treat 8.5.10 as a complete multi-channel
+  cut.
 
 ### Added
 
