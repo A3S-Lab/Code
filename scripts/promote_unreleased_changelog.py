@@ -15,11 +15,12 @@ def promote(text, version, released_on):
     lines = text.splitlines(keepends=True)
     start = None
     for index, line in enumerate(lines):
-        if line.startswith("## Unreleased"):
+        # Keep a Changelog uses either "## Unreleased" or "## [Unreleased]".
+        if line.startswith("## Unreleased") or line.startswith("## [Unreleased]"):
             start = index
             break
     if start is None:
-        raise SystemExit("changelog has no ## Unreleased section")
+        raise SystemExit("changelog has no ## Unreleased / ## [Unreleased] section")
 
     end = len(lines)
     for index in range(start + 1, len(lines)):

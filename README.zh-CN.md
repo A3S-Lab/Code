@@ -67,13 +67,16 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **原生 Bash 沙箱 Gate 7（8.5.10）。** 默认 Bash 配置仍是网络 deny-all；可选
   `mediated_http` 走 `a3s-sandbox` 0.1.3 围栏。Fake-IP HTTP 可回退 Cloudflare
   DoH 且不削弱 SSRF。Live E2E 跟随 monorepo `.a3s/config.acl` Flash 路由。
-- **智谱 / batch schema（8.5.12）。** 从 `batch` 工具 parameters examples 中移除应用层 `$ref` 对象，避免 GLM Coding 在呈现 `batch` 时 HTTP 500（#147）。npm/crates.io 请用 **8.5.12**。
+- **图片 `read` + OpenAI 工具图片（8.6.0）。** `read` 以附件返回 JPEG/PNG/GIF/WebP；
+  OpenAI 兼容路径保留 tool-result 的 `image_url`（#156 / #152）。并清理崩溃后阻塞
+  bind 的空 `.a3s-isolate-*` orphan（#155）。npm/crates.io 请用 **8.6.0**。
+- **智谱 / batch schema（8.5.12）。** 从 `batch` 工具 parameters examples 中移除应用层 `$ref` 对象，避免 GLM Coding 在呈现 `batch` 时 HTTP 500（#147）。
 - **Musl Node 原生包（8.5.11）。** 钉住 `a3s-sandbox` **0.1.4**，使
-  `*-unknown-linux-musl` Node SDK 构建通过。npm 请用当前 **8.5.12**（已包含该修复）；
+  `*-unknown-linux-musl` Node SDK 构建通过。npm 请用当前 **8.6.0**（已包含该修复）；
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.5` 文档线；
-当前包版本 **8.5.12**）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.6` 文档线；
+当前包版本 **8.6.0**）。
 
 ### 更早的版本线
 
