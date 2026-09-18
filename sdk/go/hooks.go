@@ -238,6 +238,30 @@ func (session *Session) SetOutputLanguage(ctx context.Context, language string) 
 	return session.runtime.Request(ctx, op, params, nil)
 }
 
+// SetPlanningMode overrides planning mode for subsequent turns without
+// rebuilding the session. Accepts "auto", "enabled", or "disabled" (plus the
+// same aliases as SessionOptions.PlanningMode). Takes effect on the next
+// send / stream.
+func (session *Session) SetPlanningMode(ctx context.Context, mode string) error {
+	const op = "session_set_planning_mode"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	params := session.params()
+	params["mode"] = mode
+	return session.runtime.Request(ctx, op, params, nil)
+}
+
+// ClearPlanningModeOverride clears a prior SetPlanningMode override so the
+// next loop uses the session-built PlanningMode again.
+func (session *Session) ClearPlanningModeOverride(ctx context.Context) error {
+	const op = "session_clear_planning_mode_override"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	return session.runtime.Request(ctx, op, session.params(), nil)
+}
+
 // SetSessionCheckpointExportSink installs a host-owned live checkpoint export
 // callback (SDK-CP1). Pass a nil handler to clear.
 func (session *Session) SetSessionCheckpointExportSink(

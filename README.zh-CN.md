@@ -24,7 +24,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 
 <p align="center">
   <a href="#60-秒内起步">起步</a> ·
-  <a href="#85-有什么新内容">v8.5</a> ·
+  <a href="#86-有什么新内容">v8.6</a> ·
   <a href="#为何选择-a3s-code">为何选择 Code</a> ·
   <a href="#能力地图">能力</a> ·
   <a href="#配置运行时">配置</a> ·
@@ -32,7 +32,13 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   <a href="#文档">文档</a>
 </p>
 
-## 8.5 有什么新内容
+## 8.6 有什么新内容
+
+- **图片 `read` + OpenAI 工具图片（8.6.0）。** `read` 以附件返回 JPEG/PNG/GIF/WebP；
+  OpenAI 兼容路径保留 tool-result 的 `image_url`（#156 / #152）。并清理崩溃后阻塞
+  bind 的空 `.a3s-isolate-*` orphan（#155）。npm/crates.io/PyPI 请用 **8.6.0**。
+
+### 更早的 8.5
 
 - **更快的 `grep`（CODE-G1）。** 字面量搜索时，`local-code` 会在
   `.a3s-code/grep-trigram` 下建一个小的 trigram 缓存，先缩小文件范围再做精确
@@ -67,9 +73,6 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **原生 Bash 沙箱 Gate 7（8.5.10）。** 默认 Bash 配置仍是网络 deny-all；可选
   `mediated_http` 走 `a3s-sandbox` 0.1.3 围栏。Fake-IP HTTP 可回退 Cloudflare
   DoH 且不削弱 SSRF。Live E2E 跟随 monorepo `.a3s/config.acl` Flash 路由。
-- **图片 `read` + OpenAI 工具图片（8.6.0）。** `read` 以附件返回 JPEG/PNG/GIF/WebP；
-  OpenAI 兼容路径保留 tool-result 的 `image_url`（#156 / #152）。并清理崩溃后阻塞
-  bind 的空 `.a3s-isolate-*` orphan（#155）。npm/crates.io 请用 **8.6.0**。
 - **智谱 / batch schema（8.5.12）。** 从 `batch` 工具 parameters examples 中移除应用层 `$ref` 对象，避免 GLM Coding 在呈现 `batch` 时 HTTP 500（#147）。
 - **Musl Node 原生包（8.5.11）。** 钉住 `a3s-sandbox` **0.1.4**，使
   `*-unknown-linux-musl` Node SDK 构建通过。npm 请用当前 **8.6.0**（已包含该修复）；

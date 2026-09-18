@@ -193,6 +193,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_hook_count",
     "session_set_budget_guard",
     "session_set_output_language",
+    "session_set_planning_mode",
+    "session_clear_planning_mode_override",
     "session_set_session_checkpoint_export_sink",
     "session_register_command",
     "session_list_commands",
@@ -2016,6 +2018,32 @@ impl BridgeState {
                 self.request_session(&request.params)
                     .await?
                     .set_output_language(language)?;
+                Ok(json!({ "configured": true }))
+            }
+            "session_set_planning_mode" => {
+                let mode: String = required(&request.params, "mode")?;
+                let planning_mode = match mode.trim().to_ascii_lowercase().as_str() {
+                    "auto" => PlanningMode::Auto,
+                    "enabled" | "enable" | "on" | "force" | "forced" | "true" => {
+                        PlanningMode::Enabled
+                    }
+                    "disabled" | "disable" | "off" | "false" => PlanningMode::Disabled,
+                    _ => {
+                        return Err(BridgeFailure::new(
+                            "INVALID_REQUEST",
+                            "mode must be auto, enabled, or disabled",
+                        ))
+                    }
+                };
+                self.request_session(&request.params)
+                    .await?
+                    .set_planning_mode(planning_mode)?;
+                Ok(json!({ "configured": true }))
+            }
+            "session_clear_planning_mode_override" => {
+                self.request_session(&request.params)
+                    .await?
+                    .clear_planning_mode_override()?;
                 Ok(json!({ "configured": true }))
             }
             "session_set_session_checkpoint_export_sink" => {

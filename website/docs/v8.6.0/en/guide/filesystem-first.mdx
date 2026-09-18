@@ -1,0 +1,68 @@
+---
+title: 'Filesystem-First'
+description: 'Persist roles, config, skills, tools, schedules, and team definitions as reviewable filesystem conventions'
+---
+
+# Filesystem-First
+
+A3S Code treats the filesystem as the first product interface for agents. Roles, tools, skills, schedules, and team definitions that need to last are written as files first, then loaded by convention. The goal is not fewer knobs; the goal is to make agent behavior reviewable, versioned, reusable, and portable.
+
+Filesystem-first has two common shapes:
+
+```text
+repo/
+├── AGENTS.md          # durable project instructions
+├── agent.acl          # model, provider, queue, and delegation config
+└── .a3s/
+    ├── agents/        # worker agents for task / autoDelegation
+    └── skills/        # reusable skills
+
+release-agent/
+├── instructions.md    # role slot for one durable agent
+├── agent.acl          # runtime config for that agent
+├── skills/            # private skills
+├── tools/             # MCP / script tool specs
+└── schedules/         # recurring turns
+```
+
+The first shape is a workspace convention for interactive development, team delegation, and project knowledge. The second shape is an AgentDir convention for long-running agents, scheduled work, and directory-scoped tools.
+
+## Path Map
+
+| Path                      | Purpose                                                   | Use it when                                                                          |
+| ------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `AGENTS.md`               | Stable workspace instructions                             | Code style, verification commands, safety boundaries, and release flow must persist. |
+| `instructions.md`         | Role slot for an AgentDir main agent                      | A single directory should load as a durable agent.                                   |
+| `agent.acl`               | Model, provider, queue, skill dirs, and delegation config | Runtime policy should be versioned with the repo or agent.                           |
+| `.a3s/agents/`            | Worker/subagent definitions                               | A parent agent needs `task` or automatic delegation.                                 |
+| `.a3s/skills/`, `skills/` | Reusable skills                                           | Many tasks share checklists, domain flow, or operating rules.                        |
+| `tools/`                  | AgentDir MCP or script tools                              | A connector or constrained script belongs to scheduled agent sessions.               |
+| `schedules/`              | Recurring turns                                           | Daily reports, patrols, sync jobs, and regression checks should run on cron.         |
+
+These conventions are not a new prompt system. `AGENTS.md`, `instructions.md`, and skills enter A3S Code's context composition path; tool visibility, permission gates, HITL, response contracts, and verification remain harness-controlled.
+
+## Loading Order
+
+A typical session parses `agent.acl`, binds a workspace, then loads project instructions, skills, agent definitions, direct tools, MCP connections, and runtime policy. `serve_agent_dir` loads an AgentDir by combining `instructions.md`, local `agent.acl`, `skills/`, `tools/`, and `schedules/`, then creates one independent session for every schedule.
+
+The closer a path is to a specific agent, the more local its meaning should be. Root `AGENTS.md` describes the whole project, `.a3s/agents/*.md` describes one worker, and AgentDir `instructions.md` describes the directory's main agent.
+
+## Design Rules
+
+- Conventions discover and assemble behavior; they do not bypass safety.
+- Files should be code-reviewable. Model, provider, tool, schedule, and role changes should be visible in diffs.
+- Never commit secrets. Use environment variables, host connections, or a secret manager.
+- Keep one-off experiments in SDK options; commit files when behavior must be reused, audited, or migrated.
+- AgentDir is the main-agent directory; `.a3s/agents/` is the worker-agent definition directory.
+
+## Reading Order
+
+1. [Convention Over Configuration](/guide/convention-over-configuration)
+2. [AGENTS.md](/guide/agents-md)
+3. [instructions.md](/guide/filesystem-instructions)
+4. [agent.acl](/guide/filesystem-config)
+5. [Agent Directory](/guide/agent-dir)
+6. [agents/ Role Directory](/guide/filesystem-agents)
+7. [skills/ Skill Directory](/guide/filesystem-skills)
+8. [tools/ Tool Directory](/guide/filesystem-tools)
+9. [schedules/ Schedule Directory](/guide/filesystem-schedules)

@@ -1,0 +1,74 @@
+---
+title: 'schedules/ Schedule Directory'
+description: 'Declare cron turns, independent sessions, and recoverable context with Markdown schedule files'
+---
+
+# schedules/ Schedule Directory
+
+`schedules/` declares recurring turns for AgentDir. Each Markdown file is one schedule: frontmatter defines cron metadata, and the body is the prompt sent to the agent on every fire.
+
+```text
+release-agent/
+└── schedules/
+    ├── daily.md
+    └── weekly-risk-review.md
+```
+
+## Schedule File
+
+```md
+---
+cron: '0 9 * * *'
+name: daily-release-check
+enabled: true
+---
+
+Summarize merged changes since the last run, inspect release risks,
+and report only blockers plus required verification.
+```
+
+| Field     | Required | Default   | Meaning                                              |
+| --------- | -------- | --------- | ---------------------------------------------------- |
+| `cron`    | yes      | -         | 5-field or 6-field cron expression.                  |
+| `name`    | no       | file stem | Schedule name and session id suffix.                 |
+| `enabled` | no       | `true`    | Set `false` to keep the file but pause the schedule. |
+
+5-field cron is normalized to 6 fields by prefixing `0` seconds. Times are evaluated in UTC.
+
+## Independent Sessions
+
+Every schedule uses a stable session id: `schedule:<name>`. Repeated fires of the same schedule accumulate context; different schedules stay isolated. Every session receives AgentDir `instructions.md`, `agent.acl`, `skills/`, and `tools/`.
+
+Daily and weekly schedules can share one AgentDir without sharing chat history. Use external storage, A3S Memory, or explicit tools when schedules need shared state.
+
+## Serve Daemon
+
+```rust
+use a3s_code_core::config::AgentDir;
+use a3s_code_core::serve::serve_agent_dir;
+use a3s_code_core::Agent;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent_dir = AgentDir::load("./release-agent")?;
+    let agent = Agent::from_config(agent_dir.config.clone()).await?;
+    let cancel = CancellationToken::new();
+
+    serve_agent_dir(&agent, &agent_dir, "./workspace", None, cancel).await?;
+    Ok(())
+}
+```
+
+`serve_agent_dir` runs every enabled schedule until the cancellation token fires. Graceful cancellation lets an in-flight turn finish the current loop iteration.
+
+## Recovery And Limits
+
+With a `SessionStore`, daemon restart restores the conversation history for existing `schedule:<name>` sessions. Current `instructions.md`, `skills/`, and `tools/` are re-applied on every boot.
+
+Know the limits:
+
+- Recovery restores history; it does not catch up missed fires during downtime.
+- The store directory is a trust boundary for recovered history and workspace state.
+- Invalid cron fails when the scheduler is built and names the offending schedule.
+- An AgentDir with no enabled schedules returns immediately.

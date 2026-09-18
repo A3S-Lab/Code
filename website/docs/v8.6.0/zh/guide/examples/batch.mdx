@@ -1,0 +1,189 @@
+---
+title: '批处理'
+description: '通过组合 SDK 的确定性辅助方法来批量执行确定性操作'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 批处理
+
+SDK 中并没有 `batch()` 方法。当宿主工作流或某个 agent 回合已经有一组清晰、相互独立、
+确定性的步骤时，你可以直接用会话提供的确定性辅助方法（`readFile`、`grep`、`glob`、`ls`、
+`git`）把它们组合起来，并自行汇总结果。这样"批处理"就完全在你的掌控之中：无需任何模型调用，
+执行顺序明确，且除非你主动调用，否则不会执行任何破坏性操作。
+
+下面的示例读取包元数据、changelog 和 release script，然后在不编辑任何文件的前提下报告版本不一致之处。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::Value;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/project")
+        .build()
+        .await?;
+
+    let (package, changelog, release_script) = tokio::try_join!(
+        session.read_file("package.json"),
+        session.read_file("CHANGELOG.md"),
+        session.read_file("scripts/release.sh"),
+    )?;
+
+    let package: Value = serde_json::from_str(&package)?;
+    let version = package["version"].as_str().unwrap_or_default();
+    let mut mismatches = Vec::new();
+    if !changelog.contains(version) {
+        mismatches.push(format!("CHANGELOG.md 缺少版本 {version}"));
+    }
+    if !release_script.contains(version) {
+        mismatches.push(format!("release.sh 缺少版本 {version}"));
+    }
+
+    if mismatches.is_empty() {
+        println!("所有文件中的版本一致。");
+    } else {
+        println!("{}", mismatches.join("\n"));
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/project');
+
+// Node.js 辅助方法是异步的，可用 Promise.all 组合互不依赖的读取。
+const [pkg, changelog, releaseScript] = await Promise.all([
+  session.readFile('package.json'),
+  session.readFile('CHANGELOG.md'),
+  session.readFile('scripts/release.sh'),
+]);
+
+const pkgVersion = JSON.parse(pkg).version;
+const mismatches = [];
+if (!changelog.includes(pkgVersion))
+  mismatches.push(`CHANGELOG.md is missing ${pkgVersion}`);
+if (!releaseScript.includes(pkgVersion))
+  mismatches.push(`release.sh is missing ${pkgVersion}`);
+
+console.log(
+  mismatches.length ? mismatches.join('\n') : 'All files agree on the version.',
+);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session("/path/to/project", SessionOptions())
+
+# Python 辅助方法是同步的，按顺序调用即可，无需 await。
+pkg = session.read_file("package.json")
+changelog = session.read_file("CHANGELOG.md")
+release_script = session.read_file("scripts/release.sh")
+
+pkg_version = json.loads(pkg)["version"]
+mismatches = []
+if pkg_version not in changelog:
+    mismatches.append(f"CHANGELOG.md is missing {pkg_version}")
+if pkg_version not in release_script:
+    mismatches.append(f"release.sh is missing {pkg_version}")
+
+print("\n".join(mismatches) if mismatches else "All files agree on the version.")
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/project", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	pkg, err := session.ReadFile(ctx, "package.json", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	changelog, err := session.ReadFile(ctx, "CHANGELOG.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	releaseScript, err := session.ReadFile(ctx, "scripts/release.sh", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var metadata struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(pkg), &metadata); err != nil {
+		log.Fatal(err)
+	}
+	var mismatches []string
+	if !strings.Contains(changelog, metadata.Version) {
+		mismatches = append(mismatches, "CHANGELOG.md 缺少版本 "+metadata.Version)
+	}
+	if !strings.Contains(releaseScript, metadata.Version) {
+		mismatches = append(mismatches, "release.sh 缺少版本 "+metadata.Version)
+	}
+	if len(mismatches) == 0 {
+		fmt.Println("所有文件中的版本一致。")
+	} else {
+		fmt.Println(strings.Join(mismatches, "\n"))
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+不要把破坏性操作混入这些分组读取之中。任何破坏性宿主工作流（写入、`git` 提交、`bash`）
+都应放在显式的应用确认或你的自动化关卡之后，并通过 `permissionPolicy` /
+`permission_policy` 进行约束，避免出现意料之外的步骤被静默执行。
+
+如果这些步骤并非相互独立——每一步都依赖上一步的结果，并且你希望由 agent 来驱动它们——
+请改用 [`session.pipeline(...)`](/guide/examples/orchestration)，它会分阶段运行任务，
+每个阶段都能接收到上一阶段的输出。

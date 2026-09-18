@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Documentation site current line is now `docs/v8.6.0` (archives the prior
+  `v8.5.5` line). Guide overview and Tools pages document image `read`
+  attachments and OpenAI tool-result `image_url` passthrough.
+
+### Fixed
+
+- Go SDK Session exposes `SetPlanningMode` / `ClearPlanningModeOverride` (bridge
+  ops `session_set_planning_mode` / `session_clear_planning_mode_override`) so
+  the website accuracy gate matches Node/Python host capabilities.
+
 ## [8.6.0] - 2026-09-18
 
 ### Added

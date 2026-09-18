@@ -6,9 +6,8 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [8.6.0] - 2026-09-18
 
-
-- Bundled Core (upcoming): `read` image attachments and OpenAI tool-result
-  image passthrough (#156 / #152); orphan `.a3s-isolate-*` clear + Layer C live
+- Bundled Core 8.6.0: `read` image attachments and OpenAI tool-result image
+  passthrough (#156 / #152); orphan `.a3s-isolate-*` clear + Layer C live
   timeout headroom (#155). Public Python API unchanged.
 
 

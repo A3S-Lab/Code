@@ -1,0 +1,67 @@
+---
+title: 'skills/ Skill Directory'
+description: 'Organize reusable skills, checklists, and domain process in workspace or AgentDir skill directories'
+---
+
+# skills/ Skill Directory
+
+`skills/` stores reusable skills. Skills express stable process, checklists, domain terms, and tool-use guidance. A skill is not a worker agent and does not start an independent session.
+
+A3S Code commonly uses two locations:
+
+```text
+repo/.a3s/skills/          # workspace-level skills
+release-agent/skills/      # AgentDir-private skills
+```
+
+Workspace skills are loaded through `skillDirs` or `agent.acl` `skill_dirs`.
+Agent definitions use `agentDirs`; do not put skill directories in `agentDirs`.
+AgentDir-private skills are injected when `serve_agent_dir` creates schedule
+sessions.
+
+## Skill File
+
+```md
+---
+name: release-readiness
+description: Check whether a repository is ready to release
+allowed-tools: read(*), search(*), bash(pnpm test*), bash(cargo test*)
+---
+
+Always inspect:
+
+- package or crate version changes
+- migration compatibility
+- release notes
+- required verification commands
+
+Return blockers first, then risks, then follow-up work.
+```
+
+Frontmatter helps discovery and filtering. The body describes how to execute.
+Keep `allowed-tools` minimal. When the skill is invoked through the `Skill`
+tool, omitted `allowed-tools` grants no tools, so the invocation remains
+fail-secure. Skills guide the model; they should not widen permissions.
+
+## When To Use skills/
+
+Use skills for repeated review checklists, product or protocol process, release and migration workflows, recommended tool order, and shared background for several worker agents.
+
+Do not use skills for independent roles that should be invoked by `task`; put those in `agents/`. Do not use skills for recurring jobs; put those in `schedules/`. Do not use skills to declare external capabilities; use `tools/` or MCP.
+
+## Loading
+
+```ts
+const session = agent.session('/repo', {
+  skillDirs: ['./.a3s/skills'],
+});
+```
+
+The model can use `search_skills` to find relevant skills. File skills and inline skills share discovery semantics. As directories grow, keep `name` and `description` searchable and unambiguous.
+
+## Maintenance
+
+- Keep skill files short and stable.
+- Use minimal runnable examples, not long logs.
+- Put agent-specific skills in that AgentDir's `skills/`.
+- Put repository-wide skills in `.a3s/skills/` and document their boundary in `AGENTS.md`.

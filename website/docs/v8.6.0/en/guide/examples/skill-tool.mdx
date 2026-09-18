@@ -1,0 +1,200 @@
+---
+title: 'Skill Tool'
+description: 'Invoke a registered skill as a callable tool'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Skill Tool
+
+Skills surface to the model as two core tools: `search_skills` (find a skill by intent)
+and `Skill` (invoke a skill by name). A tool-kind skill runs its handler; an
+instruction-kind skill returns its body for the model to apply. You can let the model
+call these tools during a run, or invoke a skill directly from the SDK with
+`session.tool('Skill', ...)`.
+
+Register a skill directory (a folder of `SKILL.md` files) via `skillDirs` / `skill_dirs`,
+or pass inline skills through session options. A3S Code no longer ships default
+embedded skills, so `builtinSkills` / `builtin_skills` is only a compatibility
+flag. Registered skills become visible through `Skill` and `search_skills`.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_skill_dirs(["./skills"]))
+        .build()
+        .await?;
+
+    println!("{:?}", session.tool_names());
+    let run = session
+        .send(
+            "Search available skills, then apply the most relevant one.",
+            None,
+        )
+        .await?;
+    println!("{}", run.text);
+
+    let result = session
+        .tool(
+            "Skill",
+            json!({
+                "skill_name": "release-review",
+                "prompt": "Review this release patch for blockers and verification gaps."
+            }),
+        )
+        .await?;
+    if result.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "Skill".into(),
+            message: result.output,
+        });
+    }
+    println!("{}", result.output);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd(), {
+  skillDirs: ['./skills'], // a folder of SKILL.md files
+});
+
+// Skill and search_skills are core tools — confirm they're on the surface.
+console.log(session.toolNames());
+
+// Option A: let the model search for and apply a skill during a run.
+const run = await session.run(
+  'Search available skills, then apply the most relevant one.',
+);
+console.log(run.text);
+
+// Option B: invoke a skill directly as a callable tool.
+// Canonical args: { skill_name, prompt? }.
+const result = await session.tool('Skill', {
+  skill_name: 'release-review',
+  prompt: 'Review this release patch for blockers and verification gaps.',
+});
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+console.log(result.output);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.skill_dirs = ['./skills']  # a folder of SKILL.md files
+session = agent.session('.', opts)
+
+# Skill and search_skills are core tools — confirm they're on the surface.
+print(session.tool_names())
+
+# Option A: let the model search for and apply a skill during a run.
+run = session.run('Search available skills, then apply the most relevant one.')
+print(run.text)
+
+# Option B: invoke a skill directly as a callable tool.
+# Canonical args: { skill_name, prompt? }.
+result = session.tool('Skill', {
+    'skill_name': 'release-review',
+    'prompt': 'Review this release patch for blockers and verification gaps.',
+})
+if result.exit_code != 0:
+    raise RuntimeError(result.output)
+print(result.output)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		SkillDirs: []string{"./skills"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	names, err := session.ToolNames(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(names)
+	run, err := session.Run(
+		ctx,
+		"Search available skills, then apply the most relevant one.",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(run.Text)
+
+	result, err := session.Tool(ctx, "Skill", map[string]any{
+		"skill_name": "release-review",
+		"prompt": "Review this release patch for blockers and verification gaps.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		log.Fatal(result.Output)
+	}
+	fmt.Println(result.Output)
+}
+```
+
+</Tab>
+</Tabs>
+
+A `SKILL.md` declares its `kind` in frontmatter (`tool`, `instruction`, or `agent`).
+For a tool-kind skill, the `Skill` tool runs the skill's handler and returns its output;
+for an instruction-kind skill, it returns the body for the model to apply. Skill
+administration is handled by SDK registration, skill directories, or project files — not
+by a model-visible management tool.
+
+A runnable version ships at `sdk/node/examples/skills/test_custom_skills_agents.ts`.

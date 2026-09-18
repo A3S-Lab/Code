@@ -1,0 +1,86 @@
+---
+title: '隔离'
+description: '工作区、上下文与委派任务隔离'
+---
+
+# 隔离
+
+隔离从 session 边界开始：每个 session 绑定一个 workspace，委派子运行接收有边界的
+context。宿主直接工具调用是特权操作；暴露给用户前，应在宿主应用内先做权限判断。
+
+## 工作区边界
+
+```ts
+const session = agent.session('/repo');
+```
+
+相对文件、搜索、shell 和 Git 操作都从会话工作区求值。Security Provider 与钩子属于
+会话选项；把它们当作生产边界前，应验证依赖的精确策略路径。
+
+## 委派上下文
+
+`task` 与自动子智能体委派会隔离子运行推理。父 Agent 只接收紧凑结果，而不是完整
+transcript，从而减少 prompt 污染并简化证据审查。
+
+## 存储隔离
+
+不同产品、租户或测试套件应使用独立的 memory 与会话存储目录：
+
+```ts
+import { FileMemoryStore, FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+```
+
+## 原生 Harness Worktree
+
+当 `a3s code harness` 指向 Git 仓库时，每个获得准入的协议会话都会在源仓库 `HEAD`
+创建自己的临时 detached worktree。准入时要求源 worktree 干净，因此宿主本地修改不会
+被静默遗漏。不同会话不共享可变文件；移除 Harness 会话时，其临时 worktree 也会被
+删除，但任何修改都不会自动写回源 checkout。
+
+每次运行前后，Core 都会通过隔离的临时 Git index 捕获 tracked 以及未忽略的 untracked
+内容。运行进入终态后，它生成一份支持二进制、完整 index 的 unified diff，并把结果
+tree 固定到私有 Git ref。不可变证据只属于该精确运行；冲突的第二次捕获会被拒绝。
+持久化会话恢复时，会把最近一次捕获的结果 tree 恢复到新的 detached worktree。
+
+非 Git 工作区仍使用配置的共享路径，不能生成这种 Git changeset 证据。源 Git
+worktree 不干净时，隔离准入会失败，而不会回退到共享写入。
+
+## 有边界的 Changeset 协议
+
+事件流到达 `completed`、`failed` 或 `cancelled` 后，把精确运行身份 POST 到
+`/v1/agent/changes`：
+
+```json
+{
+  "schema": "a3s.code.agent-change-set-request.v1",
+  "identity": {
+    "schema": "a3s.code.agent-run-identity.v1",
+    "protocol": "a3s.code.agent.v1",
+    "agent_release_identity": "sha256:<release-digest>",
+    "session_id": "conversation-018f4f86",
+    "run_id": "run-018f4f86-attempt-1"
+  }
+}
+```
+
+响应使用 `a3s.code.agent-change-set.v1`，包含相同 identity、终态、`base_tree`、
+`result_tree`、`patch_digest`、`patch_bytes`、`observed_at_ms`，以及格式为
+`git_unified_diff_v1`、编码为 `base64` 的 `patch_base64`。原始补丁上限为 4 MiB。
+
+变更捕获在 worker 结束后紧接着完成，因此已经进入终态的运行可能短暂返回
+`a3s.code.agent_protocol.change_set_pending`；此时重试同一查询。
+`a3s.code.agent_protocol.change_set_unavailable` 表示工作区不兼容 Git，或捕获结果无法
+满足协议上限。
+
+由调用方决定是否以及在何处应用补丁，接口本身不会自动合并。解码或应用前，应校验
+声明的字节数与 `sha256:` 摘要，并保留两个 Git tree 身份。这样既能隔离并发会话写入，
+又能向宿主提供确定性的合并或审查制品。
+
+## 外部 Harness
+
+钩子与权限策略是集成点。将其视作生产边界前，应使用自己的 Harness 测试真实组织策略。

@@ -1,0 +1,50 @@
+---
+title: 'instructions.md'
+description: 'The AgentDir main-agent role slot and its boundary with AGENTS.md'
+---
+
+# instructions.md
+
+`instructions.md` is the role file for an AgentDir main agent. It is the only required file in an AgentDir, and its body is injected as `SystemPromptSlots.role` into every scheduled session.
+
+It has a different scope from `AGENTS.md`:
+
+| File              | Scope                     | Good for                                                                    |
+| ----------------- | ------------------------- | --------------------------------------------------------------------------- |
+| `AGENTS.md`       | Workspace or subdirectory | Project rules, verification commands, code style, and safety requirements.  |
+| `instructions.md` | One AgentDir main agent   | Role identity, work goals, output preferences, and durable task boundaries. |
+
+`instructions.md` is plain Markdown with no frontmatter. It does not override harness boundaries, response format, tool permissions, or verification requirements.
+
+## Recommended Shape
+
+```md
+You are a release-readiness agent for this repository.
+
+Responsibilities:
+
+- Track release blockers and risky changes.
+- Separate shipped changes from follow-up work.
+- Never invent CI status, versions, or owners.
+
+Output:
+
+- Start with blockers.
+- Include evidence paths.
+- End with required verification commands.
+```
+
+Keep it short, stable, and reviewable. Put project commands in `AGENTS.md`, reusable process in `skills/`, and recurring prompts in `schedules/*.md`. `instructions.md` should answer: who is this durable agent, and how does it work by default?
+
+## Where It Is Used
+
+`serve_agent_dir` reads `instructions.md` at startup and applies it to every enabled schedule session. With a `SessionStore`, history comes from the store, but the current `instructions.md` is reloaded on every boot, so role edits take effect after restart.
+
+Interactive sessions can use SDK prompt slots for temporary roles. Commit `instructions.md` when the role should be reviewed, reused, or shared by several schedules.
+
+## Do Not Put
+
+- Secrets, tokens, private endpoints, or personal paths.
+- Instructions to bypass safety or auto-approve high-risk actions.
+- Large project manuals; link to docs or skills instead.
+- Schedule prompts; every recurring task belongs in `schedules/*.md`.

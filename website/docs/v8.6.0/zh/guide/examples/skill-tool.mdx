@@ -1,0 +1,192 @@
+---
+title: '技能工具'
+description: '将已注册的技能作为可调用工具来调用'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 技能工具
+
+skills 以两个核心工具的形式暴露给模型：`search_skills`（按意图查找 skill）和
+`Skill`（按名称调用 skill）。tool 类型的 skill 会运行其处理器；instruction 类型的
+skill 会返回其正文供模型应用。你既可以让模型在一次运行中调用这些工具，也可以通过
+`session.tool('Skill', ...)` 直接从 SDK 调用某个 skill。
+
+通过 `skillDirs` / `skill_dirs` 注册 skill 目录（包含若干 `SKILL.md` 文件的文件夹），
+或通过 session options 传入 inline skills。A3S Code 不再内置默认 skills，
+`builtinSkills` / `builtin_skills` 只是兼容标记。注册后的 skills 会通过
+`Skill` 与 `search_skills` 可见。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_skill_dirs(["./skills"]))
+        .build()
+        .await?;
+
+    println!("{:?}", session.tool_names());
+    let run = session
+        .send("搜索可用技能，然后应用最相关的一个。", None)
+        .await?;
+    println!("{}", run.text);
+
+    let result = session
+        .tool(
+            "Skill",
+            json!({
+                "skill_name": "release-review",
+                "prompt": "审查这个发布补丁的阻塞项和验证缺口。"
+            }),
+        )
+        .await?;
+    if result.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "Skill".into(),
+            message: result.output,
+        });
+    }
+    println!("{}", result.output);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session(process.cwd(), {
+  skillDirs: ['./skills'], // a folder of SKILL.md files
+});
+
+// Skill 和 search_skills 是核心工具；先确认它们已出现在工具列表中。
+console.log(session.toolNames());
+
+// 方式 A：让模型在运行期间搜索并应用技能。
+const run = await session.run(
+  'Search available skills, then apply the most relevant one.',
+);
+console.log(run.text);
+
+// 方式 B：把技能作为可调用工具直接执行。
+// 标准参数：{ skill_name, prompt? }。
+const result = await session.tool('Skill', {
+  skill_name: 'release-review',
+  prompt: 'Review this release patch for blockers and verification gaps.',
+});
+if (result.exitCode !== 0) {
+  throw new Error(result.output);
+}
+console.log(result.output);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.skill_dirs = ['./skills']  # a folder of SKILL.md files
+session = agent.session('.', opts)
+
+# Skill 和 search_skills 是核心工具；先确认它们已出现在工具列表中。
+print(session.tool_names())
+
+# 方式 A：让模型在运行期间搜索并应用技能。
+run = session.run('Search available skills, then apply the most relevant one.')
+print(run.text)
+
+# 方式 B：把技能作为可调用工具直接执行。
+# 标准参数：{ skill_name, prompt? }。
+result = session.tool('Skill', {
+    'skill_name': 'release-review',
+    'prompt': 'Review this release patch for blockers and verification gaps.',
+})
+if result.exit_code != 0:
+    raise RuntimeError(result.output)
+print(result.output)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v8"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		SkillDirs: []string{"./skills"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	names, err := session.ToolNames(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(names)
+	run, err := session.Run(ctx, "搜索可用技能，然后应用最相关的一个。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(run.Text)
+
+	result, err := session.Tool(ctx, "Skill", map[string]any{
+		"skill_name": "release-review",
+		"prompt":     "审查这个发布补丁的阻塞项和验证缺口。",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		log.Fatal(result.Output)
+	}
+	fmt.Println(result.Output)
+}
+```
+
+</Tab>
+</Tabs>
+
+`SKILL.md` 在 frontmatter 中声明其 `kind`（`tool`、`instruction` 或 `agent`）。对于
+tool 类型的 skill，`Skill` 工具会运行该 skill 的处理器并返回其输出；对于 instruction
+类型的 skill，则返回正文供模型应用。skill 管理由 SDK 注册、skill 目录或项目文件完成，
+而不是通过模型可见的管理工具处理。
+
+可运行版本位于 `sdk/node/examples/skills/test_custom_skills_agents.ts`。

@@ -24,7 +24,7 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
-  <a href="#whats-new-in-85">v8.5</a> ·
+  <a href="#whats-new-in-86">v8.6</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
@@ -32,7 +32,14 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   <a href="#documentation">Documentation</a>
 </p>
 
-## What's new in 8.5
+## What's new in 8.6
+
+- **Image `read` + OpenAI tool images (8.6.0).** `read` returns JPEG/PNG/GIF/WebP
+  as attachments; OpenAI-compatible clients keep tool-result `image_url` parts
+  (#156 / #152). Also clears orphan `.a3s-isolate-*` dirs that blocked bind after
+  crashed runs (#155). Prefer **8.6.0** on npm/crates.io/PyPI.
+
+### Earlier in 8.5
 
 - **Faster `grep` (CODE-G1).** For literal searches, `local-code` builds a small
   trigram cache under `.a3s-code/grep-trigram` so fewer files need a full regex
@@ -81,10 +88,6 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   deny-all; optional `mediated_http` rides `a3s-sandbox` 0.1.3 fences. Fake-IP
   HTTP fetch can fall back to Cloudflare DoH without weakening SSRF. Live E2E
   pins follow monorepo `.a3s/config.acl` Flash routes.
-- **Image `read` + OpenAI tool images (8.6.0).** `read` returns JPEG/PNG/GIF/WebP
-  as attachments; OpenAI-compatible clients keep tool-result `image_url` parts
-  (#156 / #152). Also clears orphan `.a3s-isolate-*` dirs that blocked bind after
-  crashed runs (#155). Prefer **8.6.0** on npm/crates.io.
 - **Zhipu / batch schema (8.5.12).** Removes application `$ref` objects from `batch` tool parameter examples so GLM Coding no longer HTTP 500s when `batch` is presented (#147).
 - **Musl Node natives (8.5.11).** Pins `a3s-sandbox` **0.1.4** so
   `*-unknown-linux-musl` Node SDK builds succeed. Prefer current **8.6.0** on
