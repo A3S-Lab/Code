@@ -81,14 +81,18 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   deny-all; optional `mediated_http` rides `a3s-sandbox` 0.1.3 fences. Fake-IP
   HTTP fetch can fall back to Cloudflare DoH without weakening SSRF. Live E2E
   pins follow monorepo `.a3s/config.acl` Flash routes.
-- **Zhipu / batch schema (8.5.12).** Removes application `$ref` objects from `batch` tool parameter examples so GLM Coding no longer HTTP 500s when `batch` is presented (#147). Prefer **8.5.12** on npm/crates.io.
+- **Image `read` + OpenAI tool images (8.6.0).** `read` returns JPEG/PNG/GIF/WebP
+  as attachments; OpenAI-compatible clients keep tool-result `image_url` parts
+  (#156 / #152). Also clears orphan `.a3s-isolate-*` dirs that blocked bind after
+  crashed runs (#155). Prefer **8.6.0** on npm/crates.io.
+- **Zhipu / batch schema (8.5.12).** Removes application `$ref` objects from `batch` tool parameter examples so GLM Coding no longer HTTP 500s when `batch` is presented (#147).
 - **Musl Node natives (8.5.11).** Pins `a3s-sandbox` **0.1.4** so
-  `*-unknown-linux-musl` Node SDK builds succeed. Prefer current **8.5.12** on
+  `*-unknown-linux-musl` Node SDK builds succeed. Prefer current **8.6.0** on
   npm (includes this fix); crates.io also published **8.5.10**, but that cut's
   Release workflow failed musl and did not complete the full Node matrix.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.5` line;
-current package **8.5.12**).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.6` line;
+current package **8.6.0**).
 
 ### Earlier lines
 
