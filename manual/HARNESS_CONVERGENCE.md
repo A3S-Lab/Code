@@ -8,7 +8,7 @@ Layer A–D verification matrix used by the E2E goal.
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | `HARNESS-CONV4` | Delivered | Model-visible `parallel_task` unregistered; SDK helpers removed; durable-memory Active-only (`CAP-GA1`) |
-| `HARNESS-CONV5` | Delivered | Core/SDK `default` ≈ `local-code` / zvec; CLI pins `scientific` |
+| `HARNESS-CONV5` | Delivered | Core/SDK `default` ≈ `local-code` / a3s-vec; CLI pins `scientific` |
 | `HARNESS-CONV6` | Delivered | Prompt bodies are a replaceable default pack; permission overlays stay Core-owned |
 | `HARNESS-CONV7` | Code prep Done / external In progress | Runbooks below; close only with secret-free linked reports |
 | `TB-QUAL1` | In progress | [TERMINAL_BENCH.md](TERMINAL_BENCH.md) |

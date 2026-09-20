@@ -55,12 +55,6 @@ const (
 	CodeRunControlHookRetry ErrorCode = "HOOK_RETRY"
 )
 
-const (
-	CodeServeStartupFailed            ErrorCode = "SERVE_STARTUP_FAILED"
-	CodeServeRuntimeFailed            ErrorCode = "SERVE_RUNTIME_FAILED"
-	CodeServeDaemonPanicked           ErrorCode = "SERVE_DAEMON_PANICKED"
-	CodeServeShutdownDeadlineExceeded ErrorCode = "SERVE_SHUTDOWN_DEADLINE_EXCEEDED"
-)
 
 var (
 	ErrInvalidRequest        = &Error{Code: CodeInvalidRequest}
@@ -98,12 +92,6 @@ var (
 	ErrRunIdentityConflict    = &Error{Code: CodeRunIdentityConflict}
 )
 
-var (
-	ErrServeStartupFailed            = &Error{Code: CodeServeStartupFailed}
-	ErrServeRuntimeFailed            = &Error{Code: CodeServeRuntimeFailed}
-	ErrServeDaemonPanicked           = &Error{Code: CodeServeDaemonPanicked}
-	ErrServeShutdownDeadlineExceeded = &Error{Code: CodeServeShutdownDeadlineExceeded}
-)
 
 type Error struct {
 	Op      string

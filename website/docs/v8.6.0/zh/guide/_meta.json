@@ -10,16 +10,16 @@
   },
   {
     "type": "section-header",
-    "label": "文件系统优先"
+    "label": "文件系统约定"
   },
   "filesystem-first",
   "convention-over-configuration",
   "agents-md",
   "filesystem-instructions",
   "filesystem-config",
-  "agent-dir",
   "filesystem-agents",
   "filesystem-skills",
+  "agent-dir",
   "filesystem-tools",
   "filesystem-schedules",
   {

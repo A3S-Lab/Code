@@ -96,7 +96,7 @@ returns the same session ID and closes the previous object.
 
 Inject an asynchronous embedding callback to build a session-owned,
 ephemeral index without a vector database service. A3S Memory is the single
-semantic vector projection, and product builds use zvec-rust for lexical
+semantic vector projection, and product builds use a3s-vec for lexical
 FTS/BM25. A minimal build may explicitly select the portable lexical engine.
 The callback receives bounded batches and an `AbortSignal`; pass the signal to
 the provider HTTP request so session close, query cancellation, and deadlines
@@ -145,7 +145,7 @@ const retrieval = new WorkspaceRetrievalOptions(provider, reranker, chunking)
 retrieval.maxRecords = 100_000
 retrieval.maxBytes = 128 * 1024 * 1024
 
-// Product builds use zvec-rust FTS by default. A minimal build can opt into
+// Product builds use a3s-vec FTS by default. A minimal build can opt into
 // the dependency-free scorer explicitly:
 // retrieval.lexicalEngine = WorkspaceLexicalEngineOption.Portable
 
@@ -189,12 +189,10 @@ Targets, overlap, and recursive separator lists are immutable and validated by
 Core before indexing or provider execution. Primitive strategy names are not
 accepted, and custom range callbacks remain a Rust-host-only extension.
 
-`WorkspaceLexicalEngineOption.ZvecRust` selects the official Rust binding's
-temporary FTS projection for the session-owned catalog. Supported platform
-packages carry the attested zvec sidecar and use this engine by default;
-platforms without an upstream zvec asset are built with the explicit portable
-fallback. A source build made with `--no-default-features` likewise defaults to
-portable BM25, and selecting zvec-rust there fails during session
+`WorkspaceLexicalEngineOption.A3sVec` selects the pure-Rust `a3s-vec` FTS
+projection for the session-owned catalog. Product packages enable this engine
+by default. A source build made with `--no-default-features` defaults to
+portable BM25, and selecting a3s-vec there fails during session
 initialization instead of silently changing engines.
 
 The shared [cross-SDK evaluation](../evaluation/README.md) documents the
@@ -774,19 +772,7 @@ Define a durable agent as a **directory** — `instructions.md` (required) plus
 optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
 `kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
 harness turn (context, tool visibility, safety gate, verification).
-`serveAgentDir` resolves only after schedule validation and session/tool
-preparation, so the returned handle is already ready. Startup failures reject
-the call with a stable code.
-
-```js
-const handle = await agent.serveAgentDir('./my-agent', './workspace', {
-  // Optional: pass a sessionStore so each schedule resumes its accumulated
-  // context across daemon restarts.
-  sessionStore: new FileSessionStore('./sessions'),
-})
-console.log(handle.isReady(), handle.state()) // true, "ready"
-// ... runs in the background until:
-await handle.stop()
+Filesystem-first `serve` / `ServeAgentDir` has been removed.
 console.log(handle.isStopped(), handle.state()) // true, "stopped"
 ```
 

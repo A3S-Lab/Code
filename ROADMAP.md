@@ -360,10 +360,10 @@ work on top of the existing admission/budget/cancellation/evidence stages.
 | `OPT-HOSTINV1` | Delivered (Core slice) | Permission / confirmation / budget stay authoritative over prompt text: argument-scoped deny keeps tools model-visible but blocks execution; confirmation fails closed without a manager; budget accounting survives resume | Hermetic policy + MockLlm agent tests (`argument_scoped_write_deny_*`, `prompt_injected_write_cannot_cross_*`); `safety_gate` 12/12; release `agent_convergence` checkpoint-resume case |
 | `PROMPT-ALIGN1` | Delivered | System prompts match real capability: primary Auto stays GeneralPurpose; explicit specialty styles get read-only repo contracts + hard permission checkers; default prompt stays under budget without dropping GP mutating-tool guidance | Hermetic prompt/style tests + live `test_prompt_capability_real_llm` (GP write succeeds; explicit Explore cannot write) |
 | `HARNESS-CONV1` | Delivered | Product capability inventory is tiered (`sdk-capabilities/v2`): baseline coding harness vs advanced surfaces; `parallel_task` omitted from planning inventory and marked deprecated; durable-memory shadow mode deprecated in favor of Active recall | `sdk_capabilities` unit tests + `sdk_api_alignment_check`; docs (tasks/orchestration/memory/API) and CHANGELOG Unreleased |
-| `HARNESS-CONV2` | Delivered | Node/Python/Go SDKs cfg-gate `s3`/`serve` and link them only through the `server` feature (product default still enables `server`) | Coding-only (`--no-default-features --features zvec-rust-fts-bundled`) and product/`server` `cargo check` green for Node, Python, and Go bridges |
+| `HARNESS-CONV2` | Delivered | Node/Python/Go SDKs cfg-gate `s3` and link it through the `server` feature (product default still enables `server`) | Coding-only (`--no-default-features --features a3s-vec-fts`) and product/`server` `cargo check` green for Node, Python, and Go bridges |
 | `HARNESS-CONV3` | Delivered | Shared `content_digest` (incl. `validate_digest`) decouples store/orchestration/Flow from evaluation; `evaluation` / `research` / `state-graph` / `dynamic-workflow` (and Flow projection) compile only behind `advanced-harness` (product `default` + `scientific`/`full`; SDK product default enables the same). `minimal`/`local-code` omit Advanced modules | `content_digest` + `sdk_capabilities` tests; `cargo check/test --lib` for `local-code`; product/`advanced-harness` SDK checks (Node/Python/Go) |
 | `HARNESS-CONV4` | Delivered | Physically removed dual paths: model-visible `parallel_task` is no longer registered; Node/Python/Go SDK helpers removed; durable-memory `shadow` / `ShadowCandidates` constructors and mode are removed (`CAP-GA1` slice); `task` fan-out + `active_recall` remain the only supported paths; `ParallelTaskTool` / parallel-task params are `pub(crate)` only | Registry/SDK/docs/`sdk_api_alignment_check` updated; focused ParallelTaskTool unit tests may still construct the type inside the crate |
-| `HARNESS-CONV5` | Delivered | Breaking thin library/SDK `default` ≈ `local-code` / zvec only (no `advanced-harness`, no `server`, no default `headless-search`); SDK Moli helpers cfg-gated behind `headless-search`; `a3s` CLI pins `scientific`; Advanced/server/headless are explicit features | `cargo check -p a3s-code-core` (default) and coding-only SDK crates compile without Advanced/server/Moli; scientific/full and product profiles documented |
+| `HARNESS-CONV5` | Delivered | Breaking thin library/SDK `default` ≈ `local-code` / a3s-vec only (no `advanced-harness`, no `server`, no default `headless-search`); SDK Moli helpers cfg-gated behind `headless-search`; `a3s` CLI pins `scientific`; Advanced/server/headless are explicit features; `a3s-flow` is behind `dynamic-workflow` | `cargo check -p a3s-code-core` (default) and coding-only SDK crates compile without Advanced/server/Moli/Flow; scientific/full and product profiles documented |
 | `HARNESS-CONV6` | Delivered | Prompt ownership tightened: Core keeps `AgentStyle` → hard permission overlays and `SystemPromptSlots`; specialty markdown bodies documented as a replaceable default pack; hosts own rubric/reviewer prompts | Docs/API comments + hermetic/live `PROMPT-ALIGN1` gates |
 | `HARNESS-CONV7` | Code prep Delivered / external In progress | Code wrap-up index [HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md); runbooks for [TB-QUAL1](manual/TERMINAL_BENCH.md), [DM-PROD1](manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md), [CAR checklist](manual/CLOUD_HARNESS_CONFORMANCE.md); DeepSeek/prompt live suites retained | Reproducible Harbor/host/Cloud·Box reports without secret leakage; paste links into ROADMAP when Delivered |
 
@@ -732,7 +732,7 @@ Session- and Run-owned capability scopes.
 | `HOST-HOOK1` | Delivered | Core composes projected Hook bindings through one Run-frozen executor | Definition/handler pairs remain generation-exact, invalid Run event scopes and compatibility conflicts fail before publication, external `Skip` cannot bypass projected policy, and supervised observations retain the exact Use lease through bounded settlement |
 | `HOST-MCP1` | Delivered | Core projects each MCP server as one immutable exact-client binding and freezes its wrappers per Run | Initialization and `tools/list` finish before publication; N definitions, raw calls, foreground delegated children, and the parent Run's N Use lease remain generation-exact across N+1; rollback and final-reader retirement close the Code-owned connection effect without mutable-manager fallback |
 | `HOST-CONTEXT1` | Delivered | Core projects general `ContextProvider` values into each Run-frozen Agent configuration through the same atomic batch | N Runs retain N providers and the exact N Use lease across N+1; descriptor/provider names and Session-static names cannot conflict; cognitive package bindings remain on the separately persisted Knowledge/session boundary; delegated children keep isolated prompt context |
-| `HOST-FLOW1` | Delivered | Core projects each named `FlowBinding` as one exact `WorkflowSpec` plus `FlowEngine` and exposes it through a non-clone host handle | Spec/engine runtime-build incompatibility and descriptor/spec name drift fail before publication; an N handle retains N's definition, engine/store, and exact Use lease across N+1; missing lookup acquires no lease; Session close cancels active replay and explicit close releases the lease |
+| `HOST-FLOW1` | Delivered | With `dynamic-workflow`, Core projects each named `FlowBinding` as one exact `WorkflowSpec` plus `FlowEngine` and exposes it through a non-clone host handle | Spec/engine runtime-build incompatibility and descriptor/spec name drift fail before publication; an N handle retains N's definition, engine/store, and exact Use lease across N+1; missing lookup acquires no lease; Session close cancels active replay and explicit close releases the lease; thin/default builds do not link `a3s-flow` |
 | `HOST-KNOWLEDGE1` | Delivered | Core projects multiple digest-bound, non-queryable Knowledge Surface readiness values while admitting at most one separately selected cognitive Knowledge authority into each Run | Same-source Flow dependencies close only against exact surface evidence; surface values never become cognitive context; N Runs retain N provider, binding, readiness set, and exact Use lease across N+1; each Run snapshot records its own cognitive binding while the Session snapshot records the next-Run binding; resume requires an exact bootstrap; multiple or ambient general Context authorities fail before publication |
 | `HOST-UI1` | Delivered | Core projects bounded, path-free `UiBinding` values and exposes them through a non-clone host handle | Reviewed entry, style, and script bytes plus their content digests are frozen before publication; descriptor/binding name or digest drift and dependencies outside Tool, Skill, MCP, and Flow fail closed; an N handle retains N's exact document and Use lease across N+1; missing lookup acquires no lease; Session close cancels active host use; renderer policy remains host-owned |
 | `CAP-GA1` | Delivered | Legacy shadow ownership and piecemeal reconciliation removed; durable-memory bindings are Active-recall only (`HARNESS-CONV4`) | Official hosts and SDKs use the scoped architecture and Active recall; shadow mode constructors/mode are gone |
@@ -948,7 +948,7 @@ The program preserves the existing search surfaces:
 #### Workspace retrieval backend consolidation (2026-09-04)
 
 The workspace catalog now has one explicit lexical boundary. Product builds
-use the official `zvec-rust` FTS adapter (`zvec_rust_fts_v1`) with the
+use the official `a3s-vec` FTS adapter (`a3s_vec_fts_v1`) with the
 whitespace analyzer; intentionally minimal builds use the separately reported
 portable BM25 implementation (`portable_bm25_v1`). Both paths share Code's
 admission, tokenizer, chunk identity, source-digest verification, limits, and
@@ -1014,7 +1014,7 @@ authorities; consumers migrate onto the snapshot incrementally.
 12. RRF and overlap-aware reranking consume Code-specific ranges, identifier
     tiers, and channel evidence, so they belong in Code rather than the generic
     A3S Memory vector kernel. A neural reranker is host-injected and default-off.
-13. The model-free CPU path is the product baseline: exact, glob, zvec-rust FTS/BM25,
+13. The model-free CPU path is the product baseline: exact, glob, a3s-vec FTS/BM25,
     Code Intelligence, RRF, and deterministic MMR remain useful without an
     Embedding Provider. Dense semantic mode is an optional enhancement and must
     degrade to those paths when its provider is absent or unhealthy.
@@ -1036,7 +1036,7 @@ WorkspaceFileSystem ── admitted reads ─> WorkspaceRetrievalRuntime
                               │                             │
                     ┌─────────┴─────────┐                   v
                      v                   v          InMemoryVectorIndex
-             zvec-rust FTS         source evidence       (a3s-memory)
+             a3s-vec FTS         source evidence       (a3s-memory)
                     │                   │                   │
 query ─> exact/symbol/lexical/semantic candidate generation ┘
                     │
@@ -1057,7 +1057,7 @@ The framework also provides a workspace-owned persistent FTS projection. The
 legacy `WorkspaceServices::local_with_indexed_retrieval` constructor remains a
 compatibility convenience; default local Agent workspaces configure the same
 projection automatically. It uses the same manifest watcher and catalog
-admission policy, publishes versioned zvec generations under `.a3s-code/index`,
+admission policy, publishes versioned a3s-vec generations under `.a3s-code/index`,
 and transparently accelerates the model-facing `search` `bm25` route. An
 unavailable or read-only cache falls back to the catalog, with no model-visible
 mode change. This projection is lexical only; A3S Memory remains the session
@@ -1065,7 +1065,7 @@ semantic authority. CPU-heavy tokenization and per-document normalization use
 Rust's bounded Rayon worker pool with stable input order; native generation
 publication remains serialized and atomic. During automatic cold admission,
 the catalog uses the portable scorer as a verified fallback so one native
-collection is not opened per source file; the workspace-wide zvec generation
+collection is not opened per source file; the workspace-wide a3s-vec generation
 becomes the serving path once ready. MCP is an optional external adapter and
 is not a Core dependency.
 
@@ -1083,10 +1083,10 @@ server and must produce equivalent fallback chunks when it is unavailable.
 | Subproject | Owns | Must not own |
 | --- | --- | --- |
 | `a3s-memory` | Public `VectorIndex` contract, vector/result types, exact in-memory implementation, dynamic dimensions, atomic partition replacement/removal, immutable query snapshots, deterministic ordering, and memory budgets | Workspaces, files, code chunking, embedding clients, model configuration, session lifecycle, hybrid/rerank policy, or prompt context |
-| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, zvec-rust FTS lexical projection, optional workspace-owned persistent generations, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or semantic vector persistence |
+| `a3s-code-core/workspace` | Text admission, typed/custom chunk strategies, shared `ChunkCatalog`, a3s-vec FTS lexical projection, optional workspace-owned persistent generations, manifest reconciliation, path/revision metadata, and structured `WorkspaceRetrieval` provider contract | Non-text parsing, provider credentials, host UI, or semantic vector persistence |
 | `a3s-code-core/embedding` | Host-injected `EmbeddingProvider` contract, provider descriptor, batching, cancellation, bounded retry, and normalized embedding errors | Vector storage or workspace traversal |
 | `a3s-code-core/session` | `WorkspaceRetrievalRuntime`, asynchronous construction, prioritization, query-time promotion, cancellation, close/replace/resume behavior, and session isolation | Process-global mutable indexes or hidden persistence; workspace FTS generations belong to the workspace layer |
-| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, zvec-rust FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
+| `a3s-code-core/tools` | `semantic`/`hybrid` search modes, a3s-vec FTS lexical fallback, RRF fusion, bounded overlap-aware reranking, path filters, source anchors, and coverage/status metadata | A second chunker or direct filesystem traversal outside `WorkspaceServices` |
 | Code SDKs | Typed retrieval/chunking options, typed Embedding Provider injection, status/result DTOs, and lifecycle parity across Rust, Node, Python, and Go | Primitive strategy/backend names or SDK-specific ranking behavior |
 | CLI/TUI and other hosts | ACL wiring, opt-in controls, readiness/degraded presentation, diagnostics, provider-secret handling, and optional local CPU provider adapters/model-artifact admission | Reimplementing indexing, placing model runtimes in Core/Memory, or making a host-specific search protocol |
 | Tests, benchmarks, and docs | Shared relevance fixtures, adversarial lifecycle tests, performance baselines, examples, and operator guidance | Production-only correctness assumptions that cannot be tested deterministically |
@@ -1149,7 +1149,7 @@ core/src/workspace/retrieval/
 ├── chunk.rs               # deterministic bounded chunking
 ├── chunking_strategy.rs   # built-in and host range splitters
 ├── catalog.rs             # shared immutable chunk snapshots
-├── lexical.rs             # typed zvec-rust/portable FTS projection
+├── lexical.rs             # typed a3s-vec/portable FTS projection
 ├── semantic_runtime.rs    # embedding queue and vector partitions
 ├── hybrid_rank.rs         # RRF and deterministic diversity
 └── rerank.rs              # bounded deterministic second-stage reranker
@@ -1162,7 +1162,7 @@ non-text asset.
 The compatibility BM25 path selects candidates, reads files, and creates
 bounded 80-line chunks. Both the incremental catalog and the no-catalog
 fallback now hand their normalized token stream to the same bounded lexical
-projection; product builds use zvec-rust FTS and minimal builds use portable
+projection; product builds use a3s-vec FTS and minimal builds use portable
 BM25. Code retains candidate policy, source verification, and rendering. The
 model-facing BM25 result shape and source anchors remain stable.
 
@@ -1316,15 +1316,15 @@ Current implementation status:
 | --- | --- | --- |
 | `WSR-00` | Delivered | Versioned relevance and lifecycle fixtures, native BM25 CI baseline, reference sizing profile, locked budgets, and adversarial trust-boundary review |
 | `MEM-V1` | Delivered | A3S Memory `main` commit `3293f572` adds the public exact ephemeral vector kernel, streamlines the contiguous exact-scan hot path, and passes default, SQLite-feature, oracle, concurrency, budget, cleanup, benchmark, Clippy, and rustdoc gates |
-| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, zvec-rust FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
-| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, cross-process publication/read/delete fencing, restart reopen, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
-| `CODE-P1` | Delivered | Explicit workspace-owned persistent zvec FTS generations, atomic `CURRENT` publication, restart reopen with schema-v2 chunk-payload/identity integrity checks, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
-| `CODE-G1` | Delivered | Default `local-code` enables in-tree trigram candidate pruning for workspace `grep` (`grep-trigram`): fail-open literal filter under `.a3s-code/grep-trigram`, auto-rebuild on manifest version change, host override via `configure_grep_candidate_index`, crates.io-safe (no unpublished `tgrep-core`), and tool-level proof that grep never opens durable zvec FTS |
+| `CODE-C1` | Delivered | Session-local immutable chunk catalog, conservative sensitive-path eligibility policy, UTF-8-safe deterministic chunking, a3s-vec FTS/BM25 postings with a portable minimal-build path, async manifest reconciliation, stale-content tombstones, lag rebuild, and query-time zero-read catalog path; lifecycle, locked relevance, concurrency, budget, cleanup, failure-injection, and strict Clippy gates pass |
+| `CODE-P1` | Delivered | Explicit workspace-owned persistent a3s-vec FTS generations, atomic `CURRENT` publication, cross-process publication/read/delete fencing, restart reopen, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
+| `CODE-P1` | Delivered | Explicit workspace-owned persistent a3s-vec FTS generations, atomic `CURRENT` publication, restart reopen with schema-v2 chunk-payload/identity integrity checks, stale-revision fencing, shared manifest coordinator, bounded retry/backoff, obsolete-generation collection, building status, `.a3s-code` source exclusion, transparent `bm25` acceleration, portable cold-admission fallback that avoids one native collection per file, same-content generation reuse, adaptive Rayon multi-core tokenization/posting construction with stable ordinals, and native/portable release scale, concurrency, rebuild, cleanup, and restart qualification pass |
+| `CODE-G1` | Delivered | Default `local-code` enables in-tree trigram candidate pruning for workspace `grep` (`grep-trigram`): fail-open literal filter under `.a3s-code/grep-trigram`, auto-rebuild on manifest version change, host override via `configure_grep_candidate_index`, crates.io-safe (no unpublished `tgrep-core`), and tool-level proof that grep never opens durable a3s-vec FTS |
 | `CODE-C2` | Delivered | Rust Core adds compatible line, fixed UTF-8 window, recursive prioritized-separator, and host-injected custom range strategies; Code validates complete coverage and budgets, owns IDs/digests/lines, charges overlap memory, contains host failures, and wires explicit configuration into session-owned catalogs without allowing silent overrides of host-owned catalogs |
 | `CODE-E1` | Delivered | Host-injected `EmbeddingProvider`, immutable descriptor, deterministic text/vector-budgeted batching, caller-order restoration, cancellation/timeout propagation, typed bounded retry, response validation, panic containment, redacted diagnostics, and deterministic fake-provider gates |
 | `CODE-S1` | Delivered | Typed `WorkspaceRetrievalOptions`, async session-owned catalog projection, Memory `3293f572` exact-vector partitions, pre-replacement tombstones, superseded-generation fencing, partial/degraded status and coverage, build-failure cleanup, and bounded idempotent close |
 | `CODE-Q1` | Delivered | Structured semantic search through the unified `search` tool, bounded query embedding, immutable catalog/vector revision fencing, current-file digest and byte-range verification, coverage metadata, cancellation, and explicit fallback |
-| `CODE-H1` | Delivered | Exact literal, zvec-rust FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
+| `CODE-H1` | Delivered | Exact literal, a3s-vec FTS/BM25, optional Code Intelligence symbol, and positive-similarity semantic candidates are fused by deterministic RRF (`k=60`); exact identifiers are protected, results are capped at two chunks per file, source is reread once per selected path, stale hits are filtered, and every channel reports bounded status/fallback metadata |
 | `SDK-R1` | Delivered | Rust, Node, Python, and Go expose typed provider/options boundaries, cancellation propagation, status, and verified semantic/hybrid DTOs. Go bridge protocol v2 adds callback cancellation; unit, race, and real Go-to-Rust lifecycle E2E gates pass |
 | `SDK-C2` | Delivered | Node, Python, and Go expose typed line/fixed/recursive strategy objects and recursive separator lists while omission preserves line chunking. A shared Core-owned fixture locks identical byte ranges and invalid windows; primitive names are rejected, Go validates before callback registration, the bridge revalidates typed one-of blocks, and arbitrary custom splitters remain on the Rust host boundary. Native Node/Python and real Go-to-Rust multi-chunk integration gates pass |
 | `SDK-R2` | Delivered | Node, Python, and Go expose typed deterministic-reranker objects while omission preserves RRF-only. SDK/Core defaults and hard bounds align, primitive algorithm names are not accepted, invalid settings fail before provider calls or Go callback registration, result DTOs report versioned evidence, and native Node/Python plus real Go-to-Rust bridge integration gates pass |
@@ -1356,7 +1356,7 @@ The lexical/semantic backend contract and package qualification are in
 | --- | --- | --- | --- | --- |
 | `WSR-00` | Code core/tests | None | Versioned retrieval fixture corpus, current BM25 baseline, sizing data, threat model, and locked quality/latency budgets | Baseline is reproducible in CI and separates identifier, paraphrase, CJK, and lifecycle cases |
 | `MEM-V1` | A3S Memory | `WSR-00` contract draft | Public vector types/trait and `InMemoryVectorIndex` | Contract, oracle, concurrency, invalid-input, budget, and cleanup tests pass without SQLite features |
-| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, zvec-rust FTS lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
+| `CODE-C1` | Code workspace | `WSR-00` | Shared chunk catalog, eligibility policy, deterministic chunker, a3s-vec FTS lexical postings, and manifest reconciliation | Unchanged files are not reread; create/change/delete/rename and lag recovery are deterministic |
 | `CODE-C2` | Code workspace | `CODE-C1` | Typed built-in chunk strategies, validated Rust custom range port, overlap accounting, and session catalog configuration | UTF-8, gaps, progress, size/count, panic, ownership, deterministic-ID, and async session tests pass; the default line strategy is unchanged |
 | `CODE-E1` | Code model/session | `WSR-00` | Host-injected Embedding Provider contract, batching, cancellation, and typed errors | Deterministic fake provider proves dimensions, cancellation, retry bounds, and descriptor changes |
 | `CODE-S1` | Code session | `MEM-V1`, `CODE-C1`, `CODE-E1` | Asynchronous session retrieval runtime and vector partition lifecycle | Session creation does not wait; partial readiness works; close drops all owned tasks and memory |
@@ -1519,7 +1519,7 @@ physical batches against a 391-request lower bound, with 1.0x amplification,
 quality, and cleanup gates passing.
 
 The schema-v5 backend follow-up keeps Memory as the semantic authority and
-qualifies the zvec-rust lexical path in both hybrid arms. Native handles use a
+qualifies the a3s-vec lexical path in both hybrid arms. Native handles use a
 four-entry hot cache with transient open/query/close for colder partitions;
 concurrent replacement/query bursts stay within the descriptor budget,
 package manifests are target-verified, and the same exact, RRF-only, and
@@ -1627,7 +1627,7 @@ design. Delivered `HOST-LCPU1` adds the qualified CLI-local CPU route; it does
 not block model-free search, require a new default, or move inference and
 model-artifact ownership into Code Core or A3S Memory.
 
-The semantic Memory projection and lexical zvec-rust projection have separate
+The semantic Memory projection and lexical a3s-vec projection have separate
 failure domains. A lexical package or native-runtime failure degrades lexical
 coverage and leaves exact/semantic paths available; it cannot promote a
 different vector authority or bypass current-source verification.
@@ -1635,7 +1635,7 @@ different vector authority or bypass current-source verification.
 ### 6.12 WSR non-goals
 
 - A vector database server, global daemon, or Cloud retrieval service. The
-  opt-in local zvec FTS generation is a workspace projection, not a shared
+  opt-in local a3s-vec FTS generation is a workspace projection, not a shared
   service or semantic vector authority.
 - Serializing vectors into Code checkpoints or sharing them across tenants,
   users, worktrees, or sessions.

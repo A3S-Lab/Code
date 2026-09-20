@@ -35,8 +35,6 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRecursiveWorkspaceChunkingStrategy>()?;
     m.add_class::<PyWorkspaceLexicalEngineOption>()?;
     m.add_class::<PyWorkspaceRetrievalOptions>()?;
-    #[cfg(feature = "serve")]
-    m.add_class::<PyServeHandle>()?;
     m.add_class::<PySessionQueueConfig>()?;
     m.add_class::<PySearchConfig>()?;
     m.add_class::<PySearchEngineConfig>()?;

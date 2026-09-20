@@ -13,6 +13,7 @@ mod ceiling;
 mod descriptor;
 mod effect;
 mod error;
+#[cfg(feature = "dynamic-workflow")]
 mod flow_binding;
 mod id;
 mod knowledge_surface_binding;
@@ -44,6 +45,7 @@ pub use ceiling::{
 pub use descriptor::{CapabilityContribution, CapabilityDescriptor, MAX_CAPABILITY_DEPENDENCIES};
 pub use effect::{CapabilityEffect, CapabilityEffectError};
 pub use error::CapabilitySetError;
+#[cfg(feature = "dynamic-workflow")]
 pub use flow_binding::FlowBinding;
 pub use id::{
     CapabilityId, CapabilityKind, CapabilitySourceId, CodeCatalogGeneration, Sha256Digest,

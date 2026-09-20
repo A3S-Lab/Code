@@ -262,7 +262,7 @@ and remaining limits resume without repeating completed lines.
 `search` is the single model-facing workspace search tool. Always pass `mode`
 and `query`: use `grep` for regular-expression content search, `glob` for path
 discovery, and `bm25` for native lexical relevance ranking. These modes are
-separate planes: `grep` never opens durable zvec FTS, and `bm25` never becomes
+separate planes: `grep` never opens durable a3s-vec FTS, and `bm25` never becomes
 the exact-match authority. When the host
 explicitly enables Workspace Retrieval, the same schema also advertises
 `semantic` for exact cosine ranking over the session-owned, Memory-authoritative

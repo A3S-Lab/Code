@@ -19,7 +19,7 @@ fn write(path: &Path, body: &[u8]) {
 
 fn git_available() -> bool {
     let mut command = std::process::Command::new("git");
-    crate::tools::process::output_std_with_native_gate(&mut command)
+    crate::tools::process::output_std_child(&mut command)
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
@@ -27,7 +27,7 @@ fn git_available() -> bool {
 fn run_git(root: &Path, args: &[&str]) {
     let mut command = std::process::Command::new("git");
     command.arg("-C").arg(root).args(args);
-    let status = crate::tools::process::status_std_with_native_gate(&mut command).unwrap();
+    let status = crate::tools::process::status_std_child(&mut command).unwrap();
     assert!(
         status.success(),
         "git command failed: git -C {root:?} {args:?}"
@@ -236,7 +236,7 @@ async fn deferred_manifest_keeps_fallback_search_ready_until_one_way_activation(
     assert!(ready.files.iter().any(|file| file.path == "src/main.rs"));
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test]
 async fn automatic_persistent_retrieval_uses_portable_cold_admission() {
     let temp = tempfile::tempdir().unwrap();
@@ -250,7 +250,7 @@ async fn automatic_persistent_retrieval_uses_portable_cold_admission() {
         .configure_persistent_index(temp.path().join(".a3s-code/index"))
         .unwrap();
     let catalog = backend.chunk_catalog();
-    assert_eq!(catalog.lexical_engine(), WorkspaceLexicalEngine::ZvecRust);
+    assert_eq!(catalog.lexical_engine(), WorkspaceLexicalEngine::A3sVec);
     assert!(backend.persistent_index().is_some());
 
     backend.manifest().activate();
@@ -393,7 +393,7 @@ async fn host_can_configure_the_manifest_catalog_exactly_once_before_services_at
 }
 
 #[tokio::test]
-async fn configuring_chunk_catalog_does_not_open_durable_zvec() {
+async fn configuring_chunk_catalog_does_not_open_durable_a3s_vec() {
     let temp = tempfile::tempdir().unwrap();
     let backend = ManifestWorkspaceBackend::new(temp.path());
     backend

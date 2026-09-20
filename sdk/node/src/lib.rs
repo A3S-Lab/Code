@@ -48,8 +48,6 @@ use js_slash_command::{js_command_context_to_object, JsSlashCommand};
 pub use state_graph::{strict_replay, JsStateGraphRuntime, StateGraphOptions};
 
 use a3s_code_core::commands::CommandContext as RustCommandContext;
-#[cfg(feature = "serve")]
-use a3s_code_core::config::AgentDir as RustAgentDir;
 use a3s_code_core::hitl::{
     ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
 };
@@ -72,11 +70,6 @@ use a3s_code_core::queue::{
     ExternalTaskResult as RustExternalTaskResult, LaneHandlerConfig as RustLaneHandlerConfig,
     MetricsSnapshot as RustMetricsSnapshot, SessionLane as RustSessionLane,
     SessionQueueConfig as RustSessionQueueConfig, TaskHandlerMode as RustTaskHandlerMode,
-};
-#[cfg(feature = "serve")]
-use a3s_code_core::serve::{
-    spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
-    ServeDaemonHandle as RustServeDaemonHandle,
 };
 use a3s_code_core::skills::{
     builtin_skills as rust_builtin_skills, Skill as RustSkill, SkillKind as RustSkillKind,
@@ -122,23 +115,6 @@ fn node_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> napi::
         a3s_code_core::TaskSchedulerError::Closed => "TASK_SCHEDULER_CLOSED",
         a3s_code_core::TaskSchedulerError::AtCapacity { .. } => "TASK_ADMISSION_AT_CAPACITY",
     };
-    napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
-}
-
-#[cfg(feature = "serve")]
-fn node_serve_error(
-    handle: &RustServeDaemonHandle,
-    error: a3s_code_core::CodeError,
-) -> napi::Error {
-    node_serve_error_code(handle.failure_code(), error)
-}
-
-#[cfg(feature = "serve")]
-fn node_serve_error_code(
-    failure_code: Option<&'static str>,
-    error: a3s_code_core::CodeError,
-) -> napi::Error {
-    let code = failure_code.unwrap_or(error.code());
     napi::Error::from_reason(format!("[A3S_CODE_ERROR:{code}] {error}"))
 }
 
@@ -1109,11 +1085,6 @@ mod session_host_contract;
 mod session_capabilities;
 
 mod agent;
-
-#[cfg(feature = "serve")]
-mod serve_handle;
-#[cfg(feature = "serve")]
-pub use serve_handle::ServeHandle;
 
 mod event_protocol;
 pub use event_protocol::*;

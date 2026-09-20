@@ -21,11 +21,11 @@ required-features = ["durable-memory-sqlite"]
 
 [[example]]
 name = "workspace_persistent_index_benchmark"
-required-features = ["zvec-rust-fts"]
+required-features = ["a3s-vec-fts"]
 
 [[example]]
 name = "workspace_persistent_index_production"
-required-features = ["zvec-rust-fts"]
+required-features = ["a3s-vec-fts"]
 
 [[example]]
 name = "flow_graph_benchmark"
@@ -48,13 +48,13 @@ a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
 a3s-search = { version = "=3.1.4", git = "https://github.com/A3S-Lab/Search.git", rev = "e38555cebb5a0fe9a982bde72700971262ac0773", default-features = false }
-a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false }
+# Flow engine is optional: thin coding builds do not project named workflows.
+# Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
+a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }
 a3s-sandbox = { version = "=0.1.4", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "c9b8dfbef2b3133b44c333820ac6e80453552566" }
-# Official zvec Rust binding used by the workspace full-text index. The
-# dependency is optional so minimal/no-native builds can retain the portable
-# scorer, while product builds enable the bundled feature and ship the
-# attested platform library beside the executable.
-zvec_rust = { package = "zvec-rust", version = "=0.7.0", optional = true, default-features = false }
+# Pure-Rust a3s-vec FTS engine for the workspace lexical index. Optional so
+# minimal builds keep the portable BM25 scorer without pulling the engine.
+a3s-vec = { version = "=0.1.4", optional = true }
 # Async runtime
 tokio = { version = "1.35", features = [
     "rt-multi-thread", "sync", "time", "io-util",
@@ -123,15 +123,15 @@ sha2 = "0.10"
 # Shell argument parsing
 shell-words = "1.1"
 
-# HTML to text/markdown conversion
+# HTML to text/markdown conversion (web_fetch)
 html2text = "0.16"
 htmd = "0.5"
-lopdf = "0.42"
-roxmltree = "0.20"
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
-cfb = "0.14"
-flate2 = "1.0"
-tar = "0.4"
+# PDF text extraction for web_fetch (optional; enabled by local-code).
+lopdf = { version = "0.42", optional = true }
+# Moli browser archive unpack (headless-search only)
+zip = { version = "0.6", default-features = false, features = ["deflate"], optional = true }
+flate2 = { version = "1.0", optional = true }
+tar = { version = "0.4", optional = true }
 tempfile = "3.10"
 fs2 = "0.4"
 
@@ -149,8 +149,6 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
-# Cron parsing for the `serve` schedules (gated behind the `serve` feature).
-cron = { version = "0.12", optional = true }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
 # S3-compatible workspace backend (optional, gated by `s3` feature)
@@ -167,25 +165,27 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [features]
 # Thin coding-harness default (`HARNESS-CONV5`): agent loop, tools, identity,
-# events, and bundled zvec FTS. Advanced evaluation/research/workflows,
-# browser search, S3/serve, and telemetry require explicit profiles/features.
+# events, and a3s-vec FTS. Advanced evaluation/research/workflows (including
+# Flow projection via `dynamic-workflow`), browser search, S3, and
+# telemetry require explicit profiles/features.
 default = ["local-code"]
 # ---------------------------------------------------------------------------
 # Release profiles (KRN-10). Embedders select a profile instead of composing
 # native/runtime dependencies by hand; each profile documents the surface it
 # adds over `minimal`.
 # ---------------------------------------------------------------------------
-# Governed agent loop, workspace tools, identity/events — no browser, native
-# FTS library, S3, telemetry, serve daemon, or Advanced harness modules.
+# Governed agent loop, workspace tools, identity/events — no browser, a3s-vec
+# FTS, S3, telemetry, or Advanced harness modules.
 minimal = []
-# Minimal plus the workspace persistent zvec FTS lexical path and in-tree
-# trigram pruning for workspace `grep` candidates.
-local-code = ["zvec-rust-fts-bundled", "grep-trigram"]
+# Minimal plus the workspace persistent a3s-vec FTS lexical path, in-tree
+# trigram pruning for workspace `grep` candidates, and PDF text extraction
+# for `web_fetch`.
+local-code = ["a3s-vec-fts", "grep-trigram", "web-fetch-pdf"]
 # Local code plus durable SQLite memory vectors, browser-backed web search, and
 # Advanced evaluation/research/workflow surfaces.
 scientific = ["local-code", "durable-memory-sqlite", "headless-search", "advanced-harness"]
-# Local code plus S3 workspaces, OpenTelemetry export, and the serve daemon.
-server = ["local-code", "s3", "telemetry", "serve"]
+# Local code plus S3 workspaces and OpenTelemetry export.
+server = ["local-code", "s3", "telemetry"]
 # Every optional surface.
 full = ["scientific", "server"]
 # Advanced harness: evaluation substrate, research contracts, state graphs,
@@ -193,7 +193,8 @@ full = ["scientific", "server"]
 evaluation = []
 research = ["evaluation"]
 state-graph = []
-dynamic-workflow = ["state-graph"]
+# Programmable workflows plus named Flow capability projection (`HOST-FLOW1`).
+dynamic-workflow = ["state-graph", "dep:a3s-flow"]
 advanced-harness = ["evaluation", "research", "state-graph", "dynamic-workflow"]
 # Enable the locally durable SQLite vector index for semantic-memory hosts.
 durable-memory-sqlite = ["a3s-memory/sqlite"]
@@ -202,19 +203,21 @@ durable-memory-sqlite = ["a3s-memory/sqlite"]
 # no packaged or user-provided executable is available; Chrome/Chromium and
 # Lightpanda remain selectable through configuration. HTTP/RSS and native API
 # search remain available when default features are disabled.
-headless-search = ["a3s-search/moli", "a3s-search/lightpanda"]
-# Compile the official zvec Rust/C-API FTS adapter. The default product feature
-# below enables the upstream bundled resolver for local development and CI;
-# release packaging must still copy and verify the matching native library.
-zvec-rust-fts = ["dep:zvec_rust"]
-# Permit the upstream build script to resolve a platform prebuilt library when
-# no vendored `ZVEC_LIB_DIR` is supplied. Packagers should set `ZVEC_LIB_DIR`
-# to the verified artifact so builds remain reproducible and offline.
-zvec-rust-fts-bundled = ["zvec-rust-fts", "zvec_rust/bundled"]
+headless-search = [
+    "a3s-search/moli",
+    "a3s-search/lightpanda",
+    "dep:zip",
+    "dep:flate2",
+    "dep:tar",
+]
+# Compile the pure-Rust a3s-vec FTS adapter for workspace lexical retrieval.
+a3s-vec-fts = ["dep:a3s-vec"]
 # Enable in-tree trigram pruning for workspace `grep` candidates (tgrep-style
 # fail-open filter). Exact regex matching stays owned by Code; no crates.io
 # git dep (`tgrep-core` is unpublished). Included in `local-code`.
 grep-trigram = []
+# Extract text from PDF responses in `web_fetch` (lopdf). Included in `local-code`.
+web-fetch-pdf = ["dep:lopdf"]
 # Enable OpenTelemetry OTLP export for traces and metrics.
 # When active, `TelemetryConfig::init()` sets up OTLP exporter + tracing subscriber.
 telemetry = [
@@ -232,9 +235,6 @@ s3 = [
     "dep:aws-smithy-types",
     "dep:aws-smithy-runtime-api",
 ]
-# Enable the durable serve layer: cron schedules + serve daemon for
-# filesystem-first agents. Library-only embedders pay nothing without it.
-serve = ["dep:cron"]
 
 [dev-dependencies]
 # Deterministically advance the exponential stream-retry backoff in async tests.
@@ -245,5 +245,4 @@ wiremock = "0.6"
 # Self-signed cert generation for mTLS happy-path tests. Production code does
 # not depend on rcgen.
 rcgen = "0.13"
-# Implement the async ScheduleSink trait in serve integration tests.
 async-trait = "0.1"

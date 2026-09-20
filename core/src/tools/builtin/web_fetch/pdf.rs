@@ -11,17 +11,29 @@ pub(super) fn response_is_pdf(content_type: &str, bytes: &[u8]) -> bool {
 
 /// Extract PDF text away from Tokio's async worker threads.
 pub(super) async fn extract_text(bytes: Vec<u8>) -> Result<String, String> {
-    let text = tokio::task::spawn_blocking(move || extract_text_with_lopdf(&bytes))
-        .await
-        .map_err(|error| format!("PDF text extraction worker failed: {error}"))??;
-    if text.trim().is_empty() {
-        return Err(
-            "PDF contains no extractable text; it may be image-only or scanned".to_string(),
-        );
+    #[cfg(feature = "web-fetch-pdf")]
+    {
+        let text = tokio::task::spawn_blocking(move || extract_text_with_lopdf(&bytes))
+            .await
+            .map_err(|error| format!("PDF text extraction worker failed: {error}"))??;
+        if text.trim().is_empty() {
+            return Err(
+                "PDF contains no extractable text; it may be image-only or scanned".to_string(),
+            );
+        }
+        Ok(text)
     }
-    Ok(text)
+    #[cfg(not(feature = "web-fetch-pdf"))]
+    {
+        let _ = bytes;
+        Err(
+            "PDF text extraction requires the `web-fetch-pdf` feature (included in `local-code`)"
+                .to_string(),
+        )
+    }
 }
 
+#[cfg(feature = "web-fetch-pdf")]
 fn extract_text_with_lopdf(bytes: &[u8]) -> Result<String, String> {
     let document = lopdf::Document::load_mem(bytes)
         .map_err(|error| format!("Could not parse or extract text from PDF: {error}"))?;
@@ -48,7 +60,7 @@ fn extract_text_with_lopdf(bytes: &[u8]) -> Result<String, String> {
     Ok(text)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "web-fetch-pdf"))]
 mod tests {
     use super::*;
     use crate::tools::types::{Tool, ToolContext};

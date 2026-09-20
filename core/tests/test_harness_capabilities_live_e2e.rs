@@ -20,7 +20,7 @@ mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 use support::python_stdio_command;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const MCP_TOKEN: &str = "mcp-live-token-7f3a";
 const SKILL_TOKEN: &str = "skill-live-token-91c2";
 const SEARCH_TOKEN: &str = "workspace-live-token-44e0";
@@ -94,7 +94,7 @@ fn options(session_id: &str, allows: &[&str]) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(8)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }

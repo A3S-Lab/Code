@@ -7,8 +7,6 @@
 
 #![recursion_limit = "256"]
 
-#[cfg(feature = "serve")]
-use a3s_code_core::serve::{spawn_agent_dir_daemon, ServeDaemonHandle};
 use a3s_code_core::{
     execute_steps_parallel_resumable, run_event_envelope_v1, Agent, AgentResult, AgentSession,
     AgentStepSpec, CodeError, EventEnvelopeV1, Message, PlanningMode, ReadFileOptions,
@@ -27,8 +25,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 mod immutable_content;
-#[cfg(feature = "serve")]
-mod serve;
 mod workspace_retrieval;
 use immutable_content::*;
 use workspace_retrieval::*;
@@ -66,9 +62,6 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "agent_list_sessions",
     "agent_close_session",
     "agent_disconnect_idle_mcp",
-    "agent_serve_agent_dir",
-    "agent_serve_status",
-    "agent_stop_serve",
     "agent_is_closed",
     "agent_close",
     "session_create",
@@ -356,14 +349,6 @@ impl From<a3s_code_core::ReplayError> for BridgeFailure {
     }
 }
 
-#[cfg(feature = "serve")]
-fn serve_failure(handle: &ServeDaemonHandle, error: CodeError) -> BridgeFailure {
-    BridgeFailure::new(
-        handle.failure_code().unwrap_or(error.code()),
-        error.to_string(),
-    )
-}
-
 impl From<serde_json::Error> for BridgeFailure {
     fn from(error: serde_json::Error) -> Self {
         Self::new("INVALID_REQUEST", error.to_string())
@@ -381,8 +366,6 @@ pub struct BridgeState {
     sessions: RwLock<HashMap<String, SessionEntry>>,
     #[cfg(feature = "advanced-harness")]
     graphs: RwLock<HashMap<String, Arc<StdMutex<a3s_code_core::GraphRuntime>>>>,
-    #[cfg(feature = "serve")]
-    serve_handles: RwLock<HashMap<String, ServeDaemonHandle>>,
     callbacks: RwLock<Option<Arc<CallbackClient>>>,
 }
 
@@ -394,8 +377,6 @@ impl Default for BridgeState {
             sessions: RwLock::new(HashMap::new()),
             #[cfg(feature = "advanced-harness")]
             graphs: RwLock::new(HashMap::new()),
-            #[cfg(feature = "serve")]
-            serve_handles: RwLock::new(HashMap::new()),
             callbacks: RwLock::new(None),
         }
     }
@@ -888,12 +869,6 @@ impl BridgeState {
                     .await;
                 Ok(json!({ "names": disconnected }))
             }
-            #[cfg(feature = "serve")]
-            "agent_serve_agent_dir" => serve::start(self, &request.params).await,
-            #[cfg(feature = "serve")]
-            "agent_serve_status" => serve::status(self, &request.params).await,
-            #[cfg(feature = "serve")]
-            "agent_stop_serve" => serve::stop(self, &request.params).await,
             "agent_is_closed" => {
                 let closed = self
                     .agent(&required::<String>(&request.params, "agent_id")?)
@@ -2189,23 +2164,6 @@ impl BridgeState {
     }
 
     pub async fn close_all(&self) {
-        #[cfg(feature = "serve")]
-        {
-            let handles = self
-                .serve_handles
-                .write()
-                .await
-                .drain()
-                .map(|(_, handle)| handle)
-                .collect::<Vec<_>>();
-            let mut stops = tokio::task::JoinSet::new();
-            for handle in handles {
-                stops.spawn(async move {
-                    let _ = handle.stop().await;
-                });
-            }
-            while stops.join_next().await.is_some() {}
-        }
         let sessions = self
             .sessions
             .write()
@@ -3994,100 +3952,6 @@ mod tests {
             .unwrap()["closed"],
             true
         );
-    }
-
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    async fn serve_lifecycle_is_ready_before_return_and_stop_is_joined() {
-        let agent_dir = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(
-            agent_dir.path().join("instructions.md"),
-            "You are a test agent.",
-        )
-        .unwrap();
-        let state = BridgeState::new();
-        let created = state
-            .dispatch(&request(
-                "agent_create",
-                json!({ "config_source": test_acl() }),
-            ))
-            .await
-            .unwrap();
-        let agent_id = created["agent_id"].as_str().unwrap();
-        let started = state
-            .dispatch(&request(
-                "agent_serve_agent_dir",
-                json!({
-                    "agent_id": agent_id,
-                    "dir": agent_dir.path(),
-                    "workspace": workspace.path(),
-                }),
-            ))
-            .await
-            .unwrap();
-        let serve_handle = started["serve_handle"].as_str().unwrap();
-
-        let status = state
-            .dispatch(&request(
-                "agent_serve_status",
-                json!({ "serve_handle": serve_handle }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(status["phase"], "ready");
-        assert_eq!(status["ready"], true);
-        assert_eq!(status["stopped"], false);
-        assert!(status["failure_code"].is_null());
-
-        let stopped = state
-            .dispatch(&request(
-                "agent_stop_serve",
-                json!({ "serve_handle": serve_handle }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(stopped["stopped"], true);
-        assert!(state.serve_handles.read().await.is_empty());
-    }
-
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    async fn invalid_schedule_fails_before_bridge_activation() {
-        let agent_dir = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(
-            agent_dir.path().join("instructions.md"),
-            "You are a test agent.",
-        )
-        .unwrap();
-        std::fs::create_dir(agent_dir.path().join("schedules")).unwrap();
-        std::fs::write(
-            agent_dir.path().join("schedules/invalid.md"),
-            "---\ncron: not-a-cron\n---\nDo work.",
-        )
-        .unwrap();
-        let state = BridgeState::new();
-        let created = state
-            .dispatch(&request(
-                "agent_create",
-                json!({ "config_source": test_acl() }),
-            ))
-            .await
-            .unwrap();
-        let error = state
-            .dispatch(&request(
-                "agent_serve_agent_dir",
-                json!({
-                    "agent_id": created["agent_id"],
-                    "dir": agent_dir.path(),
-                    "workspace": workspace.path(),
-                }),
-            ))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, "SERVE_STARTUP_FAILED");
-        assert!(state.serve_handles.read().await.is_empty());
     }
 
     #[tokio::test]

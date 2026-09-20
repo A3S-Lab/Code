@@ -38,7 +38,6 @@ Keep it short, stable, and reviewable. Put project commands in `AGENTS.md`, reus
 
 ## Where It Is Used
 
-`serve_agent_dir` reads `instructions.md` at startup and applies it to every enabled schedule session. With a `SessionStore`, history comes from the store, but the current `instructions.md` is reloaded on every boot, so role edits take effect after restart.
 
 Interactive sessions can use SDK prompt slots for temporary roles. Commit `instructions.md` when the role should be reviewed, reused, or shared by several schedules.
 

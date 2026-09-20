@@ -46,8 +46,8 @@ const MAX_VECTOR_BYTES: usize = 128 * 1024 * 1024;
 const MAX_CATALOG_BYTES: usize = 256 * 1024 * 1024;
 
 // The hybrid fixture is intentionally multi-chunk per file. Four sizeable
-// partitions exercise the native zvec path while avoiding an artificial
-// descriptor storm: zvec/RocksDB owns several descriptors per collection and
+// partitions exercise the a3s-vec path while avoiding an artificial
+// descriptor storm: many open collections compete for process resources and
 // Code's catalog deliberately keeps that resource bounded.
 const HYBRID_FILE_COUNT: usize = 4;
 const HYBRID_CHUNKS_PER_FILE: usize = 128;
@@ -491,16 +491,16 @@ fn stable_slot(value: &str) -> usize {
 
 fn configured_lexical_engine() -> Result<WorkspaceLexicalEngine> {
     match std::env::var(LEXICAL_ENGINE_ENV).as_deref() {
-        Ok("zvec_rust") => {
-            if !cfg!(feature = "zvec-rust-fts") {
+        Ok("a3s_vec") => {
+            if !cfg!(feature = "a3s-vec-fts") {
                 bail!(
-                    "{LEXICAL_ENGINE_ENV}=zvec_rust requires the zvec-rust-fts feature; use a native build or select portable"
+                    "{LEXICAL_ENGINE_ENV}=a3s_vec requires the a3s-vec-fts feature; use a native build or select portable"
                 );
             }
-            Ok(WorkspaceLexicalEngine::ZvecRust)
+            Ok(WorkspaceLexicalEngine::A3sVec)
         }
         Ok("portable") => Ok(WorkspaceLexicalEngine::Portable),
-        Ok(value) => bail!("{LEXICAL_ENGINE_ENV} must be 'zvec_rust' or 'portable', got '{value}'"),
+        Ok(value) => bail!("{LEXICAL_ENGINE_ENV} must be 'a3s_vec' or 'portable', got '{value}'"),
         Err(std::env::VarError::NotPresent) => Ok(WorkspaceLexicalEngine::default()),
         Err(std::env::VarError::NotUnicode(_)) => {
             bail!("{LEXICAL_ENGINE_ENV} must contain valid UTF-8")

@@ -967,7 +967,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn grep_does_not_open_durable_zvec() {
+    async fn grep_does_not_open_durable_a3s_vec() {
         use crate::workspace::{
             ChunkCatalogLimits, ChunkingConfig, ManifestWorkspaceBackend,
             WorkspaceChunkingStrategy, WorkspaceServices,

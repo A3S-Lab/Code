@@ -102,7 +102,7 @@ type EmbeddingProvider interface {
 // WorkspaceRetrievalOptions enables a bounded, session-owned semantic index
 // and its local lexical catalog. Semantic vectors are owned by the Memory
 // adapter; an omitted lexical engine lets the bridge select its compiled
-// product default (zvec-rust for native builds, portable BM25 otherwise).
+// product default (a3s-vec FTS for product builds, portable BM25 otherwise).
 type WorkspaceRetrievalOptions struct {
 	Provider         EmbeddingProvider
 	LexicalEngine    WorkspaceLexicalEngine
@@ -194,7 +194,7 @@ func prepareWorkspaceRetrievalOptions(
 		maxBytes = defaultRetrievalMaxBytes
 	}
 	lexicalEngine := retrieval.LexicalEngine
-	if lexicalEngine != "" && lexicalEngine != WorkspaceLexicalEnginePortable && lexicalEngine != WorkspaceLexicalEngineZvecRust {
+	if lexicalEngine != "" && lexicalEngine != WorkspaceLexicalEnginePortable && lexicalEngine != WorkspaceLexicalEngineA3sVec {
 		return nil, "", invalid("workspace_retrieval", "lexical engine must be a supported typed value")
 	}
 	if providerTimeout < time.Millisecond || providerTimeout > maxEmbeddingProviderTimeout {
@@ -393,24 +393,6 @@ func (agent *Agent) releaseAllRetrievalCallbacks() {
 	agent.callbackMu.Unlock()
 	for callbackID := range callbacks {
 		agent.unregisterRetrievalCallback(callbackID)
-	}
-}
-
-func (handle *ServeHandle) releaseRetrievalCallback() {
-	if handle == nil {
-		return
-	}
-	ids := handle.retrievalCallbacks
-	if len(ids) == 0 && handle.retrievalCallback != "" {
-		ids = []string{handle.retrievalCallback}
-	}
-	handle.retrievalCallbacks = nil
-	handle.retrievalCallback = ""
-	if handle.owner == nil {
-		return
-	}
-	for _, callbackID := range ids {
-		handle.owner.releaseRetrievalCallback(callbackID)
 	}
 }
 

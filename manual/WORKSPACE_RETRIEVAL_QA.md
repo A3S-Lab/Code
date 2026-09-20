@@ -98,7 +98,7 @@ also avoids reopening a mutable path to obtain link-count evidence.
 The locked fixture contains nine queries spanning exact terms, identifiers,
 CJK, and paraphrases.
 
-| Metric | zvec-rust FTS/BM25 | Hybrid | Gate |
+| Metric | a3s-vec FTS/BM25 | Hybrid | Gate |
 | --- | ---: | ---: | --- |
 | Recall@10 | 0.6667 | 1.0000 | Hybrid at least 0.85 and at least +0.15 |
 | Mean reciprocal rank | 0.6667 | 1.0000 | Improve without identifier regression |
@@ -108,7 +108,7 @@ CJK, and paraphrases.
 
 The gate is implemented by
 `locked_hybrid_fixture_meets_quality_and_identifier_gates`; it exercises the
-real catalog, zvec-rust FTS/BM25, semantic partition, RRF, diversity, and current-file
+real catalog, a3s-vec FTS/BM25, semantic partition, RRF, diversity, and current-file
 verification paths.
 
 ## Performance results
@@ -175,7 +175,7 @@ against an independent embedding-server request count for each 39-chunk session.
 
 ### Native lexical qualification
 
-The 2026-09-04 schema-v5 backend run uses the official zvec-rust FTS adapter for
+The 2026-09-04 schema-v5 backend run uses the official a3s-vec FTS adapter for
 the catalog and query-time lexical paths. The locked exact, identifier, and CJK
 fixture passes; portable minimal builds pass the same result contract. Native
 collections are flushed and closed before publication. Up to four hot

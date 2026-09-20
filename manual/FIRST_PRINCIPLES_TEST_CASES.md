@@ -17,12 +17,14 @@ cargo llvm-cov -p a3s-code-core --tests --no-cfg-coverage \
 It does **not** mean crate-wide TOTAL ≥90% (includes login helpers, optional
 transports, and Advanced-only arms). TOTAL is a health signal only.
 
-Opt-in features (`advanced-harness`, `serve`, `s3`, `headless-search`) keep
+Opt-in features (`advanced-harness`, `s3`, `headless-search`) keep
 their own kernels gated; Layer B/C feature suites prove them when enabled.
 
-Live model pin: `A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` against
-`A3S_CONFIG_FILE=./.a3s/config.acl` (maps to declared
-`boyue/bailian/deepseek-v4.1-flash` via `support/layer_c_model.rs`).
+Live model pin (full-feature L5): `A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash`
+against `A3S_CONFIG_FILE=./.a3s/config.acl` (maps to declared
+`boyue/bailian/deepseek-v4.1-flash` via `support/layer_c_model.rs`). Recipe
+fallback without override remains ACL `default_model`
+(`boyue/deepseek-v4-flash`).
 
 ---
 
@@ -53,7 +55,6 @@ Live model pin: `A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` against
 | F21 | Config / cluster | config load unit | `test_real_config_env_integration`, `test_real_llm_cluster_features` | `config/*` |
 | F22 | Memory store | memory/durable hermetic | `test_memory_store_real_llm` | `durable_memory.rs`, memory kernels |
 | F23 | Extensibility | advanced-harness suites | `test_extensibility_real_llm` | gated Advanced kernels |
-| F24 | Serve agent-dir | serve unit | `test_serve_agent_dir_real_llm` | `serve` (feature) |
 | F25 | Checkpoints / resume | session_checkpoint unit | cluster save/resume paths | `session_checkpoint.rs` |
 | F26 | Safety / budget / HITL | safety_gate, budget, ask_user, hitl unit | capabilities / prompt live | `safety_gate.rs`, `budget.rs`, `ask_user.rs`, `hitl.rs` |
 | F27 | PTC program | program executor unit | capabilities when exercised | `program.rs` |
@@ -88,8 +89,10 @@ Case-level unit, integration, and soak oracles (not a second capability list):
 
 | Gate | Evidence | Status |
 | --- | --- | --- |
-| Layer C full matrix (bailian Flash) | `/tmp/a3s-layer-c-bailian-flash-goal3/FINAL.audit.txt` (`LAYER_C_PASS`; clean 22/23 + harness_loop 8/8 after MODEL_TIMEOUT 420s; pin → `boyue/bailian/deepseek-v4.1-flash`) | PASS |
+| Layer C full matrix (bailian Flash) | `/tmp/a3s-layer-c-bailian-flash-combined/FINAL.txt` (`LAYER_C_PASS`; first pass + serial fail-recovery rerun; pin → `boyue/bailian/deepseek-v4.1-flash`; live outer/API budgets raised for bailian latency; retrieval hang fixed via cancel-on-timeout) | PASS |
 | Layer C prior clean matrix | `/tmp/a3s-layer-c-bailian-flash-r19-full/FINAL.txt` (23/23 clean orchestrator) | PASS |
-| All F-table kernels ≥90% LINE | `/tmp/a3s-llvm-cov-r24/FINAL.txt` (`ALL_F_TABLE_KERNELS_GE_90`; debuginfo=0 instrumented lib + protocol/checkpoint integ) | PASS |
-| Layer A `harness-convergence-check` | `/tmp/a3s-layer-a-bailian-goal3/FINAL.txt` EXIT:0 | PASS |
+| All F-table kernels ≥90% LINE | `/tmp/a3s-llvm-cov-r24/FINAL.txt` (`ALL_F_TABLE_KERNELS_GE_90`; debuginfo=0 instrumented lib + protocol/checkpoint integ) — prior recorded PASS; not re-measured this execution goal | PRIOR |
+| Layer A `harness-convergence-check` | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (3632 lib + SDK alignment). Prior: `/tmp/a3s-layer-a-bailian-exec/FINAL3.txt` | PASS |
+| 29-cap integrated use | [CAPABILITY_INTEGRATED_USE_LEDGER.md](CAPABILITY_INTEGRATED_USE_LEDGER.md) | PASS |
+| Release remaining | L2 remeasure + L6 digests + L7 receipts/waivers + L8 pins (plan §14) | OPEN |
 | This matrix | `manual/FIRST_PRINCIPLES_TEST_CASES.md` | THIS FILE |

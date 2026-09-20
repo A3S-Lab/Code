@@ -187,9 +187,9 @@ async fn manifest_backed_bm25_uses_the_incremental_catalog_without_query_reads()
     assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index() {
+async fn local_retrieval_automatically_uses_the_workspace_persistent_a3s_vec_index() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("src/cache.rs");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -257,8 +257,8 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
 
     assert!(result.success, "{}", result.content);
     let metadata = result.metadata.unwrap();
-    assert_eq!(metadata["index_kind"], "persistent_zvec_fts");
-    assert_eq!(metadata["execution_mode"], "persistent_zvec_fts");
+    assert_eq!(metadata["index_kind"], "persistent_a3s_vec_fts");
+    assert_eq!(metadata["execution_mode"], "persistent_a3s_vec_fts");
     assert_eq!(metadata["results"][0]["path"], "src/cache.rs");
     assert!(temp.path().join(".a3s-code/index/CURRENT").is_file());
 
@@ -292,7 +292,7 @@ async fn local_retrieval_automatically_uses_the_workspace_persistent_zvec_index(
     assert!(reopened_result.success, "{}", reopened_result.content);
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content() {
     let temp = tempfile::tempdir().unwrap();
@@ -355,7 +355,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     assert!(initial.success, "{}", initial.content);
     assert_eq!(
         initial.metadata.as_ref().unwrap()["index_kind"],
-        "persistent_zvec_fts"
+        "persistent_a3s_vec_fts"
     );
     assert_eq!(
         initial.metadata.as_ref().unwrap()["results"][0]["path"],
@@ -426,7 +426,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
         .unwrap();
     assert!(current.success, "{}", current.content);
     let current_metadata = current.metadata.as_ref().unwrap();
-    assert_eq!(current_metadata["index_kind"], "persistent_zvec_fts");
+    assert_eq!(current_metadata["index_kind"], "persistent_a3s_vec_fts");
     assert!(matches!(
         current_metadata["freshness"].as_str(),
         Some("ready" | "rebuilding")
@@ -434,7 +434,7 @@ async fn persistent_bm25_never_returns_replaced_source_and_reindexes_new_content
     assert_eq!(current_metadata["results"][0]["path"], "src/state.rs");
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test]
 async fn persistent_bm25_falls_back_to_the_catalog_before_native_ready() {
     let temp = tempfile::tempdir().unwrap();
@@ -453,7 +453,7 @@ async fn persistent_bm25_falls_back_to_the_catalog_before_native_ready() {
         .unwrap();
     let index = crate::workspace::WorkspacePersistentIndex::open(
         temp.path().join(".a3s-code/index"),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
     .unwrap();
     assert!(
@@ -546,7 +546,7 @@ async fn persistent_bm25_falls_back_to_the_catalog_before_native_ready() {
         .unwrap();
     assert!(stable.success, "{}", stable.content);
     let stable_metadata = stable.metadata.unwrap();
-    assert_eq!(stable_metadata["execution_mode"], "persistent_zvec_fts");
+    assert_eq!(stable_metadata["execution_mode"], "persistent_a3s_vec_fts");
     assert_eq!(stable_metadata["freshness"], "rebuilding");
     assert_eq!(stable_metadata["catalog_source_revision"], 2);
 

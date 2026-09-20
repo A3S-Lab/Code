@@ -189,7 +189,7 @@ mode requires an embedding callback, but the callback can run a small model
 locally on CPU; no remote API or GPU is required. A3S Code owns chunking,
 bounded vector storage, hybrid ranking, source-digest verification, and
 shutdown. A3S Memory is the single semantic vector projection; product builds
-use zvec-rust for lexical FTS/BM25 and minimal builds can select portable BM25.
+use a3s-vec for lexical FTS/BM25 and minimal builds can select portable BM25.
 Nothing is persisted to a vector database.
 
 ```python
@@ -237,7 +237,7 @@ retrieval = WorkspaceRetrievalOptions(
 )
 retrieval.max_records = 100_000
 retrieval.max_bytes = 128 * 1024 * 1024
-# Product builds use zvec-rust FTS by default. A minimal build can explicitly
+# Product builds use a3s-vec FTS by default. A minimal build can explicitly
 # select the dependency-free scorer:
 # retrieval.lexical_engine = WorkspaceLexicalEngineOption.Portable
 
@@ -260,13 +260,13 @@ the session cancels the active embedding coroutine. The exported
 physical provider requests, limit flush reasons, the theoretical request lower
 bound, and time to first ready file for the current catalog generation.
 `WorkspaceRetrievalStatus["lexical_engine"]` identifies
-`"zvec_rust_fts_v1"` in product builds or `"portable_bm25_v1"` in a minimal
+`"a3s_vec_fts_v1"` in product builds or `"portable_bm25_v1"` in a minimal
 build. Status also contains coverage, vector records/bytes, batching, and
 bounded failure counters. Semantic vectors are owned only by A3S Memory and
 are released on close. Raw backend-name selectors are not accepted; see the
 [backend contract](../../manual/WORKSPACE_RETRIEVAL_BACKENDS.md).
 
-`WorkspaceLexicalEngineOption.ZvecRust` selects the official Rust binding's
+`WorkspaceLexicalEngineOption.A3sVec` selects the official Rust binding's
 temporary FTS projection for the session-owned catalog. Selecting it without a
 target-matched native library fails during session initialization rather than
 silently changing the search engine.
@@ -854,20 +854,7 @@ Define a durable agent as a **directory** — `instructions.md` (required) plus
 optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
 `kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
 harness turn (context, tool visibility, safety gate, verification).
-`serve_agent_dir` returns only after schedule validation and session/tool
-preparation, so the handle is already ready. Startup failures raise
-`RuntimeError` with a stable `code` attribute.
-
-```python
-opts = SessionOptions()
-# Optional: pass a session_store so each schedule resumes its accumulated
-# context across daemon restarts.
-opts.session_store = FileSessionStore("./sessions")
-
-handle = agent.serve_agent_dir("./my-agent", "./workspace", opts)
-print(handle.is_ready(), handle.state())  # True, "ready"
-# ... runs in the background until:
-handle.stop()
+Filesystem-first `serve` / `ServeAgentDir` has been removed.
 print(handle.is_stopped(), handle.state())  # True, "stopped"
 ```
 

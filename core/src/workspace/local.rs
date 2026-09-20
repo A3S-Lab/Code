@@ -1023,7 +1023,7 @@ impl LocalWorkspaceBackend {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         crate::tools::process::configure_process_group(&mut command);
-        let mut child = crate::tools::process::spawn_tokio_with_native_gate(&mut command)
+        let mut child = crate::tools::process::spawn_tokio_child(&mut command)
             .map_err(|e| anyhow!("Failed to execute git: {}", e))?;
         let output =
             crate::tools::process::read_process_output(&mut child, GIT_COMMAND_TIMEOUT_MS, None)
@@ -1569,7 +1569,7 @@ mod tests {
                 "user.email=test@a3s.local",
             ])
             .args(args);
-        let started = crate::tools::process::status_std_with_native_gate(&mut command)
+        let started = crate::tools::process::status_std_child(&mut command)
             .is_ok_and(|status| status.success());
         if started && args.first() == Some(&"init") {
             // Do not inherit the runner's `core.autocrlf`. A Windows checkout

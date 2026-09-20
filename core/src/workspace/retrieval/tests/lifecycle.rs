@@ -59,7 +59,7 @@ async fn retrieval_services_lazily_attach_lexical_catalog() {
 }
 
 #[tokio::test]
-async fn catalog_attach_does_not_open_durable_zvec() {
+async fn catalog_attach_does_not_open_durable_a3s_vec() {
     let temp = tempfile::tempdir().unwrap();
     let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
     let services =
@@ -76,7 +76,7 @@ async fn catalog_attach_does_not_open_durable_zvec() {
 }
 
 #[tokio::test]
-async fn host_configured_catalog_still_defers_durable_zvec() {
+async fn host_configured_catalog_still_defers_durable_a3s_vec() {
     use crate::workspace::{
         ChunkCatalogLimits, ChunkingConfig, WorkspaceChunkingStrategy, WorkspaceServices,
     };
@@ -97,8 +97,8 @@ async fn host_configured_catalog_still_defers_durable_zvec() {
 }
 
 #[tokio::test]
-#[cfg(feature = "zvec-rust-fts")]
-async fn durable_zvec_opens_only_on_persistent_index_demand() {
+#[cfg(feature = "a3s-vec-fts")]
+async fn durable_a3s_vec_opens_only_on_persistent_index_demand() {
     let temp = tempfile::tempdir().unwrap();
     let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
     let services =

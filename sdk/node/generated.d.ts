@@ -1031,7 +1031,7 @@ export interface MemoryMaintenanceHealth {
 /** Typed lexical FTS implementation for the session-owned workspace catalog. */
 export const enum WorkspaceLexicalEngineOption {
   Portable = 'portable',
-  ZvecRust = 'zvec_rust'
+  A3sVec = 'a3s_vec'
 }
 export interface WorkspaceRetrievalOptionsObject {
   /** Opaque live provider identity. Pass a `WorkspaceRetrievalOptions` instance. */
@@ -2309,36 +2309,6 @@ export declare class ImmutableContentAdapterOptions {
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
   /**
-   * Serve a filesystem-first agent directory's cron schedules until stopped.
-   *
-   * Loads the directory by convention: `instructions.md` (required), optional
-   * `agent.acl`, `skills/`, `schedules/*.md` (cron jobs), and `tools/*.md`
-   * (`kind: mcp` servers or `kind: script` sandboxed QuickJS tools). It starts
-   * one durable session per enabled schedule (stable id `schedule:<name>`) with
-   * the agent dir's tools installed; each schedule fires as a FULL harness turn
-   * (context, tool visibility, safety gate, verification), never a raw model call.
-   *
-   * Resolves with a {@link ServeHandle} only after all enabled schedule
-   * sessions and tools have been prepared. Startup failures reject this call,
-   * so the returned handle is ready to accept scheduled work. The daemon then
-   * runs in the background until `handle.stop()` is called. The handle MUST be
-   * kept and stopped explicitly — dropping it does NOT cancel the daemon.
-   *
-   * ```js
-   * const handle = await agent.serveAgentDir('./my-agent', '/my-project');
-   * // ... later ...
-   * await handle.stop();
-   * ```
-   *
-   * @param dir - Path to the agent directory (prompt/skills/schedules/tools)
-   * @param workspace - Workspace directory each scheduled turn operates in
-   * @param options - Optional session overrides merged into every schedule session
-   *   (model, llmClient, sessionStore, …). `promptSlots` is honored when
-   *   provided; otherwise the AgentDir `instructions.md` slot is used.
-   *   `sessionId` is always owned by the daemon and set to `schedule:<name>`.
-   */
-  serveAgentDir(dir: string, workspace: string, options?: SessionOptions | undefined | null): Promise<ServeHandle>
-  /**
    * Create an Agent from a config file path or inline config string.
    *
    * Accepts ACL-compatible config files (.acl) or inline config strings.
@@ -2502,28 +2472,4 @@ export declare class Agent {
    * deployments.
    */
   disconnectIdleMcp(idleThresholdMs: number): Promise<Array<string>>
-}
-/**
- * Lifetime handle for a running serve daemon (see {@link Agent.serveAgentDir}).
- *
- * The daemon keeps running until `stop()` is called. Dropping the handle does
- * NOT cancel the daemon — call `stop()` explicitly for graceful shutdown.
- */
-export declare class ServeHandle {
-  /**
-   * Request graceful shutdown of the serve daemon.
-   *
-   * Cancels in-flight schedule work and closes daemon-owned sessions.
-   * Idempotent; resolves only after the daemon task has settled, or rejects
-   * when the bounded shutdown deadline is exceeded.
-   */
-  stop(): Promise<void>
-  /** Whether preparation completed and the daemon currently accepts work. */
-  isReady(): boolean
-  /** Current lifecycle state: starting, ready, draining, stopped, or failed. */
-  state(): string
-  /** Stable terminal failure code, or null while no failure is present. */
-  failureCode(): string | null
-  /** Whether the daemon has stopped or failed. */
-  isStopped(): boolean
 }

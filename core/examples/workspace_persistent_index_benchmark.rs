@@ -1,8 +1,8 @@
-//! Small, reproducible qualification for the workspace-owned zvec FTS index.
+//! Small, reproducible qualification for the workspace-owned a3s-vec FTS index.
 //!
 //! Run from `crates/code` in release mode:
 //!
-//! `cargo run --locked --release -p a3s-code-core --example workspace_persistent_index_benchmark --features zvec-rust-fts-bundled`
+//! `cargo run --locked --release -p a3s-code-core --example workspace_persistent_index_benchmark --features a3s-vec-fts`
 
 use a3s_code_core::workspace::{
     ChunkCatalogLimits, ChunkingConfig, LexicalSearchRequest, WorkspaceChunkCatalog,
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 // Catalog admission is intentionally not part of this benchmark. The public
 // single-file mutation API publishes an immutable snapshot on every call, so
 // constructing thousands of files through it would measure O(n²) fixture setup
-// instead of zvec indexing/query performance. Production reconciliation builds
+// instead of a3s-vec indexing/query performance. Production reconciliation builds
 // the initial snapshot in one pass before this layer is invoked.
 const FILE_COUNT: usize = 64;
 const QUERY_SAMPLES: usize = 32;
@@ -25,9 +25,9 @@ fn main() -> Result<()> {
     let catalog = WorkspaceChunkCatalog::new_with_engine(
         ChunkingConfig::default(),
         ChunkCatalogLimits::default(),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
-    .context("create zvec catalog")?;
+    .context("create a3s-vec catalog")?;
     for index in 0..FILE_COUNT {
         let path = WorkspacePath::from_normalized(format!("src/module-{index:04}.rs"));
         catalog
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
                 Some("rust"),
                 1,
                 &format!(
-                    "pub fn module_{index}() {{\n    // persistent zvec benchmark sentinel\n}}\n"
+                    "pub fn module_{index}() {{\n    // persistent a3s-vec benchmark sentinel\n}}\n"
                 ),
             )
             .with_context(|| format!("admit {}", path.as_str()))?;
@@ -44,9 +44,9 @@ fn main() -> Result<()> {
     let fixture_ms = elapsed_ms(fixture_started.elapsed());
     let index = WorkspacePersistentIndex::open(
         workspace.path().join(".a3s-code/index"),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
-    .context("open persistent zvec index")?;
+    .context("open persistent a3s-vec index")?;
 
     let build_started = Instant::now();
     index
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
         .context("build persistent generation")?;
     let build_ms = elapsed_ms(build_started.elapsed());
 
-    let request = LexicalSearchRequest::new("persistent zvec benchmark sentinel");
+    let request = LexicalSearchRequest::new("persistent a3s-vec benchmark sentinel");
     let mut latencies = Vec::with_capacity(QUERY_SAMPLES);
     for _ in 0..QUERY_SAMPLES {
         let started = Instant::now();
@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         &unchanged_path,
         Some("rust"),
         2,
-        "pub fn module_0() {\n    // persistent zvec benchmark sentinel\n}\n",
+        "pub fn module_0() {\n    // persistent a3s-vec benchmark sentinel\n}\n",
     )?;
     let reuse_started = Instant::now();
     index
@@ -87,7 +87,7 @@ fn main() -> Result<()> {
         &unchanged_path,
         Some("rust"),
         3,
-        "pub fn module_0() {\n    // changed persistent zvec benchmark sentinel\n}\n",
+        "pub fn module_0() {\n    // changed persistent a3s-vec benchmark sentinel\n}\n",
     )?;
     let rebuild_started = Instant::now();
     index

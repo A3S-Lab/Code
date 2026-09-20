@@ -27,8 +27,7 @@ A3S Code 的约定大于配置能力不是一个单独的运行器，而是一�
 | 渠道             | 托管会话、开放平台 WebSocket/SSE、宿主自有界面             | A3S Code 不把渠道写死，宿主通过流式事件和运行回放接到任意前端。                          |
 | 连接             | MCP、服务提供商配置、宿主注入凭据                          | 连接由宿主配置和授权，不建议把令牌写进智能体目录。                                       |
 | 子智能体         | [任务](/guide/tasks)、[团队](/guide/teams)、`workerAgents` | 支持聚焦或多项 `task` 调用、自动委派和动态工作智能体。                                   |
-| 调度             | 智能体目录 `schedules/` + `serve_agent_dir`                | 每个调度有独立会话标识，可配合会话存储在重启后恢复上下文。                               |
-| 持久执行         | `SessionStore`、运行回放、`parallelResumable`              | 会话历史、运行事件和可恢复工作流能落盘；失败步骤可在恢复时重试。                         |
+| 调度             | 智能体目录 `schedules/` + | 持久执行         | `SessionStore`、运行回放、`parallelResumable`              | 会话历史、运行事件和可恢复工作流能落盘；失败步骤可在恢复时重试。                         |
 | 人工确认         | [安全](/guide/security)、确认继承、工具确认                | 高风险工具可请求确认；子运行可配置自动批准、遇到询问时失败或继承父级策略。               |
 | 评测             | [验证](/guide/verification)、报告、回归证据                | A3S Code 把评测产品化为验证命令、证据摘要、运行回放与发布门禁，而不是单独的评测套件。    |
 
@@ -146,7 +145,6 @@ Summarize merged changes since the last run, inspect release risks,
 and report only blockers plus required verification.
 ```
 
-`serve_agent_dir` 会为每个调度创建独立会话。传入 `SessionStore` 后，重启只重新加载
 当前目录配置和工具，历史上下文从存储中恢复。
 
 ## 工具与连接

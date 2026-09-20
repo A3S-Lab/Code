@@ -112,7 +112,7 @@ impl WorkspaceRetrievalOptions {
     /// Select the lexical FTS implementation used by the session-owned
     /// workspace catalog.
     ///
-    /// `ZvecRust` is the production default when the native feature is
+    /// `A3sVec` is the production default when the native feature is
     /// enabled. Minimal builds use the explicitly reported portable fallback;
     /// hosts that provide their own workspace services must configure that
     /// catalog directly instead of using this session option.

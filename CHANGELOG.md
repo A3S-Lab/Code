@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Filesystem-first agent mode: the `serve` Cargo feature, `AgentDir` primary-agent convention (`instructions.md` / `schedules/` / `tools/`), cron daemon (`serve_agent_dir` / `ServeHandle`), and `AgentDirScriptTool`. Worker/subagent `agent_dirs` / `register_agent_dir` scanning remains.
+- Unused always-on `cfb` and `roxmltree` dependencies from `a3s-code-core` (no remaining call sites).
+
+### Changed
+
+- Workspace lexical FTS now uses pure-Rust `a3s-vec` (`a3s_vec_fts_v1`) instead of the `zvec-rust` C-API binding. The `a3s-vec-fts` feature replaces `zvec-rust-fts` / `zvec-rust-fts-bundled`; release packaging no longer stages a native sidecar. Existing on-disk generations with `zvec_rust_fts_v1` are treated as incompatible and rebuilt.
+- Thin coding builds no longer link `a3s-flow`. Named Flow capability projection (`FlowBinding`, `ProjectedFlowHandle`, `CodeError::Flow`) requires the `dynamic-workflow` feature (included in `advanced-harness` / `scientific`).
+- Moli archive unpack crates (`zip`, `flate2`, `tar`) are optional and enabled only with `headless-search`.
+- PDF text extraction in `web_fetch` is gated behind `web-fetch-pdf` (included in `local-code`); `minimal` / `--no-default-features` builds no longer link `lopdf`.
+- The `server` profile is now `local-code` + `s3` + `telemetry` (no serve daemon).
+
+
 ### Added
 
+- Full-feature test evidence handoff: `manual/CAPABILITY_INTEGRATED_USE_LEDGER.md`
+  (29 `sdk_capabilities()` ids effective / efficient / integrated), plus plan
+  §13/§14 status for bailian Flash Layer C and remaining L2/L6/L7/L8 release
+  gates.
 - Documentation site current line is now `docs/v8.6.0` (archives the prior
   `v8.5.5` line). Guide overview and Tools pages document image `read`
   attachments and OpenAI tool-result `image_url` passthrough.

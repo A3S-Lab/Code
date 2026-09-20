@@ -372,45 +372,6 @@ Feature: `s3`.
 - **Fail:** access key in the error string.
 - **Home:** `denied_get_error_omits_credentials` in `core/src/workspace/s3/tests.rs` (`--features s3`). A local listener returns a mixed `ListObjectsV2` page and a 403 `GetObject`. Glob keeps `visible.txt` and drops `outside/secret.txt`. The classified get error contains `Failed to read S3 object` and neither the access key nor the secret. Live `A3S_S3_TEST_ENDPOINT` remains the ignored round-trip in `core/tests/test_s3_backend.rs`.
 
-## filesystem_agent_server (SV)
-
-Feature: `serve`.
-
-### U-SV-01
-
-- **Invariant:** an agent directory with an invalid schedule fails ready and does not start the ticker.
-- **Pre:** agent dir with a bad cron.
-- **Stimulus:** `agent.serve_agent_dir`.
-- **Oracle:** typed validation error; status is not ready; no tick fired.
-- **Fail:** server listens and skips the bad schedule.
-- **Home:** serve unit tests; `core/tests/test_serve_agent_dir_real_llm.rs` is live, not this hermetic case.
-
-### U-SV-02
-
-- **Invariant:** `serve.stop` is idempotent and joins in-flight work before returning.
-- **Pre:** one request in flight.
-- **Stimulus:** stop twice.
-- **Oracle:** in-flight request finishes or is cancelled; port released; second stop succeeds.
-- **Fail:** port still bound, or second stop panics.
-- **Home:** serve tests. SDK `sdk/node/test_serve.mjs`, `sdk/python/tests/test_serve.py`.
-
-### I-SV-01
-
-- **Invariant:** tools declared in the agent dir are the tools registered, and a tool not in the dir is absent.
-- **Pre:** agent dir listing `read` only.
-- **Stimulus:** serve and list definitions.
-- **Oracle:** `read` present; `bash` absent unless the dir allows exec.
-- **Fail:** the full builtin set is exposed.
-- **Home:** `install_script_collision_fails_startup_without_shadowing` in `core/src/serve/tools.rs` (`--features serve`). An agent-dir script cannot replace builtin `bash`. Builtins stay registered. Hiding `bash` because the dir lists only `read` would contradict that kernel.
-
-### I-SV-L1
-
-- **Invariant:** live serve answers one turn from the agent dir and stops cleanly.
-- **Pre:** feature `serve`, Layer C pin. Ignored.
-- **Stimulus:** `test_serve_agent_dir_real_llm`.
-- **Oracle:** one terminal run; process exited; no leftover listener.
-- **Fail:** listener remains.
-- **Home:** `core/tests/test_serve_agent_dir_real_llm.rs`.
 
 ## opentelemetry (OT)
 

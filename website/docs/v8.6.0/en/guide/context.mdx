@@ -112,7 +112,7 @@ responsibility.
 
 The semantic serving projection is a session-owned, exact A3S Memory vector
 index, not a durable or shared vector database. Product builds use a separate
-session-local zvec-rust FTS collection for lexical ranking; its native handles
+session-local a3s-vec FTS collection for lexical ranking; its collection handles
 are short-lived and bounded. Session construction returns before corpus
 embedding finishes. The background indexer reads admitted text, publishes
 immutable per-file partitions atomically, and reconciles later source revisions
@@ -144,7 +144,7 @@ interrupts the wait.
 
 ### Backend and ranking boundary
 
-zvec-rust owns lexical FTS/BM25 postings in product builds; a minimal build can
+a3s-vec owns lexical FTS/BM25 postings in product builds; a minimal build can
 explicitly use the portable BM25 implementation. A lexical initialization or
 query failure is reported as bounded lexical degradation and cannot change the
 A3S Memory semantic authority. The SDKs expose typed lexical options and no

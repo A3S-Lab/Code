@@ -53,7 +53,7 @@ const QUERY_ID: &str = "workspace-query";
 // assertions unchanged; give the harness ~2× P95 headroom so timeouts measure
 // hangs, not slow-but-correct provider latency. Aligned with context-tools'
 // REAL_LLM_TIMEOUT (420s).
-const TURN_TIMEOUT: Duration = Duration::from_secs(420);
+const TURN_TIMEOUT: Duration = Duration::from_secs(900);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const COLLISION_COPIES_PER_TASK: usize = 8;
 const TEST_GUIDELINES: &str = "This is a deterministic repository retrieval evaluation. Follow the requested one-tool protocol exactly. Never guess an identifier that is absent from the tool evidence.";
@@ -452,7 +452,7 @@ async fn run_turn(
         .expect("start DeepSeek turn");
     let mut starts = HashMap::<String, (String, Value)>::new();
     let mut calls = Vec::new();
-    let (final_text, usage) = tokio::time::timeout(TURN_TIMEOUT, async {
+    let (final_text, usage) = match tokio::time::timeout(TURN_TIMEOUT, async {
         loop {
             match events
                 .recv()
@@ -491,7 +491,18 @@ async fn run_turn(
         }
     })
     .await
-    .expect("DeepSeek retrieval turn timed out");
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            // A timed-out stream must not leave the worker parked forever —
+            // that stalled Layer C for ~90 minutes on bailian Flash.
+            let _ = session
+                .cancel_and_settle(Duration::from_secs(5), Duration::from_secs(5))
+                .await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
+            panic!("DeepSeek retrieval turn timed out");
+        }
+    };
     worker.await.expect("DeepSeek stream worker joins");
     assert!(starts.is_empty(), "tool starts without terminal events");
     TurnTrace {
@@ -807,147 +818,155 @@ async fn real_deepseek_completes_semantic_tasks_and_beats_disabled_ablation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires the repository DeepSeek credentials and network access"]
 async fn real_deepseek_deterministic_rerank_defeats_duplicate_channel_collisions() {
-    let (agent, model) = deepseek_agent().await;
-    let mut runs = Vec::with_capacity(TASKS.len() * 2);
-    for (ordinal, task) in TASKS.iter().copied().enumerate() {
-        let variants = if ordinal % 2 == 0 {
-            [
-                EvaluationVariant::HybridRrf,
-                EvaluationVariant::HybridDeterministic,
-            ]
-        } else {
-            [
-                EvaluationVariant::HybridDeterministic,
-                EvaluationVariant::HybridRrf,
-            ]
-        };
-        for variant in variants {
-            runs.push(
-                run_task(
-                    &agent,
-                    task,
-                    variant,
-                    EvaluationChunking::Line,
-                    ordinal,
-                    true,
-                )
-                .await,
-            );
-        }
-    }
-
-    let summary = summarize_rerank(&runs);
-    println!(
-        "WSR_DEEPSEEK_RERANK_SUMMARY={}",
-        serde_json::to_string(&summary).expect("serialize rerank evaluation summary")
-    );
-    assert_eq!(summary.rrf_tool_protocol_rate, 1.0, "{runs:#?}");
-    assert_eq!(summary.deterministic_tool_protocol_rate, 1.0, "{runs:#?}");
-    assert!(
-        summary.deterministic_task_accuracy > summary.rrf_task_accuracy,
-        "rerank did not improve task completion: {runs:#?}"
-    );
-    assert_eq!(summary.deterministic_recall_at_5, 1.0, "{runs:#?}");
-    assert!(
-        summary.deterministic_recall_at_5 > summary.rrf_recall_at_5,
-        "rerank did not improve retrieval recall: {runs:#?}"
-    );
-    assert!(
-        summary.deterministic_mrr > summary.rrf_mrr,
-        "rerank did not improve reciprocal rank: {runs:#?}"
-    );
-    assert!(
-        summary.deterministic_collision_result_rate < summary.rrf_collision_result_rate,
-        "rerank did not reduce collision evidence: {runs:#?}"
-    );
-    assert!(summary.deterministic_near_duplicate_candidates > 0);
-    assert_eq!(
-        summary.deterministic_input_candidates,
-        summary.deterministic_evaluated_candidates
-    );
-    assert!(
-        summary.deterministic_selected_candidates > 0,
-        "deterministic rerank must emit selected hits: {summary:?}"
-    );
-    assert!(
-        summary.deterministic_selected_candidates <= TASKS.len() * 5 * 4,
-        "deterministic selected hits must stay within verification overfetch: {summary:?}"
-    );
-    assert!(
-        summary.deterministic_selected_near_duplicates < summary.deterministic_selected_candidates
-    );
-    assert!(summary.deterministic_selected_near_duplicate_rate < 1.0);
-    assert!(summary.deterministic_max_feature_bytes <= 100 * 4 * 1024);
-    assert!(summary.deterministic_max_scratch_bytes <= 4 * 1024 * 1024);
-    assert_eq!(summary.non_text_provider_inputs, 0, "{runs:#?}");
-    assert!(summary.rrf_document_request_amplification <= 1.10);
-    assert!(summary.deterministic_document_request_amplification <= 1.10);
-
-    let expected_text_files = TEXT_FILE_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
-    let expected_chunks = EXPECTED_CHUNK_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
-    for run in &runs {
-        assert!(run.released_after_close, "{run:#?}");
-        assert_eq!(run.phase, WorkspaceRetrievalPhase::Ready, "{run:#?}");
-        assert_eq!(run.coverage_bps, 10_000, "{run:#?}");
-        assert_eq!(run.eligible_files, expected_text_files, "{run:#?}");
-        assert_eq!(run.indexed_files, expected_text_files, "{run:#?}");
-        assert_eq!(run.indexed_chunks, expected_chunks, "{run:#?}");
-        assert_eq!(run.failed_files, 0, "{run:#?}");
-        assert_eq!(run.embedded_documents, expected_chunks, "{run:#?}");
-        assert_eq!(run.document_embedding_requests, 1, "{run:#?}");
-        assert_eq!(run.embedding_batching.document_inputs, expected_chunks);
-        assert_eq!(run.embedding_batching.document_provider_requests, 1);
-        assert_eq!(run.embedding_batching.batch_limit_lower_bound, 1);
-        assert_eq!(run.non_text_provider_inputs, 0, "{run:#?}");
-        // Hybrid verification overfetches (limit × 4) before retain_verified truncates
-        // to the requested search limit; selected_candidates counts the overfetch pool.
-        let selected = run
-            .rerank_selected_candidates
-            .expect("hybrid runs must report rerank selected_candidates");
-        assert!(
-            run.result_count <= 5,
-            "search limit=5 protocol must bound returned hits: {run:#?}"
-        );
-        assert!(
-            selected >= run.result_count,
-            "overfetch selection must cover returned hits: {run:#?}"
-        );
-        assert!(
-            selected <= 5 * 4,
-            "selected_candidates must stay within verification overfetch: {run:#?}"
-        );
-        assert_eq!(run.rerank_candidate_truncated, Some(false), "{run:#?}");
-        assert_eq!(run.rerank_fallback, None, "{run:#?}");
-        match run.variant {
-            "hybrid_rrf" => {
-                assert_eq!(run.algorithm.as_deref(), Some("rrf_k60"), "{run:#?}");
-                assert_eq!(run.rerank_requested_mode.as_deref(), Some("rrf_only"));
-                assert_eq!(run.rerank_applied_mode.as_deref(), Some("rrf_only"));
-            }
-            "hybrid_deterministic" => {
-                assert_eq!(
-                    run.algorithm.as_deref(),
-                    Some("rrf_k60+deterministic_mmr_v1"),
-                    "{run:#?}"
+    // Six live turns (3 tasks × 2 variants). Bound the whole suite so a single
+    // hung provider stream cannot stall Layer C forever.
+    const SUITE_TIMEOUT: Duration = Duration::from_secs(2_400);
+    tokio::time::timeout(SUITE_TIMEOUT, async {
+        let (agent, model) = deepseek_agent().await;
+        let mut runs = Vec::with_capacity(TASKS.len() * 2);
+        for (ordinal, task) in TASKS.iter().copied().enumerate() {
+            let variants = if ordinal % 2 == 0 {
+                [
+                    EvaluationVariant::HybridRrf,
+                    EvaluationVariant::HybridDeterministic,
+                ]
+            } else {
+                [
+                    EvaluationVariant::HybridDeterministic,
+                    EvaluationVariant::HybridRrf,
+                ]
+            };
+            for variant in variants {
+                runs.push(
+                    run_task(
+                        &agent,
+                        task,
+                        variant,
+                        EvaluationChunking::Line,
+                        ordinal,
+                        true,
+                    )
+                    .await,
                 );
-                assert_eq!(run.rerank_requested_mode.as_deref(), Some("deterministic"));
-                assert_eq!(run.rerank_applied_mode.as_deref(), Some("deterministic"));
             }
-            variant => panic!("unexpected rerank evaluation variant: {variant}"),
         }
-    }
 
-    let report = RerankEvaluationReport {
-        schema_version: 2,
-        chat_model: model,
-        embedding_provider: "process-local deterministic semantic collision oracle",
-        task_count: TASKS.len(),
-        collision_copies_per_task: COLLISION_COPIES_PER_TASK,
-        summary,
-        runs,
-    };
-    println!(
-        "WSR_DEEPSEEK_RERANK_EVAL={}",
-        serde_json::to_string(&report).expect("serialize rerank evaluation report")
-    );
+        let summary = summarize_rerank(&runs);
+        println!(
+            "WSR_DEEPSEEK_RERANK_SUMMARY={}",
+            serde_json::to_string(&summary).expect("serialize rerank evaluation summary")
+        );
+        assert_eq!(summary.rrf_tool_protocol_rate, 1.0, "{runs:#?}");
+        assert_eq!(summary.deterministic_tool_protocol_rate, 1.0, "{runs:#?}");
+        assert!(
+            summary.deterministic_task_accuracy > summary.rrf_task_accuracy,
+            "rerank did not improve task completion: {runs:#?}"
+        );
+        assert_eq!(summary.deterministic_recall_at_5, 1.0, "{runs:#?}");
+        assert!(
+            summary.deterministic_recall_at_5 > summary.rrf_recall_at_5,
+            "rerank did not improve retrieval recall: {runs:#?}"
+        );
+        assert!(
+            summary.deterministic_mrr > summary.rrf_mrr,
+            "rerank did not improve reciprocal rank: {runs:#?}"
+        );
+        assert!(
+            summary.deterministic_collision_result_rate < summary.rrf_collision_result_rate,
+            "rerank did not reduce collision evidence: {runs:#?}"
+        );
+        assert!(summary.deterministic_near_duplicate_candidates > 0);
+        assert_eq!(
+            summary.deterministic_input_candidates,
+            summary.deterministic_evaluated_candidates
+        );
+        assert!(
+            summary.deterministic_selected_candidates > 0,
+            "deterministic rerank must emit selected hits: {summary:?}"
+        );
+        assert!(
+            summary.deterministic_selected_candidates <= TASKS.len() * 5 * 4,
+            "deterministic selected hits must stay within verification overfetch: {summary:?}"
+        );
+        assert!(
+            summary.deterministic_selected_near_duplicates
+                < summary.deterministic_selected_candidates
+        );
+        assert!(summary.deterministic_selected_near_duplicate_rate < 1.0);
+        assert!(summary.deterministic_max_feature_bytes <= 100 * 4 * 1024);
+        assert!(summary.deterministic_max_scratch_bytes <= 4 * 1024 * 1024);
+        assert_eq!(summary.non_text_provider_inputs, 0, "{runs:#?}");
+        assert!(summary.rrf_document_request_amplification <= 1.10);
+        assert!(summary.deterministic_document_request_amplification <= 1.10);
+
+        let expected_text_files = TEXT_FILE_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
+        let expected_chunks = EXPECTED_CHUNK_COUNT + TASKS.len() * COLLISION_COPIES_PER_TASK;
+        for run in &runs {
+            assert!(run.released_after_close, "{run:#?}");
+            assert_eq!(run.phase, WorkspaceRetrievalPhase::Ready, "{run:#?}");
+            assert_eq!(run.coverage_bps, 10_000, "{run:#?}");
+            assert_eq!(run.eligible_files, expected_text_files, "{run:#?}");
+            assert_eq!(run.indexed_files, expected_text_files, "{run:#?}");
+            assert_eq!(run.indexed_chunks, expected_chunks, "{run:#?}");
+            assert_eq!(run.failed_files, 0, "{run:#?}");
+            assert_eq!(run.embedded_documents, expected_chunks, "{run:#?}");
+            assert_eq!(run.document_embedding_requests, 1, "{run:#?}");
+            assert_eq!(run.embedding_batching.document_inputs, expected_chunks);
+            assert_eq!(run.embedding_batching.document_provider_requests, 1);
+            assert_eq!(run.embedding_batching.batch_limit_lower_bound, 1);
+            assert_eq!(run.non_text_provider_inputs, 0, "{run:#?}");
+            // Hybrid verification overfetches (limit × 4) before retain_verified truncates
+            // to the requested search limit; selected_candidates counts the overfetch pool.
+            let selected = run
+                .rerank_selected_candidates
+                .expect("hybrid runs must report rerank selected_candidates");
+            assert!(
+                run.result_count <= 5,
+                "search limit=5 protocol must bound returned hits: {run:#?}"
+            );
+            assert!(
+                selected >= run.result_count,
+                "overfetch selection must cover returned hits: {run:#?}"
+            );
+            assert!(
+                selected <= 5 * 4,
+                "selected_candidates must stay within verification overfetch: {run:#?}"
+            );
+            assert_eq!(run.rerank_candidate_truncated, Some(false), "{run:#?}");
+            assert_eq!(run.rerank_fallback, None, "{run:#?}");
+            match run.variant {
+                "hybrid_rrf" => {
+                    assert_eq!(run.algorithm.as_deref(), Some("rrf_k60"), "{run:#?}");
+                    assert_eq!(run.rerank_requested_mode.as_deref(), Some("rrf_only"));
+                    assert_eq!(run.rerank_applied_mode.as_deref(), Some("rrf_only"));
+                }
+                "hybrid_deterministic" => {
+                    assert_eq!(
+                        run.algorithm.as_deref(),
+                        Some("rrf_k60+deterministic_mmr_v1"),
+                        "{run:#?}"
+                    );
+                    assert_eq!(run.rerank_requested_mode.as_deref(), Some("deterministic"));
+                    assert_eq!(run.rerank_applied_mode.as_deref(), Some("deterministic"));
+                }
+                variant => panic!("unexpected rerank evaluation variant: {variant}"),
+            }
+        }
+
+        let report = RerankEvaluationReport {
+            schema_version: 2,
+            chat_model: model,
+            embedding_provider: "process-local deterministic semantic collision oracle",
+            task_count: TASKS.len(),
+            collision_copies_per_task: COLLISION_COPIES_PER_TASK,
+            summary,
+            runs,
+        };
+        println!(
+            "WSR_DEEPSEEK_RERANK_EVAL={}",
+            serde_json::to_string(&report).expect("serialize rerank evaluation report")
+        );
+    })
+    .await
+    .expect("deterministic rerank suite timed out");
 }

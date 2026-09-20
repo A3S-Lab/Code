@@ -175,40 +175,30 @@ pub(crate) fn configure_std_process_group(command: &mut std::process::Command) {
     let _ = command;
 }
 
-/// Spawn a Tokio child while excluding concurrent native workspace indexing.
-///
-/// macOS may implement `Command::spawn` with `posix_spawn`, which does not
-/// invoke `pthread_atfork` handlers. Taking the read side of the workspace
-/// resource gate therefore remains necessary even after the zvec adapter has
-/// installed its fork hooks.
-pub(crate) fn spawn_tokio_with_native_gate(command: &mut Command) -> io::Result<Child> {
-    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
+/// Spawn a Tokio child process.
+pub(crate) fn spawn_tokio_child(command: &mut Command) -> io::Result<Child> {
     command.spawn()
 }
 
 /// Blocking counterpart used by synchronous workspace and Git discovery.
-pub(crate) fn spawn_std_with_native_gate(
+pub(crate) fn spawn_std_child(
     command: &mut std::process::Command,
 ) -> io::Result<std::process::Child> {
-    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
     command.spawn()
 }
 
-/// Run a short-lived blocking command while protecting the fork/exec boundary
-/// from descriptors opened by the native workspace index.
+/// Run a short-lived blocking command.
 #[cfg(test)]
-pub(crate) fn output_std_with_native_gate(
+pub(crate) fn output_std_child(
     command: &mut std::process::Command,
 ) -> io::Result<std::process::Output> {
-    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
     command.output()
 }
 
 #[cfg(test)]
-pub(crate) fn status_std_with_native_gate(
+pub(crate) fn status_std_child(
     command: &mut std::process::Command,
 ) -> io::Result<std::process::ExitStatus> {
-    let _native_spawn = crate::workspace::retrieval::native_process_spawn();
     command.status()
 }
 
@@ -514,7 +504,7 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         configure_process_group(&mut command);
-        spawn_tokio_with_native_gate(&mut command).unwrap()
+        spawn_tokio_child(&mut command).unwrap()
     }
 
     #[cfg(unix)]
@@ -596,7 +586,7 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        let mut child = spawn_tokio_with_native_gate(&mut command).expect("spawn");
+        let mut child = spawn_tokio_child(&mut command).expect("spawn");
         let mut guard = ProcessGroupGuard::for_child(&child);
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
             while !child_started.exists() {
@@ -643,7 +633,7 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let mut child = spawn_tokio_with_native_gate(&mut command).expect("spawn");
+        let mut child = spawn_tokio_child(&mut command).expect("spawn");
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
             while !child_started.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;

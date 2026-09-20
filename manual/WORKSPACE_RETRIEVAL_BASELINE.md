@@ -9,7 +9,7 @@ evidence are recorded separately in the
 This document records the measurement context, quality baseline, release
 budgets, and adversarial trust boundaries for the first Workspace Retrieval
 implementation. The machine-readable fixtures live in
-`core/tests/fixtures/workspace-retrieval-v1/` and the real zvec-rust FTS/BM25 tool
+`core/tests/fixtures/workspace-retrieval-v1/` and the real a3s-vec FTS/BM25 tool
 executes them in the core test suite.
 
 ## Quality baseline
@@ -18,7 +18,7 @@ The synthetic v1 corpus has nine judged queries: two exact multi-term queries,
 two identifier queries, two exact CJK queries, and three paraphrase queries.
 The labels are independent of the returned BM25 paths.
 
-| Metric | zvec-rust FTS/BM25 v1 |
+| Metric | a3s-vec FTS/BM25 v1 |
 | --- | ---: |
 | Recall@10 | 0.6667 (6/9) |
 | Mean reciprocal rank | 0.6667 |
@@ -136,7 +136,7 @@ estimated lexical-index memory at 64 MiB each, in addition to file and chunk
 limits. A file that would exceed a budget is reported as a failed partition;
 already admitted smaller files remain queryable and publication stays atomic.
 
-zvec-rust FTS/BM25 reuses the catalog's per-file indexes after its first source
+a3s-vec FTS/BM25 reuses the catalog's per-file indexes after its first source
 revision. Until then, and for custom providers without a catalog, it builds the
 same bounded temporary lexical projection over the query-time scan. The locked
 nine-query result ordering is equal on both paths, while the incremental path
@@ -212,7 +212,7 @@ vector cleanup.
 ## Backend consolidation evidence
 
 The lexical and semantic projections now have one implementation each in
-product builds: zvec-rust for FTS/BM25 and A3S Memory for exact semantic
+product builds: a3s-vec for FTS/BM25 and A3S Memory for exact semantic
 vectors. There is no duplicate vector projection or authority selector. The
 native lexical lifecycle, platform package contract, fallback build, descriptor
 limits, and rollback boundary are documented in

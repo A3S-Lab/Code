@@ -9,7 +9,6 @@
 //!   └── builtin tools (file, search, execution, web, and Code Intelligence queries)
 //! ```
 
-mod agent_dir_script_tool;
 mod artifacts;
 pub(crate) mod builtin;
 mod immutable_content;
@@ -30,7 +29,6 @@ pub use crate::dynamic_workflow::{
     register_dynamic_workflow, register_dynamic_workflow_with_event_store,
     register_dynamic_workflow_with_scheduler,
 };
-pub use agent_dir_script_tool::AgentDirScriptTool;
 pub use artifacts::{ArtifactStore, ArtifactStoreError, ArtifactStoreLimits, ToolArtifact};
 pub use builtin::{
     register_generate_object, register_program, register_program_with_catalog, register_task,

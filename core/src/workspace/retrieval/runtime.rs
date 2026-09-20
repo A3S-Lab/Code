@@ -267,7 +267,7 @@ fn retryable_index_error(error: &WorkspaceIndexError) -> bool {
             // The native adapter currently reports its FFI/open failures as
             // InvalidConfig. Keep those bounded-retryable while leaving
             // actual schema/configuration errors fail-fast.
-            message.starts_with("persistent zvec index failed:")
+            message.starts_with("persistent a3s-vec index failed:")
         }
         WorkspaceIndexError::InvalidQuery(_) | WorkspaceIndexError::StaleRevision { .. } => false,
         _ => true,
@@ -288,7 +288,7 @@ fn is_newer_snapshot(
         > (current.source_revision(), current.revision())
 }
 
-#[cfg(all(test, feature = "zvec-rust-fts"))]
+#[cfg(all(test, feature = "a3s-vec-fts"))]
 mod tests {
     use super::PersistentIndexCoordinator;
     use crate::workspace::{
@@ -304,7 +304,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         let path = WorkspacePath::from_normalized("src/late.rs");
@@ -313,7 +313,7 @@ mod tests {
             .expect("catalog replacement");
         let index = WorkspacePersistentIndex::open(
             temp.path().join(".a3s-code/index"),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("persistent index");
         let lifetime = CancellationToken::new();
@@ -342,13 +342,13 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         let path = WorkspacePath::from_normalized("src/burst.rs");
         let index = WorkspacePersistentIndex::open(
             temp.path().join(".a3s-code/index"),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("persistent index");
         let lifetime = CancellationToken::new();
@@ -402,7 +402,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         let path = WorkspacePath::from_normalized("src/retry.rs");
@@ -411,7 +411,7 @@ mod tests {
             .expect("catalog replacement");
         let index = WorkspacePersistentIndex::open(
             temp.path().join(".a3s-code/index"),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("persistent index");
         let destination = temp.path().join(".a3s-code/index/generation-1");
@@ -451,7 +451,7 @@ mod tests {
         ));
         assert!(super::retryable_index_error(
             &WorkspaceIndexError::InvalidConfig(
-                "persistent zvec index failed: temporary native lock".to_owned()
+                "persistent a3s-vec index failed: temporary native lock".to_owned()
             )
         ));
         assert!(!super::retryable_index_error(

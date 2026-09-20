@@ -151,7 +151,7 @@ fn spawn_windows_shell(
     };
     prepare_windows_command(&mut powershell, workspace, command_env);
 
-    match crate::tools::process::spawn_tokio_with_native_gate(&mut powershell) {
+    match crate::tools::process::spawn_tokio_child(&mut powershell) {
         Ok(child) => {
             if let Err(error) = bind_host_shell_job(&child) {
                 drop(child);
@@ -285,7 +285,7 @@ pub(crate) fn spawn_shell(
         if let Some(env) = command_env {
             cmd.envs(env);
         }
-        crate::tools::process::spawn_tokio_with_native_gate(&mut cmd)
+        crate::tools::process::spawn_tokio_child(&mut cmd)
     }
 }
 

@@ -39,14 +39,6 @@ const groups: BuildingBlockGroup[] = [
         path: '/guide/agents-md.html',
       },
       {
-        name: 'AgentDir',
-        description: {
-          zh: '用文件组织 Agent、工具和定时任务。',
-          en: 'Filesystem definitions for agents, tools, and schedules.',
-        },
-        path: '/guide/agent-dir.html',
-      },
-      {
         name: 'A3S ACL',
         description: {
           zh: '配置模型、存储、目录和运行参数。',
@@ -213,14 +205,6 @@ const groups: BuildingBlockGroup[] = [
           en: 'Build fixed flows with parallel, pipeline, and checkpoints.',
         },
         path: '/guide/orchestration.html',
-      },
-      {
-        name: 'Schedules',
-        description: {
-          zh: '按计划运行 AgentDir 中的任务。',
-          en: 'Run AgentDir tasks on a schedule.',
-        },
-        path: '/guide/filesystem-schedules.html',
       },
     ],
   },

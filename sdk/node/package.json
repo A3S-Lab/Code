@@ -32,10 +32,7 @@
     "research-protocol-v1.d.ts",
     "*.node",
     "moli",
-    "moli/**",
-    "zvec",
-    "zvec/**",
-    "zvec_c_api.dll"
+    "moli/**"
   ],
   "devDependencies": {
     "@napi-rs/cli": "^2",
@@ -52,7 +49,7 @@
     "test:release-manifest": "node --test scripts/release-manifest.test.mjs scripts/patch-loader.test.mjs",
     "test:evaluation-protocol": "node ../../scripts/generate_evaluation_protocol_artifacts.mjs --check && node ../../scripts/check_evaluation_protocol_artifacts.mjs",
     "test:research-protocol": "node ../../scripts/generate_research_protocol_artifacts.mjs --check && node ../../scripts/check_research_protocol_artifacts.mjs",
-    "test:runtime": "node test.mjs && node test_budget_guard.mjs && node test_callback_safety.mjs && node test_confirmation_inheritance.mjs && node test_session_close.mjs && node test_model_generation_pool_health_fixture.mjs && node test_model_middleware_health_fixture.mjs && node test_sdk_capability_batch_fixture.mjs && node test_sdk_checkpoint_export_fixture.mjs && node test_sdk_immutable_content_fixture.mjs && node test_workspace_retrieval.mjs && node test_serve.mjs && node test-helpers.mjs",
+    "test:runtime": "node test.mjs && node test_budget_guard.mjs && node test_callback_safety.mjs && node test_confirmation_inheritance.mjs && node test_session_close.mjs && node test_model_generation_pool_health_fixture.mjs && node test_model_middleware_health_fixture.mjs && node test_sdk_capability_batch_fixture.mjs && node test_sdk_checkpoint_export_fixture.mjs && node test_sdk_immutable_content_fixture.mjs && node test_workspace_retrieval.mjs && node test-helpers.mjs",
     "test:fixtures": "node test_workspace_retrieval_real_deepseek.mjs --validate-fixture",
     "test:types": "tsc --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck test-types.ts",
     "test:helpers": "node test-helpers.mjs"

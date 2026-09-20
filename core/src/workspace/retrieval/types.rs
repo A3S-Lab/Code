@@ -102,24 +102,24 @@ pub struct ChunkCatalogLimits {
 
 /// Local full-text index implementation used by the workspace chunk catalog.
 ///
-/// The normal product build selects the official `zvec-rust` binding. A
+/// The normal product build selects the pure-Rust `a3s-vec` FTS engine. A
 /// dependency-free portable scorer remains available only for minimal builds
-/// that intentionally disable the native feature; it keeps the model-free
+/// that intentionally disable the engine feature; it keeps the model-free
 /// `bm25` capability usable in constrained environments and is reported
 /// explicitly in result metadata.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceLexicalEngine {
-    #[cfg_attr(feature = "zvec-rust-fts", default)]
-    ZvecRust,
-    #[cfg_attr(not(feature = "zvec-rust-fts"), default)]
+    #[cfg_attr(feature = "a3s-vec-fts", default)]
+    A3sVec,
+    #[cfg_attr(not(feature = "a3s-vec-fts"), default)]
     Portable,
 }
 
 impl WorkspaceLexicalEngine {
     pub const fn stable_id(self) -> &'static str {
         match self {
-            Self::ZvecRust => "zvec_rust_fts_v1",
+            Self::A3sVec => "a3s_vec_fts_v1",
             Self::Portable => "portable_bm25_v1",
         }
     }

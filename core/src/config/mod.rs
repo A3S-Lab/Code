@@ -11,7 +11,6 @@
 //! JSON support has been removed.
 
 mod acl_render;
-pub mod agent_dir;
 mod editor;
 mod loader;
 #[cfg(test)]
@@ -21,7 +20,6 @@ mod search;
 #[cfg(test)]
 mod tests;
 
-pub use agent_dir::{AgentDir, ScheduleSpec, ScriptToolLimits, ScriptToolSpec, ToolSpec};
 pub use editor::{rewrite_acl_sections, ConfigSection};
 pub use provider::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use search::{

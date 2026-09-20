@@ -92,9 +92,9 @@ def test_async_workspace_retrieval_lifecycle() -> None:
                 normalization="unit",
             )
             retrieval = WorkspaceRetrievalOptions(provider)
-            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.ZvecRust
-            retrieval.lexical_engine = WorkspaceLexicalEngineOption.ZvecRust
-            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.ZvecRust
+            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.A3sVec
+            retrieval.lexical_engine = WorkspaceLexicalEngineOption.A3sVec
+            assert retrieval.lexical_engine == WorkspaceLexicalEngineOption.A3sVec
             retrieval.lexical_engine = WorkspaceLexicalEngineOption.Portable
             retrieval.max_records = 100
             retrieval.max_bytes = 1024 * 1024

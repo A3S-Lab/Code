@@ -21,7 +21,7 @@ use a3s_code_core::{Agent, AgentEvent, PlanningMode, SessionOptions, SystemPromp
 use a3s_memory::{FileMemoryStore, MemoryItem, MemoryStore, MemoryType};
 use support::layer_c_model::{load_pinned_layer_c_config, pinned_layer_c_model};
 
-const TURN_TIMEOUT: Duration = Duration::from_secs(180);
+const TURN_TIMEOUT: Duration = Duration::from_secs(420);
 
 fn configured_model(config: &a3s_code_core::CodeConfig) -> String {
     pinned_layer_c_model(config)

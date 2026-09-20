@@ -94,8 +94,8 @@ struct PortablePosting {
 }
 
 /// Small, deterministic scorer used by minimal builds that intentionally omit
-/// the native zvec artifact. It shares the exact tokenizer and result contract
-/// with the zvec path, so disabling native artifacts never removes BM25.
+/// the a3s-vec artifact. It shares the exact tokenizer and result contract
+/// with the a3s-vec path, so disabling engine feature never removes BM25.
 pub(crate) struct PortableLexicalIndex {
     documents: Vec<PortableDocument>,
     postings: HashMap<String, Vec<PortablePosting>>,
@@ -309,12 +309,12 @@ impl PortableLexicalIndex {
     }
 }
 
-/// Backend-neutral lexical index handle. The native zvec binding is the
+/// Backend-neutral lexical index handle. The a3s-vec binding is the
 /// product default; the portable variant is available only for minimal builds.
 pub(crate) enum LexicalIndex {
     Portable(PortableLexicalIndex),
-    #[cfg(feature = "zvec-rust-fts")]
-    ZvecRust(super::zvec_rust::ZvecRustLexicalIndex),
+    #[cfg(feature = "a3s-vec-fts")]
+    A3sVec(super::a3s_vec::A3sVecLexicalIndex),
 }
 
 impl LexicalIndex {
@@ -326,25 +326,25 @@ impl LexicalIndex {
             WorkspaceLexicalEngine::Portable => {
                 PortableLexicalIndex::build(documents).map(Self::Portable)
             }
-            WorkspaceLexicalEngine::ZvecRust => {
-                #[cfg(feature = "zvec-rust-fts")]
+            WorkspaceLexicalEngine::A3sVec => {
+                #[cfg(feature = "a3s-vec-fts")]
                 {
-                    super::zvec_rust::ZvecRustLexicalIndex::build(
+                    super::a3s_vec::A3sVecLexicalIndex::build(
                         documents
                             .iter()
                             .map(|(key, text)| (key.as_str(), text.as_str())),
                     )
-                    .map(Self::ZvecRust)
+                    .map(Self::A3sVec)
                     .map_err(|error| {
                         WorkspaceIndexError::InvalidConfig(format!(
-                            "zvec-rust lexical index failed: {error}"
+                            "a3s-vec lexical index failed: {error}"
                         ))
                     })
                 }
-                #[cfg(not(feature = "zvec-rust-fts"))]
+                #[cfg(not(feature = "a3s-vec-fts"))]
                 {
                     Err(WorkspaceIndexError::InvalidConfig(
-                        "WorkspaceLexicalEngine::ZvecRust requires the zvec-rust-fts feature"
+                        "WorkspaceLexicalEngine::A3sVec requires the a3s-vec-fts feature"
                             .to_owned(),
                     ))
                 }
@@ -355,24 +355,24 @@ impl LexicalIndex {
     pub(crate) fn document_count(&self) -> usize {
         match self {
             Self::Portable(index) => index.document_count(),
-            #[cfg(feature = "zvec-rust-fts")]
-            Self::ZvecRust(index) => index.document_count(),
+            #[cfg(feature = "a3s-vec-fts")]
+            Self::A3sVec(index) => index.document_count(),
         }
     }
 
     pub(crate) fn estimated_bytes(&self) -> usize {
         match self {
             Self::Portable(index) => index.estimated_bytes(),
-            #[cfg(feature = "zvec-rust-fts")]
-            Self::ZvecRust(index) => index.estimated_bytes(),
+            #[cfg(feature = "a3s-vec-fts")]
+            Self::A3sVec(index) => index.estimated_bytes(),
         }
     }
 
     pub(crate) fn has_any_term(&self, terms: &[String]) -> bool {
         match self {
             Self::Portable(index) => index.has_any_term(terms),
-            #[cfg(feature = "zvec-rust-fts")]
-            Self::ZvecRust(index) => index.has_any_term(terms),
+            #[cfg(feature = "a3s-vec-fts")]
+            Self::A3sVec(index) => index.has_any_term(terms),
         }
     }
 
@@ -383,9 +383,9 @@ impl LexicalIndex {
     ) -> WorkspaceIndexResult<Vec<(usize, f64)>> {
         match self {
             Self::Portable(index) => index.search(terms, limit),
-            #[cfg(feature = "zvec-rust-fts")]
-            Self::ZvecRust(index) => index.search(terms, limit).map_err(|error| {
-                WorkspaceIndexError::InvalidQuery(format!("zvec-rust FTS search failed: {error}"))
+            #[cfg(feature = "a3s-vec-fts")]
+            Self::A3sVec(index) => index.search(terms, limit).map_err(|error| {
+                WorkspaceIndexError::InvalidQuery(format!("a3s-vec FTS search failed: {error}"))
             }),
         }
     }

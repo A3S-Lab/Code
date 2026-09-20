@@ -70,11 +70,6 @@ To build the bridge from a source checkout:
 
 ```bash
 bash .github/setup-workspace.sh
-mkdir -p zvec-runtime
-bash scripts/package_zvec.sh "$(rustc -vV | sed -n 's/^host: //p')" zvec-runtime
-export ZVEC_LIB_DIR="$PWD/zvec-runtime"
-export ZVEC_AUTO_BUILD=0
-export RUSTFLAGS="$(bash scripts/zvec_rustflags.sh "$(rustc -vV | sed -n 's/^host: //p')" zvec)"
 cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 ```
 
@@ -126,7 +121,7 @@ than Go source.
 
 Inject a context-aware embedding provider to build a bounded, session-owned,
 ephemeral index without CGO or a vector database service. A3S Memory is the
-single semantic vector projection, and product bridge builds use zvec-rust for
+single semantic vector projection, and product bridge builds use a3s-vec for
 lexical FTS/BM25. Minimal bridge builds may explicitly select portable BM25.
 The host owns network access and credentials; A3S Code owns chunking,
 validation, indexing, hybrid ranking, source verification, and cleanup.
@@ -185,7 +180,7 @@ if err != nil {
 retrieval.ChunkingStrategy = chunking
 retrieval.MaxRecords = 100_000
 retrieval.MaxBytes = 128 * 1024 * 1024
-// An omitted engine follows the bridge's compiled default (zvec-rust for a
+// An omitted engine follows the bridge's compiled default (a3s-vec for a
 // native product build, portable BM25 for a --no-default-features build).
 // A minimal bridge can explicitly select the dependency-free scorer:
 // retrieval.LexicalEngine = code.WorkspaceLexicalEnginePortable
@@ -217,13 +212,13 @@ retry categories without copying remote response bodies into diagnostics.
 provider requests, limit flush reasons, the theoretical request lower bound,
 and time to first ready file for the current catalog generation.
 `WorkspaceRetrievalStatus.LexicalEngine` identifies the selected lexical
-projection. Product builds report `zvec_rust_fts_v1`; minimal builds report
+projection. Product builds report `a3s_vec_fts_v1`; minimal builds report
 `portable_bm25_v1`. Status also exposes coverage, vector records/bytes,
 batching, and bounded failure counters. Semantic vectors are owned only by
 A3S Memory and are released on close. Raw backend-name selectors are rejected;
 see the [backend contract](../../manual/WORKSPACE_RETRIEVAL_BACKENDS.md).
 
-`WorkspaceLexicalEngineZvecRust` selects the official Rust binding's temporary
+`WorkspaceLexicalEngineA3sVec` selects the official Rust binding's temporary
 FTS projection for the session-owned catalog. An unsupported selection fails
 during session initialization and does not silently fall back.
 
@@ -514,9 +509,7 @@ serializable Agent and Session capabilities, including:
   remote Git, permission/confirmation policies, retention, trajectory,
   deterministic ID/clock replay, delegation, and prompt-slot configuration.
 
-`Agent.ServeAgentDir` returns only after schedule validation and session/tool
-preparation. `ServeHandle.Status` reports `starting`, `ready`, `draining`,
-`stopped`, or `failed`; `ServeHandle.Stop` cancels in-flight work and waits for
+Filesystem-first `serve` / `ServeAgentDir` has been removed.
 bounded, joined shutdown.
 
 Headless hosts can start detached work under immutable IDs and receive the

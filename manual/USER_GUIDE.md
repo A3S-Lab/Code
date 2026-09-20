@@ -156,7 +156,7 @@ database and it is not enabled by the selected chat model. The host supplies a
 typed embedding provider; A3S Code owns text admission, chunking, batching,
 response validation, bounded vector storage, hybrid ranking, current-source
 verification, accounting, and cleanup. A3S Memory is the single semantic vector
-projection. Lexical BM25 uses zvec-rust in product builds and has an explicit
+projection. Lexical BM25 uses a3s-vec in product builds and has an explicit
 portable minimal-build fallback.
 
 ```js
@@ -220,7 +220,7 @@ publish atomically, so queries may use partial coverage while building. Closing
 the session cancels provider work, joins the indexer within a deadline, and
 releases all accounted vector records and bytes.
 
-Status also reports the selected lexical engine (`zvec_rust_fts_v1` in product
+Status also reports the selected lexical engine (`a3s_vec_fts_v1` in product
 builds or `portable_bm25_v1` in a minimal build), along with coverage, vector
 records/bytes, batching, and bounded failure counters. Semantic vectors are
 owned only by A3S Memory and are released on close.
@@ -232,7 +232,7 @@ digest and exact chunk range. Stale, deleted, unreadable, or superseded chunks
 are not exposed.
 
 The default serving index is an exact, bounded `InMemoryVectorIndex`, while the
-lexical projection is a temporary zvec-rust FTS collection per catalog
+lexical projection is a temporary a3s-vec FTS collection per catalog
 partition. Recreating a session rebuilds both session-local projections; sessions
 do not share them.
 If persistence or a shared vector service is required, the embedding host owns

@@ -1030,6 +1030,3 @@ mod model_retry_soak;
 
 #[cfg(test)]
 mod conversation_compaction_soak;
-
-#[cfg(test)]
-mod agent_dir_governance_tests;

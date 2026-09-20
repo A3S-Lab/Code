@@ -12,7 +12,7 @@ EmbeddingNormalization = Literal["none", "unit"]
 WorkspaceRetrievalPhase = Literal[
     "disabled", "building", "ready", "degraded", "closed"
 ]
-WorkspaceLexicalEngine = Literal["portable", "zvec_rust"]
+WorkspaceLexicalEngine = Literal["portable", "a3s_vec"]
 WorkspaceRetrievalChannel = Literal["exact", "lexical", "structural", "semantic"]
 WorkspaceSemanticFallbackReason = Literal[
     "building",

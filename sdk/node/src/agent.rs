@@ -1,9 +1,5 @@
 //! Node Agent lifecycle binding.
 
-#[cfg(feature = "serve")]
-#[path = "agent_serve.rs"]
-mod agent_serve;
-
 use super::*;
 use a3s_code_core::config::CodeConfig as RustCodeConfig;
 

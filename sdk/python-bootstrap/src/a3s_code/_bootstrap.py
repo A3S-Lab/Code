@@ -191,9 +191,7 @@ def _platform_tag() -> str:
         if machine in ("x86_64", "amd64"):
             return "manylinux_2_28_x86_64"
         if machine in ("arm64", "aarch64"):
-            # aarch64 wheels ship a zvec runtime that requires glibc 2.38+,
-            # and are built/audited as manylinux_2_39.
-            return "manylinux_2_39_aarch64"
+            return "manylinux_2_28_aarch64"
     elif sys_plat == "win32":
         if machine in ("amd64", "x86_64"):
             return "win_amd64"

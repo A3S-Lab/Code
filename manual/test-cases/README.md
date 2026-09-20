@@ -102,7 +102,6 @@ Advanced (explicit Cargo feature or host injection):
 | `evaluation_substrate` | EV | `advanced-harness` | [advanced.md](advanced.md) |
 | `moli_runtime` | MO | `headless-search` | [advanced.md](advanced.md) |
 | `s3_workspace` | S3 | `s3` | [advanced.md](advanced.md) |
-| `filesystem_agent_server` | SV | `serve` | [advanced.md](advanced.md) |
 | `opentelemetry` | OT | `telemetry` | [advanced.md](advanced.md) |
 
 `sdk_capabilities()` is the product id list. One compiled contract is not an
@@ -139,7 +138,7 @@ cargo test -p a3s-code-core --lib
 node scripts/sdk_api_alignment_check.mjs
 ```
 
-Feature-gated hermetic: `advanced-harness`, `s3`, `serve`, `headless-search`,
+Feature-gated hermetic: `advanced-harness`, `s3`, `telemetry`, `headless-search`,
 `telemetry` suites named in each file.
 
 Live: `just layer-c-live-e2e`.

@@ -5,7 +5,7 @@
 This runbook turns Workspace Retrieval qualification into an operational
 decision. The capability is suitable for retrieval-dependent generation when
 the gates below pass, but it remains explicit, session-bound, ephemeral, and
-default-off. A3S Memory is the sole semantic vector projection and zvec-rust is
+default-off. A3S Memory is the sole semantic vector projection and a3s-vec is
 the product lexical projection. Neither creates a durable workspace index,
 replaces exact or BM25 search, parses non-text assets, or changes the compatible
 line-chunking and RRF-only defaults.
@@ -117,7 +117,7 @@ latency rather than representing query-only latency.
 
 The exact and hybrid values in the table are separate schema-v5 workloads: the
 25,000-record gate measures the A3S Memory exact vector index, while the native
-hybrid gate measures four zvec-rust FTS partitions with 128 chunks per file and
+hybrid gate measures four a3s-vec FTS partitions with 128 chunks per file and
 warm-cache authoritative source rereads. They are not a single 25,000-vector
 hybrid corpus claim.
 

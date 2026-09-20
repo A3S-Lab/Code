@@ -98,12 +98,12 @@ and Cloud latency; those remain host qualification boundaries.
 | Persistence          | Twenty-three generations overwrote one logical session without file accumulation. Memory and file stores both returned one session, preserved snapshot identity and byte shape, and left zero files and zero bytes after delete.                                                                |
 
 The change-scoped 2026-09-04 schema-v5 workspace-retrieval run qualifies the
-official zvec-rust FTS path alongside the existing A3S Memory semantic
+official a3s-vec FTS path alongside the existing A3S Memory semantic
 projection. The locked exact, identifier, CJK, hybrid, concurrent-replacement,
 and close gates pass. Native collection handles are flushed and closed before
-publication; a four-entry hot-handle cap plus transient cold opens keeps RocksDB
-descriptors bounded. Portable minimal builds pass the same lexical result
-contract and are identified in metadata as `portable_bm25_v1`. The schema-v5
+publication; a four-entry hot-handle cap plus transient cold opens keeps
+collection reopen cost bounded. Portable minimal builds pass the same lexical
+result contract and are identified in metadata as `portable_bm25_v1`. The schema-v5
 benchmark separates its 25,000-record exact-vector workload from the
 four-file/512-chunk native hybrid workload. See the
 [backend contract](WORKSPACE_RETRIEVAL_BACKENDS.md).
@@ -153,7 +153,7 @@ gh run download <run-id> --repo A3S-Lab/Code
 ```
 
 The current workflow requires exactly nine JSON files (including the native
-zvec-rust workspace and evaluation-substrate reports) and rejects any report
+a3s-vec workspace and evaluation-substrate reports) and rejects any report
 whose top-level `passed` value is not `true`. The authoritative run above
 contains all nine reports, including the native workspace and evaluation
 substrate records; its archive digest can be checked before the 30-day

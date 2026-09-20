@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
-FEATURES="${A3S_WORKSPACE_FEATURES:-zvec-rust-fts-bundled}"
+FEATURES="${A3S_WORKSPACE_FEATURES:-a3s-vec-fts}"
 FILES="${A3S_WORKSPACE_ACCEPTANCE_FILES:-512}"
 QUERY_WORKERS="${A3S_WORKSPACE_ACCEPTANCE_QUERY_WORKERS:-8}"
 FULL=0

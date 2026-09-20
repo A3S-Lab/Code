@@ -1,43 +1,43 @@
 //! Workspace-owned persistent lexical index.
 //!
 //! The session catalog remains the source of truth for admission and source
-//! verification. This module adds an optional durable zvec generation that can
+//! verification. This module adds an optional durable a3s-vec generation that can
 //! be reopened after a process restart. The generation is replaced atomically
 //! after a catalog snapshot has been fully built.
 
 use super::catalog::ChunkCatalogSnapshot;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use super::chunk::{chunk_id, digest_content};
 use super::lexical::LexicalSearchRequest;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use super::lexical::{path_matches, query_terms};
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use super::types::WorkspaceChunk;
 use super::types::{WorkspaceIndexError, WorkspaceIndexResult, WorkspaceLexicalEngine};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use std::collections::HashSet;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use std::fs;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use std::io::Read;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 use std::sync::{Condvar, Mutex, RwLock};
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 const MANIFEST_SCHEMA_VERSION: u32 = 2;
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 const CURRENT_FILE: &str = "CURRENT";
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 const MANIFEST_FILE: &str = "manifest.json";
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 const STORAGE_LOCK_FILE: &str = ".index.lock";
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedChunk {
@@ -57,7 +57,7 @@ struct PersistedChunk {
     text: String,
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 impl PersistedChunk {
     fn from_chunk(chunk: &WorkspaceChunk) -> Self {
         Self {
@@ -91,7 +91,7 @@ impl PersistedChunk {
     }
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenerationManifest {
@@ -102,22 +102,22 @@ struct GenerationManifest {
     chunks: Vec<PersistedChunk>,
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 struct PersistentState {
     generation: String,
     catalog_revision: u64,
     source_revision: u64,
     indexed_chunks: Arc<[Arc<WorkspaceChunk>]>,
     indexed_files: usize,
-    index: super::zvec_rust::ZvecRustLexicalIndex,
+    index: super::a3s_vec::A3sVecLexicalIndex,
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 struct PersistentOperationGuard {
     active: Arc<(Mutex<usize>, Condvar)>,
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 impl Drop for PersistentOperationGuard {
     fn drop(&mut self) {
         let (lock, wake) = &*self.active;
@@ -151,20 +151,20 @@ pub struct WorkspacePersistentIndexStatus {
 pub struct WorkspacePersistentIndex {
     root: PathBuf,
     engine: WorkspaceLexicalEngine,
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     writer: Mutex<()>,
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     active_operations: Arc<(Mutex<usize>, Condvar)>,
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     building: AtomicBool,
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     state: RwLock<Option<PersistentState>>,
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 struct BuildActivityGuard<'a>(&'a AtomicBool);
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 impl Drop for BuildActivityGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -186,23 +186,23 @@ impl WorkspacePersistentIndex {
         root: impl Into<PathBuf>,
         engine: WorkspaceLexicalEngine,
     ) -> WorkspaceIndexResult<Arc<Self>> {
-        // zvec rejects Windows verbatim (`\\?\`) paths from `canonicalize()`.
+        // a3s-vec rejects Windows verbatim (`\\?\`) paths from `canonicalize()`.
         // Workspace roots are commonly canonicalized before the index is
         // configured, so strip the prefix at the durable-index boundary.
         let root = strip_windows_verbatim_prefix(root.into());
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             let _ = (&root, engine);
             Err(WorkspaceIndexError::InvalidConfig(
-                "persistent workspace indexing requires the zvec-rust-fts feature".to_owned(),
+                "persistent workspace indexing requires the a3s-vec-fts feature".to_owned(),
             ))
         }
 
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
-            if engine != WorkspaceLexicalEngine::ZvecRust {
+            if engine != WorkspaceLexicalEngine::A3sVec {
                 return Err(WorkspaceIndexError::InvalidConfig(
-                    "persistent workspace indexing currently requires the zvec-rust lexical engine"
+                    "persistent workspace indexing currently requires the a3s-vec lexical engine"
                         .to_owned(),
                 ));
             }
@@ -243,21 +243,21 @@ impl WorkspacePersistentIndex {
     }
 
     pub fn is_ready(&self) -> bool {
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             self.state
                 .read()
                 .map(|state| state.is_some())
                 .unwrap_or(false)
         }
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             false
         }
     }
 
     pub fn status(&self) -> WorkspacePersistentIndexStatus {
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             let building = self.building.load(Ordering::Acquire);
             self.state
@@ -288,7 +288,7 @@ impl WorkspacePersistentIndex {
                     indexed_chunks: 0,
                 })
         }
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             WorkspacePersistentIndexStatus {
                 phase: WorkspacePersistentIndexPhase::Absent,
@@ -305,14 +305,14 @@ impl WorkspacePersistentIndex {
     }
 
     pub fn drop_index(&self) -> WorkspaceIndexResult<()> {
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             Err(WorkspaceIndexError::InvalidConfig(
-                "persistent workspace indexing requires the zvec-rust-fts feature".to_owned(),
+                "persistent workspace indexing requires the a3s-vec-fts feature".to_owned(),
             ))
         }
 
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             let _storage_guard = self.acquire_storage_lock()?;
             let _write_guard = self
@@ -360,15 +360,15 @@ impl WorkspacePersistentIndex {
     }
 
     pub fn sync_snapshot(&self, snapshot: &ChunkCatalogSnapshot) -> WorkspaceIndexResult<()> {
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             let _ = snapshot;
             Err(WorkspaceIndexError::InvalidConfig(
-                "persistent workspace indexing requires the zvec-rust-fts feature".to_owned(),
+                "persistent workspace indexing requires the a3s-vec-fts feature".to_owned(),
             ))
         }
 
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             let _operation = self.begin_operation()?;
             self.building.store(true, Ordering::Release);
@@ -482,14 +482,16 @@ impl WorkspacePersistentIndex {
             })?;
 
             let collection_path = staging.join("collection");
-            let mut index = super::zvec_rust::ZvecRustLexicalIndex::build_at_path(
+            let mut index = super::a3s_vec::A3sVecLexicalIndex::build_at_path(
                 &collection_path,
                 indexed_chunks
                     .iter()
                     .map(|chunk| (chunk.id.as_str(), chunk.text.as_ref())),
             )
             .map_err(|error| {
-                WorkspaceIndexError::InvalidConfig(format!("persistent zvec index failed: {error}"))
+                WorkspaceIndexError::InvalidConfig(format!(
+                    "persistent a3s-vec index failed: {error}"
+                ))
             })?;
             let manifest = GenerationManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
@@ -536,15 +538,15 @@ impl WorkspacePersistentIndex {
         &self,
         request: &LexicalSearchRequest,
     ) -> WorkspaceIndexResult<super::lexical::LexicalSearchResult> {
-        #[cfg(not(feature = "zvec-rust-fts"))]
+        #[cfg(not(feature = "a3s-vec-fts"))]
         {
             let _ = request;
             Err(WorkspaceIndexError::InvalidConfig(
-                "persistent workspace indexing requires the zvec-rust-fts feature".to_owned(),
+                "persistent workspace indexing requires the a3s-vec-fts feature".to_owned(),
             ))
         }
 
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             let _operation = self.begin_operation()?;
             super::lexical::validate_request(request)?;
@@ -600,7 +602,7 @@ impl WorkspacePersistentIndex {
                 .saturating_mul(request.max_candidate_files.max(1))
                 .min(state.index.document_count().max(request.limit));
             let ranked = state.index.search(&terms, query_limit).map_err(|error| {
-                WorkspaceIndexError::InvalidQuery(format!("zvec-rust FTS search failed: {error}"))
+                WorkspaceIndexError::InvalidQuery(format!("a3s-vec FTS search failed: {error}"))
             })?;
             let mut selected_files = HashSet::new();
             let mut hits = Vec::new();
@@ -643,13 +645,13 @@ impl WorkspacePersistentIndex {
         }
     }
 
-    /// Wait until all native work owned by this workspace index has finished.
+    /// Wait until all index work owned by this workspace has finished.
     ///
     /// Runtime task cancellation cannot interrupt `spawn_blocking`, so backend
     /// teardown uses this boundary before allowing a temporary workspace or
-    /// caller-owned root to disappear underneath RocksDB.
+    /// caller-owned root to disappear underneath an open collection.
     pub(crate) fn wait_for_idle(&self) {
-        #[cfg(feature = "zvec-rust-fts")]
+        #[cfg(feature = "a3s-vec-fts")]
         {
             let (lock, wake) = &*self.active_operations;
             let Ok(mut count) = lock.lock() else {
@@ -664,7 +666,7 @@ impl WorkspacePersistentIndex {
         }
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn begin_operation(&self) -> WorkspaceIndexResult<PersistentOperationGuard> {
         let (lock, _) = &*self.active_operations;
         let mut count = lock.lock().map_err(|_| WorkspaceIndexError::LockPoisoned)?;
@@ -676,7 +678,7 @@ impl WorkspacePersistentIndex {
         })
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn acquire_storage_lock(&self) -> WorkspaceIndexResult<std::fs::File> {
         use fs2::FileExt;
 
@@ -690,7 +692,7 @@ impl WorkspacePersistentIndex {
         Ok(file)
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn acquire_storage_read_lock(&self) -> WorkspaceIndexResult<std::fs::File> {
         let file = self.open_storage_lock_file()?;
         let path = self.root.join(STORAGE_LOCK_FILE);
@@ -701,7 +703,7 @@ impl WorkspacePersistentIndex {
         Ok(file)
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn open_storage_lock_file(&self) -> WorkspaceIndexResult<std::fs::File> {
         let path = self.root.join(STORAGE_LOCK_FILE);
         let file = fs::OpenOptions::new()
@@ -717,7 +719,7 @@ impl WorkspacePersistentIndex {
         Ok(file)
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn load_current(&self) -> WorkspaceIndexResult<()> {
         let Some((generation, manifest)) = self.read_current_manifest()? else {
             return Ok(());
@@ -738,7 +740,7 @@ impl WorkspacePersistentIndex {
                 .cloned()
                 .collect::<Vec<_>>(),
         );
-        let index = super::zvec_rust::ZvecRustLexicalIndex::open_persistent(
+        let index = super::a3s_vec::A3sVecLexicalIndex::open_persistent(
             generation_root.join("collection"),
             indexed_chunks
                 .iter()
@@ -746,7 +748,7 @@ impl WorkspacePersistentIndex {
         )
         .map_err(|error| {
             WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec index failed to open: {error}"
+                "persistent a3s-vec index failed to open: {error}"
             ))
         })?;
         let indexed_files = distinct_path_count(&indexed_chunks);
@@ -764,7 +766,7 @@ impl WorkspacePersistentIndex {
         Ok(())
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     fn read_current_manifest(&self) -> WorkspaceIndexResult<Option<(String, GenerationManifest)>> {
         let current = self.root.join(CURRENT_FILE);
         let generation = match fs::read_to_string(&current) {
@@ -779,7 +781,7 @@ impl WorkspacePersistentIndex {
         };
         if generation.is_empty() || !safe_generation_name(&generation) {
             return Err(WorkspaceIndexError::InvalidConfig(
-                "persistent zvec CURRENT contains an invalid generation name".to_owned(),
+                "persistent a3s-vec CURRENT contains an invalid generation name".to_owned(),
             ));
         }
         let generation_root = self.root.join(&generation);
@@ -788,7 +790,7 @@ impl WorkspacePersistentIndex {
             || manifest.lexical_engine != self.engine.stable_id()
         {
             return Err(WorkspaceIndexError::InvalidConfig(
-                "persistent zvec index schema or lexical engine is incompatible".to_owned(),
+                "persistent a3s-vec index schema or lexical engine is incompatible".to_owned(),
             ));
         }
         validate_persisted_chunks(&manifest.chunks)?;
@@ -796,7 +798,7 @@ impl WorkspacePersistentIndex {
     }
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn safe_generation_name(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|character| {
@@ -804,11 +806,11 @@ fn safe_generation_name(value: &str) -> bool {
         })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn gc_generations(root: &Path, current_generation: &str) -> WorkspaceIndexResult<()> {
     if !safe_generation_name(current_generation) {
         return Err(WorkspaceIndexError::InvalidConfig(
-            "persistent zvec cleanup received an invalid current generation".to_owned(),
+            "persistent a3s-vec cleanup received an invalid current generation".to_owned(),
         ));
     }
     for entry in fs::read_dir(root).map_err(|error| WorkspaceIndexError::ReadFailed {
@@ -835,7 +837,7 @@ fn gc_generations(root: &Path, current_generation: &str) -> WorkspaceIndexResult
     Ok(())
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn remove_path_if_exists(path: &Path) -> WorkspaceIndexResult<()> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -849,7 +851,7 @@ fn remove_path_if_exists(path: &Path) -> WorkspaceIndexResult<()> {
 
 /// Strip Windows extended-length prefixes that `canonicalize()` adds.
 ///
-/// Native zvec rejects `\\?\C:\...` paths as invalid. Persistent index roots
+/// Native a3s-vec rejects `\\?\C:\...` paths as invalid. Persistent index roots
 /// often inherit a canonicalized workspace path, so normalize at this boundary.
 fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
@@ -865,7 +867,7 @@ fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
     path
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn write_current(root: &Path, generation: &str) -> WorkspaceIndexResult<()> {
     let temporary = root.join(".CURRENT.tmp");
     fs::write(&temporary, format!("{generation}\n")).map_err(|error| {
@@ -884,12 +886,12 @@ fn write_current(root: &Path, generation: &str) -> WorkspaceIndexResult<()> {
     })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> WorkspaceIndexResult<()> {
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec(value).map_err(|error| {
         WorkspaceIndexError::InvalidConfig(format!(
-            "persistent zvec manifest serialization failed: {error}"
+            "persistent a3s-vec manifest serialization failed: {error}"
         ))
     })?;
     fs::write(&temporary, bytes).map_err(|error| WorkspaceIndexError::ReadFailed {
@@ -902,7 +904,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> WorkspaceIndexResu
     })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> WorkspaceIndexResult<T> {
     const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
     let file = fs::File::open(path).map_err(|error| WorkspaceIndexError::ReadFailed {
@@ -918,7 +920,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> WorkspaceIndexResult<
         .len();
     if declared_len > MAX_MANIFEST_BYTES {
         return Err(WorkspaceIndexError::InvalidConfig(format!(
-            "persistent zvec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
+            "persistent a3s-vec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
         )));
     }
     let mut reader = file.take(MAX_MANIFEST_BYTES + 1);
@@ -935,42 +937,44 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> WorkspaceIndexResult<
         })?;
     if bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(WorkspaceIndexError::InvalidConfig(format!(
-            "persistent zvec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
+            "persistent a3s-vec manifest exceeds the {MAX_MANIFEST_BYTES} byte limit"
         )));
     }
     serde_json::from_slice(&bytes).map_err(|error| {
-        WorkspaceIndexError::InvalidConfig(format!("persistent zvec manifest is invalid: {error}"))
+        WorkspaceIndexError::InvalidConfig(format!(
+            "persistent a3s-vec manifest is invalid: {error}"
+        ))
     })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn validate_persisted_chunks(chunks: &[PersistedChunk]) -> WorkspaceIndexResult<()> {
     let mut ids = HashSet::with_capacity(chunks.len());
     for (index, chunk) in chunks.iter().enumerate() {
         if chunk.path.is_empty() {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} has an empty path"
+                "persistent a3s-vec manifest chunk {index} has an empty path"
             )));
         }
         if chunk.start_byte >= chunk.end_byte {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} has an invalid byte range"
+                "persistent a3s-vec manifest chunk {index} has an invalid byte range"
             )));
         }
         if chunk.start_line == 0 || chunk.start_line > chunk.end_line {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} has an invalid line range"
+                "persistent a3s-vec manifest chunk {index} has an invalid line range"
             )));
         }
         if !valid_sha256_digest(&chunk.content_digest) || !valid_sha256_digest(&chunk.text_digest) {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} has a non-canonical digest"
+                "persistent a3s-vec manifest chunk {index} has a non-canonical digest"
             )));
         }
         let expected_text_digest = digest_content(&chunk.text);
         if chunk.text.is_empty() || expected_text_digest.as_ref() != chunk.text_digest {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} text digest does not match its payload"
+                "persistent a3s-vec manifest chunk {index} text digest does not match its payload"
             )));
         }
         let expected_id = chunk_id(
@@ -981,19 +985,19 @@ fn validate_persisted_chunks(chunks: &[PersistedChunk]) -> WorkspaceIndexResult<
         );
         if chunk.id != expected_id.as_str() {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest chunk {index} id does not bind its metadata"
+                "persistent a3s-vec manifest chunk {index} id does not bind its metadata"
             )));
         }
         if !ids.insert(chunk.id.as_str()) {
             return Err(WorkspaceIndexError::InvalidConfig(format!(
-                "persistent zvec manifest contains duplicate chunk id at index {index}"
+                "persistent a3s-vec manifest contains duplicate chunk id at index {index}"
             )));
         }
     }
     Ok(())
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn valid_sha256_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
@@ -1003,7 +1007,7 @@ fn valid_sha256_digest(value: &str) -> bool {
     })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn indexed_chunks_match(left: &[Arc<WorkspaceChunk>], right: &[Arc<WorkspaceChunk>]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1018,7 +1022,7 @@ fn indexed_chunks_match(left: &[Arc<WorkspaceChunk>], right: &[Arc<WorkspaceChun
         })
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 fn distinct_path_count(chunks: &[Arc<WorkspaceChunk>]) -> usize {
     chunks
         .iter()
@@ -1027,7 +1031,7 @@ fn distinct_path_count(chunks: &[Arc<WorkspaceChunk>]) -> usize {
         .len()
 }
 
-#[cfg(all(test, feature = "zvec-rust-fts"))]
+#[cfg(all(test, feature = "a3s-vec-fts"))]
 mod tests {
     use super::{strip_windows_verbatim_prefix, WorkspacePersistentIndex, MANIFEST_FILE};
     use crate::workspace::retrieval::{
@@ -1054,7 +1058,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "zvec-rust-fts")]
+    #[cfg(feature = "a3s-vec-fts")]
     #[test]
     fn persistent_index_opens_under_windows_verbatim_prefix() {
         let directory = tempfile::tempdir().expect("temporary index directory");
@@ -1078,7 +1082,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         catalog
@@ -1089,7 +1093,7 @@ mod tests {
                 "verbatim path persistent sentinel\n",
             )
             .expect("catalog replacement");
-        let index = WorkspacePersistentIndex::open(open_root, WorkspaceLexicalEngine::ZvecRust)
+        let index = WorkspacePersistentIndex::open(open_root, WorkspaceLexicalEngine::A3sVec)
             .expect("persistent index under verbatim prefix");
         index
             .sync_snapshot(&catalog.snapshot().expect("snapshot"))
@@ -1107,7 +1111,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         catalog
@@ -1120,7 +1124,7 @@ mod tests {
             .expect("catalog replacement");
 
         let index =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("persistent index");
         index
             .sync_snapshot(&catalog.snapshot().expect("snapshot"))
@@ -1134,7 +1138,7 @@ mod tests {
         drop(index);
 
         let reopened =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("reopen persistent index");
         let result = reopened.search(&request).expect("reopened query");
         assert_eq!(result.hits.len(), 1);
@@ -1164,7 +1168,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         let path = WorkspacePath::from_normalized("src/lib.rs");
@@ -1172,7 +1176,7 @@ mod tests {
             .replace_file(&path, Some("rust"), 1, "stable content sentinel\n")
             .expect("first replacement");
         let index =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("persistent index");
         index
             .sync_snapshot(&catalog.snapshot().expect("first snapshot"))
@@ -1209,12 +1213,12 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         let path = WorkspacePath::from_normalized("src/lib.rs");
         let index =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("persistent index");
 
         catalog
@@ -1261,7 +1265,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         catalog
@@ -1274,7 +1278,7 @@ mod tests {
             .expect("catalog replacement");
 
         let index =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("persistent index");
         let snapshot = catalog.snapshot().expect("snapshot");
         index.sync_snapshot(&snapshot).expect("generation write");
@@ -1292,7 +1296,7 @@ mod tests {
         .expect("tampered manifest");
 
         let reopened =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("reopen should remain recoverable");
         assert!(!reopened.is_ready());
         assert_eq!(
@@ -1319,7 +1323,7 @@ mod tests {
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
             ChunkCatalogLimits::default(),
-            WorkspaceLexicalEngine::ZvecRust,
+            WorkspaceLexicalEngine::A3sVec,
         )
         .expect("catalog");
         catalog
@@ -1331,7 +1335,7 @@ mod tests {
             )
             .expect("catalog replacement");
         let index =
-            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::ZvecRust)
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
                 .expect("persistent index");
         index
             .sync_snapshot(&catalog.snapshot().expect("snapshot"))

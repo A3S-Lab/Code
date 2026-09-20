@@ -20,7 +20,7 @@ scripts/workspace_search_production.sh --full
 
 The scale profile creates a temporary workspace, starts the real deferred
 manifest scanner, activates the normal retrieval services, and waits for the
-background zvec generation. It then verifies all of the invariants that matter
+background a3s-vec generation. It then verifies all of the invariants that matter
 for production use:
 
 - every source file is admitted and every chunk is indexed;
@@ -31,7 +31,7 @@ for production use:
 - a fresh `WorkspacePersistentIndex` reopens the published generation and
   answers the same query.
 
-The automatic persistent path uses native zvec for the workspace-wide durable
+The automatic persistent path uses a3s-vec for the workspace-wide durable
 projection. During cold admission, the session catalog uses the portable
 scorer as a verified fallback, so the runtime does not open one native
 collection per source file. This keeps admission proportional to source bytes;
@@ -54,7 +54,7 @@ A3S_WORKSPACE_ACCEPTANCE_FILES=1024 \
 ```
 
 The native feature can be pointed at a verified packaged library with
-`A3S_WORKSPACE_FEATURES=zvec-rust-fts` and the normal `ZVEC_LIB_DIR` packaging
+`A3S_WORKSPACE_FEATURES=a3s-vec-fts` and the pure-Rust a3s-vec dependency
 configuration. The default bundled feature is intended for local and CI
 qualification; release artifacts must still pass the repository's native
 library attestation and packaging checks.

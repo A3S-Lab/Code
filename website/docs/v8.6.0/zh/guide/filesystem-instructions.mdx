@@ -38,7 +38,6 @@ Output:
 
 ## 会被哪里使用
 
-`serve_agent_dir` 会在启动时读取 `instructions.md`，并把它应用到每个已启用 schedule 的 session。配合 `SessionStore` 恢复历史时，历史上下文来自 store，但当前的 `instructions.md` 会重新加载，因此修改角色文件会在下一次重启后生效。
 
 交互式 session 如果只需要临时角色，可以直接使用 SDK 的 prompt slots；当角色需要随仓库保存、接受 review 或被多个调度复用时，再把它固化到 `instructions.md`。
 

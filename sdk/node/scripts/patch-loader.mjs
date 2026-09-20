@@ -167,7 +167,7 @@ wrapA3sCodeErrors(Agent && Agent.prototype, [
   'session', 'sessionAsync', 'resumeSession', 'resumeSessionAsync',
   'sessionForAgent', 'sessionForAgentAsync', 'sessionForWorker',
   'sessionForWorkerAsync', 'refreshMcpTools', 'replaceSessionAsync',
-  'serveAgentDir', 'disconnectIdleMcp', 'closeSession', 'close',
+  'disconnectIdleMcp', 'closeSession', 'close',
 ])
 wrapA3sCodeErrors(Session && Session.prototype, [
   'send', 'run', 'resumeRun', 'sendRequest', 'stream', 'streamRequest',

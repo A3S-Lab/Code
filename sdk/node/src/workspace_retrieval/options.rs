@@ -5,13 +5,13 @@ use super::*;
 pub enum WorkspaceLexicalEngineOption {
     #[napi(value = "portable")]
     Portable,
-    #[napi(value = "zvec_rust")]
-    ZvecRust,
+    #[napi(value = "a3s_vec")]
+    A3sVec,
 }
 
 fn default_lexical_engine() -> WorkspaceLexicalEngineOption {
-    if cfg!(feature = "zvec-rust-fts") {
-        WorkspaceLexicalEngineOption::ZvecRust
+    if cfg!(feature = "a3s-vec-fts") {
+        WorkspaceLexicalEngineOption::A3sVec
     } else {
         WorkspaceLexicalEngineOption::Portable
     }
@@ -226,8 +226,8 @@ pub(crate) fn js_workspace_retrieval_to_rust(
             WorkspaceLexicalEngineOption::Portable => {
                 a3s_code_core::WorkspaceLexicalEngine::Portable
             }
-            WorkspaceLexicalEngineOption::ZvecRust => {
-                a3s_code_core::WorkspaceLexicalEngine::ZvecRust
+            WorkspaceLexicalEngineOption::A3sVec => {
+                a3s_code_core::WorkspaceLexicalEngine::A3sVec
             }
         },
     );

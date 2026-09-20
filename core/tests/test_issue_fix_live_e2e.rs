@@ -63,7 +63,7 @@ fn options(session_id: &str, allows: &[&str]) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(10)
-        .with_llm_api_timeout(120_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }

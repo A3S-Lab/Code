@@ -32,7 +32,6 @@ A3S Box, or its own task system.
 | Channels              | Managed sessions, open-platform WebSocket/SSE, host UI                   | A3S Code does not hard-code channels. Hosts connect streaming events and run replay to any frontend.                                                     |
 | Connections           | MCP, provider config, host-injected credentials                          | Connections are configured and authorized by the host. Do not put tokens in the agent directory.                                                         |
 | Subagents             | [Tasks](/guide/tasks), [Teams](/guide/teams), `workerAgents`             | Supports focused or multi-item `task` calls, automatic delegation, and dynamic worker agents.                                                            |
-| Schedules             | AgentDir `schedules/` + `serve_agent_dir`                                | Every schedule has an independent session id and can recover context after restart when a session store is configured.                                   |
 | Durable execution     | `SessionStore`, run replay, `parallelResumable`                          | Session history, run events, and resumable workflow checkpoints can be persisted; failed steps retry on resume.                                          |
 | Human-in-the-loop     | [Security](/guide/security), confirmation inheritance, tool confirmation | High-risk tools can request confirmation. Child runs can auto-approve, fail on Ask, or inherit the parent policy.                                        |
 | Evaluations           | [Verification](/guide/verification), reports, regression evidence        | A3S Code productizes evaluation as verification commands, evidence summaries, run replay, and release gates rather than a separate eval suite.           |
@@ -151,7 +150,6 @@ Summarize merged changes since the last run, inspect release risks,
 and report only blockers plus required verification.
 ```
 
-`serve_agent_dir` creates an independent session for every schedule. With a `SessionStore`, restart reloads the current directory config and tools while recovering prior context from the store.
 
 ## Tools And Connections
 

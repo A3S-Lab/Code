@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, ServeHandle, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -333,7 +333,6 @@ module.exports.CallbackEmbeddingProvider = CallbackEmbeddingProvider
 module.exports.DeterministicWorkspaceReranker = DeterministicWorkspaceReranker
 module.exports.ImmutableContentAdapterOptions = ImmutableContentAdapterOptions
 module.exports.Agent = Agent
-module.exports.ServeHandle = ServeHandle
 
 // a3s-code: bundled Moli runtime bridge
 function a3sConfigureBundledMoli() {
@@ -481,7 +480,7 @@ wrapA3sCodeErrors(Agent && Agent.prototype, [
   'session', 'sessionAsync', 'resumeSession', 'resumeSessionAsync',
   'sessionForAgent', 'sessionForAgentAsync', 'sessionForWorker',
   'sessionForWorkerAsync', 'refreshMcpTools', 'replaceSessionAsync',
-  'serveAgentDir', 'disconnectIdleMcp', 'closeSession', 'close',
+  'disconnectIdleMcp', 'closeSession', 'close',
 ])
 wrapA3sCodeErrors(Session && Session.prototype, [
   'send', 'run', 'resumeRun', 'sendRequest', 'stream', 'streamRequest',

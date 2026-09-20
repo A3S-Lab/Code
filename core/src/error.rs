@@ -154,6 +154,7 @@ pub enum CodeError {
     Capability(#[from] crate::capability::CapabilityRuntimeError),
 
     /// A3S Flow definition, replay, store, or runtime failure.
+    #[cfg(feature = "dynamic-workflow")]
     #[error("Flow error: {0}")]
     Flow(#[from] a3s_flow::FlowError),
 
@@ -198,6 +199,7 @@ impl CodeError {
             Self::Mcp(_) => "MCP_ERROR",
             Self::Queue(_) => "QUEUE_ERROR",
             Self::Capability(_) => "CAPABILITY_RUNTIME_ERROR",
+            #[cfg(feature = "dynamic-workflow")]
             Self::Flow(_) => "FLOW_ERROR",
             Self::Io(_) => "IO_ERROR",
             Self::Serialization(_) => "SERIALIZATION_ERROR",

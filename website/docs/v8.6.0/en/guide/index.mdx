@@ -14,7 +14,7 @@ permissions, child tasks, workspace search, and session save/resume.
 In 8.6.x, `read` returns JPEG/PNG/GIF/WebP as image attachments, and the
 OpenAI-compatible path keeps multimodal `image_url` parts in tool-result
 messages. Literal `grep` can still use a small trigram cache so it opens fewer
-files first; ranked search still goes through `bm25` / zvec. Session stores
+files first; ranked search still goes through `bm25` / a3s-vec. Session stores
 take a flock on reopen so a bad WAL does not mint colliding sequence numbers.
 
 ## Design rules
@@ -22,7 +22,7 @@ take a flock on reopen so a bad WAL does not mint colliding sequence numbers.
 | Rule                        | Meaning                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Thin default                | Core `default` = `local-code`. Advanced evaluation, server, and headless search are explicit features. |
-| Grep ≠ zvec                 | Exact `grep` owns matches; trigram pruning only narrows candidates and fails open. Use `bm25` to rank. |
+| Grep ≠ a3s-vec                 | Exact `grep` owns matches; trigram pruning only narrows candidates and fails open. Use `bm25` to rank. |
 | One delegation path         | Multi-item fan-out uses `task` / `session.tasks`. Do not restore `parallel_task`.                      |
 | Active-only memory          | Durable serving is `active_recall`. Candidate shadow mode is refused.                                  |
 | Evidence before Gate claims | Incomplete or retention-gapped evidence cannot satisfy Gate evaluation.                                |
@@ -54,10 +54,10 @@ same events, so every UI does not need its own agent loop.
 | Child tasks     | Use the model-visible `task` tool or the host-side `session.task(...)` and `session.tasks(...)` helpers with built-in and custom agents. One item is focused; multiple independent items fan out concurrently.                                                             |
 | Scheduling      | One [Agent-wide priority scheduler](/guide/tasks#agent-wide-priority-scheduler) shares local execution capacity across sessions, direct tools, detached children, and host workflows, with FIFO ordering, aging, cancellation, and occupancy snapshots.                    |
 | Workflows       | Use [`session.parallel`](/guide/orchestration), pipelines, phases, checkpoints, loop limits, and budget records for fixed, recoverable workflows.                                                                                                                          |
-| Scheduled work  | Run scheduled AgentDir turns through `serveAgentDir` / `serve_agent_dir`; each schedule keeps a stable `schedule:<name>` session.                                                                                                                                          |
+| Worker agents   | Load `.a3s/agents/` definitions for `task` / auto-delegation.                                                                                                                                                                              |
 | Access control  | Apply permission rules, user confirmation, budgets, Workspace path checks, tool timeouts, lifecycle hooks, and output cleanup during execution.                                                                                                                            |
 | Workspaces      | [Workspace backends](/guide/workspace-backends) support local files, application-provided workspaces, optional S3-compatible storage, and remote Git services. The native Harness can isolate conversations in detached Git worktrees.                                     |
-| Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, zvec-rust FTS/BM25, optional host embeddings, A3S Memory exact vectors, hybrid RRF, and optional deterministic CPU reranking without a vector database service. |
+| Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, a3s-vec FTS/BM25, optional host embeddings, A3S Memory exact vectors, hybrid RRF, and optional deterministic CPU reranking without a vector database service. |
 | Events          | `EventEnvelopeV1` is shared by Rust, Node.js, Python, and Go. Unknown event payloads and metadata are preserved.                                                                                                                                                           |
 | Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                                  |
 | Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                                  |
@@ -98,7 +98,7 @@ same events, so every UI does not need its own agent loop.
   without a `/v1` suffix or a duplicated `/paas/v4` path segment.
 - **Faster literal `grep` (`CODE-G1`, since 8.5.1).** Builds a fail-open
   trigram cache under `.a3s-code/grep-trigram`. Exact regex still runs in
-  Code; durable zvec FTS is not opened on this path.
+  Code; durable a3s-vec FTS is not opened on this path.
 - **Session-store WAL flock (since 8.5.1).** Concurrent writers re-read the
   durable max sequence under flock; a corrupt WAL can be quarantined so the
   host keeps going from snapshots.
@@ -107,8 +107,8 @@ same events, so every UI does not need its own agent loop.
 ## Earlier v8.4.0 additions
 
 - Library and SDK **defaults are thin**: `a3s-code-core` defaults to
-  `local-code` (bundled zvec FTS); Node/Python/Go SDK crates default to
-  `zvec-rust-fts-bundled`. Enable `advanced-harness`, `server`, and/or
+  `local-code` (a3s-vec FTS); Node/Python/Go SDK crates default to
+  `a3s-vec-fts-bundled`. Enable `advanced-harness`, `server`, and/or
   `headless-search` explicitly when product embeds need them.
 - Model-visible **`parallel_task` is removed**; multi-item fan-out uses the
   `task` tool. Matching Node/Python/Go helpers are gone.
@@ -136,7 +136,7 @@ same events, so every UI does not need its own agent loop.
   data, or external. Sessions expose secret-free `model_middleware_health`
   counters on Rust and all four SDKs.
 - Workspace retrieval binds results to a tamper-evident source snapshot
-  (KRN-4). Persistent BM25/zvec indexing is release-qualified on Windows and
+  (KRN-4). Persistent BM25/a3s-vec indexing is release-qualified on Windows and
   Linux, including stripping Windows `\\?\` verbatim paths before native opens.
 - Node.js and Python FFI runtime initialization is fallible (KRN-9).
   `TASK_ADMISSION_AT_CAPACITY` maps consistently across SDKs.
@@ -199,7 +199,7 @@ same events, so every UI does not need its own agent loop.
   chunking, readiness and batching metrics, optional deterministic reranking,
   cancellation, current-source digest verification, and bounded cleanup.
   Non-text assets are rejected before chunking or embedding.
-- Product builds use zvec-rust for lexical FTS/BM25 and A3S Memory for exact
+- Product builds use a3s-vec for lexical FTS/BM25 and A3S Memory for exact
   semantic vectors. Native lexical handles are bounded and temporary; semantic
   vectors are released with the owning session.
 - Model-bound run evidence records the effective capability and policy
@@ -411,7 +411,7 @@ Check access in your application before exposing them to users.
 
 - [A3S Code TUI](/guide/tui) explains installation, config discovery, slash commands, and effort profiles.
 - [SDKs and APIs](/api/#go-module-and-bridge) explains Go module and bridge installation; the Go examples then stay beside Node.js and Python throughout the shared guides.
-- [Filesystem-first](/guide/filesystem-first) covers `AGENTS.md`, ACL, AgentDir, Skills, tools, and schedules.
+- [Filesystem conventions](/guide/filesystem-first) covers `AGENTS.md`, ACL, Skills, and `.a3s/agents/` workers.
 - [API contract](/guide/api-contract) lists the Node.js API covered by integration tests.
 - [Sessions](/guide/sessions) covers creation, streaming, run state, saving, resuming, and cancellation.
 - [Tools](/guide/tools) covers direct calls, typed errors, structured output, and QuickJS programs.

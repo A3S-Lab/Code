@@ -28,7 +28,7 @@ type WorkspaceLexicalEngine string
 
 const (
 	WorkspaceLexicalEnginePortable WorkspaceLexicalEngine = "portable"
-	WorkspaceLexicalEngineZvecRust WorkspaceLexicalEngine = "zvec_rust"
+	WorkspaceLexicalEngineA3sVec   WorkspaceLexicalEngine = "a3s_vec"
 )
 
 type WorkspaceEmbeddingBatchMetrics struct {

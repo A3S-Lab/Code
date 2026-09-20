@@ -20,7 +20,7 @@ use a3s_code_core::{Agent, AgentEvent, RunStatus, SessionOptions};
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 
 async fn configured_agent() -> Agent {
     Agent::from_config(load_pinned_layer_c_config())
@@ -45,7 +45,7 @@ fn checklist_options(session_id: &str) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(4)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }

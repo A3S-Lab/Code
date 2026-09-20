@@ -25,7 +25,7 @@ fi
 if [ "${1:-}" = "--dry-run" ]; then
   cd "$WORKSPACE"
   A3S_CONFIG_FILE="$CONFIG_FILE" cargo test --locked -p a3s-code-core \
-    --features zvec-rust-fts --test test_workspace_search_real_llm \
+    --features a3s-vec-fts --test test_workspace_search_real_llm \
     --no-run
   exit 0
 fi
@@ -42,17 +42,17 @@ export RUST_TEST_THREADS=1
 # Establish the local correctness and acceleration invariant before spending a
 # provider request. This gate is deterministic and proves the same public
 # service constructor used by the live model test selects the native index.
-cargo test --locked -p a3s-code-core --features zvec-rust-fts --lib \
+cargo test --locked -p a3s-code-core --features a3s-vec-fts --lib \
   tools::builtin::bm25::tests -- --nocapture --test-threads=1
 
-cargo test --locked -p a3s-code-core --features zvec-rust-fts --lib \
+cargo test --locked -p a3s-code-core --features a3s-vec-fts --lib \
   workspace::retrieval::runtime::tests \
   -- --nocapture --test-threads=1
 
-cargo test --locked -p a3s-code-core --features zvec-rust-fts --lib \
+cargo test --locked -p a3s-code-core --features a3s-vec-fts --lib \
   workspace::retrieval::persistent::tests \
   -- --nocapture --test-threads=1
 
 cargo test --locked -p a3s-code-core \
-  --features zvec-rust-fts --test test_workspace_search_real_llm \
+  --features a3s-vec-fts --test test_workspace_search_real_llm \
   -- --ignored --nocapture --test-threads=1

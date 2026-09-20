@@ -27,18 +27,6 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Stage verified zvec runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p sdk/node/zvec
-          bash scripts/package_zvec.sh \
-            x86_64-unknown-linux-gnu sdk/node/zvec
-          bash scripts/configure_zvec_runtime.sh \
-            x86_64-unknown-linux-gnu sdk/node/zvec
-          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)" >> "$GITHUB_ENV"
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -108,26 +96,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install 'maturin>=1,<2' pytest
           python sdk/python/scripts/clean_native_artifacts.py
-          mkdir -p sdk/python/python/a3s_code/zvec
-          bash scripts/package_zvec.sh \
-            x86_64-unknown-linux-gnu sdk/python/python/a3s_code/zvec
-          export ZVEC_LIB_DIR="$PWD/sdk/python/python/a3s_code/zvec"
-          export ZVEC_AUTO_BUILD=0
-          export RUSTFLAGS="$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)"
-          export LD_LIBRARY_PATH="$ZVEC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           maturin develop --locked --manifest-path sdk/python/Cargo.toml \
             --features advanced-harness,server
-          # Native zvec/pyo3 teardown can SIGSEGV after a green pytest summary.
-          set +e
-          pytest_out="$(python -m pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py 2>&1)"
-          pytest_ec=$?
-          set -e
-          printf '%s\n' "$pytest_out"
-          if [[ "$pytest_ec" -eq 139 ]] && grep -Eq '[0-9]+ passed' <<<"$pytest_out"; then
-            echo "Ignoring interpreter teardown SIGSEGV after green pytest summary"
-          elif [[ "$pytest_ec" -ne 0 ]]; then
-            exit "$pytest_ec"
-          fi
+          pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py
           python sdk/python/tests/test_budget_guard.py
           python sdk/python/tests/test_parallel_budget.py
           python sdk/python/tests/test_session_close.py

@@ -14,7 +14,7 @@ use crate::tools::Tool;
 
 use super::{
     CapabilityEffect, CapabilityId, CapabilityKind, CapabilityProjectionError,
-    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration, FlowBinding,
+    CapabilityReadinessPlan, CapabilitySet, CapabilityValue, CodeCatalogGeneration,
     KnowledgeSurfaceBinding, McpBinding, ScopeClosePolicy, Sha256Digest, UiBinding,
     UseGenerationLeaseProvider,
 };
@@ -199,7 +199,8 @@ impl CapabilityProjection {
         }
     }
 
-    pub fn flow(&self, id: &CapabilityId) -> Option<&FlowBinding> {
+    #[cfg(feature = "dynamic-workflow")]
+    pub fn flow(&self, id: &CapabilityId) -> Option<&crate::capability::FlowBinding> {
         match self.values.get(id) {
             Some(CapabilityValue::Flow(value)) => Some(value.as_ref()),
             _ => None,

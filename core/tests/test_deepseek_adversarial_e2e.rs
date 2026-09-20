@@ -31,7 +31,7 @@ use a3s_code_core::{Agent, AgentEvent, RunStatus, SessionOptions, ToolRequestOri
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
 const FAKE_API_KEY: &str = "sk-AAAAAAAAAAAAAAAAAAAAAAAA";
 #[cfg(not(windows))]
@@ -64,7 +64,7 @@ fn bounded_options(session_id: &str, policy: PermissionPolicy) -> SessionOptions
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(5)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_tool_result_transform_policy(ToolResultTransformPolicyV1::context_efficient())
         .with_temperature(0.0)
         .with_continuation(false)

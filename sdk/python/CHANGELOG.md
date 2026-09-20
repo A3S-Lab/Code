@@ -83,7 +83,7 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 ### Added
 
 - Bundled Core 8.5.0: default `local-code` in-tree trigram pruning for workspace
-  `grep` candidates (`CODE-G1`), without opening durable zvec FTS.
+  `grep` candidates (`CODE-G1`), without opening durable a3s-vec FTS.
 
 ## [8.4.0] - 2026-09-08
 
@@ -96,7 +96,7 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ### Breaking
 
-- Default crate features are now `zvec-rust-fts-bundled` only; enable
+- Default crate features are now `a3s-vec-fts` only; enable
   `advanced-harness`, `server`, and/or `headless-search` explicitly.
 - Removed `parallel_task` helper; use multi-item `task` / `tasks`.
 

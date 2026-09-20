@@ -1,4 +1,4 @@
-//! Production-style qualification of the workspace-owned zvec FTS projection.
+//! Production-style qualification of the workspace-owned a3s-vec FTS projection.
 //!
 //! This exercises the real manifest scanner, catalog runtime, background
 //! index coordinator, concurrent readers, same-content generation reuse,
@@ -6,7 +6,7 @@
 //!
 //! Run from `crates/code` in release mode:
 //!
-//! `cargo run --locked --release -p a3s-code-core --example workspace_persistent_index_production --features zvec-rust-fts-bundled`
+//! `cargo run --locked --release -p a3s-code-core --example workspace_persistent_index_production --features a3s-vec-fts`
 
 use a3s_code_core::workspace::{
     scan_workspace_files, LexicalSearchRequest, ManifestWorkspaceBackend, WorkspaceLexicalEngine,
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
     drop(persistent);
     drop(services);
     drop(backend);
-    let reopened = WorkspacePersistentIndex::open(&index_root, WorkspaceLexicalEngine::ZvecRust)
+    let reopened = WorkspacePersistentIndex::open(&index_root, WorkspaceLexicalEngine::A3sVec)
         .context("reopen persistent workspace index")?;
     let restart_hits = reopened
         .search(&LexicalSearchRequest::new("production changed sentinel"))?

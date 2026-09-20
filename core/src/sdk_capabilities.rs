@@ -383,14 +383,6 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
         tier: CapabilityTier::Advanced,
     },
     CapabilitySpec {
-        id: "filesystem_agent_server",
-        category: "deployment",
-        description: "Serve agent directories with validated schedules, tools, readiness, and joined shutdown. Requires the SDK `serve` Cargo feature.",
-        operations: &["agent.serve_agent_dir", "serve.status", "serve.stop"],
-        host_owned: true,
-        tier: CapabilityTier::Advanced,
-    },
-    CapabilitySpec {
         id: "opentelemetry",
         category: "observability",
         description: "Export redacted runtime traces and metrics through the optional OTLP integration. Requires the Core `telemetry` Cargo feature.",
@@ -481,7 +473,6 @@ mod tests {
             "state_graph",
             "programmable_workflows",
             "s3_workspace",
-            "filesystem_agent_server",
             "opentelemetry",
             "moli_runtime",
         ];
@@ -550,7 +541,6 @@ mod tests {
                 "evaluation_substrate"
                     | "state_graph"
                     | "s3_workspace"
-                    | "filesystem_agent_server"
                     | "programmable_workflows"
             )
         }));

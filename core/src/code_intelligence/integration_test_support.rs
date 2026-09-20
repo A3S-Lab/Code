@@ -18,7 +18,7 @@ pub(super) fn compile_fake_server(output: &Path) {
             .arg(source)
             .arg("-o")
             .arg(&binary);
-        let result = crate::tools::process::output_std_with_native_gate(&mut command)
+        let result = crate::tools::process::output_std_child(&mut command)
             .expect("rustc must be available while Cargo tests are running");
         assert!(
             result.status.success(),

@@ -19,7 +19,7 @@ use a3s_code_core::{
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const REAL_TIMEOUT: Duration = Duration::from_secs(420);
+const REAL_TIMEOUT: Duration = Duration::from_secs(900);
 const SPEC: &str = r#"# Label summary contract
 
 `normalizeLabels(values)` must trim every string, lowercase it, discard empty
@@ -86,7 +86,7 @@ fn session_options(model: &str) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(16)
-        .with_llm_api_timeout(120_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(

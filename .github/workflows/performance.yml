@@ -12,10 +12,6 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "core/Cargo.toml"
-      - "core/resources/zvec-runtime-manifest.json"
-      - "scripts/package_zvec.sh"
-      - "scripts/configure_zvec_runtime.sh"
-      - "scripts/zvec_rustflags.sh"
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
       - "core/examples/context_memory_benchmark.rs"
@@ -48,10 +44,6 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "core/Cargo.toml"
-      - "core/resources/zvec-runtime-manifest.json"
-      - "scripts/package_zvec.sh"
-      - "scripts/configure_zvec_runtime.sh"
-      - "scripts/zvec_rustflags.sh"
       - "core/examples/agent_convergence_benchmark.rs"
       - "core/examples/code_intelligence_benchmark.rs"
       - "core/examples/context_memory_benchmark.rs"
@@ -106,17 +98,6 @@ jobs:
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Stage verified zvec runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p zvec-runtime
-          bash scripts/package_zvec.sh x86_64-unknown-linux-gnu zvec-runtime
-          bash scripts/configure_zvec_runtime.sh \
-            x86_64-unknown-linux-gnu zvec-runtime
-          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)" >> "$GITHUB_ENV"
 
       - name: Create report directory
         run: mkdir -p performance-results

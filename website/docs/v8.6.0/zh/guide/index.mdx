@@ -13,7 +13,7 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 
 8.6.x 里，`read` 对 JPEG/PNG/GIF/WebP 返回图片附件；OpenAI 兼容路径会在工具结果
 消息中保留多模态 `image_url`，而不是压成纯文本。字面量 `grep` 仍可用小的
-trigram 缓存缩小文件范围；排序检索仍走 `bm25` / zvec。会话存储重开时会拿
+trigram 缓存缩小文件范围；排序检索仍走 `bm25` / a3s-vec。会话存储重开时会拿
 flock，坏 WAL 不会再写出冲突序号。
 
 ## 设计规则
@@ -21,7 +21,7 @@ flock，坏 WAL 不会再写出冲突序号。
 | 规则             | 含义                                                                       |
 | ---------------- | -------------------------------------------------------------------------- |
 | 默认变薄         | Core `default` = `local-code`。Advanced 评估、server、无头搜索需显式开启。 |
-| Grep ≠ zvec      | 精确 `grep` 负责匹配；trigram 只缩小候选，失败就回退。排序检索用 `bm25`。  |
+| Grep ≠ a3s-vec      | 精确 `grep` 负责匹配；trigram 只缩小候选，失败就回退。排序检索用 `bm25`。  |
 | 单一委派路径     | 多条目扇出使用 `task` / `session.tasks`。不要恢复 `parallel_task`。        |
 | 仅 Active 记忆   | Durable 服务路径为 `active_recall`。拒绝 Candidate shadow。                |
 | Gate 先要证据    | 证据不完整或存在 retention 缺口时，Gate 不可宣称已完成评估。               |
@@ -52,7 +52,7 @@ flock，坏 WAL 不会再写出冲突序号。
 | 子任务     | 通过模型可见的 `task`，或宿主侧 `session.task(...)` 与 `session.tasks(...)` 使用内置或自定义 Agent；单项聚焦执行，多项独立任务并发扇出。                                          |
 | 任务调度   | 一个 [Agent 级优先级调度器](/guide/tasks#agent-wide-priority-scheduler)在 Session、直接工具、detached 子任务和宿主工作流之间共享本地执行容量，并提供 FIFO、老化、取消和占用快照。 |
 | 流程编排   | [`session.parallel`](/guide/orchestration)、`session.pipeline`、阶段、Checkpoint、循环上限和预算记录，可用于编写固定且可恢复的工作流。                                            |
-| 定时任务   | [AgentDir](/guide/agent-dir) 可以通过 `serveAgentDir` / `serve_agent_dir` 运行定时 Turn；每个 Schedule 使用稳定的 `schedule:<name>` Session。                                     |
+| Worker agents | 通过 `.a3s/agents/` 加载定义，供 `task` / 自动委派使用。 |
 | 安全       | 权限策略、用户确认、预算、Workspace 路径检查、工具超时、生命周期 Hook 和输出清理都会在执行过程中生效。                                                                            |
 | Workspace  | [Workspace 后端](/guide/workspace-backends) 支持本地文件、应用提供的 Workspace、可选的 S3 兼容存储和 remote-git 服务；原生 Harness 可用 detached Git worktree 隔离会话。          |
 | 工作区检索 | [工作区检索](/guide/context#workspace-retrieval)提供异步 Session 文本目录、增量 BM25、可选宿主 Embedding、精确内存向量、Hybrid RRF 与可选确定性 CPU Rerank，不依赖向量数据库。    |
@@ -90,15 +90,15 @@ flock，坏 WAL 不会再写出冲突序号。
   `/chat/completions`，不会加 `/v1`，也不会重复 `/paas/v4`。
 - **更快的字面量 `grep`（`CODE-G1`，自 8.5.1）。** 在 `.a3s-code/grep-trigram`
   下建失败可回退的 trigram 缓存。精确正则仍在 Code 里跑，这条路径不打开持久
-  zvec FTS。
+  a3s-vec FTS。
 - **会话存储 WAL flock（自 8.5.1）。** 并发写者在 flock 下重读持久最大序号；
   坏 WAL 可以隔离，宿主从快照继续。
 - 仍包含 8.4 的小 harness 默认，以及 8.3 的耐久 / 信任改动。
 
 ## 早期 v8.4.0 新增内容
 
-- 库与 SDK **默认变薄**：`a3s-code-core` 默认 `local-code`（捆绑 zvec FTS）；
-  Node / Python / Go SDK crate 默认 `zvec-rust-fts-bundled`。产品嵌入需要时再显式
+- 库与 SDK **默认变薄**：`a3s-code-core` 默认 `local-code`（a3s-vec FTS）；
+  Node / Python / Go SDK crate 默认 `a3s-vec-fts-bundled`。产品嵌入需要时再显式
   启用 `advanced-harness`、`server` 和/或 `headless-search`。
 - 模型可见的 **`parallel_task` 已移除**；多条目扇出统一使用 `task` 工具。对应的
   Node / Python / Go 辅助 API 一并删除。
@@ -120,7 +120,7 @@ flock，坏 WAL 不会再写出冲突序号。
   以及引用感知的 Artifact GC。
 - 每个工具结果都带有类型化信任标签（KRN-5）：trusted、workspace data 或
   external。Rust 与四种 SDK 都暴露无密钥的 `model_middleware_health` 计数器。
-- 工作区检索把结果绑定到可防篡改的来源快照（KRN-4）。持久 BM25 / zvec 索引在
+- 工作区检索把结果绑定到可防篡改的来源快照（KRN-4）。持久 BM25 / a3s-vec 索引在
   Windows 与 Linux 上通过发布资格验证，包括在原生打开前剥离 Windows `\\?\` 路径。
 - Node.js / Python 的 FFI 运行时初始化可失败（KRN-9）。
   `TASK_ADMISSION_AT_CAPACITY` 在各 SDK 上映射一致。
@@ -336,7 +336,7 @@ await agent.close();
 
 - [A3S Code TUI](/guide/tui) 说明安装、配置发现、斜杠命令和 Effort。
 - [SDK 与 API](/api/#go-module-与桥接程序)说明 Go 模块和桥接程序的安装方式；后续 Go 示例会与 Node.js、Python 一起出现在各通用章节中。
-- [文件系统优先](/guide/filesystem-first) 介绍 `AGENTS.md`、ACL、AgentDir、Skill、工具和定时任务。
+- [文件系统约定](/guide/filesystem-first) 覆盖 `AGENTS.md`、ACL、Skill 与 `.a3s/agents/` worker。
 - [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。
 - [会话](/guide/sessions) 介绍创建、流式输出、运行状态、保存、恢复和取消。
 - [工具](/guide/tools) 介绍直接调用、错误类型、结构化输出和 QuickJS Program。

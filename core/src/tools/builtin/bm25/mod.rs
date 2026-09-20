@@ -1,4 +1,4 @@
-//! zvec-rust FTS/BM25 workspace search.
+//! a3s-vec FTS/BM25 workspace search.
 
 mod ranking;
 #[cfg(test)]
@@ -73,7 +73,7 @@ impl Tool for Bm25Tool {
     }
 
     fn description(&self) -> &str {
-        "Rank workspace text chunks with zvec-rust FTS/BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
+        "Rank workspace text chunks with a3s-vec FTS/BM25 lexical relevance. Use for multi-term or natural-language repository searches; use grep for exact strings and regular expressions."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -406,11 +406,11 @@ async fn search_persistent_catalog(
     if let Some(serde_json::Value::Object(metadata)) = output.metadata.as_mut() {
         metadata.insert(
             "index_kind".to_owned(),
-            serde_json::json!("persistent_zvec_fts"),
+            serde_json::json!("persistent_a3s_vec_fts"),
         );
         metadata.insert(
             "execution_mode".to_owned(),
-            serde_json::json!("persistent_zvec_fts"),
+            serde_json::json!("persistent_a3s_vec_fts"),
         );
         metadata.insert("source_verified".to_owned(), serde_json::json!(true));
         metadata.insert(

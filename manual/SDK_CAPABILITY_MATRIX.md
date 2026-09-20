@@ -32,7 +32,7 @@ enabled its required resource.
 Every record also has a `tier` (`baseline` | `advanced`). Use
 `sdk_baseline_capabilities()` for the thin coding harness, and treat Advanced
 IDs as requiring an explicit Cargo profile (`advanced-harness`,
-`headless-search`, `server`, …) or host injection.
+`headless-search`, `s3`, `telemetry`, profile `server` (= s3+telemetry), …) or host injection.
 
 ## Product capabilities
 
@@ -65,9 +65,8 @@ IDs as requiring an explicit Cargo profile (`advanced-harness`,
 | `agent_protocol` | advanced | always compiled helpers | Versioned harness/bridge event and recovery operations | Service transport owner |
 | `evaluation_substrate` | advanced | `advanced-harness` | Bounded evidence / auxiliary / dispatch / result wire | Evaluation host policy |
 | `moli_runtime` | advanced | `headless-search` | Default Moli provisioning via web search; packaged/cache diagnostics | Shared cache and executable ownership |
-| `s3_workspace` | advanced | `s3` / `server` | Typed S3 workspace provider options | Object-store credentials and endpoint |
-| `filesystem_agent_server` | advanced | `serve` / `server` | `serveAgentDir` / `serve_agent_dir` / `ServeAgentDir` | Daemon lifecycle and schedule policy |
-| `opentelemetry` | advanced | `telemetry` / `server` | Core telemetry configuration and trace inspection | Collector endpoint and export policy |
+| `s3_workspace` | advanced | `s3` (also profile `server`) | Typed S3 workspace provider options | Object-store credentials and endpoint |
+| `opentelemetry` | advanced | `telemetry` (also profile `server`) | Core telemetry configuration and trace inspection | Collector endpoint and export policy |
 
 The exact set and order are tested by Core, Node, Python, and Go bridge
 qualification. Use the discovery endpoint for optional-feature checks; do not
@@ -88,3 +87,7 @@ The parity checker (`scripts/sdk_api_alignment_check.mjs`) and the capability
 verification ledger run in release CI. They fail when a product capability,
 event type, or required Agent/Session operation disappears from one official
 SDK.
+
+Related: [CAPABILITY_INTEGRATED_USE_LEDGER.md](CAPABILITY_INTEGRATED_USE_LEDGER.md)
+(dated effective / efficient / integrated-use snapshot) and
+[FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md) §14 (release handoff).

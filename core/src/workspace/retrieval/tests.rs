@@ -294,9 +294,9 @@ fn incremental_lexical_index_matches_the_locked_native_bm25_fixture() {
     }
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[test]
-fn zvec_rust_lexical_backend_preserves_the_workspace_result_contract() {
+fn a3s_vec_lexical_backend_preserves_the_workspace_result_contract() {
     let fixture = [
         (
             "src/path_policy.rs",
@@ -307,7 +307,7 @@ fn zvec_rust_lexical_backend_preserves_the_workspace_result_contract() {
     ];
     let engines = [
         WorkspaceLexicalEngine::Portable,
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     ];
 
     for engine in engines {
@@ -353,13 +353,13 @@ fn zvec_rust_lexical_backend_preserves_the_workspace_result_contract() {
     }
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[test]
-fn zvec_rust_lexical_snapshot_supports_concurrent_queries() {
+fn a3s_vec_lexical_snapshot_supports_concurrent_queries() {
     let catalog = WorkspaceChunkCatalog::new_with_engine(
         ChunkingConfig::default(),
         ChunkCatalogLimits::default(),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
     .unwrap();
     for index in 0..8 {
@@ -390,9 +390,9 @@ fn zvec_rust_lexical_snapshot_supports_concurrent_queries() {
     }
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[test]
-fn zvec_rust_lexical_backend_matches_locked_bm25_paths() {
+fn a3s_vec_lexical_backend_matches_locked_bm25_paths() {
     #[derive(Debug, Deserialize)]
     struct Fixture {
         documents: Vec<FixtureDocument>,
@@ -418,9 +418,9 @@ fn zvec_rust_lexical_backend_matches_locked_bm25_paths() {
     let catalog = WorkspaceChunkCatalog::new_with_engine(
         ChunkingConfig::default(),
         ChunkCatalogLimits::default(),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
-    .expect("zvec catalog must construct");
+    .expect("a3s-vec catalog must construct");
     for (revision, document) in fixture.documents.iter().enumerate() {
         catalog
             .replace_file(
@@ -429,9 +429,9 @@ fn zvec_rust_lexical_backend_matches_locked_bm25_paths() {
                 revision as u64 + 1,
                 &document.content,
             )
-            .expect("zvec catalog replacement must succeed");
+            .expect("a3s-vec catalog replacement must succeed");
     }
-    let snapshot = catalog.snapshot().expect("zvec snapshot must exist");
+    let snapshot = catalog.snapshot().expect("a3s-vec snapshot must exist");
 
     for query in fixture.queries {
         let result = snapshot
@@ -446,13 +446,13 @@ fn zvec_rust_lexical_backend_matches_locked_bm25_paths() {
     }
 }
 
-#[cfg(not(feature = "zvec-rust-fts"))]
+#[cfg(not(feature = "a3s-vec-fts"))]
 #[test]
-fn zvec_rust_selection_fails_closed_without_the_native_feature() {
+fn a3s_vec_selection_fails_closed_without_the_native_feature() {
     let error = WorkspaceChunkCatalog::new_with_engine(
         ChunkingConfig::default(),
         ChunkCatalogLimits::default(),
-        WorkspaceLexicalEngine::ZvecRust,
+        WorkspaceLexicalEngine::A3sVec,
     )
     .unwrap_err();
     assert!(matches!(error, WorkspaceIndexError::InvalidConfig(_)));

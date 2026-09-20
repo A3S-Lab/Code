@@ -162,7 +162,7 @@ const SESSION_OPTION_ALIASES = new Map([
   ['prompt_slots', 'role'],
 ]);
 
-const SDK_AGENT_EXTRAS = ['serve_agent_dir'];
+const SDK_AGENT_EXTRAS = [];
 const SDK_SESSION_EXTRAS = [
   'run',
   'send_request',

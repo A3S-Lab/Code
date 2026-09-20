@@ -10,16 +10,16 @@
   },
   {
     "type": "section-header",
-    "label": "Filesystem first"
+    "label": "Filesystem conventions"
   },
   "filesystem-first",
   "convention-over-configuration",
   "agents-md",
   "filesystem-instructions",
   "filesystem-config",
-  "agent-dir",
   "filesystem-agents",
   "filesystem-skills",
+  "agent-dir",
   "filesystem-tools",
   "filesystem-schedules",
   {

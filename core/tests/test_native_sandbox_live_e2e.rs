@@ -28,7 +28,7 @@ use a3s_code_core::sandbox::{BashSandbox, SandboxCommandRequest};
 use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_config};
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(240);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const NATIVE_TOKEN: &str = "native-sandbox-live-token-0a3s";
 
 async fn configured_agent() -> Agent {
@@ -61,7 +61,7 @@ fn options(session_id: &str, allows: &[&str]) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(6)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }

@@ -43,7 +43,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **更快的 `grep`（CODE-G1）。** 字面量搜索时，`local-code` 会在
   `.a3s-code/grep-trigram` 下建一个小的 trigram 缓存，先缩小文件范围再做精确
   正则。缓存不可用或不是字面量时直接回退。精确匹配仍走 Code 自己的 `grep`，
-  不会碰持久 zvec FTS（排序检索继续用 `bm25`）。
+  不会碰持久 a3s-vec FTS（排序检索继续用 `bm25`）。
 - **会话重开更稳（8.5.1）。** 写者先拿跨进程 flock，再读持久序号；坏掉的 WAL
   可以隔离，避免并发写出冲突 ID。
 - **DeepResearch Flow 身份（8.5.2）。** 动态 Flow 步骤身份允许最大 512 KiB
@@ -274,11 +274,11 @@ AgentEvent / EventEnvelopeV1
 ## 能力地图
 
 **推荐嵌入：** 依赖 `a3s-code-core`，使用
-`default-features = false` 与 `features = ["local-code"]`（捆绑 zvec FTS）。
+`default-features = false` 与 `features = ["local-code"]`（捆绑 a3s-vec FTS）。
 该配置即编码 Agent Harness：Agent 循环、工作区工具、策略、事件与词法检索 —
 不含 Advanced 评估/研究/工作流、S3/serve 或浏览器搜索。
 
-Core 库的 `default` 即为变薄的编码 Harness（`local-code`：捆绑 zvec FTS）。
+Core 库的 `default` 即为变薄的编码 Harness（`local-code`：捆绑 a3s-vec FTS）。
 显式启用 `advanced-harness`、`headless-search`、`server`、`scientific` 或
 `full` 以获得 Advanced 评估/研究/工作流、浏览器搜索或 S3/serve。开启
 `headless-search` 时，Moli 支持的搜索从打包 sidecar、经校验的每用户缓存或
@@ -294,7 +294,7 @@ Harness 收口（打包、双轨移除、外部证明门）：
 |评估基材|提供者中立的执行目标/框架、仅摘要的事实日志、原子有界证据快照、独立的辅助运行、主机边界监督、重新启动安全调度租约、持久结果 CAS 以及严格版本化的 Rust/Node/Python/Go 线投影 |注入 `EvaluationPolicy`/`AuxiliaryExecutor` 以及可选的调度/结果存储；核心供应机制和生成的传输模式，而审阅者规则、调查结果、授权和云审计仍然由宿主拥有 |
 |本土研究契约|版本化的摘要绑定研究运行、证据事实、声明、引文、具有出版完整性的证据图、具有结果收据绑定的工作流程计划、发现触发的重新运行谱系、再现性清单、出处收据、审查结果、项目事件以及具有生成的 Node/Python/Go 投影、有界字段和失败即关闭生命周期转换的版本化研究线信封 |主机绑定精确的源/证据快照和`RunCapabilityBindingV1`； A3S Use提供包/环境身份和桌面/云自己的科学政策、审查决策、保留和发布 |
 |代码情报 |已保存文件符号、定义、声明、引用、实现、诊断、修订和过时状态元数据 |主机选择的本地工作区 |
-|工作空间检索 |异步会话拥有的块目录、默认情况下的官方 zvec-rust FTS/BM25、内存支持的精确向量、混合 RRF、可选的确定性 CPU 重新排序、就绪/覆盖指标以及经过摘要验证的当前源结果 |每个会话明确选择语义/向量工作；基线词汇和符号搜索不需要嵌入模型或向量数据库；原生 zvec 构建需要经过验证的平台库 |
+|工作空间检索 |异步会话拥有的块目录、默认情况下的官方 a3s-vec FTS/BM25、内存支持的精确向量、混合 RRF、可选的确定性 CPU 重新排序、就绪/覆盖指标以及经过摘要验证的当前源结果 |每个会话明确选择语义/向量工作；基线词汇和符号搜索不需要嵌入模型或向量数据库；产品构建使用纯 Rust a3s-vec，无需原生 sidecar |
 |背景和记忆|排名上下文、重复压缩、三层 V1 内存、类型化存储、召回、提取、非破坏性取代、V2 候选阴影、审核的仅活动词法/语义/一跳关系召回、确定性 RRF、验证修订版 CAS 快照刷新收据、精确命名空间令牌加速、主机持久安全刷新检查点、选择加入会话拥有的刷新计划、精确重启绑定和拥有的维护运行状况 |主持人选择； V2 需要精确的存储库/命名空间绑定和证据支持的激活；语义召回还需要类型化嵌入提供程序、调用者拥有的向量索引、显式刷新定时和精确的 schema-5 生成身份 |
 |认知包 | Exact A3S Use生成绑定、宿主注入引用 Markdown 提供程序、有界源验证、重新启动检查和失败关闭检索 | Rust 宿主注入`CognitiveContextSession`；代码从不安装或解析包 |
 | A3S Use运行时任务 |通过宿主拥有的调度程序进行精确的功能快照 v2 运行时工具投影和模型可见的受控调用 |原子使用支持的`SessionCapabilityBatch`中的阶段`UseRuntimeTaskProjectionAdapter`；代码从不启动预计的命令或直接获取包状态 |
@@ -312,7 +312,6 @@ Harness 收口（打包、双轨移除、外部证明门）：
 |无头网络搜索 | `a3s-search` v3.1.4，具有惰性 Moli 支持的 Google/Baidu/Bing/Brave 引擎、共享缓存生命周期和类型诊断； Chrome/Chromium 和 Lightpanda 仍可配置。付费提供方保持显式启用 |默认Cargo功能`headless-search`；使用 `default-features = false` 禁用 |
 | SDK能力合约| Rust、Node.js、Python 和 Go 公开了有序产品功能清单、模式发现、Moli 诊断/配置和状态图 API |在可选集成之前调用每个 SDK 的能力发现功能 |
 | S3 工作区 | S3 兼容对象后端 |Cargo功能`s3` |
-|文件系统代理服务器|代理目录 cron 提供准备后准备、类型化故障状态和有界连接关闭 |Cargo功能`serve` |
 |开放遥测|除基线 `tracing` 外，还导出 OTLP |Cargo功能`telemetry` |
 
 可用性永远不会绕过政策。自动保存、自动压缩、目标、
@@ -546,7 +545,7 @@ A3S Use能力快照。嵌入主机提供
 
 |关注|内置表面|
 | ------------------------ | | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|文件和目录|预算单/多文件 `read`、`write`、可预览 CAS `edit`、`patch`、`ls`，以及统一的 `search` 与 `grep`、`glob`、zvec-rust FTS/BM25、语义诊断和混合检索模式|
+|文件和目录|预算单/多文件 `read`、`write`、可预览 CAS `edit`、`patch`、`ls`，以及统一的 `search` 与 `grep`、`glob`、a3s-vec FTS/BM25、语义诊断和混合检索模式|
 |命令和源代码控制|有界 `bash` 加上类型化 `git` 操作、取消和 Unix 进程组终止 |
 |代码情报 | `code_symbols`、`code_navigation`、`code_diagnostics`；源代码读取和突变保留在文件工具中|
 |网络证据|基线 `web_search` 走 HTTP/RSS/API，具有共享准入、会话电路和请求合并（无头/Moli 仅在 `headless-search`）；加上有界 `web_fetch`、源标准化和 SSRF 保护 |
@@ -674,21 +673,21 @@ fn session_options(
 `.a3s-code/grep-trigram` 下惰性构建进程内 trigram 候选缓存，
 以便字面量模式在正则扫描前打开更少文件。非字面量模式与
 索引失败会失败开放回今日的全量扫描。该路径不会打开持久
-zvec FTS（排序检索请用 `mode: "bm25"`）。宿主可用
+a3s-vec FTS（排序检索请用 `mode: "bm25"`）。宿主可用
 `ManifestWorkspaceBackend::configure_grep_candidate_index` 替换自动索引。
 在 `mode: "glob"` 中，`search` 保留了
 默认后端的最近度或相关性顺序；请求`sort: "path"`时
 光标页需要稳定的词汇顺序。使用 `mode: "bm25"` 表示有界
-zvec-rust FTS/BM25 对工作区文本块的词汇排名。启用检索
+a3s-vec FTS/BM25 对工作区文本块的词汇排名。启用检索
 清单支持的本地工作区构建一个有界的、会话本地块目录
 异步并跨查询重用其 FTS 发布。类型化并选择加入
-`WorkspaceLexicalEngine::ZvecRust`选择器可以使用官方的`zvec-rust`
-当产品版本提供经过验证的`libzvec_c_api`时进行绑定。最小
+`WorkspaceLexicalEngine::A3sVec`选择器可以使用官方的`a3s-vec`
+当产品版本提供经过验证的`a3s-vec`时进行绑定。最小
 `--no-default-features` 构建使用明确报告的可移植 BM25
 实施；产品构建永远不会默默地切换引擎。
 会话构建不等待索引； BM25 透明地使用
 当第一个快照被接纳时，会话本地目录记分器。一次
-持久生成已准备就绪，相同的 `bm25` 调用切换到其 zvec 帖子
+持久生成已准备就绪，相同的 `bm25` 调用切换到其 a3s-vec 帖子
 无需更改模型可见的工具合约。目录路线分数
 无需查询时文件读取。本机路由验证其有界结果
 针对实时文件系统的候选者，因此编辑不会泄漏过时的文本。
@@ -699,14 +698,14 @@ CPU 密集型标记化和每个文档规范化阶段使用 Rust
 
 当启用自动持久投影时，冷目录准入使用
 便携式记分器作为其经过验证的后备方案，而不是打开一个本机
-每个源文件的集合。工作区范围内的 zvec 生成仍然是
+每个源文件的集合。工作区范围内的 a3s-vec 生成仍然是
 本机服务路径一旦准备好，因此启动成本与源字节成比例，而
 面向模型的搜索契约保持不变。
 
-需要显式 zvec-grep-style 重启持久性的宿主可以使用
+需要显式 restart-persistent 重启持久性的宿主可以使用
 `WorkspaceServices::local_with_indexed_retrieval`；默认本地代理
 工作区自动使用相同的路径。这保留了相同的清单
-观察者和块准入策略，在下面写入版本化的 zvec 代
+观察者和块准入策略，在下面写入版本化的 a3s-vec 代
 `.a3s-code/index`，并让现有的 `search` `bm25` 模式使用该索引
 自动。默认本地代理工作区现在会尽最大努力
 配置；不可用或只读的缓存会回退到目录。
@@ -751,7 +750,7 @@ CPU 密集型标记化和每个文档规范化阶段使用 Rust
 `.a3s` 控制路径。在替换工作之前，文件更改会被逻辑删除；一个
 读取失败会减少索引覆盖率，而不是返回过时的文本。的
 目录是会话本地的，并与其清单支持的工作区一起发布
-后端；其可选的持久 zvec 投影是一代版本的
+后端；其可选的持久 a3s-vec 投影是一代版本的
 工作区根目录。跨 UI 共享 `ManifestWorkspaceBackend` 的主机，
 搜索，并且会话将其目录配置一次
 `configure_chunk_catalog` 连接前`local_with_retrieval_backend`；
@@ -759,7 +758,7 @@ CPU 密集型标记化和每个文档规范化阶段使用 Rust
 默默地取代东道主拥有的战略或其预算。
 
 基线工作区搜索不需要嵌入或重新排序模型：
-精确、glob、zvec-rust FTS/BM25、代码智能和 RRF 在本地执行
+精确、glob、a3s-vec FTS/BM25、代码智能和 RRF 在本地执行
 当工作空间检索被省略时，CPU 和保持可用。密集语义
 搜索必然需要文本到向量的函数，但该函数可能是
 宿主注入的进程内 CPU 回调；它不需要是远程的或使用
@@ -777,7 +776,7 @@ CPU 密集型标记化和每个文档规范化阶段使用 Rust
 语义服务投影。嵌入经过一次验证，插入到
 有界内存分区，并随会话释放；没有重复的
 矢量投影或隐藏权限选择器。词汇投影是
-独立并使用 zvec-rust FTS/BM25，因此词法故障只能降级
+独立并使用 a3s-vec FTS/BM25，因此词法故障只能降级
 词汇覆盖率，而语义结果保留其记忆契约。
 代码重用已承认的块目录，
 开始索引而不延迟 `session_async`，合并来自
@@ -829,7 +828,7 @@ Node、Python 和 Go 公开类型化行、固定 UTF-8 窗口和递归
 仍然是值得信赖的 Rust 宿主扩展。策略验证先于提供商
 执行，Go 在回调注册之前完成它。
 
-混合模式创建独立的精确文字、zvec-rust FTS/BM25、可选代码
+混合模式创建独立的精确文字、a3s-vec FTS/BM25、可选代码
 情报符号和积极相似语义候选列表。它
 将基于一的等级与倒数等级融合（`k=60`）融合，而不是混合
 未校准的分数。精确的 ASCII 标识符令牌占据受保护层；
@@ -1615,25 +1614,9 @@ Node.js 和 Python 绑定在同一 Core 上保持独立的本机 crate。
 Go SDK 通过一个长期存在的、经过功能检查的本地来到达该核心。
 桥接过程。
 
-## 文件系统优先的 Agent 与发布
+## Agent 目录与发布
 
-`AgentDir` 使可重复使用的代理可以作为文件进行审查：
-
-```text
-agent-dir/
-├── instructions.md
-├── agent.acl
-├── skills/
-├── tools/
-└── schedules/
-```
-
-工具规范可以连接MCP服务器或有界的PTC脚本。随着
-`serve` 功能，宿主可以提供代理目录并运行 cron 计划。
-可观察的守护进程句柄仅在计划、会话和
-工具准备好； shutdown 取消正在进行的工作，关闭拥有的会话，以及
-在有限的期限内加入。文件永远不会绕过工作区、权限、
-确认或验证政策。
+Worker / 子代理定义仍可通过 `agent_dirs` / `register_agent_dir` 从目录加载（供 `task` 目录使用的 YAML/Markdown）。原先的文件系统优先主 Agent 约定（`AgentDir`：`instructions.md` / `schedules/` / `tools/`）以及 cron `serve` 守护进程已移除。
 
 `AgentReleaseManifest`承认版本化的`.a3s/asset.acl`合约，推导
 模式感知规范 ACL 和 SHA-256 身份，并验证运行时
@@ -1686,14 +1669,13 @@ v1 架构或声明外部运行时认证。
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) |语言运行时、能力边界、生命周期和验证 |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) |架构、质量预算、生命周期和对抗性信任边界 |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) |发布测试、独立预言机、性能证据和 DeepSeek E2E 范围 |
-| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md) |一种用于自主搜索模式选择和透明本机 zvec 加速的有界 ACL 模型门 |
+| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md) |一种用于自主搜索模式选择和透明a3s-vec 加速的有界 ACL 模型门 |
 | [Workspace Search Production Qualification](manual/WORKSPACE_SEARCH_PRODUCTION.md) |确定性的本机/便携式测试加上真正的清单支持的规模、并发性、重建、清理和重新启动门 |
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) |配对任务/重新排序消融、内置块矩阵、跨 SDK 真实模型奇偶校验、自定义负控制、非文本边界、指标和批处理跟进 |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) |内置/自定义策略、验证、异步生命周期、非文本边界和重新排序计划 |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md) |生产 SLO、遥测、状态响应、生成门和仅配置回滚 |
-| [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md) | zvec-rust 词法索引、内存语义向量、资源边界、打包和回滚 |
+| [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md) | a3s-vec 词法索引、内存语义向量、资源边界、打包和回滚 |
 | [Terminal-Bench Evaluation](manual/TERMINAL_BENCH.md) | Harbor 适配器、精确的任务交付、本地 Codex 评估以及符合排行榜的证据 |
-| [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md) |文件系统优先工具和代理定义|
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md) |准入模式、身份、兼容性和安全边界 |
 | [Changelog](CHANGELOG.md) |发布历史记录和迁移相关的更改 |
 

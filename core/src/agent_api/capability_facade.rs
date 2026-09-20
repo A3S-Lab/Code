@@ -185,15 +185,6 @@ impl AgentSession {
             .await
     }
 
-    /// The session's tool executor, for installing agent-dir `tools/` entries
-    /// (e.g. a `kind = "script"` tool) into the live registry. Internal seam used
-    /// by [`serve::install_agent_dir_tools`](crate::serve::install_agent_dir_tools)
-    /// (the only caller, hence the `serve` gate).
-    #[cfg(feature = "serve")]
-    pub(crate) fn tool_executor(&self) -> &Arc<crate::tools::ToolExecutor> {
-        &self.tool_executor
-    }
-
     /// Register a host-provided dynamic tool into the live session. Enables an
     /// embedding app (e.g. the a3s-code CLI's login-gated `runtime` A3S Runtime
     /// offload tool) to add a native tool at runtime; it enters the LLM's toolset

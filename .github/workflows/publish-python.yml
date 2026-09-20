@@ -30,26 +30,17 @@ jobs:
           - host: macos-latest
             target: aarch64-apple-darwin
             python_architecture: arm64
-            zvec: true
           - host: macos-15-intel
             target: x86_64-apple-darwin
             python_architecture: x64
-            zvec: false
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
             python_architecture: x64
-            zvec: true
           - host: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            # Bundled aarch64 zvec needs GLIBC_2.38 symbols. maturin-action
-            # has no default container for 2_39 on aarch64, so pin the PyPA
-            # image explicitly; host builds on ubuntu-24.04 pull GLIBC_2.39
-            # into the extension and then fail manylinux audit.
-            manylinux: 2_39
-            container: quay.io/pypa/manylinux_2_39_aarch64:latest
+            manylinux: 2_28
             python_architecture: arm64
-            zvec: true
           - host: windows-11-arm
             target: aarch64-pc-windows-msvc
             # The hosted ARM64 image does not provide CPython 3.10 ARM64.
@@ -57,11 +48,9 @@ jobs:
             # project's cp310-abi3 wheel.
             python_version: "3.13"
             python_architecture: arm64
-            zvec: false
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             python_architecture: x64
-            zvec: true
 
     name: Build ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -116,26 +105,6 @@ jobs:
           bash scripts/package_moli.sh \
             "${{ matrix.settings.target }}" sdk/python/python/a3s_code/moli
 
-      - name: Stage verified zvec runtime
-        if: matrix.settings.zvec
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p sdk/python/python/a3s_code/zvec
-          bash scripts/package_zvec.sh \
-            "${{ matrix.settings.target }}" sdk/python/python/a3s_code/zvec
-          if [[ "${{ matrix.settings.target }}" == *-windows-* ]]; then
-            cp sdk/python/python/a3s_code/zvec/zvec_c_api.dll \
-              sdk/python/python/a3s_code/zvec_c_api.dll
-          fi
-          bash scripts/configure_zvec_runtime.sh \
-            "${{ matrix.settings.target }}" sdk/python/python/a3s_code/zvec
-          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
-          ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh \
-            "${{ matrix.settings.target }}" zvec)"
-          echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"
-
-      # Build native wheels - these go to GitHub Releases ONLY
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -145,13 +114,12 @@ jobs:
           # against the oldest supported interpreter to keep the ABI honest;
           # the Windows ARM64 job uses its native 3.13 interpreter because
           # setup-python does not ship CPython 3.10 for that architecture.
-          # Build from an explicit feature set. This prevents unsupported
-          # targets from silently downloading or auto-building a foreign zvec
-          # library while retaining the stable ABI extension feature.
+          # Explicit feature set retains the stable ABI extension feature and
+          # ships a3s-vec FTS plus Advanced/server product surfaces.
           args: >-
             --release --out dist --manifest-path sdk/python/Cargo.toml
             --no-default-features
-            --features extension-module${{ matrix.settings.zvec && ',zvec-rust-fts-bundled,advanced-harness,server' || '' }}
+            --features extension-module,a3s-vec-fts,advanced-harness,server
             -i python${{ matrix.settings.python_version || '3.10' }}
           manylinux: ${{ matrix.settings.manylinux || 'auto' }}
           container: ${{ matrix.settings.container || '' }}

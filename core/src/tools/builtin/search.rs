@@ -171,7 +171,7 @@ impl SearchTool {
                 copy_if_present(args, &mut adapted, "limit", "limit");
                 if self.persistent_backend_enabled {
                     // Preserve the existing public `bm25` mode while routing
-                    // local manifest workspaces to their durable zvec
+                    // local manifest workspaces to their durable a3s-vec
                     // projection automatically. Callers do not need to know
                     // whether the native cache is ready; Bm25Tool falls back
                     // to the catalog path until it is available.

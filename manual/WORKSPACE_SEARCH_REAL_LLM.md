@@ -8,7 +8,7 @@ credentials to the model or the command line.
 The gate follows the smallest useful chain of evidence:
 
 1. Deterministic Core tests construct the normal local workspace services,
-   prove that the durable `persistent_zvec_fts` projection is used, verify
+   prove that the durable `persistent_a3s_vec_fts` projection is used, verify
    that a replaced source cannot leak through a stale generation, and check
    that a burst of saves produces one newest generation. They also cover
    transient publication retry, `Building` status, and obsolete-generation
@@ -18,7 +18,7 @@ The gate follows the smallest useful chain of evidence:
    `search` tool.
 3. The prompt leaves mode selection to the model. A natural-language relevance
    question should produce one `bm25` call; the framework keeps the public mode
-   stable and routes it to zvec internally.
+   stable and routes it to a3s-vec internally.
 4. The test rejects extra tools, failed calls, incorrect paths, stale or
    unverified metadata, missing native-index metadata, and an answer not found
    in the returned evidence. The request, tool rounds, context, and timeout
@@ -41,7 +41,7 @@ refresh.
 Index publication is driven by a single background coordinator. It receives
 immutable catalog snapshots through a latest-only queue and waits briefly for
 an editor save burst to settle before starting one staged build. Catalog
-reconciliation and queries therefore never wait for zvec construction; if a
+reconciliation and queries therefore never wait for a3s-vec construction; if a
 newer snapshot arrives during a build, the old generation remains readable and
 the queued newest snapshot is built next. Transient build failures retry with
 bounded backoff, and successful publication removes obsolete generations after
@@ -71,7 +71,7 @@ scripts/workspace_search_real_llm.sh --dry-run
 
 The live result prints only the selected `provider/model`, mode, index kind,
 token count, and elapsed turn time. A successful run must report
-`mode=bm25 index=persistent_zvec_fts result=pass`.
+`mode=bm25 index=persistent_a3s_vec_fts result=pass`.
 
 The latest release benchmark reports (64 chunks, warm native queries)
 approximately 0.39 ms p50, 0.51 ms p95, 219 ms initial build, 0.26 ms for a

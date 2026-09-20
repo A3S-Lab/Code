@@ -58,13 +58,13 @@ enum BridgeEmbeddingNormalization {
 #[serde(rename_all = "snake_case")]
 enum BridgeWorkspaceLexicalEngine {
     Portable,
-    ZvecRust,
+    A3sVec,
 }
 
 impl Default for BridgeWorkspaceLexicalEngine {
     fn default() -> Self {
-        if cfg!(feature = "zvec-rust-fts") {
-            Self::ZvecRust
+        if cfg!(feature = "a3s-vec-fts") {
+            Self::A3sVec
         } else {
             Self::Portable
         }
@@ -128,9 +128,7 @@ impl BridgeWorkspaceRetrievalOptions {
             BridgeWorkspaceLexicalEngine::Portable => {
                 a3s_code_core::WorkspaceLexicalEngine::Portable
             }
-            BridgeWorkspaceLexicalEngine::ZvecRust => {
-                a3s_code_core::WorkspaceLexicalEngine::ZvecRust
-            }
+            BridgeWorkspaceLexicalEngine::A3sVec => a3s_code_core::WorkspaceLexicalEngine::A3sVec,
         });
         if let Some(reranker) = reranker {
             retrieval = retrieval.with_rerank_options(reranker);

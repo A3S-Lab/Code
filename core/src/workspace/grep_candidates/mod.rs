@@ -6,7 +6,7 @@
 //! be safely indexed, return [`GrepCandidateSelection::Unconstrained`] so the
 //! existing full-scan path remains authoritative.
 //!
-//! This plane is intentionally separate from durable zvec FTS/BM25.
+//! This plane is intentionally separate from durable a3s-vec FTS/BM25.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -321,7 +321,7 @@ mod tests {
                 root.join(".a3s-code/grep-trigram").exists(),
                 "auto index must land under .a3s-code/grep-trigram"
             );
-            // Grep still must not open durable zvec FTS.
+            // Grep still must not open durable a3s-vec FTS.
             assert!(backend.persistent_index().is_none());
         }
 

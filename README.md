@@ -45,7 +45,7 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   trigram cache under `.a3s-code/grep-trigram` so fewer files need a full regex
   pass. If the cache misses or the pattern is not literal, it just falls back.
   Exact match still comes from Code's own `grep` — this never opens the durable
-  zvec FTS index (`bm25` stays for ranked search).
+  a3s-vec FTS index (`bm25` stays for ranked search).
 - **Safer session reopen (8.5.1).** Writers take a cross-process flock, re-read
   the durable sequence, and can quarantine a bad WAL instead of minting
   colliding IDs.
@@ -293,13 +293,13 @@ background service share the same execution semantics without sharing a UI.
 ## Capability map
 
 **Recommended embed:** depend on `a3s-code-core` with
-`default-features = false` and `features = ["local-code"]` (bundled zvec FTS).
+`default-features = false` and `features = ["local-code"]` (a3s-vec FTS).
 That profile is the coding-agent harness: agent loop, workspace tools, policy,
 events, and lexical retrieval — without Advanced evaluation/research/workflows,
 S3/serve, or browser search.
 
 The Core crate's library `default` is the thin coding harness (`local-code`:
-bundled zvec FTS). Enable `advanced-harness`, `headless-search`, `server`,
+a3s-vec FTS). Enable `advanced-harness`, `headless-search`, `server`,
 `scientific`, or `full` explicitly for Advanced evaluation/research/workflows,
 browser search, or S3/serve. Moli-backed search (when `headless-search` is on)
 resolves from a packaged sidecar, the verified per-user cache, or a pinned
@@ -316,7 +316,7 @@ gates): [`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md).
 | Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Cargo feature `advanced-harness` (opt-in); inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
 | Native research contracts | Versioned digest-bound research runs, evidence facts, claims, citations, evidence graphs with publication completeness, workflow plans with result-receipt binding, finding-triggered re-run lineage, reproducibility manifests, provenance receipts, review findings, project events, and a versioned research wire envelope with generated Node/Python/Go projections, with bounded fields and fail-closed lifecycle transitions | Cargo feature `advanced-harness` (opt-in); hosts bind exact source/evidence snapshots and `RunCapabilityBindingV1`; A3S Use supplies package/environment identity and Desktop/Cloud own scientific policy, review decisions, retention, and publication |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
-| Workspace retrieval     | Asynchronous session-owned chunk catalog, official zvec-rust FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; native zvec builds require an attested platform library |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, official a3s-vec FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; a3s-vec builds require an attested platform library |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 Candidate extraction before Active activation, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
@@ -334,7 +334,6 @@ gates): [`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md).
 | Headless web search     | `a3s-search` v3.1.4 with lazy Moli-backed Google/Baidu/Bing/Brave engines, shared-cache lifecycle, and typed diagnostics; Chrome/Chromium and Lightpanda remain configurable. Billed providers stay opt-in. | Cargo feature `headless-search` (also via `scientific` / `full`)                                                                                          |
 | SDK capability contract | Ordered product capability inventory, schema discovery, Moli diagnostics/provisioning, and state-graph APIs are exposed by Rust, Node.js, Python, and Go                                                                                 | Call each SDK's capability discovery function before optional integrations                                                                                                 |
 | S3 workspace            | S3-compatible object backend                                                                                                                                                                                                            | Cargo feature `s3` (also via SDK `server`)                                                                                                                                |
-| Filesystem agent server | Agent-directory cron serving with post-preparation readiness, typed failure state, and bounded joined shutdown                                                                                                                          | Cargo feature `serve` (also via SDK `server`)                                                                                                                             |
 | OpenTelemetry           | OTLP export in addition to baseline `tracing`                                                                                                                                                                                           | Cargo feature `telemetry`                                                                                                                                                 |
 
 Availability never bypasses policy. Auto-save, automatic compaction, goals,
@@ -570,7 +569,7 @@ the model.
 
 | Concern                     | Built-in surface                                                                                                                                                                           |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, zvec-rust FTS/BM25, semantic diagnostics, and hybrid retrieval modes |
+| Files and directories       | Budgeted single/multi-file `read`, `write`, previewable CAS `edit`, `patch`, `ls`, and unified `search` with `grep`, `glob`, a3s-vec FTS/BM25, semantic diagnostics, and hybrid retrieval modes |
 | Commands and source control | Bounded `bash` plus typed `git` operations, cancellation, and Unix process-group termination                                                                                               |
 | Code intelligence           | `code_symbols`, `code_navigation`, and `code_diagnostics`; source reading and mutation remain in file tools                                                                                |
 | Web evidence                | Baseline `web_search` over HTTP/RSS/API with shared admission, session circuits, and request coalescing (headless/Moli only with `headless-search`); plus bounded `web_fetch`, source normalization, and SSRF protections |
@@ -697,22 +696,22 @@ constructing discarded match text. Exact `grep` still owns match authority; with
 the default `local-code` profile, manifest-backed workspaces also build a lazy
 in-tree trigram candidate cache under `.a3s-code/grep-trigram` so literal needles
 open fewer files before the regex scan. Non-literal patterns and index failures
-fail open to today's full scan. This path never opens durable zvec FTS (use
+fail open to today's full scan. This path never opens durable a3s-vec FTS (use
 `mode: "bm25"` for ranked retrieval). Hosts may replace the auto index with
 `ManifestWorkspaceBackend::configure_grep_candidate_index`. In `mode: "glob"`,
 `search` retains a
 backend's recency or relevance order by default; request `sort: "path"` when
 cursor pages require stable lexical ordering. Use `mode: "bm25"` for bounded
-zvec-rust FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled
+a3s-vec FTS/BM25 lexical ranking over workspace text chunks. Retrieval-enabled
 manifest-backed local workspaces build one bounded, session-local chunk catalog
 asynchronously and reuse its FTS postings across queries. A typed, opt-in
-`WorkspaceLexicalEngine::ZvecRust` selector can use the official `zvec-rust`
-binding when the product build supplies a verified `libzvec_c_api`. Minimal
+`WorkspaceLexicalEngine::A3sVec` selector can use the official `a3s-vec`
+binding when the product build supplies a verified `a3s-vec`. Minimal
 `--no-default-features` builds use the explicitly reported portable BM25
 implementation; product builds never silently switch engines.
 Session construction does not wait for indexing; BM25 transparently uses the
 session-local catalog scorer while the first snapshot is being admitted. Once a
-durable generation is ready, the same `bm25` call switches to its zvec postings
+durable generation is ready, the same `bm25` call switches to its a3s-vec postings
 without changing the model-visible tool contract. The catalog route scores
 without query-time file reads. The native route verifies its bounded result
 candidates against the live filesystem so an edit cannot leak stale text.
@@ -723,14 +722,14 @@ publication remains serialized behind its atomic generation boundary.
 
 When the automatic durable projection is enabled, cold catalog admission uses
 the portable scorer as its verified fallback instead of opening one native
-collection per source file. The workspace-wide zvec generation remains the
+collection per source file. The workspace-wide a3s-vec generation remains the
 native serving path once ready, so startup cost scales with source bytes while
 the model-facing search contract stays unchanged.
 
-Hosts that need explicit zvec-grep-style restart persistence can use
+Hosts that need explicit restart-persistent restart persistence can use
 `WorkspaceServices::local_with_indexed_retrieval`; default local Agent
 workspaces use the same path automatically. This keeps the same manifest
-watcher and chunk admission policy, writes versioned zvec generations under
+watcher and chunk admission policy, writes versioned a3s-vec generations under
 `.a3s-code/index`, and lets the existing `search` `bm25` mode use that index
 automatically. Default local Agent workspaces now make the same best-effort
 configuration; an unavailable or read-only cache falls back to the catalog.
@@ -775,7 +774,7 @@ immutable and exclude generated, non-text, oversized, credential, key, and
 `.a3s` control paths. File changes are tombstoned before replacement work; a
 failed read reduces indexed coverage instead of returning stale text. The
 catalog is session-local and is released with its manifest-backed workspace
-backend; its optional persistent zvec projection is generation-versioned under
+backend; its optional persistent a3s-vec projection is generation-versioned under
 the workspace root. Hosts that share a `ManifestWorkspaceBackend` across UI,
 search, and sessions configure its catalog exactly once with
 `configure_chunk_catalog` before attaching `local_with_retrieval_backend`;
@@ -783,7 +782,7 @@ session options cannot
 silently replace that host-owned strategy or its budgets.
 
 No embedding or reranking model is required for the baseline workspace search:
-exact, glob, zvec-rust FTS/BM25, Code Intelligence, and RRF execute locally on
+exact, glob, a3s-vec FTS/BM25, Code Intelligence, and RRF execute locally on
 CPU and remain available when Workspace Retrieval is omitted. Dense semantic
 search necessarily needs a text-to-vector function, but that function may be a
 host-injected in-process CPU callback; it is not required to be remote or use a
@@ -801,7 +800,7 @@ binds that contract to a session. A3S Memory is the single exact, session-owned
 semantic serving projection. Embeddings are validated once, inserted into
 bounded Memory partitions, and released with the session; there is no duplicate
 vector projection or hidden authority selector. The lexical projection is
-independent and uses zvec-rust FTS/BM25, so a lexical failure can degrade only
+independent and uses a3s-vec FTS/BM25, so a lexical failure can degrade only
 lexical coverage while semantic results retain their Memory contract.
 Code reuses the admitted chunk catalog,
 starts indexing without delaying `session_async`, coalesces chunks from the
@@ -853,7 +852,7 @@ ranges and invalid-window behavior, while arbitrary custom range callbacks
 remain a trusted Rust-host extension. Strategy validation precedes provider
 execution, and Go completes it before callback registration.
 
-Hybrid mode creates independent exact-literal, zvec-rust FTS/BM25, optional Code
+Hybrid mode creates independent exact-literal, a3s-vec FTS/BM25, optional Code
 Intelligence symbol, and positive-similarity semantic candidate lists. It
 fuses one-based ranks with reciprocal-rank fusion (`k=60`) instead of mixing
 uncalibrated scores. Exact ASCII identifier tokens occupy a protected tier;
@@ -1331,8 +1330,9 @@ typed objects + typed relations
 optimistic GraphPatch → new version or explicit rejection
 ```
 
-Applications opt into graph replay, branches, diffs, and Flow projection when
-multiple agents or behaviors need one auditable shared model.
+Applications opt into graph replay, branches, diffs, and Flow projection
+(`dynamic-workflow` / `advanced-harness`) when multiple agents or behaviors need
+one auditable shared model.
 
 ## Runtime surfaces
 
@@ -1638,25 +1638,13 @@ Node.js and Python bindings remain separate native crates over the same Core.
 The Go SDK reaches that Core through a long-lived, capability-checked local
 bridge process.
 
-## Filesystem-first agents and releases
+## Agent directories and releases
 
-`AgentDir` keeps reusable agents reviewable as files:
-
-```text
-agent-dir/
-├── instructions.md
-├── agent.acl
-├── skills/
-├── tools/
-└── schedules/
-```
-
-Tool specifications can connect MCP servers or bounded PTC scripts. With the
-`serve` feature, a host can serve an agent directory and run cron schedules.
-The observable daemon handle becomes ready only after schedules, sessions, and
-tools are prepared; shutdown cancels in-flight work, closes owned sessions, and
-joins within a bounded deadline. Files never bypass workspace, permission,
-confirmation, or verification policy.
+Worker and subagent definitions can still be loaded from directories via
+`agent_dirs` / `register_agent_dir` (YAML/Markdown agent files for the `task`
+catalog). The former filesystem-first primary-agent convention (`AgentDir` with
+`instructions.md` / `schedules/` / `tools/`) and the cron `serve` daemon have
+been removed.
 
 `AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, derives
 schema-aware canonical ACL and a SHA-256 identity, and verifies runtime
@@ -1709,14 +1697,13 @@ the v1 schema or claiming external Runtime certification.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md)                                               | Architecture, quality budgets, lifecycle, and adversarial trust boundaries                                                                                    |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md)                                                | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope                                                                              |
-| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md)                                   | One bounded ACL-model gate for autonomous search-mode selection and transparent native zvec acceleration                                                     |
+| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md)                                   | One bounded ACL-model gate for autonomous search-mode selection and transparent a3s-vec acceleration                                                     |
 | [Workspace Search Production Qualification](manual/WORKSPACE_SEARCH_PRODUCTION.md)                               | Deterministic native/portable tests plus a real manifest-backed scale, concurrency, rebuild, cleanup, and restart gate                              |
 | [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |
-| [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md)                                              | zvec-rust lexical indexing, Memory semantic vectors, resource bounds, packaging, and rollback                                                                       |
+| [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md)                                              | a3s-vec lexical indexing, Memory semantic vectors, resource bounds, packaging, and rollback                                                                       |
 | [Terminal-Bench Evaluation](manual/TERMINAL_BENCH.md)                                                               | Harbor adapter, exact task delivery, local Codex evaluation, and leaderboard-compliant evidence                                                                     |
-| [Agent Directory Tools](manual/AGENT_DIR_TOOLS_DESIGN.md)                                                            | Filesystem-first tool and agent definitions                                                                                                                   |
 | [Agent Release Contract](manual/AGENT_RELEASE_CONTRACT.md)                                                           | Admission schema, identity, compatibility, and security boundary                                                                                              |
 | [Changelog](CHANGELOG.md)                                                                                            | Release history and migration-relevant changes                                                                                                                |
 

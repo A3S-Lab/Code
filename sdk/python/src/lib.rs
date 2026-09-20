@@ -99,11 +99,6 @@ fn py_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> PyErr {
     py_error_with_code(code, error.to_string())
 }
 
-fn py_serve_error(failure_code: Option<&'static str>, error: a3s_code_core::CodeError) -> PyErr {
-    let code = failure_code.unwrap_or(error.code());
-    py_error_with_code(code, error.to_string())
-}
-
 fn py_error_with_code(code: &str, message: String) -> PyErr {
     let py_error = PyRuntimeError::new_err(message);
     Python::with_gil(|py| {
@@ -140,14 +135,6 @@ fn inline_skill_to_rust(name: String, content: String, kind: &str) -> PyResult<A
         version: None,
     }))
 }
-
-#[cfg(feature = "serve")]
-use a3s_code_core::config::AgentDir as RustAgentDir;
-#[cfg(feature = "serve")]
-use a3s_code_core::serve::{
-    spawn_agent_dir_daemon as rust_spawn_agent_dir_daemon,
-    ServeDaemonHandle as RustServeDaemonHandle,
-};
 
 // ============================================================================
 // Utilities
@@ -427,11 +414,6 @@ use search_config::*;
 mod moli_runtime;
 #[cfg(feature = "headless-search")]
 use moli_runtime::{py_ensure_moli, py_moli_default_version, py_moli_runtime_info};
-
-#[cfg(feature = "serve")]
-mod serve_handle;
-#[cfg(feature = "serve")]
-use serve_handle::PyServeHandle;
 
 mod agent;
 use agent::PyAgent;

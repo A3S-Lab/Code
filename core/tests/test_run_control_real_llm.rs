@@ -15,7 +15,7 @@ use a3s_code_core::{
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(240);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 #[cfg(not(windows))]
 const STEER_COMMAND: &str =
     "printf STARTED > steer-started.txt && sleep 2 && printf FINISHED > steer-finished.txt";
@@ -55,7 +55,7 @@ fn options(model: &str, session_id: &str, command: &str) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(4)
-        .with_llm_api_timeout(120_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(

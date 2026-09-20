@@ -63,7 +63,7 @@ async fn auto_delegation_triggers_unified_task_fanout_with_real_provider() {
         This is a smoke test; keep every specialist result compact and do not modify files.";
     let (mut rx, handle) = session.stream(prompt, None).await.expect("stream starts");
 
-    let fanout_task_starts = tokio::time::timeout(Duration::from_secs(240), async {
+    let fanout_task_starts = tokio::time::timeout(Duration::from_secs(420), async {
         let mut fanout_task_starts = 0_usize;
 
         while let Some(event) = rx.recv().await {
@@ -157,7 +157,7 @@ async fn builtin_subagents_execute_with_real_provider() {
         ]
     });
 
-    let result = tokio::time::timeout(Duration::from_secs(240), session.tool("task", tasks))
+    let result = tokio::time::timeout(Duration::from_secs(420), session.tool("task", tasks))
         .await
         .expect("timed out waiting for built-in subagents")
         .expect("task tool should execute multi-item fan-out");

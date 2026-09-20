@@ -145,14 +145,14 @@ func TestWorkspaceRetrievalLexicalEngineIsTypedAndWired(t *testing.T) {
 	options := &SessionOptions{
 		WorkspaceRetrieval: NewWorkspaceRetrievalOptions(provider),
 	}
-	options.WorkspaceRetrieval.LexicalEngine = WorkspaceLexicalEngineZvecRust
+	options.WorkspaceRetrieval.LexicalEngine = WorkspaceLexicalEngineA3sVec
 	prepared, callbackID, err := prepareWorkspaceRetrievalOptions(runtime, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.unregisterCallback(callbackID)
 	wire := prepared.(map[string]any)["workspace_retrieval"].(workspaceRetrievalWireOptions)
-	if wire.LexicalEngine != WorkspaceLexicalEngineZvecRust {
+	if wire.LexicalEngine != WorkspaceLexicalEngineA3sVec {
 		t.Fatalf("lexical engine wire = %q", wire.LexicalEngine)
 	}
 

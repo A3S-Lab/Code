@@ -70,63 +70,6 @@ impl PyAgent {
         run_in_asyncio_executor(py, callable.into_any())
     }
 
-    /// Serve a filesystem-first agent directory's cron schedules until stopped.
-    ///
-    /// Loads the directory by convention: `instructions.md` (required), optional
-    /// `agent.acl`, `skills/`, `schedules/*.md` (cron jobs), and `tools/*.md`
-    /// (`kind: mcp` servers or `kind: script` sandboxed QuickJS tools). It starts
-    /// one durable session per enabled schedule (stable id `schedule:<name>`) with
-    /// the agent dir's tools installed; each schedule fires as a FULL harness turn
-    /// (context, tool visibility, safety gate, verification), never a raw model call.
-    ///
-    /// Returns a `ServeHandle` only after all enabled schedule sessions and
-    /// tools have been prepared. Startup failures raise from this call, so the
-    /// returned handle is ready to accept scheduled work. The daemon then runs
-    /// in the background until `handle.stop()` is called. Dropping the handle
-    /// does NOT cancel the daemon.
-    ///
-    /// Args:
-    ///     dir: Path to the agent directory (prompt/skills/schedules/tools)
-    ///     workspace: Workspace directory each scheduled turn operates in
-    ///     options: Optional SessionOptions merged into every schedule session
-    ///         (model, llm_client, session_store, …)
-    #[pyo3(signature = (dir, workspace, options=None))]
-    #[cfg(feature = "serve")]
-    fn serve_agent_dir(
-        &self,
-        py: Python<'_>,
-        dir: String,
-        workspace: String,
-        options: Option<PySessionOptions>,
-    ) -> PyResult<PyServeHandle> {
-        let agent_dir = RustAgentDir::load(&dir)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to load agent dir: {e}")))?;
-        let extra = match options {
-            Some(o) => Some(build_rust_session_options(o)?),
-            None => None,
-        };
-
-        let agent = self.inner.clone();
-        let started = py.allow_threads(move || {
-            get_runtime().block_on(async move {
-                let handle = match rust_spawn_agent_dir_daemon(agent, agent_dir, workspace, extra) {
-                    Ok(handle) => handle,
-                    Err(error) => return Err((None, error)),
-                };
-                if let Err(error) = handle.wait_ready().await {
-                    return Err((handle.failure_code(), error));
-                }
-                Ok(handle)
-            })
-        });
-        let handle =
-            started.map_err(|(failure_code, error)| py_serve_error(failure_code, error))?;
-
-        Ok(PyServeHandle {
-            inner: Arc::new(handle),
-        })
-    }
-
     /// Re-fetch tool definitions from all connected global MCP servers and
     /// update the agent-level cache.
     ///

@@ -412,6 +412,7 @@ fn pin_runtime_projection_with_command_registry(
             // Flow is consumed through AgentSession::projected_flow. The
             // admitted Agent Run still pins the same catalog generation, but
             // Flow definitions are intentionally not model-visible tools.
+            #[cfg(feature = "dynamic-workflow")]
             CapabilityValue::Flow(_) => {}
             // UI is consumed through AgentSession::projected_ui. Core retains
             // its exact document and dependencies without choosing a renderer

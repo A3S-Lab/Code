@@ -84,17 +84,6 @@ jobs:
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
 
-      - name: Stage verified zvec runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p zvec-runtime
-          bash scripts/package_zvec.sh x86_64-unknown-linux-gnu zvec-runtime
-          bash scripts/configure_zvec_runtime.sh \
-            x86_64-unknown-linux-gnu zvec-runtime
-          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=$(bash scripts/zvec_rustflags.sh x86_64-unknown-linux-gnu zvec)" >> "$GITHUB_ENV"
-
       - name: Verify capability architecture and evidence
         run: |
           python3 scripts/check_scoped_capability_architecture.py
@@ -183,16 +172,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Stage verified zvec runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p zvec-runtime
-          bash scripts/package_zvec.sh x86_64-pc-windows-msvc zvec-runtime
-          bash scripts/configure_zvec_runtime.sh \
-            x86_64-pc-windows-msvc zvec-runtime
-          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
 
       - name: Clippy (Windows)
         # --all-features: thin default leaves Advanced-only APIs unused otherwise.

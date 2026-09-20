@@ -48,7 +48,7 @@ async fn retrieval_is_disabled_without_explicit_typed_options() {
     );
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
@@ -56,7 +56,7 @@ async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
     std::fs::create_dir_all(workspace.path().join("src")).unwrap();
     std::fs::write(
         workspace.path().join("src/cache.rs"),
-        "pub fn persistent_workspace_cache() { /* zvec route */ }\n",
+        "pub fn persistent_workspace_cache() { /* a3s-vec route */ }\n",
     )
     .unwrap();
     let agent = Agent::from_config(super::tests::test_config())
@@ -86,7 +86,7 @@ async fn default_local_agent_session_routes_bm25_to_persistent_projection() {
                 .metadata
                 .as_ref()
                 .and_then(|metadata| metadata.get("index_kind"))
-                == Some(&serde_json::json!("persistent_zvec_fts"))
+                == Some(&serde_json::json!("persistent_a3s_vec_fts"))
             {
                 return result;
             }
@@ -544,9 +544,9 @@ async fn session_owned_workspace_uses_the_explicit_chunking_strategy() {
     session.close().await;
 }
 
-#[cfg(feature = "zvec-rust-fts")]
+#[cfg(feature = "a3s-vec-fts")]
 #[tokio::test]
-async fn session_owned_workspace_uses_the_explicit_zvec_lexical_engine() {
+async fn session_owned_workspace_uses_the_explicit_a3s_vec_lexical_engine() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -559,7 +559,7 @@ async fn session_owned_workspace_uses_the_explicit_zvec_lexical_engine() {
     });
     let options = SessionOptions::new().with_workspace_retrieval(
         WorkspaceRetrievalOptions::new(provider)
-            .with_lexical_engine(crate::WorkspaceLexicalEngine::ZvecRust),
+            .with_lexical_engine(crate::WorkspaceLexicalEngine::A3sVec),
     );
     let agent = Agent::from_config(super::tests::test_config())
         .await
@@ -580,7 +580,7 @@ async fn session_owned_workspace_uses_the_explicit_zvec_lexical_engine() {
     assert_eq!(result.exit_code, 0, "{}", result.output);
     assert_eq!(
         result.metadata.unwrap()["parameters"]["engine"],
-        crate::WorkspaceLexicalEngine::ZvecRust.stable_id()
+        crate::WorkspaceLexicalEngine::A3sVec.stable_id()
     );
     session.close().await;
 }

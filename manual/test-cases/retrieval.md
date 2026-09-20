@@ -54,7 +54,7 @@ It does not search the network, and it does not keep vectors after close.
 - **Stimulus:** create session, read status, search.
 - **Oracle:** session exists; status is loading or not-ready; search does not panic.
 - **Fail:** `register_builtins` opens the native index and stalls session build. The source comment in `builtin/mod.rs` says registration must not open native indexes.
-- **Home:** `core/src/tools/builtin/mod.rs` `register_builtins_does_not_open_durable_zvec`. `SearchTool::new` is reached through `register_builtins`; the durable index stays unopened and `.a3s-code/index` is not created.
+- **Home:** `core/src/tools/builtin/mod.rs` `register_builtins_does_not_open_durable_a3s_vec`. `SearchTool::new` is reached through `register_builtins`; the durable index stays unopened and `.a3s-code/index` is not created.
 
 ### U-WR-06
 
@@ -72,7 +72,7 @@ It does not search the network, and it does not keep vectors after close.
 - **Stimulus:** close; open a new session on a copy of the workspace that has not been indexed.
 - **Oracle:** status not-ready or empty; no hit until index. On the same store, close releases the lock so the next open can acquire it.
 - **Fail:** lock held after close, or vectors readable with no index.
-- **Home:** `core/src/workspace/retrieval/tests/lifecycle.rs`; zvec flock in `zvec_rust.rs`.
+- **Home:** `core/src/workspace/retrieval/tests/lifecycle.rs`; a3s-vec adapter in `a3s_vec.rs`.
 
 ## Integration
 

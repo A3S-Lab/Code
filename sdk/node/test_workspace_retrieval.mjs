@@ -55,9 +55,9 @@ const provider = new mod.CallbackEmbeddingProvider(
   },
 )
 const retrieval = new mod.WorkspaceRetrievalOptions(provider)
-assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.ZvecRust)
-retrieval.lexicalEngine = mod.WorkspaceLexicalEngineOption.ZvecRust
-assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.ZvecRust)
+assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.A3sVec)
+retrieval.lexicalEngine = mod.WorkspaceLexicalEngineOption.A3sVec
+assert.equal(retrieval.lexicalEngine, mod.WorkspaceLexicalEngineOption.A3sVec)
 retrieval.lexicalEngine = mod.WorkspaceLexicalEngineOption.Portable
 retrieval.maxRecords = 100
 retrieval.maxBytes = 1024 * 1024

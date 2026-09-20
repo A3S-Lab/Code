@@ -53,6 +53,7 @@ mod execution_coordinator;
 mod governance_facade;
 mod hook_control;
 mod project_instructions;
+#[cfg(feature = "dynamic-workflow")]
 mod projected_flow;
 mod projected_host_capability;
 mod projected_ui;
@@ -85,6 +86,7 @@ mod workflow_facade;
 pub use agent_facade::{Agent, SessionBuilder};
 use direct_tools::DirectToolRuntime;
 use hook_control::HookControl;
+#[cfg(feature = "dynamic-workflow")]
 pub use projected_flow::ProjectedFlowHandle;
 pub use projected_ui::ProjectedUiHandle;
 use runtime_events::ActiveToolState;

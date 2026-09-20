@@ -144,8 +144,6 @@ pub mod sdk_capabilities;
 #[cfg(feature = "headless-search")]
 pub mod search_runtime;
 pub mod security;
-#[cfg(feature = "serve")]
-pub mod serve;
 pub mod session_checkpoint;
 pub(crate) mod session_lane_queue;
 pub mod session_review;
@@ -175,9 +173,11 @@ pub mod workspace;
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult, ModelMiddlewareHealthSnapshot};
 pub use agent_api::{
-    Agent, AgentRunSpawn, AgentSession, ProjectedFlowHandle, ProjectedUiHandle, ReadFileOptions,
-    SessionBuilder, SessionOptions, ToolCallResult,
+    Agent, AgentRunSpawn, AgentSession, ProjectedUiHandle, ReadFileOptions, SessionBuilder,
+    SessionOptions, ToolCallResult,
 };
+#[cfg(feature = "dynamic-workflow")]
+pub use agent_api::ProjectedFlowHandle;
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,

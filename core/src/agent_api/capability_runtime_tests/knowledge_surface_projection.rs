@@ -1,4 +1,3 @@
-use super::flow_projection::flow_binding;
 use super::*;
 
 use crate::capability::{
@@ -24,7 +23,7 @@ fn knowledge_surface(
 }
 
 #[tokio::test]
-async fn multiple_knowledge_surfaces_publish_flow_readiness_without_becoming_cognitive_authority() {
+async fn multiple_knowledge_surfaces_publish_readiness_without_becoming_cognitive_authority() {
     let session = test_session("knowledge-surface-readiness").await;
     let acquired = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
@@ -45,8 +44,6 @@ async fn multiple_knowledge_surfaces_publish_flow_readiness_without_becoming_cog
     .unwrap();
     let domain = knowledge_surface("research:domain", 'd', 'e');
     let runbook = knowledge_surface("research:runbook", 'f', '1');
-    let executions = Arc::new(Mutex::new(Vec::new()));
-    let flow = flow_binding("research:review", "v1", &executions);
     let domain_descriptor = CapabilityDescriptor::new(
         &source,
         CapabilityKind::KnowledgeSurface,
@@ -63,26 +60,16 @@ async fn multiple_knowledge_surfaces_publish_flow_readiness_without_becoming_cog
         "runbook",
         runbook.public_name(),
         runbook.surface_digest().clone(),
-        [],
-    )
-    .unwrap();
-    let runbook_id = runbook_descriptor.id().clone();
-    let flow_descriptor = CapabilityDescriptor::new(
-        &source,
-        CapabilityKind::Flow,
-        "review",
-        flow.public_name(),
-        digest('2'),
         [domain_id.clone()],
     )
     .unwrap();
-    let flow_id = flow_descriptor.id().clone();
+    let runbook_id = runbook_descriptor.id().clone();
     let set = CapabilitySet::from_use_projection(
         CodeCatalogGeneration::new(1),
         upstream.clone(),
         [CapabilityContribution::new(
             source,
-            [domain_descriptor, runbook_descriptor, flow_descriptor],
+            [domain_descriptor, runbook_descriptor],
         )
         .unwrap()],
     )
@@ -100,8 +87,6 @@ async fn multiple_knowledge_surfaces_publish_flow_readiness_without_becoming_cog
             runbook_id.clone(),
             CapabilityValue::KnowledgeSurface(Arc::clone(&runbook)),
         )
-        .unwrap()
-        .stage_value(flow_id.clone(), CapabilityValue::Flow(Arc::clone(&flow)))
         .unwrap();
     session
         .apply_capability_batch(batch, CancellationToken::new())
@@ -118,15 +103,10 @@ async fn multiple_knowledge_surfaces_publish_flow_readiness_without_becoming_cog
         run.projection().knowledge_surface(&runbook_id).unwrap(),
         runbook.as_ref()
     ));
-    assert!(std::ptr::eq(
-        run.projection().flow(&flow_id).unwrap(),
-        flow.as_ref()
-    ));
     let waves = run.projection().readiness_plan().waves();
     assert_eq!(waves.len(), 2);
-    assert!(waves[0].contains(&domain_id));
-    assert!(waves[0].contains(&runbook_id));
-    assert_eq!(waves[1], [flow_id]);
+    assert_eq!(waves[0], [domain_id]);
+    assert_eq!(waves[1], [runbook_id]);
     assert!(run
         .projection()
         .iter()

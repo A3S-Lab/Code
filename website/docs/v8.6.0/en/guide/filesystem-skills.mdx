@@ -11,12 +11,10 @@ A3S Code commonly uses two locations:
 
 ```text
 repo/.a3s/skills/          # workspace-level skills
-release-agent/skills/      # AgentDir-private skills
 ```
 
 Workspace skills are loaded through `skillDirs` or `agent.acl` `skill_dirs`.
 Agent definitions use `agentDirs`; do not put skill directories in `agentDirs`.
-AgentDir-private skills are injected when `serve_agent_dir` creates schedule
 sessions.
 
 ## Skill File

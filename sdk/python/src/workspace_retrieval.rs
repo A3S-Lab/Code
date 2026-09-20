@@ -34,12 +34,12 @@ const MAX_SEARCH_LIMIT: usize = 25;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PyWorkspaceLexicalEngineOption {
     Portable,
-    ZvecRust,
+    A3sVec,
 }
 
 fn default_lexical_engine() -> PyWorkspaceLexicalEngineOption {
-    if cfg!(feature = "zvec-rust-fts") {
-        PyWorkspaceLexicalEngineOption::ZvecRust
+    if cfg!(feature = "a3s-vec-fts") {
+        PyWorkspaceLexicalEngineOption::A3sVec
     } else {
         PyWorkspaceLexicalEngineOption::Portable
     }
@@ -49,7 +49,7 @@ impl From<PyWorkspaceLexicalEngineOption> for a3s_code_core::WorkspaceLexicalEng
     fn from(value: PyWorkspaceLexicalEngineOption) -> Self {
         match value {
             PyWorkspaceLexicalEngineOption::Portable => Self::Portable,
-            PyWorkspaceLexicalEngineOption::ZvecRust => Self::ZvecRust,
+            PyWorkspaceLexicalEngineOption::A3sVec => Self::A3sVec,
         }
     }
 }

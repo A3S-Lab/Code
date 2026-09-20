@@ -641,18 +641,6 @@ layer-c-live-e2e:
       fi
       rg -n 'test result:|using default_model=' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
     fi
-    if cargo test -p a3s-code-core --features serve --test test_serve_agent_dir_real_llm -- --list >/dev/null 2>&1; then
-      suite=test_serve_agent_dir_real_llm
-      echo "=== ${suite} (serve) ===" | tee -a "${EVIDENCE}/summary.txt"
-      if cargo test -p a3s-code-core --features serve --test "${suite}" -- --ignored --test-threads=1 --nocapture \
-          >"${EVIDENCE}/${suite}.log" 2>&1; then
-        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-      else
-        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-        fail=1
-      fi
-      rg -n 'test result:|using default_model=' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
-    fi
     if [[ "${fail}" -eq 0 ]]; then
       echo "LAYER_C_PASS model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
     else

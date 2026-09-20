@@ -105,7 +105,7 @@ async fn ultracode_trivial_greeting_does_not_plan_or_fan_out() {
     let mut fanned_out = false;
     let mut got_text = false;
 
-    let _ = tokio::time::timeout(Duration::from_secs(180), async {
+    let _ = tokio::time::timeout(Duration::from_secs(420), async {
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::PlanningStart { .. } => planned = true,
@@ -174,7 +174,7 @@ async fn ultracode_parallel_task_still_fans_out() {
         Keep each summary compact and do not modify any files.";
     let (mut rx, handle) = session.stream(prompt, None).await.expect("stream starts");
 
-    let fanned_out = tokio::time::timeout(Duration::from_secs(300), async {
+    let fanned_out = tokio::time::timeout(Duration::from_secs(420), async {
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::ToolExecutionStart { name, args, .. } if name == "task" => {

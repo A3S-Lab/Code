@@ -19,11 +19,17 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
-# Workspace retrieval's native index is latency-sensitive; keep the rest of
+# Workspace retrieval's lexical index is latency-sensitive; keep the rest of
 # the distributable size-optimized while compiling the hot dependency for
 # speed.
+[profile.release.package.a3s-vec]
+opt-level = 3
+
 [profile.release.package.a3s-memory]
 opt-level = 3
 
 [patch."https://github.com/A3S-Lab/Sandbox.git"]
 a3s-sandbox = { path = "../sandbox" }
+
+[patch.crates-io]
+a3s-vec = { path = "../vec" }

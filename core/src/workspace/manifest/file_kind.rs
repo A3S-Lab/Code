@@ -98,7 +98,7 @@ fn is_known_non_text_path(path: &Path) -> bool {
             | "ogg"
             | "wav"
             | "webm"
-            // Databases, columnar data, fonts, models, and native artifacts.
+            // Databases, columnar data, fonts, models, and engine feature.
             | "a"
             | "arrow"
             | "avro"

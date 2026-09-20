@@ -38,7 +38,7 @@ impl HookExecutor for RewritingReadHook {
     }
 }
 
-const REAL_TIMEOUT: Duration = Duration::from_secs(300);
+const REAL_TIMEOUT: Duration = Duration::from_secs(420);
 const CONFORMANCE_GUIDELINES: &str = "This is a deterministic integration test. Follow the numbered protocol exactly, use the named tools with their canonical schemas, inspect every result, do not replace a required tool call with prose, and stop after reporting the requested marker.";
 
 async fn real_agent() -> (Agent, String) {
@@ -66,7 +66,7 @@ fn governed_options(model: &str, session_id: &str, rules: &[&str]) -> SessionOpt
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(8)
-        .with_llm_api_timeout(120_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(CONFORMANCE_GUIDELINES))

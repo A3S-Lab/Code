@@ -26,7 +26,7 @@ Linux, macOS, and Windows. Otherwise Linux is enough and the waiver says so.
 - S-S3-01: unlocked via in-repo `fixtures/s3-compat` + `A3S_S3_TEST_*`. Proven Windows 2026-09-20; **WSL Ubuntu 2026-09-20** (access key `a3s-code-akid` so bucket names cannot false-positive the leak oracle).
 - S-RX-01: blocked - no append-only evidence fact store to reopen.
 - Do not soak the live Flash provider account for hermetic retry/load soaks.
-- Flash Layer C (boyue/bailian/deepseek-v4-flash → v4.1-flash): prior-fail + prior-pass + optional `advanced-harness`/`serve` suites all PASS 2026-09-20. Evidence under `%TEMP%\a3s-layer-c-bailian-rerun*`. **WSL Ubuntu 2026-09-20:** full Layer C matrix PASS (`~/a3s-wsl-evidence/FINAL-GOAL6.txt`); export `NVM_DIR` so native sandbox can re-allow the nvm toolchain under masked `$HOME`; live suite outer budgets raised to 300s where WSL provider turns exceeded 180s. Catalog blockers that remain: macOS matrix (CI), S-RX-01 (no inventable evidence store).
+- Flash Layer C (boyue/bailian/deepseek-v4-flash → v4.1-flash): prior-fail + prior-pass + optional `advanced-harness` extensibility suite PASS 2026-09-20. Evidence under `%TEMP%\a3s-layer-c-bailian-rerun*`. **WSL Ubuntu 2026-09-20:** full Layer C matrix PASS (`~/a3s-wsl-evidence/FINAL-GOAL6.txt`); export `NVM_DIR` so native sandbox can re-allow the nvm toolchain under masked `$HOME`; live suite outer budgets raised to 300s where WSL provider turns exceeded 180s. Catalog blockers that remain: macOS matrix (CI), S-RX-01 (no inventable evidence store). AgentDir HTTP serve is removed; do not treat historical serve soak notes as current gates.
 
 ## Program
 
@@ -306,13 +306,6 @@ This is not a live provider soak. Do not soak the Flash account.
 
 ### S-SV-01
 
-- **Capability:** `filesystem_agent_server`
-- **Cycles:** 20 serve start / one request / stop.
-- **Oracle:** port free after each stop; schedule tick count equals expected ticks, not double after restart; 20th start succeeds.
-- **Fail:** address in use, or double schedule fire.
-- **Home:** `core/src/serve/lifecycle.rs` `soak_twenty_serve_restarts_stay_ready_and_do_not_fire` (`#[ignore]`, `--features serve`). Twenty start, status, and stop cycles each reach `Ready` then `Stopped`; a second stop stays `Stopped`. The daemon does not bind a socket, so there is no port to free. The yearly cron cannot fire inside a cycle, and the store does not contain the schedule prompt. Re-proven Windows 2026-09-20 (`--features serve --lib --ignored`).
-
-### S-OT-01
 
 - **Capability:** `opentelemetry`
 - **Cycles:** 100 spans with the collector refusing connections.

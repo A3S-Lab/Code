@@ -5,7 +5,8 @@ adapters / policy / events / retrieval / evidence) — not Cloud UI, not a
 plugin market, not a scientific product chrome.
 
 Efficiency rule: default surface stays thin (`local-code`); Advanced /
-server / headless / Harbor / prod memory are explicit opt-in gates.
+S3 / telemetry / headless / Harbor / prod memory are explicit opt-in gates.
+(Cargo profile `server` = `s3` + `telemetry`; it is not AgentDir HTTP serve.)
 
 ## Layer A — Hermetic baseline (must be green)
 
@@ -29,7 +30,7 @@ Orchestration: `just harness-convergence-check` covers A1–A4.
 | B1 | Evaluation substrate | `advanced-harness` | `evaluation_*` |
 | B2 | Research contracts | `advanced-harness` | `research_*` |
 | B3 | State graph / dynamic workflow | `advanced-harness` | `test_state_graph_*`, `dynamic_workflow_*` |
-| B4 | Serve / S3 | `server` / `s3` | `test_s3_backend`, serve suites |
+| B4 | S3 / telemetry | `s3` / `telemetry` (profile `server`) | `test_s3_backend`, OTEL collector-down |
 
 ## Layer C — Live provider E2E (ignored; config required)
 
@@ -44,8 +45,11 @@ Orchestration: `just harness-convergence-check` covers A1–A4.
 | C7 | `test_issue_fix_live_e2e` | `#139` streaming tool names, `#137` MCP stdio progress, `#138` oversized event page, `#140` process-host bash under live Flash |
 | C8 | `test_agent_protocol_live_e2e` | Harness Start/replay, live tool→change set, protocol Cancel |
 
-Run the full serial matrix with `just layer-c-live-e2e` (pins
-`boyue/deepseek-v4-flash`; override with `A3S_TEST_MODEL`).
+Run the full serial matrix with `just layer-c-live-e2e` (defaults to
+`boyue/deepseek-v4-flash`). For bailian Flash qualification set
+`A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` (remaps to declared
+`boyue/bailian/deepseek-v4.1-flash` via `support/layer_c_model.rs`). See
+[FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md) §2.
 
 ## Layer D — External qualification (not substituted by A–C)
 
@@ -70,7 +74,7 @@ Unit, integration, and soak case oracles:
 
 | Check | Pass criteria |
 | --- | --- |
-| Default compile surface | No Advanced/server in default dependency tree |
+| Default compile surface | No Advanced/S3/headless stacks in default dependency tree |
 | Registry surface | No model-visible `parallel_task`; no shadow memory mode |
 | CI cost | local-code gate is mandatory; Advanced is not default |
 | Live budget | Ignored suites; run serially (`--test-threads=1`) |
@@ -173,7 +177,7 @@ Evidence `/tmp/a3s-layer-c-bailian-flash-goal/` (2026-09-17):
 Evidence `/tmp/a3s-layer-c-bailian-flash-r19-full/` (2026-09-16):
 - Full serial matrix **LAYER_C_PASS** on bailian Flash (`FINAL.txt`).
 - All 23 Layer C suites PASS (21 core + `advanced-harness` extensibility +
-  `serve` agent-dir).
+  agent-dir).
 - llvm-cov `--tests` `/tmp/a3s-llvm-cov-r20/`: E2E surfaces all ≥90% lines —
   `agent_protocol` **93.50%**, `agent_protocol_host` **90.91%**,
   `agent_protocol_harness` **90.14%**, `session_sandbox` **95.72%**,
@@ -285,7 +289,6 @@ Evidence `/tmp/a3s-layer-c-boyue-v858-r9/`:
 | `test_real_llm_cluster_features` | 7/7 |
 | `test_memory_store_real_llm` | 2/2 |
 | `test_extensibility_real_llm` (`advanced-harness`) | 4/4 |
-| `test_serve_agent_dir_real_llm` (`serve`) | 2/2 |
 
 Prior r6 under `/tmp/a3s-layer-c-boyue-v858-r6/` is the last clean pass before
 these coverage deltas. r7/r8 aborted mid-matrix after probe fixes.

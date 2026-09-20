@@ -221,7 +221,7 @@ const result = await session.tool('download', {
 
 `search` 是模型侧唯一的工作区搜索工具，必须传入 `mode` 和 `query`：正则内容搜索使用
 `grep`，路径发现使用 `glob`，原生词汇相关性排序使用 `bm25`。这些模式是分离的平面：
-`grep` 不会打开持久 zvec FTS，`bm25` 也不会成为精确匹配权威。宿主显式启用 Workspace
+`grep` 不会打开持久 a3s-vec FTS，`bm25` 也不会成为精确匹配权威。宿主显式启用 Workspace
 Retrieval 后，同一个 Schema 还会提供 `semantic`，在 Session 独占的内存索引上执行
 Exact Cosine Ranking，以及 `hybrid`，对 Exact、Lexical、Symbol 与 Semantic Evidence
 执行 Reciprocal-rank Fusion。关闭状态不会暴露这两个 Mode。所有模式共用 `path`；Grep、

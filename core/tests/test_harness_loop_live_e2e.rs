@@ -59,7 +59,7 @@ fn options(session_id: &str, allow_write: bool) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(6)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }
@@ -494,7 +494,7 @@ fn plan_options(workspace: &Path) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(6)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_continuation(false)
 }

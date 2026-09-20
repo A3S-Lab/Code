@@ -20,7 +20,7 @@ use a3s_code_core::{
 };
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const GP_GUIDELINES: &str = "This is a deterministic capability gate. Use the write tool with canonical arguments to create the requested file. Do not replace the required write with prose.";
 
 async fn real_agent() -> Agent {
@@ -45,7 +45,7 @@ fn general_opts(session_id: &str) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(6)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_prompt_slots(SystemPromptSlots {
             style: Some(AgentStyle::GeneralPurpose),
@@ -66,7 +66,7 @@ fn explore_opts(session_id: &str) -> SessionOptions {
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
         .with_max_tool_rounds(4)
-        .with_llm_api_timeout(90_000)
+        .with_llm_api_timeout(180_000)
         .with_temperature(0.0)
         .with_prompt_slots(SystemPromptSlots {
             style: Some(AgentStyle::Explore),

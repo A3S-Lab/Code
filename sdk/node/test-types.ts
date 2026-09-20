@@ -10,7 +10,6 @@ import type {
   Agent,
   AgentEvent,
   EventStream,
-  ServeHandle,
   StateGraphRuntime,
   ToolResult,
   AgentRunSpawnObject,
@@ -69,7 +68,6 @@ declare const _session: Session
 declare const _agent: Agent
 declare const _event: AgentEvent
 declare const _eventStream: EventStream
-declare const _serveHandle: ServeHandle
 declare const _stateGraph: StateGraphRuntime
 declare const _result: ToolResult
 declare const _runSpawn: AgentRunSpawnObject
@@ -96,7 +94,7 @@ declare const _fixedChunking: FixedWindowWorkspaceChunkingStrategy
 declare const _recursiveChunking: RecursiveWorkspaceChunkingStrategy
 declare const _retrievalOptions: WorkspaceRetrievalOptions
 const _lexicalEngineOption: WorkspaceLexicalEngineOption =
-  WorkspaceLexicalEngineOption.ZvecRust
+  WorkspaceLexicalEngineOption.A3sVec
 declare const _retrievalStatus: WorkspaceRetrievalStatusObject
 declare const _semanticResult: WorkspaceSemanticSearchResultObject
 declare const _hybridResult: WorkspaceHybridSearchResultObject
@@ -271,7 +269,6 @@ async function _consumeAsyncLifecycle(): Promise<void> {
   await resumed.closeAsync()
   const replacement = await _agent.replaceSessionAsync(session, {})
   await replacement.closeAsync()
-  const serveHandle = await _agent.serveAgentDir('./agent', '.', {})
   await serveHandle.stop()
 }
 

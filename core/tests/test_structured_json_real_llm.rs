@@ -33,8 +33,8 @@ use support::layer_c_model::{load_pinned_layer_c_config, REQUIRED_DEFAULT_MODEL}
 
 /// Hard ceiling per LLM call so a flaky/hung endpoint fails the test fast
 /// instead of stalling for minutes.
-const CALL_TIMEOUT: Duration = Duration::from_secs(240);
-const PRE_ANALYZE_TIMEOUT: Duration = Duration::from_secs(180);
+const CALL_TIMEOUT: Duration = Duration::from_secs(420);
+const PRE_ANALYZE_TIMEOUT: Duration = Duration::from_secs(420);
 
 /// Build a client pinned to Layer C Flash (`boyue/bailian/deepseek-v4.1-flash`).
 fn real_client() -> Arc<dyn LlmClient> {

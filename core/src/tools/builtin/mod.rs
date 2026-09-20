@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_builtins_does_not_open_durable_zvec() {
+    async fn register_builtins_does_not_open_durable_a3s_vec() {
         let temp = tempfile::tempdir().unwrap();
         let backend = ManifestWorkspaceBackend::new(temp.path());
         backend

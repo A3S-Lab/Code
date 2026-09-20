@@ -3,7 +3,7 @@
 //! Architecture mirrors microsoft/tgrep (trigrams as a candidate filter only):
 //! exact matches still come from the workspace regex scan. Implemented in-tree
 //! so `a3s-code-core` stays crates.io-publishable (`tgrep-core` is not on the
-//! registry). Does not start a TCP server and does not touch durable zvec FTS.
+//! registry). Does not start a TCP server and does not touch durable a3s-vec FTS.
 
 use super::{GrepCandidateIndex, GrepCandidateSelection};
 use std::collections::{BTreeSet, HashMap, HashSet};
