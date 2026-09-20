@@ -18,6 +18,7 @@ use a3s_code_core::{Agent, AgentEvent, SessionOptions};
 
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
+use support::python_stdio_command;
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
 const MCP_TOKEN: &str = "mcp-live-token-7f3a";
@@ -531,7 +532,7 @@ async fn deepseek_flash_mcp_tool_returns_the_server_token() {
         .add_mcp_server(a3s_code_core::mcp::McpServerConfig {
             name: "fixture".to_string(),
             transport: a3s_code_core::mcp::McpTransportConfig::Stdio {
-                command: "python3".to_string(),
+                command: python_stdio_command(),
                 args: vec![script.to_string_lossy().to_string()],
             },
             enabled: true,

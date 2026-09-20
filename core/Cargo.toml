@@ -89,7 +89,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # OpenTelemetry (optional — requires `telemetry` feature)
 opentelemetry = { version = "0.27", optional = true }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.27", features = ["tonic"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["tonic", "http-proto", "hyper-client"], optional = true }
 tracing-opentelemetry = { version = "0.28", optional = true }
 
 # Async utilities
@@ -163,7 +163,7 @@ aws-smithy-runtime-api = { version = "1", optional = true }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [features]
 # Thin coding-harness default (`HARNESS-CONV5`): agent loop, tools, identity,

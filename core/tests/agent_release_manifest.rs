@@ -603,3 +603,45 @@ fn public_release_types_are_send_and_sync() {
     assert_send_sync::<AgentReleaseStorage>();
     assert_send_sync::<AgentReleaseWorkspaceMode>();
 }
+
+#[test]
+#[ignore = "S-AR-01 repeated release admit; run with --ignored"]
+fn soak_release_admits_collapse_to_one_binding() {
+    let host = compatibility();
+    let mut bindings = std::collections::HashSet::new();
+    let mut receipt = None;
+    for _ in 0..50 {
+        let admitted = AgentReleaseManifest::parse(fixture()).expect("good manifest admits");
+        admitted
+            .verify_compatibility(&host)
+            .expect("good manifest stays compatible");
+        let identity = admitted.identity().to_string();
+        match &receipt {
+            None => receipt = Some(identity.clone()),
+            Some(previous) => assert_eq!(&identity, previous, "receipt id must stay stable"),
+        }
+        bindings.insert(identity);
+    }
+    assert_eq!(
+        bindings.len(),
+        1,
+        "repeated admits must collapse to one binding"
+    );
+
+    let bad = fixture().replace(
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    );
+    let mut admitted_bad = 0usize;
+    for _ in 0..50 {
+        match AgentReleaseManifest::parse(&bad) {
+            Ok(_) => admitted_bad += 1,
+            Err(error) => {
+                assert_eq!(error.code(), "a3s.code.agent_release.invalid_field");
+                assert!(!error.to_string().contains("BBBB"));
+            }
+        }
+    }
+    assert_eq!(admitted_bad, 0, "a bad digest must never admit");
+    assert_eq!(bindings.len(), 1);
+}

@@ -11,7 +11,10 @@
 use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_ENCODING, LOCATION, RANGE};
 use reqwest::{redirect::Policy, Url};
 use std::fmt;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub(super) const MAX_REDIRECTS: usize = 10;
@@ -253,6 +256,18 @@ struct ResolvedTarget {
     is_ip_literal: bool,
 }
 
+type HostLookup = Pin<Box<dyn Future<Output = Result<Vec<SocketAddr>, String>> + Send>>;
+
+fn lookup_system(host: &str, port: u16) -> HostLookup {
+    let host = host.to_owned();
+    Box::pin(async move {
+        let addresses = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|error| format!("Failed to resolve URL host {host}: {error}"))?;
+        Ok(addresses.collect())
+    })
+}
+
 /// Resolve the target and reject the whole result if any address is non-public.
 /// Rejecting mixed public/private answers avoids resolver-order dependent bypasses.
 ///
@@ -260,6 +275,16 @@ struct ResolvedTarget {
 /// non-public answers (loopback, RFC1918, link-local, …) stay hard failures so
 /// DoH cannot turn a poisoned private answer into a public connect.
 async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpError> {
+    resolve_public_target_with(url, lookup_system).await
+}
+
+async fn resolve_public_target_with<L>(
+    url: &Url,
+    lookup: L,
+) -> Result<ResolvedTarget, SafeHttpError>
+where
+    L: Fn(&str, u16) -> HostLookup,
+{
     validate_url_target(url).map_err(SafeHttpError::invalid)?;
 
     let serialized_host = url
@@ -273,12 +298,7 @@ async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpErro
         .port_or_known_default()
         .ok_or_else(|| SafeHttpError::invalid("URL must include a valid port"))?;
     let is_ip_literal = host.parse::<IpAddr>().is_ok();
-    let mut addresses: Vec<_> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|error| {
-            SafeHttpError::transport(format!("Failed to resolve URL host {host}: {error}"))
-        })?
-        .collect();
+    let mut addresses = lookup(host, port).await.map_err(SafeHttpError::transport)?;
     addresses.sort_unstable();
     addresses.dedup();
 
@@ -403,11 +423,24 @@ fn parse_doh_answer_ips(body: &str, port: u16) -> Result<Vec<SocketAddr>, String
 /// Create a client for one hop only. Redirects are handled manually so the next
 /// host is resolved and validated before a connection is attempted.
 fn build_direct_client(target: &ResolvedTarget) -> Result<reqwest::Client, String> {
+    build_pinned_client(target, None)
+}
+
+/// `fallback` is the resolver used only when a hostname has no pin. Production
+/// passes `None` and keeps the system resolver. Tests pass a resolver that
+/// returns a later private answer so a missing pin fails closed.
+fn build_pinned_client(
+    target: &ResolvedTarget,
+    fallback: Option<Arc<dyn reqwest::dns::Resolve>>,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .no_proxy()
         .user_agent(concat!("a3s-code/", env!("CARGO_PKG_VERSION")));
 
+    if let Some(fallback) = fallback {
+        builder = builder.dns_resolver2(fallback);
+    }
     if !target.is_ip_literal {
         builder = builder.resolve_to_addrs(&target.host, &target.addresses);
     }
@@ -746,5 +779,94 @@ mod tests {
         };
         assert!(!err.is_transport());
         assert!(err.to_string().contains("non-public"));
+    }
+
+    #[tokio::test]
+    async fn pinned_connect_ignores_a_later_private_answer() {
+        use reqwest::dns::{Addrs, Resolve, Resolving};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        const PRIVATE_BODY: &str = "PRIVATE-BODY-91";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind private answer");
+        let private = listener.local_addr().expect("private address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let accept_hits = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                accept_hits.fetch_add(1, Ordering::SeqCst);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PRIVATE_BODY}",
+                    PRIVATE_BODY.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let url =
+            Url::parse(&format!("http://rebind.example:{}/secret", private.port())).expect("url");
+        let target = resolve_public_target_with(&url, |_host, port| {
+            Box::pin(async move {
+                Ok(vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    port,
+                )])
+            })
+        })
+        .await
+        .expect("public check");
+        assert!(
+            target
+                .addresses
+                .iter()
+                .all(|address| !is_forbidden_ip(address.ip())),
+            "the checked address must be the public answer"
+        );
+
+        struct LaterPrivate {
+            addr: SocketAddr,
+        }
+        impl Resolve for LaterPrivate {
+            fn resolve(&self, _name: reqwest::dns::Name) -> Resolving {
+                let addr = self.addr;
+                Box::pin(async move {
+                    let addrs: Addrs = Box::new(std::iter::once(addr));
+                    Ok(addrs)
+                })
+            }
+        }
+
+        let client = build_pinned_client(&target, Some(Arc::new(LaterPrivate { addr: private })))
+            .expect("pinned client");
+        let fetched = client
+            .get(url)
+            .timeout(Duration::from_millis(1500))
+            .send()
+            .await;
+        match fetched {
+            Ok(response) => {
+                let body = response.text().await.unwrap_or_default();
+                assert!(
+                    !body.contains(PRIVATE_BODY),
+                    "private answer body was stored: {body}"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    !error.to_string().contains(PRIVATE_BODY),
+                    "private answer leaked into the error: {error}"
+                );
+            }
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "connect used the later private address"
+        );
     }
 }

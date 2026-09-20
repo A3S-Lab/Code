@@ -722,21 +722,31 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
     Ok(branches)
 }
 
-/// Create a new branch.
-pub fn create_branch(repo_path: &Path, name: &str, base: &str) -> Result<()> {
-    if name.trim().is_empty()
-        || name.contains('\0')
-        || base.trim().is_empty()
-        || base.contains('\0')
-    {
+/// Reject revisions that would be parsed as Git options.
+///
+/// Ubuntu's packaged Git (2.43) still treats `checkout --end-of-options` as a
+/// pathspec, so callers must refuse flag-like refs before invoking checkout
+/// instead of relying on that separator.
+pub(crate) fn refuse_flag_like_git_revision(revision: &str, kind: &str) -> Result<()> {
+    let revision = revision.trim();
+    if revision.is_empty() || revision.contains('\0') {
+        return Err(anyhow!("Git {kind} must be a non-empty revision"));
+    }
+    if revision.starts_with('-') {
         return Err(anyhow!(
-            "Git branch name and base must be non-empty revisions"
+            "Git {kind} must not look like a command-line option: {revision}"
         ));
     }
-    let (success, _, stderr) = run_git(
-        repo_path,
-        &["checkout", "-b", name, "--end-of-options", base],
-    )?;
+    Ok(())
+}
+
+/// Create a new branch.
+pub fn create_branch(repo_path: &Path, name: &str, base: &str) -> Result<()> {
+    refuse_flag_like_git_revision(name, "branch name")
+        .map_err(|error| anyhow!("Failed to create branch: {error}"))?;
+    refuse_flag_like_git_revision(base, "branch base")
+        .map_err(|error| anyhow!("Failed to create branch: {error}"))?;
+    let (success, _, stderr) = run_git(repo_path, &["checkout", "-b", name, base])?;
     if !success && !stderr.is_empty() {
         return Err(anyhow!("Failed to create branch: {}", stderr));
     }

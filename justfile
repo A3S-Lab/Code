@@ -576,8 +576,21 @@ layer-c-live-e2e:
     : >"${EVIDENCE}/summary.txt"
     export A3S_CONFIG_FILE="${CONFIG}"
     export A3S_TEST_MODEL="${A3S_TEST_MODEL:-boyue/deepseek-v4-flash}"
+    # Linux native sandbox masks $HOME; nvm/fnm toolchains must be re-allowed
+    # via NVM_DIR/FNM_DIR (see a3s-sandbox readable_tool_paths) or `node` is
+    # invisible inside bwrap and long-horizon bash verification stays exit 1.
+    if [[ -z "${NVM_DIR:-}" && -d "${HOME}/.nvm" ]]; then
+      export NVM_DIR="${HOME}/.nvm"
+    fi
+    if [[ -n "${NVM_DIR:-}" && -d "${NVM_DIR}/versions/node" ]]; then
+      node_bin="$(ls -d "${NVM_DIR}"/versions/node/*/bin 2>/dev/null | sort -V | tail -n1 || true)"
+      if [[ -n "${node_bin}" ]]; then
+        export PATH="${node_bin}:${PATH}"
+      fi
+    fi
     echo "A3S_CONFIG_FILE=${A3S_CONFIG_FILE}" | tee "${EVIDENCE}/env.txt"
     echo "A3S_TEST_MODEL=${A3S_TEST_MODEL}" | tee -a "${EVIDENCE}/env.txt"
+    echo "NVM_DIR=${NVM_DIR:-}" | tee -a "${EVIDENCE}/env.txt"
     rg -n '^default_model' "${A3S_CONFIG_FILE}" | tee -a "${EVIDENCE}/env.txt"
     rg -n 'deepseek-v4-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
     suites=(

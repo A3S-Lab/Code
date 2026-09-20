@@ -955,4 +955,55 @@ mod tests {
     fn test_record_tool_result_failure() {
         record_tool_result(1, std::time::Duration::from_secs(5));
     }
+
+    /// U-OT-01: the default build has no OTLP exporter, so a session turn must
+    /// not open the endpoint named by `OTEL_EXPORTER_OTLP_ENDPOINT`.
+    #[cfg(not(feature = "telemetry"))]
+    #[tokio::test]
+    async fn default_build_does_not_open_an_otlp_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let previous = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint);
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value),
+                    None => std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                }
+            }
+        }
+        let _restore = Restore(previous);
+
+        let config = crate::config::CodeConfig::from_acl(
+            r#"
+default_model = "anthropic/claude-sonnet-4-20250514"
+providers "anthropic" {
+  api_key = "test-key"
+  models "claude-sonnet-4-20250514" { name = "Claude Sonnet 4" }
+}
+"#,
+        )
+        .unwrap();
+        let agent = crate::Agent::from_config(config).await.unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("note.txt"), "OTLP-ABSENT-91").unwrap();
+        let session = agent
+            .session_async(workspace.path().display().to_string(), None)
+            .await
+            .unwrap();
+        let result = session
+            .tool("read", serde_json::json!({ "file_path": "note.txt" }))
+            .await
+            .expect("a default-feature tool turn must not depend on OTLP");
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        assert!(result.output.contains("OTLP-ABSENT-91"));
+
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("default build opened an OTLP connection: {other:?}"),
+        }
+    }
 }

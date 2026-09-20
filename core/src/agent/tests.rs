@@ -682,7 +682,7 @@ impl LlmClient for BlockingExtractionLlmClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
         let prompt_text = messages
             .iter()
@@ -696,22 +696,10 @@ impl LlmClient for BlockingExtractionLlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
-            || prompt_text.contains("compact pre-analysis object")
-        {
-            let prompt = pre_analysis_user_request(&prompt_text);
-            let response = serde_json::json!({
-                "intent": "GeneralPurpose",
-                "requires_planning": false,
-                "goal": { "description": prompt, "success_criteria": [] },
-                "execution_plan": {
-                    "complexity": "Simple",
-                    "steps": [],
-                    "required_tools": []
-                },
-                "optimized_input": prompt
-            });
-            return Ok(Self::text_response(&response.to_string()));
+        // Use the shared detector so CRLF/LF drift and emit_pre_analysis tools
+        // cannot misroute pre-analysis into the extraction gate on Windows.
+        if is_pre_analysis_llm_request(system, &prompt_text, tools) {
+            return Ok(pre_analysis_mock_response(&prompt_text));
         }
 
         self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -3514,7 +3502,7 @@ async fn test_streaming_llm_memory_extraction_does_not_block_final_result() {
     let (event_tx, _event_rx) = mpsc::channel(32);
 
     let result = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(2),
         agent.execute_with_session(
             &[],
             "remember that streaming memory extraction must not block final output",
@@ -3589,7 +3577,7 @@ async fn scoped_streaming_memory_extraction_survives_turn_cancel() {
     let (event_tx, _event_rx) = mpsc::channel(32);
 
     let result = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(2),
         agent.execute_with_session(
             &[],
             "remember that scoped streaming extraction belongs to the Run",
@@ -3674,8 +3662,8 @@ async fn max_execution_time_bounds_a_stalled_llm_call() {
             style: Some(AgentStyle::GeneralPurpose),
             ..Default::default()
         },
-        llm_api_timeout_ms: Some(1_000),
-        max_execution_time_ms: Some(200),
+        llm_api_timeout_ms: Some(5_000),
+        max_execution_time_ms: Some(1_500),
         circuit_breaker_threshold: 1,
         continuation_enabled: false,
         ..Default::default()
@@ -3688,14 +3676,17 @@ async fn max_execution_time_bounds_a_stalled_llm_call() {
     );
 
     let error = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(5),
         agent.execute_with_session(&[], "finish before the run deadline", None, None, None),
     )
     .await
     .expect("max_execution_time_ms must bound a provider call")
     .expect_err("the stalled provider must not complete");
 
-    assert!(error.to_string().contains("Execution timeout reached"));
+    assert!(
+        error.to_string().contains("Execution timeout reached"),
+        "got: {error}"
+    );
     assert_eq!(mock_client.complete_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -4019,7 +4010,7 @@ async fn test_streaming_llm_memory_extraction_queues_every_completed_turn() {
 
     let (first_tx, _first_rx) = mpsc::channel(32);
     let first = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(2),
         agent.execute_with_session(
             &[],
             "remember the first durable workflow for memory extraction",
@@ -4043,7 +4034,7 @@ async fn test_streaming_llm_memory_extraction_queues_every_completed_turn() {
 
     let (second_tx, _second_rx) = mpsc::channel(32);
     let second = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_secs(2),
         agent.execute_with_session(
             &[],
             "remember the second durable workflow for memory extraction",

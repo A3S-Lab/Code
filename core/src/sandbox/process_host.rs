@@ -63,6 +63,17 @@ impl ProcessHostBashSandbox {
     }
 }
 
+/// Bash invocation for one process-host command.
+///
+/// The command text is not inspected. An absolute path outside `workspace`
+/// stays in the argv. The outer container or VM is the path boundary.
+fn process_host_command(workspace: &Path, command: &str) -> (PathBuf, Vec<String>) {
+    (
+        workspace.to_path_buf(),
+        vec!["-c".to_string(), command.to_string()],
+    )
+}
+
 #[async_trait]
 impl BashSandbox for ProcessHostBashSandbox {
     async fn exec_command(&self, command: &str, guest_workspace: &str) -> Result<SandboxOutput> {
@@ -107,11 +118,11 @@ impl BashSandbox for ProcessHostBashSandbox {
 
         // Non-login `-c`: login shells (`-lc`) source profile scripts that often
         // exit non-zero on Windows Git Bash / CI images and poison tool exit codes.
+        let (current_dir, args) = process_host_command(&self.workspace, &request.command);
         let mut shell = Command::new("bash");
         shell
-            .arg("-c")
-            .arg(&request.command)
-            .current_dir(&self.workspace)
+            .args(&args)
+            .current_dir(current_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -481,6 +492,19 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let sandbox = ProcessHostBashSandbox::new(directory.path().to_path_buf(), None);
         assert_eq!(sandbox.workspace(), directory.path());
+    }
+
+    #[test]
+    fn process_host_does_not_filter_commands_that_name_paths_outside_the_workspace() {
+        let workspace = Path::new(r"C:\workspace");
+        let command = "printf OUTSIDE-91 > /tmp/outside-91.txt";
+        let (current_dir, args) = process_host_command(workspace, command);
+        assert_eq!(current_dir, workspace);
+        assert_eq!(args, vec!["-c".to_string(), command.to_string()]);
+        assert!(
+            args[1].contains("/tmp/outside-91.txt"),
+            "outside path must stay in the command; the outer isolator owns the deny"
+        );
     }
 
     #[tokio::test]

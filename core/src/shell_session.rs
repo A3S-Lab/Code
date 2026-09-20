@@ -88,6 +88,16 @@ pub fn drop_session(session_id: &str) {
     }
 }
 
+#[cfg(test)]
+fn job_count(session_id: &str) -> usize {
+    sessions()
+        .lock()
+        .expect("shell sessions")
+        .get(session_id)
+        .map(|session| session.jobs.len())
+        .unwrap_or(0)
+}
+
 pub fn cwd(session_id: &str) -> Option<PathBuf> {
     sessions()
         .lock()
@@ -234,15 +244,20 @@ pub fn run_bounded(session_id: &str, command: &str, timeout: Duration) -> Result
 
 fn spawn(session_id: &str, admitted: &AdmittedCommand) -> Result<Child> {
     let overlay = overlay_env(session_id);
-    let mut command = Command::new("sh");
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(&admitted.command);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = windows_detached_command(admitted, &overlay)?;
     command
-        .arg("-c")
-        .arg(&admitted.command)
         .current_dir(&admitted.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in overlay {
+    for (key, value) in &overlay {
         command.env(key, value);
     }
     #[cfg(unix)]
@@ -254,12 +269,97 @@ fn spawn(session_id: &str, admitted: &AdmittedCommand) -> Result<Child> {
             Ok(())
         });
     }
-    Ok(command.spawn()?)
+    let mut child = command.spawn().map_err(|error| {
+        anyhow!("failed to spawn detached shell for session {session_id}: {error}")
+    })?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        if let Err(error) = crate::tools::builtin::bash::bind_windows_process_tree(
+            child.as_raw_handle(),
+            child.id(),
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "failed to bind detached shell job for session {session_id}: {error}"
+            ));
+        }
+    }
+    Ok(child)
+}
+
+/// Detached jobs use the same host shell as foreground commands. Windows has
+/// no `sh` on PATH; PowerShell 7 runs the compat shim so `printf` and `sleep`
+/// still start a child the session can poll and kill.
+#[cfg(windows)]
+fn windows_detached_command(
+    admitted: &AdmittedCommand,
+    overlay: &HashMap<String, String>,
+) -> Result<Command> {
+    use std::os::windows::process::CommandExt;
+
+    let powershell = a3s_sandbox::windows_host_powershell(&admitted.cwd).map_err(|error| {
+        anyhow!(
+            "failed to resolve PowerShell 7 for {}: {error}",
+            admitted.cwd.display()
+        )
+    })?;
+    let mut source = String::new();
+    for key in overlay.keys() {
+        if is_powershell_identifier(key) {
+            source.push_str(&format!("${key} = $env:{key}\n"));
+        }
+    }
+    source.push_str(&admitted.command);
+    let wrapped = crate::tools::builtin::bash::build_powershell_command(&source);
+    let encoded = crate::tools::builtin::bash::encode_powershell_command(&wrapped);
+    let mut command = Command::new(&powershell);
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+    ]);
+    let encoded_chars = format!("{powershell:?} -EncodedCommand {encoded}")
+        .encode_utf16()
+        .count();
+    if encoded_chars <= 30_000 {
+        command.arg("-EncodedCommand").arg(encoded);
+    } else {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let path =
+            std::env::temp_dir().join(format!("a3s-detach-{}-{unique}.ps1", std::process::id()));
+        let literal = path.to_string_lossy().replace('\'', "''");
+        let body = format!(
+            "trap {{ exit 1 }}\nRegister-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {{ Remove-Item -LiteralPath '{literal}' -Force -ErrorAction SilentlyContinue }} | Out-Null\n{wrapped}\nif (-not $?) {{ exit 1 }}\n"
+        );
+        std::fs::write(&path, body.as_bytes())
+            .map_err(|error| anyhow!("failed to write detached shell script: {error}"))?;
+        command.arg("-File").arg(&path);
+    }
+    command.creation_flags(crate::tools::builtin::bash::CREATE_NO_WINDOW);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn is_powershell_identifier(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn kill_child(child: &mut Child) -> Result<()> {
-    // The process id is only an input to the Unix process-group kill. Binding
-    // it on Windows is an unused variable under `-D warnings`.
+    // Unix kills the process group. On Windows the shell is assigned to a
+    // Job Object at spawn; ending this process makes that job terminate the
+    // remaining descendants.
     #[cfg(unix)]
     let pid = child.id();
     #[cfg(unix)]
@@ -406,7 +506,15 @@ mod tests {
         )
         .unwrap();
         let written = std::fs::read_to_string(root.path().join("other-overlay.txt")).unwrap();
-        assert_eq!(written, "other-only");
+        assert_eq!(
+            written.trim(),
+            "other-only",
+            "the writer session must record its own overlay, not the other session"
+        );
+        assert!(
+            !written.contains("owner-only"),
+            "overlay leaked across sessions that share a cwd: {written:?}"
+        );
         drop_session(owner);
         drop_session(other);
     }
@@ -431,6 +539,83 @@ mod tests {
         drop_session("timeout");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn killing_a_detached_job_stops_its_descendant_before_a_later_write() {
+        let root = tempfile::tempdir().unwrap();
+        let child_started = root.path().join("child-started");
+        let leaked = root.path().join("leaked");
+        let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
+        let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
+        let powershell = a3s_sandbox::windows_host_powershell(root.path()).expect("PowerShell 7");
+        let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
+             -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 1; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+             Wait-Process -Id $child.Id"
+        );
+        let session = format!("detach-tree-{}", std::process::id());
+        bind_session(&session, root.path());
+        let id = detach(&session, &command, CommandAdmission::Allow).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !child_started.exists() {
+            assert!(
+                deadline > std::time::Instant::now(),
+                "descendant did not start before the detached shell was killed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        kill(&session, &id).unwrap();
+        std::thread::sleep(Duration::from_millis(1_200));
+        drop_session(&session);
+        assert!(
+            !leaked.exists(),
+            "killing a detached job must stop a descendant before its later write"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn timing_out_a_shell_stops_its_descendant_before_a_later_write() {
+        let root = tempfile::tempdir().unwrap();
+        let child_started = root.path().join("child-started");
+        let leaked = root.path().join("leaked");
+        let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
+        let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
+        let powershell = a3s_sandbox::windows_host_powershell(root.path()).expect("PowerShell 7");
+        let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
+             -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 30; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+             Wait-Process -Id $child.Id"
+        );
+        let session = format!("timeout-tree-{}", std::process::id());
+        bind_session(&session, root.path());
+        let session_for_run = session.clone();
+        let runner = std::thread::spawn(move || {
+            run_bounded(&session_for_run, &command, Duration::from_secs(8))
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        while !child_started.exists() {
+            assert!(
+                deadline > std::time::Instant::now(),
+                "descendant did not start before the shell timeout"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let error = runner.join().expect("timeout runner").unwrap_err();
+        assert!(
+            error.to_string().contains("killed the process group"),
+            "timeout did not report the process-group kill: {error}"
+        );
+        std::thread::sleep(Duration::from_millis(1_200));
+        drop_session(&session);
+        assert!(
+            !leaked.exists(),
+            "a shell timeout must stop a descendant before its later write"
+        );
+    }
+
     #[test]
     fn transcript_omits_secret_env() {
         let root = tempfile::tempdir().unwrap();
@@ -441,5 +626,52 @@ mod tests {
         assert!(visible.iter().any(|(key, _)| key == "PATH"));
         assert!(visible.iter().all(|(key, _)| key != "OPENAI_API_KEY"));
         drop_session("env");
+    }
+
+    /// S-WT-01: one rooted session, 100 commands, including escapes.
+    #[test]
+    #[ignore = "S-WT-01 rooted shell soak"]
+    fn soak_rooted_shell_keeps_cwd_inside_one_hundred_commands() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("a3s-shell-escape-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&outside);
+        let session = format!("soak-wt-{}", std::process::id());
+        bind_session_rooted(&session, root.path(), root.path());
+        let parent = root.path().parent().expect("parent");
+        let absolute_escape = format!("cd {}", parent.display());
+
+        for index in 0..100 {
+            let before = cwd(&session).expect("cwd");
+            let command = match index % 4 {
+                0 => "cd nested",
+                1 => "cd ..",
+                2 => absolute_escape.as_str(),
+                _ => "cd ..",
+            };
+            let result = admit(&session, command, CommandAdmission::Allow);
+            let after = cwd(&session).expect("cwd");
+            assert!(
+                stays_under_root(&after, root.path()),
+                "cycle {index} cwd left the root: {after:?}"
+            );
+            if result.is_err() {
+                assert_eq!(before, after, "denied cd moved cwd on cycle {index}");
+            }
+            assert_eq!(
+                job_count(&session),
+                0,
+                "cycle {index} leaked a detached job"
+            );
+            assert!(
+                !outside.exists(),
+                "cycle {index} created a file outside the root"
+            );
+        }
+
+        drop_session(&session);
+        let _ = std::fs::remove_file(&outside);
     }
 }

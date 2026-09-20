@@ -63,6 +63,9 @@ Feature → hermetic/live/cov kernel mapping:
 Full-feature program (capability join, train order, gaps, version pins):
 [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
 
+Unit, integration, and soak case oracles:
+[test-cases/README.md](test-cases/README.md).
+
 ## Efficiency checks
 
 | Check | Pass criteria |

@@ -369,12 +369,98 @@ function which {
         }
     }
 }
+
+function test {
+    # A Parameter attribute makes this an advanced function, and then -d binds
+    # to -Debug. $args keeps POSIX operators as literal arguments.
+    $ok = $false
+    if ($args.Count -eq 2) {
+        $path = $args[1]
+        switch ($args[0]) {
+            '-e' { $ok = Test-Path -LiteralPath $path }
+            '-f' { $ok = Test-Path -LiteralPath $path -PathType Leaf }
+            '-d' { $ok = Test-Path -LiteralPath $path -PathType Container }
+            '-s' {
+                $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+                $ok = $null -ne $item -and -not $item.PSIsContainer -and $item.Length -gt 0
+            }
+        }
+    }
+    if ($ok) {
+        $global:LASTEXITCODE = 0
+    } else {
+        $global:LASTEXITCODE = 1
+    }
+}
+
+function grep {
+    $quiet = $false
+    $pattern = $null
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($arg in $args) {
+        if ($null -eq $pattern -and ($arg -eq '-q' -or $arg -eq '--quiet' -or $arg -eq '--silent')) {
+            $quiet = $true
+            continue
+        }
+        if ($null -eq $pattern) {
+            $pattern = $arg
+            continue
+        }
+        $files.Add($arg)
+    }
+    if ([string]::IsNullOrEmpty($pattern) -or $files.Count -eq 0) {
+        $global:LASTEXITCODE = 2
+        return
+    }
+    $matched = $false
+    $missing = $false
+    foreach ($file in $files) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            $missing = $true
+            continue
+        }
+        foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $file))) {
+            if ($line -match $pattern) {
+                $matched = $true
+                if (-not $quiet) {
+                    Write-Output $line
+                }
+            }
+        }
+    }
+    if ($matched) {
+        $global:LASTEXITCODE = 0
+    } elseif ($missing) {
+        $global:LASTEXITCODE = 2
+    } else {
+        $global:LASTEXITCODE = 1
+    }
+}
+
+function printf {
+    # $args, not a Parameter attribute: a leading dash must stay a format flag.
+    if ($args.Count -eq 0) {
+        return
+    }
+    $text = [string]$args[0]
+    $text = $text.Replace('\n', "`n").Replace('\t', "`t")
+    $next = 1
+    while ($next -lt $args.Count) {
+        $slot = $text.IndexOf('%s')
+        if ($slot -lt 0) {
+            break
+        }
+        $text = $text.Remove($slot, 2).Insert($slot, [string]$args[$next])
+        $next += 1
+    }
+    Write-Output $text
+}
 "#;
 
 #[cfg(windows)]
 pub(crate) fn build_powershell_command(command: &str) -> String {
     format!(
-        "{WINDOWS_POWERSHELL_COMPAT_SHIM}\n{}",
+        "{WINDOWS_POWERSHELL_COMPAT_SHIM}\n{}\nif ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}",
         preprocess_windows_command(command)
     )
 }

@@ -371,14 +371,28 @@ async fn connect_with_timeout_records_timeout_in_status() {
     use std::collections::HashMap;
     use std::time::Duration;
 
+    // Unix `sleep` is not a Windows executable (spawn fails immediately).
+    #[cfg(windows)]
+    let (command, args) = (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "Start-Sleep -Seconds 30".to_string(),
+        ],
+    );
+    #[cfg(not(windows))]
+    let (command, args) = ("sleep".to_string(), vec!["30".to_string()]);
+
     let manager = McpManager::new();
     manager
         .register_server(McpServerConfig {
             name: "slow-server".to_string(),
             transport: McpTransportConfig::Stdio {
                 // Blocks until killed — never speaks MCP, so connect hangs until budget.
-                command: "sleep".to_string(),
-                args: vec!["30".to_string()],
+                command,
+                args,
             },
             enabled: true,
             env: HashMap::new(),

@@ -108,6 +108,9 @@ fn prepare_windows_command(
     }
 }
 
+/// Windows `CreateProcess` rejects command lines longer than 32767 characters.
+const MAX_POWERSHELL_COMMAND_CHARS: usize = 30_000;
+
 #[cfg(windows)]
 fn spawn_windows_shell(
     powershell_program: &OsStr,
@@ -124,26 +127,133 @@ fn spawn_windows_shell(
         "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
-        "-EncodedCommand",
-        &encoded_command,
     ]);
+    let encoded_line = format!("{powershell_program:?} -EncodedCommand {encoded_command}");
+    let script_file = if encoded_line.encode_utf16().count() <= MAX_POWERSHELL_COMMAND_CHARS {
+        powershell.arg("-EncodedCommand").arg(&encoded_command);
+        None
+    } else {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let path =
+            std::env::temp_dir().join(format!("a3s-host-{}-{unique}.ps1", std::process::id()));
+        let literal = path.to_string_lossy().replace('\'', "''");
+        // -File does not fail the process when a cmdlet fails. Match
+        // -EncodedCommand, and delete the script when the engine exits.
+        let body = format!(
+            "trap {{ exit 1 }}\nRegister-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {{ Remove-Item -LiteralPath '{literal}' -Force -ErrorAction SilentlyContinue }} | Out-Null\n{wrapped_command}\nif (-not $?) {{ exit 1 }}\n"
+        );
+        std::fs::write(&path, body.as_bytes())?;
+        powershell.arg("-File").arg(&path);
+        Some(path)
+    };
     prepare_windows_command(&mut powershell, workspace, command_env);
 
-    crate::tools::process::spawn_tokio_with_native_gate(&mut powershell).map_err(|source| {
-        std::io::Error::new(
-            source.kind(),
-            format!(
-                "failed to spawn PowerShell executable {powershell_program:?}: {source}; refusing to reinterpret the command with another shell"
-            ),
+    match crate::tools::process::spawn_tokio_with_native_gate(&mut powershell) {
+        Ok(child) => {
+            if let Err(error) = bind_host_shell_job(&child) {
+                drop(child);
+                if let Some(path) = script_file {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(error);
+            }
+            Ok(child)
+        }
+        Err(source) => {
+            if let Some(path) = script_file {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(std::io::Error::new(
+                source.kind(),
+                format!(
+                    "failed to spawn PowerShell executable {powershell_program:?}: {source}; refusing to reinterpret the command with another shell"
+                ),
+            ))
+        }
+    }
+}
+
+/// Put the host shell in a job that dies with it. `kill_on_drop` only ends
+/// the direct process; a descendant started by that shell would otherwise
+/// keep running and write after cancellation.
+#[cfg(windows)]
+pub(crate) fn bind_windows_process_tree(
+    raw_process: std::os::windows::io::RawHandle,
+    pid: u32,
+) -> std::io::Result<()> {
+    use std::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+    let mut limits = unsafe { zeroed::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let size = u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+        .map_err(|_| std::io::Error::other("Job Object limit structure size overflowed"))?;
+    if unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<c_void>(),
+            size,
         )
-    })
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), raw_process) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let raw_wait = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    if raw_wait.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let wait = unsafe { OwnedHandle::from_raw_handle(raw_wait) };
+    std::thread::Builder::new()
+        .name("a3s-host-shell-job".to_string())
+        .spawn(move || {
+            if unsafe { WaitForSingleObject(wait.as_raw_handle(), u32::MAX) } == 0 {
+                let _ = unsafe { TerminateJobObject(job.as_raw_handle(), 1) };
+            }
+        })
+        .map(|_| ())
+}
+
+#[cfg(windows)]
+fn bind_host_shell_job(child: &tokio::process::Child) -> std::io::Result<()> {
+    let Some(raw_process) = child.raw_handle() else {
+        return Ok(());
+    };
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    bind_windows_process_tree(raw_process, pid)
 }
 
 /// Spawn a shell command cross-platform.
 ///
 /// - Unix: `bash -c <command>`
-/// - Windows: `powershell.exe -EncodedCommand <command>` with hidden console window.
-///   Startup failures are returned without reinterpreting the command as cmd.
+/// - Windows: PowerShell 7 with a hidden console window. The process is
+///   placed in a Job Object that kills descendants when the shell exits, so
+///   dropping the child cannot leave a later side effect. Short commands use
+///   `-EncodedCommand`. Commands that would exceed the 32767-character
+///   `CreateProcess` limit use `-File`. Startup failures are returned without
+///   reinterpreting the command as `cmd` or Windows PowerShell 5.
 pub(crate) fn spawn_shell(
     command: &str,
     workspace: &std::path::Path,
@@ -151,12 +261,16 @@ pub(crate) fn spawn_shell(
 ) -> std::io::Result<tokio::process::Child> {
     #[cfg(windows)]
     {
-        spawn_windows_shell(
-            OsStr::new("powershell.exe"),
-            command,
-            workspace,
-            command_env,
-        )
+        let powershell = a3s_sandbox::windows_host_powershell(workspace).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "failed to resolve PowerShell 7 for workspace {}: {error}",
+                    workspace.display()
+                ),
+            )
+        })?;
+        spawn_windows_shell(powershell.as_os_str(), command, workspace, command_env)
     }
     #[cfg(not(windows))]
     {

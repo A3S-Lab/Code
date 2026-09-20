@@ -845,3 +845,63 @@ async fn store_shadow_candidate_accepts_tags_and_clamps_invalid_confidence() {
     assert_eq!(node.kind, DurableMemoryKind::Episodic);
     assert_eq!(node.confidence, 0.0);
 }
+
+#[tokio::test]
+async fn active_recall_does_not_cross_namespaces() {
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace_a = MemoryNamespace::try_new("tenant", "principal", "session-a").unwrap();
+    let namespace_b = MemoryNamespace::try_new("tenant", "principal", "session-b").unwrap();
+    let session_a = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace_a.clone(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
+    let session_b = DurableMemorySession::active_recall(
+        repository.clone(),
+        namespace_b.clone(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
+    repository
+        .apply(MemoryChangeSet::new(
+            "seed-session-a",
+            namespace_a.clone(),
+            time(1),
+            vec![MemoryOperation::Create {
+                node: MemoryNodeDraft::new(
+                    "session-a-fact",
+                    namespace_a,
+                    DurableMemoryKind::Semantic,
+                    MemoryStatus::Active,
+                    "NAMESPACE-ISOLATION-91",
+                    vec![evidence("session-a", EvidenceKind::Verification, 1)],
+                    time(1),
+                ),
+            }],
+        ))
+        .await
+        .unwrap();
+
+    let owned = session_a
+        .query_active_context("NAMESPACE-ISOLATION-91")
+        .await
+        .unwrap();
+    assert!(
+        !owned.result.is_empty(),
+        "the owning namespace must recall its active fact"
+    );
+    let foreign = session_b
+        .query_active_context("NAMESPACE-ISOLATION-91")
+        .await
+        .unwrap();
+    assert!(
+        foreign.result.is_empty(),
+        "a second namespace must not recall the first namespace's fact: {:?}",
+        foreign.result
+    );
+    assert!(repository
+        .query(MemoryQuery::new(namespace_b).with_text("NAMESPACE-ISOLATION-91"))
+        .await
+        .unwrap()
+        .hits
+        .is_empty());
+}

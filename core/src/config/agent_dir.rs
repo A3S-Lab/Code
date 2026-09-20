@@ -473,10 +473,21 @@ struct ScriptFront {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Temp path unique across parallel libtest threads (PID alone races).
+    fn unique_temp(tag: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "a3s-agentdir-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     /// Build a fixture agent dir under a unique temp path.
     fn fixture() -> PathBuf {
-        let base = std::env::temp_dir().join(format!("a3s-agentdir-{}", std::process::id()));
+        let base = unique_temp("fx");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("skills")).unwrap();
         std::fs::create_dir_all(base.join("schedules")).unwrap();
@@ -563,8 +574,7 @@ mod tests {
     #[test]
     fn load_does_not_follow_symlinks_outside_the_agent_directory() {
         let dir = fixture();
-        let outside =
-            std::env::temp_dir().join(format!("a3s-agentdir-outside-{}", std::process::id()));
+        let outside = unique_temp("outside");
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(outside.join("skills/leak")).unwrap();
         std::fs::write(
@@ -643,7 +653,7 @@ mod tests {
 
     /// One script tool per file, written under a unique temp dir, must fail to load.
     fn assert_script_tool_load_err(tag: &str, frontmatter: &str) {
-        let base = std::env::temp_dir().join(format!("a3s-agentdir-{tag}-{}", std::process::id()));
+        let base = unique_temp(tag);
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(base.join("instructions.md"), "role").unwrap();
@@ -701,8 +711,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_kind_is_an_error() {
-        let base =
-            std::env::temp_dir().join(format!("a3s-agentdir-toolkind-{}", std::process::id()));
+        let base = unique_temp("toolkind");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(base.join("instructions.md"), "role").unwrap();
@@ -713,8 +722,7 @@ mod tests {
 
     #[test]
     fn duplicate_tool_name_is_an_error() {
-        let base =
-            std::env::temp_dir().join(format!("a3s-agentdir-tooldup-{}", std::process::id()));
+        let base = unique_temp("tooldup");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(base.join("instructions.md"), "role").unwrap();
@@ -727,7 +735,7 @@ mod tests {
 
     #[test]
     fn script_tool_accepts_mjs_and_frontmatter_description_wins_over_body() {
-        let base = std::env::temp_dir().join(format!("a3s-agentdir-mjs-{}", std::process::id()));
+        let base = unique_temp("mjs");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(base.join("instructions.md"), "role").unwrap();
@@ -755,8 +763,7 @@ mod tests {
         // allow-list (no tools), not "all tools". Session governance remains in
         // force, but the independent script boundary must not grant a tool merely
         // because the session policy would allow it.
-        let base =
-            std::env::temp_dir().join(format!("a3s-agentdir-noallow-{}", std::process::id()));
+        let base = unique_temp("noallow");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("tools")).unwrap();
         std::fs::write(base.join("instructions.md"), "role").unwrap();
@@ -780,7 +787,7 @@ mod tests {
 
     #[test]
     fn missing_instructions_is_an_error() {
-        let base = std::env::temp_dir().join(format!("a3s-agentdir-empty-{}", std::process::id()));
+        let base = unique_temp("empty");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         assert!(AgentDir::load(&base).is_err());

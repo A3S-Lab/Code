@@ -103,6 +103,61 @@ fn offline_test_config() -> CodeConfig {
     }
 }
 
+/// U-MA-06: an undeclared provider fail-closes while the session is being
+/// built. The in-memory reservation must drop, and neither the session store
+/// nor the workspace may gain files.
+#[tokio::test]
+async fn unknown_provider_fail_closes_before_a_session_directory() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sessions = tempfile::tempdir().expect("sessions");
+    let mut config = offline_test_config();
+    config.sessions_dir = Some(sessions.path().to_path_buf());
+    let agent = Agent::from_config(config).await.expect("agent");
+
+    let error = agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_session_id("unknown-adapter")
+                    .with_model("not-an-adapter/ghost"),
+            ),
+        )
+        .await
+        .expect_err("unknown provider must fail at session create");
+    let message = error.to_string();
+    assert!(
+        message.contains("not-an-adapter"),
+        "typed config error must name the missing provider: {message}"
+    );
+    assert!(
+        std::fs::read_dir(sessions.path())
+            .expect("sessions")
+            .next()
+            .is_none(),
+        "failed create left a session directory"
+    );
+    assert!(
+        std::fs::read_dir(workspace.path())
+            .expect("workspace")
+            .next()
+            .is_none(),
+        "failed create left workspace files"
+    );
+
+    agent
+        .session_async(
+            workspace.path().to_string_lossy().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_session_id("unknown-adapter")
+                    .with_model("anthropic/claude-sonnet-4-20250514"),
+            ),
+        )
+        .await
+        .expect("a failed create must not leave the session id reserved");
+}
+
 /// IT-1: closing a session with a delegated subagent task in flight must
 /// transition that task to Cancelled, fire its registered cancel token,
 /// and — critically — a late `SubagentEnd` event from the cancelled child

@@ -161,7 +161,7 @@ impl ExecutionLoopState {
         }
 
         Some(format!(
-            "Execution timeout after {} seconds (limit: {} seconds). Completed {} turns.",
+            "Execution timeout reached after {} seconds (limit: {} seconds). Completed {} turns.",
             elapsed_ms / 1000,
             max_time_ms / 1000,
             self.turn.saturating_sub(1)

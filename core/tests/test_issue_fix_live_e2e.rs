@@ -12,6 +12,7 @@
 //! ```
 
 mod support;
+use support::python_stdio_command;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -258,7 +259,7 @@ async fn live_mcp_stdio_progress_notifications_arrive_during_tool_call() {
         .register_server(McpServerConfig {
             name: "progress".into(),
             transport: McpTransportConfig::Stdio {
-                command: "python3".into(),
+                command: python_stdio_command(),
                 args: vec![script.to_string_lossy().into_owned()],
             },
             enabled: true,

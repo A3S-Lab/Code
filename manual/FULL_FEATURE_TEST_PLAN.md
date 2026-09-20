@@ -1,6 +1,6 @@
 # A3S Code Full-Feature Test Plan (First Principles)
 
-**Status:** planning contract (2026-09-17, Core line `8.5.12`)  
+**Status:** planning contract (2026-09-19, Core line `8.6.0`)  
 **Mission under test:** a **governed coding-agent harness** — loop, tools,
 policy, events, retrieval, evidence, and the four official SDKs — not Desktop
 chrome, not Cloud UI, not Use package markets.
@@ -11,6 +11,7 @@ This plan does **not** replace:
 - [FIRST_PRINCIPLES_E2E.md](FIRST_PRINCIPLES_E2E.md) (Layers A–D)
 - [CAPABILITY_VERIFICATION.md](CAPABILITY_VERIFICATION.md) (evidence ledger)
 - [SDK_CAPABILITY_MATRIX.md](SDK_CAPABILITY_MATRIX.md) (`sdk_capabilities()`)
+- [test-cases/README.md](test-cases/README.md) (unit / integration / soak cases)
 
 It **composes** them into one executable full-feature program: every public
 product capability must have named evidence at the right layer, or an explicit
@@ -159,6 +160,8 @@ These are first-class cases because they broke real providers or builds:
 
 | Pin | Mechanism | Hermetic evidence | Live |
 | --- | --- | --- | --- |
+| **8.6.0 image `read`** | JPEG/PNG/GIF/WebP tool results stay `image_url` on the OpenAI-compatible path | `tools/builtin/read.rs`, `llm/openai.rs` (#156) | Optional |
+| **8.6.0 orphan isolate** | Empty `.a3s-isolate-*` sibling is cleared before bind | `effect_isolation.rs` `bind_clears_a_stale_empty_isolation_directory` (#155) | — |
 | **8.5.12 batch schema** | No application `$ref` objects under `batch` parameters `examples` | `tools/builtin/batch.rs` schema asserts (#147) | Optional: GLM Coding turn with `batch` presented |
 | **8.5.11 musl** | `a3s-sandbox` 0.1.4 rlimit typing | Node musl optional native build in Release | Release matrix |
 | **8.5.10 Gate 7 + Fake-IP** | Native sandbox + DoH fallback | `safe_http` + `test_native_sandbox_live_e2e` | Layer C capabilities |
@@ -181,10 +184,11 @@ alone.
 | G4 | GLM Coding live not in Layer C pin | batch schema was provider-specific | Keep hermetic pin; optional L5 provider matrix row |
 | G5 | Harbor / CAR / DM-PROD are external | Cannot fake in Core CI | Keep L7 owners; never mark full-feature complete without their latest receipt or explicit waiver |
 | G6 | Performance numbers age | Runner variance | Re-run `performance.yml` on release candidates; update PERFORMANCE_QUALIFICATION digests |
+| G7 | No single soak command | Unit and integration cases do not prove resource bounds | [test-cases/soak.md](test-cases/soak.md); only retrieval soak and memory restart endurance are wired |
 
-As of `8.5.12`, CAPABILITY_VERIFICATION still claims **no unresolved Code-owned
-ledger gap** for the prior closure set; G1–G6 are **program gaps** (orchestration /
-join / external), not missing Core kernels.
+As of `8.6.0`, G1–G7 are **program gaps** (orchestration, join, soak wiring,
+external owners). They are not a claim that every case in
+[test-cases/](test-cases/README.md) already has a named test.
 
 ---
 
@@ -238,6 +242,7 @@ FIRST_PRINCIPLES_E2E        ──► Layers A–D ↔ L1/L3/L5/L7
 CAPABILITY_VERIFICATION     ──► dimension checklist + ledger
 SDK_CAPABILITY_MATRIX       ──► language entrypoints
 THIS PLAN                   ──► join + train order + gaps + pins
+test-cases/                 ──► unit / integration / soak case oracles
 ```
 
 ---
@@ -247,6 +252,7 @@ THIS PLAN                   ──► join + train order + gaps + pins
 | Item | State |
 | --- | --- |
 | This plan file | **Written** |
+| Deep case catalog | **Specified** in [test-cases/README.md](test-cases/README.md). Rows are cases, not green tests. Soak gaps are G7. |
 | F01–F30 + Layer C recipes | **Exist** (see linked manuals; last recorded PASS in TEST_CASES status table) |
 | `just full-feature-hermetic` | **Gap G1** — not implemented |
 | Baseline ID ↔ F-table CI join | **Gap G2** — manual join in §2 only |

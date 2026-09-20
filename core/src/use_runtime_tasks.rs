@@ -708,4 +708,151 @@ mod tests {
         assert!(parse_argv(&serde_json::json!({"args": []})).is_err());
         assert!(parse_argv(&serde_json::json!({"argv": ["bad\u{0}arg"]})).is_err());
     }
+
+    struct EveryFourthDeny {
+        checks: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::permissions::PermissionChecker for EveryFourthDeny {
+        fn check(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> crate::permissions::PermissionDecision {
+            assert_ne!(tool_name, "read", "a runtime task must not shadow read");
+            let seen = self
+                .checks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            if seen % 4 == 0 {
+                crate::permissions::PermissionDecision::Deny
+            } else {
+                crate::permissions::PermissionDecision::Allow
+            }
+        }
+    }
+
+    struct LatencyDispatcher {
+        calls: std::sync::atomic::AtomicUsize,
+        execution: UseRuntimeTaskExecutionV1,
+    }
+
+    #[async_trait]
+    impl UseRuntimeTaskDispatcher for LatencyDispatcher {
+        async fn invoke(
+            &self,
+            _request: UseRuntimeTaskRequestV1,
+        ) -> UseRuntimeTaskResult<UseRuntimeTaskExecutionV1> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            Ok(self.execution.clone())
+        }
+    }
+
+    struct IdleModel;
+
+    #[async_trait]
+    impl crate::llm::LlmClient for IdleModel {
+        async fn complete(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            anyhow::bail!("use-runtime soak must not call the model")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("use-runtime soak must not stream the model")
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "S-UR-01 soak: 40 governed Use calls, deny every fourth"]
+    async fn soak_governed_use_calls_skip_denied_host_dispatch() {
+        let dispatcher = Arc::new(LatencyDispatcher {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            execution: UseRuntimeTaskExecutionV1 {
+                schema: USE_RUNTIME_TASK_RESULT_SCHEMA.to_owned(),
+                package_id: "acme/research".to_owned(),
+                surface_id: "convert".to_owned(),
+                lifecycle_generation: 7,
+                provider_id: "test-runtime".to_owned(),
+                exit_code: 0,
+                stdout: r#"{"answer":1}"#.to_owned(),
+                stderr: String::new(),
+                truncated: false,
+            },
+        });
+        let runtime_tool = tool(Arc::clone(&dispatcher) as Arc<dyn UseRuntimeTaskDispatcher>);
+        let tool_name = runtime_tool.name().to_owned();
+        assert_ne!(tool_name, "read");
+
+        let directory = tempfile::tempdir().unwrap();
+        let executor = Arc::new(crate::tools::ToolExecutor::new(
+            directory.path().to_string_lossy().to_string(),
+        ));
+        let read_before = executor.registry().get("read");
+        executor.register_dynamic_tool(Arc::new(runtime_tool));
+        let read_after = executor.registry().get("read");
+        match (&read_before, &read_after) {
+            (Some(before), Some(after)) => assert!(
+                Arc::ptr_eq(before, after),
+                "registering the runtime task replaced read"
+            ),
+            (None, None) => {}
+            _ => panic!("read registration changed when the runtime task was added"),
+        }
+
+        let session_id = "use-runtime-soak";
+        let context = ToolContext::new(directory.path().to_path_buf()).with_session_id(session_id);
+        let agent = crate::agent::AgentLoop::new(
+            Arc::new(IdleModel),
+            Arc::clone(&executor),
+            context.clone(),
+            crate::agent::AgentConfig {
+                permission_checker: Some(Arc::new(EveryFourthDeny {
+                    checks: std::sync::atomic::AtomicUsize::new(0),
+                })),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+
+        for index in 1..=40 {
+            let result = agent
+                .invoke_host_tool(
+                    crate::tools::ToolInvocation::host_governed(
+                        format!("use-soak-{index}"),
+                        tool_name.clone(),
+                        serde_json::json!({"argv": []}),
+                    ),
+                    session_id,
+                    &None,
+                    &CancellationToken::new(),
+                    &context,
+                )
+                .await;
+            if index % 4 == 0 {
+                assert_ne!(result.exit_code, 0, "denied call {index} reached the host");
+                assert!(
+                    result.output.contains("Permission denied"),
+                    "call {index}: {}",
+                    result.output
+                );
+            } else {
+                assert_eq!(result.exit_code, 0, "call {index}: {}", result.output);
+            }
+        }
+        assert_eq!(
+            dispatcher.calls.load(std::sync::atomic::Ordering::SeqCst),
+            30,
+            "denied calls must not reach the host dispatcher"
+        );
+    }
 }

@@ -258,6 +258,14 @@ pub struct SearchEngineConfig {
     /// Optional Tavily project identifier used with an authenticated key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+
+    /// Optional API provider endpoint override.
+    ///
+    /// Wired only for native API engines (`anysearch`, `tavily`). Validation
+    /// stays in `a3s-search`: HTTPS in production, loopback HTTP for fixtures.
+    /// This does not weaken `web_fetch` / `download` SSRF checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 pub(crate) fn default_search_timeout() -> u64 {

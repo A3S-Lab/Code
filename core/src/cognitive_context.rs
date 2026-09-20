@@ -673,6 +673,38 @@ fn capability_snapshot_digest(
     )
 }
 
+#[cfg(test)]
+pub(crate) fn package_binding_for_generation(
+    package_version: &str,
+    lifecycle_generation: u64,
+    generation_digest: &str,
+    content_digest: &str,
+) -> CognitivePackageBindingV1 {
+    let knowledge = CognitiveKnowledgeBindingV1::new(
+        "domain-knowledge",
+        "0.2",
+        content_digest,
+        lifecycle_generation,
+        generation_digest,
+    )
+    .expect("knowledge binding");
+    let mut binding = CognitivePackageBindingV1 {
+        schema: COGNITIVE_PACKAGE_BINDING_SCHEMA.to_string(),
+        package_id: "contra-sense/handbook".to_string(),
+        package_version: package_version.to_string(),
+        lifecycle_generation,
+        generation_digest: generation_digest.to_string(),
+        capability_snapshot_digest:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        knowledge,
+        limits: CognitiveContextLimits::default(),
+    };
+    binding.capability_snapshot_digest =
+        capability_snapshot_digest(&binding).expect("snapshot digest");
+    binding.validate().expect("generation binding");
+    binding
+}
+
 fn canonical_digest<T: Serialize + ?Sized>(
     domain: &str,
     value: &T,

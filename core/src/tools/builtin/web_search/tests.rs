@@ -217,6 +217,7 @@ fn configured_default_engine_selection_can_enable_anysearch_explicitly() {
             timeout: None,
             api_key: None,
             project: None,
+            endpoint: None,
         },
     )]));
 
@@ -287,6 +288,7 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
         (
@@ -297,6 +299,7 @@ fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
     ]));
@@ -402,6 +405,7 @@ fn default_engine_selection_respects_explicit_configuration() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
         (
@@ -412,6 +416,7 @@ fn default_engine_selection_respects_explicit_configuration() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
     ]));
@@ -427,6 +432,7 @@ fn default_engine_selection_respects_explicit_configuration() {
             timeout: None,
             api_key: None,
             project: None,
+            endpoint: None,
         },
     )]));
     let (engines, source) = default_engine_selection(Some(&config));
@@ -445,6 +451,7 @@ fn configured_default_engine_selection_deduplicates_aliases() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
         (
@@ -455,6 +462,7 @@ fn configured_default_engine_selection_deduplicates_aliases() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         ),
     ]));
@@ -545,6 +553,7 @@ async fn configured_engine_selection_is_identified_in_failure_metadata() {
                 timeout: None,
                 api_key: None,
                 project: None,
+                endpoint: None,
             },
         )]),
         headless: None,
@@ -730,6 +739,83 @@ fn explicit_headless_selection_does_not_invent_earlier_tiers() {
 fn headless_selection_is_unavailable_without_the_feature() {
     let plan = tiered_engine_plan(&["google", "baidu"], None, false);
     assert!(plan.is_empty());
+}
+
+#[cfg(not(feature = "headless-search"))]
+fn browser_process_ids() -> std::collections::BTreeSet<(String, u32)> {
+    let mut command = if cfg!(windows) {
+        let mut command = std::process::Command::new("tasklist");
+        command.args(["/FO", "CSV", "/NH"]);
+        command
+    } else {
+        let mut command = std::process::Command::new("ps");
+        command.args(["-A", "-o", "pid=,comm="]);
+        command
+    };
+    let output = command.output().expect("list processes");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut ids = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let (name, pid) = if cfg!(windows) {
+            let mut parts = line.split("\",\"");
+            let Some(name) = parts.next() else { continue };
+            let Some(pid) = parts.next() else { continue };
+            (
+                name.trim_matches('"').to_ascii_lowercase(),
+                pid.trim_matches('"').parse::<u32>().ok(),
+            )
+        } else {
+            let mut parts = line.split_whitespace();
+            let Some(pid) = parts.next() else { continue };
+            let Some(name) = parts.next() else { continue };
+            (name.to_ascii_lowercase(), pid.parse::<u32>().ok())
+        };
+        let Some(pid) = pid else { continue };
+        if name.contains("moli") || name.contains("lightpanda") || name.contains("chrom") {
+            ids.insert((name, pid));
+        }
+    }
+    ids
+}
+
+#[cfg(not(feature = "headless-search"))]
+#[tokio::test]
+async fn headless_engine_request_does_not_spawn_moli() {
+    let before = browser_process_ids();
+    let tool = WebSearchTool::new();
+    let context = ToolContext::new(PathBuf::from("."));
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "query": "kernel bound",
+                "engines": "google"
+            }),
+            &context,
+        )
+        .await
+        .expect("web_search returns a typed result");
+
+    assert!(!output.success);
+    assert!(
+        matches!(
+            output.error_kind,
+            Some(crate::tools::ToolErrorKind::InvalidArgument { .. })
+        ),
+        "headless engines must be a typed rejection without the feature: {output:?}"
+    );
+    assert!(
+        output.content.contains("No valid engines"),
+        "rejection must name the missing engine set: {}",
+        output.content
+    );
+    let spawned = browser_process_ids()
+        .difference(&before)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        spawned.is_empty(),
+        "a headless request spawned a browser process: {spawned:?}"
+    );
 }
 
 #[tokio::test]
@@ -1259,4 +1345,194 @@ fn search_query_urls_drop_credentials_query_and_fragment() {
     ] {
         assert!(!query.contains(secret), "leaked {secret}: {query}");
     }
+}
+
+#[test]
+fn configured_api_endpoint_rejects_non_loopback_http() {
+    let mut search = Search::new();
+    let config = SearchConfig {
+        timeout: 5,
+        cascade_order: None,
+        health: None,
+        engines: HashMap::from([(
+            "tavily".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                api_key: None,
+                project: None,
+                endpoint: Some("http://example.com/search".to_string()),
+            },
+        )]),
+        headless: None,
+    };
+
+    let failure = add_http_engine(&mut search, "tavily", None, Some(&config))
+        .expect_err("non-loopback http endpoint must fail closed");
+    assert_eq!(failure.engine, "tavily");
+    assert_eq!(failure.provider.as_deref(), Some("tavily"));
+    assert!(
+        failure.kind.contains("invalid") || failure.message.to_lowercase().contains("https"),
+        "{failure:?}"
+    );
+}
+
+#[test]
+fn configured_api_endpoint_accepts_loopback_http() {
+    let mut search = Search::new();
+    let config = SearchConfig {
+        timeout: 5,
+        cascade_order: None,
+        health: None,
+        engines: HashMap::from([(
+            "tavily".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                api_key: None,
+                project: None,
+                endpoint: Some("http://127.0.0.1:9/search".to_string()),
+            },
+        )]),
+        headless: None,
+    };
+
+    assert!(
+        add_http_engine(&mut search, "tavily", None, Some(&config)).expect("loopback ok"),
+        "loopback fixture endpoint must register"
+    );
+}
+
+/// S-WS-01: 100 searches against a loopback Tavily fixture stay connection-
+/// and byte-bounded. Endpoint override stays SSRF-safe (loopback HTTP only).
+#[tokio::test]
+#[ignore = "S-WS-01 soak: loopback search fixture connection and byte caps"]
+async fn soak_web_search_loopback_fixture_stays_connection_and_byte_capped() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const CYCLES: usize = 100;
+    const POOL_IDLE_CAP: usize = 4;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("addr");
+    let endpoint = format!("http://127.0.0.1:{}/search", addr.port());
+
+    let open = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let serve_open = Arc::clone(&open);
+    let serve_peak = Arc::clone(&peak);
+    let serve_hits = Arc::clone(&hits);
+    let serve_stop = Arc::clone(&stop);
+    let server = tokio::spawn(async move {
+        loop {
+            if serve_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let accept = tokio::time::timeout(Duration::from_millis(50), listener.accept()).await;
+            let Ok(Ok((mut stream, _))) = accept else {
+                continue;
+            };
+            let open = Arc::clone(&serve_open);
+            let peak = Arc::clone(&serve_peak);
+            let hits = Arc::clone(&serve_hits);
+            tokio::spawn(async move {
+                let current = open.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                let mut buf = vec![0u8; 16 * 1024];
+                let _ = stream.read(&mut buf).await;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let body = serde_json::json!({
+                    "results": [{
+                        "title": "Fixture",
+                        "url": "https://example.com/fixture",
+                        "content": "X".repeat(64 * 1024)
+                    }]
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                open.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+    });
+
+    let tool = WebSearchTool::new();
+    let ctx = ToolContext::new(std::env::temp_dir()).with_search_config(SearchConfig {
+        timeout: 10,
+        cascade_order: None,
+        health: None,
+        engines: HashMap::from([(
+            "tavily".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                api_key: None,
+                project: None,
+                endpoint: Some(endpoint),
+            },
+        )]),
+        headless: None,
+    });
+
+    for index in 0..CYCLES {
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "query": format!("soak-{index}"),
+                    "engines": ["tavily"],
+                    "format": "json",
+                    "limit": 1
+                }),
+                &ctx,
+            )
+            .await
+            .expect("typed result");
+        assert!(output.success, "cycle {index} failed: {}", output.content);
+        assert!(
+            output.content.len() <= MAX_JSON_OUTPUT_BYTES,
+            "cycle {index} exceeded output cap: {} > {}",
+            output.content.len(),
+            MAX_JSON_OUTPUT_BYTES
+        );
+        assert!(
+            open.load(Ordering::SeqCst) <= POOL_IDLE_CAP,
+            "open connections exceeded pool cap mid-soak: {}",
+            open.load(Ordering::SeqCst)
+        );
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let idle_open = open.load(Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
+    let _ = server.await;
+
+    assert_eq!(hits.load(Ordering::SeqCst), CYCLES, "fixture hit count");
+    assert!(
+        idle_open <= POOL_IDLE_CAP,
+        "idle open connections {idle_open} exceeded pool cap {POOL_IDLE_CAP} (fail if == {CYCLES})"
+    );
+    assert_ne!(
+        idle_open, CYCLES,
+        "each search must not leave a live socket"
+    );
+    assert!(
+        peak.load(Ordering::SeqCst) <= POOL_IDLE_CAP,
+        "peak open {} exceeded pool cap",
+        peak.load(Ordering::SeqCst)
+    );
 }

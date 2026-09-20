@@ -264,6 +264,7 @@ mod tests {
     use crate::mcp::test_support::{mcp_tool, ready_binding, RecordingMcpTransport};
     use crate::mcp::transport::McpTransport;
     use crate::mcp::McpProjectionAdapter;
+    use async_trait::async_trait;
 
     #[tokio::test]
     async fn binding_rejects_clients_that_are_not_ready_or_have_another_identity() {
@@ -402,5 +403,126 @@ mod tests {
 
         assert_send_sync::<McpBinding>();
         assert_send_sync::<McpProjectionAdapter>();
+    }
+
+    #[tokio::test]
+    async fn denied_governed_mcp_call_does_not_reach_the_server() {
+        let (binding, transport, _) = ready_binding(
+            "catalog",
+            "generation-one",
+            vec![mcp_tool("lookup", "lookup")],
+        )
+        .await;
+        let wrappers = binding.projected_tools();
+        let tool_name = wrappers[0].name().to_string();
+        assert_eq!(tool_name, "mcp__catalog__lookup");
+
+        let directory = tempfile::tempdir().unwrap();
+        let executor = Arc::new(crate::tools::ToolExecutor::new(
+            directory.path().to_string_lossy().to_string(),
+        ));
+        executor.register_dynamic_tool(Arc::clone(&wrappers[0]));
+        let session_id = "mcp-deny";
+        let context = ToolContext::new(directory.path().to_path_buf()).with_session_id(session_id);
+        let gate = Arc::new(DenyThenAllow {
+            allow: std::sync::atomic::AtomicBool::new(false),
+        });
+        let agent = crate::agent::AgentLoop::new(
+            Arc::new(IdleModel),
+            executor,
+            context.clone(),
+            crate::agent::AgentConfig {
+                permission_checker: Some(
+                    Arc::clone(&gate) as Arc<dyn crate::permissions::PermissionChecker>
+                ),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+
+        let denied = agent
+            .invoke_host_tool(
+                crate::tools::ToolInvocation::host_governed(
+                    "mcp-deny-1",
+                    tool_name.clone(),
+                    serde_json::json!({"generation": "secret"}),
+                ),
+                session_id,
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+                &context,
+            )
+            .await;
+        assert_ne!(denied.exit_code, 0, "{}", denied.output);
+        assert!(
+            denied.output.contains("Permission denied"),
+            "{}",
+            denied.output
+        );
+        assert!(
+            transport.calls().is_empty(),
+            "denied MCP call mutated the server: {:?}",
+            transport.calls()
+        );
+
+        gate.allow.store(true, std::sync::atomic::Ordering::SeqCst);
+        let allowed = agent
+            .invoke_host_tool(
+                crate::tools::ToolInvocation::host_governed(
+                    "mcp-allow-1",
+                    tool_name,
+                    serde_json::json!({"generation": "visible"}),
+                ),
+                session_id,
+                &None,
+                &tokio_util::sync::CancellationToken::new(),
+                &context,
+            )
+            .await;
+        assert_eq!(allowed.exit_code, 0, "{}", allowed.output);
+        assert_eq!(transport.calls().len(), 1);
+        assert_eq!(transport.calls()[0].name, "lookup");
+    }
+
+    struct DenyThenAllow {
+        allow: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::permissions::PermissionChecker for DenyThenAllow {
+        fn check(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> crate::permissions::PermissionDecision {
+            assert_eq!(tool_name, "mcp__catalog__lookup");
+            if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
+                crate::permissions::PermissionDecision::Allow
+            } else {
+                crate::permissions::PermissionDecision::Deny
+            }
+        }
+    }
+
+    struct IdleModel;
+
+    #[async_trait]
+    impl crate::llm::LlmClient for IdleModel {
+        async fn complete(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            anyhow::bail!("MCP policy test must not call the model")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[crate::llm::Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("MCP policy test must not stream the model")
+        }
     }
 }

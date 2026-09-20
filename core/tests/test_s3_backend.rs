@@ -7,7 +7,7 @@
 //! ```sh
 //! export A3S_S3_TEST_ENDPOINT=http://127.0.0.1:9000
 //! export A3S_S3_TEST_REGION=us-east-1
-//! export A3S_S3_TEST_ACCESS_KEY_ID=a3s-code-test
+//! export A3S_S3_TEST_ACCESS_KEY_ID=a3s-code-akid
 //! export A3S_S3_TEST_SECRET_ACCESS_KEY=a3s-code-test-secret
 //! export A3S_S3_TEST_BUCKET=a3s-code-tests
 //! export A3S_S3_TEST_FORCE_PATH_STYLE=true
@@ -254,4 +254,123 @@ async fn cleanup_prefix(
         anyhow::bail!("S3 integration cleanup left objects under {prefix}");
     }
     Ok(())
+}
+
+/// S-S3-01: 40 put/get/delete cycles against the hermetic s3-compat fixture,
+/// including 5 oversize puts that must fail closed without leaving objects or
+/// leaking credentials in error strings.
+#[tokio::test]
+#[ignore = "S-S3-01 soak: requires A3S_S3_TEST_ENDPOINT (fixtures/s3-compat)"]
+async fn soak_s3_put_get_delete_returns_to_prefix_baseline() {
+    let Some(mut cfg) = live_config() else {
+        eprintln!("Skipping: A3S_S3_TEST_ENDPOINT not configured");
+        return;
+    };
+    // Tight ceiling so oversize puts are cheap to exercise.
+    cfg = cfg.max_read_bytes(1024);
+    let access_key = cfg.access_key_id.clone();
+    let secret_key = cfg.secret_access_key.clone();
+    let prefix_for_cleanup = cfg.prefix.clone();
+    let bucket_for_cleanup = cfg.bucket.clone();
+
+    let backend = Arc::new(S3WorkspaceBackend::new(cfg));
+    let services = WorkspaceServices::from_s3_backend(Arc::clone(&backend));
+    let executor = ToolExecutor::new_with_workspace_services_and_artifact_limits(
+        format!("s3://{}/{}", backend.bucket(), backend.prefix()),
+        Arc::clone(&services),
+        ArtifactStoreLimits::default(),
+    );
+    let ctx = executor.registry().context().with_session_id("s3-soak");
+
+    async fn object_count(client: &aws_sdk_s3::Client, bucket: &str, prefix: &str) -> usize {
+        let prefix = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/")
+        };
+        let resp = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(&prefix)
+            .send()
+            .await
+            .expect("list");
+        resp.contents().len()
+    }
+
+    let baseline = object_count(backend.client(), &bucket_for_cleanup, &prefix_for_cleanup).await;
+    const CYCLES: usize = 40;
+    const OVERSIZE: usize = 5;
+
+    for index in 0..CYCLES {
+        let path = format!("soak/item-{index}.txt");
+        if index < OVERSIZE {
+            let huge = "Z".repeat(2048);
+            let write = executor
+                .execute_with_context(
+                    "write",
+                    &json!({ "file_path": path, "content": huge }),
+                    &ctx,
+                )
+                .await
+                .expect("dispatch");
+            assert_ne!(
+                write.exit_code, 0,
+                "oversize put must fail: {}",
+                write.output
+            );
+            assert!(
+                write.output.contains("max_read_bytes") || write.output.contains("exceeds"),
+                "{}",
+                write.output
+            );
+            assert!(!write.output.contains(&access_key), "leaked access key");
+            assert!(!write.output.contains(&secret_key), "leaked secret");
+            continue;
+        }
+
+        let content = format!("cycle-{index}-payload");
+        let write = executor
+            .execute_with_context(
+                "write",
+                &json!({ "file_path": path, "content": content }),
+                &ctx,
+            )
+            .await
+            .expect("write");
+        assert_eq!(write.exit_code, 0, "{}", write.output);
+
+        let read = executor
+            .execute_with_context("read", &json!({ "file_path": path }), &ctx)
+            .await
+            .expect("read");
+        assert_eq!(read.exit_code, 0, "{}", read.output);
+        assert!(
+            read.output.contains(&format!("cycle-{index}-payload")),
+            "{}",
+            read.output
+        );
+
+        // Delete via overwrite-empty is not delete; use backend delete through write of then list cleanup.
+        // Prefer explicit delete if the tool exists; otherwise remove via AWS client key.
+        let key = format!("{}/{}", prefix_for_cleanup.trim_end_matches('/'), path);
+        backend
+            .client()
+            .delete_object()
+            .bucket(&bucket_for_cleanup)
+            .key(&key)
+            .send()
+            .await
+            .expect("delete");
+    }
+
+    let remaining = object_count(backend.client(), &bucket_for_cleanup, &prefix_for_cleanup).await;
+    assert_eq!(
+        remaining, baseline,
+        "object count must return to prefix baseline (was {remaining}, baseline {baseline})"
+    );
+
+    cleanup_prefix(backend.client(), &bucket_for_cleanup, &prefix_for_cleanup)
+        .await
+        .expect("final cleanup");
 }

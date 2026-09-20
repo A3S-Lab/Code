@@ -1005,4 +1005,7 @@ mod tests {
         assert_eq!(rounds, 1);
         assert_eq!(out.len(), 1, "the completed round is still returned");
     }
+
+    #[path = "resume_soak.rs"]
+    mod resume_soak;
 }

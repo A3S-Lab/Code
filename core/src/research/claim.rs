@@ -335,6 +335,21 @@ mod tests {
     }
 
     #[test]
+    fn supported_claim_cannot_also_carry_a_conflict_digest() {
+        let mut claim = ResearchClaimV1::new("claim-1", "project-1", "run-1", digest('a'), 1)
+            .unwrap()
+            .mark_supported(vec![digest('b')])
+            .unwrap();
+        claim.conflict_digests.push(digest('d'));
+        assert!(matches!(
+            claim.validate(),
+            Err(ResearchContractError::InvalidField("supportDigests"))
+        ));
+        let bytes = serde_json::to_vec(&claim).unwrap();
+        assert!(ResearchClaimV1::from_slice(&bytes).is_err());
+    }
+
+    #[test]
     fn unsupported_claim_requires_an_explicit_gap_digest() {
         let claim = ResearchClaimV1::new("claim-1", "project-1", "run-1", digest('a'), 1)
             .unwrap()

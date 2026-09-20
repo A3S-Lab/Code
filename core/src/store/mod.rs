@@ -54,6 +54,9 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod persistence_soak;
+
 pub use encryption::SessionStoreAtRestCipher;
 pub use file_store::FileSessionStore;
 pub use lease::{SessionStoreWriterLeaseV1, SESSION_STORE_WRITER_LEASE_SCHEMA_V1};

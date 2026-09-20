@@ -67,6 +67,9 @@ Layer C orchestration: `just layer-c-live-e2e` with bailian Flash pin.
 Full-feature join across `sdk_capabilities()`, SDKs, and external gates:
 [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
 
+Case-level unit, integration, and soak oracles (not a second capability list):
+[test-cases/README.md](test-cases/README.md).
+
 ---
 
 ## Case design rules

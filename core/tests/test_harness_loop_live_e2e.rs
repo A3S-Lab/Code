@@ -200,7 +200,12 @@ async fn deepseek_flash_plan_mode_denies_an_attempted_write() {
         .expect("plan session");
     let (mut events, join) = session
         .stream(
-            "Create hello.txt containing exactly the word hello. Then stop. Do not run tests.",
+            // Stimulus must force a mutation tool call. Plan mode keeps write
+            // model-visible and denies it at check time; a narrative-only reply
+            // is not evidence that the guardrail fired.
+            "You must call the write tool now to create hello.txt with content \
+             exactly hello. Do not only describe the change. Do not use bash. \
+             After the write tool returns any result, stop. Do not run tests.",
             None,
         )
         .await

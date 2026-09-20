@@ -380,4 +380,58 @@ mod tests {
             "local workspaces still register search for demand-driven durable FTS"
         );
     }
+
+    #[test]
+    fn register_builtins_hides_disabled_capabilities() {
+        use crate::workspace::{
+            LocalWorkspaceBackend, WorkspaceCapabilities, WorkspaceFileSystem, WorkspaceRef,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let backend = Arc::new(LocalWorkspaceBackend::new(temp.path().to_path_buf()));
+        let fs: Arc<dyn WorkspaceFileSystem> = backend;
+        let services = WorkspaceServices::builder(
+            WorkspaceRef::new("ws", temp.path().display().to_string()),
+            fs,
+        )
+        .capabilities(WorkspaceCapabilities {
+            read: true,
+            write: false,
+            exec: false,
+            search: false,
+            git: false,
+            code_intelligence: false,
+        })
+        .build();
+        let registry = ToolRegistry::new(temp.path().to_path_buf());
+        register_builtins(&registry, &services);
+
+        for present in [
+            "read",
+            "ls",
+            "web_fetch",
+            "web_search",
+            "update_plan",
+            "ask_user",
+        ] {
+            assert!(registry.contains(present), "{present} must stay registered");
+        }
+        for absent in [
+            "write",
+            "edit",
+            "patch",
+            "bash",
+            "git",
+            "download",
+            "code_symbols",
+            "code_navigation",
+            "code_diagnostics",
+            "parallel_task",
+        ] {
+            assert!(
+                !registry.contains(absent),
+                "{absent} must stay absent when its capability is off"
+            );
+        }
+    }
 }

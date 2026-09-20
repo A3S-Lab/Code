@@ -1,0 +1,68 @@
+name: Durable Memory Restart Soak
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  memory-restart-soak:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler on macOS
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protobuf compiler on Windows
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - name: Stage verified zvec runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zvec-runtime
+          bash scripts/package_zvec.sh "${{ matrix.target }}" zvec-runtime
+          bash scripts/configure_zvec_runtime.sh \
+            "${{ matrix.target }}" zvec-runtime
+          echo "ZVEC_AUTO_BUILD=0" >> "$GITHUB_ENV"
+          ZVEC_FLAGS="$(bash scripts/zvec_rustflags.sh "${{ matrix.target }}" zvec)"
+          echo "RUSTFLAGS=$ZVEC_FLAGS" >> "$GITHUB_ENV"
+
+      - name: Run durable memory restart endurance
+        run: >-
+          cargo test --locked -p a3s-code-core --test
+          durable_memory_restart_endurance_eval
+          repeated_restart_reuse_preserves_every_context_and_current_revision
+          -- --exact --test-threads=1

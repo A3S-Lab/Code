@@ -32,6 +32,11 @@ jobs:
     needs: registry-preflight
     uses: ./.github/workflows/workspace-retrieval-soak.yml
 
+  memory-restart-soak:
+    name: Memory restart soak
+    needs: registry-preflight
+    uses: ./.github/workflows/durable-memory-restart-soak.yml
+
   sdk-runtime:
     name: SDK runtime
     needs: registry-preflight

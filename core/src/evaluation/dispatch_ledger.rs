@@ -1210,4 +1210,7 @@ mod tests {
             Err(EvaluationDispatchLedgerError::Conflict)
         ));
     }
+
+    #[path = "eval_award_soak.rs"]
+    mod eval_award_soak;
 }

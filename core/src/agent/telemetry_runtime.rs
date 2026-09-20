@@ -13,7 +13,19 @@ impl AgentLoop {
 }
 
 fn record_tool_result_metadata(tool_name: &str, args: &serde_json::Value, exit_code: i32) {
-    let span = tracing::Span::current();
+    let args_bytes = serde_json::to_string(args)
+        .map(|s| s.len() as u64)
+        .unwrap_or(0);
+    // The span carries the tool name and sizes only. Argument values stay off
+    // the exported attributes so a collector cannot see secrets from the call.
+    let span = tracing::info_span!(
+        crate::telemetry::SPAN_TOOL_EXECUTE,
+        tool_name = tool_name,
+        exit_code = exit_code,
+        success = exit_code == 0,
+        args_bytes = args_bytes,
+    );
+    let _entered = span.enter();
     span.record(crate::telemetry::ATTR_TOOL_NAME, tool_name);
     span.record(crate::telemetry::ATTR_TOOL_EXIT_CODE, exit_code as i64);
     span.record(crate::telemetry::ATTR_TOOL_SUCCESS, exit_code == 0);
@@ -22,9 +34,7 @@ fn record_tool_result_metadata(tool_name: &str, args: &serde_json::Value, exit_c
         a3s.tool.name = tool_name,
         a3s.tool.exit_code = exit_code,
         a3s.tool.success = exit_code == 0,
-        a3s.tool.args_bytes = serde_json::to_string(args)
-            .map(|s| s.len())
-            .unwrap_or_default(),
+        a3s.tool.args_bytes = args_bytes,
         "Tool execution result recorded"
     );
 }

@@ -329,3 +329,115 @@ async fn independent_sessions_share_scheduler_backed_provider_generation_capacit
     assert!(scheduler_health.released >= 2);
     agent.close().await;
 }
+
+#[tokio::test]
+async fn task_and_generate_object_reject_the_same_invalid_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .session_async(
+            dir.path().to_string_lossy().to_string(),
+            Some(
+                SessionOptions::new().with_llm_client(Arc::new(StaticStreamingClient::new("nope"))),
+            ),
+        )
+        .await
+        .unwrap();
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "n": { "type": "number" } },
+        "required": ["n"]
+    });
+
+    let generated = session
+        .tool(
+            "generate_object",
+            serde_json::json!({
+                "schema": schema,
+                "schema_name": "same_validator",
+                "prompt": "Return n.",
+                "mode": "prompt",
+                "max_repair_attempts": 2
+            }),
+        )
+        .await
+        .unwrap();
+    let tasked = session
+        .tool(
+            "task",
+            serde_json::json!({
+                "agent": "loop-planner",
+                "description": "schema",
+                "prompt": "Return n.",
+                "output_schema": schema
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(generated.exit_code, 0, "{}", generated.output);
+    assert_ne!(tasked.exit_code, 0, "{}", tasked.output);
+    for output in [&generated.output, &tasked.output] {
+        assert!(
+            output.contains("schema validation") || output.contains("no JSON object"),
+            "validator decision diverged: {output}"
+        );
+        assert!(
+            !output.contains("\"n\""),
+            "invalid object was accepted: {output}"
+        );
+    }
+
+    let accepted = agent
+        .session_async(
+            dir.path().to_string_lossy().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_llm_client(Arc::new(StaticStreamingClient::new(r#"{"n":1}"#))),
+            ),
+        )
+        .await
+        .unwrap();
+    let generated = accepted
+        .tool(
+            "generate_object",
+            serde_json::json!({
+                "schema": schema,
+                "schema_name": "same_validator",
+                "prompt": "Return n.",
+                "mode": "prompt",
+                "max_repair_attempts": 0
+            }),
+        )
+        .await
+        .unwrap();
+    let tasked = accepted
+        .tool(
+            "task",
+            serde_json::json!({
+                "agent": "loop-planner",
+                "description": "schema",
+                "prompt": "Return n.",
+                "output_schema": schema
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.exit_code, 0, "{}", generated.output);
+    assert_eq!(tasked.exit_code, 0, "{}", tasked.output);
+    let send_object = serde_json::from_str::<serde_json::Value>(&generated.output)
+        .expect("generate_object output")
+        .get("object")
+        .cloned()
+        .expect("generate_object object");
+    let task_object = tasked
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("structured"))
+        .cloned()
+        .expect("task structured object");
+    assert_eq!(send_object, serde_json::json!({"n": 1}));
+    assert_eq!(send_object, task_object);
+    agent.close().await;
+}

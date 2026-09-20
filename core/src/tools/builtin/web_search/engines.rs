@@ -150,6 +150,18 @@ fn with_api_key<T>(
     }
 }
 
+fn parse_optional_endpoint(
+    provider: &str,
+    endpoint: Option<&str>,
+) -> a3s_search::Result<Option<url::Url>> {
+    let Some(endpoint) = endpoint.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    url::Url::parse(endpoint).map(Some).map_err(|_| {
+        SearchError::Other(format!("{provider} endpoint is not a valid URL: {endpoint}").into())
+    })
+}
+
 fn create_api_engine(
     provider: BuiltinProvider,
     config: Option<&crate::config::SearchConfig>,
@@ -164,10 +176,21 @@ fn create_api_engine(
         .and_then(|engine| engine.project.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let endpoint = parse_optional_endpoint(
+        provider.id(),
+        engine_config.and_then(|engine| engine.endpoint.as_deref()),
+    )?;
 
     match provider {
         BuiltinProvider::AnySearch => {
             let mut provider_config = AnySearchConfig::new()?;
+            if let Some(endpoint) = endpoint {
+                provider_config = provider_config.with_endpoint(endpoint)?;
+                // Fixture endpoints are anonymous unless an explicit key is set.
+                if api_key.is_none() {
+                    provider_config = provider_config.with_api_key(CredentialSource::none());
+                }
+            }
             if let Some(api_key) = api_key {
                 provider_config = provider_config.with_api_key(CredentialSource::value(api_key));
             }
@@ -177,6 +200,12 @@ fn create_api_engine(
         }
         BuiltinProvider::Tavily => {
             let mut provider_config = TavilyConfig::new()?;
+            if let Some(endpoint) = endpoint {
+                provider_config = provider_config.with_endpoint(endpoint)?;
+                if api_key.is_none() {
+                    provider_config = provider_config.with_api_key(CredentialSource::none());
+                }
+            }
             if let Some(api_key) = api_key {
                 provider_config = provider_config.with_api_key(CredentialSource::value(api_key));
             }

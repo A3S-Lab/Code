@@ -177,4 +177,26 @@ mod tests {
             Err(ResearchContractError::InvalidField("locator"))
         ));
     }
+
+    #[test]
+    fn citation_rejects_source_plaintext() {
+        let citation = ResearchCitationV1::new(
+            "cite-1",
+            "project-1",
+            "run-1",
+            "claim-1",
+            digest('a'),
+            digest('b'),
+            Some("page-3".to_owned()),
+            1,
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&citation).unwrap();
+        value["sourceText"] = serde_json::Value::String("SOURCE-PLAINTEXT-91".to_owned());
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(ResearchCitationV1::from_slice(&bytes).is_err());
+        let stored = citation.to_vec().unwrap();
+        let stored = String::from_utf8(stored).unwrap();
+        assert!(!stored.contains("SOURCE-PLAINTEXT-91"));
+    }
 }

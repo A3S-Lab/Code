@@ -1146,4 +1146,112 @@ mod tests {
         };
         assert!(SessionLaneQueue::build_queue_manager(&cfg).await.is_ok());
     }
+
+    struct HeldCommand {
+        calls: Arc<AtomicUsize>,
+        started_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        release_rx: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    }
+
+    #[async_trait]
+    impl SessionCommand for HeldCommand {
+        async fn execute(&self) -> Result<Value> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.started_tx.lock().await.take() {
+                let _ = tx.send(());
+            }
+            if let Some(rx) = self.release_rx.lock().await.take() {
+                let _ = rx.await;
+            }
+            Ok(serde_json::json!({"receipt": "LANE-ONCE"}))
+        }
+
+        fn command_type(&self) -> &str {
+            "held"
+        }
+    }
+
+    #[tokio::test]
+    async fn replacing_the_lane_handler_does_not_rerun_the_in_flight_command() {
+        let (event_tx, _) = broadcast::channel(100);
+        let queue = SessionLaneQueue::new("lane-replace", SessionQueueConfig::default(), event_tx)
+            .await
+            .unwrap();
+        queue.start().await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let result = queue
+            .submit(
+                SessionLane::Execute,
+                Box::new(HeldCommand {
+                    calls: Arc::clone(&calls),
+                    started_tx: Arc::new(Mutex::new(Some(started_tx))),
+                    release_rx: Arc::new(Mutex::new(Some(release_rx))),
+                }),
+            )
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .expect("in-flight command should start")
+            .expect("start signal");
+
+        queue
+            .set_lane_handler(
+                SessionLane::Execute,
+                LaneHandlerConfig {
+                    mode: TaskHandlerMode::External,
+                    timeout_ms: 30_000,
+                },
+            )
+            .await;
+        release_tx.send(()).expect("release in-flight command");
+
+        let finished = tokio::time::timeout(Duration::from_secs(2), result)
+            .await
+            .expect("in-flight command should finish on the captured handler")
+            .expect("result channel")
+            .expect("internal result");
+        assert_eq!(finished["receipt"], "LANE-ONCE");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(queue.pending_external_tasks().await.is_empty());
+
+        let next = queue
+            .submit(
+                SessionLane::Execute,
+                Box::new(TestCommand {
+                    value: serde_json::json!({"next": true}),
+                }),
+            )
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while queue.pending_external_tasks().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the replacement applies to the next command");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let task_id = queue.pending_external_tasks().await[0].task_id.clone();
+        assert!(
+            queue
+                .complete_external_task(
+                    &task_id,
+                    ExternalTaskResult {
+                        success: true,
+                        result: serde_json::json!({"next": true}),
+                        error: None,
+                    },
+                )
+                .await
+        );
+        let next_result = tokio::time::timeout(Duration::from_secs(2), next)
+            .await
+            .expect("external command should resolve")
+            .expect("result channel")
+            .expect("external result");
+        assert_eq!(next_result["next"], true);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        queue.shutdown().await;
+    }
 }

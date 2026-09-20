@@ -536,9 +536,26 @@ fn html_to_text(html: &str) -> String {
         .unwrap_or_else(|_| String::from("[failed to parse HTML]"))
 }
 
-/// Convert HTML to markdown using htmd
+/// Convert HTML to markdown using htmd.
+///
+/// Script and style bodies are removed first. Conversion is a pure string
+/// transform and must not execute embedded script.
 fn html_to_markdown(html: &str) -> String {
-    htmd::convert(html).unwrap_or_else(|_| html_to_text(html))
+    let stripped = strip_embedded_script_and_style(html);
+    htmd::convert(&stripped).unwrap_or_else(|_| html_to_text(&stripped))
+}
+
+fn strip_embedded_script_and_style(html: &str) -> String {
+    static SCRIPT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static STYLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let script = SCRIPT.get_or_init(|| {
+        regex::Regex::new(r"(?is)<script\b[^>]*>.*?</script>").expect("script strip pattern")
+    });
+    let style = STYLE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<style\b[^>]*>.*?</style>").expect("style strip pattern")
+    });
+    let without_script = script.replace_all(html, "");
+    style.replace_all(&without_script, "").into_owned()
 }
 
 #[cfg(test)]

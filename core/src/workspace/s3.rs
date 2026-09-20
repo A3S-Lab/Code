@@ -362,9 +362,10 @@ impl WorkspaceFileSystem for S3WorkspaceBackend {
         path: &WorkspacePath,
         content: &str,
     ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+        let bytes = content.len() as u64;
+        validate_write_bytes(bytes, self.max_read_bytes)?;
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
-        let bytes = content.len() as u64;
 
         let start = std::time::Instant::now();
         let send_result = self
@@ -511,9 +512,10 @@ impl WorkspaceFileSystemExt for S3WorkspaceBackend {
             });
         }
 
+        let bytes = content.len() as u64;
+        validate_write_bytes(bytes, self.max_read_bytes)?;
         let key = self.key_for(path);
         let body = ByteStream::from(content.as_bytes().to_vec());
-        let bytes = content.len() as u64;
 
         let start = std::time::Instant::now();
         let send_result = self

@@ -289,6 +289,9 @@ impl SkillRegistry {
         const MAX_DEPTH: usize = 64;
 
         fn stays_in_root(root: &Path, path: &Path) -> bool {
+            let Ok(root) = std::fs::canonicalize(root) else {
+                return false;
+            };
             std::fs::canonicalize(path)
                 .map(|canonical| canonical.starts_with(root))
                 .unwrap_or(false)

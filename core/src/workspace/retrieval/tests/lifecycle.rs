@@ -5,7 +5,8 @@ use super::super::{ChunkCatalogLimits, ChunkingConfig, LexicalSearchRequest};
 use crate::workspace::{
     LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifestSnapshot,
     WorkspaceDirEntry, WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind,
-    WorkspaceFileSystem, WorkspacePath, WorkspaceResult, WorkspaceWriteOutcome,
+    WorkspaceFileSystem, WorkspaceGrepRequest, WorkspacePath, WorkspaceResult, WorkspaceSearch,
+    WorkspaceWriteOutcome,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -456,5 +457,91 @@ impl WorkspaceFileSystem for CountingFileSystem {
 
     async fn list_dir(&self, _path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
         Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn write_then_search_drops_the_replaced_line() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("note.rs"),
+        "fn marker() { let _ = \"OLD-LINE-91\"; }\n",
+    )
+    .unwrap();
+    let backend = crate::workspace::ManifestWorkspaceBackend::new(temp.path());
+    let catalog = backend.chunk_catalog();
+    wait_for_chunk(&catalog, "OLD-LINE-91", "initial line").await;
+    let indexed = catalog.snapshot().unwrap().revision();
+
+    let path = WorkspacePath::from_normalized("note.rs");
+    backend
+        .write_text(&path, "fn marker() { let _ = \"NEW-LINE-91\"; }\n")
+        .await
+        .unwrap();
+
+    let old = backend
+        .grep(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "OLD-LINE-91".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 4096,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        old.match_count, 0,
+        "grep still treats the replaced line as current"
+    );
+    let current = backend
+        .grep(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "NEW-LINE-91".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 4096,
+        })
+        .await
+        .unwrap();
+    assert!(
+        current.match_count >= 1,
+        "grep missed the line the write tool just stored"
+    );
+
+    wait_for_chunk(&catalog, "NEW-LINE-91", "watcher publication").await;
+    let published = catalog.snapshot().unwrap();
+    assert!(
+        published.revision() > indexed,
+        "catalog publication did not advance after the write"
+    );
+    assert!(
+        published
+            .chunks()
+            .iter()
+            .all(|chunk| !chunk.text.contains("OLD-LINE-91")),
+        "catalog still serves the replaced line"
+    );
+}
+
+async fn wait_for_chunk(catalog: &WorkspaceChunkCatalog, needle: &str, label: &str) {
+    // Parallel libtest on WSL/Linux can starve the catalog watcher the same way
+    // manifest scans do; reuse the shared external-resource start budget.
+    let deadline = tokio::time::Instant::now()
+        + crate::test_support::external_resource_start_timeout(std::time::Duration::from_secs(5));
+    loop {
+        let snapshot = catalog.snapshot().unwrap();
+        if snapshot
+            .chunks()
+            .iter()
+            .any(|chunk| chunk.text.contains(needle))
+        {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("catalog did not publish {label} ({needle})");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }

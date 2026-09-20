@@ -1118,4 +1118,7 @@ mod tests {
         }
         server.verify().await;
     }
+
+    #[path = "install_soak.rs"]
+    mod install_soak;
 }

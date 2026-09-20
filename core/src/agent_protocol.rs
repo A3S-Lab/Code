@@ -1124,6 +1124,86 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn protocol_page_matches_observability_seq_and_marks_truncation() {
+        let store = crate::run::InMemoryRunStore::new();
+        let run = store.create_run("session-trunc", "prompt").await;
+        let oversized = format!(
+            "TRUNC-SRC-91{}",
+            "x".repeat(AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES)
+        );
+        store
+            .record_event(
+                &run.id,
+                AgentEvent::ToolEnd {
+                    id: "tool-91".into(),
+                    name: "read".into(),
+                    args: None,
+                    exit_code: 0,
+                    output: oversized.clone(),
+                    metadata: None,
+                    error_kind: None,
+                },
+            )
+            .await
+            .expect("record oversized tool end");
+        let observed = store
+            .event_page(&run.id, None, 16)
+            .await
+            .expect("observability page");
+        let snapshot = store.snapshot(&run.id).await.expect("snapshot");
+        let projected = AgentProtocolEventPageV1::from_run_page(
+            identity(),
+            snapshot.status,
+            snapshot.updated_at_ms,
+            None,
+            &observed,
+        )
+        .expect("protocol page");
+
+        assert_eq!(
+            projected.first_available_sequence,
+            observed
+                .first_available_sequence
+                .map(|sequence| u64::try_from(sequence).unwrap())
+        );
+        assert_eq!(
+            projected.latest_sequence_exclusive,
+            u64::try_from(observed.latest_sequence_exclusive).unwrap()
+        );
+        assert_eq!(
+            projected.next_after_event_sequence,
+            observed
+                .next_after_sequence
+                .map(|sequence| u64::try_from(sequence).unwrap())
+        );
+        assert_eq!(projected.retention_gap, observed.retention_gap);
+        assert_eq!(projected.has_more, observed.has_more);
+        assert_eq!(projected.events.len(), observed.events.len());
+        assert_eq!(
+            projected.events[0].sequence,
+            u64::try_from(observed.events[0].sequence).unwrap()
+        );
+
+        let AgentEvent::ToolEnd { output, .. } = &observed.events[0].event else {
+            panic!("observability page dropped the tool end");
+        };
+        assert_eq!(output, &oversized);
+        assert!(
+            !output.contains(AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK),
+            "the retained page must keep the original tool output"
+        );
+        let output = projected.events[0].event.payload["output"]
+            .as_str()
+            .expect("protocol tool_end keeps an output string");
+        assert!(
+            output.ends_with(AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK),
+            "protocol page must end the oversized output with the truncation mark"
+        );
+        assert!(output.len() < oversized.len());
+        assert!(!output.contains(&oversized));
+    }
+
     #[test]
     fn protocol_error_codes_are_stable() {
         assert_eq!(

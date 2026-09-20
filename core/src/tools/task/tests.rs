@@ -1,5 +1,14 @@
 use super::*;
 
+/// Serialize tests that measure in-process provider concurrency peaks.
+/// Under `cargo test -- --test-threads=N` these otherwise starve each other
+/// and under-report `max_active` or miss barrier rendezvous.
+static PROVIDER_CAPACITY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn lock_provider_capacity_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    PROVIDER_CAPACITY_TEST_LOCK.lock().await
+}
+
 struct DelegatedCoalescingEngine {
     config: a3s_search::EngineConfig,
     calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -1336,7 +1345,45 @@ fn pre_analysis_response(messages: &[Message]) -> LlmResponse {
 }
 
 fn is_pre_analysis_system(system: Option<&str>) -> bool {
-    system.is_some_and(|value| value.contains(crate::prompts::PRE_ANALYSIS_SYSTEM))
+    let Some(system) = system else {
+        return false;
+    };
+    if system.contains(crate::prompts::PRE_ANALYSIS_SYSTEM) {
+        return true;
+    }
+    // Tolerate CRLF/LF drift between the compiled prompt constant and the
+    // assembled system string observed by child-task mocks on Windows.
+    let normalized_system = system.replace("\r\n", "\n");
+    let normalized_constant = crate::prompts::PRE_ANALYSIS_SYSTEM.replace("\r\n", "\n");
+    normalized_system.contains(&normalized_constant)
+}
+
+fn is_pre_analysis_request(
+    system: Option<&str>,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> bool {
+    if tools
+        .iter()
+        .any(|tool| tool.name == "emit_pre_analysis" || tool.name.starts_with("emit_pre_analysis"))
+    {
+        return true;
+    }
+    let prompt_text = messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if prompt_text.contains("compact pre-analysis object")
+        || prompt_text.contains("pre-analysis object")
+    {
+        return true;
+    }
+    is_pre_analysis_system(system)
 }
 
 fn last_text(messages: &[Message]) -> String {
@@ -2026,14 +2073,21 @@ struct ConcurrentLlmClient {
     barrier: Arc<Barrier>,
     active: AtomicUsize,
     max_active: AtomicUsize,
+    /// How long the "slow branch" prompt holds after the barrier.
+    slow_hold: Duration,
 }
 
 impl ConcurrentLlmClient {
     fn new(task_count: usize) -> Self {
+        Self::with_slow_hold(task_count, Duration::from_millis(1_000))
+    }
+
+    fn with_slow_hold(task_count: usize, slow_hold: Duration) -> Self {
         Self {
             barrier: Arc::new(Barrier::new(task_count)),
             active: AtomicUsize::new(0),
             max_active: AtomicUsize::new(0),
+            slow_hold,
         }
     }
 
@@ -2220,9 +2274,9 @@ impl LlmClient for LimitedConcurrencyLlmClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        if is_pre_analysis_system(system) {
+        if is_pre_analysis_request(system, messages, tools) {
             return Ok(pre_analysis_response(messages));
         }
 
@@ -2231,7 +2285,8 @@ impl LlmClient for LimitedConcurrencyLlmClient {
         self.record_active();
         // Hold long enough that concurrent batches can saturate the shared
         // provider window under loaded CI (Windows runners were peaking at 7/8
-        // with a 40ms hold).
+        // with a 40ms hold). Capacity-peak tests take PROVIDER_CAPACITY_TEST_LOCK
+        // so the default --lib suite cannot starve this observation.
         tokio::time::sleep(Duration::from_millis(150)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
         Ok(text_response(format!("completed: {prompt}")))
@@ -2239,12 +2294,18 @@ impl LlmClient for LimitedConcurrencyLlmClient {
 
     async fn complete_streaming(
         &self,
-        _messages: &[Message],
-        _system: Option<&str>,
-        _tools: &[ToolDefinition],
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        anyhow::bail!("streaming is not used by task executor tests")
+        // Child TaskExecutor always enables streaming; delegate to complete().
+        let response = self.complete(messages, system, tools).await?;
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
     }
 }
 
@@ -2354,9 +2415,9 @@ impl LlmClient for ConcurrentLlmClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        if is_pre_analysis_system(system) {
+        if is_pre_analysis_request(system, messages, tools) {
             return Ok(pre_analysis_response(messages));
         }
 
@@ -2364,7 +2425,7 @@ impl LlmClient for ConcurrentLlmClient {
         self.record_active();
         self.barrier.wait().await;
         if prompt.contains("slow") {
-            tokio::time::sleep(Duration::from_millis(1_000)).await;
+            tokio::time::sleep(self.slow_hold).await;
         } else {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -2374,12 +2435,18 @@ impl LlmClient for ConcurrentLlmClient {
 
     async fn complete_streaming(
         &self,
-        _messages: &[Message],
-        _system: Option<&str>,
-        _tools: &[ToolDefinition],
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        anyhow::bail!("streaming is not used by task executor tests")
+        // Child TaskExecutor always enables streaming; delegate to complete().
+        let response = self.complete(messages, system, tools).await?;
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(StreamEvent::Done(response)).await;
+        });
+        Ok(rx)
     }
 }
 
@@ -3108,6 +3175,7 @@ async fn independent_subagent_work_uses_the_agent_scheduler_without_nested_deadl
 
 #[tokio::test]
 async fn detached_children_share_one_run_quota_before_using_global_capacity() {
+    let _guard = lock_provider_capacity_tests().await;
     use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
 
     let workspace = tempfile::tempdir().unwrap();
@@ -3980,6 +4048,7 @@ async fn task_child_run_step_budget_enforced() {
 
 #[tokio::test]
 async fn parallel_task_executor_runs_children_concurrently_and_preserves_input_order() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(ConcurrentLlmClient::new(2));
     let executor = Arc::new(TaskExecutor::new(
@@ -4008,7 +4077,7 @@ async fn parallel_task_executor_runs_children_concurrently_and_preserves_input_o
     ];
 
     let results = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(15),
         executor.execute_parallel(tasks, None, None),
     )
     .await
@@ -4028,6 +4097,7 @@ async fn parallel_task_executor_runs_children_concurrently_and_preserves_input_o
 
 #[tokio::test]
 async fn parallel_task_executor_respects_configured_concurrency_limit() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(LimitedConcurrencyLlmClient::new());
     let executor = Arc::new(
@@ -4059,6 +4129,7 @@ async fn parallel_task_executor_respects_configured_concurrency_limit() {
 
 #[tokio::test]
 async fn concurrent_parallel_calls_share_one_provider_capacity_window() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(LimitedConcurrencyLlmClient::new());
     let executor = Arc::new(
@@ -4098,6 +4169,7 @@ async fn concurrent_parallel_calls_share_one_provider_capacity_window() {
 
 #[tokio::test]
 async fn concurrent_parallel_batches_share_eight_slots_and_execute_each_branch_once() {
+    let _guard = lock_provider_capacity_tests().await;
     const BATCH_COUNT: usize = 4;
     const TASKS_PER_BATCH: usize = 7;
     const PROVIDER_CAPACITY: usize = 8;
@@ -4129,7 +4201,7 @@ async fn concurrent_parallel_batches_share_eight_slots_and_execute_each_branch_o
         }
     });
 
-    let results = tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(batches))
+    let results = tokio::time::timeout(Duration::from_secs(30), futures::future::join_all(batches))
         .await
         .expect("bounded concurrent batches should finish");
 
@@ -4475,6 +4547,7 @@ async fn task_tool_executes_multiple_unified_tasks_concurrently() {
 
 #[tokio::test]
 async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(BlockingCapacityLlmClient::new());
     let executor = Arc::new(
@@ -4545,7 +4618,7 @@ async fn cancelling_a_batch_waiting_for_provider_capacity_returns_promptly() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     cancellation.cancel();
 
-    let second_output = tokio::time::timeout(Duration::from_millis(500), second)
+    let second_output = tokio::time::timeout(Duration::from_secs(5), second)
         .await
         .expect("a cancelled capacity waiter must not hang")
         .expect("capacity waiter task should join");
@@ -4946,8 +5019,14 @@ async fn parallel_task_tool_allows_partial_failure_when_requested() {
 
 #[tokio::test]
 async fn parallel_task_tool_timeout_returns_completed_partial_results() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
-    let client = Arc::new(ConcurrentLlmClient::new(2));
+    // Hold the slow branch well past the fan-out budget so spawn jitter cannot
+    // let it finish before the parent timeout collects the fast sibling.
+    let client = Arc::new(ConcurrentLlmClient::with_slow_hold(
+        2,
+        Duration::from_secs(30),
+    ));
     let executor = Arc::new(TaskExecutor::new(
         test_registry_with_text_worker(),
         client.clone(),
@@ -4960,7 +5039,9 @@ async fn parallel_task_tool_timeout_returns_completed_partial_results() {
         .execute(
             &serde_json::json!({
                 "allow_partial_failure": true,
-                "timeout_ms": 500,
+                // Windows child spawn + barrier rendezvous needs headroom; the
+                // slow branch still exceeds this budget after both start.
+                "timeout_ms": 2_000,
                 "tasks": [
                     {
                         "agent": "worker",
@@ -4992,7 +5073,7 @@ async fn parallel_task_tool_timeout_returns_completed_partial_results() {
     assert!(
         metadata["duration_ms"]
             .as_u64()
-            .is_some_and(|duration_ms| duration_ms >= 500),
+            .is_some_and(|duration_ms| duration_ms >= 2_000),
         "{metadata}"
     );
     assert_eq!(metadata["success_count"], 1);
@@ -5014,6 +5095,7 @@ async fn parallel_task_tool_timeout_returns_completed_partial_results() {
 
 #[tokio::test]
 async fn parallel_task_tool_timeout_path_respects_configured_concurrency_limit() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(LimitedConcurrencyLlmClient::new());
     let executor = Arc::new(
@@ -5031,7 +5113,9 @@ async fn parallel_task_tool_timeout_path_respects_configured_concurrency_limit()
         .execute(
             &serde_json::json!({
                 "allow_partial_failure": true,
-                "timeout_ms": 1_000,
+                // Five tasks × ~150ms hold at concurrency 2; exclusive lock
+                // keeps the peak observation stable under --test-threads=N.
+                "timeout_ms": 5_000,
                 "tasks": (0..5)
                     .map(|idx| serde_json::json!({
                         "agent": "worker",
@@ -5059,6 +5143,7 @@ async fn parallel_task_tool_timeout_path_respects_configured_concurrency_limit()
 
 #[tokio::test]
 async fn parallel_task_tool_can_return_after_min_success_count() {
+    let _guard = lock_provider_capacity_tests().await;
     let workspace = tempfile::tempdir().unwrap();
     let executor = Arc::new(TaskExecutor::new(
         test_registry_with_text_worker(),
@@ -6005,3 +6090,6 @@ fn synthesize_progress_ignores_unrelated_events() {
         );
     }
 }
+
+#[path = "delegation_soak.rs"]
+mod delegation_soak;

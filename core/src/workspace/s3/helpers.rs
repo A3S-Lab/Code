@@ -60,6 +60,18 @@ pub(super) fn validate_content_length(
     }
 }
 
+/// Refuse puts that exceed the workspace read ceiling so oversize objects
+/// never land under the prefix.
+pub(super) fn validate_write_bytes(bytes: u64, max_read_bytes: u64) -> Result<()> {
+    if bytes > max_read_bytes {
+        Err(anyhow!(
+            "Refusing to write S3 object: {bytes} bytes exceeds workspace max_read_bytes ({max_read_bytes})"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn normalize_prefix(prefix: &str) -> String {
     prefix
         .trim_start_matches('/')

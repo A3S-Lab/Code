@@ -31,7 +31,7 @@ use a3s_code_core::{Agent, AgentEvent, RunStatus, SessionOptions, ToolRequestOri
 mod support;
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(20);
 const FAKE_API_KEY: &str = "sk-AAAAAAAAAAAAAAAAAAAAAAAA";
 #[cfg(not(windows))]
@@ -435,7 +435,11 @@ async fn deepseek_stream_cancellation_settles_the_run_and_tool_state() {
     .expect("DeepSeek did not start the cancellable tool in time");
 
     let started_path = workspace.path().join("cancel-started.txt");
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // ToolExecutionStart is emitted before the tool body. The Windows sandbox
+    // probe budget is 30s, so the marker wait has to cover that startup. The
+    // command still sleeps 5s after the marker; cancellation runs as soon as
+    // the file appears.
+    tokio::time::timeout(Duration::from_secs(45), async {
         loop {
             if started_path.exists() {
                 return;

@@ -869,6 +869,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_image_media_types_follow_extension_and_text_stays_text() {
+        // Media type is extension-based. Bytes are not decoded; the oracle is
+        // the attachment type, not image validity.
+        let cases = [
+            ("shot.jpg", "image/jpeg"),
+            ("shot.jpeg", "image/jpeg"),
+            ("shot.gif", "image/gif"),
+            ("shot.webp", "image/webp"),
+        ];
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        for (name, media_type) in cases {
+            std::fs::write(temp.path().join(name), b"not-a-real-codec").unwrap();
+            let result = ReadTool
+                .execute(&serde_json::json!({"file_path": name}), &ctx)
+                .await
+                .unwrap();
+            assert!(result.success, "{name}: {}", result.content);
+            assert_eq!(result.images.len(), 1, "{name}");
+            assert_eq!(result.images[0].media_type, media_type, "{name}");
+            assert_eq!(result.images[0].data, b"not-a-real-codec");
+        }
+
+        std::fs::write(temp.path().join("notes.txt"), b"plain").unwrap();
+        let text = ReadTool
+            .execute(&serde_json::json!({"file_path": "notes.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(text.success, "{}", text.content);
+        assert!(
+            text.images.is_empty(),
+            "text read must not emit an image part"
+        );
+        assert!(text.content.contains("plain"));
+    }
+
+    #[tokio::test]
+    async fn test_read_rejects_parent_directory_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = parent.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(parent.path().join("secret.txt"), "OUTSIDE-SECRET").unwrap();
+
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({"file_path": "../secret.txt"}),
+                &ToolContext::new(workspace.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !result.success,
+            "parent escape must fail closed: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("OUTSIDE-SECRET"),
+            "denied read must not return the outside file"
+        );
+        assert!(result.images.is_empty());
+
+        let absolute = parent.path().join("secret.txt");
+        let absolute_result = ReadTool
+            .execute(
+                &serde_json::json!({ "file_path": absolute.to_string_lossy().to_string() }),
+                &ToolContext::new(workspace),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !absolute_result.success,
+            "absolute path outside the workspace must fail closed: {}",
+            absolute_result.content
+        );
+        assert!(
+            !absolute_result.content.contains("OUTSIDE-SECRET"),
+            "denied absolute read must not return the outside file"
+        );
+    }
+
+    #[tokio::test]
     async fn test_read_image_rejects_text_range_args() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("shot.png"), b"not-checked").unwrap();

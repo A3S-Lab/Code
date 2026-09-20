@@ -215,19 +215,49 @@ pub(crate) fn status_std_with_native_gate(
 pub(crate) struct ProcessGroupGuard {
     #[cfg(unix)]
     process_group: Option<i32>,
+    #[cfg(windows)]
+    job: Option<std::os::windows::io::OwnedHandle>,
 }
 
 impl ProcessGroupGuard {
     pub(crate) fn for_child(child: &Child) -> Self {
-        Self::for_process_id(child.id())
+        #[cfg(unix)]
+        {
+            return Self::for_process_id(child.id());
+        }
+        #[cfg(windows)]
+        {
+            let job = child
+                .raw_handle()
+                .and_then(|raw| try_own_windows_job(raw).ok());
+            Self { job }
+        }
     }
 
     pub(crate) fn for_process_id(process_id: Option<u32>) -> Self {
-        #[cfg(not(unix))]
-        let _ = process_id;
-        Self {
-            #[cfg(unix)]
-            process_group: process_id.and_then(|id| i32::try_from(id).ok()),
+        #[cfg(unix)]
+        {
+            return Self {
+                process_group: process_id.and_then(|id| i32::try_from(id).ok()),
+            };
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+            };
+
+            let Some(pid) = process_id else {
+                return Self { job: None };
+            };
+            let raw = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if raw.is_null() {
+                return Self { job: None };
+            }
+            let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let job = try_own_windows_job(process.as_raw_handle()).ok();
+            Self { job }
         }
     }
 
@@ -242,6 +272,15 @@ impl ProcessGroupGuard {
                 }
             }
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+            if let Some(job) = self.job.take() {
+                let _ = unsafe { TerminateJobObject(job.as_raw_handle(), 1) };
+            }
+        }
     }
 
     pub(crate) fn disarm(&mut self) {
@@ -249,7 +288,55 @@ impl ProcessGroupGuard {
         {
             self.process_group = None;
         }
+        #[cfg(windows)]
+        {
+            // Drop the job handle without terminating. Processes that were only
+            // tracked here keep running after a successful wait.
+            self.job = None;
+        }
     }
+}
+
+/// Own a Job Object for timeout/cancel of a process that is not already in a
+/// job. Bash host shells bind their own job first; Assign then fails and this
+/// returns an error so the existing job remains the sole owner.
+#[cfg(windows)]
+fn try_own_windows_job(
+    raw_process: std::os::windows::io::RawHandle,
+) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use std::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+    // Do not set KILL_ON_JOB_CLOSE: disarm must drop the handle without
+    // killing a process that already exited cleanly.
+    let limits = unsafe { zeroed::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() };
+    let size = u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+        .map_err(|_| io::Error::other("Job Object limit structure size overflowed"))?;
+    if unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<c_void>(),
+            size,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), raw_process) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(job)
 }
 
 impl Drop for ProcessGroupGuard {
@@ -477,6 +564,104 @@ mod tests {
         assert!(
             !directory.path().join("cancellation-leak").exists(),
             "dropping process capture must kill every descendant"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn process_group_guard_kills_a_windows_descendant_before_a_later_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let child_started = directory.path().join("child-started");
+        let leaked = directory.path().join("leaked");
+        let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
+        let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
+        let powershell =
+            a3s_sandbox::windows_host_powershell(directory.path()).expect("PowerShell 7");
+        let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
+        // Spawn without bind_windows_process_tree so the guard itself owns the job.
+        let mut command = Command::new(&powershell);
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
+                     -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 1; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+                     Wait-Process -Id $child.Id"
+                ),
+            ])
+            .current_dir(directory.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = spawn_tokio_with_native_gate(&mut command).expect("spawn");
+        let mut guard = ProcessGroupGuard::for_child(&child);
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while !child_started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("descendant should start");
+        guard.kill();
+        child.start_kill().ok();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert!(
+            !leaked.exists(),
+            "ProcessGroupGuard must stop a Windows descendant before its later write"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn read_process_output_timeout_kills_a_windows_descendant_before_a_later_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let child_started = directory.path().join("child-started");
+        let leaked = directory.path().join("leaked");
+        let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
+        let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
+        let powershell =
+            a3s_sandbox::windows_host_powershell(directory.path()).expect("PowerShell 7");
+        let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
+        let mut command = Command::new(&powershell);
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
+                     -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 30; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+                     Wait-Process -Id $child.Id"
+                ),
+            ])
+            .current_dir(directory.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = spawn_tokio_with_native_gate(&mut command).expect("spawn");
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while !child_started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("descendant should start before the capture deadline");
+        let output = read_process_output(&mut child, 200, None)
+            .await
+            .expect("capture");
+        assert!(
+            output.timed_out,
+            "deadline must fire while the descendant is still sleeping"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert!(
+            !leaked.exists(),
+            "a timed-out capture must stop a Windows descendant before its later write"
         );
     }
 }

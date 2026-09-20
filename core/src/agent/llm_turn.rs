@@ -436,6 +436,11 @@ impl AgentLoop {
         let Some(timeout) = timeout else {
             return call.await;
         };
+        // When the effective wait is the run budget (alone or tighter than the
+        // provider timeout), classify as an execution timeout even if the timer
+        // fires a millisecond early (elapsed_ms < limit).
+        let bounded_by_run_deadline = run_timeout
+            .is_some_and(|run| provider_timeout.map_or(true, |provider| run <= provider));
 
         if timeout.is_zero() {
             attempt_cancel.cancel();
@@ -452,9 +457,10 @@ impl AgentLoop {
                 // shutdown signal. The parent run remains retryable.
                 attempt_cancel.cancel();
                 let elapsed_ms = request.execution_start.elapsed().as_millis() as u64;
-                if request
-                    .max_execution_time_ms
-                    .is_some_and(|limit| elapsed_ms >= limit)
+                if bounded_by_run_deadline
+                    || request
+                        .max_execution_time_ms
+                        .is_some_and(|limit| elapsed_ms >= limit)
                 {
                     Err(anyhow::anyhow!(
                         "Execution timeout reached during LLM call after {elapsed_ms} ms"

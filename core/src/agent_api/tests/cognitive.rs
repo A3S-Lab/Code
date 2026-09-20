@@ -240,3 +240,16 @@ async fn cognitive_session_resume_requires_the_same_host_injected_binding() {
         .unwrap();
     assert_eq!(resumed.cognitive_package_binding(), Some(&expected));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn unbound_session_does_not_invent_a_cognitive_package() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let session = agent
+        .session_async(workspace.path().display().to_string(), None)
+        .await
+        .unwrap();
+
+    assert!(session.cognitive_package_binding().is_none());
+    assert!(session.current_cognitive_package_binding().is_none());
+}

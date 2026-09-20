@@ -149,6 +149,21 @@ fn validate_content_length_rejects_negative_length() {
 }
 
 #[test]
+fn validate_write_bytes_rejects_over_cap_without_credentials() {
+    let err = validate_write_bytes(4097, 4096).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("exceeds workspace max_read_bytes"), "{msg}");
+    assert!(!msg.contains("AK"), "{msg}");
+    assert!(!msg.contains("SK"), "{msg}");
+}
+
+#[test]
+fn validate_write_bytes_allows_at_cap() {
+    assert!(validate_write_bytes(4096, 4096).is_ok());
+    assert!(validate_write_bytes(0, 4096).is_ok());
+}
+
+#[test]
 fn services_s3_factory_disables_exec_search_and_git_by_default() {
     let cfg = S3BackendConfig::new("bucket", "ws", "AK", "SK");
     let services = super::super::WorkspaceServices::s3(cfg);
@@ -286,4 +301,111 @@ fn glob_pattern_matches_is_permissive_across_slashes() {
 fn make_backend(prefix: &str) -> S3WorkspaceBackend {
     let cfg = S3BackendConfig::new("bucket", prefix, "AK", "SK");
     S3WorkspaceBackend::new(cfg)
+}
+
+#[tokio::test]
+async fn denied_get_error_omits_credentials() {
+    const ACCESS_KEY: &str = "AKIA-SECRET-KEY-91";
+    const SECRET: &str = "SECRET-VALUE-91";
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(false).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let listed = br#"<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>bucket</Name>
+  <Prefix>p/</Prefix>
+  <KeyCount>2</KeyCount>
+  <MaxKeys>1000</MaxKeys>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>p/visible.txt</Key>
+    <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+    <ETag>&quot;abc&quot;</ETag>
+    <Size>4</Size>
+    <StorageClass>STANDARD</StorageClass>
+  </Contents>
+  <Contents>
+    <Key>outside/secret.txt</Key>
+    <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+    <ETag>&quot;def&quot;</ETag>
+    <Size>4</Size>
+    <StorageClass>STANDARD</StorageClass>
+  </Contents>
+</ListBucketResult>"#;
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0_u8; 8192];
+            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]);
+            let (status, body): (&str, &[u8]) = if head.contains("list-type") {
+                ("200 OK", listed)
+            } else {
+                (
+                    "403 Forbidden",
+                    b"<Error><Code>AccessDenied</Code><Message>denied</Message></Error>",
+                )
+            };
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut stream, header.as_bytes());
+            let _ = std::io::Write::write_all(&mut stream, body);
+        }
+    });
+
+    let backend = S3WorkspaceBackend::new(
+        S3BackendConfig::new("bucket", "p", ACCESS_KEY, SECRET)
+            .endpoint(format!("http://127.0.0.1:{port}"))
+            .force_path_style(true)
+            .enable_search(true),
+    );
+    let listed = tokio::time::timeout(
+        Duration::from_secs(8),
+        backend.glob(WorkspaceGlobRequest {
+            base: WorkspacePath::root(),
+            pattern: "*".to_string(),
+        }),
+    )
+    .await
+    .expect("prefix search must finish without hanging")
+    .expect("prefix search must accept the hermetic listing");
+    let names: Vec<String> = listed
+        .matches
+        .iter()
+        .map(|path| path.as_str().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "visible.txt"),
+        "in-prefix hit missing: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|name| !name.contains("outside") && !name.contains("secret.txt")),
+        "search leaked a key outside the prefix: {names:?}"
+    );
+    let error = tokio::time::timeout(
+        Duration::from_secs(8),
+        backend.read_text(&WorkspacePath::from_normalized("note.txt")),
+    )
+    .await
+    .expect("denied get must finish without hanging")
+    .expect_err("403 must fail the read");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("Failed to read S3 object"),
+        "denied get must be classified, not a local config miss: {rendered}"
+    );
+    assert!(
+        !rendered.contains(ACCESS_KEY),
+        "access key leaked into the S3 error: {rendered}"
+    );
+    assert!(
+        !rendered.contains(SECRET),
+        "secret leaked into the S3 error: {rendered}"
+    );
 }

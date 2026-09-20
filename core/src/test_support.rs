@@ -45,11 +45,10 @@ pub(crate) fn hermetic_workspace() -> PathBuf {
 /// Allow OS-backed test resources to start under a busy shared macOS/Windows
 /// host without relaxing behavioral cancellation or shutdown deadlines.
 pub(crate) const fn external_resource_start_timeout(default: Duration) -> Duration {
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        if default.as_secs() < 30 {
-            return Duration::from_secs(30);
-        }
+    // Full-suite parallel scheduling on Linux WSL/CI flakes the same way
+    // Windows and macOS do when the default budget is only a couple seconds.
+    if default.as_secs() < 30 {
+        return Duration::from_secs(30);
     }
     default
 }

@@ -303,6 +303,13 @@ impl ResearchWireEnvelopeV1 {
         Self::from_typed(ResearchWireKindV1::ResearchEvent, payload)
     }
 
+    /// Construct a provenance-receipt envelope.
+    pub fn from_provenance_receipt(
+        payload: ResearchProvenanceReceiptV1,
+    ) -> Result<Self, ResearchProtocolError> {
+        Self::from_typed(ResearchWireKindV1::ResearchProvenanceReceipt, payload)
+    }
+
     /// Construct a reproducibility-manifest envelope.
     pub fn from_reproducibility_manifest(
         payload: ResearchReproducibilityManifestV1,

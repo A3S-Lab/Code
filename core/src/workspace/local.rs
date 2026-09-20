@@ -774,9 +774,7 @@ impl WorkspaceGit for LocalWorkspaceBackend {
         &self,
         request: WorkspaceGitCheckoutRequest,
     ) -> Result<WorkspaceGitCheckoutOutput> {
-        if request.refspec.trim().is_empty() || request.refspec.contains('\0') {
-            bail!("Git checkout ref must be a non-empty revision");
-        }
+        crate::git::refuse_flag_like_git_revision(&request.refspec, "checkout ref")?;
         if self.access_boundary.is_some() {
             self.refuse_checkout_targets(&request.refspec, request.force)?;
         }
@@ -784,15 +782,10 @@ impl WorkspaceGit for LocalWorkspaceBackend {
             vec![
                 "checkout".to_string(),
                 "--force".to_string(),
-                "--end-of-options".to_string(),
                 request.refspec,
             ]
         } else {
-            vec![
-                "checkout".to_string(),
-                "--end-of-options".to_string(),
-                request.refspec,
-            ]
+            vec!["checkout".to_string(), request.refspec]
         };
         let (success, stdout, stderr) = self.run_git_command(args).await?;
         if !success {
@@ -1960,7 +1953,9 @@ mod tests {
             .await
             .expect_err("an option-like ref must not become a Git flag");
         assert!(
-            error.to_string().contains("checkout") || error.to_string().contains("Git"),
+            error.to_string().contains("option")
+                || error.to_string().contains("checkout")
+                || error.to_string().contains("Git"),
             "{error}"
         );
         assert!(!output.exists());

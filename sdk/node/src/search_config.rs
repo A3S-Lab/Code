@@ -24,6 +24,7 @@ impl From<SearchEngineConfig> for RustSearchEngineConfig {
             timeout: config.timeout.map(u64::from),
             api_key: None,
             project: None,
+            endpoint: None,
         }
     }
 }

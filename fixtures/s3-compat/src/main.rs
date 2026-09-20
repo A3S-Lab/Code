@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 
 const DEFAULT_BIND: &str = "127.0.0.1:9000";
 const DEFAULT_BUCKET: &str = "a3s-code-tests";
-const DEFAULT_ACCESS_KEY: &str = "a3s-code-test";
+const DEFAULT_ACCESS_KEY: &str = "a3s-code-akid";
 const DEFAULT_SECRET_KEY: &str = "a3s-code-test-secret";
 
 #[tokio::main]

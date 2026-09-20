@@ -670,6 +670,35 @@ mod tests {
         discard("stale-empty").await.unwrap();
     }
 
+    /// S-EI-01. Ignored: 100 git worktrees are a soak, not Required CI.
+    #[tokio::test]
+    #[ignore = "soak: 100 bind/discard cycles"]
+    async fn soak_bind_discard_does_not_leak_into_source() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo(root.path());
+        let source = fs::read(root.path().join("README.md")).unwrap();
+        for i in 0..100 {
+            let id = format!("soak-ei-{i}");
+            forget_leaked_session(&id);
+            let binding = bind(&id, root.path(), true)
+                .await
+                .unwrap_or_else(|error| panic!("bind {id}: {error}"));
+            fs::write(binding.worktree_path.join("leak.txt"), b"nope").unwrap();
+            discard(&id)
+                .await
+                .unwrap_or_else(|error| panic!("discard {id}: {error}"));
+            assert!(
+                !root.path().join("leak.txt").exists(),
+                "discard cycle {i} wrote the source tree"
+            );
+            assert!(
+                !worktree_path_for(root.path(), &id).exists(),
+                "discard cycle {i} left an isolation directory"
+            );
+        }
+        assert_eq!(fs::read(root.path().join("README.md")).unwrap(), source);
+    }
+
     #[tokio::test]
     async fn two_sessions_do_not_share_a_writable_tree() {
         let root = tempfile::tempdir().unwrap();

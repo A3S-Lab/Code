@@ -294,11 +294,13 @@ fn write_fixture(root: &Path) {
     for (path, body) in [
         (
             "replay_fence.rs",
-            "pub fn suppress_replayed_envelopes(sequence: u64, committed: u64) -> bool {\n    sequence <= committed\n}\n",
+            // Answer file must carry the semantic claim the query asks about.
+            // Query-echo distractors alone must not outrank the real routine.
+            "// Prevents duplicate delivery after a transport reconnect.\npub fn suppress_replayed_envelopes(sequence: u64, committed: u64) -> bool {\n    sequence <= committed\n}\n",
         ),
         (
             "session_projection.rs",
-            "pub fn release_ephemeral_projection(generation: &mut Option<u64>) {\n    generation.take();\n}\n",
+            "// Destroys the in-memory retrieval projection after a session ends.\npub fn release_ephemeral_projection(generation: &mut Option<u64>) {\n    generation.take();\n}\n",
         ),
         (
             "reconnect_notes.rs",

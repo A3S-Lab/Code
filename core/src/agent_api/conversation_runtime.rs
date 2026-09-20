@@ -65,6 +65,7 @@ pub(super) async fn send_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
+    reject_oversized_attachments(attachments)?;
     // Admission must precede the attachment message's internal-history clone.
     let _lease = ExecutionCoordinator::admit(session, "send-with-attachments").await?;
 
@@ -83,6 +84,7 @@ pub(super) async fn stream_with_attachments(
     attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+    reject_oversized_attachments(attachments)?;
     let lease = ExecutionCoordinator::admit(session, "stream-with-attachments").await?;
 
     let input = ConversationInput::with_attachments(session, history, prompt, attachments);
@@ -92,6 +94,21 @@ pub(super) async fn stream_with_attachments(
         rx,
         ExecutionCoordinator::supervise_stream(handle, worker_aborts, lease),
     ))
+}
+
+fn reject_oversized_attachments(attachments: &[Attachment]) -> Result<()> {
+    for attachment in attachments {
+        if attachment.data.len() > crate::llm::MAX_ATTACHMENT_BYTES {
+            return Err(CodeError::SessionConfiguration {
+                field: "attachments",
+                message: format!(
+                    "attachment exceeds the {}-byte limit",
+                    crate::llm::MAX_ATTACHMENT_BYTES
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn stream(

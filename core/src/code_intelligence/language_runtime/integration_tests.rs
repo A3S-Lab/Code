@@ -1,13 +1,19 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tokio_util::sync::CancellationToken;
 
 use super::LanguageRuntime;
 use crate::{
     code_intelligence::{
-        diagnostics::DiagnosticsStore, document_store::DocumentStore,
-        integration_test_support::compile_fake_server, language_profile::LanguageServerProfile,
-        project_layout::ProjectLayoutResolver, CodePosition, NavigationKind,
+        diagnostics::DiagnosticsStore,
+        document_store::DocumentStore,
+        integration_test_support::{compile_fake_server, fixture_started_pids},
+        language_profile::LanguageServerProfile,
+        project_layout::ProjectLayoutResolver,
+        CodePosition, NavigationKind,
     },
     workspace::{
         LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifestSnapshot,
@@ -494,6 +500,130 @@ async fn unexpected_process_exit_exposes_state_and_bounded_stderr() {
     assert!(
         message.contains("code 12"),
         "unexpected health message: {message}"
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            let _ = CloseHandle(handle);
+            ok != 0 && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+}
+
+#[tokio::test]
+#[ignore = "S-CI-01 soak: 50 symbol queries, fixture exits on query 30"]
+async fn soak_symbol_queries_fail_closed_after_server_exit() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(workspace.path().join("src")).unwrap();
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname='fixture'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.path().join("src/lib.rs"),
+        "pub fn answer() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    let canonical_root = std::fs::canonicalize(workspace.path()).unwrap();
+    let server_dir = tempfile::tempdir().unwrap();
+    let server = server_dir.path().join(if cfg!(windows) {
+        "code-intelligence-exit-soak-lsp.exe"
+    } else {
+        "code-intelligence-exit-soak-lsp"
+    });
+    compile_fake_server(&server);
+    let snapshot = LocalWorkspaceManifestSnapshot {
+        version: 1,
+        root: canonical_root.clone(),
+        files: vec![manifest_file("Cargo.toml"), manifest_file("src/lib.rs")],
+        scanned_at_ms: 1,
+    };
+    let query_timeout = Duration::from_secs(5);
+    let runtime = LanguageRuntime::start(
+        LanguageServerProfile::rust(&server),
+        canonical_root,
+        ProjectLayoutResolver::resolve(&snapshot),
+        Arc::new(DocumentStore::new(1)),
+        Arc::new(DiagnosticsStore::new(1)),
+        CancellationToken::new(),
+        query_timeout,
+    )
+    .await
+    .unwrap();
+
+    let path = WorkspacePath::from_normalized("src/lib.rs");
+    let saved = "pub fn answer() -> i32 { 42 }\n";
+    for index in 1..=50 {
+        let started = Instant::now();
+        let result = tokio::time::timeout(query_timeout + Duration::from_secs(1), async {
+            if index == 30 {
+                runtime
+                    .search_symbols("terminate-process", 1, CancellationToken::new())
+                    .await
+                    .map(|found| found.items.iter().any(|item| item.name == "answer"))
+            } else {
+                runtime
+                    .document_symbols(&path, saved, CancellationToken::new())
+                    .await
+                    .map(|found| found.items.iter().any(|item| item.name == "answer"))
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("query {index} hung past the tool timeout"));
+        assert!(
+            started.elapsed() <= query_timeout + Duration::from_millis(500),
+            "query {index} exceeded the tool timeout"
+        );
+        if index < 30 {
+            let symbols = result.unwrap_or_else(|error| {
+                panic!("query {index} must succeed before the fixture exits: {error}")
+            });
+            assert!(symbols, "query {index} dropped the saved symbol");
+        } else {
+            let error = result.expect_err("query {index} must fail closed after the fixture exits");
+            let message = error.to_string();
+            assert!(
+                !message.contains("timed out"),
+                "query {index} hung inside the runtime: {message}"
+            );
+        }
+    }
+
+    let log = std::fs::read_to_string(server.with_extension("log")).unwrap();
+    let pids = fixture_started_pids(&log);
+    assert_eq!(
+        pids.len(),
+        1,
+        "the exited language server must not be respawned: {log}"
+    );
+    assert!(
+        !process_alive(pids[0]),
+        "language server pid {} is still alive",
+        pids[0]
     );
     runtime.shutdown().await.unwrap();
 }

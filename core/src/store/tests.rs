@@ -115,7 +115,7 @@ async fn create_test_run_records() -> Vec<RunRecord> {
     runs.records().await
 }
 
-async fn create_test_snapshot() -> SessionSnapshotV1 {
+pub(crate) async fn create_test_snapshot() -> SessionSnapshotV1 {
     let artifacts = ArtifactStore::new();
     artifacts.put(crate::tools::ToolArtifact {
         artifact_id: "tool-output:test:snapshot".to_string(),

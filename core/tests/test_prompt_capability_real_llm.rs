@@ -20,7 +20,7 @@ use a3s_code_core::{
 };
 use support::layer_c_model::load_pinned_layer_c_config;
 
-const MODEL_TIMEOUT: Duration = Duration::from_secs(180);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(300);
 const GP_GUIDELINES: &str = "This is a deterministic capability gate. Use the write tool with canonical arguments to create the requested file. Do not replace the required write with prose.";
 
 async fn real_agent() -> Agent {

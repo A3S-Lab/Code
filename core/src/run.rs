@@ -1703,4 +1703,10 @@ mod tests {
         assert_eq!(unchanged.status, RunStatus::Failed);
         assert_eq!(unchanged.error.as_deref(), Some("provider failed"));
     }
+
+    #[path = "run_cognitive_binding_soak.rs"]
+    mod cognitive_binding_soak;
+
+    #[path = "run_protocol_soak.rs"]
+    mod protocol_soak;
 }

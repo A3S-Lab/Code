@@ -1,8 +1,8 @@
 #![cfg(feature = "research")]
 use a3s_code_core::research::{
-    ResearchEventV1, ResearchProtocolError, ResearchWireEnvelopeV1, ResearchWireKindV1,
-    RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES, RESEARCH_PROTOCOL_SCHEMA_V1, RESEARCH_PROTOCOL_VERSION_V1,
-    RESEARCH_WIRE_KIND_DESCRIPTORS_V1,
+    ResearchArtifactKindV1, ResearchEventV1, ResearchProtocolError, ResearchProvenanceReceiptV1,
+    ResearchWireEnvelopeV1, ResearchWireKindV1, RESEARCH_PROTOCOL_MAX_MESSAGE_BYTES,
+    RESEARCH_PROTOCOL_SCHEMA_V1, RESEARCH_PROTOCOL_VERSION_V1, RESEARCH_WIRE_KIND_DESCRIPTORS_V1,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -47,6 +47,44 @@ fn research_event_round_trips_through_the_strict_envelope() {
         .payload_as(ResearchWireKindV1::ResearchEvent)
         .expect("payload");
     assert_eq!(restored, event);
+}
+
+fn receipt_digest(ch: char) -> String {
+    format!("sha256:{}", ch.to_string().repeat(64))
+}
+
+#[test]
+fn provenance_receipt_round_trips_after_reopen() {
+    let receipt = ResearchProvenanceReceiptV1::new(
+        "project-1",
+        1,
+        "run-1",
+        "artifact-1",
+        ResearchArtifactKindV1::Report,
+        receipt_digest('a'),
+        vec![receipt_digest('b')],
+        receipt_digest('d'),
+        receipt_digest('e'),
+        receipt_digest('f'),
+        "local",
+        None,
+        None,
+        None,
+    )
+    .expect("receipt");
+    let digest = receipt.receipt_digest.clone();
+    let envelope =
+        ResearchWireEnvelopeV1::from_provenance_receipt(receipt.clone()).expect("envelope");
+    let bytes = envelope.to_vec().expect("encode");
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    std::fs::write(file.path(), &bytes).expect("persist");
+    let reopened = std::fs::read(file.path()).expect("read back");
+    let decoded = ResearchWireEnvelopeV1::from_slice(&reopened).expect("decode");
+    let restored: ResearchProvenanceReceiptV1 = decoded
+        .payload_as(ResearchWireKindV1::ResearchProvenanceReceipt)
+        .expect("payload");
+    assert_eq!(restored, receipt);
+    assert_eq!(restored.receipt_digest, digest);
 }
 
 #[test]

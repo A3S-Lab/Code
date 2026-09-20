@@ -11,6 +11,8 @@ pub mod factory;
 pub mod http;
 pub mod openai;
 pub mod structured;
+#[cfg(test)]
+mod structured_repair_soak;
 mod text_tool_calls;
 mod token_estimation;
 mod types;

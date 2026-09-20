@@ -24,3 +24,6 @@ pub use types::{GraphObject, GraphPatch, GraphRelation, ObjectId, PatchOperation
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod graph_soak;

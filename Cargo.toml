@@ -24,3 +24,6 @@ panic = "abort"
 # speed.
 [profile.release.package.a3s-memory]
 opt-level = 3
+
+[patch."https://github.com/A3S-Lab/Sandbox.git"]
+a3s-sandbox = { path = "../sandbox" }

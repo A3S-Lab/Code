@@ -10,6 +10,8 @@ compiles.
 
 For the executable full-feature train order, capability join table, and
 program gaps, see [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md).
+Case oracles for unit, integration, and soak tests are in
+[test-cases/README.md](test-cases/README.md).
 
 The ledger has three jobs:
 

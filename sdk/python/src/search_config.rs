@@ -46,6 +46,7 @@ impl From<PySearchEngineConfig> for RustSearchEngineConfig {
             timeout: config.timeout,
             api_key: None,
             project: None,
+            endpoint: None,
         }
     }
 }

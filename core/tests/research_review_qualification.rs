@@ -437,3 +437,27 @@ async fn gate_mode_research_reviewer_cannot_admit_on_incomplete_evidence() {
         Err(AuxiliaryRunError::EvidenceIncomplete)
     ));
 }
+
+#[tokio::test]
+async fn attaching_a_finding_does_not_approve_the_run() {
+    let fixture = reviewed_run().await;
+    assert_eq!(fixture.run.status, ResearchRunStatusV1::Admitted);
+    let finding = bound_finding(&fixture, "finding-status", "research-reviewer");
+    let finding_digest = finding.finding_digest.clone();
+    let batch = ResearchReviewBatchV1::new_for_run(
+        "batch-status",
+        &fixture.run,
+        &fixture.record,
+        fixture.evidence_digest.clone(),
+        vec![finding],
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.run.status,
+        ResearchRunStatusV1::Admitted,
+        "recording a review finding must not approve the research run"
+    );
+    assert_eq!(batch.findings.len(), 1);
+    assert_eq!(batch.findings[0].finding_digest, finding_digest);
+    assert!(finding_digest.starts_with("sha256:"));
+}

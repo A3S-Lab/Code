@@ -509,4 +509,60 @@ mod tests {
             Err(EvaluationStoreError::Conflict)
         ));
     }
+
+    /// I-EV-01: session close and dropping the evaluation store are separate
+    /// lifecycles. The host-owned result digest survives session close, and
+    /// the session file survives dropping the store.
+    #[tokio::test]
+    async fn session_close_leaves_the_host_evaluation_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let evaluation = root.path().join("evaluation");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&evaluation).unwrap();
+        std::fs::write(workspace.join("session-note.txt"), "SESSION-SURVIVOR-91").unwrap();
+
+        let record = EvaluationRecordV1::new(result(), 1).unwrap();
+        let digest = record.record_digest.clone();
+        let store = crate::evaluation::FileEvaluationResultStore::open(&evaluation)
+            .await
+            .unwrap();
+        store.write(record).await.unwrap();
+        drop(store);
+
+        let config = crate::config::CodeConfig::from_acl(
+            r#"
+default_model = "anthropic/claude-sonnet-4-20250514"
+providers "anthropic" {
+  api_key = "test-key"
+  models "claude-sonnet-4-20250514" { name = "Claude Sonnet 4" }
+}
+"#,
+        )
+        .unwrap();
+        let agent = crate::Agent::from_config(config).await.unwrap();
+        let session = agent
+            .session_async(workspace.display().to_string(), None)
+            .await
+            .unwrap();
+        session.close().await;
+        drop(session);
+        drop(agent);
+
+        let reopened = crate::evaluation::FileEvaluationResultStore::open(&evaluation)
+            .await
+            .unwrap();
+        let stored = reopened
+            .get_checked(&digest)
+            .await
+            .unwrap()
+            .expect("session close must not delete a host-owned evaluation result");
+        assert_eq!(stored.record_digest, digest);
+        drop(reopened);
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("session-note.txt")).unwrap(),
+            "SESSION-SURVIVOR-91"
+        );
+    }
 }

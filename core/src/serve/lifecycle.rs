@@ -471,4 +471,55 @@ providers "anthropic" {
             Some("SERVE_SHUTDOWN_DEADLINE_EXCEEDED")
         );
     }
+
+    #[tokio::test]
+    #[ignore = "S-SV-01 soak: 20 serve start, status, and stop cycles"]
+    async fn soak_twenty_serve_restarts_stay_ready_and_do_not_fire() {
+        const CYCLES: usize = 20;
+        let agent = Arc::new(Agent::from_config(test_agent_config()).await.unwrap());
+        let workspace = tempfile::tempdir().unwrap();
+        let store: Arc<dyn crate::store::SessionStore> =
+            Arc::new(crate::store::MemorySessionStore::new());
+        let extra = crate::agent_api::SessionOptions::new().with_session_store(Arc::clone(&store));
+        let dir = agent_dir_with(vec![ScheduleSpec {
+            name: "yearly".to_string(),
+            cron: "0 0 1 1 *".to_string(),
+            prompt: "SOAK-TICK-PROMPT".to_string(),
+            enabled: true,
+        }]);
+
+        for cycle in 0..CYCLES {
+            let handle = spawn_agent_dir_daemon(
+                Arc::clone(&agent),
+                dir.clone(),
+                workspace.path().to_string_lossy(),
+                Some(extra.clone()),
+            )
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), handle.wait_ready())
+                .await
+                .unwrap_or_else(|_| panic!("cycle {cycle} did not become ready"))
+                .unwrap();
+            assert_eq!(handle.status().phase, ServeDaemonPhase::Ready);
+            let stopped = handle
+                .stop_with_timeout(Duration::from_secs(2))
+                .await
+                .unwrap_or_else(|error| panic!("cycle {cycle} stop failed: {error}"));
+            assert_eq!(stopped.phase, ServeDaemonPhase::Stopped);
+            let again = handle
+                .stop_with_timeout(Duration::from_secs(2))
+                .await
+                .unwrap();
+            assert_eq!(again.phase, ServeDaemonPhase::Stopped);
+        }
+
+        let saved = store.load("schedule:yearly").await.unwrap();
+        if let Some(data) = saved {
+            let rendered = format!("{:?}", data.messages);
+            assert!(
+                !rendered.contains("SOAK-TICK-PROMPT"),
+                "a restart fired the yearly schedule: {rendered}"
+            );
+        }
+    }
 }

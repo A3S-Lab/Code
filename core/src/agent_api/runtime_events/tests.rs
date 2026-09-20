@@ -479,3 +479,62 @@ async fn split_stream_secret_is_sanitized_before_stream_store_and_hooks() {
         serde_json::to_value(&hooked).unwrap()
     );
 }
+
+#[tokio::test]
+async fn terminal_run_clears_active_tools() {
+    let run_store = Arc::new(crate::run::InMemoryRunStore::new());
+    let run = run_store.create_run("session-1", "prompt").await;
+    let active_tools = active_tools();
+    let sink = RuntimeEventSink::new(RuntimeEventSinkConfig {
+        run_store: Arc::clone(&run_store),
+        run_id: run.id.clone(),
+        session_id: "session-1".to_string(),
+        hook_executor: None,
+        security_provider: None,
+        persistence_state: persistence_state(),
+        active_tools: Arc::clone(&active_tools),
+        subagent_tasks: Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new()),
+    });
+
+    sink.observe(&AgentEvent::ToolExecutionStart {
+        id: "tool-1".to_string(),
+        name: "bash".to_string(),
+        args: serde_json::json!({ "command": "true" }),
+    })
+    .await;
+    assert_eq!(active_tools.read().await.len(), 1);
+
+    sink.observe(&AgentEvent::End {
+        text: "done".to_string(),
+        usage: crate::llm::TokenUsage::default(),
+        verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(&[])),
+        meta: None,
+    })
+    .await;
+    let snapshot = run_store.snapshot(&run.id).await.expect("run snapshot");
+    assert!(
+        snapshot.status.is_terminal(),
+        "End must move the run to a terminal status"
+    );
+
+    let cleanup = RunCleanupState {
+        run_id: run.id.clone(),
+        active_tools: Arc::clone(&active_tools),
+        current_run_id: Arc::new(tokio::sync::Mutex::new(Some(run.id.clone()))),
+        cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
+        active_run_control: Arc::new(tokio::sync::Mutex::new(None)),
+        host_env: Arc::new(crate::host_env::HostEnv::default()),
+    };
+    cleanup.finish().await;
+
+    assert!(
+        active_tools.read().await.is_empty(),
+        "a terminal run must not keep an active tool id"
+    );
+    assert!(run_store
+        .snapshot(&run.id)
+        .await
+        .expect("snapshot after cleanup")
+        .status
+        .is_terminal());
+}

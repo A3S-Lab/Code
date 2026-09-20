@@ -327,7 +327,6 @@ async fn default_execution_fails_closed_without_a_sandbox() {
 }
 
 #[tokio::test]
-#[cfg(not(windows))]
 async fn escalated_execution_skips_the_configured_sandbox() {
     let tool = BashTool;
     let called = Arc::new(AtomicBool::new(false));
@@ -364,7 +363,12 @@ async fn escalated_execution_skips_the_configured_sandbox() {
         .unwrap();
 
     assert!(result.success, "{}", result.content);
-    assert_eq!(result.content, "host");
+    assert_eq!(result.content.trim(), "host");
+    assert!(
+        !result.content.contains("wrong boundary"),
+        "escalated command ran inside the sandbox: {}",
+        result.content
+    );
     assert!(!called.load(Ordering::SeqCst));
     assert_eq!(result.metadata.unwrap()["sandboxed"], false);
 }
@@ -513,7 +517,6 @@ async fn test_bash_echo() {
 }
 
 #[tokio::test]
-#[cfg(not(windows))]
 async fn test_bash_tiny_timeout_is_clamped() {
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
@@ -572,16 +575,58 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
 }
 
 #[tokio::test]
-#[cfg(not(windows))]
+#[cfg(windows)]
+async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf());
+    let started = temp.path().join("started");
+    let child_started = temp.path().join("child-started");
+    let leaked = temp.path().join("leaked");
+    let started_literal = started.to_string_lossy().replace('\'', "''");
+    let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
+    let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
+    let powershell = a3s_sandbox::windows_host_powershell(temp.path()).expect("PowerShell 7");
+    let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
+    let command = format!(
+        "Set-Content -LiteralPath '{started_literal}' -Value started; \
+         $child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
+         -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 1; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+         Wait-Process -Id $child.Id"
+    );
+
+    let execution = tokio::spawn(async move { tool.execute(&escalated_args(command), &ctx).await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while !child_started.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("descendant should start before cancellation");
+
+    execution.abort();
+    let _ = execution.await;
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+
+    assert!(
+        !leaked.exists(),
+        "a cancelled bash execution must not continue later shell side effects"
+    );
+}
+
+#[tokio::test]
 async fn test_bash_bounds_long_single_line_and_reports_exact_capture_metadata() {
     let tool = BashTool;
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
+    #[cfg(windows)]
+    let command = "[Console]::Out.Write(('x' * 120000))";
+    #[cfg(not(windows))]
+    let command = "printf '%*s' 120000 '' | tr ' ' x";
 
-    let result = tool
-        .execute(&escalated_args("printf '%*s' 120000 '' | tr ' ' x"), &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(&escalated_args(command), &ctx).await.unwrap();
 
     assert!(result.success, "{}", result.content);
     assert!(result.content.contains("command output truncated"));
@@ -637,6 +682,114 @@ async fn missing_powershell_fails_closed_without_cmd_fallback() {
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     assert!(error.to_string().contains("refusing to reinterpret"));
     assert!(!marker.exists());
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn host_shell_starts_after_native_sandbox_write() {
+    let workspace = tempfile::tempdir().unwrap();
+    let sandbox = crate::sandbox::native::NativeBashSandbox::new(workspace.path()).unwrap();
+    let output = sandbox
+        .exec_command(
+            "[IO.File]::WriteAllText((Join-Path (Get-Location) 'after-sandbox.txt'), 'ok')",
+            "/workspace",
+        )
+        .await
+        .expect("sandboxed write");
+    assert_eq!(
+        output.exit_code, 0,
+        "stdout={} stderr={}",
+        output.stdout, output.stderr
+    );
+    assert!(workspace.path().join("after-sandbox.txt").is_file());
+
+    let mut child = super::spawn_shell("Write-Output host-ok", workspace.path(), None)
+        .expect("host PowerShell 7 must start after a sandboxed write");
+    let status = child.wait().await.expect("host powershell wait");
+    assert!(status.success(), "host powershell exit={status}");
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn windows_native_sandbox_runs_path_node() {
+    let node_on_path = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("node.exe").is_file()));
+    if !node_on_path {
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("probe.mjs"), "process.exit(0)\n").unwrap();
+    let sandbox = crate::sandbox::native::NativeBashSandbox::new(workspace.path()).unwrap();
+    let output = sandbox
+        .exec_command("node probe.mjs", "/workspace")
+        .await
+        .expect("sandboxed node");
+    assert_eq!(
+        output.exit_code, 0,
+        "stdout={} stderr={}",
+        output.stdout, output.stderr
+    );
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn windows_host_shell_test_and_grep_use_posix_exit_codes() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("verify-me.txt"), "verified\n").unwrap();
+    std::fs::create_dir(workspace.path().join("nested")).unwrap();
+
+    async fn exit_code(workspace: &std::path::Path, command: &str) -> (i32, String) {
+        let child = super::spawn_shell(command, workspace, None)
+            .unwrap_or_else(|error| panic!("spawn {command}: {error}"));
+        let output = child.wait_with_output().await.expect("wait");
+        let detail = format!(
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (output.status.code().unwrap_or(1), detail)
+    }
+
+    let (code, detail) = exit_code(workspace.path(), "test -f verify-me.txt").await;
+    assert_eq!(code, 0, "{detail}");
+    let (code, detail) = exit_code(workspace.path(), "test -f missing.txt").await;
+    assert_eq!(code, 1, "{detail}");
+    let (code, detail) = exit_code(workspace.path(), "test -d nested").await;
+    assert_eq!(code, 0, "{detail}");
+    let (code, detail) = exit_code(workspace.path(), "grep -q '^verified$' verify-me.txt").await;
+    assert_eq!(code, 0, "{detail}");
+    let (code, detail) = exit_code(workspace.path(), "grep -q '^absent$' verify-me.txt").await;
+    assert_eq!(code, 1, "{detail}");
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn windows_host_shell_long_command_keeps_its_exit_code() {
+    let mut padding = 8_000usize;
+    let command = loop {
+        let candidate = format!("{}\nexit 3", "#".repeat(padding));
+        let wrapped = super::build_powershell_command(&candidate);
+        let encoded = super::encode_powershell_command(&wrapped);
+        if encoded.len() + 256 > 30_000 {
+            break candidate;
+        }
+        padding += 4_000;
+        assert!(
+            padding <= 80_000,
+            "command did not exceed the Windows limit"
+        );
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let child = super::spawn_shell(&command, workspace.path(), None)
+        .unwrap_or_else(|error| panic!("long host command failed to spawn: {error}"));
+    let output = child.wait_with_output().await.expect("wait");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test]
@@ -1339,7 +1492,6 @@ async fn unsupported_job_action_requires_bound_shell_session() {
 }
 
 #[tokio::test]
-#[cfg(not(windows))]
 async fn poll_and_kill_job_actions_work_for_detached_jobs() {
     let root = tempfile::tempdir().unwrap();
     let session = format!("bash-poll-kill-{}", std::process::id());
@@ -1436,3 +1588,6 @@ async fn missing_command_parameter_returns_tool_error() {
     assert!(!result.success);
     assert!(result.content.contains("command parameter is required"));
 }
+
+#[path = "sandbox_soak.rs"]
+mod sandbox_soak;
