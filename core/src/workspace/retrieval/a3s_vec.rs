@@ -60,6 +60,7 @@ fn bootstrap_a3s_vec_engine() -> Result<(), String> {
 }
 
 /// Force search to open collections transiently (no process-wide cache slot).
+#[cfg(test)]
 pub(crate) fn force_transient_collection_open_for_test(force: bool) {
     TEST_FORCE_TRANSIENT_OPEN.store(force, Ordering::SeqCst);
 }

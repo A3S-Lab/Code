@@ -584,3 +584,47 @@ fn test_from_config_defers_default_model_validation_to_session() {
 
     assert!(error.to_string().contains("default_model"), "{error:#}");
 }
+
+#[test]
+fn host_skill_replaces_a_same_name_directory_skill() {
+    use crate::skills::{Skill, SkillKind};
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp_dir.path().join("review.md"),
+        r#"---
+name: review
+description: directory copy
+kind: instruction
+---
+directory body
+"#,
+    )
+    .unwrap();
+
+    let host = Arc::new(Skill {
+        name: "review".to_string(),
+        description: "host".to_string(),
+        allowed_tools: None,
+        disable_model_invocation: false,
+        kind: SkillKind::Instruction,
+        content: "host body".to_string(),
+        tags: vec![],
+        version: None,
+    });
+    let opts = SessionOptions::new()
+        .with_skill_dirs([temp_dir.path()])
+        .with_host_skill(Arc::clone(&host));
+    let registry = build_effective_registry_for_test(None, &opts);
+    assert_eq!(registry.get("review").unwrap().content, "host body");
+
+    let mut shadow = (*host).clone();
+    shadow.content = "shadow".to_string();
+    match registry.snapshot_with_external_skills([Arc::new(shadow)]) {
+        Err(error) => assert!(
+            error.to_string().contains("review"),
+            "conflict should name the host skill, got {error}"
+        ),
+        Ok(_) => panic!("host skill name must not be shadowed"),
+    }
+}

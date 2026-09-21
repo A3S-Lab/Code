@@ -296,6 +296,10 @@ pub(super) fn build_effective_skill_registry(
         }
     }
 
+    for skill in &opts.host_skills {
+        base_registry.register_host(Arc::clone(skill));
+    }
+
     Arc::new(base_registry)
 }
 

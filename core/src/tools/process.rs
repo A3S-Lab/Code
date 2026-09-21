@@ -213,7 +213,7 @@ impl ProcessGroupGuard {
     pub(crate) fn for_child(child: &Child) -> Self {
         #[cfg(unix)]
         {
-            return Self::for_process_id(child.id());
+            Self::for_process_id(child.id())
         }
         #[cfg(windows)]
         {
@@ -227,9 +227,9 @@ impl ProcessGroupGuard {
     pub(crate) fn for_process_id(process_id: Option<u32>) -> Self {
         #[cfg(unix)]
         {
-            return Self {
+            Self {
                 process_group: process_id.and_then(|id| i32::try_from(id).ok()),
-            };
+            }
         }
         #[cfg(windows)]
         {

@@ -109,6 +109,7 @@ fn prepare_windows_command(
 }
 
 /// Windows `CreateProcess` rejects command lines longer than 32767 characters.
+#[cfg(windows)]
 const MAX_POWERSHELL_COMMAND_CHARS: usize = 30_000;
 
 #[cfg(windows)]

@@ -43,6 +43,7 @@ impl std::fmt::Debug for SessionOptions {
                     .as_ref()
                     .map(|r| format!("{} skills", r.len())),
             )
+            .field("host_skills", &self.host_skills.len())
             .field(
                 "enforce_active_skill_tool_restrictions",
                 &self.enforce_active_skill_tool_restrictions,
@@ -283,6 +284,14 @@ impl SessionOptions {
     /// Add a custom skill registry
     pub fn with_skill_registry(mut self, registry: Arc<crate::skills::SkillRegistry>) -> Self {
         self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Register one host-owned skill after skill directories.
+    ///
+    /// Same-name directory skills do not replace it.
+    pub fn with_host_skill(mut self, skill: Arc<crate::skills::Skill>) -> Self {
+        self.host_skills.push(skill);
         self
     }
 

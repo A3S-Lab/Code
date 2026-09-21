@@ -269,7 +269,7 @@ fn spawn(session_id: &str, admitted: &AdmittedCommand) -> Result<Child> {
             Ok(())
         });
     }
-    let mut child = command.spawn().map_err(|error| {
+    let child = command.spawn().map_err(|error| {
         anyhow!("failed to spawn detached shell for session {session_id}: {error}")
     })?;
     #[cfg(windows)]

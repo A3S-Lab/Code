@@ -251,6 +251,11 @@ pub struct SessionOptions {
     pub command_env: Option<HashMap<String, String>>,
     /// Optional skill registry for instruction injection
     pub skill_registry: Option<Arc<crate::skills::SkillRegistry>>,
+    /// Host-owned skills registered after skill directories.
+    ///
+    /// A directory skill with the same name does not replace these. They stay
+    /// protected from later external projection, the same way built-ins are.
+    pub host_skills: Vec<Arc<crate::skills::Skill>>,
     /// Whether active skill `allowed-tools` restrict ordinary session tool calls.
     ///
     /// Defaults to false so ordinary tools continue through permission policy,

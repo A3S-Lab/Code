@@ -440,7 +440,7 @@ impl AgentLoop {
         // provider timeout), classify as an execution timeout even if the timer
         // fires a millisecond early (elapsed_ms < limit).
         let bounded_by_run_deadline = run_timeout
-            .is_some_and(|run| provider_timeout.map_or(true, |provider| run <= provider));
+            .is_some_and(|run| provider_timeout.is_none_or(|provider| run <= provider));
 
         if timeout.is_zero() {
             attempt_cancel.cancel();

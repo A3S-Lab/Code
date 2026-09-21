@@ -158,7 +158,7 @@ fn parse_optional_endpoint(
         return Ok(None);
     };
     url::Url::parse(endpoint).map(Some).map_err(|_| {
-        SearchError::Other(format!("{provider} endpoint is not a valid URL: {endpoint}").into())
+        SearchError::Other(format!("{provider} endpoint is not a valid URL: {endpoint}"))
     })
 }
 

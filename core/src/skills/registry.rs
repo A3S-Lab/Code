@@ -193,6 +193,11 @@ impl SkillRegistry {
         self.builtin_names.write().unwrap().insert(name);
     }
 
+    /// Register a host-owned skill and protect the name from later replacement.
+    pub fn register_host(&self, skill: Arc<Skill>) {
+        self.register_builtin(skill);
+    }
+
     /// Get a skill by name
     pub fn get(&self, name: &str) -> Option<Arc<Skill>> {
         let skills = self.skills.read().unwrap();

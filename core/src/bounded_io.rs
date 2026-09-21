@@ -3,6 +3,7 @@
 use std::io::{self, Read};
 use std::path::Path;
 
+#[allow(dead_code)] // retained for agent-directory read budgets
 pub(crate) const MAX_AGENT_DIRECTORY_FILE_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_CONFIG_FILE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_AUTH_FILE_BYTES: usize = 1024 * 1024;

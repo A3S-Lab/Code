@@ -1126,6 +1126,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn review_skill_invocation_returns_fences_instead_of_not_found() {
+        let hermetic_root = crate::test_support::hermetic_workspace();
+        use crate::prompts::PlanningMode;
+
+        let registry = Arc::new(SkillRegistry::new());
+        registry.register_host(Arc::new(Skill {
+            name: "review".to_string(),
+            description: "Single-document review".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "Emit fences for the injected batch only.".to_string(),
+            tags: vec![],
+            version: None,
+        }));
+
+        let fence = "```a3s-review-finding\n{\"id\":\"f1\",\"title\":\"核对\",\"evidenceQuote\":\"交付前必须核对证据\",\"summary\":\"缺少核对\",\"guidance\":\"写明核对人\"}\n```";
+        let llm = Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+            fence,
+        )]));
+        let executor = Arc::new(ToolExecutor::new(hermetic_root.display().to_string()));
+        let config = AgentConfig {
+            planning_mode: PlanningMode::Disabled,
+            continuation_enabled: false,
+            ..Default::default()
+        };
+        let tool = SkillTool::new(registry, llm, executor, config);
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "skill_name": "review",
+                    "prompt": "审查本批注入正文"
+                }),
+                &ToolContext::new(hermetic_root.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("a3s-review-finding"));
+        assert!(!result.content.contains("not found"));
+    }
+
+    #[tokio::test]
     async fn skill_workspace_write_is_a_parent_mutation() {
         use crate::prompts::PlanningMode;
 
