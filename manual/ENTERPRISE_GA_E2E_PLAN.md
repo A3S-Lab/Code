@@ -139,11 +139,11 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | L6 performance.yml on `9b28f066` | **PASS** — run [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682), nine `passed: true` JSON reports; digest in [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
 | L6 hermetic-integrations on `515a50b0` | **PASS** — run [`35642286881`](https://github.com/A3S-Lab/Code/actions/runs/35642286881); S3/CDP/OTLP `passed: true`; digest in PERFORMANCE_QUALIFICATION |
 | Standalone patch strip + relock | **Landed** on `9b28f066` |
-| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 / DM-PROD1 In progress; CAR checklist empty ([HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md)). No product waiver recorded. |
+| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| Enterprise GA | **Not achieved** — L6 digests are current; L7 Harbor/CAR receipts or a written product waiver remain open |
+| Enterprise GA | **Not achieved** — tip CI + L6 digests must be current on the candidate commit; L7 Harbor/CAR receipts or a written product waiver remain open |
 
 ## 6. Closure checklist
 
