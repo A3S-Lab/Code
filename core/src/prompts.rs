@@ -404,8 +404,17 @@ impl AgentStyle {
     /// classification outside the main pre-analysis path.
     ///
     /// Uses a lightweight classification prompt that returns a single word.
+    ///
+    /// The primary writable session does not call this helper and does not
+    /// change style from it. A typed decision must not replace it: the
+    /// classifier prompt is a keyword list, and this call is not a generation
+    /// the session spends.
     pub async fn detect_with_llm(llm: &dyn LlmClient, message: &str) -> anyhow::Result<Self> {
         use crate::llm::Message;
+
+        if message.trim().is_empty() {
+            return Ok(Self::GeneralPurpose);
+        }
 
         let system = INTENT_CLASSIFY_SYSTEM;
         let messages = vec![Message::user(message)];
@@ -415,17 +424,22 @@ impl AgentStyle {
             .await
             .context("LLM intent classification failed")?;
 
-        let text = response.text().trim().to_lowercase();
+        Ok(Self::style_from_classifier_text(&response.text()))
+    }
 
-        let style = match text.as_str() {
-            "plan" => AgentStyle::Plan,
-            "explore" => AgentStyle::Explore,
-            "verification" => AgentStyle::Verification,
-            "codereview" | "code review" => AgentStyle::CodeReview,
-            _ => AgentStyle::GeneralPurpose,
-        };
-
-        Ok(style)
+    /// Map a classifier reply to a style.
+    ///
+    /// The whole trimmed reply must be one known label. Surrounding prose
+    /// stays `GeneralPurpose` and is not parsed into a typed answer.
+    fn style_from_classifier_text(text: &str) -> Self {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "plan" => Self::Plan,
+            "explore" => Self::Explore,
+            "verification" => Self::Verification,
+            "codereview" | "code review" => Self::CodeReview,
+            "generalpurpose" => Self::GeneralPurpose,
+            _ => Self::GeneralPurpose,
+        }
     }
 }
 

@@ -64,6 +64,7 @@ IDs as requiring an explicit Cargo profile (`advanced-harness`,
 | `agent_release_contract` | advanced | always compiled helpers | Release admission/verification through host runtime | Artifact publication and provenance |
 | `agent_protocol` | advanced | always compiled helpers | Versioned harness/bridge event and recovery operations | Service transport owner |
 | `evaluation_substrate` | advanced | `advanced-harness` | Bounded evidence / auxiliary / dispatch / result wire | Evaluation host policy |
+| `typed_decisions` | advanced | `apofasi` (+ optional `apofasi-infer` / `apofasi-metal`) | Host-called `TypedDecisionService` / receipts (not Use-projected) | Call sites, GatePolicy thresholds, neural checkpoints |
 | `moli_runtime` | advanced | `headless-search` | Default Moli provisioning via web search; packaged/cache diagnostics | Shared cache and executable ownership |
 | `s3_workspace` | advanced | `s3` (also profile `server`) | Typed S3 workspace provider options | Object-store credentials and endpoint |
 | `opentelemetry` | advanced | `telemetry` (also profile `server`) | Core telemetry configuration and trace inspection | Collector endpoint and export policy |

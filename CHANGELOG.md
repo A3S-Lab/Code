@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional typed System-1 decisions via A3S Apofasi: Cargo features `apofasi`
+  (lexical + script router), `apofasi-infer` (Candle checkpoints), and
+  `apofasi-metal` (Apple Silicon Metal). Host API:
+  `TypedDecisionEngine` / `TypedDecisionService` / `decide_and_gate` /
+  `TypedDecisionReceiptV1` / `GatePolicy`, plus Advanced inventory id
+  `typed_decisions` and `CodeError::TypedDecision`. Empty requests fail closed.
+  Not enabled by `local-code`, `scientific`, or `full` — hosts must opt in.
+  Does not add a Use-projected capability kind. When `apofasi` is enabled,
+  Code refuses to replace planning pre-analysis, because that generation also
+  returns intent, a goal, a plan, and optimized input. Goal achievement
+  returns `achieved`, `progress`, and `remaining_criteria`. Both call sites
+  refuse to skip the generation. Code does not add a keyword classifier and
+  does not lower `GatePolicy`. At the default gate, Auto makes zero
+  generations and Escalate makes one; the escalate prompt includes the task
+  state. Model text stays evidence. The system prompt is unchanged. Other
+  call sites stay host-owned.
+- Typed-decision end-to-end coverage: hermetic host composition
+  (`compose_host_decision`) proves default-gate Auto with an engine above
+  `0.7` makes zero generations, and the lexical refund request at that same
+  gate makes one. Model text stays evidence and the escalate prompt includes
+  the task state. Ignored Layer C tests pin
+  `boyue/bailian/deepseek-v4-flash` to declared
+  `boyue/bailian/deepseek-v4.1-flash` and reject the `bailina` typo.
+
 ## [8.7.0] - 2026-09-21
 
 ### Removed
@@ -26,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Full-feature test evidence handoff: `manual/CAPABILITY_INTEGRATED_USE_LEDGER.md`
-  (29 `sdk_capabilities()` ids effective / efficient / integrated), plus plan
+  (30 `sdk_capabilities()` ids effective / efficient / integrated), plus plan
   §13/§14 status for bailian Flash Layer C and remaining L2/L6/L7/L8 release
   gates.
 - Documentation site current line is now `docs/v8.7.0` (archives the prior

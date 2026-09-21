@@ -168,6 +168,9 @@ pub(crate) mod tool_confirmation;
 pub mod tools;
 pub mod trace;
 pub mod transcript;
+#[cfg(feature = "apofasi")]
+pub mod typed_decision;
+mod typed_decision_absence;
 pub mod use_runtime_tasks;
 pub mod verification;
 pub mod workspace;
@@ -430,6 +433,20 @@ pub use tools::{
     TOOL_PRESENTATION_PROFILE_V1_SCHEMA, TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
 pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind, ToolResultTrustV1};
+#[cfg(feature = "apofasi")]
+pub use typed_decision::TokenUsage as ApofasiTokenUsage;
+#[cfg(feature = "apofasi")]
+pub use typed_decision::{
+    admit_goal_achievement, admit_planning_pre_analysis, analyse, build_typed_decision_receipt,
+    compose_host_decision, enforce_ineligible, gate_answer, gate_system_one_response,
+    load_neural_engine, parse_host_evidence, validate_system_one_request, Answer, CheckpointId,
+    Criteria, DecisionKind, Detection, Escalation, GateAction, GatePolicy, GatedAnswer,
+    GatedDecision, GenerationAdmission, HostDecisionEvidence, HostEvidenceError, NeuralDevice,
+    NeuralEngineHandle, Question, RouteDecision, State, SystemOneRequest, SystemOneResponse,
+    TemperatureTable, TypedDecisionComposition, TypedDecisionEngine, TypedDecisionError,
+    TypedDecisionReceiptV1, TypedDecisionResult, TypedDecisionService, APOFASI_VERSION,
+    TYPED_DECISION_RECEIPT_SCHEMA_V1,
+};
 pub use use_runtime_tasks::{
     UsePlanScope, UsePlanScopeKind, UseProjectedLifecycleIdentity, UseRuntimeTaskDispatcher,
     UseRuntimeTaskError, UseRuntimeTaskExecutionV1, UseRuntimeTaskProjectionAdapter,

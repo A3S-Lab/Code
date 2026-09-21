@@ -720,3 +720,15 @@ fn test_prompts_do_not_reference_removed_surfaces() {
     assert!(!SYSTEM_DEFAULT.contains("parallel_task"));
     assert!(!PRE_ANALYSIS_SYSTEM.contains("parallel_task"));
 }
+
+#[test]
+fn classifier_prose_is_not_a_typed_label() {
+    assert_eq!(
+        AgentStyle::style_from_classifier_text("Explore"),
+        AgentStyle::Explore
+    );
+    assert_eq!(
+        AgentStyle::style_from_classifier_text("I would explore the surrounding files"),
+        AgentStyle::GeneralPurpose
+    );
+}

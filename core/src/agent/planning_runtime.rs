@@ -318,6 +318,8 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<bool> {
+        #[cfg(feature = "apofasi")]
+        crate::typed_decision::enforce_ineligible(crate::typed_decision::admit_goal_achievement())?;
         let operation =
             self.begin_capability_operation(0, cancel_token, "goal achievement orchestration")?;
         let llm_client =

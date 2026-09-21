@@ -40,6 +40,16 @@ name = "test_extensibility_real_llm"
 path = "tests/test_extensibility_real_llm.rs"
 required-features = ["advanced-harness"]
 
+[[test]]
+name = "typed_decision_layer_c"
+path = "tests/typed_decision_layer_c.rs"
+required-features = ["apofasi"]
+
+[[test]]
+name = "typed_decision_perf"
+path = "tests/typed_decision_perf.rs"
+required-features = ["apofasi"]
+
 [dependencies]
 # Internal crates
 a3s-common = "0.1.1"
@@ -52,6 +62,9 @@ a3s-search = { version = "=3.1.4", git = "https://github.com/A3S-Lab/Search.git"
 # Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }
 a3s-sandbox = { version = "=0.1.4", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "c9b8dfbef2b3133b44c333820ac6e80453552566" }
+# Typed System-1 decisions (Apofasi). Optional so thin coding builds stay
+# ML-free; lexical/router path only unless `apofasi-infer` is enabled.
+a3s-apofasi = { version = "=0.1.1", git = "https://github.com/A3S-Lab/Apofasi.git", rev = "0bc3961d3183f9d2692c0406967765866bc914d6", default-features = false, features = ["router"], optional = true }
 # Pure-Rust a3s-vec FTS engine for the workspace lexical index. Optional so
 # minimal builds keep the portable BM25 scorer without pulling the engine.
 a3s-vec = { version = "=0.1.4", optional = true }
@@ -235,6 +248,15 @@ s3 = [
     "dep:aws-smithy-types",
     "dep:aws-smithy-runtime-api",
 ]
+# Typed System-1 decisions via A3S Apofasi (lexical + script router).
+# Not part of `local-code` / `scientific` / `full` — hosts opt in explicitly.
+# Call sites, GatePolicy thresholds, and product routing stay host-owned.
+apofasi = ["dep:a3s-apofasi"]
+# Neural checkpoint path (Candle). Requires bundled weights; keeps ML off
+# the default Apofasi surface.
+apofasi-infer = ["apofasi", "a3s-apofasi/infer"]
+# Apple Silicon Metal for Apofasi neural forwards.
+apofasi-metal = ["apofasi-infer", "a3s-apofasi/metal"]
 
 [dev-dependencies]
 # Deterministically advance the exponential stream-retry backoff in async tests.

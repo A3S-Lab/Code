@@ -88,6 +88,10 @@ jobs:
             echo "local-code Core must not compile the browser/CDP dependency stack" >&2
             exit 1
           fi
+          if grep -q 'a3s-apofasi' <<<"$local_code_tree"; then
+            echo "local-code Core must not link a3s-apofasi" >&2
+            exit 1
+          fi
           headless_tree="$(cargo tree -p a3s-code-core --no-default-features --features headless-search -e normal)"
           grep -q 'chromiumoxide' <<<"$headless_tree"
 
@@ -97,6 +101,7 @@ jobs:
         run: |
           cargo check -p a3s-code-core --no-default-features --features local-code
           cargo test -p a3s-code-core --no-default-features --features local-code --lib
+          cargo test -p a3s-code-core --no-default-features --features apofasi --lib typed_decision
 
       - name: Clippy
         # --all-features: thin default leaves Advanced-only APIs unused otherwise.

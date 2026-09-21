@@ -50,6 +50,12 @@ Run the full serial matrix with `just layer-c-live-e2e` (defaults to
 `A3S_TEST_MODEL=boyue/bailian/deepseek-v4-flash` (remaps to declared
 `boyue/bailian/deepseek-v4.1-flash` via `support/layer_c_model.rs`). See
 [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md) §2.
+Typed System-1 decisions are a separate composition. Hermetic coverage uses the
+default `0.7` gate: a confident fixture makes zero generations, and lexical
+Apofasi on the refund request makes one. The pinned Flash model is only that
+host escalate path. An ignored neural test repeats Auto on the published
+checkpoint without lowering the gate. Contract:
+[TYPED_DECISION_E2E_PLAN.md](TYPED_DECISION_E2E_PLAN.md).
 
 ## Layer D — External qualification (not substituted by A–C)
 

@@ -19,14 +19,14 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 
 | Root | Path / fact |
 | --- | --- |
-| Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (3632 passed; SDK alignment 29 caps) |
+| Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (historical 29-cap snapshot); `typed_decisions` added via Core inventory + unit evidence below |
 | Layer C | `/tmp/a3s-layer-c-bailian-flash-combined/FINAL.txt` `LAYER_C_PASS` (22/22 final after fail-recovery) |
 | Efficiency | `/tmp/a3s-goal-integ-use/efficiency.log` (THIN_OK, Active-only, hide-disabled, golden inventory) |
 | Advanced hermetics | `/tmp/a3s-goal-integ-use/advanced-integ.log` + `cap-targeted.log` |
-| SDK discovery | Node / Python / Go each expose 29 ids; schema `a3s-code/sdk-capabilities/v2` |
+| SDK discovery | Node / Python / Go project `sdk_capabilities()`; Core inventory now has 30 ids including `typed_decisions` (schema `a3s-code/sdk-capabilities/v2`) |
 | L3 hermetics | `/tmp/a3s-l3-hermetic/FINAL.txt` EXIT:0 |
 
-## Per-capability matrix (29)
+## Per-capability matrix (30)
 
 | Capability | Tier | Effective | Efficient | Integrated use | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -56,6 +56,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | `agent_release_contract` | advanced | agent_release_manifest | admission bounds | advanced-integ PASS | PASS |
 | `agent_protocol` | advanced | agent_protocol hermetic | event page bounds | `test_agent_protocol_live_e2e` PASS | PASS |
 | `evaluation_substrate` | advanced | evaluation_* hermetic | host eval policy external | advanced-integ PASS | PASS |
+| `typed_decisions` | advanced | `typed_decision` unit (feature `apofasi`) | fail-closed empty; feature opt-in | Code substrate CI; host product routing external | PASS |
 | `moli_runtime` | advanced | `test_web_search_headless` | `headless-search` feature | L3 hermetic PASS | PASS |
 | `s3_workspace` | advanced | S3 unit + ignored live green | `s3` feature; profile `server` ≠ serve | advanced-integ PASS | PASS |
 | `opentelemetry` | advanced | telemetry unit + ignored green | `telemetry` feature | advanced-integ PASS | PASS |
@@ -74,7 +75,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 
 ## Verdict
 
-All **29** product capabilities have current-state evidence of effective
+All **30** product capabilities have current-state evidence of effective
 kernels, efficiency/absence constraints, and integrated or host-boundary use.
 Layer C under bailian Flash is green. This closes the Core full-feature
 hermetic + L5 + integrated-use bar. It does **not** by itself authorize a

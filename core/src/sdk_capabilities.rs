@@ -363,6 +363,19 @@ const CAPABILITY_SPECS: &[CapabilitySpec] = &[
         tier: CapabilityTier::Advanced,
     },
     CapabilitySpec {
+        id: "typed_decisions",
+        category: "decision",
+        description: "In-process typed System-1 decisions via Apofasi (`choice` / `score` / `noul`) with host GatePolicy auto/escalate and digest-bound receipts. Requires Cargo feature `apofasi` (optional `apofasi-infer` / `apofasi-metal`). When enabled, Code refuses to replace planning pre-analysis and goal achievement: each returns more than one typed answer, and the call site refuses to skip the generation. Code does not add a keyword classifier and does not lower GatePolicy. The escalate prompt includes the task state. Not injected into the system prompt, not a generative model path, and not a Use-projected capability kind.",
+        operations: &[
+            "typed_decision.decide",
+            "typed_decision.decide_and_gate",
+            "typed_decision.receipt_v1",
+            "typed_decision.route",
+        ],
+        host_owned: true,
+        tier: CapabilityTier::Advanced,
+    },
+    CapabilitySpec {
         id: "moli_runtime",
         category: "web",
         description: "Use a verified packaged or shared-cache Moli runtime with cross-process installation locking.",
@@ -470,6 +483,7 @@ mod tests {
         }
         let required_advanced = [
             "evaluation_substrate",
+            "typed_decisions",
             "state_graph",
             "programmable_workflows",
             "s3_workspace",

@@ -31,5 +31,8 @@ opt-level = 3
 [patch."https://github.com/A3S-Lab/Sandbox.git"]
 a3s-sandbox = { path = "../sandbox" }
 
+[patch."https://github.com/A3S-Lab/Apofasi.git"]
+a3s-apofasi = { path = "../apofasi" }
+
 [patch.crates-io]
 a3s-vec = { path = "../vec" }

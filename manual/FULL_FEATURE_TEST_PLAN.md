@@ -136,6 +136,8 @@ Rules:
 - Model-switch live tests must keep both Flash peers declared in ACL.
 - Do not add a third “goal model” without updating `layer_c_model.rs` and this
   table in the same change.
+- Typed System-1 E2E uses this same pin but must not treat DeepSeek as the
+  decision engine. See [TYPED_DECISION_E2E_PLAN.md](TYPED_DECISION_E2E_PLAN.md).
 
 ---
 
@@ -183,6 +185,7 @@ node -e 'const c=require("@a3s-lab/code"); console.log(c.sdkCapabilities().map(x
 | `agent_release_contract` | always compiled | `agent_release_manifest` | release workflow |
 | `agent_protocol` | always compiled | agent_protocol_* | `test_agent_protocol_live_e2e` |
 | `evaluation_substrate` | `advanced-harness` | evaluation_* | host eval policy |
+| `typed_decisions` | `apofasi` (not in `local-code`) | `typed_decision` lib tests | [TYPED_DECISION_E2E_PLAN.md](TYPED_DECISION_E2E_PLAN.md) TD-C..TD-E |
 | `moli_runtime` | `headless-search` | `test_web_search_headless` | soak / packaging |
 | `s3_workspace` | `s3` (also via profile `server`) | `test_s3_backend` | hermetic-integrations |
 | `opentelemetry` | `telemetry` (also via profile `server`) | OTEL unit + collector-down | hermetic collector gate |
@@ -428,7 +431,7 @@ Authoritative counts used while writing this plan (working tree):
 
 | Surface | Count / fact |
 | --- | --- |
-| `sdk_capabilities()` baseline+advanced | 29 ids in `CAPABILITY_SPECS` |
+| `sdk_capabilities()` baseline+advanced | 30 ids in `CAPABILITY_SPECS` |
 | `core/tests/*.rs` | 106 integration/live/soak entrypoints |
 | Case catalog `### U-/I-/S-*` | runtime 32 + execution 44 + model 34 + retrieval 12 + advanced 45 + soak 33 = **200** |
 | Layer C default suites | 21 + optional extensibility |
