@@ -713,16 +713,23 @@ async fn host_shell_starts_after_native_sandbox_write() {
 #[tokio::test]
 #[cfg(windows)]
 async fn windows_native_sandbox_runs_path_node() {
-    let node_on_path = std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("node.exe").is_file()));
-    if !node_on_path {
+    let node = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find_map(|dir| {
+            let candidate = dir.join("node.exe");
+            candidate.is_file().then_some(candidate)
+        })
+    });
+    let Some(node) = node else {
         return;
-    }
+    };
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("probe.mjs"), "process.exit(0)\n").unwrap();
     let sandbox = crate::sandbox::native::NativeBashSandbox::new(workspace.path()).unwrap();
+    // Resolve the absolute host binary: AppContainer PATH may not include the
+    // runner's Node install even when the outer process sees node.exe on PATH.
+    let node_literal = node.to_string_lossy().replace('\'', "''");
     let output = sandbox
-        .exec_command("node probe.mjs", "/workspace")
+        .exec_command(&format!("& '{node_literal}' probe.mjs"), "/workspace")
         .await
         .expect("sandboxed node");
     assert_eq!(
