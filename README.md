@@ -24,7 +24,7 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
-  <a href="#whats-new-in-86">v8.6</a> ·
+  <a href="#whats-new-in-87">v8.7</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
   <a href="#configure-the-runtime">Configure</a> ·
@@ -308,12 +308,12 @@ background service share the same execution semantics without sharing a UI.
 `default-features = false` and `features = ["local-code"]` (a3s-vec FTS).
 That profile is the coding-agent harness: agent loop, workspace tools, policy,
 events, and lexical retrieval — without Advanced evaluation/research/workflows,
-S3/serve, or browser search.
+S3, or browser search.
 
 The Core crate's library `default` is the thin coding harness (`local-code`:
 a3s-vec FTS). Enable `advanced-harness`, `headless-search`, `server`,
 `scientific`, or `full` explicitly for Advanced evaluation/research/workflows,
-browser search, or S3/serve. Moli-backed search (when `headless-search` is on)
+browser search, or S3. Moli-backed search (when `headless-search` is on)
 resolves from a packaged sidecar, the verified per-user cache, or a pinned
 HTTPS download and is shared by all local Code processes. Chrome and Lightpanda
 remain explicit backends.
@@ -328,7 +328,7 @@ gates): [`manual/HARNESS_CONVERGENCE.md`](manual/HARNESS_CONVERGENCE.md).
 | Evaluation substrate    | Provider-neutral execution targets/frames, digest-only fact journals, atomic bounded evidence snapshots, isolated auxiliary runs, host boundary supervision, restart-safe dispatch leases, durable result CAS, and strict versioned Rust/Node/Python/Go wire projections | Cargo feature `advanced-harness` (opt-in); inject an `EvaluationPolicy`/`AuxiliaryExecutor` and optionally a dispatch/result store; Core supplies mechanisms and generated transport schemas, while reviewer rubrics, findings, authorization, and Cloud audit remain host-owned |
 | Native research contracts | Versioned digest-bound research runs, evidence facts, claims, citations, evidence graphs with publication completeness, workflow plans with result-receipt binding, finding-triggered re-run lineage, reproducibility manifests, provenance receipts, review findings, project events, and a versioned research wire envelope with generated Node/Python/Go projections, with bounded fields and fail-closed lifecycle transitions | Cargo feature `advanced-harness` (opt-in); hosts bind exact source/evidence snapshots and `RunCapabilityBindingV1`; A3S Use supplies package/environment identity and Desktop/Cloud own scientific policy, review decisions, retention, and publication |
 | Code intelligence       | Saved-file symbols, definitions, declarations, references, implementations, diagnostics, revisions, and stale-state metadata                                                                                                            | Host-selected local workspace                                                                                                                                             |
-| Workspace retrieval     | Asynchronous session-owned chunk catalog, official a3s-vec FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; a3s-vec builds require an attested platform library |
+| Workspace retrieval     | Asynchronous session-owned chunk catalog, official pure-Rust a3s-vec FTS/BM25 by default, Memory-backed exact vectors, hybrid RRF, optional deterministic CPU reranking, readiness/coverage metrics, and digest-verified current-source results | Explicit per-session opt-in for semantic/vector work; baseline lexical and symbol search needs no embedding model or vector database; `a3s_vec_fts_v1` replaces incompatible `zvec_rust_fts_v1` generations by rebuilding them |
 | Context and memory      | Ranked context, repeated compaction, three-tier V1 memory, typed stores, recall, extraction, non-destructive supersession, V2 Candidate extraction before Active activation, audited active-only lexical/semantic/one-hop relation recall, deterministic RRF, verified revision-CAS snapshot refresh receipts, exact namespace-token acceleration, host-persisted safe refresh checkpoints, opt-in session-owned refresh scheduling, exact restart binding, and owned maintenance health | Host-selected; V2 requires an exact repository/namespace binding and evidence-backed activation; semantic recall additionally requires a typed embedding provider, caller-owned vector index, explicit refresh timing, and exact schema-5 generation identity |
 | Cognitive packages      | Exact A3S Use generation binding, host-injected cited Markdown provider, bounded source verification, restart checks, and fail-closed retrieval                                                                                         | Rust host injects `CognitiveContextSession`; Code never installs or resolves packages                                                                                     |
 | A3S Use Runtime Tasks   | Exact capability-snapshot v2 Runtime Tool projection and model-visible governed invocation through a host-owned dispatcher                                                                                                             | Stage `UseRuntimeTaskProjectionAdapter` in the atomic Use-backed `SessionCapabilityBatch`; Code never launches projected commands or acquires package state directly       |
@@ -1389,10 +1389,10 @@ On Intel Macs, the native wheel is built for macOS 12 (`x86_64`). The optional
 keep retrieval model-free or configure an explicitly authorized remote
 embedding provider instead.
 
-The native SDK crates explicitly enable the Core `headless-search`, `s3`, and
-`serve` features to preserve their complete product surface. Direct Rust
-embedders receive the lazy Moli search tier by default and can omit the browser
-dependency stack with `default-features = false`. The pure-Go package uses the
+The native SDK crates default to `a3s-vec-fts` and can enable `headless-search`
+and `s3` (`server` is `s3` only; there is no `serve` feature). Direct Rust
+embedders receive the lazy Moli search tier only when `headless-search` is on
+and can omit the browser dependency stack with `default-features = false`. The pure-Go package uses the
 matching `a3s-code-go-bridge` release asset and requires no CGO; bridge bundles
 for each supported GNU/macOS/Windows target include the matching Moli sidecar.
 All official SDKs expose the same ordered `sdk-capabilities` inventory, event

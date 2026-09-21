@@ -766,19 +766,12 @@ configuration is inherited as a read-only capability source: a local server can
 shadow it only in this session, and removing the local shadow reveals the
 inherited tools again. Sibling sessions and the global manager are unchanged.
 
-## Filesystem-First Agents
+## Worker directories
 
-Define a durable agent as a **directory** — `instructions.md` (required) plus
-optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
-`kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
-harness turn (context, tool visibility, safety gate, verification).
-Filesystem-first `serve` / `ServeAgentDir` has been removed.
-console.log(handle.isStopped(), handle.state()) // true, "stopped"
-```
-
-`stop()` cancels in-flight schedule work, closes daemon-owned sessions, and
-waits for the bounded shutdown deadline. `failureCode()` exposes a stable code
-when the daemon reaches `failed`.
+Worker and subagent definitions load from directories via `agent_dirs` /
+`register_agent_dir` (YAML or Markdown files in the `task` catalog). The
+filesystem-first primary agent (`instructions.md`, `schedules/`, `tools/`) and
+`serve` / `ServeAgentDir` are removed. Recurring work belongs to the host.
 
 ## HITL Confirmations
 

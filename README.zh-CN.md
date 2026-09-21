@@ -24,7 +24,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 
 <p align="center">
   <a href="#60-秒内起步">起步</a> ·
-  <a href="#86-有什么新内容">v8.6</a> ·
+  <a href="#87-有什么新内容">v8.7</a> ·
   <a href="#为何选择-a3s-code">为何选择 Code</a> ·
   <a href="#能力地图">能力</a> ·
   <a href="#配置运行时">配置</a> ·
@@ -285,13 +285,13 @@ AgentEvent / EventEnvelopeV1
 ## 能力地图
 
 **推荐嵌入：** 依赖 `a3s-code-core`，使用
-`default-features = false` 与 `features = ["local-code"]`（捆绑 a3s-vec FTS）。
+`default-features = false` 与 `features = ["local-code"]`（纯 Rust a3s-vec FTS）。
 该配置即编码 Agent Harness：Agent 循环、工作区工具、策略、事件与词法检索 —
-不含 Advanced 评估/研究/工作流、S3/serve 或浏览器搜索。
+不含 Advanced 评估/研究/工作流、S3 或浏览器搜索。
 
-Core 库的 `default` 即为变薄的编码 Harness（`local-code`：捆绑 a3s-vec FTS）。
+Core 库的 `default` 即为变薄的编码 Harness（`local-code`：纯 Rust a3s-vec FTS）。
 显式启用 `advanced-harness`、`headless-search`、`server`、`scientific` 或
-`full` 以获得 Advanced 评估/研究/工作流、浏览器搜索或 S3/serve。开启
+`full` 以获得 Advanced 评估/研究/工作流、浏览器搜索或 S3。开启
 `headless-search` 时，Moli 支持的搜索从打包 sidecar、经校验的每用户缓存或
 固定 HTTPS 下载解析，并由本地 Code 进程共享。Chrome 与 Lightpanda 仍为显式后端。
 
@@ -1365,10 +1365,10 @@ python3.14 -m pip install a3s-code
 保持检索模型自由或配置明确授权的远程
 而是嵌入提供者。
 
-本机 SDK 包明确启用了 Core `headless-search`、`s3` 和
-`serve` 具有保留完整产品表面的功能。直接生Rust
-嵌入器默认接收惰性 Moli 搜索层，并且可以省略浏览器
-与`default-features = false`的依赖堆栈。 pure-Go 包使用
+本机 SDK crate 默认启用 `a3s-vec-fts`，并可再打开 `headless-search` 和
+`s3`（`server` 只含 `s3`，没有 `serve` feature）。直接嵌入 Rust 时，只有打开
+`headless-search` 才会带上惰性 Moli 搜索层，并且可以用
+`default-features = false` 去掉浏览器依赖。 pure-Go 包使用
 匹配`a3s-code-go-bridge`释放资产，无需CGO；桥束
 对于每个受支持的 GNU/macOS/Windows 目标，包括匹配的 Moli sidecar。
 所有官方 SDK 都公开相同的有序 `sdk-capabilities` 库存、事件

@@ -848,19 +848,12 @@ The legacy `parallel_task` helper and registry entry are removed
 The old standalone lifecycle control-plane API is intentionally removed from
 the 2.0 SDK surface.
 
-## Filesystem-First Agents
+## Worker directories
 
-Define a durable agent as a **directory** — `instructions.md` (required) plus
-optional `agent.acl`, `skills/`, `schedules/` (cron), and `tools/` (`kind: mcp` or
-`kind: script` sandboxed QuickJS) — and serve its schedules. Each fire is a full
-harness turn (context, tool visibility, safety gate, verification).
-Filesystem-first `serve` / `ServeAgentDir` has been removed.
-print(handle.is_stopped(), handle.state())  # True, "stopped"
-```
-
-`stop()` cancels in-flight schedule work, closes daemon-owned sessions, and
-waits for the bounded shutdown deadline. `failure_code()` exposes a stable code
-when the daemon reaches `failed`.
+Worker and subagent definitions load from directories via `agent_dirs` /
+`register_agent_dir` (YAML or Markdown files in the `task` catalog). The
+filesystem-first primary agent (`instructions.md`, `schedules/`, `tools/`) and
+`serve` / `ServeAgentDir` are removed. Recurring work belongs to the host.
 
 ## License
 

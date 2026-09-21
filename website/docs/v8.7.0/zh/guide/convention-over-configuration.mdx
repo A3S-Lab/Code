@@ -1,14 +1,15 @@
 ---
 title: '约定大于配置'
-description: '用文件系统优先的智能体、工具、连接、子智能体、调度、持久化和人工确认构建长期工作单元。'
+description: '用文件系统约定、会话、工具、委派和验证组成长期工作单元。'
 ---
 
 # 约定大于配置
 
 A3S Code 的约定大于配置能力不是一个单独的运行器，而是一套长期智能体组合：
 [文件系统优先](/guide/filesystem-first)约定、会话运行时、工具权限、
-多智能体委派、可恢复编排、人工确认、运行回放和调度守护进程。它让一个智能体
+多智能体委派、可恢复编排、人工确认和运行回放。它让一个智能体
 从“能聊天的 SDK 会话”变成“有角色、有工具、有团队、有状态、有接管点的工作单元”。
+周期性 cron 留在宿主侧；Core 不再提供 serve 守护进程。
 
 如果你在评估目录优先的智能体框架，可以把 A3S Code 看成更底层、更可嵌入的运行时。
 目录约定、工具、连接、子智能体、调度、持久化和观测都存在，但不会强制绑定到某个
@@ -19,15 +20,15 @@ A3S Code 的约定大于配置能力不是一个单独的运行器，而是一�
 
 | 智能体框架概念   | A3S Code 对应能力                                          | 说明                                                                                     |
 | ---------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 智能体是一个目录 | [智能体目录](/guide/agent-dir)                             | `instructions.md`、`agent.acl`、`skills/`、`tools/`、`schedules/` 合成一个可运行智能体。 |
-| Markdown 指令    | `instructions.md`、`AGENTS.md`、提示词插槽                 | 指令作为插槽注入，不能覆盖驾驭层的边界、响应契约和安全门。                               |
+| 智能体是文件     | [`AGENTS.md`](/guide/agents-md)、[`.a3s/agents/`](/guide/filesystem-agents) | 项目规则和 Worker 定义。旧的 AgentDir（`instructions.md`、`tools/`、`schedules/`）已移除。 |
+| Markdown 指令    | `AGENTS.md`、提示词插槽                                    | 指令作为插槽注入，不能覆盖驾驭层的边界、响应契约和安全门。                               |
 | Markdown 技能    | [技能](/guide/skills)                                      | 文件型技能、内联技能和显式注册表使用同一套发现语义。A3S Code 不再内置默认技能。          |
-| TypeScript 工具  | `program`、直接工具、MCP 工具、智能体目录脚本工具          | A3S Code 更关注工具注册、权限门、带类型错误和验证证据；脚本工具运行在 QuickJS 受限环境。 |
+| TypeScript 工具  | `program`、直接工具、MCP 工具                              | A3S Code 更关注工具注册、权限门、带类型错误和验证证据；`program` 运行在 QuickJS 受限环境。 |
 | 沙箱             | `program` 沙箱、权限策略、人工确认、A3S Box                | A3S Code 控制工具权限和脚本沙箱；需要进程、文件系统、网络级隔离时接 A3S Box。            |
 | 渠道             | 托管会话、开放平台 WebSocket/SSE、宿主自有界面             | A3S Code 不把渠道写死，宿主通过流式事件和运行回放接到任意前端。                          |
 | 连接             | MCP、服务提供商配置、宿主注入凭据                          | 连接由宿主配置和授权，不建议把令牌写进智能体目录。                                       |
 | 子智能体         | [任务](/guide/tasks)、[团队](/guide/teams)、`workerAgents` | 支持聚焦或多项 `task` 调用、自动委派和动态工作智能体。                                   |
-| 调度             | 智能体目录 `schedules/` + | 持久执行         | `SessionStore`、运行回放、`parallelResumable`              | 会话历史、运行事件和可恢复工作流能落盘；失败步骤可在恢复时重试。                         |
+| 持久执行         | `SessionStore`、运行回放、`parallelResumable`              | 会话历史、运行事件和可恢复工作流能落盘；失败步骤可在恢复时重试。                         |
 | 人工确认         | [安全](/guide/security)、确认继承、工具确认                | 高风险工具可请求确认；子运行可配置自动批准、遇到询问时失败或继承父级策略。               |
 | 评测             | [验证](/guide/verification)、报告、回归证据                | A3S Code 把评测产品化为验证命令、证据摘要、运行回放与发布门禁，而不是单独的评测套件。    |
 
@@ -107,45 +108,11 @@ console.log(result.text);
 console.log(result.verificationSummaryText);
 ```
 
-## 智能体目录形态
+## 已移除的 AgentDir 形态
 
-需要长期运行、调度或目录级工具时，使用文件系统优先的智能体：
-
-```text
-release-agent/
-├── instructions.md
-├── agent.acl
-├── skills/
-│   └── release-readiness.md
-├── schedules/
-│   └── daily.md
-└── tools/
-    ├── github.md
-    └── search-auth.md
-```
-
-`instructions.md` 是角色插槽：
-
-```md
-You are a release-readiness agent for this repository.
-Always separate blockers from follow-up work.
-Never invent versions or CI status. Read evidence from the workspace.
-```
-
-`schedules/daily.md` 是周期性回合：
-
-```md
----
-cron: '0 9 * * *'
-name: daily-release-check
-enabled: true
----
-
-Summarize merged changes since the last run, inspect release risks,
-and report only blockers plus required verification.
-```
-
-当前目录配置和工具，历史上下文从存储中恢复。
+带 `instructions.md`、`schedules/` 和 `tools/` 的目录**已移除**。使用上面的仓库形态、
+[`.a3s/agents/`](/guide/filesystem-agents) Worker，以及宿主自己的调度。见
+[AgentDir（已移除）](/guide/agent-dir)。
 
 ## 工具与连接
 
@@ -155,10 +122,10 @@ A3S Code 的工具面分三层：
 | ------------------ | --------------------------------------------------------- | --------------------------------------------------------- |
 | 内置与直接工具     | `session.tool(...)`、文件、命令行、Git、`generate_object` | 宿主明确知道要运行什么，或需要确定性调用。                |
 | MCP                | MCP 服务器                                                | 连接 GitHub、Linear、内部系统、远程宿主工具或跨进程能力。 |
-| 智能体目录脚本工具 | `tools/*.md` + QuickJS `program`                          | 把一段受限脚本包装成模型可见工具。                        |
+| `program`          | 进程内受限 QuickJS                                        | 把一段受限脚本包装成模型可见工具。                        |
 
 工具不是“文件存在就无限可用”。可见性、权限门、人工确认、允许列表和沙箱都由驾驭层
-或智能体目录加载器统一控制。高权限工具应只给可信目录，密钥应通过环境变量和宿主连接注入。
+控制。高权限工具应只给可信宿主，密钥应通过环境变量和宿主连接注入。
 
 ## 子智能体与团队
 
@@ -208,7 +175,6 @@ A3S Code session
 - 发布巡检、依赖升级、代码库维护等长期工程 Agent。
 - 能拆成 explore / review / verify / implement 多角色协作的任务。
 - 需要自动委派，但仍要保留权限门、审计和验证证据的工作。
-- 需要 cron 调度和可恢复上下文的周期性报告。
 - 需要接入托管工作流、宿主 session 或外部协作渠道的 Agent。
 
 不适合：
@@ -219,10 +185,9 @@ A3S Code session
 
 ## 阅读顺序
 
-1. [文件系统优先](/guide/filesystem-first)
-2. [Agent 目录](/guide/agent-dir)
+1. [文件系统约定](/guide/filesystem-first)
+2. [AGENTS.md](/guide/agents-md)
 3. [agents/ 角色目录](/guide/filesystem-agents)
-4. [tools/ 工具目录](/guide/filesystem-tools)
-5. [schedules/ 调度目录](/guide/filesystem-schedules)
-6. [任务](/guide/tasks)
-7. [团队](/guide/teams)
+4. [skills/ 技能目录](/guide/filesystem-skills)
+5. [任务](/guide/tasks)
+6. [团队](/guide/teams)

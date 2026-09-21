@@ -489,8 +489,7 @@ authorized by the host.
 The stable surface is aligned with the Node.js and Python SDKs for
 serializable Agent and Session capabilities, including:
 
-- Agent creation, session creation/resume/replace/list/close, worker sessions,
-  MCP refresh/idle disconnect, and agent-directory serving.
+- Agent creation, session creation/resume/replace/list/close, and worker sessions.
 - `Send`, `Run`, `Stream`, attachments, checkpoint resume, exact detached run
   admission/replay, history, save, cancellation, and close.
 - Parallel, resumable parallel, workflow-step, and pipeline orchestration.
@@ -509,8 +508,8 @@ serializable Agent and Session capabilities, including:
   remote Git, permission/confirmation policies, retention, trajectory,
   deterministic ID/clock replay, delegation, and prompt-slot configuration.
 
-Filesystem-first `serve` / `ServeAgentDir` has been removed.
-bounded, joined shutdown.
+Filesystem-first `serve` / `ServeAgentDir` has been removed. Worker directories
+still load through `agent_dirs`.
 
 Headless hosts can start detached work under immutable IDs and receive the
 authoritative snapshot immediately:

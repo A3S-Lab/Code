@@ -1,6 +1,6 @@
 ---
 title: 'skills/ 技能目录'
-description: '用工作区或智能体目录中的 skills/ 组织可复用技能、检查清单和领域流程。'
+description: '用工作区 skills/ 组织可复用技能和检查清单。'
 ---
 
 # skills/ 技能目录
@@ -11,11 +11,10 @@ A3S Code 有两类常见路径：
 
 ```text
 repo/.a3s/skills/          # workspace 级技能
-release-agent/skills/      # AgentDir 私有技能
 ```
 
-workspace 技能通过 `skillDirs` 或 `agent.acl` 的 `skill_dirs` 加载；agent 定义使用
-`agentDirs`，不要把 skill 目录放进 `agentDirs`。AgentDir 私有技能会在
+workspace 技能通过 `skillDirs` 或 `agent.acl` 的 `skill_dirs` 加载。Worker
+定义使用 `agentDirs`，不要把 skill 目录放进 `agentDirs`。
 
 ## 技能文件
 
@@ -51,9 +50,8 @@ frontmatter 帮助发现和筛选，正文描述执行方式。`allowed-tools` �
 
 不适合：
 
-- 需要独立身份、独立上下文或被 `task` 调用的角色；放进 `agents/`。
-- 需要周期性触发的任务；放进 `schedules/`。
-- 需要连接外部系统的能力声明；放进 `tools/` 或宿主 MCP 配置。
+- 需要独立身份、独立上下文或被 `task` 调用的角色；放进 `.a3s/agents/`。
+- 需要连接外部系统的能力声明；注册 MCP 或 SDK 工具。周期性工作由 Core 之外的宿主调度器负责。
 
 ## 加载方式
 
@@ -69,5 +67,4 @@ const session = agent.session('/repo', {
 
 - 技能文件应该短而稳定，避免塞入整本文档。
 - 需要示例时给最小可执行片段，不要复制大量日志。
-- 当 skill 只对某个长期 Agent 有效，放在该 AgentDir 的 `skills/` 中。
 - 当 skill 是整个仓库规范，放在 `.a3s/skills/` 中，并在 `AGENTS.md` 中说明它的使用边界。

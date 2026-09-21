@@ -11,10 +11,10 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 桌面应用，复用同一套 Agent 循环：工具、权限、子任务、工作区搜索，以及会话的
 保存和恢复。
 
-8.6.x 里，`read` 对 JPEG/PNG/GIF/WebP 返回图片附件；OpenAI 兼容路径会在工具结果
-消息中保留多模态 `image_url`，而不是压成纯文本。字面量 `grep` 仍可用小的
-trigram 缓存缩小文件范围；排序检索仍走 `bm25` / a3s-vec。会话存储重开时会拿
-flock，坏 WAL 不会再写出冲突序号。
+默认 profile 是 `local-code`：Agent 循环、工作区工具、策略、事件，以及纯 Rust
+的 a3s-vec 词法检索。`read` 对 JPEG/PNG/GIF/WebP 返回图片附件；OpenAI 兼容路径
+在工具结果里保留 `image_url`。没有文件系统优先的 `serve` 守护进程；项目规则写在
+`AGENTS.md`，Worker 放在 `.a3s/agents/`。
 
 ## 设计规则
 
@@ -46,7 +46,7 @@ flock，坏 WAL 不会再写出冲突序号。
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent 会话 | 通过异步 `SessionBuilder` 创建绑定到 Workspace 的 `AgentSession`；支持 `send`、`run`、`stream`、steer、interrupt、取消、保存、恢复和清理。同一会话发生并发冲突时会立即报错。      |
 | 终端界面   | [`a3s code`](/guide/tui) 把事件流显示成终端对话，并展示工具调用、确认提示、记忆、文件和会话状态。                                                                                 |
-| 项目约定   | [文件系统优先](/guide/filesystem-first) 介绍如何用 `AGENTS.md`、`agent.acl`、`.a3s/agents/`、`skills/`、`tools/` 和 `schedules/` 管理项目配置。                                   |
+| 项目约定   | [文件系统约定](/guide/filesystem-first) 介绍 `AGENTS.md`、`agent.acl`、`.a3s/agents/` 和 `skills/`。旧的 AgentDir `tools/` 与 `schedules/` 布局已移除。 |
 | 工具       | 内置文件、二进制安全的本地下载、搜索、Shell、Git、网页、Batch、结构化输出、QuickJS、Skills、MCP 和子任务工具。模型调用统一经过参数、权限、确认、取消、确定性结果投影与证据记录。  |
 | 命令       | [命令](/guide/commands) 说明 TUI 的斜杠命令，以及如何在 SDK 中注册自己的 `/command`。                                                                                             |
 | 子任务     | 通过模型可见的 `task`，或宿主侧 `session.task(...)` 与 `session.tasks(...)` 使用内置或自定义 Agent；单项聚焦执行，多项独立任务并发扇出。                                          |
@@ -55,7 +55,7 @@ flock，坏 WAL 不会再写出冲突序号。
 | Worker agents | 通过 `.a3s/agents/` 加载定义，供 `task` / 自动委派使用。 |
 | 安全       | 权限策略、用户确认、预算、Workspace 路径检查、工具超时、生命周期 Hook 和输出清理都会在执行过程中生效。                                                                            |
 | Workspace  | [Workspace 后端](/guide/workspace-backends) 支持本地文件、应用提供的 Workspace、可选的 S3 兼容存储和 remote-git 服务；原生 Harness 可用 detached Git worktree 隔离会话。          |
-| 工作区检索 | [工作区检索](/guide/context#workspace-retrieval)提供异步 Session 文本目录、增量 BM25、可选宿主 Embedding、精确内存向量、Hybrid RRF 与可选确定性 CPU Rerank，不依赖向量数据库。    |
+| 工作区检索 | [工作区检索](/guide/context#workspace-retrieval)提供异步 Session 文本目录、纯 Rust a3s-vec FTS/BM25、可选宿主 Embedding、精确内存向量、Hybrid RRF 与可选确定性 CPU Rerank，不依赖向量数据库。 |
 | 事件       | `EventEnvelopeV1` 是 Rust、Node.js、Python、Go 共用的事件格式；未知事件的 Payload 和 Metadata 也会保留。                                                                          |
 | 保存与恢复 | `SessionSnapshotV1`、Session ID、Auto-save、Run Event、Trace、Artifact、Loop / Workflow Checkpoint 和 Memory Store 用来恢复会话和回放运行过程。                                   |
 | 验证       | [验证](/guide/verification) 支持验证命令、预设、结构化报告、摘要、Artifact、Trace Event 和 Run Replay。                                                                           |
@@ -108,8 +108,8 @@ flock，坏 WAL 不会再写出冲突序号。
 
 ## 早期 v8.4.0 新增内容
 
-- 库与 SDK **默认变薄**：`a3s-code-core` 默认 `local-code`（a3s-vec FTS）；
-  Node / Python / Go SDK crate 默认 `a3s-vec-fts-bundled`。产品嵌入需要时再显式
+- 库与 SDK **默认变薄**：`a3s-code-core` 默认 `local-code`（纯 Rust `a3s-vec-fts`）；
+  Node / Python / Go SDK crate 默认 `a3s-vec-fts`。产品嵌入需要时再显式
   启用 `advanced-harness`、`server` 和/或 `headless-search`。
 - 模型可见的 **`parallel_task` 已移除**；多条目扇出统一使用 `task` 工具。对应的
   Node / Python / Go 辅助 API 一并删除。

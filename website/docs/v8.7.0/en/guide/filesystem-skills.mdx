@@ -1,6 +1,6 @@
 ---
 title: 'skills/ Skill Directory'
-description: 'Organize reusable skills, checklists, and domain process in workspace or AgentDir skill directories'
+description: 'Organize reusable skills and checklists in workspace skill directories'
 ---
 
 # skills/ Skill Directory
@@ -14,8 +14,7 @@ repo/.a3s/skills/          # workspace-level skills
 ```
 
 Workspace skills are loaded through `skillDirs` or `agent.acl` `skill_dirs`.
-Agent definitions use `agentDirs`; do not put skill directories in `agentDirs`.
-sessions.
+Worker definitions use `agentDirs`; do not put skill directories in `agentDirs`.
 
 ## Skill File
 
@@ -45,7 +44,7 @@ fail-secure. Skills guide the model; they should not widen permissions.
 
 Use skills for repeated review checklists, product or protocol process, release and migration workflows, recommended tool order, and shared background for several worker agents.
 
-Do not use skills for independent roles that should be invoked by `task`; put those in `agents/`. Do not use skills for recurring jobs; put those in `schedules/`. Do not use skills to declare external capabilities; use `tools/` or MCP.
+Do not use skills for independent roles that should be invoked by `task`; put those in `.a3s/agents/`. Do not use skills to declare external capabilities; register MCP servers or SDK tools instead. Recurring work is a host scheduler outside Core.
 
 ## Loading
 
@@ -61,5 +60,4 @@ The model can use `search_skills` to find relevant skills. File skills and inlin
 
 - Keep skill files short and stable.
 - Use minimal runnable examples, not long logs.
-- Put agent-specific skills in that AgentDir's `skills/`.
 - Put repository-wide skills in `.a3s/skills/` and document their boundary in `AGENTS.md`.
