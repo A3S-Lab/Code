@@ -60,11 +60,11 @@ prompts.
 | Field | Value |
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
-| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__03-24-05` (agent_setup ok, 0 exceptions); agent smoke `2026-09-22__03-50-30` / `bun-sourcemap-leak` reached live DeepSeek then failed completion gate (workspace mutation without Passed verification / host waiver). Native `terminal_bench_runner` + full `-k` matrix still required. |
+| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__03-24-05` (agent_setup ok); agent smoke `2026-09-22__04-29-13` / `bun-sourcemap-leak` completed with 0 Harbor exceptions after host verification binding (reward 0.0 — task not solved). Native `terminal_bench_runner` + full `-k` matrix still required. |
 | `-n` / `-k` | diagnostic `-n 1 -k 1` only |
 | GPU sandbox | no (Docker Desktop on Darwin) |
-| Trials with native `verifier_result` | `0/1` (agent exception before verifier) |
-| Failures classified | other — completion gate blocks unattended Python Harbor adapter after 8.5.6 |
+| Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); agent exception none |
+| Failures classified | other — task incorrect / incomplete solution under verifier; adapter wiring no longer blocked by completion gate |
 | ROADMAP link date | |
 
 ### DM-PROD1

@@ -90,4 +90,6 @@ fi
 
 cargo semver-checks check-release \
   --package "$PACKAGE" \
-  --baseline-root "$SOURCE_ROOT"
+  --baseline-root "$SOURCE_ROOT" \
+  --default-features \
+  --features ci-all
