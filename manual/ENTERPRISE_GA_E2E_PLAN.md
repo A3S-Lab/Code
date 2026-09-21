@@ -138,8 +138,9 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
 | L6 performance.yml on `9b28f066` | **PASS** — run [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682), nine `passed: true` JSON reports; digest in [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
 | L6 hermetic-integrations on `515a50b0` | **PASS** — run [`35642286881`](https://github.com/A3S-Lab/Code/actions/runs/35642286881); S3/CDP/OTLP `passed: true`; digest in PERFORMANCE_QUALIFICATION |
+| L6 re-run on tip `c9e26504` | **In progress** — dispatched [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466) (performance) and [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718) (hermetic); archive digests into PERFORMANCE_QUALIFICATION only after both complete with `passed: true` |
 | Standalone patch strip + relock | **Landed** on `9b28f066` |
-| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
+| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green on wheel 8.6.0 job `2026-09-22__07-32-16`; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
