@@ -4,6 +4,15 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [8.7.0] - 2026-09-21
+
+- Bundled Core 8.7.0: removed filesystem-first `serve` / `AgentDir`
+  primary-agent mode; workspace lexical FTS uses `a3s-vec`
+  (`a3s_vec_fts_v1`) and rebuilds incompatible `zvec_rust_fts_v1`
+  generations; `web_search` returns usable rows as complete or partial
+  success (#161).
+
+
 ## [8.6.0] - 2026-09-18
 
 - Bundled Core 8.6.0: `read` image attachments and OpenAI tool-result image

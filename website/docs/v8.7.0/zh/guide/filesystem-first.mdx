@@ -1,0 +1,48 @@
+---
+title: '文件系统约定'
+description: '将项目说明、配置、Skill 与 worker Agent 以可审查文件持久化'
+---
+
+# 文件系统约定
+
+A3S Code 从工作区文件系统加载持久化的项目行为。需要长期保留的角色、Skill
+与 worker 定义写成文件，再按约定加载。目标是可审查、可版本化、可复用，而不是
+另一套产品运行时。
+
+```text
+repo/
+├── AGENTS.md          # 持久化项目说明
+├── agent.acl          # 模型、provider、队列与委派配置
+└── .a3s/
+    ├── agents/        # task / autoDelegation 的 worker
+    └── skills/        # 可复用 Skill
+```
+
+## 路径表
+
+| 路径                      | 用途                         | 何时使用                                       |
+| ------------------------- | ---------------------------- | ---------------------------------------------- |
+| `AGENTS.md`               | 稳定的工作区说明             | 代码风格、验证命令、安全边界需要持久化         |
+| `agent.acl`               | 模型、provider、队列与委派   | 运行时策略应随仓库版本化                       |
+| `.a3s/agents/`            | Worker / 子代理定义          | 父 Agent 需要 `task` 或自动委派                |
+| `.a3s/skills/`、`skills/` | 可复用 Skill                 | 多任务共享清单、领域流程或操作规则             |
+
+这些约定不是新的提示词系统。`AGENTS.md` 与 Skill 进入 A3S Code 的上下文组装路径；
+工具可见性、权限门、HITL、响应契约与验证仍由 harness 控制。
+
+## 已移除：文件系统优先 AgentDir / serve
+
+原先的主 Agent 目录约定（`instructions.md`、`schedules/`、`tools/`）以及 cron
+`serve_agent_dir` 守护进程已移除。请改用交互式 `AgentSession`、宿主侧调度、
+MCP / SDK 工具注册，以及 `.a3s/agents/` worker。
+
+## 加载顺序
+
+典型 session 解析 `agent.acl`、绑定工作区，再加载项目说明、Skill、Agent 定义、
+直接工具、MCP 连接与运行时策略。
+
+## 设计规则
+
+1. 优先使用可在 PR 中审查的文件，而不是不透明的内存默认值。
+2. 保持 harness 权威：文件提供内容；Core 仍拥有安全与验证。
+3. Worker 定义放在 `.a3s/agents/`，不要依赖已删除的 serve 守护进程。

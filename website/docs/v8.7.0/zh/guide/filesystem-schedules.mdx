@@ -1,0 +1,11 @@
+---
+title: 'AgentDir schedules（已移除）'
+description: 'AgentDir schedules/ 与 serve_agent_dir cron 已移除'
+---
+
+# AgentDir schedules（已移除）
+
+AgentDir `schedules/` 与 `serve_agent_dir` cron 循环**已移除**。
+
+请在宿主进程（或外部调度器）中安排周期性工作，并对每次触发调用
+`AgentSession::send` / SDK `session.send`。

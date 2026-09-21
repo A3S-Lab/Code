@@ -1,0 +1,65 @@
+---
+title: '安全'
+description: '权限策略、HITL、hook 与验证关卡'
+---
+
+# 安全
+
+A3S Code 在创建 session 时暴露安全控制，并通过 session hook 暴露生命周期回调。宿主直接调用 `session.tool()`、`session.bash()` 等 API 时，应把它们视为宿主侧特权操作；是否把这些能力暴露给用户，由宿主应用自己判断。
+
+委派子运行会继承所选 subagent 或 worker spec 的有边界权限。使用 `confirmationInheritance` 控制子运行的 Ask 决策，并把高风险发布命令放在显式 policy 后面。
+
+权限确认界面应该向用户说明操作、原因、影响范围和风险，而不只是放两个按钮。
+
+## 安全下载
+
+`download` 是有边界的工作区修改操作，不是任意网络或文件系统原语。它只会在会话拥有
+可写本地工作区时注册。模型选择的调用与其他修改一样经过权限策略、HITL 确认、Hook、
+超时、取消和工作区检查。直接调用 `session.tool('download', ...)` 仍是宿主特权操作，
+嵌入应用必须先完成授权。
+
+网络边界只接受 HTTP(S)，拒绝 URL 用户信息和非公网目标，并逐跳重新校验有限次数的
+重定向。直接连接会拒绝包含任何私网或保留地址的 DNS 结果，并把该跳验证后的公网地址
+固定给请求。跨源重定向会移除凭据和资源校验器。显式代理模式由已配置代理解析域名，
+但仍保留字面主机与重定向检查。
+
+对象存储和发行系统经常用签名查询参数授权，所以实际请求会保留它们；诊断信息和
+`source_anchors` 会移除这些参数，成功或失败的工具元数据不会暴露签名。
+
+目标路径必须位于本地工作区内，且不能跨越符号链接。内容在字节数和时间上限内流式写入
+相邻临时文件；严格 Range 校验、可选 `expected_sha256`、先同步后提升与原子替换会阻止
+不完整或未验证内容进入最终路径。取消或失败会清理临时文件，`overwrite` 默认 `false`。
+
+完整参数契约见[工具](/guide/tools#二进制安全的本地下载)。
+
+## 权限策略与 Hook
+
+```ts title=permissions.ts
+const session = agent.session('/repo', {
+  // !callout(1:7) 执行前生效
+  permissionPolicy: {
+    deny: ['bash(rm -rf*)', 'write(**/.env*)'],
+    ask: ['bash(git push*)', 'bash(npm publish*)'],
+    allow: ['read(*)', 'search(*)', 'bash(cargo test*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+```
+
+Hook API 的管理面包括注册、计数和卸载：
+
+```ts
+session.registerHook(
+  'observe-secret-read',
+  'pre_tool_use',
+  { pathPattern: '**/.env*' },
+  { priority: 100 },
+  () => ({ action: 'continue' }),
+);
+
+console.log(session.hookCount());
+session.unregisterHook('observe-secret-read');
+```
+
+发布流程应要求测试、包检查、CI 和 provider 验证证据。

@@ -1,0 +1,53 @@
+---
+title: 'Filesystem conventions'
+description: 'Persist project instructions, config, skills, and worker agents as reviewable files'
+---
+
+# Filesystem conventions
+
+A3S Code loads durable project behavior from the workspace filesystem. Roles,
+skills, and worker definitions that need to last are written as files, then
+loaded by convention. The goal is reviewable, versioned, reusable behavior —
+not a separate product runtime.
+
+```text
+repo/
+├── AGENTS.md          # durable project instructions
+├── agent.acl          # model, provider, queue, and delegation config
+└── .a3s/
+    ├── agents/        # worker agents for task / autoDelegation
+    └── skills/        # reusable skills
+```
+
+## Path Map
+
+| Path                      | Purpose                                                   | Use it when                                                                          |
+| ------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `AGENTS.md`               | Stable workspace instructions                             | Code style, verification commands, safety boundaries, and release flow must persist. |
+| `agent.acl`               | Model, provider, queue, skill dirs, and delegation config | Runtime policy should be versioned with the repo.                                    |
+| `.a3s/agents/`            | Worker/subagent definitions                               | A parent agent needs `task` or automatic delegation.                                 |
+| `.a3s/skills/`, `skills/` | Reusable skills                                           | Many tasks share checklists, domain flow, or operating rules.                        |
+
+These conventions are not a new prompt system. `AGENTS.md` and skills enter
+A3S Code's context composition path; tool visibility, permission gates, HITL,
+response contracts, and verification remain harness-controlled.
+
+## Removed: filesystem-first AgentDir / serve
+
+The former primary-agent directory convention (`instructions.md`,
+`schedules/`, `tools/`) and the cron `serve_agent_dir` daemon have been
+removed. Use interactive `AgentSession`s, host schedules outside Core, MCP /
+SDK tool registration, and `.a3s/agents/` workers instead.
+
+## Loading Order
+
+A typical session parses `agent.acl`, binds a workspace, then loads project
+instructions, skills, agent definitions, direct tools, MCP connections, and
+runtime policy.
+
+## Design Rules
+
+1. Prefer files that can be reviewed in a PR over opaque in-memory defaults.
+2. Keep harness authority: files supply content; Core still owns safety and
+   verification.
+3. Put worker definitions under `.a3s/agents/`, not a separate serve daemon.

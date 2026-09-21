@@ -1,0 +1,128 @@
+---
+title: 'Teams'
+description: 'Building teams with agent definitions, task tools, and automatic delegation'
+---
+
+# Teams
+
+Teams are a harness pattern built from named agent definitions plus the unified
+`task` delegation core. A3S Code does not expose a separate team runner API; the
+parent session stays responsible for synthesis, policy, and final verification.
+
+## Recommended Shape
+
+1. Put durable roles in `.a3s/agents` or configure additional `agentDirs`.
+2. Keep each role focused: description, prompt, allowed tools, denied tools.
+3. Enable `autoDelegation` when the runtime should select high-confidence subagents.
+4. Use `session.task(...)` or `session.tasks(...)` when the host already knows the lanes.
+5. Merge child summaries, evidence references, and risks in the parent.
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  planningMode: 'auto',
+  autoDelegation: { enabled: true, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+});
+
+await session.send(`
+Build a release-readiness team:
+- explorer: find risky changed areas
+- tester: identify missing verification
+- security: review side-effect paths
+
+Use independent subagents where useful and return a single prioritized report.
+`);
+```
+
+## Custom Agent Files
+
+Markdown agent files use Claude-compatible frontmatter, with A3S-native placement under `.a3s/agents`:
+
+```markdown
+---
+name: release-reviewer
+description: Use proactively after release or CI changes
+tools: Read, Search, Bash(cargo test*)
+disallowedTools:
+  - Write
+  - Bash(git push*)
+---
+
+Review release blockers first, then risks, then follow-up work.
+```
+
+A3S also reads `.claude/agents` as a migration source. Prefer `.a3s/agents` for new projects.
+
+## Built-in Team Roles
+
+Use these without creating files:
+
+- `explore`: read-only repository exploration
+- `plan`: read-only implementation planning
+- `general` / `general-purpose`: multi-step implementation
+- `verification`: checks, repros, and regression validation
+- `review`: findings-first code review
+
+## Manual Lanes
+
+SDK callers can call direct helpers when the host already knows the lanes:
+
+```ts
+const result = await session.tasks([
+  {
+    agent: 'explore',
+    description: 'Changed files',
+    prompt: 'Find risky changed files.',
+  },
+  {
+    agent: 'verification',
+    description: 'Test gaps',
+    prompt: 'Find missing verification.',
+  },
+  {
+    agent: 'review',
+    description: 'Regression review',
+    prompt: 'Review correctness risks.',
+  },
+]);
+
+if (result.exitCode !== 0) throw new Error(result.output);
+console.log(result.output);
+```
+
+`session.tasks(...)` is the host-driven multi-item wrapper around `task`; it
+returns a `ToolResult`, not a `StepOutcome[]`. Use `session.parallel(...)` when
+you need one structured outcome per lane.
+
+When the team's lane structure is fixed and should be reproducible and resumable rather than model-chosen, use the programmable combinators in [Orchestration](/guide/orchestration) (`session.parallel` / `session.pipeline` / `session.parallelResumable`).
+
+## Worker Agents
+
+Register disposable worker agents with `workerAgents` or `registerWorkerAgent()` when the role is constructed by the host instead of stored on disk:
+
+```ts
+const session = agent.session('/repo', {
+  workerAgents: [
+    {
+      name: 'frontend-worker',
+      description: 'Small verified frontend fixes',
+      kind: 'implementer',
+      model: 'provider/model-id',
+      maxSteps: 24,
+      confirmationInheritance: 'auto_approve',
+    },
+  ],
+});
+```
+
+Control how child runs resolve Ask decisions with `confirmationInheritance`:
+
+- `'auto_approve'` (default): child runs auto-approve all Ask decisions
+- `'deny_on_ask'`: child runs fail immediately when encountering an Ask
+- `'inherit_parent'`: child runs inherit the parent's confirmation policy
+
+## Runtime State
+
+Applications should observe streaming events and run replay snapshots, then cancel active Node work with `cancelRun(runId)` when needed.

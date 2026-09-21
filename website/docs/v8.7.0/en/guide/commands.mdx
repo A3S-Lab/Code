@@ -1,0 +1,70 @@
+---
+title: 'Commands'
+description: 'Command surfaces and recommended control flows'
+---
+
+# Commands
+
+A3S Code is primarily SDK-driven. Product CLIs and UIs usually map commands to
+session APIs rather than depending on a large public command protocol.
+
+This page describes the SDK command registry. For the built-in commands in the
+`a3s code` terminal app, see [A3S Code TUI](/guide/tui).
+
+The two surfaces are intentionally different:
+
+| Surface                   | Owner            | Purpose                                                                                                                   |
+| ------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `a3s code` slash commands | CLI/TUI          | Terminal controls such as `/model`, `/flow`, `/memory`, `/kb`, `/update`, and `/exit`.                                    |
+| SDK command registry      | Host application | Product-defined commands registered with `session.registerCommand(...)` and invoked through `session.send("/name args")`. |
+
+SDK commands execute before the LLM sees the input. A handler receives the raw
+argument string plus session metadata, and returns display text. Use commands
+for thin control-plane actions; use normal SDK methods for workflows, tools,
+verification, and persistence.
+
+Inside the TUI, `/flow` manages workflow asset files and optional host
+integrations. It is not the same surface as `DynamicWorkflowRuntime`, which is
+the local A3S Flow-backed runtime used by `ultracode` and `?` DeepResearch
+through the model-visible `dynamic_workflow` tool.
+
+## Recommended Mappings
+
+| User action                       | Session API                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| Send a prompt                     | `session.send(prompt)`                                                                |
+| Stream a prompt                   | `session.stream(prompt)`                                                              |
+| Ask a side question               | Create an isolated session, or call `send` / `stream` with explicit isolated history. |
+| Run a deterministic tool          | `session.tool(name, args)`                                                            |
+| Read history                      | `session.history()`                                                                   |
+| Save state                        | `session.save()`                                                                      |
+| Resume state                      | `agent.resumeSession(id, options)`                                                    |
+| Inspect tools                     | `session.toolNames()` / `session.toolDefinitions()`                                   |
+| Verify work                       | `session.verifyCommands(subject, commands)`                                           |
+| Replay run state                  | `session.runs()` / `session.runEvents(runId)`                                         |
+| Inspect or cancel the current run | `session.currentRun()` / `session.cancelRun(runId)`                                   |
+
+## Building Slash Commands
+
+If your app exposes slash commands, keep them thin. Register the handler, list
+the available commands, and invoke the command through `session.send()`:
+
+```ts
+session.registerCommand(
+  'docs_status',
+  'Return docs command status',
+  (args, ctx) => {
+    return `status args=${args}; session=${ctx.sessionId}; workspace=${ctx.workspace}`;
+  },
+);
+
+console.log(session.listCommands());
+
+const result = await session.send('/docs_status check');
+console.log(result.text);
+```
+
+Command handlers should not hide long-running work. If a command needs to run
+tools, verify output, fan out to subagents, or schedule recurring automation,
+have the handler return a short acknowledgement and run that work through
+explicit host code. That keeps cancellation, audit, and permissions visible.

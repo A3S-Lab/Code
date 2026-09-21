@@ -1,0 +1,17 @@
+---
+title: 'AgentDir (removed)'
+description: 'The filesystem-first AgentDir and serve daemon have been removed'
+---
+
+# AgentDir (removed)
+
+The filesystem-first primary-agent directory (`instructions.md`,
+`agent.acl`, `skills/`, `tools/`, `schedules/`) and the `serve` /
+`serve_agent_dir` cron daemon are **removed**.
+
+Use instead:
+
+- Interactive or host-driven [`AgentSession`](/guide/sessions) loops
+- [`.a3s/agents/`](/guide/filesystem-agents) worker definitions for `task`
+- MCP connections or SDK `session` tool registration for tools
+- Host-owned schedulers outside Core for recurring work

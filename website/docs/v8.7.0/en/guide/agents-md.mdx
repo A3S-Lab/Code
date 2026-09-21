@@ -1,0 +1,81 @@
+---
+title: 'AGENTS.md'
+description: 'Workspace-level project instructions as versioned context'
+---
+
+# AGENTS.md
+
+`AGENTS.md` is the workspace-level project instruction file. It lets project rules live with the repo, so every prompt does not need to repeat build commands, code style, safety boundaries, and release flow.
+
+In the filesystem-first architecture, `AGENTS.md` explains how this project works. AgentDir `instructions.md` explains who one durable agent is. Both enter context composition, but neither can override harness permission gates, response contracts, or verification requirements.
+
+```md
+# Project Instructions
+
+- Use `cargo test -p a3s-code-core` for core changes.
+- Never commit real secrets from `.a3s/config.acl`.
+- Prefer `rg` for search.
+- Release checks must include package metadata, CI, and provider verification.
+```
+
+## Good Content
+
+- Build, test, lint, format, and release commands.
+- Directory responsibilities, module boundaries, and code style.
+- Safety rules for secrets, permissions, external side effects, and data handling.
+- Verification policy for different kinds of changes.
+- Project-specific terminology and common workflows.
+
+## Bad Content
+
+- Secrets, tokens, private credentials, or personal machine paths.
+- Worker-agent role descriptions; put those in `.a3s/agents/`.
+- Durable-agent identity and default output style; put those in `instructions.md`.
+- Reusable checklists; put those in `.a3s/skills/`.
+
+## Nested Rules
+
+A3S Code builds one instruction chain when a session starts. It finds the
+nearest Git root, walks from that root to the selected workspace, and includes
+at most one document from every directory. The lookup order in each directory
+is:
+
+1. `AGENTS.override.md`
+2. `AGENTS.md`
+3. the ordered names in `project_doc_fallback_filenames`
+
+Documents are joined from root to workspace. More local guidance appears later
+and therefore overrides broader guidance. An `AGENTS.override.md` replaces the
+ordinary `AGENTS.md` only in its own directory; it does not discard guidance
+from parent directories. If no Git root exists, A3S Code checks only the
+selected workspace.
+
+Empty files are skipped. The combined default budget is 32 KiB and can be
+changed with `project_doc_max_bytes`; zero disables project instruction loading.
+A3S Code accepts regular UTF-8 files inside the project root and ignores
+symlink candidates and unsafe fallback names. The effective bounded chain is
+mandatory session context, so the generic retrieval budget cannot silently
+drop it.
+
+Use nested `AGENTS.md` files only when subdirectories truly differ, such as a
+desktop app, API package, or SDK with a different toolchain. Do not copy the
+root file just to repeat it; duplicated rules make it harder for long-running
+agents to identify the current source of truth.
+
+```acl
+project_doc_max_bytes = 65536
+project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+```
+
+## Relationship To Other Conventions
+
+```text
+repo/
+├── AGENTS.md          # project-level durable instructions
+├── agent.acl          # runtime config
+└── .a3s/
+    ├── agents/        # worker/subagent definitions
+    └── skills/        # reusable skills
+```
+
+`AGENTS.md` gives the agent project facts and working boundaries. `agent.acl` tells the runtime how to connect models and directories. `agents/` and `skills/` provide discoverable roles and reusable process.

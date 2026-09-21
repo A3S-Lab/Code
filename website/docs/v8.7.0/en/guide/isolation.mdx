@@ -1,0 +1,100 @@
+---
+title: 'Isolation'
+description: 'Workspace, context, and delegated-task isolation'
+---
+
+# Isolation
+
+Isolation starts with the session boundary: each session binds to one
+workspace, and each delegated child run receives bounded context. Direct host
+tool calls are privileged host operations; gate them in the host application
+before exposing them to users.
+
+## Workspace Boundary
+
+```ts
+const session = agent.session('/repo');
+```
+
+Relative file, search, shell, and git operations are evaluated from the session
+workspace. Security providers and hooks are session options; validate the exact
+policy path you depend on before using them as a production boundary.
+
+## Delegated Context
+
+`task` and automatic subagent delegation isolate child reasoning. The parent
+receives compact results instead of full transcripts. This avoids prompt
+pollution and makes evidence review easier.
+
+## Storage Isolation
+
+Use separate memory and session store directories for different products, tenants, or test suites:
+
+```ts
+import { FileMemoryStore, FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+```
+
+## Native Harness Worktrees
+
+When `a3s code harness` points at a Git repository, every admitted protocol
+conversation receives its own temporary detached worktree at the source
+repository's `HEAD`. The source worktree must be clean at admission, so local
+host changes are never silently omitted. Different conversation sessions do
+not share mutable files, and removing a Harness session removes its temporary
+worktree without applying anything to the source checkout.
+
+Tracked and untracked non-ignored content is snapshotted through an isolated
+temporary Git index before and after each run. After the run becomes terminal,
+Core captures one binary-capable, full-index unified diff and pins the result
+tree under a private Git ref. The immutable evidence belongs to that exact run;
+a conflicting second capture is rejected. A resumed persisted conversation
+restores its latest captured result tree into the new detached worktree.
+
+Non-Git workspaces continue to use the configured shared path and cannot
+produce this Git change-set evidence. A dirty Git source fails isolation
+admission instead of falling back to shared writes.
+
+## Bounded Change-set Protocol
+
+Post an exact run identity to `/v1/agent/changes` after its event stream reaches
+`completed`, `failed`, or `cancelled`:
+
+```json
+{
+  "schema": "a3s.code.agent-change-set-request.v1",
+  "identity": {
+    "schema": "a3s.code.agent-run-identity.v1",
+    "protocol": "a3s.code.agent.v1",
+    "agent_release_identity": "sha256:<release-digest>",
+    "session_id": "conversation-018f4f86",
+    "run_id": "run-018f4f86-attempt-1"
+  }
+}
+```
+
+The response uses `a3s.code.agent-change-set.v1` and includes the same identity,
+terminal state, `base_tree`, `result_tree`, `patch_digest`, `patch_bytes`,
+`observed_at_ms`, and a `patch_base64` payload with format
+`git_unified_diff_v1` and encoding `base64`. The raw patch is limited to 4 MiB.
+
+Change capture settles just after the worker, so a terminal run can briefly
+return `a3s.code.agent_protocol.change_set_pending`; retry the same query.
+`a3s.code.agent_protocol.change_set_unavailable` means the workspace was not
+Git-compatible or capture could not satisfy the protocol bound.
+
+The caller, not the endpoint, decides whether and where to apply the patch.
+Before decoding or applying it, verify the declared byte count and
+`sha256:` digest and retain both Git tree identities. This keeps concurrent
+conversation writes isolated while still giving the host a deterministic
+merge or review artifact.
+
+## External Harness
+
+Hooks and permission policy are exposed as integration points. Test live
+organization policy with your own harness before treating it as a production
+boundary.

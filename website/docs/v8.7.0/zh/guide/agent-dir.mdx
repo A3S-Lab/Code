@@ -1,0 +1,16 @@
+---
+title: 'AgentDir（已移除）'
+description: '文件系统优先 AgentDir 与 serve 守护进程已移除'
+---
+
+# AgentDir（已移除）
+
+文件系统优先主 Agent 目录（`instructions.md`、`agent.acl`、`skills/`、
+`tools/`、`schedules/`）以及 `serve` / `serve_agent_dir` cron 守护进程**已移除**。
+
+请改用：
+
+- 交互式或宿主驱动的 [`AgentSession`](/guide/sessions)
+- [`.a3s/agents/`](/guide/filesystem-agents) worker（供 `task` 使用）
+- MCP 或 SDK session 工具注册
+- Core 之外的宿主调度器处理周期性工作

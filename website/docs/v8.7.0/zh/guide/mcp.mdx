@@ -1,0 +1,241 @@
+---
+title: 'MCP'
+description: '模型上下文协议服务集成'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# MCP
+
+MCP 把 A3S Code session 连接到外部工具服务器。stdio server 可以加入 live
+session、检查状态、通过注册工具调用，并在不需要时移除。server 的工具会注册到
+session 中，名称格式为 `mcp__<server>__<tool>`。
+
+## 添加服务器
+
+新代码优先使用 object-shaped `addMcp(...)` API。它直接对应 core 的
+`McpServerConfig` 形状，避免 positional overload 的参数顺序问题。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
+use std::collections::HashMap;
+
+let count = session
+    .add_mcp_server(McpServerConfig {
+        name: "echo".into(),
+        transport: McpTransportConfig::Stdio {
+            command: "node".into(),
+            args: vec![
+                "tools/mcp_echo_server.mjs".into(),
+                "example-value".into(),
+            ],
+        },
+        enabled: true,
+        env: HashMap::new(),
+        oauth: None,
+        tool_timeout_secs: 30,
+    })
+    .await?;
+
+println!("已注册工具数：{count}");
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const count = await session.addMcp({
+  name: 'echo',
+  transport: {
+    type: 'stdio',
+    command: process.execPath,
+    args: ['tools/mcp_echo_server.mjs', 'example-value'],
+  },
+  timeoutMs: 30000,
+});
+
+console.log('registered tools:', count);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+count = session.add_mcp({
+    'name': 'echo',
+    'transport': {
+        'type': 'stdio',
+        'command': 'python',
+        'args': ['tools/mcp_echo_server.py', 'example-value'],
+    },
+    'timeout_ms': 30000,
+})
+print('registered tools:', count)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+count, err := session.AddMCPServer(ctx, code.MCPServerConfig{
+	Name: "echo",
+	Transport: code.MCPTransport{
+		Type:    "stdio",
+		Command: "node",
+		Args:    []string{"tools/mcp_echo_server.mjs", "example-value"},
+	},
+	ToolTimeoutSecs: 30,
+})
+if err != nil {
+	return err
+}
+fmt.Println("已注册工具：", count)
+```
+
+</Tab>
+</Tabs>
+
+Python 通过 `session.add_mcp({...})` 暴露相同的对象式 API。
+`addMcpServer(...)` / `add_mcp_server(...)` 和
+`addMcpServerConfig(...)` / `add_mcp_server_config(...)` 仍作为兼容别名保留。
+
+远程 server 使用嵌套 transport object，`type` 取 `'http'` 或
+`'streamable-http'`。凭据应由宿主环境或 secret manager 注入；在生产文档或发布说明依赖前，先针对你的 server 做集成测试。
+
+## 检查和移除
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use serde_json::json;
+
+println!("{:#?}", session.mcp_status().await);
+println!(
+    "{:#?}",
+    session
+        .tool_names()
+        .into_iter()
+        .filter(|name| name.starts_with("mcp__"))
+        .collect::<Vec<_>>()
+);
+let result = session
+    .tool("mcp__echo__echo", json!({ "message": "文档 MCP 正常" }))
+    .await?;
+println!("{}", result.output);
+session.remove_mcp_server("echo").await?;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+console.log(await session.mcpStatus());
+console.log(session.toolNames().filter((name) => name.startsWith('mcp__')));
+await session.tool('mcp__echo__echo', { message: 'docs mcp ok' });
+await session.removeMcpServer('echo');
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+print(session.mcp_status())
+print([name for name in session.tool_names() if name.startswith('mcp__')])
+session.tool('mcp__echo__echo', {'message': 'docs mcp ok'})
+session.remove_mcp_server('echo')
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+status, err := session.MCPStatus(ctx)
+if err != nil {
+	return err
+}
+names, err := session.ToolNames(ctx)
+if err != nil {
+	return err
+}
+result, err := session.Tool(ctx, "mcp__echo__echo", map[string]any{
+	"message": "docs mcp ok",
+})
+if err != nil {
+	return err
+}
+fmt.Println(status, names, result.Output)
+if err := session.RemoveMCPServer(ctx, "echo"); err != nil {
+	return err
+}
+```
+
+</Tab>
+</Tabs>
+
+## 所有权与会话隔离
+
+MCP 能力发现与实时修改分属不同所有者：
+
+- 智能体全局管理器持有从全局配置加载的服务器。
+- 通过 Rust `SessionOptions` 传入的管理器是该会话继承的只读能力来源。
+- 每个已构建会话都新建一个私有管理器，专门承接实时 `addMcp` 与
+  `removeMcpServer` 操作。
+
+会话组装会读取继承来源的工具定义，但不会把会话配置合并回这些管理器。本地新增的
+服务器可以在当前会话内遮蔽同名的继承全限定工具；移除本地服务器后，继承工具会
+重新出现。这个操作不会注销、断开或改变全局或宿主持有的来源，同级会话也不会受影响。
+
+委派的子智能体会收到有序能力来源，从而调用同一批 MCP 工具，但不会取得所有者身份。
+`session.close()` 只断开私有管理器的服务器；`agent.close()` 和
+`disconnectIdleMcp(...)` 仍负责智能体全局管理器。
+
+Rust 中，宿主传入的 MCP 来源需要异步构建会话，使发现过程不会阻塞：
+
+```rust
+let session = agent
+    .session_builder("/repo")
+    .options(SessionOptions::new().with_mcp(manager))
+    .build()
+    .await?;
+```
+
+## 闲置断开
+
+已通过标准输入输出连接的 MCP 服务器即使处于空闲状态也会占用资源，包括文件描述符
+和一个后台工作进程。在长期运行的集群会话中，这些安静的服务器会越积越多。
+`disconnectIdleMcp`（更新日志 `[3.3.0]` 的 “MCP idle disconnect”）会按需回收它们：
+断开最后活动时间早于阈值的全局 MCP 服务器，释放文件描述符和工作进程，
+**同时保留每台服务器已经注册的配置**，让后续工具调用可以按需重连。
+
+这是一个智能体级方法，只作用于智能体的全局 MCP 管理器，底层由
+`McpManager::disconnect_idle(threshold_ms)` 支持。它返回被断开的服务器名称列表。
+
+```ts
+// 回收空闲超过 5 分钟的服务器，返回被断开的名称。
+const dropped = await agent.disconnectIdleMcp(5 * 60 * 1000);
+console.log('disconnected:', dropped);
+```
+
+```python
+# 回收空闲超过 5 分钟的服务器，返回被断开的名称。
+dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
+print('disconnected:', dropped)
+```
+
+当前 Go 桥接层提供会话本地的添加、状态、调用和移除，以及智能体级
+`RefreshMCPTools`；它还没有暴露全局闲置连接清扫器。
+
+运行成千上万长期会话的宿主应通过清扫器周期性调用它，例如每 60 秒调用一次、阈值设为
+5 分钟。对已断开服务器的后续工具调用会根据保留的配置重新建立连接，无需重新注册。
+
+断开操作还会清除孤儿时间戳：只调用过 `touch()`、从未真正连接过的服务器条目，会在
+每次 `disconnect_idle` 调用时被清扫，使活动映射在管理器的长期生命周期内不会无限
+增长（更新日志 `[3.3.0]` 修复了 “MCP timestamp leak”）。
+
+## 安全
+
+外部工具服务器应视为特权集成，凭据只放在环境变量或宿主密钥管理器中。

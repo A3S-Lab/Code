@@ -32,12 +32,24 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   <a href="#documentation">Documentation</a>
 </p>
 
-## What's new in 8.6
+## What's new in 8.7
+
+- **No filesystem-first serve mode (8.7.0).** The `serve` feature, `AgentDir`
+  primary-agent layout, cron daemon, and `AgentDirScriptTool` are removed.
+  Worker `agent_dirs` scanning remains.
+- **a3s-vec lexical FTS (8.7.0).** Workspace FTS uses pure-Rust `a3s-vec`
+  (`a3s_vec_fts_v1`). On-disk `zvec_rust_fts_v1` generations are incompatible
+  and rebuilt.
+- **`web_search` usable rows succeed (8.7.0).** Default cascade is API, then
+  HTTP/RSS, then headless. Non-empty usable rows are `complete` or `partial`
+  success (#161). Prefer **8.7.0** on npm/crates.io/PyPI.
+
+### Earlier in 8.6
 
 - **Image `read` + OpenAI tool images (8.6.0).** `read` returns JPEG/PNG/GIF/WebP
   as attachments; OpenAI-compatible clients keep tool-result `image_url` parts
   (#156 / #152). Also clears orphan `.a3s-isolate-*` dirs that blocked bind after
-  crashed runs (#155). Prefer **8.6.0** on npm/crates.io/PyPI.
+  crashed runs (#155).
 
 ### Earlier in 8.5
 
@@ -90,12 +102,12 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   pins follow monorepo `.a3s/config.acl` Flash routes.
 - **Zhipu / batch schema (8.5.12).** Removes application `$ref` objects from `batch` tool parameter examples so GLM Coding no longer HTTP 500s when `batch` is presented (#147).
 - **Musl Node natives (8.5.11).** Pins `a3s-sandbox` **0.1.4** so
-  `*-unknown-linux-musl` Node SDK builds succeed. Prefer current **8.6.0** on
-  npm (includes this fix); crates.io also published **8.5.10**, but that cut's
+  `*-unknown-linux-musl` Node SDK builds succeed. The current npm release
+  includes this fix; crates.io also published **8.5.10**, but that cut's
   Release workflow failed musl and did not complete the full Node matrix.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.6` line;
-current package **8.6.0**).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.7` line;
+current package **8.7.0**).
 
 ### Earlier lines
 

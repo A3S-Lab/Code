@@ -1,0 +1,11 @@
+---
+title: 'AgentDir schedules (removed)'
+description: 'AgentDir schedules/ and serve_agent_dir cron loops have been removed'
+---
+
+# AgentDir schedules (removed)
+
+AgentDir `schedules/` and `serve_agent_dir` cron loops are **removed**.
+
+Schedule recurring work in the host process (or an external scheduler) and
+call `AgentSession::send` / SDK `session.send` for each turn.

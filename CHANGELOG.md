@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.7.0] - 2026-09-21
+
 ### Removed
 
 - Filesystem-first agent mode: the `serve` Cargo feature, `AgentDir` primary-agent convention (`instructions.md` / `schedules/` / `tools/`), cron daemon (`serve_agent_dir` / `ServeHandle`), and `AgentDirScriptTool`. Worker/subagent `agent_dirs` / `register_agent_dir` scanning remains.
@@ -27,15 +29,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (29 `sdk_capabilities()` ids effective / efficient / integrated), plus plan
   §13/§14 status for bailian Flash Layer C and remaining L2/L6/L7/L8 release
   gates.
-- Documentation site current line is now `docs/v8.6.0` (archives the prior
-  `v8.5.5` line). Guide overview and Tools pages document image `read`
-  attachments and OpenAI tool-result `image_url` passthrough.
+- Documentation site current line is now `docs/v8.7.0` (archives the prior
+  `v8.6.0` line). Guide overview records the serve removal, a3s-vec FTS, and
+  the `web_search` success contract.
 
 ### Fixed
 
 - Go SDK Session exposes `SetPlanningMode` / `ClearPlanningModeOverride` (bridge
   ops `session_set_planning_mode` / `session_clear_planning_mode_override`) so
   the website accuracy gate matches Node/Python host capabilities.
+- `web_search` tries API, then HTTP/RSS, then headless. Non-empty usable rows
+  succeed as `complete` or `partial`; the structural gate only continues the
+  cascade. JSON stays a result array. Empty results, unknown engines, and
+  invalid arguments stay errors (#161).
+
+### Notes
+
+- Full multi-channel cut: crates.io `a3s-code-core`, GitHub Release `v8.7.0`,
+  npm `@a3s-lab/code`, Python bootstrap / wheels, and Go module tag
+  `sdk/go/v8.7.0`.
+
 
 ## [8.6.0] - 2026-09-18
 

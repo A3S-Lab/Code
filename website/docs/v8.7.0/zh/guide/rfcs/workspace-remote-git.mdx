@@ -1,0 +1,500 @@
+---
+title: 'RFC：远端 Workspace Git 后端'
+description: '为非本地 workspace 后端提供 git 操作的 HTTP/JSON 协议'
+---
+
+# RFC：远端 Workspace Git 后端
+
+| 字段 | 取值                                                    |
+| ---- | ------------------------------------------------------- |
+| 状态 | **已实现** v2.6.x（`core/src/workspace/remote_git.rs`） |
+| 归属 | `crates/code` workspace 子系统                          |
+| 关联 | S3 / 非本地 workspace 加固 Phase 4.1                    |
+| 相关 | `S3WorkspaceBackend`、`WorkspaceGit*` trait 族          |
+
+本文档作为协议规范保留——讲此协议的客户端与服务端应当严格匹配下方的
+线协议形态。后续修订应作为独立的 amendment 文档发布，而非原地修改这
+份 RFC，以便"实际 ship 出去的是什么"这条历史线索可审计。
+
+本 RFC 提出一套协议和 Rust 客户端，让 `a3s-code` 的内置 `git` 工具能够
+跑在非本地文件系统的 workspace 之上——首先服务 S3，将来覆盖容器 / DFS
+等无法承载 `.git` 目录的后端。
+
+## 1. 动机
+
+Workspace 抽象层已经通过 `WorkspaceFileSystem` 把内置工具与具体文件系统
+解耦。对 `bash`、`grep`、`glob`、`git` 这四个工具，我们使用**能力门控**：
+后端无法提供的能力对应的工具就不会被注册，模型根本看不到它。
+
+这对 `bash` 是合理的（对象存储确实没法跑 shell），对 `grep` 是可接受的
+（我们后来加了 `LIST + GET + regex` 的降级路径）。但对 `git` 是**痛点**：
+很多 a3s-code 工作流期望查询分支/提交状态、diff 工作区、创建分支、stash
+变更。如果只对本地会话开放 `git`，云端 workspace 就成了二等公民。
+
+本方案是引入一个**远端 `WorkspaceGit` 后端**，把这些操作通过网络委托
+给宿主运维的外部服务。该服务持有真实的工作区（或基于 libgit2 的实现），
+对外暴露一小套 HTTP API。a3s-code 客户端讲这套 API，对工具层来说它
+就是另一个 `WorkspaceGit` provider。
+
+```text
+                ┌──────────────────┐
+                │   a3s-code       │
+   模型         │                  │
+   ──────►      │  git 工具         │       HTTP/JSON
+                │      │           │   ┌────────────────┐
+                │      ▼           │   │                │
+                │  WorkspaceGit ───┼──►│  gitserver     │
+                │  (RemoteGit…)    │   │ (libgit2 / sh) │
+                │                  │   │                │
+                │  WorkspaceFs ────┼──►│  (S3, etc.)    │
+                └──────────────────┘   └────────────────┘
+```
+
+## 2. 非目标
+
+- **托管 gitserver。** 本 RFC 只定义客户端与协议，服务端的实现
+  （libgit2 封装、shell 外调、Gitea API 适配等）超出范围。
+- **替换本地 git。** 当 `WorkspaceFs` 是 `LocalWorkspaceBackend` 时，
+  现有的 `LocalWorkspaceBackend` 的 `WorkspaceGit` 实现仍是默认。
+  宿主按会话自由组合。
+- **push / pull。** `WorkspaceGit` trait 对远程是只读的
+  （`list_remotes` 返回已配置的远程；不暴露 `git push` / `git fetch`）。
+  如果有工具需要，未来 RFC 再加。
+- **Worktrees。** Worktree 是本地文件系统概念；远端后端**不**实现
+  `WorkspaceGitWorktreeProvider`。详见 §8。
+
+## 3. 协议选择 — HTTP/JSON
+
+**结论：** HTTP/JSON，不用 gRPC。
+
+| 评估维度         | HTTP/JSON                | gRPC                           |
+| ---------------- | ------------------------ | ------------------------------ |
+| 现有依赖         | `reqwest` 已在树中       | `tonic` + proto 工具链全是新增 |
+| schema 严格度    | 手写 `serde` 类型        | `.proto` 强类型                |
+| 测试 mock 难度   | `wiremock` 就够          | 需要 gRPC mock 基础设施        |
+| 运维可调试性     | `curl` 直接打            | `grpcurl`（普及度低）          |
+| 流式             | chunked / SSE            | 原生双向流                     |
+| 操作数量         | ~12 个 op，全部请求/响应 | 数量同上；流式罕用             |
+| 服务端实现自由度 | 直接包 `git` 或 `gitea`  | 必须实现 gRPC server           |
+
+操作面 ~12 个 RPC、请求响应都是扁平结构。流式只对 `log` 和 `diff` 有
+点用，而这两个客户端已经有上限。HTTP/JSON 在 mock 与运维调试上的优势
+明显压过 gRPC 的 schema 优势。如果操作面剧增或流式变成关键路径，
+再回头考虑 gRPC。
+
+我们对**所有操作都用 `POST`**：git 操作本质是命令式而非资源 CRUD，
+请求体让加字段（兼容方式）变得轻松——`GET` 强迫所有信息塞 query string。
+
+## 4. 仓库标识
+
+客户端知道自己在操作哪个仓库，服务端需要路由。仓库标识写在 **URL 路径**
+里：
+
+```
+POST /v1/repos/{repo_id}/git/<operation>
+```
+
+`repo_id` 是宿主与 gitserver 运维方协商的、不透明的、URL 安全字符串。
+典型值有：
+
+- `users/{user_id}/sessions/{session_id}`（与 S3 工作区前缀一一对应）
+- UUID
+- 服务端的工作区路径
+
+客户端把 `repo_id` 当不透明字符串；服务端负责映射到实际的工作区/裸仓。
+
+## 5. 端点参考
+
+全部 `POST`，全部 `application/json` 收发。字段命名 `snake_case`，匹配
+Rust serde 默认值。
+
+### 5.1 状态 — `WorkspaceGit::status`
+
+```
+POST /v1/repos/{repo_id}/git/status
+→ 200 {
+    "branch":       "main",
+    "commit":       "abc123...",
+    "is_worktree":  false,
+    "is_dirty":     true,
+    "dirty_count":  3
+  }
+→ 404 {"error":{"code":"REPO_NOT_FOUND", ...}}
+```
+
+### 5.2 日志 — `WorkspaceGit::log`
+
+```
+POST /v1/repos/{repo_id}/git/log
+{"max_count": 10}
+→ 200 {
+    "commits": [
+      {"id":"abc...", "message":"feat: ...", "author":"Alice <a@b>", "date":"2026-05-19T..."}
+    ]
+  }
+```
+
+### 5.3 列出分支 — `WorkspaceGit::list_branches`
+
+```
+POST /v1/repos/{repo_id}/git/branches
+→ 200 {"branches":[{"name":"main", "is_current":true}, ...]}
+```
+
+### 5.4 创建分支 — `WorkspaceGit::create_branch`
+
+```
+POST /v1/repos/{repo_id}/git/branches/create
+{"name":"feat/x", "base":"main"}
+→ 201 {}
+→ 409 {"error":{"code":"BRANCH_EXISTS", ...}}
+→ 404 {"error":{"code":"BASE_NOT_FOUND", ...}}
+```
+
+### 5.5 检出 — `WorkspaceGit::checkout`
+
+```
+POST /v1/repos/{repo_id}/git/checkout
+{"refspec":"feat/x", "force":false}
+→ 200 {"stdout":"Switched to branch 'feat/x'"}
+→ 409 {"error":{"code":"WORKING_TREE_DIRTY", ...}}
+```
+
+### 5.6 差异 — `WorkspaceGit::diff`
+
+```
+POST /v1/repos/{repo_id}/git/diff
+{"target": null}             // null 表示工作区与暂存区的差异
+{"target": "main"}           // 与指定引用比较
+→ 200 {"diff":"<统一差异文本>", "truncated": false}
+```
+
+`truncated` 为 `true` 表示服务端截断了响应正文——见 §9。客户端会在
+`git diff` 工具结果里把这个信号透出去。
+
+### 5.7 列出远端 — `WorkspaceGit::list_remotes`
+
+```
+POST /v1/repos/{repo_id}/git/remotes
+→ 200 {"remotes":[{"name":"origin", "url":"git@github.com:...", "direction":"fetch"}]}
+```
+
+### 5.8 是否为仓库 — `WorkspaceGit::is_repository`
+
+```
+POST /v1/repos/{repo_id}/git/exists
+→ 200 {"is_repository": true}
+```
+
+与“仓库不存在”（404）有别：服务端可能允许 `repo_id` 映射到非 Git
+目录。`is_repository` 让客户端不依赖 404 就能探测意图。
+
+### 5.9 列出贮藏 — `WorkspaceGitStashProvider::list_stashes`
+
+```
+POST /v1/repos/{repo_id}/git/stashes
+→ 200 {"stashes":[{"index":0, "message":"WIP on main: ..."}]}
+```
+
+### 5.10 创建贮藏 — `WorkspaceGitStashProvider::stash`
+
+```
+POST /v1/repos/{repo_id}/git/stashes/create
+{"message":"wip", "include_untracked":true}
+→ 201 {}
+→ 409 {"error":{"code":"NOTHING_TO_STASH", ...}}
+```
+
+## 6. 认证
+
+客户端支持两种传输认证模式，按会话配置：
+
+1. **Bearer token（默认）。** `Authorization: Bearer <token>`。Token
+   下发是宿主的责任（例如同一身份层签发的短期 JWT，复用 S3 访问的
+   门禁）。
+2. **mTLS。** 在 backend config 上设置 `client_cert_pem` 和
+   `client_key_pem` 两个路径。客户端在构造时读两个文件，拼接后交给
+   `reqwest::Identity::from_pem`。`rustls-tls` 后端要求密钥是 PKCS#8
+   PEM 格式。只设一边会在构造期 fail-closed 报错。
+
+两者可以同时启用——深度防御的部署直接两个都设。
+
+无认证模式（本地开发场景）通过把 token 设为空、不设 mTLS 来开启；
+客户端在构造时会 `tracing::warn!` 一条以让这个状态可见。
+
+## 7. 错误模型
+
+HTTP 状态码是**传输信号**。错误**类别**在 JSON body 里：
+
+```json
+{
+  "error": {
+    "code": "BRANCH_EXISTS",
+    "message": "branch 'feat/x' already exists"
+  }
+}
+```
+
+客户端映射：
+
+| HTTP    | 默认行为                                    |
+| ------- | ------------------------------------------- |
+| 200/201 | `Ok(...)`                                   |
+| 400     | `Err(anyhow!("bad request: {message}"))`    |
+| 401/403 | `Err(anyhow!("auth failed: {message}"))`    |
+| 404     | `Err(anyhow!("not found: {message}"))`      |
+| 409     | 类型化 conflict — 见下                      |
+| 5xx     | `Err(anyhow!("gitserver internal: {...}"))` |
+
+客户端为可恢复 conflict 引入一个类型化错误：
+
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("remote git conflict: {code}: {message}")]
+pub struct RemoteGitConflict {
+    pub code: String,
+    pub message: String,
+}
+```
+
+希望从 `BRANCH_EXISTS` / `WORKING_TREE_DIRTY` / `NOTHING_TO_STASH`
+恢复的工具用 `anyhow::Error::downcast_ref::<RemoteGitConflict>()`
+取出来——这与 `edit` / `patch` 在 S3 CAS 路径上用 `WorkspaceVersionConflict`
+的模式相同。
+
+协议正式定义的错误码（可扩展）：
+
+| Code                 | 来源                                          |
+| -------------------- | --------------------------------------------- |
+| `REPO_NOT_FOUND`     | `repo_id` 未注册                              |
+| `NOT_A_REPOSITORY`   | 路径存在但不是 git 仓库                       |
+| `BRANCH_EXISTS`      | `create_branch` 同名冲突                      |
+| `BRANCH_NOT_FOUND`   | checkout / diff 目标缺失                      |
+| `BASE_NOT_FOUND`     | `create_branch` 的 base ref 缺失              |
+| `WORKING_TREE_DIRTY` | `checkout` 会丢工作区改动（且 `force=false`） |
+| `NOTHING_TO_STASH`   | 干净工作区上的 stash                          |
+| `RATE_LIMITED`       | 服务端限流（自定义阈值）                      |
+
+## 8. 可选 Trait
+
+`WorkspaceGit` 完整实现。
+`WorkspaceGitStashProvider` 实现。
+`WorkspaceGitWorktreeProvider` **故意不实现**。Worktree 是本地文件系统
+概念，对远端服务映射不干净：
+
+- "在路径 X 创建一个 worktree"——客户端没有路径概念；服务端的路径
+  布局对客户端是不透明的。
+- 工具里用 worktree 隔离的工作流（多个 agent 并行跑在隔离副本上），
+  在云端的更优形式是**多个会话，每个会话有自己的 `repo_id`**，而不是
+  在客户端模拟一个本地文件系统特性。
+
+依赖 `WorkspaceGitWorktreeProvider` 的工具会从 `services.git_worktree()`
+拿到 `None`，并报"worktrees unavailable on remote git workspaces"。
+
+## 9. 大小与成本上限
+
+沿用 S3 后端的设防方式，远端 git 客户端强制几个客户端侧上限，避免
+模型触发无界响应：
+
+| 配置项                   | 默认值 | 作用对象                      |
+| ------------------------ | ------ | ----------------------------- |
+| `max_diff_bytes`         | 1 MiB  | `diff` 响应 body              |
+| `max_log_entries`        | 200    | `log` 的 `max_count` 上限     |
+| `request_timeout`        | 30 s   | 每次 HTTP 调用                |
+| `operation_timeout` (WS) | 60 s   | 叠加在 `WorkspaceServices` 层 |
+
+期望服务端也尊重这些上限——客户端会把相关上限传到请求里（例如
+`max_log_entries`），并把服务端返回的 `diff.truncated` 透出去，让
+工具能提示"diff 太大被截断，请缩小目标"。
+
+## 10. Rust 客户端设计
+
+```rust
+// core/src/workspace/remote_git.rs
+
+#[derive(Debug, Clone)]
+pub struct RemoteGitBackendConfig {
+    pub base_url:        String,           // https://git.example.invalid
+    pub repo_id:         String,           // path-segment 安全
+    pub bearer_token:    Option<String>,
+    pub client_cert_pem: Option<PathBuf>,  // mTLS
+    pub client_key_pem:  Option<PathBuf>,
+    pub request_timeout: Option<Duration>, // 默认 30s
+    pub max_diff_bytes:  Option<u64>,      // 默认 1 MiB
+    pub max_log_entries: Option<usize>,    // 默认 200
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteGitBackend {
+    http:           reqwest::Client,
+    base_url:       String,
+    repo_id:        String,
+    max_diff_bytes: u64,
+    max_log_entries: usize,
+}
+
+#[async_trait]
+impl WorkspaceGit for RemoteGitBackend { /* 见 §5 */ }
+
+#[async_trait]
+impl WorkspaceGitStashProvider for RemoteGitBackend { /* 见 §5 */ }
+```
+
+组合工厂沿用 S3 的形式：
+
+```rust
+impl WorkspaceServices {
+    /// 在已有文件系统后端之上挂一个远端 git provider。
+    pub fn with_remote_git(
+        self: Arc<Self>,
+        cfg: RemoteGitBackendConfig,
+    ) -> Arc<Self> { ... }
+}
+```
+
+或者作为 S3 + 远端 git 工作区的顶层便利方法：
+
+```rust
+pub fn s3_with_remote_git(
+    s3:  S3BackendConfig,
+    git: RemoteGitBackendConfig,
+) -> Arc<WorkspaceServices> { ... }
+```
+
+接线沿用现有的 builder 模式：
+
+```rust
+let backend = Arc::new(RemoteGitBackend::new(cfg));
+let git:   Arc<dyn WorkspaceGit>              = backend.clone();
+let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
+
+WorkspaceServices::builder(workspace_ref, fs)
+    .file_system_ext(fs_ext)        // S3 ETag CAS
+    .git(git)
+    .git_stash(stash)
+    // 不设 git_worktree — 见 §8
+    .operation_timeout(Duration::from_secs(60))
+    .build()
+```
+
+之后能力门控会自动注册 `git` 工具。
+
+## 11. 每调用可观测性
+
+每次 HTTP 调用发一个 `tracing::debug!` 事件，字段形态与
+`S3WorkspaceBackend::emit_s3_call_event` 一致（见
+`core/src/workspace/s3.rs`）：
+
+| 字段          | 示例                          |
+| ------------- | ----------------------------- |
+| `op`          | `git.status`、`git.diff`、... |
+| `repo_id`     | `sessions/example`            |
+| `outcome`     | `ok` \| `error`               |
+| `status`      | HTTP 状态码                   |
+| `bytes`       | 响应 body 长度                |
+| `duration_ms` | 墙钟耗时                      |
+
+已经 meter S3 成本的宿主可以把同一个 subscriber 接上来 meter gitserver
+成本——不引入新依赖，也不要新接口。
+
+## 12. 组合示例
+
+### S3 workspace + 远端 git
+
+```rust
+let ws = WorkspaceServices::s3_with_remote_git(
+    S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
+        .endpoint("https://s3.example.invalid")
+        .force_path_style(true)
+        .enable_search(true),
+    RemoteGitBackendConfig::new(
+        "https://git.example.invalid",
+        "sessions/example",
+    )
+    .bearer_token(token),
+);
+
+let session = agent
+    .session_builder("s3://workspace/sessions/example")
+    .options(SessionOptions::new().with_workspace_backend(ws))
+    .build()
+    .await?;
+```
+
+该会话注册的工具：`read`、`write`、`edit`、`patch`、`ls`、`grep`、`glob`、
+`git`。（`bash` 仍然隐藏——对象存储跑不了 shell。）
+
+### 本地文件系统 + 远端 git（混合）
+
+CI 跑在本地 checkout 上，但宿主想把 git 操作路由进沙箱化服务
+（例如做审计或限流）时有用。
+
+```rust
+let local = WorkspaceServices::local("/workspaces/repo");
+let ws    = local.with_remote_git(remote_cfg);   // 覆盖本地的 git provider
+```
+
+## 13. 未决问题
+
+这些应在 Phase 4.2（实现）开始前敲定。
+
+1. **Diff 方言。** 本地后端返回原始 `git diff` 的 stdout。远端 API 是否
+   应该强制具体 diff 方言（POSIX `diff -u`？libgit2 的变体？），还是
+   透传服务端产出？建议：透传，文档要求服务端必须生成 unified diff。
+
+2. **并发操作。** 两个客户端同时访问同一 `repo_id`（一个跑 `checkout`、
+   一个跑 `diff`），服务端是否要串行？建议：服务端按 `repo_id`
+   做串行；写进文档；客户端不在冲突上重试。
+
+3. **长任务。** 大树上的 `checkout` 可能超过 `request_timeout`。协议是
+   否要支持轮询 / 异步 job 模式？建议：先不做。设合理的超时；我们
+   面向的（每会话沙箱）工作区不大。
+
+4. **Hooks。** 服务端可能装了 pre-commit / pre-push hooks。响应里要
+   不要给一个"hook 输出"通道？建议：当非空时把 hook 的 stderr 塞进
+   `checkout` / `stash` 的响应；hook 失败映射到 HTTP 422 +
+   `HOOK_FAILED`。
+
+5. **schema 版本化。** 第一版端点放 `/v1/`。什么时候升 `/v2/`？
+   建议：只在请求/响应 shape 出现不兼容变更时；新增字段保留在
+   `/v1/`（客户端要忽略未知字段）。
+
+6. **参考实现。** 是否要在本仓库放一个最小参考 gitserver
+   （比如 libgit2 + Rust）？建议：仓库外。客户端 + 协议足够；参考
+   服务归运维方。
+
+## 14. 范围外（未来 RFC）
+
+- **push / fetch 到上游。** 让"agent 改完代码 push 回去"的工作流成立，
+  涉及凭证下发。
+- **稀疏 / 局部 checkout。** 大型 monorepo 必要；当前面假定整个仓库
+  全量落地到服务端。
+- **流式 `log` / `diff`。** 当响应稳定超出 `max_diff_bytes` 时必要，
+  会让 gRPC 的判断重新被讨论。
+- **Hooks 管理。** 通过客户端列举 / 配置服务端 hook。
+
+## 15. 实现笔记（v2.6.x 已发布）
+
+最初草案给的是 8 步实施提纲；实际发布出去的（Phase 4.2 + 后续 Phase 5.x）如下：
+
+1. `RemoteGitBackend` / `RemoteGitBackendConfig` / `RemoteGitConflict` 位于
+   `core/src/workspace/remote_git.rs`。最终没有加
+   `remote-git` cargo feature——`reqwest` 已经在依赖里，模块无条件编译。
+2. `WorkspaceGit` 与 `WorkspaceGitStashProvider` 完整实现；
+   `WorkspaceGitWorktreeProvider` 故意不实现（见 §8）。
+3. `WorkspaceServices::with_remote_git` 是公开挂载点。内部 helper
+   `with_git_provider`（v2.6.x 一个后续提交里加上）用 struct literal
+   显式拷贝字段——确保 `WorkspaceServices` 未来加字段时装饰器不会静默丢失。
+4. 除 bearer token 外支持 mTLS（`client_cert_pem` + `client_key_pem`），
+   在 Phase 5.2 一次后续提交里 ship；同一个提交把上方 §6 也更新到了
+   已实现状态。
+5. `diff` 客户端侧防 OOM：HTTP body 流式累积，硬上限
+   `max_diff_bytes * 4`（Phase 6.2）。soft `max_diff_bytes` 显示截断
+   在 JSON decode 之后照旧生效。
+6. 测试面：`remote_git.rs` 里 25+ 个 wiremock 单元测试 + 1 个端到端
+   驱动内置 `git` 工具的集成测试；workspace 通用 conformance suite
+   在 Phase 6.3 加入。
+7. README 与 CHANGELOG 已更新；TLS 后端选择与 AWS SDK 一致用
+   rustls-tls。
+8. SDK 暴露在 Phase 5.1 完成（Node + Python）——草案曾说"trait 稳定之
+   后再补"，结果是 Phase 4.2 完成两个提交后就上了。
