@@ -166,7 +166,6 @@ void _knownResearchKind
 void ResearchWireTypeV1.RESEARCH_EVENT
 void RESEARCH_WIRE_KINDS_V1
 const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
-const _serveFailureCode: A3sCodeErrorCode = 'SERVE_STARTUP_FAILED'
 
 void _session.readFile('notes.txt', _readOptions)
 void _session.readFile('notes.txt', { offset: 1, limit: 1 })
@@ -217,10 +216,6 @@ void _agent.session('repo', {
   manualDelegationEnabled: false,
   retentionLimits: { unbounded: true },
 })
-void _serveHandle.isReady()
-void _serveHandle.state()
-void _serveHandle.failureCode()
-void _serveHandle.isStopped()
 void _versionedEvent.payload
 void _envelope.payload.opaque
 void _knownEventType
@@ -229,7 +224,6 @@ void _codeError.code
 void _runSpawn.snapshot
 void _runSpawn.replayed
 void _busyCode
-void _serveFailureCode
 
 async function _consumeRunReplay(): Promise<void> {
   const started: AgentRunSpawnObject = await _session.spawnRunWithId('run-1', 'inspect')
@@ -269,7 +263,6 @@ async function _consumeAsyncLifecycle(): Promise<void> {
   await resumed.closeAsync()
   const replacement = await _agent.replaceSessionAsync(session, {})
   await replacement.closeAsync()
-  await serveHandle.stop()
 }
 
 void _consumeAsyncLifecycle

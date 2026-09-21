@@ -1,7 +1,7 @@
 # A3S Code Performance Qualification
 
-Status: passed on 2026-08-30 for Code
-[`9d17c63`](https://github.com/A3S-Lab/Code/commit/9d17c63803408a8aa32021cd8139256d52e0de0e).
+Status: passed on 2026-09-21 for Code
+[`9b28f066`](https://github.com/A3S-Lab/Code/commit/9b28f06671fabefaf876cb861c73eb95949cd37d).
 
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
@@ -12,13 +12,18 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
-| Seven release performance profiles                              | [`33304362997`](https://github.com/A3S-Lab/Code/actions/runs/33304362997) | `performance-33304362997-1`           | `0c3e497f546ed3917555036fe972a051f38c89d9062f62e0727a6990665bdf42` |
+| Nine release performance profiles (current RC)                  | [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682) | `performance-35639843682-1`           | `17851eb61d21970a46582c277a5fe7704f38f098bfaea074feaf23b19a246a04` |
 | Nine release performance profiles (including evaluation substrate) | [`33844533910`](https://github.com/A3S-Lab/Code/actions/runs/33844533910) | `performance-33844533910-1`           | `c6062c73f46fae51d665fc754a2bf7824db02648b1ccf5c6dbbf3ac3e92ff7e3` |
+| Seven release performance profiles                              | [`33304362997`](https://github.com/A3S-Lab/Code/actions/runs/33304362997) | `performance-33304362997-1`           | `0c3e497f546ed3917555036fe972a051f38c89d9062f62e0727a6990665bdf42` |
 | MinIO, controlled Chrome/CDP, and local OpenTelemetry Collector | [`32130843684`](https://github.com/A3S-Lab/Code/actions/runs/32130843684) | `hermetic-integrations-32130843684-1` | `7d6a3dea89bea20ffa9be82d0feab14f96a168196bba2f55b8cb2c7c89d2c975` |
 
-GitHub reported both digests for the uploaded ZIP archives. The artifacts are
+GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
+
+Run `35639843682` on commit `9b28f066` produced all nine reports with
+`passed: true` after standalone CI stripped monorepo path patches and
+re-locked `a3s-apofasi`, `a3s-sandbox`, and `a3s-vec`.
 
 ## Measurement boundary
 

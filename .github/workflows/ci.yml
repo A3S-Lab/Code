@@ -75,7 +75,7 @@ jobs:
       - name: Rustdoc warning gate
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --workspace --all-features --no-deps
+        run: cargo doc --locked -p a3s-code-core -p a3s-code-go-bridge --features ci-all --no-deps
 
       - name: Check browser dependency boundary
         shell: bash
@@ -107,8 +107,8 @@ jobs:
           cargo test -p a3s-code-core --no-default-features --features apofasi --lib typed_decision
 
       - name: Clippy
-        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
-        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
+        # --features ci-all: every optional surface except Apple-only apofasi-metal.
+        run: cargo clippy -p a3s-code-core -p a3s-code-go-bridge --lib --bins --features ci-all -- -D warnings
 
       - name: Check public API compatibility with v5.3.5
         run: |
@@ -123,7 +123,7 @@ jobs:
       - name: Feature-gated library tests
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test --workspace --all-features --lib
+        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib
 
       - name: Agent convergence benchmark
         run: cargo run -p a3s-code-core --example agent_convergence_benchmark
@@ -193,8 +193,8 @@ jobs:
         run: bash .github/relock-standalone-deps.sh
 
       - name: Clippy
-        # --all-features: thin default leaves Advanced-only APIs unused otherwise.
-        run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
+        # --features ci-all: every optional surface except Apple-only apofasi-metal.
+        run: cargo clippy -p a3s-code-core -p a3s-code-go-bridge --lib --bins --features ci-all -- -D warnings
 
       - name: Library tests
         # a3s-sandbox's AppContainer backend temporarily reserves DOS drive

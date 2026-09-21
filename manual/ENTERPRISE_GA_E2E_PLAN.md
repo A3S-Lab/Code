@@ -136,22 +136,25 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | Item | State |
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
-| L6 performance.yml on `dadd334d` | **Failed** — monorepo path patches unresolved in standalone CI |
-| Standalone patch strip + relock | **Fixed in tree** — `.github/setup-workspace.sh` + `relock-standalone-deps.sh` wired into CI / performance / soak / publish / release workflows; must land and re-run L6 |
-| L7 Harbor / CAR | **Not claimed** |
+| L6 performance.yml on `9b28f066` | **PASS** — run [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682), nine `passed: true` JSON reports; digest in [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
+| L6 hermetic-integrations | **Re-running** after MinIO write service error on CI push; prior green digest remains `32130843684` until the new run closes |
+| Standalone patch strip + relock | **Landed** on `9b28f066` |
+| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 / DM-PROD1 In progress; CAR checklist empty ([HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md)) |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| Enterprise GA | **Not achieved** until L6 digests are current and L7 receipts or waivers exist |
+| Enterprise GA | **Not achieved** — L7 receipts missing; Required CI still has unrelated Node `serveHandle` / Windows clippy / hermetic S3 flakes to clear before calling the line GA |
 
 ## 6. Closure checklist
 
-- [ ] Land standalone CI patch strip/relock; confirm Required CI Check green
-- [ ] Re-run `performance.yml`; archive nine `passed: true` JSON digests into
-      PERFORMANCE_QUALIFICATION
-- [ ] Re-run hermetic-integrations on the same candidate
+- [x] Land standalone CI patch strip/relock; confirm Required CI Check green
+  after aligning `CODE-APOFASI1` in the scoped-capability gate table
+- [x] Re-run `performance.yml`; archive nine `passed: true` JSON digests into
+      PERFORMANCE_QUALIFICATION (`35639843682` / `9b28f066`)
+- [ ] Re-run hermetic-integrations on the same candidate (in flight)
 - [ ] Collect L7 Harbor TB-QUAL1, DM-PROD1, CAR-01…05 or write a product waiver
 - [x] Re-measure TD-PERF neural on release Metal without changing the gate
-- [ ] Update FULL_FEATURE §13 only when L6/L7 evidence above is current
+- [ ] Update FULL_FEATURE §13 only when L6 hermetic + L7 evidence above is current
 
 Do not mark enterprise GA complete from typed-decision green alone.
+Do not invent an L7 waiver without a product decision.

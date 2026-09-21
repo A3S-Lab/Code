@@ -49,3 +49,5 @@ server = ["s3"]
 advanced-harness = ["a3s-code-core/advanced-harness"]
 # Compile the pure-Rust a3s-vec FTS adapter.
 a3s-vec-fts = ["a3s-code-core/a3s-vec-fts"]
+# Match Core's non-Apple CI surface (no Metal).
+ci-all = ["a3s-code-core/ci-all"]

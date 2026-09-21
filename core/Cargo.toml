@@ -255,8 +255,12 @@ apofasi = ["dep:a3s-apofasi"]
 # Neural checkpoint path (Candle). Requires bundled weights; keeps ML off
 # the default Apofasi surface.
 apofasi-infer = ["apofasi", "a3s-apofasi/infer"]
-# Apple Silicon Metal for Apofasi neural forwards.
+# Apple Silicon Metal for Apofasi neural forwards. Not part of `ci-all`:
+# `--all-features` would pull objc2 onto Linux/Windows runners.
 apofasi-metal = ["apofasi-infer", "a3s-apofasi/metal"]
+# Every optional surface that is safe on Linux/Windows CI hosts.
+# Prefer this over `--all-features` outside macOS.
+ci-all = ["full", "apofasi", "apofasi-infer"]
 
 [dev-dependencies]
 # Deterministically advance the exponential stream-retry backoff in async tests.
