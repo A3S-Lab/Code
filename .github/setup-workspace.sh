@@ -40,3 +40,24 @@ if grep -nE 'path = "\.\./\.\./[^"]+"' core/Cargo.toml; then
 fi
 
 echo "Path dependencies replaced. Ready to build."
+
+# Workspace [patch] tables point at monorepo siblings (../apofasi, ../sandbox,
+# ../vec). This checkout does not have those directories. Drop the tables so
+# Cargo uses the git and crates.io dependencies declared in core/Cargo.toml.
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path("Cargo.toml")
+text = path.read_text()
+marker = "\n[patch."
+start = text.find(marker)
+if start == -1:
+    raise SystemExit("expected monorepo [patch] tables in Cargo.toml")
+path.write_text(text[:start].rstrip() + "\n")
+print("removed monorepo path patches from Cargo.toml")
+PY
+
+if grep -nE 'path = "\.\./' Cargo.toml; then
+  echo "setup-workspace left a sibling path in Cargo.toml" >&2
+  exit 1
+fi

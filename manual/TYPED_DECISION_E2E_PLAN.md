@@ -237,5 +237,8 @@ cargo test -p a3s-code-core --features apofasi,apofasi-metal --test typed_decisi
 | TD-C | Hermetic host proves 0 vs 1 fake generations and fail-closed parse |
 | TD-D | Ignored test shows remapped `boyue/bailian/deepseek-v4.1-flash` |
 | TD-E | Ignored live tests show one default-gate escalate generation on the single-question pin, the three-kind payout request, and the structured billing triage. Neural checkpoint tests show zero generations on Auto and a matching count on each complex request |
+| TD-PERF | Ignored `typed_decision_perf` Flash percentiles on the billing triage at default 0.7; recorded in [ENTERPRISE_GA_E2E_PLAN.md](ENTERPRISE_GA_E2E_PLAN.md). Not an L6 digest |
 
-TD-D and TD-E are release qualification, not merge blockers.
+TD-D, TD-E, and TD-PERF are release qualification, not merge blockers.
+Enterprise GA still requires L6 digests and L7 receipts as named in
+[ENTERPRISE_GA_E2E_PLAN.md](ENTERPRISE_GA_E2E_PLAN.md).

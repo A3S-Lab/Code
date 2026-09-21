@@ -34,6 +34,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Relock standalone dependencies
+        run: bash .github/relock-standalone-deps.sh
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Install protobuf compiler on Linux

@@ -72,6 +72,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Relock standalone dependencies
+        run: bash .github/relock-standalone-deps.sh
+
       - name: Install Linux build and sandbox prerequisites
         shell: bash
         run: |
@@ -173,6 +176,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Relock standalone dependencies
+        run: bash .github/relock-standalone-deps.sh
+
       - name: Clippy (Windows)
         # --all-features: thin default leaves Advanced-only APIs unused otherwise.
         run: cargo clippy --workspace --lib --bins --all-features -- -D warnings
@@ -210,6 +216,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Relock standalone dependencies
+        run: bash .github/relock-standalone-deps.sh
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler

@@ -451,6 +451,7 @@ CAPABILITY_VERIFICATION     ──► dimension checklist + ledger
 CAPABILITY_INTEGRATED_USE   ──► dated 29-id E+E+I snapshot
 SDK_CAPABILITY_MATRIX       ──► language entrypoints
 THIS PLAN                   ──► join + unit/integ/E2E taxonomy + train + gaps + pin
+ENTERPRISE_GA_E2E_PLAN      ──► L0–L8 GA board + TD-PERF complex Flash latency
 test-cases/                 ──► unit / integration / soak case oracles
 layer_c_model.rs            ──► L5 Flash pin + bailian typo remap
 ```
@@ -470,7 +471,7 @@ layer_c_model.rs            ──► L5 Flash pin + bailian typo remap
 | L5 Layer C bailian Flash | **PASS** `/tmp/a3s-layer-c-bailian-flash-combined/FINAL.txt` (`LAYER_C_PASS`, 22/22 final) |
 | 29-cap integrated use | **PASS** [CAPABILITY_INTEGRATED_USE_LEDGER.md](CAPABILITY_INTEGRATED_USE_LEDGER.md) |
 | L2 F-kernel cov | **Prior PASS** (not re-measured this execution) |
-| L6/L7 | **Not claimed** this run (performance.yml / Harbor / CAR owner-gated) |
+| L6/L7 | **Not claimed** this run (performance.yml / Harbor / CAR owner-gated). See [ENTERPRISE_GA_E2E_PLAN.md](ENTERPRISE_GA_E2E_PLAN.md) for the GA board and TD-PERF Flash evidence |
 | `just full-feature-hermetic` | **Gap G1** — not implemented |
 | Baseline ID ↔ F-table CI join | **Gap G2** — manual join in §3 only |
 | Serve-doc scrub | **G8 mostly closed** for active manuals; CHANGELOG history may retain serve notes |
