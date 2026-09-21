@@ -18,7 +18,9 @@ pub(crate) mod windows;
 #[cfg(windows)]
 pub(crate) use windows::maybe_execute_simple_windows_http_command;
 #[cfg(windows)]
-pub(crate) use windows::{build_powershell_command, encode_powershell_command, CREATE_NO_WINDOW};
+pub(crate) use windows::{
+    build_powershell_command, encode_powershell_command, windows_host_powershell, CREATE_NO_WINDOW,
+};
 #[cfg(all(test, windows))]
 use windows::{
     normalize_json_like_literal, parse_simple_windows_http_command, preprocess_windows_command,
@@ -262,7 +264,7 @@ pub(crate) fn spawn_shell(
 ) -> std::io::Result<tokio::process::Child> {
     #[cfg(windows)]
     {
-        let powershell = a3s_sandbox::windows_host_powershell(workspace).map_err(|error| {
+        let powershell = windows_host_powershell(workspace).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(

@@ -587,7 +587,8 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
     let started_literal = started.to_string_lossy().replace('\'', "''");
     let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
     let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
-    let powershell = a3s_sandbox::windows_host_powershell(temp.path()).expect("PowerShell 7");
+    let powershell =
+        crate::tools::builtin::bash::windows_host_powershell(temp.path()).expect("PowerShell 7");
     let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
     let command = format!(
         "Set-Content -LiteralPath '{started_literal}' -Value started; \

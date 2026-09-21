@@ -565,8 +565,8 @@ mod tests {
         let leaked = directory.path().join("leaked");
         let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
         let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
-        let powershell =
-            a3s_sandbox::windows_host_powershell(directory.path()).expect("PowerShell 7");
+        let powershell = crate::tools::builtin::bash::windows_host_powershell(directory.path())
+            .expect("PowerShell 7");
         let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
         // Spawn without bind_windows_process_tree so the guard itself owns the job.
         let mut command = Command::new(&powershell);
@@ -613,8 +613,8 @@ mod tests {
         let leaked = directory.path().join("leaked");
         let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
         let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
-        let powershell =
-            a3s_sandbox::windows_host_powershell(directory.path()).expect("PowerShell 7");
+        let powershell = crate::tools::builtin::bash::windows_host_powershell(directory.path())
+            .expect("PowerShell 7");
         let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
         let mut command = Command::new(&powershell);
         command

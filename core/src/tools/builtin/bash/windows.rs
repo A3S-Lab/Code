@@ -1033,3 +1033,27 @@ impl<'a> JsonLikeParser<'a> {
         }
     }
 }
+
+/// Resolve PowerShell 7 (`pwsh.exe`) for host shell execution on Windows.
+///
+/// Product bash and detached sessions require PowerShell 7. This does not use
+/// the AppContainer sandbox path resolver; it only locates the host binary.
+#[cfg(windows)]
+pub(crate) fn windows_host_powershell(
+    _workspace: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+
+    let program_files = std::env::var_os("ProgramFiles")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .context("Windows Program Files directory is unavailable")?;
+    let candidate = program_files.join("PowerShell").join("7").join("pwsh.exe");
+    if !candidate.is_file() {
+        anyhow::bail!(
+            "PowerShell 7 is required at {}; install pwsh.exe before running host shell commands",
+            candidate.display()
+        );
+    }
+    Ok(candidate)
+}

@@ -269,7 +269,8 @@ fn spawn(session_id: &str, admitted: &AdmittedCommand) -> Result<Child> {
             Ok(())
         });
     }
-    let child = command.spawn().map_err(|error| {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut child = command.spawn().map_err(|error| {
         anyhow!("failed to spawn detached shell for session {session_id}: {error}")
     })?;
     #[cfg(windows)]
@@ -299,12 +300,13 @@ fn windows_detached_command(
 ) -> Result<Command> {
     use std::os::windows::process::CommandExt;
 
-    let powershell = a3s_sandbox::windows_host_powershell(&admitted.cwd).map_err(|error| {
-        anyhow!(
-            "failed to resolve PowerShell 7 for {}: {error}",
-            admitted.cwd.display()
-        )
-    })?;
+    let powershell =
+        crate::tools::builtin::bash::windows_host_powershell(&admitted.cwd).map_err(|error| {
+            anyhow!(
+                "failed to resolve PowerShell 7 for {}: {error}",
+                admitted.cwd.display()
+            )
+        })?;
     let mut source = String::new();
     for key in overlay.keys() {
         if is_powershell_identifier(key) {
@@ -547,7 +549,8 @@ mod tests {
         let leaked = root.path().join("leaked");
         let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
         let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
-        let powershell = a3s_sandbox::windows_host_powershell(root.path()).expect("PowerShell 7");
+        let powershell = crate::tools::builtin::bash::windows_host_powershell(root.path())
+            .expect("PowerShell 7");
         let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
         let command = format!(
             "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
@@ -582,7 +585,8 @@ mod tests {
         let leaked = root.path().join("leaked");
         let child_started_literal = child_started.to_string_lossy().replace('\'', "''");
         let leaked_literal = leaked.to_string_lossy().replace('\'', "''");
-        let powershell = a3s_sandbox::windows_host_powershell(root.path()).expect("PowerShell 7");
+        let powershell = crate::tools::builtin::bash::windows_host_powershell(root.path())
+            .expect("PowerShell 7");
         let powershell_literal = powershell.to_string_lossy().replace('\'', "''");
         let command = format!(
             "$child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
