@@ -12,8 +12,8 @@ use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider, PageRenderer};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    EngineFailure, Metrics, MetricsSnapshot, RetrievalRequirements, Search,
-    SearchCascade, SearchCoalescerSnapshot, SearchQuery, SearchResult, SearchResults,
+    EngineFailure, Metrics, MetricsSnapshot, RetrievalRequirements, Search, SearchCascade,
+    SearchCoalescerSnapshot, SearchQuery, SearchResult, SearchResults,
 };
 use anyhow::Result;
 use async_trait::async_trait;
