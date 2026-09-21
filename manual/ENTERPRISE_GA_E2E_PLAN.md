@@ -137,8 +137,8 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
 | L6 performance.yml on `9b28f066` | **PASS** — run [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682), nine `passed: true` JSON reports; digest in [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
-| L6 hermetic-integrations on `515a50b0` | **PASS** — run [`35642286881`](https://github.com/A3S-Lab/Code/actions/runs/35642286881); S3/CDP/OTLP `passed: true`; digest in PERFORMANCE_QUALIFICATION |
-| L6 re-run on tip `c9e26504` | **In progress** — dispatched [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466) (performance) and [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718) (hermetic); archive digests into PERFORMANCE_QUALIFICATION only after both complete with `passed: true` |
+| L6 hermetic-integrations on tip `c9e26504` | **PASS** — run [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718); S3/CDP/OTLP `passed: true`; digest `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` in PERFORMANCE_QUALIFICATION |
+| L6 performance.yml tip re-run `c9e26504` | **In progress** — [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466); keep prior PASS on `9b28f066` until tip digests archive |
 | Standalone patch strip + relock | **Landed** on `9b28f066` |
 | L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green on wheel 8.6.0 job `2026-09-22__07-32-16`; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
@@ -152,7 +152,10 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
   after aligning `CODE-APOFASI1` in the scoped-capability gate table
 - [x] Re-run `performance.yml`; archive nine `passed: true` JSON digests into
       PERFORMANCE_QUALIFICATION (`35639843682` / `9b28f066`)
-- [x] Re-run hermetic-integrations on the same line (`35642286881` / `515a50b0`)
+- [x] Re-run hermetic-integrations on tip `c9e26504` (`35667552718`); archive
+      digest into PERFORMANCE_QUALIFICATION
+- [ ] Re-run `performance.yml` on tip `c9e26504` (`35667548466`) and archive
+      nine `passed: true` digests
 - [ ] Collect L7 Harbor TB-QUAL1, DM-PROD1, CAR-01…05 or write a product waiver
 - [x] Re-measure TD-PERF neural on release Metal without changing the gate
 - [x] Update FULL_FEATURE §13 L6 status with current performance digests
