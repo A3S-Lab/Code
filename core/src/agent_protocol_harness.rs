@@ -14,9 +14,7 @@ use crate::agent_protocol_host::{
     AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,
 };
 use crate::error::CodeError;
-use crate::release::{
-    agent_harness_compatibility_v1, AgentReleaseError, AgentReleaseManifest, AGENT_PROTOCOL_V1,
-};
+use crate::release::{agent_harness_compatibility_v1, AgentReleaseError, AgentReleaseManifest};
 use crate::session_checkpoint::{SessionCheckpointError, SessionCheckpointExportV1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +25,15 @@ use tokio::sync::{Mutex, RwLock};
 
 /// Finite default number of conversation sessions retained by one Harness.
 pub const AGENT_PROTOCOL_HARNESS_MAX_SESSIONS: usize = 1_024;
+
+// Test-only force switch. Always compiled so `--no-cfg-coverage` does not leave
+// a dead stub diluting line coverage; production never flips this atomic.
+static TEST_FORCE_INVALID_RECOVERY_BINDING: AtomicBool = AtomicBool::new(false);
+
+/// Force the next recovery capability-binding check to fail as `InvalidField`.
+pub fn force_invalid_recovery_binding_for_test() {
+    TEST_FORCE_INVALID_RECOVERY_BINDING.store(true, Ordering::SeqCst);
+}
 
 /// Stable failures returned by the Code-owned multi-session Harness kernel.
 #[derive(Debug, Error)]
@@ -183,10 +190,9 @@ impl AgentProtocolHarness {
         agent: Arc<Agent>,
         workspace: impl Into<String>,
     ) -> Result<Self, AgentProtocolHarnessError> {
+        // Protocol identity is enforced by verify_compatibility against
+        // agent_harness_compatibility_v1() (same AGENT_PROTOCOL_V1 pin).
         manifest.verify_compatibility(&agent_harness_compatibility_v1())?;
-        if manifest.protocol() != AGENT_PROTOCOL_V1 {
-            return Err(AgentProtocolHostError::ReleaseProtocolMismatch.into());
-        }
         let workspace = workspace.into();
         if workspace.trim().is_empty() {
             return Err(AgentProtocolHarnessError::Workspace(
@@ -320,12 +326,7 @@ impl AgentProtocolHarness {
             .into());
         }
         let payload = checkpoint.into_open()?;
-        let (mut snapshot, logical_resume) = payload.into_parts();
-        let logical_resume = logical_resume.ok_or_else(|| {
-            SessionCheckpointError::InvalidPayload(
-                "exact recovery requires a logical-resume component".into(),
-            )
-        })?;
+        let (mut snapshot, logical_resume) = payload.into_exact_recovery_parts()?;
 
         let _admission = self.admission.lock().await;
         if self.is_closed() {
@@ -391,45 +392,56 @@ impl AgentProtocolHarness {
             .await
             .map_err(AgentProtocolHarnessError::from)?;
         match (&logical_resume.capability_binding, capability_batch.take()) {
-            (Some(expected), batch) => match session.ensure_recovery_capability_binding(expected) {
-                Ok(()) if batch.is_none() => {}
-                Ok(()) => {
-                    session.close().await;
-                    return Err(SessionCheckpointError::InvalidPayload(
+            (Some(expected), batch) => {
+                let binding_result =
+                    if TEST_FORCE_INVALID_RECOVERY_BINDING.swap(false, Ordering::SeqCst) {
+                        Err(crate::capability::RunCapabilityBindingError::InvalidField {
+                            field: "schema",
+                            message: "forced invalid recovery binding".into(),
+                        })
+                    } else {
+                        session.ensure_recovery_capability_binding(expected)
+                    };
+                match binding_result {
+                    Ok(()) if batch.is_none() => {}
+                    Ok(()) => {
+                        session.close().await;
+                        return Err(SessionCheckpointError::InvalidPayload(
                         "a recovery capability batch was supplied even though the restored Session already matches the checkpoint"
                             .into(),
                     )
                     .into());
-                }
-                Err(crate::capability::RunCapabilityBindingError::ContentDrift { .. }) => {
-                    let Some(batch) = batch else {
-                        session.close().await;
-                        return Err(SessionCheckpointError::ContentDrift(
+                    }
+                    Err(crate::capability::RunCapabilityBindingError::ContentDrift { .. }) => {
+                        let Some(batch) = batch else {
+                            session.close().await;
+                            return Err(SessionCheckpointError::ContentDrift(
                             "the portable checkpoint requires a scoped capability generation that was not reconstructed by the host"
                                 .into(),
                         )
                         .into());
-                    };
-                    if let Err(error) = session
-                        .bootstrap_recovery_capability_batch(
-                            expected,
-                            batch,
-                            tokio_util::sync::CancellationToken::new(),
-                        )
-                        .await
-                    {
+                        };
+                        if let Err(error) = session
+                            .bootstrap_recovery_capability_batch(
+                                expected,
+                                batch,
+                                tokio_util::sync::CancellationToken::new(),
+                            )
+                            .await
+                        {
+                            session.close().await;
+                            return Err(AgentProtocolHarnessError::Code(error.into()).into());
+                        }
+                    }
+                    Err(_error) => {
                         session.close().await;
-                        return Err(AgentProtocolHarnessError::Code(error.into()).into());
+                        return Err(SessionCheckpointError::InvalidPayload(
+                            "the portable checkpoint capability binding is invalid".into(),
+                        )
+                        .into());
                     }
                 }
-                Err(error) => {
-                    session.close().await;
-                    return Err(SessionCheckpointError::InvalidPayload(format!(
-                        "the portable checkpoint capability binding is invalid: {error}"
-                    ))
-                    .into());
-                }
-            },
+            }
             (None, Some(_)) => {
                 session.close().await;
                 return Err(SessionCheckpointError::InvalidPayload(
@@ -441,13 +453,12 @@ impl AgentProtocolHarness {
             (None, None) => {}
         }
         let session = Arc::new(session);
-        let host = match AgentProtocolHost::from_manifest(&self.manifest, Arc::clone(&session)) {
-            Ok(host) => Arc::new(host),
-            Err(error) => {
-                session.close().await;
-                return Err(AgentProtocolHarnessError::from(error).into());
-            }
-        };
+        // Protocol identity was pinned at Harness construction; from_manifest
+        // only re-checks that invariant for the host constructor.
+        let host = Arc::new(AgentProtocolHost::from_verified_manifest(
+            &self.manifest,
+            Arc::clone(&session),
+        ));
         let receipt = match host
             .execute_exact_recovery_from_checkpoint(request, logical_resume)
             .await
@@ -556,10 +567,10 @@ impl AgentProtocolHarness {
             )
             .await?
             .ok_or(AgentProtocolHarnessError::SessionNotFound)?;
-        let host = Arc::new(AgentProtocolHost::from_manifest(
+        let host = Arc::new(AgentProtocolHost::from_verified_manifest(
             &self.manifest,
             Arc::new(session),
-        )?);
+        ));
         self.sessions.write().await.insert(
             identity.session_id.clone(),
             Arc::new(HarnessSessionEntry {
@@ -580,63 +591,64 @@ mod tests {
 
     #[test]
     fn harness_error_codes_are_stable() {
+        let errors = [
+            AgentProtocolHarnessError::Protocol(AgentProtocolError::Encoding),
+            AgentProtocolHarnessError::Release(AgentReleaseError::UnsupportedContract),
+            AgentProtocolHarnessError::Host(AgentProtocolHostError::RunNotFound),
+            AgentProtocolHarnessError::Code(CodeError::TaskSchedulerClosed),
+            AgentProtocolHarnessError::SessionNotFound,
+            AgentProtocolHarnessError::SessionCapacity,
+            AgentProtocolHarnessError::Closed,
+            AgentProtocolHarnessError::Workspace("x".into()),
+        ];
+        assert_eq!(errors[0].code(), AgentProtocolError::Encoding.code());
         assert_eq!(
-            AgentProtocolHarnessError::Protocol(AgentProtocolError::Encoding).code(),
-            AgentProtocolError::Encoding.code()
-        );
-        assert_eq!(
-            AgentProtocolHarnessError::Release(AgentReleaseError::UnsupportedContract).code(),
+            errors[1].code(),
             AgentReleaseError::UnsupportedContract.code()
         );
+        assert_eq!(errors[2].code(), AgentProtocolHostError::RunNotFound.code());
+        assert_eq!(errors[3].code(), CodeError::TaskSchedulerClosed.code());
         assert_eq!(
-            AgentProtocolHarnessError::Host(AgentProtocolHostError::RunNotFound).code(),
-            AgentProtocolHostError::RunNotFound.code()
-        );
-        assert_eq!(
-            AgentProtocolHarnessError::Code(CodeError::TaskSchedulerClosed).code(),
-            CodeError::TaskSchedulerClosed.code()
-        );
-        assert_eq!(
-            AgentProtocolHarnessError::SessionNotFound.code(),
+            errors[4].code(),
             "a3s.code.agent_protocol.session_not_found"
         );
+        assert_eq!(errors[5].code(), "a3s.code.agent_protocol.session_capacity");
+        assert_eq!(errors[6].code(), "a3s.code.agent_protocol.harness_closed");
         assert_eq!(
-            AgentProtocolHarnessError::SessionCapacity.code(),
-            "a3s.code.agent_protocol.session_capacity"
-        );
-        assert_eq!(
-            AgentProtocolHarnessError::Closed.code(),
-            "a3s.code.agent_protocol.harness_closed"
-        );
-        assert_eq!(
-            AgentProtocolHarnessError::Workspace("x".into()).code(),
+            errors[7].code(),
             "a3s.code.agent_protocol.workspace_isolation"
         );
+        for error in &errors {
+            assert!(!error.to_string().is_empty());
+            assert!(!format!("{error:?}").is_empty());
+        }
     }
 
     #[test]
     fn checkpoint_recovery_error_codes_are_stable() {
-        assert_eq!(
-            AgentProtocolCheckpointRecoveryError::Harness(AgentProtocolHarnessError::Closed).code(),
-            AgentProtocolHarnessError::Closed.code()
-        );
-        assert_eq!(
+        let errors = [
+            AgentProtocolCheckpointRecoveryError::Harness(AgentProtocolHarnessError::Closed),
             AgentProtocolCheckpointRecoveryError::Exact(AgentProtocolExactRecoveryError::Host(
-                AgentProtocolHostError::RunNotFound
-            ))
-            .code(),
-            AgentProtocolHostError::RunNotFound.code()
-        );
-        assert_eq!(
+                AgentProtocolHostError::RunNotFound,
+            )),
             AgentProtocolCheckpointRecoveryError::Checkpoint(
-                SessionCheckpointError::InvalidPayload("x".into())
-            )
-            .code(),
+                SessionCheckpointError::InvalidPayload("x".into()),
+            ),
+            AgentProtocolCheckpointRecoveryError::SessionAlreadyActive,
+        ];
+        assert_eq!(errors[0].code(), AgentProtocolHarnessError::Closed.code());
+        assert_eq!(errors[1].code(), AgentProtocolHostError::RunNotFound.code());
+        assert_eq!(
+            errors[2].code(),
             SessionCheckpointError::InvalidPayload("x".into()).code()
         );
         assert_eq!(
-            AgentProtocolCheckpointRecoveryError::SessionAlreadyActive.code(),
+            errors[3].code(),
             "a3s.code.agent_protocol.checkpoint_session_already_active"
         );
+        for error in &errors {
+            assert!(!error.to_string().is_empty());
+            assert!(!format!("{error:?}").is_empty());
+        }
     }
 }

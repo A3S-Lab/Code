@@ -71,14 +71,18 @@ impl CapabilityProjection {
                     value_kind: value.kind(),
                 });
             }
-            if let Some(actual) = value.public_name() {
-                if actual != descriptor.public_name() {
-                    return Err(CapabilityProjectionError::PublicNameMismatch {
-                        capability: id.to_string(),
-                        expected: descriptor.public_name().to_owned(),
-                        actual: actual.to_owned(),
-                    });
-                }
+            if value
+                .public_name()
+                .is_some_and(|actual| actual != descriptor.public_name())
+            {
+                return Err(CapabilityProjectionError::PublicNameMismatch {
+                    capability: id.to_string(),
+                    expected: descriptor.public_name().to_owned(),
+                    actual: value
+                        .public_name()
+                        .expect("is_some_and already observed a public name")
+                        .to_owned(),
+                });
             }
             if let CapabilityValue::Ui(binding) = value {
                 if descriptor.surface_digest() != binding.surface_digest() {
@@ -578,5 +582,556 @@ pub struct CapabilityCleanupReport {
 impl CapabilityCleanupReport {
     pub const fn is_clean(&self) -> bool {
         self.effects_failed == 0 && self.effects_timed_out == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::{CapabilitySource, Sha256Digest};
+    use crate::cognitive_context::CognitiveContextProvider;
+    use crate::hooks::HookHandler;
+    use crate::skills::{Skill, SkillKind};
+
+    fn digest(byte: char) -> Sha256Digest {
+        assert!(
+            byte.is_ascii_hexdigit(),
+            "test digests must use hex characters"
+        );
+        Sha256Digest::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
+    }
+
+    fn sample_skill_value(name: &str) -> CapabilityValue {
+        CapabilityValue::Skill(Arc::new(Skill {
+            name: name.to_owned(),
+            description: "coverage".to_owned(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "body".to_owned(),
+            tags: vec![],
+            version: None,
+        }))
+    }
+
+    #[test]
+    fn empty_projection_exposes_accessors_and_none_lookups() {
+        let set = CapabilitySet::empty().unwrap();
+        let projection = CapabilityProjection::new(Arc::clone(&set), []).unwrap();
+        assert!(projection.is_empty());
+        assert_eq!(projection.len(), 0);
+        assert_eq!(projection.iter().len(), 0);
+        assert!(Arc::ptr_eq(projection.set_arc(), &set));
+        assert_eq!(projection.set().generation().get(), set.generation().get());
+        assert_eq!(
+            projection.readiness_plan().generation().get(),
+            set.generation().get()
+        );
+
+        let source = CapabilitySource::builtin("a3s-code", digest('a')).unwrap();
+        let missing = CapabilityId::new(&source, CapabilityKind::Skill, "missing").unwrap();
+        assert!(!projection.contains(&missing));
+        assert!(projection.tool(&missing).is_none());
+        assert!(projection.skill(&missing).is_none());
+        assert!(projection.agent(&missing).is_none());
+        assert!(projection.command(&missing).is_none());
+        assert!(projection.hook(&missing).is_none());
+        assert!(projection.mcp(&missing).is_none());
+        assert!(projection.knowledge(&missing).is_none());
+        assert!(projection.knowledge_surface(&missing).is_none());
+        assert!(projection.ui(&missing).is_none());
+        assert!(projection.context(&missing).is_none());
+    }
+
+    #[test]
+    fn projection_rejects_duplicate_and_unexpected_values() {
+        let set = CapabilitySet::empty().unwrap();
+        let source = CapabilitySource::builtin("a3s-code", digest('b')).unwrap();
+        let id = CapabilityId::new(&source, CapabilityKind::Skill, "orphan").unwrap();
+        let value = sample_skill_value("orphan");
+
+        let duplicate = CapabilityProjection::new(
+            Arc::clone(&set),
+            [(id.clone(), value.clone()), (id.clone(), value.clone())],
+        );
+        assert!(matches!(
+            duplicate,
+            Err(CapabilityProjectionError::DuplicateValue { .. })
+        ));
+
+        let unexpected = CapabilityProjection::new(Arc::clone(&set), [(id, value)]);
+        assert!(matches!(
+            unexpected,
+            Err(CapabilityProjectionError::UnexpectedValue { .. })
+        ));
+    }
+
+    #[test]
+    fn readiness_plan_mismatch_fails_closed() {
+        let set = CapabilitySet::empty().unwrap();
+        let other = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(2),
+            Vec::<crate::capability::CapabilityContribution>::new(),
+        )
+        .unwrap();
+        let readiness = Arc::new(CapabilityReadinessPlan::from_set(&other).unwrap());
+        let err = CapabilityProjection::with_readiness(set, readiness, []);
+        assert!(matches!(
+            err,
+            Err(CapabilityProjectionError::ReadinessPlanMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn projection_with_skill_covers_typed_lookups() {
+        let source = CapabilitySource::builtin("a3s-code", digest('c')).unwrap();
+        let descriptor = crate::capability::CapabilityDescriptor::new(
+            &source,
+            CapabilityKind::Skill,
+            "coverage-skill",
+            "coverage-skill",
+            digest('d'),
+            [],
+        )
+        .unwrap();
+        let id = descriptor.id().clone();
+        let set = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(1),
+            [crate::capability::CapabilityContribution::new(source, [descriptor]).unwrap()],
+        )
+        .unwrap();
+        let value = sample_skill_value("coverage-skill");
+        let projection =
+            CapabilityProjection::new(Arc::clone(&set), [(id.clone(), value)]).unwrap();
+        assert_eq!(projection.len(), 1);
+        assert!(!projection.is_empty());
+        assert!(projection.contains(&id));
+        assert!(projection.skill(&id).is_some());
+        assert!(projection.tool(&id).is_none());
+        assert!(projection.agent(&id).is_none());
+        assert!(projection.command(&id).is_none());
+        assert!(projection.hook(&id).is_none());
+        assert!(projection.mcp(&id).is_none());
+        assert!(projection.knowledge(&id).is_none());
+        assert!(projection.knowledge_surface(&id).is_none());
+        assert!(projection.ui(&id).is_none());
+        assert!(projection.context(&id).is_none());
+
+        let catalog = CapabilityCatalog::new(Arc::clone(&projection));
+        let rendered = format!("{catalog:?}");
+        assert!(rendered.contains("CapabilityCatalog"));
+        assert!(rendered.contains("pending_cleanup_batches"));
+        let lease = catalog.pin();
+        let lease_dbg = format!("{lease:?}");
+        assert!(lease_dbg.contains("CapabilityProjectionLease"));
+        assert_eq!(lease.projection().len(), 1);
+        assert_eq!(lease.stamp().generation().get(), set.generation().get());
+    }
+
+    struct SlowEffect;
+    struct FailingEffect;
+
+    #[async_trait::async_trait]
+    impl CapabilityEffect for SlowEffect {
+        fn name(&self) -> &str {
+            "slow-coverage"
+        }
+
+        async fn close(self: Box<Self>) -> Result<(), crate::capability::CapabilityEffectError> {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CapabilityEffect for FailingEffect {
+        fn name(&self) -> &str {
+            "failing-coverage"
+        }
+
+        async fn close(self: Box<Self>) -> Result<(), crate::capability::CapabilityEffectError> {
+            Err(crate::capability::CapabilityEffectError::new("boom"))
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_cleanup_reports_failed_and_timed_out_effects() {
+        let set = CapabilitySet::empty().unwrap();
+        let projection = CapabilityProjection::new(Arc::clone(&set), []).unwrap();
+        let catalog = CapabilityCatalog::new(projection);
+
+        let failing: Box<dyn crate::capability::CapabilityEffect> = Box::new(FailingEffect);
+        assert_eq!(failing.name(), "failing-coverage");
+        catalog.inner.enqueue_rollback(vec![failing]);
+        let failed = catalog.drain_cleanup().await;
+        assert_eq!(failed.effects_failed, 1);
+        assert!(!failed.is_clean());
+
+        let slow: Box<dyn crate::capability::CapabilityEffect> = Box::new(SlowEffect);
+        assert_eq!(slow.name(), "slow-coverage");
+        catalog
+            .inner
+            .enqueue_rollback(vec![slow, Box::new(SlowEffect), Box::new(SlowEffect)]);
+        let policy = ScopeClosePolicy::new(std::time::Duration::from_millis(5)).expect("policy");
+        let timed_out = catalog.drain_cleanup_with_policy(policy).await;
+        assert!(
+            timed_out.effects_timed_out > 0,
+            "expected timeout accounting, got {timed_out:?}"
+        );
+    }
+
+    struct CoverageCommand;
+
+    impl crate::commands::SlashCommand for CoverageCommand {
+        fn name(&self) -> &str {
+            "coverage-cmd"
+        }
+
+        fn description(&self) -> &str {
+            "projection accessor coverage"
+        }
+
+        fn execute(
+            &self,
+            _args: &str,
+            _ctx: &crate::commands::CommandContext,
+        ) -> crate::commands::CommandOutput {
+            crate::commands::CommandOutput::text("ok")
+        }
+    }
+
+    struct CoverageHookHandler;
+
+    impl crate::hooks::HookHandler for CoverageHookHandler {
+        fn handle(&self, _event: &crate::hooks::HookEvent) -> crate::hooks::HookResponse {
+            crate::hooks::HookResponse::continue_()
+        }
+    }
+
+    struct CoverageKnowledgeProvider;
+
+    #[async_trait::async_trait]
+    impl crate::cognitive_context::CognitiveContextProvider for CoverageKnowledgeProvider {
+        fn name(&self) -> &str {
+            "coverage-knowledge"
+        }
+
+        async fn query(
+            &self,
+            _request: &crate::cognitive_context::CognitiveContextRequestV1,
+        ) -> crate::cognitive_context::CognitiveContextResult<
+            crate::cognitive_context::CognitiveContextResponseV1,
+        > {
+            Err(crate::cognitive_context::CognitiveContextError::Provider(
+                "coverage provider is query-less".into(),
+            ))
+        }
+    }
+
+    fn sample_knowledge_value() -> CapabilityValue {
+        let generation_digest =
+            "sha256:aa0beeb62f1b7b21bf70f21e6f0e858a1e4b720d313f0907209b5b9dad2eeb20";
+        let knowledge = crate::cognitive_context::CognitiveKnowledgeBindingV1::new(
+            "domain-knowledge",
+            "0.2",
+            "sha256:1def786da6d190b7b3ce0176e71d99ff1cac3f8c8cc7c0f8b76a893c544e7a90",
+            7,
+            generation_digest,
+        )
+        .unwrap();
+        let binding = crate::cognitive_context::CognitivePackageBindingV1::new(
+            "contra-sense/handbook",
+            "0.1.0",
+            7,
+            generation_digest,
+            "sha256:1e0f0a0162f5b290887ade8886af69fbba4548c863df026178e3550c77813455",
+            knowledge,
+            crate::cognitive_context::CognitiveContextLimits::default(),
+        )
+        .unwrap();
+        CapabilityValue::Knowledge(Arc::new(
+            crate::cognitive_context::CognitiveContextSession::new(
+                binding,
+                Arc::new(CoverageKnowledgeProvider),
+            )
+            .unwrap(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn projection_typed_some_accessors_hit_each_capability_arm() {
+        let source = CapabilitySource::builtin("a3s-code", digest('e')).unwrap();
+        let kinds = [
+            (CapabilityKind::Agent, "coverage-agent", "coverage-agent"),
+            (CapabilityKind::Command, "coverage-cmd", "coverage-cmd"),
+            (CapabilityKind::Hook, "coverage-hook", "coverage-hook"),
+            (CapabilityKind::Mcp, "coverage-mcp", "coverage-mcp"),
+            (
+                CapabilityKind::Knowledge,
+                "coverage-knowledge",
+                "coverage-knowledge",
+            ),
+            (
+                CapabilityKind::Context,
+                "coverage-context",
+                "coverage-context",
+            ),
+        ];
+        let descriptors = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, (kind, name, public_name))| {
+                crate::capability::CapabilityDescriptor::new(
+                    &source,
+                    *kind,
+                    *name,
+                    *public_name,
+                    digest(char::from_digit((index + 1) as u32, 16).unwrap_or('f')),
+                    [],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let ids = descriptors
+            .iter()
+            .map(|descriptor| descriptor.id().clone())
+            .collect::<Vec<_>>();
+        let set = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(3),
+            [crate::capability::CapabilityContribution::new(source, descriptors).unwrap()],
+        )
+        .unwrap();
+
+        let (mcp_binding, _transport, _client) = crate::mcp::test_support::ready_binding(
+            "coverage-mcp",
+            "v1",
+            vec![crate::mcp::test_support::mcp_tool("ping", "ping")],
+        )
+        .await;
+        let values = [
+            (
+                ids[0].clone(),
+                CapabilityValue::Agent(Arc::new(crate::subagent::AgentDefinition::new(
+                    "coverage-agent",
+                    "projection coverage",
+                ))),
+            ),
+            (
+                ids[1].clone(),
+                CapabilityValue::Command(Arc::new(CoverageCommand)),
+            ),
+            (
+                ids[2].clone(),
+                CapabilityValue::Hook(Arc::new(crate::hooks::HookBinding::new(
+                    crate::hooks::Hook::new(
+                        "coverage-hook",
+                        crate::hooks::HookEventType::PreToolUse,
+                    ),
+                    Arc::new(CoverageHookHandler),
+                ))),
+            ),
+            (ids[3].clone(), CapabilityValue::Mcp(mcp_binding)),
+            (ids[4].clone(), sample_knowledge_value()),
+            (
+                ids[5].clone(),
+                CapabilityValue::Context(Arc::new(crate::context::StaticContextProvider::new(
+                    "coverage-context",
+                ))),
+            ),
+        ];
+        let projection = CapabilityProjection::new(Arc::clone(&set), values).unwrap();
+        assert!(projection.agent(&ids[0]).is_some());
+        assert_eq!(projection.agent(&ids[0]).unwrap().name, "coverage-agent");
+        assert!(projection.command(&ids[1]).is_some());
+        let command = projection.command(&ids[1]).unwrap();
+        assert_eq!(command.name(), "coverage-cmd");
+        assert_eq!(command.description(), "projection accessor coverage");
+        let command_ctx = crate::commands::CommandContext {
+            session_id: "coverage".into(),
+            workspace: "/tmp".into(),
+            model: "test".into(),
+            history_len: 0,
+            total_tokens: 0,
+            total_cost: 0.0,
+            tool_names: vec![],
+            mcp_servers: vec![],
+        };
+        assert_eq!(command.execute("", &command_ctx).text, "ok");
+        assert!(projection.hook(&ids[2]).is_some());
+        assert_eq!(projection.hook(&ids[2]).unwrap().hook().id, "coverage-hook");
+        let hook_response = CoverageHookHandler.handle(&crate::hooks::HookEvent::SessionStart(
+            crate::hooks::SessionStartEvent {
+                session_id: "coverage".into(),
+                system_prompt: None,
+                model_provider: "test".into(),
+                model_name: "coverage".into(),
+            },
+        ));
+        assert_eq!(hook_response.action, crate::hooks::HookAction::Continue);
+        assert!(projection.mcp(&ids[3]).is_some());
+        assert_eq!(
+            projection.mcp(&ids[3]).unwrap().server_name(),
+            "coverage-mcp"
+        );
+        assert!(projection.knowledge(&ids[4]).is_some());
+        assert_eq!(
+            projection.knowledge(&ids[4]).unwrap().provider_name(),
+            "coverage-knowledge"
+        );
+        let knowledge_provider = CoverageKnowledgeProvider;
+        assert_eq!(
+            crate::cognitive_context::CognitiveContextProvider::name(&knowledge_provider),
+            "coverage-knowledge"
+        );
+        let knowledge_binding = projection.knowledge(&ids[4]).unwrap().binding().clone();
+        let knowledge_request = crate::cognitive_context::CognitiveContextRequestV1::new(
+            "coverage-session",
+            "coverage query",
+            knowledge_binding,
+        )
+        .expect("knowledge request");
+        let knowledge_err = knowledge_provider
+            .query(&knowledge_request)
+            .await
+            .expect_err("coverage provider stays query-less");
+        assert!(matches!(
+            knowledge_err,
+            crate::cognitive_context::CognitiveContextError::Provider(_)
+        ));
+        assert!(projection.context(&ids[5]).is_some());
+        assert_eq!(
+            projection.context(&ids[5]).unwrap().name(),
+            "coverage-context"
+        );
+        // Wrong-kind lookups stay None.
+        assert!(projection.skill(&ids[0]).is_none());
+        assert!(projection.ui(&ids[1]).is_none());
+        assert!(projection.tool(&ids[5]).is_none());
+        assert!(projection.knowledge_surface(&ids[4]).is_none());
+    }
+
+    #[test]
+    fn projection_rejects_ui_surface_digest_and_dependency_mismatches() {
+        let source = CapabilitySource::builtin("a3s-code", digest('9')).unwrap();
+        let document = crate::capability::UiDocument::new(
+            crate::capability::UiAsset::new(
+                crate::capability::UiAssetKind::Html,
+                "<!doctype html><main>ui</main>",
+            )
+            .unwrap(),
+            [],
+            [],
+        )
+        .unwrap();
+        let ui = crate::capability::UiBinding::new(crate::capability::UiBindingSpec {
+            public_name: "ui-surface".to_owned(),
+            title: "UI".to_owned(),
+            description: "surface coverage".to_owned(),
+            icon: "panel-top".to_owned(),
+            order: 1,
+            document,
+        })
+        .unwrap();
+        let bad_digest = digest('a');
+        let descriptor = crate::capability::CapabilityDescriptor::new(
+            &source,
+            CapabilityKind::Ui,
+            "ui-surface",
+            "ui-surface",
+            bad_digest,
+            [],
+        )
+        .unwrap();
+        let id = descriptor.id().clone();
+        let set = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(5),
+            [
+                crate::capability::CapabilityContribution::new(source.clone(), [descriptor])
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
+        let err = CapabilityProjection::new(
+            Arc::clone(&set),
+            [(id, CapabilityValue::Ui(Arc::new(ui.clone())))],
+        );
+        assert!(matches!(
+            err,
+            Err(CapabilityProjectionError::SurfaceDigestMismatch { .. })
+        ));
+
+        let agent_dep = CapabilityId::new(&source, CapabilityKind::Agent, "blocked-dep").unwrap();
+        let agent_descriptor = crate::capability::CapabilityDescriptor::new(
+            &source,
+            CapabilityKind::Agent,
+            "blocked-dep",
+            "blocked-dep",
+            digest('b'),
+            [],
+        )
+        .unwrap();
+        let agent_id = agent_descriptor.id().clone();
+        let descriptor = crate::capability::CapabilityDescriptor::new(
+            &source,
+            CapabilityKind::Ui,
+            "ui-surface",
+            "ui-surface",
+            ui.surface_digest().clone(),
+            [agent_dep],
+        )
+        .unwrap();
+        let id = descriptor.id().clone();
+        let set = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(6),
+            [crate::capability::CapabilityContribution::new(
+                source,
+                [agent_descriptor, descriptor],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let err = CapabilityProjection::new(
+            Arc::clone(&set),
+            [
+                (
+                    agent_id,
+                    CapabilityValue::Agent(Arc::new(crate::subagent::AgentDefinition::new(
+                        "blocked-dep",
+                        "dependency present only to admit the ui descriptor",
+                    ))),
+                ),
+                (id, CapabilityValue::Ui(Arc::new(ui))),
+            ],
+        );
+        assert!(matches!(
+            err,
+            Err(CapabilityProjectionError::UnsupportedUiDependencyKind { .. })
+        ));
+    }
+
+    #[test]
+    fn projection_rejects_public_name_mismatch() {
+        let source = CapabilitySource::builtin("a3s-code", digest('7')).unwrap();
+        let descriptor = crate::capability::CapabilityDescriptor::new(
+            &source,
+            CapabilityKind::Skill,
+            "expected-name",
+            "expected-name",
+            digest('8'),
+            [],
+        )
+        .unwrap();
+        let id = descriptor.id().clone();
+        let set = CapabilitySet::from_contributions(
+            CodeCatalogGeneration::new(4),
+            [crate::capability::CapabilityContribution::new(source, [descriptor]).unwrap()],
+        )
+        .unwrap();
+        let err =
+            CapabilityProjection::new(Arc::clone(&set), [(id, sample_skill_value("actual-name"))]);
+        assert!(matches!(
+            err,
+            Err(CapabilityProjectionError::PublicNameMismatch { .. })
+        ));
     }
 }

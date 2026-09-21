@@ -653,6 +653,36 @@ async fn portable_recovery_requires_logical_resume_component() {
 }
 
 #[tokio::test]
+async fn portable_recovery_rejects_forced_invalid_capability_binding() {
+    let workspace = tempfile::tempdir().unwrap();
+    let harness = harness_fixture(&workspace, Arc::new(MemorySessionStore::new())).await;
+    let export = portable_export_with_binding(
+        "forced-invalid-binding-session",
+        1,
+        Some(empty_catalog_capability_binding()),
+    );
+    let request = request(
+        harness.agent_release_identity(),
+        "forced-invalid-binding-session",
+        "forced-invalid-binding-target",
+        &export,
+    );
+    a3s_code_core::force_invalid_recovery_binding_for_test();
+    let error = harness
+        .execute_checkpoint_recovery(&request, export)
+        .await
+        .expect_err("forced invalid recovery binding must fail closed");
+    assert!(matches!(
+        error,
+        AgentProtocolCheckpointRecoveryError::Checkpoint(
+            SessionCheckpointError::InvalidPayload(message)
+        ) if message.contains("capability binding is invalid")
+    ));
+    assert_eq!(harness.session_count().await, 0);
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn portable_recovery_rejects_closed_harness() {
     let workspace = tempfile::tempdir().unwrap();
     let harness = harness_fixture(&workspace, Arc::new(MemorySessionStore::new())).await;
@@ -1255,4 +1285,129 @@ async fn file_store_restart_replays_the_exact_portable_checkpoint() {
         .unwrap()
         .is_none());
     restarted.close().await;
+}
+
+fn invalid_schema_capability_binding() -> a3s_code_core::capability::RunCapabilityBindingV1 {
+    use a3s_code_core::capability::{
+        CAPABILITY_CEILING_SCHEMA, CAPABILITY_SET_SCHEMA, RUN_CAPABILITY_BINDING_SCHEMA,
+    };
+    // Keep digests well-formed so export construction succeeds; only the binding
+    // schema is invalid so ensure_recovery_capability_binding fails closed.
+    let _ = RUN_CAPABILITY_BINDING_SCHEMA;
+    serde_json::from_value(serde_json::json!({
+        "schema": "a3s.code.run-capability-binding.invalid",
+        "capabilitySetSchema": CAPABILITY_SET_SCHEMA,
+        "codeCatalogGeneration": 1,
+        "catalogDigest": format!("sha256:{}", "a".repeat(64)),
+        "capabilityCeilingSchema": CAPABILITY_CEILING_SCHEMA,
+        "capabilityCeilingDigest": format!("sha256:{}", "b".repeat(64)),
+    }))
+    .expect("invalid binding fixture must deserialize")
+}
+
+#[test]
+fn portable_export_rejects_invalid_capability_binding_payload() {
+    // Invalid binding schemas fail closed before a portable export can be minted,
+    // so Harness recovery never admits this class of payload.
+    let logical = logical_resume_with_binding(
+        "invalid-binding-session",
+        1,
+        Some(invalid_schema_capability_binding()),
+    );
+    let session = SessionData {
+        id: "invalid-binding-session".into(),
+        config: SessionConfig {
+            name: "portable Harness fixture".into(),
+            workspace: "/source/workspace".into(),
+            max_context_length: 128_000,
+            ..SessionConfig::default()
+        },
+        state: SessionState::Active,
+        messages: logical.messages.clone(),
+        context_usage: ContextUsage::default(),
+        total_usage: logical.total_usage.clone(),
+        total_cost: 0.0,
+        model_name: Some("fixture/static".into()),
+        cost_records: Vec::new(),
+        tool_names: Vec::new(),
+        thinking_enabled: false,
+        thinking_budget: None,
+        created_at: 1_724_000_000,
+        updated_at: 1_724_000_001,
+        llm_config: None,
+        tasks: Vec::new(),
+        parent_id: None,
+        tenant_id: None,
+        principal: None,
+        agent_template_id: None,
+        correlation_id: None,
+        durable_memory_binding: None,
+        cognitive_package_binding: None,
+        immutable_content_adapter_binding: None,
+    };
+    let source = RunRecord {
+        snapshot: RunSnapshot {
+            id: logical.run_id.clone(),
+            session_id: "invalid-binding-session".into(),
+            status: RunStatus::Executing,
+            prompt: "portable source".into(),
+            cognitive_package_binding: None,
+            capability_binding: logical.capability_binding.clone(),
+            created_at_ms: 1_724_000_000_000,
+            updated_at_ms: logical.checkpoint_ms,
+            result_text: None,
+            error: None,
+            event_count: 0,
+            workspace_change_set: None,
+        },
+        events: Vec::new(),
+    };
+    let snapshot = SessionSnapshotV1::new(
+        session,
+        &ArtifactStore::new(),
+        Vec::new(),
+        vec![source],
+        Vec::new(),
+        Vec::new(),
+    );
+    let err = SessionCheckpointExportV1::new(snapshot, Some(logical))
+        .expect_err("invalid binding must fail export construction");
+    assert!(
+        matches!(
+            err,
+            SessionCheckpointError::InvalidPayload(ref message)
+                if message.contains("capability binding")
+        ),
+        "unexpected export error: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn portable_recovery_fails_closed_when_harness_closes_during_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let harness = Arc::new(harness_fixture(&workspace, Arc::new(MemorySessionStore::new())).await);
+    let export = portable_export("close-during-recovery-session", 1);
+    let request = request(
+        harness.agent_release_identity(),
+        "close-during-recovery-session",
+        "close-during-recovery-target",
+        &export,
+    );
+    let recover = {
+        let harness = Arc::clone(&harness);
+        tokio::spawn(async move { harness.execute_checkpoint_recovery(&request, export).await })
+    };
+    // Let recovery acquire the admission mutex before close waits on it.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    harness.close().await;
+    let result = recover.await.expect("join recovery");
+    assert!(
+        matches!(
+            result,
+            Err(AgentProtocolCheckpointRecoveryError::Harness(
+                AgentProtocolHarnessError::Closed
+            )) | Ok(_)
+        ),
+        "unexpected close-during-recovery outcome: {result:?}"
+    );
 }

@@ -905,3 +905,164 @@ async fn active_recall_does_not_cross_namespaces() {
         .hits
         .is_empty());
 }
+
+#[test]
+fn with_semantic_recall_requires_active_recall_policy() {
+    use crate::durable_memory::{
+        DurableMemorySemanticError, DurableMemorySemanticRecall, DurableMemorySemanticRecallPolicy,
+    };
+    use crate::embedding::{
+        EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingExecutorConfig,
+        EmbeddingNormalization, EmbeddingProvider, EmbeddingProviderDescriptor,
+        EmbeddingProviderError,
+    };
+    use a3s_memory::vector::{InMemoryVectorIndex, VectorIndex, VectorIndexDescriptor};
+
+    struct RejectingProvider;
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for RejectingProvider {
+        fn descriptor(&self) -> EmbeddingProviderDescriptor {
+            EmbeddingProviderDescriptor::new("fixture", "semantic-policy", 2)
+                .with_revision("fixture-r1")
+                .with_normalization(EmbeddingNormalization::Unit)
+        }
+        async fn embed(
+            &self,
+            _request: EmbeddingBatchRequest,
+            _cancellation: CancellationToken,
+        ) -> Result<EmbeddingBatchResponse, EmbeddingProviderError> {
+            Err(EmbeddingProviderError::InvalidRequest)
+        }
+    }
+
+    let repository = Arc::new(InMemoryRepository::new());
+    let namespace = MemoryNamespace::try_new("tenant", "principal", "scope").unwrap();
+    let mut binding = DurableMemorySession::active_recall(
+        repository,
+        namespace,
+        DurableMemoryRecallPolicy::try_new(4, 0.0).unwrap(),
+    );
+    // Fail-closed: semantic attachment requires an Active recall policy.
+    binding.recall_policy = None;
+    let index: Arc<dyn VectorIndex> =
+        Arc::new(InMemoryVectorIndex::new(VectorIndexDescriptor::new(2)).unwrap());
+    let semantic = DurableMemorySemanticRecall::new(
+        format!("sha256:{}", "b".repeat(64)),
+        Arc::new(RejectingProvider),
+        EmbeddingExecutorConfig::default(),
+        index,
+        DurableMemorySemanticRecallPolicy::try_new(8, 0.7).unwrap(),
+    )
+    .unwrap();
+    let err = binding.with_semantic_recall(semantic).unwrap_err();
+    assert!(matches!(
+        err,
+        DurableMemorySemanticError::InvalidConfiguration { field: "mode", .. }
+    ));
+}
+
+struct EmptyNodesRepository;
+
+#[async_trait::async_trait]
+impl a3s_memory::repository::MemoryRepository for EmptyNodesRepository {
+    async fn apply(
+        &self,
+        change_set: MemoryChangeSet,
+    ) -> Result<a3s_memory::repository::MemoryChangeResult, MemoryRepositoryError> {
+        Ok(a3s_memory::repository::MemoryChangeResult {
+            idempotency_key: change_set.idempotency_key,
+            occurred_at: change_set.occurred_at,
+            nodes: Vec::new(),
+        })
+    }
+
+    async fn get(
+        &self,
+        _namespace: &MemoryNamespace,
+        _node_id: &str,
+    ) -> Result<Option<a3s_memory::repository::MemoryNode>, MemoryRepositoryError> {
+        Ok(None)
+    }
+
+    async fn query(
+        &self,
+        _query: MemoryQuery,
+    ) -> Result<a3s_memory::repository::MemoryQueryResult, MemoryRepositoryError> {
+        Ok(a3s_memory::repository::MemoryQueryResult { hits: Vec::new() })
+    }
+
+    async fn record_admission(
+        &self,
+        _event: a3s_memory::repository::MemoryAccessEvent,
+    ) -> Result<(), MemoryRepositoryError> {
+        Ok(())
+    }
+
+    async fn record_use(
+        &self,
+        _event: a3s_memory::repository::MemoryAccessEvent,
+    ) -> Result<(), MemoryRepositoryError> {
+        Ok(())
+    }
+
+    async fn usage_summary(
+        &self,
+        _namespace: &MemoryNamespace,
+        _node_id: &str,
+    ) -> Result<a3s_memory::repository::MemoryUsageSummary, MemoryRepositoryError> {
+        Ok(a3s_memory::repository::MemoryUsageSummary::default())
+    }
+}
+
+#[tokio::test]
+async fn activate_candidate_fails_when_repository_returns_no_active_node() {
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(EmptyNodesRepository),
+        MemoryNamespace::try_new("tenant", "principal", "scope").unwrap(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
+    let err = binding
+        .activate_candidate(
+            DurableMemoryActivation::try_new(
+                "activate-empty",
+                "missing-node",
+                1,
+                evidence("decision", EvidenceKind::Verification, 0),
+                time(1),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("no active target node"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn store_shadow_candidate_fails_when_repository_returns_no_node() {
+    let binding = DurableMemorySession::active_recall(
+        Arc::new(EmptyNodesRepository),
+        MemoryNamespace::try_new("tenant", "principal", "scope").unwrap(),
+        DurableMemoryRecallPolicy::try_new(8, 0.0).unwrap(),
+    );
+    let turn_evidence = DurableTurnEvidence::try_new(
+        "session-empty",
+        "turn-1",
+        "remember",
+        "done",
+        "user: remember",
+        time(0),
+    )
+    .unwrap();
+    let item = MemoryItem::new("orphan candidate").with_type(MemoryType::Semantic);
+    let err = binding
+        .store_shadow_candidate(&item, &turn_evidence)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("returned no node"),
+        "unexpected error: {err}"
+    );
+}

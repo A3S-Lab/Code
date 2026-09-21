@@ -974,3 +974,97 @@ async fn harness_rejects_protocol_mismatch_on_construction() {
         error.code()
     );
 }
+
+#[tokio::test]
+async fn harness_isolated_worktree_drop_warns_when_git_removal_fails() {
+    let workspace = tempfile::tempdir().unwrap();
+    let status = Command::new("git")
+        .args(["init"])
+        .current_dir(workspace.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(workspace.path().join("README.md"), "hi\n").unwrap();
+    let _ = Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(workspace.path())
+        .status();
+    let _ = Command::new("git")
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-m",
+            "i",
+        ])
+        .current_dir(workspace.path())
+        .status();
+
+    let harness = AgentProtocolHarness::new(
+        manifest(),
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(SessionOptions::new().with_llm_client(Arc::new(StaticStreamingClient)));
+    harness
+        .execute(&start(
+            harness.agent_release_identity(),
+            "isolated-drop-session",
+            "isolated-drop-run",
+        ))
+        .await
+        .unwrap();
+    // Corrupt the source git dir so Drop's remove_isolated_worktree fails and
+    // takes the warn path instead of succeeding silently.
+    let _ = std::fs::remove_dir_all(workspace.path().join(".git"));
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn host_for_rejects_when_closed_after_admission_lock() {
+    let workspace = tempfile::tempdir().unwrap();
+    let harness = Arc::new(
+        AgentProtocolHarness::new(
+            manifest(),
+            Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+            workspace.path().display().to_string(),
+        )
+        .unwrap()
+        .with_session_options(
+            SessionOptions::new().with_llm_client(Arc::new(StaticStreamingClient)),
+        ),
+    );
+    let release = harness.agent_release_identity().to_string();
+    // First admission holds the mutex long enough for a second caller to pass
+    // the pre-lock closed check and then observe Closed after acquiring it.
+    let keeper = {
+        let harness = Arc::clone(&harness);
+        let release = release.clone();
+        tokio::spawn(async move {
+            harness
+                .execute(&start(&release, "keeper-session", "keeper-run"))
+                .await
+        })
+    };
+    tokio::task::yield_now().await;
+    let raced = {
+        let harness = Arc::clone(&harness);
+        let release = release.clone();
+        tokio::spawn(async move {
+            harness
+                .execute(&start(&release, "race-session", "race-run"))
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    harness.close().await;
+    let _ = keeper.await.expect("join keeper");
+    let result = raced.await.expect("join raced");
+    assert!(
+        matches!(result, Err(AgentProtocolHarnessError::Closed) | Ok(_)),
+        "unexpected race outcome: {result:?}"
+    );
+}

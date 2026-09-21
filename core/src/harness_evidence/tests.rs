@@ -1312,3 +1312,355 @@ fn presentation_validate_rejects_sequence_count_and_auxiliary_drift() {
         Err(HarnessEvidenceError::DigestMismatch(_))
     ));
 }
+
+#[test]
+fn tool_result_context_usage_validation_fail_closed_partitions() {
+    let empty = ToolResultContextUsageV1 {
+        total_count: 0,
+        unique_count: 0,
+        repeated_count: 0,
+        content_bytes: 0,
+        repeated_content_bytes: 0,
+        estimated_tokens: 0,
+        repeated_estimated_tokens: 0,
+        contents_digest: None,
+        repeated_contents_digest: None,
+    };
+    empty.validate().unwrap();
+
+    let bad_partition = ToolResultContextUsageV1 {
+        total_count: 2,
+        unique_count: 3,
+        repeated_count: 0,
+        ..empty.clone()
+    };
+    assert!(matches!(
+        bad_partition.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let empty_with_digest = ToolResultContextUsageV1 {
+        contents_digest: Some(digest_for_test('a')),
+        ..empty.clone()
+    };
+    assert!(matches!(
+        empty_with_digest.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let repeated_without_budget = ToolResultContextUsageV1 {
+        total_count: 2,
+        unique_count: 1,
+        repeated_count: 1,
+        content_bytes: 10,
+        repeated_content_bytes: 11,
+        estimated_tokens: 4,
+        repeated_estimated_tokens: 0,
+        contents_digest: Some(digest_for_test('b')),
+        repeated_contents_digest: Some(digest_for_test('c')),
+    };
+    assert!(matches!(
+        repeated_without_budget.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+}
+
+#[test]
+fn model_usage_binding_exposes_call_sequence() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (_, input, tool_results) = source
+        .capture(
+            9,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("seq")],
+                None,
+                &[],
+                None,
+                3,
+            ),
+        )
+        .unwrap();
+    let binding =
+        crate::harness_evidence::usage::ModelUsageBinding::from_input(&input, tool_results.clone());
+    assert_eq!(binding.call_sequence(), 9);
+    let snapshot =
+        ModelUsageSnapshotV1::from_input(&input, &tool_results, &TokenUsage::default()).unwrap();
+    assert_eq!(snapshot.call_sequence, 9);
+}
+
+#[test]
+fn tool_request_validate_fail_closed_partitions() {
+    let arguments = serde_json::json!({"path": "README.md"});
+    let snapshot = ToolRequestSnapshotV1::capture(
+        "tool-call-1",
+        "read",
+        &arguments,
+        ToolRequestOriginV1::Agent,
+    )
+    .unwrap();
+
+    let mut unsupported = snapshot.clone();
+    unsupported.schema = "bad.schema".into();
+    assert!(matches!(
+        unsupported.validate(),
+        Err(HarnessEvidenceError::UnsupportedSchema)
+    ));
+
+    let mut empty_args = snapshot.clone();
+    empty_args.arguments_bytes = 0;
+    assert!(matches!(
+        empty_args.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    assert!(matches!(
+        snapshot.validate_against(
+            "tool-call-1",
+            "read",
+            &arguments,
+            ToolRequestOriginV1::Nested,
+        ),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+    assert!(matches!(
+        snapshot.validate_against("other-id", "read", &arguments, ToolRequestOriginV1::Agent,),
+        Err(HarnessEvidenceError::DigestMismatch("tool_id_digest"))
+    ));
+    assert!(matches!(
+        snapshot.validate_against(
+            "tool-call-1",
+            "write",
+            &arguments,
+            ToolRequestOriginV1::Agent,
+        ),
+        Err(HarnessEvidenceError::DigestMismatch("tool_name_digest"))
+    ));
+
+    let mut bytes_drift = snapshot.clone();
+    bytes_drift.arguments_bytes = bytes_drift.arguments_bytes.saturating_add(9);
+    assert!(matches!(
+        bytes_drift.validate(),
+        Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"))
+    ));
+}
+
+#[test]
+fn model_usage_validate_fail_closed_partitions() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (_, input, tool_results) = source
+        .capture(
+            3,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("usage partitions")],
+                None,
+                &[],
+                None,
+                4,
+            ),
+        )
+        .unwrap();
+    let usage =
+        ModelUsageSnapshotV1::from_input(&input, &tool_results, &TokenUsage::default()).unwrap();
+    usage.validate_against(&input).unwrap();
+
+    let mut unsupported = usage.clone();
+    unsupported.schema = "bad.schema".into();
+    assert!(matches!(
+        unsupported.validate(),
+        Err(HarnessEvidenceError::UnsupportedSchema)
+    ));
+
+    let mut zero_seq = usage.clone();
+    zero_seq.call_sequence = 0;
+    assert!(matches!(
+        zero_seq.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let mut digest_drift = usage.clone();
+    digest_drift.input_snapshot_digest = digest_for_test('e');
+    assert!(matches!(
+        digest_drift.validate(),
+        Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"))
+    ));
+
+    let mut prompt_drift = usage.clone();
+    prompt_drift.estimated_prompt_tokens = input.estimated_prompt_tokens.saturating_add(9);
+    assert!(matches!(
+        prompt_drift.validate(),
+        Err(HarnessEvidenceError::DigestMismatch("snapshot_digest"))
+    ));
+
+    let mut count_mismatch = tool_results.clone();
+    count_mismatch.total_count = input.tool_result_count.saturating_add(1);
+    count_mismatch.unique_count = count_mismatch.total_count;
+    count_mismatch.repeated_count = 0;
+    if count_mismatch.total_count > 0 {
+        count_mismatch.content_bytes = 1;
+        count_mismatch.estimated_tokens = 1;
+        count_mismatch.contents_digest = Some(digest_for_test('f'));
+    }
+    assert!(matches!(
+        ModelUsageSnapshotV1::from_input(&input, &count_mismatch, &TokenUsage::default()),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+
+    let empty = ToolResultContextUsageV1 {
+        total_count: 0,
+        unique_count: 0,
+        repeated_count: 0,
+        content_bytes: 0,
+        repeated_content_bytes: 0,
+        estimated_tokens: 0,
+        repeated_estimated_tokens: 0,
+        contents_digest: None,
+        repeated_contents_digest: None,
+    };
+    let no_results_but_bytes = ToolResultContextUsageV1 {
+        content_bytes: 4,
+        ..empty.clone()
+    };
+    assert!(matches!(
+        no_results_but_bytes.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+    let repeated_digest_without_count = ToolResultContextUsageV1 {
+        repeated_contents_digest: Some(digest_for_test('a')),
+        ..empty
+    };
+    assert!(matches!(
+        repeated_digest_without_count.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+    let repeated_over_budget = ToolResultContextUsageV1 {
+        total_count: 2,
+        unique_count: 1,
+        repeated_count: 1,
+        content_bytes: 4,
+        repeated_content_bytes: 2,
+        estimated_tokens: 2,
+        repeated_estimated_tokens: 3,
+        contents_digest: Some(digest_for_test('b')),
+        repeated_contents_digest: Some(digest_for_test('c')),
+    };
+    assert!(matches!(
+        repeated_over_budget.validate(),
+        Err(HarnessEvidenceError::InvalidContents(_))
+    ));
+}
+
+#[test]
+fn model_usage_validate_against_partitions_with_recomputed_digest() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let (_, input, tool_results) = source
+        .capture(
+            5,
+            ModelCallObservation::new(
+                ModelInputKindV1::Completion,
+                &[Message::user("against partitions")],
+                None,
+                &[],
+                None,
+                6,
+            ),
+        )
+        .unwrap();
+    let usage =
+        ModelUsageSnapshotV1::from_input(&input, &tool_results, &TokenUsage::default()).unwrap();
+
+    let mut digest_drift = usage.clone();
+    digest_drift.input_snapshot_digest = digest_for_test('a');
+    digest_drift
+        .recompute_snapshot_digest_for_test()
+        .expect("recompute");
+    assert!(matches!(
+        digest_drift.validate_against(&input),
+        Err(HarnessEvidenceError::DigestMismatch(
+            "input_snapshot_digest"
+        ))
+    ));
+
+    let mut prompt_drift = usage.clone();
+    prompt_drift.estimated_prompt_tokens = input.estimated_prompt_tokens.saturating_add(3);
+    prompt_drift
+        .recompute_snapshot_digest_for_test()
+        .expect("recompute");
+    assert!(matches!(
+        prompt_drift.validate_against(&input),
+        Err(HarnessEvidenceError::InvalidContents(
+            "usage and input prompt estimates agree"
+        ))
+    ));
+
+    let mut count_drift = usage.clone();
+    count_drift.tool_results.total_count = input.tool_result_count.saturating_add(1);
+    count_drift.tool_results.unique_count = count_drift.tool_results.total_count;
+    count_drift.tool_results.repeated_count = 0;
+    if count_drift.tool_results.total_count > 0 {
+        count_drift.tool_results.content_bytes = 1;
+        count_drift.tool_results.estimated_tokens = 1;
+        count_drift.tool_results.contents_digest = Some(digest_for_test('b'));
+    }
+    count_drift
+        .recompute_snapshot_digest_for_test()
+        .expect("recompute");
+    assert!(matches!(
+        count_drift.validate_against(&input),
+        Err(HarnessEvidenceError::InvalidContents(
+            "usage and input Tool-result counts agree"
+        ))
+    ));
+}
+
+#[test]
+fn model_input_counts_image_blocks_in_messages_and_tool_results() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = source(workspace.path());
+    let image = crate::llm::ImageSource {
+        source_type: "base64".into(),
+        media_type: "image/png".into(),
+        data: "aGVsbG8=".into(),
+    };
+    let messages = vec![
+        Message {
+            role: "user".into(),
+            content: vec![crate::llm::ContentBlock::Image {
+                source: image.clone(),
+            }],
+            reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
+        },
+        Message {
+            role: "user".into(),
+            content: vec![crate::llm::ContentBlock::ToolResult {
+                tool_use_id: "img-1".into(),
+                content: crate::llm::ToolResultContentField::Blocks(vec![
+                    crate::llm::ToolResultContent::Text {
+                        text: "caption".into(),
+                    },
+                    crate::llm::ToolResultContent::Image { source: image },
+                ]),
+                is_error: Some(false),
+                trust: Default::default(),
+                redaction_reviewed: false,
+            }],
+            reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
+        },
+    ];
+    let (_, input, _) = source
+        .capture(
+            2,
+            ModelCallObservation::new(ModelInputKindV1::Completion, &messages, None, &[], None, 8),
+        )
+        .unwrap();
+    assert!(input.image_block_count >= 2);
+    input.validate().unwrap();
+}

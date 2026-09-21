@@ -79,6 +79,22 @@ pub(super) fn require_digest(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn digest_writer_flush_succeeds() {
+        let mut writer = DigestWriter::new("coverage.flush");
+        writer.write_all(b"payload").unwrap();
+        writer.flush().unwrap();
+        let measurement = writer.finish();
+        assert!(measurement.digest.starts_with("sha256:"));
+        assert_eq!(measurement.bytes, 7);
+    }
+}
+
 pub(super) fn to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }

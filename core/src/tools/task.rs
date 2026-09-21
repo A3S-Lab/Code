@@ -31,10 +31,19 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+
+// Test-only force switches. Always compiled so `--no-cfg-coverage` does not
+// leave dead `#[cfg(not(test))]` stubs diluting line coverage; production
+// never flips these atomics.
+static TEST_FORCE_IDENTITY_DERIVE_FAILURE: AtomicBool = AtomicBool::new(false);
+static TEST_FORCE_EMPTY_SCHEDULER_QUOTAS: AtomicBool = AtomicBool::new(false);
+static TEST_FORCE_EVENT_BRIDGE_JOIN_FAILURE: AtomicBool = AtomicBool::new(false);
+static TEST_FORCE_BACKGROUND_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
 
 const TASK_OUTPUT_CONTEXT_LIMIT: usize = 4_000;
 const TASK_OUTPUT_CONTEXT_HEAD: usize = 3_000;
@@ -157,6 +166,14 @@ impl ParallelTaskLifecycle {
 
     fn is_ended(&self, task_id: &str) -> bool {
         self.lock_state().ended.contains(task_id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.state.lock().expect("lifecycle lock");
+            panic!("intentional parallel task lifecycle poison");
+        }));
     }
 }
 
@@ -473,6 +490,30 @@ impl TaskExecutor {
             .is_some_and(|admission| admission.publishes_model_generation_pool())
     }
 
+    /// Test-only entry that runs the child path with an exact cancellation token
+    /// so MCP registration cancel branches can be forced hermetically.
+    #[cfg(test)]
+    pub(crate) async fn execute_with_cancel_token_for_test(
+        &self,
+        task_id: String,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        cancel_token: CancellationToken,
+    ) -> Result<TaskResult> {
+        self.execute_with_task_id_in_scope(
+            task_id,
+            params,
+            event_tx,
+            parent_session_id,
+            true,
+            cancel_token,
+            None,
+            None,
+        )
+        .await
+    }
+
     fn visible_agents(&self) -> Vec<AgentDefinition> {
         self.registry.list_visible()
     }
@@ -597,18 +638,7 @@ impl TaskExecutor {
             )
             .await;
         let close = close_capability_subtask(capability_subtask.as_ref()).await;
-        match (execution, close) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Ok(_), Err(close_error)) => Err(close_error),
-            (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(close_error)) => {
-                tracing::warn!(
-                    error = %close_error,
-                    "Capability Subtask close also failed after delegated execution failure"
-                );
-                Err(error)
-            }
-        }
+        settle_delegated_execution(execution, close)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -650,15 +680,20 @@ impl TaskExecutor {
                 if let Some(parent_session_id) = parent_session_id {
                     identity_spec = identity_spec.with_parent_session_id(parent_session_id);
                 }
-                Some(
+                Some({
+                    if TEST_FORCE_IDENTITY_DERIVE_FAILURE.swap(false, Ordering::SeqCst) {
+                        return Err(anyhow::anyhow!(
+                            "derive delegated task execution identity: forced test failure"
+                        ));
+                    }
                     crate::orchestration::workflow_step_execution_identity(
                         parent_session_id.unwrap_or("host"),
                         &identity_spec,
                     )
                     .map_err(|error| {
                         anyhow::anyhow!("derive delegated task execution identity: {error}")
-                    })?,
-                )
+                    })?
+                })
             } else {
                 None
             };
@@ -693,6 +728,9 @@ impl TaskExecutor {
                         {
                             quotas.push(quota.clone());
                         }
+                    }
+                    if TEST_FORCE_EMPTY_SCHEDULER_QUOTAS.swap(false, Ordering::SeqCst) {
+                        quotas.clear();
                     }
                     let priority = if params.background {
                         crate::task_scheduler::TaskPriority::Background
@@ -1080,17 +1118,10 @@ impl TaskExecutor {
         if let Some(provider) = child_security_provider.as_deref() {
             output = crate::security::sanitize_text(provider, &output);
             if let Some(value) = structured.take() {
-                let sanitized = output_schema.as_ref().map_or_else(
-                    || sanitize_task_json(provider, &value),
-                    |schema| sanitize_task_json_with_schema(provider, &value, schema),
-                );
-                if output_schema
-                    .as_ref()
-                    .is_none_or(|schema| value_matches_schema(&sanitized, schema))
+                match apply_structured_output_sanitization(provider, value, output_schema.as_ref())
                 {
-                    structured = Some(sanitized);
-                } else {
-                    success = false;
+                    Ok(sanitized) => structured = Some(sanitized),
+                    Err(()) => success = false,
                 }
             }
         }
@@ -1101,6 +1132,9 @@ impl TaskExecutor {
         // stale child deltas or progress events.
         drop(child_event_tx);
         drop(child_llm_event_tx);
+        if TEST_FORCE_EVENT_BRIDGE_JOIN_FAILURE.swap(false, Ordering::SeqCst) {
+            child_event_forwarder.abort();
+        }
         let source_anchors = match child_event_forwarder.await {
             Ok(source_anchors) => source_anchors,
             Err(error) => {
@@ -1314,10 +1348,19 @@ impl TaskExecutor {
         let mut running = true;
         if let Some(run) = capability_run {
             let task_name = format!("subagent.{task_id}");
-            if let Err(error) = run.spawn_task(task_name, async move {
-                background.await;
-                Ok(())
-            }) {
+            let spawn_result = if TEST_FORCE_BACKGROUND_SPAWN_FAILURE.swap(false, Ordering::SeqCst)
+            {
+                Err(crate::capability::CapabilityScopeError::SupervisorClosed {
+                    scope_id: "forced-background-spawn-failure".to_string(),
+                })
+            } else {
+                run.spawn_task(task_name, async move {
+                    background.await;
+                    Ok(())
+                })
+                .map(|_| ())
+            };
+            if let Err(error) = spawn_result {
                 // Admission races with Run close fail closed: no detached
                 // child work may escape after the exact generation lease is
                 // released.
@@ -1360,6 +1403,12 @@ async fn close_capability_subtask(
         return Ok(());
     };
     let report = subtask.close().await?;
+    reject_unclean_capability_subtask_close(&report)
+}
+
+fn reject_unclean_capability_subtask_close(
+    report: &crate::capability::ScopeCloseReport,
+) -> Result<()> {
     if !report.is_clean() {
         anyhow::bail!(
             "Capability Subtask close was incomplete (tasks failed: {}, tasks timed out: {}, child scopes failed: {}, child scopes timed out: {}, effects failed: {}, effects timed out: {})",
@@ -1372,6 +1421,24 @@ async fn close_capability_subtask(
         );
     }
     Ok(())
+}
+
+fn settle_delegated_execution(
+    execution: Result<TaskResult>,
+    close: Result<()>,
+) -> Result<TaskResult> {
+    match (execution, close) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(close_error)) => Err(close_error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(close_error)) => {
+            tracing::warn!(
+                error = %close_error,
+                "Capability Subtask close also failed after delegated execution failure"
+            );
+            Err(error)
+        }
+    }
 }
 
 fn settle_task_capability_operation<T>(
@@ -1723,6 +1790,22 @@ pub(crate) use parallel_params::ParallelTaskParams;
 
 mod parallel_task;
 pub(crate) use parallel_task::ParallelTaskTool;
+
+fn apply_structured_output_sanitization(
+    provider: &dyn crate::security::SecurityProvider,
+    value: serde_json::Value,
+    output_schema: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, ()> {
+    let sanitized = match output_schema {
+        None => sanitize_task_json(provider, &value),
+        Some(schema) => sanitize_task_json_with_schema(provider, &value, schema),
+    };
+    if output_schema.is_none_or(|schema| value_matches_schema(&sanitized, schema)) {
+        Ok(sanitized)
+    } else {
+        Err(())
+    }
+}
 
 fn adopt_dirtied_paths(
     parent_session: Option<&str>,

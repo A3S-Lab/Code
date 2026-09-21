@@ -980,3 +980,95 @@ fn is_read_only_git_segment(tokens: &[&str]) -> bool {
 fn normalize_shell(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::permissions::PermissionDecision;
+
+    #[test]
+    fn stricter_permission_and_bash_segment_helpers_cover_near_miss_branches() {
+        assert_eq!(
+            stricter_permission(PermissionDecision::Deny, PermissionDecision::Ask),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            stricter_permission(PermissionDecision::Ask, PermissionDecision::Allow),
+            PermissionDecision::Ask
+        );
+
+        assert!(!is_read_only_bash_segment(""));
+        assert!(!is_read_only_bash_segment("ls -R"));
+        assert!(!is_read_only_bash_segment("ls --recursive"));
+        assert!(!is_read_only_bash_segment("ls --dereference"));
+        assert!(!is_read_only_bash_segment("grep --exclude-from=x pattern"));
+        assert!(!is_read_only_bash_segment("grep --file=x pattern"));
+        assert!(!is_read_only_bash_segment("grep --recursive pattern"));
+        assert!(!is_read_only_bash_segment("du -L ."));
+        assert!(!is_read_only_bash_segment("du --dereference ."));
+        assert!(is_read_only_bash_segment("df -h"));
+        assert!(is_read_only_bash_segment("uname -a"));
+        assert!(!is_read_only_bash_segment("cat --output=x"));
+        assert!(option_executes_or_writes("--files-from"));
+        assert!(option_executes_or_writes("--output=/tmp/x"));
+
+        assert!(!is_read_only_git_segment(&["status"]));
+        assert!(!is_read_only_git_segment(&["git"]));
+        assert!(is_read_only_git_segment(&["git", "--no-pager", "status"]));
+        assert!(!is_read_only_git_segment(&["git", "-C", "/tmp", "status"]));
+        assert!(!is_read_only_git_segment(&["git", "diff", "--ext-diff"]));
+        assert!(is_read_only_git_segment(&["git", "remote", "-v"]));
+        assert!(is_read_only_git_segment(&["git", "remote"]));
+        assert!(is_read_only_git_segment(&[
+            "git",
+            "branch",
+            "--show-current"
+        ]));
+        assert!(!is_read_only_git_segment(&[
+            "git", "branch", "--delete", "x"
+        ]));
+    }
+
+    #[test]
+    fn normalize_abs_lexical_handles_dot_dot_and_curdir() {
+        let rooted = normalize_abs_lexical(std::path::Path::new("/tmp/a/../b/./c")).unwrap();
+        assert!(rooted.ends_with("b/c") || rooted.ends_with("b\\c"));
+
+        assert!(normalize_abs_lexical(std::path::Path::new("/../")).is_err());
+        assert!(!path_is_outside_workspace(
+            "",
+            Some(std::path::Path::new("/tmp"))
+        ));
+        assert!(path_is_outside_workspace(
+            "/etc/passwd",
+            Some(std::path::Path::new("/tmp"))
+        ));
+        assert!(!path_is_outside_workspace(
+            "relative/path",
+            Some(std::path::Path::new("/tmp"))
+        ));
+        assert!(relative_path_escapes("../escape"));
+        assert!(!relative_path_escapes("safe/path"));
+    }
+
+    #[test]
+    fn invocation_crosses_local_symlink_skips_malformed_batch_entries() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!invocation_crosses_local_symlink(
+            root.path(),
+            "batch",
+            &serde_json::json!({
+                "invocations": [
+                    {"args": {"file_path": "x"}},
+                    {"tool": "read"},
+                    {"tool": "unknown_tool", "args": {"file_path": "x"}}
+                ]
+            })
+        ));
+        assert!(!invocation_crosses_local_symlink(
+            root.path(),
+            "unknown",
+            &serde_json::json!({})
+        ));
+    }
+}

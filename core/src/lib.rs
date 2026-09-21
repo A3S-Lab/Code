@@ -160,6 +160,8 @@ pub mod telemetry;
 #[cfg(feature = "telemetry")]
 pub mod telemetry_otel;
 #[cfg(test)]
+pub(crate) mod test_mutex_poison;
+#[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod text;
 pub(crate) mod tool_confirmation;
@@ -172,12 +174,12 @@ pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
 pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult, ModelMiddlewareHealthSnapshot};
+#[cfg(feature = "dynamic-workflow")]
+pub use agent_api::ProjectedFlowHandle;
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentSession, ProjectedUiHandle, ReadFileOptions, SessionBuilder,
     SessionOptions, ToolCallResult,
 };
-#[cfg(feature = "dynamic-workflow")]
-pub use agent_api::ProjectedFlowHandle;
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
@@ -194,8 +196,8 @@ pub use agent_protocol::{
     AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES, AGENT_PROTOCOL_V1,
 };
 pub use agent_protocol_harness::{
-    AgentProtocolCheckpointRecoveryError, AgentProtocolHarness, AgentProtocolHarnessError,
-    AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
+    force_invalid_recovery_binding_for_test, AgentProtocolCheckpointRecoveryError,
+    AgentProtocolHarness, AgentProtocolHarnessError, AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
 };
 pub use agent_protocol_host::{
     AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,

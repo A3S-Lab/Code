@@ -267,13 +267,13 @@ fn automatic_tier_plan_is_stable_and_deduplicated() {
 
 #[cfg(feature = "headless-search")]
 #[test]
-fn automatic_search_route_prefers_headless_discovery() {
+fn automatic_search_route_tries_api_before_http_and_headless() {
     use super::engines::EngineTier;
     use super::fallback::automatic_tier_order;
 
     assert_eq!(
         automatic_tier_order(),
-        [EngineTier::Headless, EngineTier::Http, EngineTier::Api]
+        [EngineTier::Api, EngineTier::Http, EngineTier::Headless]
     );
 }
 
@@ -1178,44 +1178,32 @@ fn json_search_result_preserves_published_date() {
 
 #[test]
 fn json_search_payload_preserves_the_array_contract_when_requirements_are_met() {
-    let mut health = RetrievalHealth::default();
-    health.usable_result_count = 1;
-    health.unique_host_count = 1;
-    health.contributing_engine_count = 1;
-    let requirements = RetrievalRequirements::for_limit(1);
     let results = vec![serde_json::json!({
         "title": "Portable evidence",
         "url": "https://example.test/evidence"
     })];
 
-    let payload = json_search_payload(results.clone(), true, &health, &requirements);
+    let payload = json_search_payload(results.clone());
 
     assert_eq!(payload, serde_json::Value::Array(results));
 }
 
 #[test]
-fn json_search_payload_is_diagnostic_below_retrieval_requirements() {
+fn json_search_payload_keeps_the_array_contract_below_retrieval_requirements() {
     let health = RetrievalHealth::default();
     let requirements = RetrievalRequirements::for_limit(1);
     assert!(
         !requirements.is_met(&health),
-        "an empty result set cannot pass"
+        "an empty health snapshot cannot pass the structural gate"
     );
 
-    let payload = json_search_payload(
-        vec![serde_json::json!({
-            "title": "Weak candidate",
-            "url": "https://example.test/candidate"
-        })],
-        false,
-        &health,
-        &requirements,
-    );
+    let results = vec![serde_json::json!({
+        "title": "Weak candidate",
+        "url": "https://example.test/candidate"
+    })];
+    let payload = json_search_payload(results.clone());
 
-    assert_eq!(payload["status"], "retrieval_requirements_not_met");
-    assert_eq!(payload["retrieval_health"]["usable_result_count"], 0);
-    assert_eq!(payload["retrieval_requirements"]["min_usable_results"], 1);
-    assert_eq!(payload["results"].as_array().map(Vec::len), Some(1));
+    assert_eq!(payload, serde_json::Value::Array(results));
 }
 
 #[test]

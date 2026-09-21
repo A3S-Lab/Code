@@ -19,12 +19,14 @@ pub(super) struct EngineTierPlan {
 
 #[cfg(feature = "headless-search")]
 pub(super) fn automatic_tier_order() -> [EngineTier; 3] {
-    [EngineTier::Headless, EngineTier::Http, EngineTier::Api]
+    // API first. Headless is last so a slow browser tier cannot consume the
+    // deadline before engines that actually satisfy the structural gate.
+    [EngineTier::Api, EngineTier::Http, EngineTier::Headless]
 }
 
 #[cfg(not(feature = "headless-search"))]
 pub(super) fn automatic_tier_order() -> [EngineTier; 2] {
-    [EngineTier::Http, EngineTier::Api]
+    [EngineTier::Api, EngineTier::Http]
 }
 
 /// Resolve cascade tier order from SearchConfig, falling back to the product default.

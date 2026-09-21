@@ -6091,5 +6091,1051 @@ fn synthesize_progress_ignores_unrelated_events() {
     }
 }
 
+#[test]
+fn with_mcp_builds_an_executor_that_accepts_a_manager() {
+    let workspace = tempfile::tempdir().unwrap();
+    let manager = Arc::new(crate::mcp::McpManager::new());
+    let executor = TaskExecutor::with_mcp(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("done")),
+        workspace.path().to_string_lossy().to_string(),
+        manager,
+    );
+    // Construction itself is the coverage target for with_mcp; functional
+    // manager wrapping is asserted by with_mcp_registers_manager_tools_*.
+    let _ = executor.with_max_parallel_tasks(1);
+}
+
+#[tokio::test]
+async fn execute_with_task_id_runs_a_foreground_child() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("task-id result")),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let result = executor
+        .execute_with_task_id(
+            "fixed-task-id".to_string(),
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "fixed id".to_string(),
+                prompt: "say done".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert_eq!(result.output, "task-id result");
+    assert_eq!(result.session_id, "task-run-fixed-task-id");
+}
+
+#[tokio::test]
+async fn execute_with_task_id_fails_closed_when_parent_cancellation_is_already_set() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_parent_cancellation(cancellation);
+    let error = executor
+        .execute_with_task_id(
+            "cancelled-task".to_string(),
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "cancelled".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+            true,
+        )
+        .await
+        .expect_err("cancelled parent must fail before child work");
+    assert!(
+        error.to_string().contains("cancelled by parent session"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn with_mcp_registers_manager_tools_into_the_delegated_child() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (binding, transport, client) = crate::mcp::test_support::ready_binding(
+        "catalog",
+        "manager-generation",
+        vec![crate::mcp::test_support::mcp_tool(
+            "lookup",
+            "manager-generation",
+        )],
+    )
+    .await;
+    let _ = binding;
+    let manager = Arc::new(crate::mcp::McpManager::new());
+    manager
+        .insert_client_for_test("catalog", Arc::clone(&client))
+        .await;
+
+    let registry = AgentRegistry::new();
+    registry.register(
+        crate::subagent::WorkerAgentSpec::custom("mcp-worker", "Use manager MCP")
+            .with_permissions(PermissionPolicy::new().allow("mcp__catalog__lookup(*)"))
+            .with_prompt("Call the manager MCP tool exactly once.")
+            .with_max_steps(3)
+            .into_agent_definition(),
+    );
+    let llm = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "delegated-mcp",
+            "mcp__catalog__lookup",
+            serde_json::json!({"generation": "manager"}),
+        ),
+        MockLlmClient::text_response("manager MCP complete"),
+    ]));
+    let executor = TaskExecutor::with_mcp(
+        Arc::new(registry),
+        Arc::clone(&llm) as Arc<dyn LlmClient>,
+        workspace.path().to_string_lossy().to_string(),
+        manager,
+    )
+    .with_child_tool_presentation(crate::tools::ToolPresentationProfileV1::direct());
+
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "mcp-worker".to_string(),
+                description: "Use manager MCP".to_string(),
+                prompt: "Call lookup once.".to_string(),
+                background: false,
+                max_steps: Some(3),
+                output_schema: None,
+            },
+            None,
+            Some("parent-run"),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "delegated child failed: {}", result.output);
+    assert_eq!(transport.calls().len(), 1);
+    assert_eq!(transport.calls()[0].name, "lookup");
+    let offered: Vec<String> = llm
+        .request_tool_definitions
+        .lock()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(|definition| definition.name.clone())
+        .collect();
+    assert!(
+        offered.iter().any(|name| name == "mcp__catalog__lookup"),
+        "manager MCP wrappers must be installed: {offered:?}"
+    );
+    client.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn scoped_tool_name_collision_fails_before_child_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let colliding = Arc::new(BatchSourceTool {
+        name: "read",
+        source_anchor: "https://example.test/collide",
+    });
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_scoped_tools(vec![colliding]);
+    let error = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "collide".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+        )
+        .await
+        .expect_err("scoped tool collision must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("conflicts with another child capability"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn empty_child_final_output_is_reported_as_a_failed_task() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("   ")),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "empty".to_string(),
+                prompt: "return nothing".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(
+        result.output.contains("no final output"),
+        "unexpected output: {}",
+        result.output
+    );
+}
+
+#[test]
+fn parallel_task_lifecycle_recovers_from_a_poisoned_mutex() {
+    let lifecycle = ParallelTaskLifecycle::default();
+    lifecycle.mark_started("task-a");
+    lifecycle.poison_for_test();
+    assert!(lifecycle.is_started("task-a"));
+    lifecycle.mark_ended("task-a");
+    assert!(lifecycle.is_ended("task-a"));
+}
+
+#[tokio::test]
+async fn background_scheduler_admission_carries_output_schema_into_identity() {
+    use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "verdict": { "type": "string" } },
+        "required": ["verdict"]
+    });
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(MockLlmClient::new(vec![MockLlmClient::text_response(
+                r#"{"verdict":"ok"}"#,
+            )])),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker))
+        .with_task_scheduler(Arc::clone(&scheduler), false),
+    );
+    let task_id = executor.clone().execute_background(
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "schema background".to_string(),
+            prompt: "emit schema".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: Some(schema),
+        },
+        None,
+        Some("parent-session".to_string()),
+    );
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(snapshot) = tracker.get(&task_id).await {
+                if snapshot.status != SubagentStatus::Running {
+                    break snapshot;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background schema task should settle");
+    assert_eq!(snapshot.status, SubagentStatus::Completed);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelled_parent_stops_manager_mcp_registration_before_child_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (_binding, _transport, client) = crate::mcp::test_support::ready_binding(
+        "catalog",
+        "cancel-generation",
+        vec![crate::mcp::test_support::mcp_tool(
+            "lookup",
+            "cancel-generation",
+        )],
+    )
+    .await;
+    let manager = Arc::new(crate::mcp::McpManager::new());
+    manager
+        .insert_client_for_test("catalog", Arc::clone(&client))
+        .await;
+
+    let cancellation = CancellationToken::new();
+    let executor = TaskExecutor::with_mcp(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+        manager,
+    )
+    .with_parent_cancellation(cancellation.clone());
+
+    // Cancel after construction so execute_with_task_id's early parent check
+    // rejects before MCP wrappers are installed.
+    cancellation.cancel();
+    let error = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "cancel mcp".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+        )
+        .await
+        .expect_err("cancelled parent must stop before MCP registration");
+    assert!(
+        error.to_string().contains("cancelled by parent session"),
+        "unexpected error: {error}"
+    );
+    client.close().await.unwrap();
+}
+
+#[test]
+fn settle_task_capability_operation_covers_close_error_branches() {
+    let ok_close_err = settle_task_capability_operation(
+        Ok(7_u8),
+        Err(anyhow::anyhow!("close failed")),
+        "structured task generation",
+    );
+    assert!(ok_close_err
+        .expect_err("close error must win when execution succeeded")
+        .to_string()
+        .contains("close failed"));
+
+    let both_err = settle_task_capability_operation::<()>(
+        Err(anyhow::anyhow!("execution failed")),
+        Err(anyhow::anyhow!("close also failed")),
+        "structured task coercion",
+    );
+    assert!(both_err
+        .expect_err("execution error must be preserved")
+        .to_string()
+        .contains("execution failed"));
+}
+
+#[test]
+fn settle_delegated_execution_covers_close_error_branches() {
+    let ok_result = TaskResult {
+        task_id: "t1".into(),
+        agent: "worker".into(),
+        output: "ok".into(),
+        success: true,
+        session_id: "s1".into(),
+        structured: None,
+        source_anchors: Vec::new(),
+        completion: crate::harness_loop::CompletionTerminal::Narrative,
+    };
+    let close_wins =
+        settle_delegated_execution(Ok(ok_result), Err(anyhow::anyhow!("subtask close failed")));
+    assert!(close_wins
+        .expect_err("close error must surface")
+        .to_string()
+        .contains("subtask close failed"));
+
+    let exec_wins = settle_delegated_execution(
+        Err(anyhow::anyhow!("child failed")),
+        Err(anyhow::anyhow!("close also failed")),
+    );
+    assert!(exec_wins
+        .expect_err("execution error must be preserved")
+        .to_string()
+        .contains("child failed"));
+}
+
+#[test]
+fn reject_unclean_capability_subtask_close_formats_incomplete_report() {
+    let mut report = crate::capability::ScopeCloseReport::default();
+    report.tasks_failed = 1;
+    let error = reject_unclean_capability_subtask_close(&report)
+        .expect_err("unclean report must fail closed");
+    assert!(
+        error.to_string().contains("incomplete"),
+        "unexpected error: {error}"
+    );
+    assert!(reject_unclean_capability_subtask_close(
+        &crate::capability::ScopeCloseReport::default()
+    )
+    .is_ok());
+}
+
+#[tokio::test]
+async fn cancelled_token_stops_manager_mcp_tool_registration_before_child() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (_binding, _transport, client) = crate::mcp::test_support::ready_binding(
+        "catalog",
+        "cancel-before-child",
+        vec![crate::mcp::test_support::mcp_tool(
+            "lookup",
+            "cancel-before-child",
+        )],
+    )
+    .await;
+    let manager = Arc::new(crate::mcp::McpManager::new());
+    manager
+        .insert_client_for_test("catalog", Arc::clone(&client))
+        .await;
+
+    let executor = TaskExecutor::with_mcp(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+        manager,
+    );
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let error = executor
+        .execute_with_cancel_token_for_test(
+            "cancel-mcp-manager".to_string(),
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "cancel manager mcp".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+            cancel,
+        )
+        .await
+        .expect_err("pre-cancelled token must stop before child execution");
+    assert!(
+        error
+            .to_string()
+            .contains("cancelled before child execution"),
+        "unexpected error: {error}"
+    );
+    client.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_token_stops_projected_mcp_binding_registration_before_child() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (binding, _transport, client) = crate::mcp::test_support::ready_binding(
+        "catalog",
+        "cancel-projected",
+        vec![crate::mcp::test_support::mcp_tool(
+            "lookup",
+            "cancel-projected",
+        )],
+    )
+    .await;
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_projected_mcp_bindings(vec![binding]);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let error = executor
+        .execute_with_cancel_token_for_test(
+            "cancel-mcp-binding".to_string(),
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "cancel projected mcp".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+            cancel,
+        )
+        .await
+        .expect_err("pre-cancelled token must stop projected MCP install");
+    assert!(
+        error
+            .to_string()
+            .contains("cancelled before child execution"),
+        "unexpected error: {error}"
+    );
+    client.close().await.unwrap();
+}
+
+struct PooledStaticLlmClient {
+    inner: StaticLlmClient,
+    pool: crate::llm::ModelGenerationPool,
+}
+
+impl PooledStaticLlmClient {
+    fn new(text: impl Into<String>) -> Self {
+        Self {
+            inner: StaticLlmClient::new(text),
+            pool: crate::llm::ModelGenerationPool::for_endpoint(
+                "test-provider",
+                "test-model",
+                "https://example.test/v1",
+                crate::llm::ModelGenerationConcurrency::bounded(
+                    std::num::NonZeroUsize::new(2).expect("nonzero"),
+                ),
+            )
+            .expect("pool"),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for PooledStaticLlmClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.inner.complete(messages, system, tools).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.inner
+            .complete_streaming(messages, system, tools, cancel_token)
+            .await
+    }
+
+    fn model_generation_pool(&self) -> Option<crate::llm::ModelGenerationPool> {
+        Some(self.pool.clone())
+    }
+
+    fn model_generation_concurrency(&self) -> crate::llm::ModelGenerationConcurrency {
+        crate::llm::ModelGenerationConcurrency::bounded(
+            std::num::NonZeroUsize::new(2).expect("nonzero"),
+        )
+    }
+}
+
+#[tokio::test]
+async fn scheduled_foreground_composes_distinct_provider_quota_identity() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(PooledStaticLlmClient::new("pooled scheduled result")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_task_scheduler(Arc::clone(&scheduler), true);
+    assert!(
+        executor.has_provider_model_generation_admission(),
+        "pooled client must publish provider admission"
+    );
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "pooled quota".to_string(),
+                prompt: "say done".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .expect("scheduled foreground with distinct provider quota");
+    assert!(result.success);
+    assert_eq!(result.output, "pooled scheduled result");
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn foreground_without_scheduler_attaches_provider_model_generation_admission() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    // schedule_foreground=false so the child attaches provider_admission on the
+    // agent loop instead of holding it on the outer scheduler lease.
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(PooledStaticLlmClient::new("admission attached result")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_task_scheduler(Arc::clone(&scheduler), false);
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "attach admission".to_string(),
+                prompt: "say done".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .expect("foreground child must attach provider admission");
+    assert!(result.success);
+    assert_eq!(result.output, "admission attached result");
+    scheduler.shutdown().await;
+}
+
+#[test]
+fn structured_output_sanitization_without_schema_redacts_nested_strings() {
+    let sanitized = apply_structured_output_sanitization(
+        &RedactingSourceSecurityProvider,
+        serde_json::json!({
+            "verdict": "private",
+            "nested": ["safe", {"detail": "private detail"}],
+        }),
+        None,
+    )
+    .expect("unsanitized schema-less structured output must remain valid JSON");
+    assert_eq!(
+        sanitized,
+        serde_json::json!({
+            "verdict": "[redacted]",
+            "nested": ["safe", {"detail": "[redacted] detail"}],
+        })
+    );
+}
+
+#[tokio::test]
+async fn scheduler_identity_derive_failure_fails_closed_before_child() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_task_scheduler(Arc::clone(&scheduler), true);
+    TEST_FORCE_IDENTITY_DERIVE_FAILURE.store(true, Ordering::SeqCst);
+    let error = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "identity fail".to_string(),
+                prompt: "nope".to_string(),
+                background: true,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .expect_err("forced identity derive failure must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("derive delegated task execution identity"),
+        "unexpected error: {error}"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn scheduler_empty_quotas_uses_acquire_with_identity() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("identity lease ok")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_task_scheduler(Arc::clone(&scheduler), true);
+    TEST_FORCE_EMPTY_SCHEDULER_QUOTAS.store(true, Ordering::SeqCst);
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "empty quotas".to_string(),
+                prompt: "finish".to_string(),
+                background: true,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+        )
+        .await
+        .expect("empty quota path must still admit via acquire_with_identity");
+    assert!(result.success);
+    assert_eq!(result.output, "identity lease ok");
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelled_structured_generation_reports_cancelled_by_caller() {
+    let workspace = tempfile::tempdir().unwrap();
+    let registry = AgentRegistry::new();
+    registry.register(AgentDefinition::new("decision", "Pure decision").tool_free());
+    let executor = TaskExecutor::new(
+        Arc::new(registry),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let result = executor
+        .execute_with_cancel_token_for_test(
+            "cancel-structured".to_string(),
+            TaskParams {
+                agent: "decision".to_string(),
+                description: "cancel structured".to_string(),
+                prompt: "emit object".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: Some(verdict_schema()),
+            },
+            None,
+            Some("parent"),
+            cancel,
+        )
+        .await
+        .expect("cancelled structured generation settles as a TaskResult");
+    assert!(!result.success);
+    assert!(
+        result.output.contains("Task cancelled by caller")
+            || result.output.contains("Task failed:"),
+        "unexpected output: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn cancelled_child_execution_error_reports_cancelled_by_caller() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cancel = CancellationToken::new();
+    let cancel_for_client = cancel.clone();
+    // Cancel after the child loop starts so we reach the execute Err+cancel arm
+    // instead of the pre-child MCP registration bail.
+    let started = Arc::new(Notify::new());
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(NotifyThenFailClient {
+            started: Arc::clone(&started),
+            cancel: cancel_for_client,
+        }),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    let run = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            executor
+                .execute_with_cancel_token_for_test(
+                    "cancel-execute-err".to_string(),
+                    TaskParams {
+                        agent: "worker".to_string(),
+                        description: "cancel err".to_string(),
+                        prompt: "fail after cancel".to_string(),
+                        background: false,
+                        max_steps: Some(1),
+                        output_schema: None,
+                    },
+                    None,
+                    Some("parent"),
+                    cancel,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), started.notified())
+        .await
+        .expect("child LLM call should start");
+    let result = tokio::time::timeout(Duration::from_secs(2), run)
+        .await
+        .expect("cancelled execute must settle")
+        .expect("join")
+        .expect("cancelled execute error settles as a TaskResult");
+    assert!(!result.success);
+    assert!(
+        result.output.contains("Task cancelled by caller")
+            || result.output.contains("Task failed:"),
+        "unexpected output: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn event_bridge_join_failure_is_warned_and_task_still_completes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("bridge survived")),
+        workspace.path().to_string_lossy().to_string(),
+    );
+    TEST_FORCE_EVENT_BRIDGE_JOIN_FAILURE.store(true, Ordering::SeqCst);
+    let result = executor
+        .execute(
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "bridge abort".to_string(),
+                prompt: "finish".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent"),
+        )
+        .await
+        .expect("aborted event bridge must not fail the child result");
+    assert!(result.success);
+    assert_eq!(result.output, "bridge survived");
+    assert!(result.source_anchors.is_empty());
+}
+
+#[tokio::test]
+async fn background_capability_admission_failure_emits_terminal_event() {
+    let workspace = tempfile::tempdir().unwrap();
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session = crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+        "session-bg-admit",
+        set,
+        ceiling.clone(),
+    )
+    .unwrap();
+    let run = session.admit_run("run-bg-admit", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run);
+    let turn = runtime.begin_turn(1).unwrap();
+    let capability_context = turn.tool_context();
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_capability_context(capability_context);
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("should not execute")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_parent_context(redacting_parent_context()),
+    );
+    let scoped = executor.scoped_for_invocation(&context);
+    turn.close().await.unwrap();
+
+    let (event_tx, mut event_rx) = broadcast::channel(8);
+    let launch = scoped.execute_background_with_parent_cancellation(
+        "bg-admit-fail".to_string(),
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "closed turn".to_string(),
+            prompt: "must fail admission".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        Some(event_tx),
+        Some("parent-session".to_string()),
+        None,
+    );
+    assert!(!launch.running);
+    let end = event_rx
+        .try_recv()
+        .ok()
+        .and_then(|first| match first {
+            AgentEvent::SubagentStart { .. } => event_rx.try_recv().ok(),
+            other => Some(other),
+        })
+        .expect("admission failure must emit a terminal event");
+    match end {
+        AgentEvent::SubagentEnd {
+            success: false,
+            output,
+            ..
+        } => {
+            assert!(
+                output.contains("Background task capability admission failed"),
+                "unexpected output: {output}"
+            );
+        }
+        other => panic!("expected SubagentEnd failure, got {other:?}"),
+    }
+    run.close().await.unwrap();
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_spawn_failure_after_admission_emits_terminal_event() {
+    let workspace = tempfile::tempdir().unwrap();
+    let set = crate::capability::CapabilitySet::empty().unwrap();
+    let ceiling = crate::capability::CapabilityCeiling::all(
+        &set,
+        crate::capability::WorkspaceCapabilityCeiling::all(),
+        crate::capability::GovernanceCapabilityCeiling::none_required(),
+        crate::capability::CapabilityExecutionCeiling::new(
+            4,
+            2,
+            Some(1_000),
+            Some(1_000),
+            Some(5_000),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session = crate::capability::CapabilityScope::<crate::capability::Session>::new_session(
+        "session-bg-spawn",
+        set,
+        ceiling.clone(),
+    )
+    .unwrap();
+    let run = session.admit_run("run-bg-spawn", ceiling).unwrap();
+    let runtime = crate::capability::AgentCapabilityRuntime::from_run(&run);
+    let turn = runtime.begin_turn(1).unwrap();
+    let context = ToolContext::new(workspace.path().to_path_buf())
+        .with_capability_context(turn.tool_context());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("should not execute")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_parent_context(redacting_parent_context()),
+    );
+    let scoped = executor.scoped_for_invocation(&context);
+    TEST_FORCE_BACKGROUND_SPAWN_FAILURE.store(true, Ordering::SeqCst);
+    let (event_tx, mut event_rx) = broadcast::channel(8);
+    let launch = scoped.execute_background_with_parent_cancellation(
+        "bg-spawn-fail".to_string(),
+        TaskParams {
+            agent: "worker".to_string(),
+            description: "spawn fail".to_string(),
+            prompt: "must fail spawn".to_string(),
+            background: true,
+            max_steps: Some(1),
+            output_schema: None,
+        },
+        Some(event_tx),
+        Some("parent-session".to_string()),
+        None,
+    );
+    assert!(!launch.running);
+    let mut saw_failure = false;
+    while let Ok(event) = event_rx.try_recv() {
+        if let AgentEvent::SubagentEnd {
+            success: false,
+            output,
+            ..
+        } = event
+        {
+            assert!(
+                output.contains("Background task capability admission failed"),
+                "unexpected output: {output}"
+            );
+            saw_failure = true;
+        }
+    }
+    assert!(saw_failure, "forced spawn failure must emit SubagentEnd");
+    turn.close().await.unwrap();
+    run.close().await.unwrap();
+    session.close().await.unwrap();
+}
+
+struct NotifyThenFailClient {
+    started: Arc<Notify>,
+    cancel: CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for NotifyThenFailClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        self.started.notify_one();
+        self.cancel.cancel();
+        anyhow::bail!("forced child execution failure after cancel")
+    }
+
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let _ = self.complete(messages, system, tools).await?;
+        unreachable!("complete always errors after cancel")
+    }
+}
+
 #[path = "delegation_soak.rs"]
 mod delegation_soak;

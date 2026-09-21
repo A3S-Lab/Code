@@ -704,12 +704,26 @@ mod tests {
             crate::external_observation::RequiredAction::WorkspaceChange,
         )
         .expect("observation");
-        match decide_with_observations(&MutationLedger::default(), &[], &[], true, &[observation]) {
+        match decide_with_observations(
+            &MutationLedger::default(),
+            &[],
+            &[],
+            true,
+            &[observation.clone()],
+        ) {
             CompletionGate::Continue { message } => {
                 assert!(message.starts_with("completion gate:"));
                 assert!(message.contains("external observation"));
             }
             other => panic!("expected continue, got {other:?}"),
+        }
+        match decide_with_observations(&MutationLedger::default(), &[], &[], false, &[observation])
+        {
+            CompletionGate::Incomplete { message } => {
+                assert!(message.starts_with("completion gate:"));
+                assert!(message.contains("external observation"));
+            }
+            other => panic!("expected incomplete without continuation, got {other:?}"),
         }
     }
 
@@ -1090,5 +1104,273 @@ mod tests {
             PlanRunAdmission::implementation("abc").label(),
             "plan_implementation"
         );
+    }
+
+    #[test]
+    fn fold_same_digest_waivers_keeps_first_bound_terminal() {
+        let waived = CompletionTerminal::Waived {
+            effect_digest: "same".into(),
+        };
+        assert_eq!(
+            fold_step_completions(&[waived.clone(), waived.clone()]),
+            waived
+        );
+        assert!(completion_digest(&CompletionTerminal::Distinct).is_none());
+        assert!(completion_digest(&CompletionTerminal::Narrative).is_none());
+    }
+
+    #[test]
+    fn fold_same_digest_prefers_verified_over_waived() {
+        let verified = CompletionTerminal::Verified {
+            effect_digest: "d".into(),
+        };
+        let waived = CompletionTerminal::Waived {
+            effect_digest: "d".into(),
+        };
+        assert_eq!(fold_step_completions(&[waived, verified.clone()]), verified);
+    }
+
+    #[test]
+    fn fold_different_digests_is_distinct() {
+        assert_eq!(
+            fold_step_completions(&[
+                CompletionTerminal::Verified {
+                    effect_digest: "a".into(),
+                },
+                CompletionTerminal::Verified {
+                    effect_digest: "b".into(),
+                },
+            ]),
+            CompletionTerminal::Distinct
+        );
+    }
+
+    #[test]
+    fn nested_tool_calls_skip_failed_and_nameless_entries() {
+        let metadata = serde_json::json!({
+            "results": [
+                {"tool": "write", "success": false, "exit_code": 0, "metadata": {"file_path": "a.rs"}},
+                {"tool": "write", "success": true, "exit_code": 1, "metadata": {"file_path": "b.rs"}},
+                {"tool": "", "success": true, "exit_code": 0, "metadata": {"file_path": "c.rs"}},
+                {"success": true, "exit_code": 0, "metadata": {"file_path": "d.rs"}},
+                {"tool": "write", "success": true, "exit_code": 0, "metadata": {"file_path": "e.rs", "after": "ok"}}
+            ]
+        });
+        let mut ledger = MutationLedger::default();
+        ledger.observe_tool("task", 1, Some(&metadata));
+        assert!(
+            ledger.paths().any(|path| path == "e.rs"),
+            "only the successful named nested write should land"
+        );
+        assert!(!ledger.paths().any(|path| path == "a.rs"));
+        assert!(!ledger.paths().any(|path| path == "b.rs"));
+    }
+
+    #[test]
+    fn completion_waiver_rejects_blank_digest_or_reason() {
+        assert!(CompletionWaiverV1::new("   ", "reason").is_none());
+        assert!(CompletionWaiverV1::new("digest", "   ").is_none());
+        assert!(CompletionWaiverV1::new("", "reason").is_none());
+    }
+
+    #[test]
+    fn content_digest_for_path_misses_unrelated_records() {
+        let ledger = ledger_with_write();
+        assert!(ledger.content_digest_for_path("other.rs").is_none());
+        assert!(ledger.content_digest_for_path("src/lib.rs").is_some());
+    }
+
+    #[test]
+    fn observe_workspace_child_ignores_blank_and_missing_markers() {
+        let mut ledger = MutationLedger::default();
+        ledger.observe_tool(
+            "bash",
+            0,
+            Some(&serde_json::json!({"workspace_child": "   "})),
+        );
+        assert!(!ledger.has_open_children());
+
+        let missing = format!("missing-child-{}", std::process::id());
+        ledger.observe_tool(
+            "bash",
+            0,
+            Some(&serde_json::json!({ "workspace_child": missing })),
+        );
+        assert!(!ledger.has_open_children());
+    }
+
+    #[tokio::test]
+    async fn observe_workspace_child_records_settled_paths_and_dedupes_open_markers() {
+        let root = tempfile::tempdir().unwrap();
+        let settled = format!("settled-child-{}", std::process::id());
+        let watch = crate::porcelain::Watch::start(root.path()).await;
+        crate::porcelain::install_workspace_child(&settled, watch);
+        std::fs::write(root.path().join("guest.txt"), "x\n").unwrap();
+        crate::porcelain::settle_workspace_child(&settled, root.path()).await;
+
+        let mut ledger = MutationLedger::default();
+        ledger.observe_tool(
+            "bash",
+            0,
+            Some(&serde_json::json!({ "workspace_child": settled })),
+        );
+        assert!(!ledger.has_open_children());
+        assert!(!ledger.is_empty());
+
+        let open = format!("open-child-{}", std::process::id());
+        let watch = crate::porcelain::Watch::start(root.path()).await;
+        crate::porcelain::install_workspace_child(&open, watch);
+        let mut ledger = MutationLedger::default();
+        ledger.observe_tool(
+            "bash",
+            0,
+            Some(&serde_json::json!({ "workspace_child": open })),
+        );
+        assert!(ledger.has_open_children());
+        ledger.observe_tool(
+            "bash",
+            0,
+            Some(&serde_json::json!({ "workspace_child": open })),
+        );
+        assert_eq!(ledger.open_children.len(), 1);
+        crate::porcelain::settle_workspace_child(&open, root.path()).await;
+        let _ = crate::porcelain::take_settled_workspace_child(&open);
+    }
+
+    #[test]
+    fn push_ignores_empty_paths() {
+        let mut ledger = MutationLedger::default();
+        ledger.observe_tool(
+            "write",
+            0,
+            Some(&serde_json::json!({"file_path": "   ", "after": "x"})),
+        );
+        assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn model_visible_observation_covers_empty_and_already_tagged_output() {
+        let observation =
+            MutationObservationV1::diagnostics("src/a.rs", Some(1), vec!["warn".into()]);
+        let rendered = model_visible_observation("", &observation);
+        assert!(rendered.contains("[mutation observation]") || !rendered.is_empty());
+        let tagged = model_visible_observation("[mutation observation]\nprior", &observation);
+        assert!(tagged.contains("[mutation observation]"));
+        let combined = model_visible_observation("body", &observation);
+        assert!(combined.contains("body"));
+    }
+
+    #[test]
+    fn report_binds_pass_rejects_digest_mismatch_and_empty_required() {
+        let ledger = ledger_with_write();
+        let digest = ledger.digest().to_string();
+        let mismatched = VerificationReport::new(
+            "edit",
+            vec![VerificationCheck::required("build", "command", "compiles")
+                .with_status(VerificationStatus::Passed)],
+        )
+        .with_effect_digest("other-digest");
+        assert!(!report_binds_pass(&mismatched, &digest));
+        let empty_required = VerificationReport::new(
+            "edit",
+            vec![VerificationCheck::optional("note", "info", "n")
+                .with_status(VerificationStatus::Passed)],
+        )
+        .with_effect_digest(&digest);
+        assert!(!report_binds_pass(&empty_required, &digest));
+    }
+
+    #[test]
+    fn attach_observation_wraps_non_object_and_none_metadata() {
+        let observation =
+            MutationObservationV1::diagnostics("src/a.rs", Some(1), vec!["warn".into()]);
+        let mut none_meta = None;
+        attach_observation(&mut none_meta, &observation);
+        assert!(none_meta
+            .as_ref()
+            .unwrap()
+            .get("mutation_observation")
+            .is_some());
+
+        let mut scalar = Some(serde_json::json!("prior"));
+        attach_observation(&mut scalar, &observation);
+        assert_eq!(scalar.as_ref().unwrap()["previous"], "prior");
+        assert!(scalar
+            .as_ref()
+            .unwrap()
+            .get("mutation_observation")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn absorb_open_children_skips_nongit_without_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ledger = MutationLedger::default();
+        let task_id = format!("nongit-{}", std::process::id());
+        ledger.open_children.push(OpenWorkspaceChild {
+            task_id: task_id.clone(),
+            porcelain: None,
+            head: None,
+            nongit: true,
+        });
+        let incomplete = absorb_open_workspace_children(
+            &mut ledger,
+            root.path(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+        assert!(!incomplete);
+        // Nongit markers without snapshots are skipped without settling, so the
+        // open child remains until a later successful observation clears it.
+        assert_eq!(ledger.open_children.len(), 1);
+        assert_eq!(ledger.open_children[0].task_id, task_id);
+    }
+
+    #[tokio::test]
+    async fn absorb_open_children_deltas_git_backed_markers() {
+        let root = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(root.path().join("README.md"), "hi\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root.path())
+            .status();
+        let _ = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "i",
+            ])
+            .current_dir(root.path())
+            .status();
+
+        let before_porcelain = crate::porcelain::lines(root.path()).await;
+        std::fs::write(root.path().join("guest.txt"), "delta\n").unwrap();
+
+        let mut ledger = MutationLedger::default();
+        // No pending porcelain slot: absorb must take the delta branch.
+        ledger.open_children.push(OpenWorkspaceChild {
+            task_id: format!("git-child-{}", std::process::id()),
+            porcelain: before_porcelain,
+            head: None,
+            nongit: false,
+        });
+        let incomplete = absorb_open_workspace_children(
+            &mut ledger,
+            root.path(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+        assert!(!incomplete || ledger.open_children.is_empty());
+        assert!(ledger.open_children.is_empty());
     }
 }

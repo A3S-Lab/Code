@@ -289,4 +289,44 @@ mod tests {
         let err = parse_plan_args(&serde_json::json!({ "plan": rows })).unwrap_err();
         assert!(err.contains("maximum"));
     }
+
+    #[test]
+    fn update_plan_capabilities_are_read_only_and_idempotent() {
+        let caps = UpdatePlanTool.capabilities(&serde_json::json!({}));
+        assert!(caps.read_only);
+        assert!(caps.idempotent);
+        assert!(caps.cancellation_safe);
+        assert!(!caps.resumable);
+        assert!(!caps.supports_pagination);
+        assert_eq!(caps.max_parallelism, 1);
+    }
+
+    #[test]
+    fn parse_plan_args_rejects_empty_plan() {
+        let err = parse_plan_args(&serde_json::json!({ "plan": [] })).unwrap_err();
+        assert!(err.contains("at least one step"));
+    }
+
+    #[test]
+    fn truncate_chars_stops_at_max_and_summarize_without_in_progress() {
+        let long: String = "字".repeat(MAX_STEP_CHARS + 8);
+        let truncated = truncate_chars(&long, MAX_STEP_CHARS);
+        assert_eq!(truncated.chars().count(), MAX_STEP_CHARS);
+
+        let tasks = vec![
+            {
+                let mut task = Task::new("1", "done");
+                task.status = TaskStatus::Completed;
+                task
+            },
+            {
+                let mut task = Task::new("2", "waiting");
+                task.status = TaskStatus::Pending;
+                task
+            },
+        ];
+        let summary = summarize_plan(&tasks);
+        assert_eq!(summary, "Updated plan: 1/2 done");
+        assert!(!summary.contains("in progress"));
+    }
 }

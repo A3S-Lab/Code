@@ -153,6 +153,21 @@ impl AgentProtocolHost {
         })
     }
 
+    /// Construct a host after the Harness (or equivalent) has already verified
+    /// protocol compatibility for this manifest.
+    pub fn from_verified_manifest(
+        manifest: &AgentReleaseManifest,
+        session: Arc<AgentSession>,
+    ) -> Self {
+        debug_assert_eq!(manifest.protocol(), AGENT_PROTOCOL_V1);
+        Self {
+            agent_release_identity: manifest.artifact().digest().to_string(),
+            session,
+            change_set_admission: Arc::new(Mutex::new(())),
+            change_set_states: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     pub fn agent_release_identity(&self) -> &str {
         &self.agent_release_identity
     }

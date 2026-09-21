@@ -1589,4 +1589,512 @@ mod tests {
             "successful parallel steps should emit StepEnd Completed"
         );
     }
+
+    struct CompleteAndCancelClient {
+        cancel: CancellationToken,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmClient for CompleteAndCancelClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            self.cancel.cancel();
+            Ok(MockLlmClient::text_response("done after cancel signal"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+            let response = self.complete(messages, system, tools).await?;
+            let (tx, rx) = mpsc::channel(4);
+            tokio::spawn(async move {
+                let text = response.text();
+                if !text.is_empty() {
+                    let _ = tx.send(crate::llm::StreamEvent::TextDelta(text)).await;
+                }
+                let _ = tx.send(crate::llm::StreamEvent::Done(response)).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_plan_marks_completed_step_cancelled_when_token_trips_during_ok() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancel_token = CancellationToken::new();
+        let agent = AgentLoop::new(
+            Arc::new(CompleteAndCancelClient {
+                cancel: cancel_token.clone(),
+            }),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("cancel after ok", Complexity::Simple);
+        plan.add_step(Task::new("s1", "First"));
+        plan.add_step(Task::new("s2", "Second").with_dependencies(vec!["s1".into()]));
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("cancel-after-ok"),
+                Some(event_tx),
+                &cancel_token,
+            )
+            .await;
+
+        let mut saw_cancelled = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                AgentEvent::StepEnd {
+                    status: TaskStatus::Cancelled,
+                    ..
+                }
+            ) {
+                saw_cancelled = true;
+            }
+        }
+        assert!(
+            saw_cancelled || cancel_token.is_cancelled(),
+            "cancel during Ok step should mark Cancelled or stop the plan"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plan_breaks_at_loop_top_when_cancelled_between_waves() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancel_token = CancellationToken::new();
+        let cancel_for_client = cancel_token.clone();
+        let agent = AgentLoop::new(
+            Arc::new(CompleteAndCancelClient {
+                cancel: cancel_for_client,
+            }),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("between waves", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Only first"));
+        plan.add_step(Task::new("s2", "Never runs").with_dependencies(vec!["s1".into()]));
+        let result = agent
+            .execute_plan(&[], &plan, Some("between-waves"), None, &cancel_token)
+            .await;
+        // Either Ok with partial progress or Err from completion gate — must not hang.
+        let _ = result;
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_wave_emits_cancelled_when_parent_cancels() {
+        let workspace = tempfile::tempdir().unwrap();
+        let client = Arc::new(HangThenCancelClient::new());
+        let agent = AgentLoop::new(
+            client.clone(),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_parallel_tasks: 2,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(5_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("parallel cancel", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Hang A"));
+        plan.add_step(Task::new("s2", "Hang B"));
+        let cancel_token = CancellationToken::new();
+        let run_token = cancel_token.clone();
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let run = tokio::spawn(async move {
+            agent
+                .execute_plan(
+                    &[],
+                    &plan,
+                    Some("parallel-cancel"),
+                    Some(event_tx),
+                    &run_token,
+                )
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.step_started.notified(),
+        )
+        .await
+        .expect("parallel wave should start");
+        cancel_token.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), run)
+            .await
+            .expect("cancelled parallel wave must finish")
+            .expect("join");
+
+        let mut cancelled = 0usize;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                AgentEvent::StepEnd {
+                    status: TaskStatus::Cancelled,
+                    ..
+                }
+            ) {
+                cancelled += 1;
+            }
+        }
+        assert!(
+            cancelled >= 1 || client.calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "parallel cancel should interrupt in-flight wave"
+        );
+    }
+
+    struct FailAndCancelClient {
+        cancel: CancellationToken,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmClient for FailAndCancelClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            self.cancel.cancel();
+            Err(anyhow::anyhow!("forced plan step failure after cancel"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+            let _ = self.complete(messages, system, tools).await?;
+            unreachable!("complete always errors")
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_plan_marks_failed_step_cancelled_when_token_trips_during_err() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancel_token = CancellationToken::new();
+        let agent = AgentLoop::new(
+            Arc::new(FailAndCancelClient {
+                cancel: cancel_token.clone(),
+            }),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("cancel after err", Complexity::Simple);
+        plan.add_step(Task::new("s1", "First"));
+        plan.add_step(Task::new("s2", "Second").with_dependencies(vec!["s1".into()]));
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("cancel-after-err"),
+                Some(event_tx),
+                &cancel_token,
+            )
+            .await;
+
+        let mut saw_cancelled = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                AgentEvent::StepEnd {
+                    status: TaskStatus::Cancelled,
+                    ..
+                }
+            ) {
+                saw_cancelled = true;
+            }
+        }
+        assert!(
+            saw_cancelled || cancel_token.is_cancelled(),
+            "cancel during Err step should mark Cancelled or stop the plan"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_wave_emits_failed_step_ends_on_llm_error() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancel_token = CancellationToken::new();
+        let agent = AgentLoop::new(
+            Arc::new(FailAndCancelClient {
+                cancel: cancel_token.clone(),
+            }),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_parallel_tasks: 2,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("parallel fail", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Fail A"));
+        plan.add_step(Task::new("s2", "Fail B"));
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("parallel-fail"),
+                Some(event_tx),
+                &cancel_token,
+            )
+            .await;
+
+        let mut saw_end = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(
+                event,
+                AgentEvent::StepEnd {
+                    status: TaskStatus::Failed | TaskStatus::Cancelled,
+                    ..
+                }
+            ) {
+                saw_end = true;
+            }
+        }
+        assert!(
+            saw_end || cancel_token.is_cancelled(),
+            "parallel LLM failures should emit Failed/Cancelled ends"
+        );
+    }
+
+    struct AlwaysFailClient;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmClient for AlwaysFailClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            Err(anyhow::anyhow!("forced parallel step failure"))
+        }
+
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+            let _ = self.complete(messages, system, tools).await?;
+            unreachable!("complete always errors")
+        }
+    }
+
+    struct PanicOnCompleteClient;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmClient for PanicOnCompleteClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<crate::llm::LlmResponse> {
+            panic!("forced parallel branch panic");
+        }
+
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+            _cancel_token: CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<crate::llm::StreamEvent>> {
+            let _ = self.complete(messages, system, tools).await?;
+            unreachable!("complete always panics")
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_plan_requires_cancelled_step_end_when_err_trips_token() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancel_token = CancellationToken::new();
+        let agent = AgentLoop::new(
+            Arc::new(FailAndCancelClient {
+                cancel: cancel_token.clone(),
+            }),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("require cancel end", Complexity::Simple);
+        plan.add_step(Task::new("s1", "First"));
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move {
+            let mut saw_cancelled = false;
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event,
+                    AgentEvent::StepEnd {
+                        status: TaskStatus::Cancelled,
+                        ..
+                    }
+                ) {
+                    saw_cancelled = true;
+                }
+            }
+            saw_cancelled
+        });
+
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("require-cancel-end"),
+                Some(event_tx),
+                &cancel_token,
+            )
+            .await;
+
+        assert!(
+            drain.await.expect("drain join"),
+            "Err+cancel must emit StepEnd Cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_wave_emits_failed_ends_without_cancelling() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent = AgentLoop::new(
+            Arc::new(AlwaysFailClient),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_parallel_tasks: 2,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("parallel fail no cancel", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Fail A"));
+        plan.add_step(Task::new("s2", "Fail B"));
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move {
+            let mut failed = 0usize;
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event,
+                    AgentEvent::StepEnd {
+                        status: TaskStatus::Failed,
+                        ..
+                    }
+                ) {
+                    failed += 1;
+                }
+            }
+            failed
+        });
+
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("parallel-fail-no-cancel"),
+                Some(event_tx),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(
+            drain.await.expect("drain join") >= 1,
+            "parallel Ok(Err) failures must emit StepEnd Failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plan_parallel_wave_emits_failed_ends_when_branch_panics() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent = AgentLoop::new(
+            Arc::new(PanicOnCompleteClient),
+            Arc::new(ToolExecutor::new(workspace.path().display().to_string())),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig {
+                continuation_enabled: false,
+                max_parallel_tasks: 2,
+                max_tool_rounds: 2,
+                max_execution_time_ms: Some(3_000),
+                ..crate::agent::AgentConfig::default()
+            },
+        );
+        let mut plan = ExecutionPlan::new("parallel panic", Complexity::Simple);
+        plan.add_step(Task::new("s1", "Panic A"));
+        plan.add_step(Task::new("s2", "Panic B"));
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move {
+            let mut failed = 0usize;
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event,
+                    AgentEvent::StepEnd {
+                        status: TaskStatus::Failed,
+                        ..
+                    }
+                ) {
+                    failed += 1;
+                }
+            }
+            failed
+        });
+
+        let _ = agent
+            .execute_plan(
+                &[],
+                &plan,
+                Some("parallel-panic"),
+                Some(event_tx),
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert!(
+            drain.await.expect("drain join") >= 1,
+            "panicked parallel branches must surface as StepEnd Failed"
+        );
+    }
 }

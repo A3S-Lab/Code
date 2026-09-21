@@ -1579,6 +1579,220 @@ mod extra_llm_tests2 {
     }
 
     #[tokio::test]
+    async fn stream_final_message_chunk_with_logprobs_and_content() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"message":{"role":"assistant","content":"hello","reasoning_content":"think"},"logprobs":{"content":[{"token":"hello","logprob":-0.1,"bytes":[104,101,108,108,111],"top_logprobs":[]}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(&[Message::user("hi")], None, &[], CancellationToken::new())
+            .await
+            .unwrap();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                done = Some(response);
+                break;
+            }
+        }
+        let response = done.expect("done");
+        assert_eq!(response.text(), "hello");
+        assert_eq!(response.message.reasoning_content.as_deref(), Some("think"));
+        assert!(!response.token_logprobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_finalizes_without_done_and_synthesizes_empty_tool_call_ids() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"bash","arguments":"{\"c\":1}"}}]},"finish_reason":null}],"usage":null}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("tool")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                done = Some(response);
+                break;
+            }
+        }
+        let response = done.expect("finalized without [DONE]");
+        let tool = response
+            .message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolUse { id, name, .. } => Some((id.as_str(), name.as_str())),
+                _ => None,
+            })
+            .expect("tool use");
+        assert_eq!(tool.0, "call_0");
+        assert_eq!(tool.1, "bash");
+    }
+
+    #[tokio::test]
+    async fn stream_trailing_chunk_without_sse_prefix_is_parsed() {
+        // A bare JSON chunk (no `data:` prefix) is held until EOF and parsed as
+        // the trailing OpenAiStreamChunk path.
+        let trailing = concat!(
+            r#"{"id":"chatcmpl-trail","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"trail"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+            "\n"
+        );
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: vec![Bytes::from(trailing)],
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("trail")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut text = String::new();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                StreamEvent::Done(response) => {
+                    done = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let response = done.expect("trailing parse");
+        assert!(text.contains("trail") || response.text().contains("trail"));
+    }
+
+    #[tokio::test]
+    async fn stream_unparseable_trailing_closes_without_done() {
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: vec![Bytes::from("not-json-at-all")],
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(&[Message::user("x")], None, &[], CancellationToken::new())
+            .await
+            .unwrap();
+        let mut saw_done = false;
+        while let Some(event) = rx.recv().await {
+            if matches!(event, StreamEvent::Done(_)) {
+                saw_done = true;
+            }
+        }
+        assert!(!saw_done);
+    }
+
+    #[tokio::test]
+    async fn stream_delta_reasoning_and_content_set_first_token() {
+        let sse = vec![
+            concat!(
+                r#"data: {"choices":[{"delta":{"reasoning_content":"plan","content":"hi"},"finish_reason":null}]}"#,
+                "\n\n"
+            )
+            .to_string(),
+            concat!(
+                r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                "\n\n"
+            )
+            .to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: sse.into_iter().map(Bytes::from).collect(),
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(&[Message::user("hi")], None, &[], CancellationToken::new())
+            .await
+            .unwrap();
+        let mut saw_reasoning = false;
+        let mut saw_text = false;
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ReasoningDelta(_) => saw_reasoning = true,
+                StreamEvent::TextDelta(_) => saw_text = true,
+                StreamEvent::Done(response) => done = Some(response),
+                _ => {}
+            }
+        }
+        let response = done.expect("done");
+        assert!(saw_reasoning || response.message.reasoning_content.is_some());
+        assert!(saw_text || !response.text().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_trailing_full_response_json_is_parsed() {
+        // Trailing bare OpenAiResponse (not a chunk) at EOF.
+        let trailing = concat!(
+            r#"{"id":"full-1","object":"chat.completion","model":"m","choices":[{"message":{"role":"assistant","content":"full","reasoning_content":"r"},"finish_reason":"stop","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#,
+        );
+        let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(MockStreamingHttpClient {
+                chunks: vec![Bytes::from(trailing)],
+            }),
+        );
+        let mut rx = client
+            .complete_streaming(
+                &[Message::user("full")],
+                None,
+                &[],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            if let StreamEvent::Done(response) = event {
+                done = Some(response);
+                break;
+            }
+        }
+        let response = done.expect("full trailing response");
+        assert!(
+            response.text().contains("full")
+                || response.message.reasoning_content.as_deref() == Some("r")
+                || !response.token_logprobs.is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn test_openai_stream_tool_input_deltas_keep_interleaved_call_ids() {
         let sse = vec![
             concat!(

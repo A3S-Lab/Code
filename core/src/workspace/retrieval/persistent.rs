@@ -486,7 +486,8 @@ impl WorkspacePersistentIndex {
                 &collection_path,
                 indexed_chunks
                     .iter()
-                    .map(|chunk| (chunk.id.as_str(), chunk.text.as_ref())),
+                    .map(|chunk| (chunk.id.as_str().to_owned(), chunk.text.as_ref().to_owned()))
+                    .collect(),
             )
             .map_err(|error| {
                 WorkspaceIndexError::InvalidConfig(format!(
@@ -744,7 +745,8 @@ impl WorkspacePersistentIndex {
             generation_root.join("collection"),
             indexed_chunks
                 .iter()
-                .map(|chunk| (chunk.id.as_str(), chunk.text.as_ref())),
+                .map(|chunk| (chunk.id.as_str().to_owned(), chunk.text.as_ref().to_owned()))
+                .collect(),
         )
         .map_err(|error| {
             WorkspaceIndexError::InvalidConfig(format!(

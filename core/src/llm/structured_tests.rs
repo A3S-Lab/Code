@@ -2425,6 +2425,8 @@ fn find_json_start_skips_code_fence_prefixes_and_escaped_quotes() {
     assert_eq!(find_json_start("```json\n{\"a\":1}"), Some(8));
     assert_eq!(find_json_start("```\n[1]"), Some(4));
     assert_eq!(find_json_start("\"no{\" {\"a\":1}"), Some(6));
+    // Backslash escapes inside a string must not end the string early.
+    assert_eq!(find_json_start(r#""say \"hi\"" {"a":1}"#), Some(13));
     assert!(find_json_start("\"never closes").is_none());
     assert!(find_json_start("just prose").is_none());
 }
@@ -2503,6 +2505,75 @@ fn resolve_structured_records_envelope_schema_mismatch_for_repair() {
             .any(|error| error.contains("minLength") || error.contains("$")),
         "{errors:?}"
     );
+}
+
+#[test]
+fn schema_root_kind_covers_mixed_enums_anyof_and_non_string_type() {
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "enum": [1, "mixed"]
+        })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "anyOf": [
+                { "type": "object", "properties": { "a": { "type": "string" } } },
+                { "type": "array", "items": { "type": "string" } }
+            ]
+        })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "type": ["object", "null"]
+        })),
+        SchemaEnvelope::Value
+    );
+    assert_eq!(
+        SchemaEnvelope::for_schema(&serde_json::json!({
+            "type": {"not": "a-string"}
+        })),
+        SchemaEnvelope::Value
+    );
+}
+
+#[test]
+fn resolve_structured_records_invalid_unwrapped_envelope_value() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": { "name": { "type": "string", "minLength": 2 } }
+    });
+    let resolution = resolve_structured(
+        &[r#"{"value":{"name":"x"}}"#.to_string()],
+        &schema,
+        SchemaEnvelope::Value,
+    );
+    assert!(resolution.valid.is_none());
+    let (_, errors) = resolution.invalid.expect("invalid unwrapped value");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("minLength") || error.contains("name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn resolve_structured_records_invalid_elements_wrapper() {
+    let schema = serde_json::json!({
+        "type": "array",
+        "items": { "type": "string" }
+    });
+    let resolution = resolve_structured(
+        &[r#"{"elements":[1,2,3]}"#.to_string()],
+        &schema,
+        SchemaEnvelope::Elements,
+    );
+    assert!(resolution.valid.is_none());
+    assert!(resolution.invalid.is_some());
 }
 
 struct DropAfterCompleteClient;

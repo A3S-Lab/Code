@@ -236,4 +236,12 @@ impl ModelUsageSnapshotV1 {
         )?
         .digest)
     }
+
+    #[cfg(test)]
+    pub(crate) fn recompute_snapshot_digest_for_test(
+        &mut self,
+    ) -> Result<(), HarnessEvidenceError> {
+        self.snapshot_digest = self.expected_digest()?;
+        Ok(())
+    }
 }

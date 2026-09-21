@@ -270,6 +270,8 @@ impl LoopCheckpointSink for SessionStoreCheckpointSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::SessionStore;
+    use async_trait::async_trait;
 
     fn sample(run_id: &str, turn: usize) -> LoopCheckpoint {
         LoopCheckpoint {
@@ -428,5 +430,16 @@ mod tests {
         let sink = SessionStoreCheckpointSink::new(std::sync::Arc::new(FailingCheckpointStore));
         sink.save_checkpoint(&sample("run-fail", 1)).await;
         assert!(sink.load_latest("run-fail").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn failing_checkpoint_store_covers_unused_session_store_surface() {
+        let store = FailingCheckpointStore;
+        // Hit every non-checkpoint SessionStore stub without building SessionData.
+        assert!(store.load("any").await.unwrap().is_none());
+        store.delete("any").await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(!store.exists("any").await.unwrap());
+        assert_eq!(store.backend_name(), "failing-checkpoint");
     }
 }

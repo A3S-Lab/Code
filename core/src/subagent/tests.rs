@@ -659,6 +659,72 @@ fn test_load_agents_from_nonexistent_dir() {
 }
 
 #[test]
+fn worker_yaml_disallowed_tools_only_uses_kind_default_permissions() {
+    let yaml = r#"
+name: deny-only-worker
+description: Worker with only disallowed tools
+kind: implementer
+disallowedTools:
+  - Bash
+"#;
+    let agent = parse_agent_yaml(yaml).unwrap();
+    assert_eq!(
+        agent
+            .permissions
+            .check("bash", &serde_json::json!({"command": "echo"})),
+        PermissionDecision::Deny
+    );
+    assert_eq!(
+        agent.confirmation_inheritance,
+        Some(ConfirmationInheritance::AutoApprove)
+    );
+}
+
+#[test]
+fn parse_tools_field_rejects_non_string_non_sequence_and_empty_name() {
+    let yaml = r#"
+name: bad-tools
+description: Invalid tools value
+tools: 42
+"#;
+    let agent = parse_agent_yaml(yaml).unwrap();
+    assert!(agent.permissions.allow.is_empty());
+
+    let empty_name = r#"
+name: "   "
+description: Whitespace name
+"#;
+    assert!(parse_agent_yaml(empty_name)
+        .unwrap_err()
+        .to_string()
+        .contains("Agent name is required"));
+}
+
+#[test]
+fn load_agents_skips_unreadable_files_and_extensionless_entries() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    std::fs::write(
+        root.join("good.yaml"),
+        r#"
+name: good-agent
+description: Valid agent
+"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("notes"), "not an agent").unwrap();
+    std::fs::write(root.join("broken.yaml"), "name: [\n").unwrap();
+    // Nested directory whose contents are unreadable as agents still must not panic.
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("skip.txt"), "ignore").unwrap();
+
+    let agents = load_agents_from_dir(root);
+    let names: Vec<_> = agents.iter().map(|agent| agent.name.as_str()).collect();
+    assert_eq!(names, vec!["good-agent"]);
+}
+
+#[test]
 fn test_registry_with_config() {
     let temp_dir = tempfile::tempdir().unwrap();
 

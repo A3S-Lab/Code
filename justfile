@@ -169,6 +169,16 @@ test-context:
 
 # ============================================================================
 # Coverage (requires: cargo install cargo-llvm-cov, brew install lcov)
+
+# F-table kernel line coverage (integration-bearing). Default gate ≥95%.
+# Evidence: $A3S_F_TABLE_EVIDENCE/FINAL.txt → ALL_F_TABLE_KERNELS_GE_95
+f-table-cov:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export A3S_F_TABLE_MIN_LINE_PCT="${A3S_F_TABLE_MIN_LINE_PCT:-95}"
+    export A3S_F_TABLE_EVIDENCE="${A3S_F_TABLE_EVIDENCE:-/tmp/a3s-llvm-cov-f${A3S_F_TABLE_MIN_LINE_PCT}}"
+    scripts/f_table_coverage.sh
+
 # ============================================================================
 
 # Test with coverage - shows real-time test progress + module coverage

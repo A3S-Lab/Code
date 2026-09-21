@@ -10,9 +10,9 @@ use crate::skills::Skill;
 use crate::subagent::AgentDefinition;
 use crate::tools::Tool;
 
-use super::{CapabilityKind, KnowledgeSurfaceBinding, UiBinding};
 #[cfg(feature = "dynamic-workflow")]
 use super::FlowBinding;
+use super::{CapabilityKind, KnowledgeSurfaceBinding, UiBinding};
 
 /// Closed runtime value categories accepted by the Code projection kernel.
 ///
@@ -80,5 +80,36 @@ impl fmt::Debug for CapabilityValue {
             debug.field("public_name", &public_name);
         }
         debug.finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::{Skill, SkillKind};
+
+    fn sample_skill(name: &str) -> CapabilityValue {
+        CapabilityValue::Skill(Arc::new(Skill {
+            name: name.to_owned(),
+            description: "coverage".to_owned(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Instruction,
+            content: "body".to_owned(),
+            tags: vec![],
+            version: None,
+        }))
+    }
+
+    #[test]
+    fn debug_emits_kind_and_public_name_without_body() {
+        let value = sample_skill("coverage-skill");
+        let rendered = format!("{value:?}");
+        assert!(rendered.contains("CapabilityValue"));
+        assert!(rendered.contains("Skill"));
+        assert!(rendered.contains("coverage-skill"));
+        assert!(!rendered.contains("body"));
+        assert_eq!(value.kind(), CapabilityKind::Skill);
+        assert_eq!(value.public_name(), Some("coverage-skill"));
     }
 }

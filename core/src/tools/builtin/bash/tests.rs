@@ -1075,6 +1075,20 @@ fn prefix_session_cwd_without_session_leaves_command_unmodified() {
 }
 
 #[test]
+fn prefix_session_cwd_prefixes_non_cd_commands_with_admitted_cwd() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-prefix-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let prefixed = prefix_session_cwd("pwd", &ctx);
+    assert!(
+        prefixed.starts_with("cd ") && prefixed.contains(" && pwd"),
+        "expected cwd prefix, got {prefixed}"
+    );
+    crate::shell_session::drop_session(&session);
+}
+
+#[test]
 fn shell_admission_denies_when_run_checker_denies() {
     struct DenyBash;
 
@@ -1492,6 +1506,48 @@ async fn unsupported_job_action_requires_bound_shell_session() {
 }
 
 #[tokio::test]
+async fn poll_missing_job_returns_tool_error() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-poll-missing-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let result = tool
+        .execute(
+            &serde_json::json!({"job_action": "poll", "job_id": "does-not-exist"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    crate::shell_session::drop_session(&session);
+}
+
+#[tokio::test]
+async fn detach_refuses_when_workspace_has_foreign_dirty_path() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("guest.txt"), "owned").unwrap();
+    crate::external_observation::claim_bound_write(Some("bash-owner"), root.path(), "guest.txt")
+        .unwrap();
+    let session = format!("bash-detach-foreign-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let denied = BashTool
+        .execute(
+            &serde_json::json!({
+                "job_action": "detach",
+                "command": "printf x > other.txt"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!denied.success);
+    crate::shell_session::drop_session(&session);
+    crate::external_observation::release_session("bash-owner");
+}
+
+#[tokio::test]
 async fn poll_and_kill_job_actions_work_for_detached_jobs() {
     let root = tempfile::tempdir().unwrap();
     let session = format!("bash-poll-kill-{}", std::process::id());
@@ -1587,6 +1643,193 @@ async fn missing_command_parameter_returns_tool_error() {
     let result = tool.execute(&serde_json::json!({}), &ctx).await.unwrap();
     assert!(!result.success);
     assert!(result.content.contains("command parameter is required"));
+}
+
+struct FailingSandbox;
+
+#[async_trait]
+impl BashSandbox for FailingSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        anyhow::bail!("the bash tool must use the extended sandbox contract")
+    }
+
+    async fn exec(
+        &self,
+        _request: SandboxCommandRequest,
+    ) -> anyhow::Result<SandboxExecutionOutput> {
+        anyhow::bail!("sandbox backend refused the request")
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct HangingSandboxWithSummary {
+    summary: CommandOutputSummary,
+}
+
+#[async_trait]
+impl BashSandbox for HangingSandboxWithSummary {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        std::future::pending().await
+    }
+
+    async fn exec(&self, request: SandboxCommandRequest) -> anyhow::Result<SandboxExecutionOutput> {
+        if let Some(observer) = request.output_observer {
+            observer.on_output_delta("partial before hang").await;
+            observer.on_output_complete(&self.summary).await;
+        }
+        std::future::pending().await
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct FailingWorkspaceCommandRunner;
+
+#[async_trait]
+impl crate::workspace::WorkspaceCommandRunner for FailingWorkspaceCommandRunner {
+    async fn exec(
+        &self,
+        _request: crate::workspace::CommandRequest,
+    ) -> anyhow::Result<crate::workspace::CommandOutput> {
+        anyhow::bail!("workspace command runner refused")
+    }
+}
+
+struct EmptyWorkspaceFs;
+
+#[async_trait]
+impl crate::workspace::WorkspaceFileSystem for EmptyWorkspaceFs {
+    async fn read_text(
+        &self,
+        path: &crate::workspace::WorkspacePath,
+    ) -> crate::workspace::WorkspaceResult<String> {
+        Err(crate::workspace::WorkspaceError::NotFound {
+            path: path.as_str().to_string(),
+        })
+    }
+
+    async fn write_text(
+        &self,
+        _path: &crate::workspace::WorkspacePath,
+        content: &str,
+    ) -> crate::workspace::WorkspaceResult<crate::workspace::WorkspaceWriteOutcome> {
+        Ok(crate::workspace::WorkspaceWriteOutcome {
+            bytes: content.len(),
+            lines: content.lines().count(),
+        })
+    }
+
+    async fn list_dir(
+        &self,
+        _path: &crate::workspace::WorkspacePath,
+    ) -> crate::workspace::WorkspaceResult<Vec<crate::workspace::WorkspaceDirEntry>> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn sandbox_backend_failure_is_surfaced_as_tool_error() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(FailingSandbox));
+    let err = tool
+        .execute(&serde_json::json!({"command": "true"}), &ctx)
+        .await
+        .expect_err("sandbox Err must propagate");
+    assert!(
+        err.to_string().contains("Sandbox bash execution failed"),
+        "{err}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn sandbox_outer_timeout_includes_capture_summary_metadata() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(
+        HangingSandboxWithSummary {
+            summary: CommandOutputSummary {
+                total_bytes: 21,
+                captured_bytes: 18,
+                truncated: true,
+                timed_out: false,
+            },
+        },
+    ));
+    const PORCELAIN_GIT_BUDGET_MS: u64 = 400 * 4;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(MIN_TIMEOUT_MS + PORCELAIN_GIT_BUDGET_MS),
+        tool.execute(
+            &serde_json::json!({"command": "hang forever", "timeout": MIN_TIMEOUT_MS}),
+            &ctx,
+        ),
+    )
+    .await
+    .expect("outer sandbox deadline must fire")
+    .unwrap();
+    assert!(!result.success);
+    let metadata = result.metadata.expect("timeout metadata");
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["output"]["total_bytes"], 21);
+    assert_eq!(metadata["output"]["captured_bytes"], 18);
+    assert_eq!(metadata["output"]["truncated"], true);
+    assert_eq!(metadata["output"]["timed_out"], true);
+}
+
+#[tokio::test]
+async fn workspace_command_runner_failure_is_surfaced() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let services = crate::workspace::WorkspaceServices::builder(
+        crate::workspace::WorkspaceRef::new("fail-ws", "memory://fail-ws"),
+        Arc::new(EmptyWorkspaceFs) as Arc<dyn crate::workspace::WorkspaceFileSystem>,
+    )
+    .command_runner(Arc::new(FailingWorkspaceCommandRunner))
+    .build();
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_workspace_services(services);
+    let err = tool
+        .execute(&escalated_args("printf host"), &ctx)
+        .await
+        .expect_err("workspace runner Err must propagate");
+    assert!(
+        err.to_string().contains("Workspace bash execution failed"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn detach_of_cd_command_returns_tool_error() {
+    let root = tempfile::tempdir().unwrap();
+    let session = format!("bash-detach-cd-{}", std::process::id());
+    crate::shell_session::bind_session(&session, root.path());
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "job_action": "detach",
+                "command": "cd nested"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!output.success);
+    assert!(
+        output.content.contains("not a detachable job"),
+        "{}",
+        output.content
+    );
+    crate::shell_session::drop_session(&session);
 }
 
 #[path = "sandbox_soak.rs"]

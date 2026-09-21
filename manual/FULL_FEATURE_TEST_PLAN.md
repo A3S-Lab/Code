@@ -90,7 +90,8 @@ mechanisms that make those capabilities safe:
    every official wrapper (`scripts/sdk_api_alignment_check.mjs`).
 6. **Ignored ≠ green** — `#[ignore]` / credentialed / Harbor / soak are
    **Layer E/F / L5–L7**, never counted as Required CI.
-7. **Coverage claim** — “≥90%” means **F-table kernel files**, not crate TOTAL
+7. **Coverage claim** — “≥95%” means **F-table kernel files**, not crate TOTAL
+   (`just f-table-cov` / `scripts/f_table_coverage.sh`).
    (see F-cases doc).
 8. **Post-slim honesty** — Cargo feature `server` means `local-code` + `s3` +
    `telemetry` (profile). It is **not** AgentDir HTTP serve. Do not plan
@@ -302,7 +303,7 @@ still gap G7.
 | --- | --- | --- | --- |
 | **L0** | Contract discovery | PR | `sdk_api_alignment_check.mjs` + `sdk_capabilities` golden order |
 | **L1** | Thin hermetic Core | PR (Required CI) | `just harness-convergence-check` + `cargo test -p a3s-code-core --lib` (local-code) |
-| **L2** | F-table kernel coverage | Release / scheduled | llvm-cov F01–F30 kernels ≥90% ([TEST_CASES](FIRST_PRINCIPLES_TEST_CASES.md)) |
+| **L2** | F-table kernel coverage | Release / scheduled | llvm-cov F01–F30 kernels ≥95% (`just f-table-cov`) |
 | **L3** | Advanced hermetic | Path / feature CI | `advanced-harness`, `s3`, `telemetry`, `headless-search` suites |
 | **L4** | SDK runtime parity | PR / `sdk-runtime.yml` | Node/Python/Go unit + capability/checkpoint/immutable fixtures |
 | **L5** | Live provider E2E | Manual / release | `just layer-c-live-e2e` with **bailian Flash pin** (§2) |
@@ -411,7 +412,7 @@ Pass criteria for “full-feature release qualified”:
 | Layer | Evidence location |
 | --- | --- |
 | L1 / A | CI logs; optional `/tmp/a3s-layer-a-*/FINAL.txt` |
-| L2 | `/tmp/a3s-llvm-cov-*/FINAL.txt` (`ALL_F_TABLE_KERNELS_GE_90`) |
+| L2 | `/tmp/a3s-llvm-cov-*/FINAL.txt` (`ALL_F_TABLE_KERNELS_GE_95`) |
 | L5 / C | `$A3S_LAYER_C_EVIDENCE` or `/tmp/a3s-layer-c-live/FINAL.txt` |
 | L6 | Actions artifacts + PERFORMANCE_QUALIFICATION.md |
 | L7 | Harbor / Cloud / host report paths in HARNESS_CONVERGENCE.md |

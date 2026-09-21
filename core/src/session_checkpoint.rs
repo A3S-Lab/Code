@@ -331,6 +331,21 @@ impl SessionCheckpointPayloadV1 {
     pub fn into_parts(self) -> (SessionSnapshotV1, Option<LoopCheckpoint>) {
         (self.snapshot, self.logical_resume)
     }
+
+    /// Exact recovery always requires a logical-resume component. Fail closed
+    /// here so callers that already validated the descriptor still get a typed
+    /// payload error if the opened body omits it.
+    pub fn into_exact_recovery_parts(
+        self,
+    ) -> SessionCheckpointResult<(SessionSnapshotV1, LoopCheckpoint)> {
+        let (snapshot, logical_resume) = self.into_parts();
+        let logical_resume = logical_resume.ok_or_else(|| {
+            SessionCheckpointError::InvalidPayload(
+                "exact recovery requires a logical-resume component".into(),
+            )
+        })?;
+        Ok((snapshot, logical_resume))
+    }
 }
 
 mod artifact;
@@ -507,6 +522,17 @@ mod tests {
         descriptor = export.descriptor().clone();
         descriptor.media_type = "application/json".into();
         assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn exact_recovery_parts_require_logical_resume() {
+        let export =
+            SessionCheckpointExportV1::new(minimal_snapshot("session-exact"), None).unwrap();
+        let payload = export.into_open().unwrap();
+        let err = payload
+            .into_exact_recovery_parts()
+            .expect_err("exact recovery without logical resume must fail closed");
+        assert!(matches!(err, SessionCheckpointError::InvalidPayload(_)));
     }
 
     #[test]

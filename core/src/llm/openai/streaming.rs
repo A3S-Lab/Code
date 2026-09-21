@@ -851,4 +851,59 @@ mod empty_name_tests {
         };
         assert!(tool_call_delta_conflicts("call_1", "write", &delta));
     }
+
+    #[test]
+    fn tool_call_delta_name_only_mismatch_is_a_conflict() {
+        let delta = OpenAiToolCallDelta {
+            index: 0,
+            id: Some("call_1".into()),
+            function: Some(OpenAiFunctionDelta {
+                name: Some("read".into()),
+                arguments: None,
+            }),
+        };
+        assert!(tool_call_delta_conflicts("call_1", "write", &delta));
+    }
+
+    #[test]
+    fn apply_tool_call_snapshot_keeps_bound_args_when_snapshot_args_empty() {
+        let mut tool_calls = std::collections::BTreeMap::new();
+        tool_calls.insert(
+            0,
+            ("call_1".into(), "write".into(), r#"{"keep":true}"#.into()),
+        );
+        apply_tool_call_snapshot(
+            &mut tool_calls,
+            vec![OpenAiToolCall {
+                id: "call_1".into(),
+                function: OpenAiFunction {
+                    name: "write".into(),
+                    arguments: String::new(),
+                },
+            }],
+        );
+        let (id, name, args) = tool_calls.get(&0).expect("slot 0");
+        assert_eq!(id, "call_1");
+        assert_eq!(name, "write");
+        assert_eq!(args, r#"{"keep":true}"#);
+    }
+
+    #[test]
+    fn openai_logprobs_to_token_logprobs_maps_content() {
+        let mapped = openai_logprobs_to_token_logprobs(&OpenAiChoiceLogprobs {
+            content: Some(vec![OpenAiTokenLogprob {
+                token: "hi".into(),
+                logprob: -0.1,
+                bytes: Some(vec![104, 105]),
+                top_logprobs: vec![OpenAiTopLogprob {
+                    token: "hi".into(),
+                    logprob: -0.1,
+                    bytes: Some(vec![104, 105]),
+                }],
+            }]),
+        });
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].token, "hi");
+        assert_eq!(mapped[0].top_logprobs.len(), 1);
+    }
 }

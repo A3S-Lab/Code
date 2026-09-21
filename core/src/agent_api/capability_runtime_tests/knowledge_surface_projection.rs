@@ -67,11 +67,7 @@ async fn multiple_knowledge_surfaces_publish_readiness_without_becoming_cognitiv
     let set = CapabilitySet::from_use_projection(
         CodeCatalogGeneration::new(1),
         upstream.clone(),
-        [CapabilityContribution::new(
-            source,
-            [domain_descriptor, runbook_descriptor],
-        )
-        .unwrap()],
+        [CapabilityContribution::new(source, [domain_descriptor, runbook_descriptor]).unwrap()],
     )
     .unwrap();
     let mut batch =

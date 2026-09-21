@@ -6,16 +6,26 @@ not every Advanced scientific surface by default.
 
 ## Coverage scope (first principles)
 
-“≥90% coverage for each feature” means **line coverage of the kernel files that
+“≥95% coverage for each feature” means **line coverage of the kernel files that
 implement that feature**, measured with:
+
+```bash
+just f-table-cov
+# or:
+A3S_F_TABLE_MIN_LINE_PCT=95 scripts/f_table_coverage.sh
+```
+
+Underlying llvm-cov invocation (see `scripts/f_table_coverage.sh`):
 
 ```bash
 cargo llvm-cov -p a3s-code-core --tests --no-cfg-coverage \
   --ignore-filename-regex '(/\.cargo/registry/|/rustc/)' --summary-only
 ```
 
-It does **not** mean crate-wide TOTAL ≥90% (includes login helpers, optional
+It does **not** mean crate-wide TOTAL ≥95% (includes login helpers, optional
 transports, and Advanced-only arms). TOTAL is a health signal only.
+
+Pass token: `ALL_F_TABLE_KERNELS_GE_95` in `$A3S_F_TABLE_EVIDENCE/FINAL.txt`.
 
 Opt-in features (`advanced-harness`, `s3`, `headless-search`) keep
 their own kernels gated; Layer B/C feature suites prove them when enabled.
@@ -30,7 +40,7 @@ fallback without override remains ACL `default_model`
 
 ## Feature → case matrix
 
-| ID | Feature | Hermetic cases (must) | Live Layer C suite | Cov kernel (≥90%) |
+| ID | Feature | Hermetic cases (must) | Live Layer C suite | Cov kernel (≥95%) |
 | --- | --- | --- | --- | --- |
 | F01 | Native sandbox | session_sandbox unit; native seatbelt fail-closed | `test_native_sandbox_live_e2e` | `sandbox/native.rs`, `agent_api/session_sandbox.rs` |
 | F02 | Process-host sandbox | process_host unit; Harbor opt-in | `test_issue_fix_live_e2e` (#140) | `sandbox/process_host.rs` |

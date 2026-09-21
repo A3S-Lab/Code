@@ -329,17 +329,13 @@ impl LexicalIndex {
             WorkspaceLexicalEngine::A3sVec => {
                 #[cfg(feature = "a3s-vec-fts")]
                 {
-                    super::a3s_vec::A3sVecLexicalIndex::build(
-                        documents
-                            .iter()
-                            .map(|(key, text)| (key.as_str(), text.as_str())),
-                    )
-                    .map(Self::A3sVec)
-                    .map_err(|error| {
-                        WorkspaceIndexError::InvalidConfig(format!(
-                            "a3s-vec lexical index failed: {error}"
-                        ))
-                    })
+                    super::a3s_vec::A3sVecLexicalIndex::build(documents.to_vec())
+                        .map(Self::A3sVec)
+                        .map_err(|error| {
+                            WorkspaceIndexError::InvalidConfig(format!(
+                                "a3s-vec lexical index failed: {error}"
+                            ))
+                        })
                 }
                 #[cfg(not(feature = "a3s-vec-fts"))]
                 {
@@ -721,7 +717,9 @@ fn is_cjk(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::PortableLexicalIndex;
+    use super::{
+        path_matches, validate_request, LexicalSearchRequest, PortableLexicalIndex, MAX_QUERY_BYTES,
+    };
 
     #[test]
     fn large_portable_build_keeps_dense_ordinals_after_empty_documents() {
@@ -750,5 +748,104 @@ mod tests {
         let expected_ordinal = (0..129).filter(|index| index % 13 != 0).count();
         assert_eq!(hits.first().map(|hit| hit.0), Some(expected_ordinal));
         assert_eq!(index.document_count(), 236);
+    }
+
+    #[test]
+    fn portable_build_rejects_empty_and_duplicate_keys() {
+        let empty = PortableLexicalIndex::build(&[("".to_owned(), "text".to_owned())]);
+        assert!(
+            matches!(
+                empty,
+                Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidConfig(_))
+            ),
+            "empty key should be InvalidConfig"
+        );
+
+        let dup = PortableLexicalIndex::build(&[
+            ("same".to_owned(), "a".to_owned()),
+            ("same".to_owned(), "b".to_owned()),
+        ]);
+        assert!(
+            matches!(
+                dup,
+                Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidConfig(_))
+            ),
+            "duplicate keys should be InvalidConfig"
+        );
+    }
+
+    #[test]
+    fn portable_search_returns_empty_for_empty_terms_or_zero_limit() {
+        let index = PortableLexicalIndex::build(&[("doc".to_owned(), "alpha beta".to_owned())])
+            .expect("index");
+        assert!(index.search(&[], 8).expect("empty terms").is_empty());
+        assert!(index
+            .search(&["alpha".to_owned()], 0)
+            .expect("zero limit")
+            .is_empty());
+    }
+
+    #[test]
+    fn portable_build_rejects_nul_in_document_key() {
+        let err = PortableLexicalIndex::build(&[("bad\0key".to_owned(), "text".to_owned())]);
+        assert!(matches!(
+            err,
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_request_rejects_empty_oversized_and_zero_limits() {
+        let mut request = LexicalSearchRequest::new("   ");
+        assert!(matches!(
+            validate_request(&request),
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidQuery(_))
+        ));
+
+        request = LexicalSearchRequest::new("a".repeat(MAX_QUERY_BYTES + 1));
+        assert!(matches!(
+            validate_request(&request),
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidQuery(_))
+        ));
+
+        request = LexicalSearchRequest::new("alpha");
+        request.limit = 0;
+        assert!(matches!(
+            validate_request(&request),
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidQuery(_))
+        ));
+
+        request = LexicalSearchRequest::new("alpha");
+        request.max_candidate_files = 0;
+        assert!(matches!(
+            validate_request(&request),
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidQuery(_))
+        ));
+
+        request = LexicalSearchRequest::new("alpha");
+        request.max_results_per_file = 0;
+        assert!(matches!(
+            validate_request(&request),
+            Err(crate::workspace::retrieval::WorkspaceIndexError::InvalidQuery(_))
+        ));
+
+        request = LexicalSearchRequest::new("!!! ???");
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn path_matches_handles_root_base_exact_and_prefix_paths() {
+        use crate::workspace::WorkspacePath;
+        let root = WorkspacePath::root();
+        assert!(path_matches("src/main.rs", &root, None));
+
+        let base = WorkspacePath::from_normalized("src");
+        assert!(path_matches("src", &base, None));
+        assert!(path_matches("src/lib.rs", &base, None));
+        assert!(!path_matches("tests/lib.rs", &base, None));
+
+        let pattern = glob::Pattern::new("*.rs").expect("glob");
+        assert!(path_matches("src/lib.rs", &base, Some(&pattern)));
+        assert!(!path_matches("src/lib.toml", &base, Some(&pattern)));
     }
 }

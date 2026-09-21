@@ -249,23 +249,10 @@ fn bounded_json_search_results(
     bounded
 }
 
-fn json_search_payload(
-    results: Vec<serde_json::Value>,
-    requirements_met: bool,
-    health: &RetrievalHealth,
-    requirements: &RetrievalRequirements,
-) -> serde_json::Value {
-    if requirements_met {
-        serde_json::Value::Array(results)
-    } else {
-        serde_json::json!({
-            "status": "retrieval_requirements_not_met",
-            "message": "Search exhausted the available tiers without meeting the structural retrieval requirements; reformulate the query before treating these candidates as evidence.",
-            "retrieval_health": health,
-            "retrieval_requirements": requirements,
-            "results": results,
-        })
-    }
+fn json_search_payload(results: Vec<serde_json::Value>) -> serde_json::Value {
+    // Structural requirements decide whether another tier runs. Usable rows
+    // stay a result array; `partial` vs `complete` lives on tool metadata.
+    serde_json::Value::Array(results)
 }
 
 fn safe_search_result_url(result: &SearchResult) -> String {
@@ -1074,13 +1061,8 @@ impl Tool for WebSearchTool {
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             (
-                serde_json::to_string_pretty(&json_search_payload(
-                    json_results,
-                    requirements_met,
-                    &retrieval_health,
-                    &retrieval_requirements,
-                ))
-                .unwrap_or_default(),
+                serde_json::to_string_pretty(&json_search_payload(json_results))
+                    .unwrap_or_default(),
                 source_anchors,
                 returned_result_count,
             )
@@ -1108,14 +1090,14 @@ impl Tool for WebSearchTool {
             (text, source_anchors, results.len())
         };
 
-        let tool_output = if requirements_met {
-            ToolOutput::success_external(output)
+        let status = if requirements_met && errors.is_empty() {
+            "complete"
         } else {
-            ToolOutput::error(output)
+            "partial"
         };
         Ok(
-            tool_output.with_metadata(serde_json::json!({
-                "status": if !requirements_met { "failed" } else if errors.is_empty() { "complete" } else { "partial" },
+            ToolOutput::success_external(output).with_metadata(serde_json::json!({
+                "status": status,
                 "engine_selection_source": engine_selection_source,
                 "selected_engines": &selected_engines,
                 "source_anchors": source_anchors,

@@ -538,10 +538,7 @@ mod tests {
         assert!(!baseline.iter().any(|capability| {
             matches!(
                 capability.id.as_str(),
-                "evaluation_substrate"
-                    | "state_graph"
-                    | "s3_workspace"
-                    | "programmable_workflows"
+                "evaluation_substrate" | "state_graph" | "s3_workspace" | "programmable_workflows"
             )
         }));
         assert!(baseline.len() >= 12);

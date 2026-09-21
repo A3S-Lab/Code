@@ -4,9 +4,7 @@
 
 use super::McpTransport;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
-use crate::tools::process::{
-    configure_process_group, spawn_tokio_child, ProcessGroupGuard,
-};
+use crate::tools::process::{configure_process_group, spawn_tokio_child, ProcessGroupGuard};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -430,6 +428,7 @@ async fn drain_stderr(mut stderr: ChildStderr, shutdown: CancellationToken) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::process::ProcessGroupGuard;
 
     #[cfg(unix)]
     async fn wait_for_path(path: &std::path::Path) {
@@ -744,5 +743,227 @@ for raw in sys.stdin:
             !leaked.exists(),
             "protocol EOF must reap the MCP server and every descendant"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_reader_skips_blank_lines_and_unknown_frames() {
+        let args = vec![
+            "-c".to_string(),
+            r#"
+printf '\n'
+printf '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}}\n'
+printf 'not-json-at-all\n'
+printf '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n'
+"#
+            .to_string(),
+        ];
+        let transport = StdioTransport::spawn("/bin/sh", &args, &HashMap::new())
+            .await
+            .unwrap();
+        // Give the reader time to consume frames (including unknown + blank).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = transport.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn request_after_close_fails_to_send() {
+        let transport = StdioTransport::spawn("cat", &[], &HashMap::new())
+            .await
+            .unwrap();
+        transport.close().await.unwrap();
+        let error = transport
+            .request(JsonRpcRequest::new(1, "tools/list", None))
+            .await
+            .expect_err("closed transport must refuse requests");
+        assert!(
+            error.to_string().contains("Failed to send request")
+                || error.to_string().contains("not connected")
+                || error.to_string().contains("Transport"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn notification_after_close_fails_to_send() {
+        let transport = StdioTransport::spawn("cat", &[], &HashMap::new())
+            .await
+            .unwrap();
+        transport.close().await.unwrap();
+        let error = transport
+            .notify(JsonRpcNotification::new("notifications/initialized", None))
+            .await
+            .expect_err("closed transport must refuse notifications");
+        assert!(
+            error.to_string().contains("Failed to send notification")
+                || error.to_string().contains("not connected")
+                || error.to_string().contains("Transport"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notifications_receiver_is_empty_after_second_take() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let transport = runtime.block_on(async {
+            let transport = StdioTransport::spawn("cat", &[], &HashMap::new())
+                .await
+                .unwrap();
+            transport
+        });
+        let _first = transport.notifications();
+        let mut second = transport.notifications();
+        assert!(second.try_recv().is_err());
+        runtime.block_on(async {
+            let _ = transport.close().await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_reader_breaks_on_oversized_line() {
+        // LinesCodec max length is 8 MiB; one longer line forces a decode Err.
+        let args = vec![
+            "-c".to_string(),
+            format!(
+                "python3 -c \"import sys; sys.stdout.write('x'*{} + chr(10)); sys.stdout.flush()\"",
+                MAX_MCP_STDIO_LINE_BYTES + 16
+            ),
+        ];
+        let transport = StdioTransport::spawn("/bin/sh", &args, &HashMap::new())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = transport.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stderr_drain_captures_server_noise() {
+        let args = vec![
+            "-c".to_string(),
+            "printf 'mcp-stderr-noise\\n' 1>&2; cat".to_string(),
+        ];
+        let transport = StdioTransport::spawn("/bin/sh", &args, &HashMap::new())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        transport.close().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn settle_io_tasks_reports_panic_as_task_failure() {
+        let handle = tokio::spawn(async {
+            panic!("stdio settle panic");
+        });
+        // Yield so the task panics before we await it through settle_io_tasks.
+        tokio::task::yield_now().await;
+        let error = settle_io_tasks(vec![handle])
+            .await
+            .expect_err("panic must surface");
+        assert!(
+            error.to_string().contains("MCP stdio task failed"),
+            "{error}"
+        );
+    }
+
+    fn disconnected_stdin_transport(stdin_tx: mpsc::Sender<String>) -> StdioTransport {
+        StdioTransport {
+            process_group: Arc::new(StdMutex::new(ProcessGroupGuard::for_process_id(None))),
+            process_task: StdMutex::new(None),
+            io_tasks: StdMutex::new(Vec::new()),
+            stdin_tx,
+            pending: Arc::new(RwLock::new(HashMap::new())),
+            notification_rx: RwLock::new(None),
+            connected: Arc::new(AtomicBool::new(true)),
+            shutdown: CancellationToken::new(),
+            request_timeout_secs: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn request_maps_closed_stdin_channel_to_send_failure() {
+        let (stdin_tx, stdin_rx) = mpsc::channel(1);
+        drop(stdin_rx);
+        let transport = disconnected_stdin_transport(stdin_tx);
+        let error = transport
+            .request(JsonRpcRequest::new(7, "tools/list", None))
+            .await
+            .expect_err("closed stdin channel must fail send");
+        assert!(
+            error.to_string().contains("Failed to send request"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_maps_closed_stdin_channel_to_send_failure() {
+        let (stdin_tx, stdin_rx) = mpsc::channel(1);
+        drop(stdin_rx);
+        let transport = disconnected_stdin_transport(stdin_tx);
+        let error = transport
+            .notify(JsonRpcNotification::new("notifications/initialized", None))
+            .await
+            .expect_err("closed stdin channel must fail notify");
+        assert!(
+            error.to_string().contains("Failed to send notification"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_io_tasks_aborts_hanging_task() {
+        let handle = tokio::spawn(async {
+            // Longer than PROCESS_SETTLEMENT_TIMEOUT; aborted by settle_io_tasks.
+            futures::future::pending::<()>().await;
+        });
+        let error = settle_io_tasks(vec![handle])
+            .await
+            .expect_err("hanging task must time out");
+        assert!(
+            error
+                .to_string()
+                .contains("MCP stdio task did not settle during close"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_writer_breaks_when_child_closes_its_stdin() {
+        // Close the child's stdin fd immediately so subsequent writes get EPIPE.
+        let args = vec!["-c".to_string(), "exec 0<&-; sleep 1.5".to_string()];
+        let transport = StdioTransport::spawn("/bin/sh", &args, &HashMap::new())
+            .await
+            .unwrap();
+        for i in 0..64 {
+            let _ = transport
+                .notify(JsonRpcNotification::new(
+                    "notifications/message",
+                    Some(serde_json::json!({ "i": i, "pad": "x".repeat(256) })),
+                ))
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = transport.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stderr_drain_reads_flushed_server_noise() {
+        // Force unbuffered stderr so drain_stderr's Ok(count) arm runs before close.
+        let args = vec![
+            "-c".to_string(),
+            "python3 -c \"import sys,time; sys.stderr.write('mcp-stderr-noise\\\\n'); sys.stderr.flush(); time.sleep(0.4)\"".to_string(),
+        ];
+        let transport = StdioTransport::spawn("/bin/sh", &args, &HashMap::new())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        transport.close().await.unwrap();
     }
 }
