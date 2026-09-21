@@ -60,9 +60,9 @@ prompts.
 | Field | Value |
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
-| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__03-24-05` (agent_setup ok); agent smoke `2026-09-22__04-29-13` / `bun-sourcemap-leak` completed with 0 Harbor exceptions after host verification binding (reward 0.0 — task not solved). Native `terminal_bench_runner` + full `-k` matrix still required. |
+| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__07-32-16` on wheel `a3s_code-8.6.0-cp310-abi3-manylinux_2_28_x86_64.whl` (`INSTALL_ONLY_RC=0`, Harbor exceptions 0); prior install-only `2026-09-22__03-24-05`; agent smoke `2026-09-22__04-29-13` / `bun-sourcemap-leak` completed with 0 Harbor exceptions after host verification binding (reward 0.0 — task not solved). Native `terminal_bench_runner` + full `-k` matrix still required. |
 | `-n` / `-k` | diagnostic `-n 1 -k 1` only |
-| GPU sandbox | no (Docker Desktop on Darwin) |
+| GPU sandbox | WSL2 Ubuntu + Docker; host NVIDIA GeForce RTX 4090 (24564 MiB) |
 | Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); agent exception none |
 | Failures classified | other — task incorrect / incomplete solution under verifier; adapter wiring no longer blocked by completion gate |
 | ROADMAP link date | |
