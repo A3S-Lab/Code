@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::{SearchConfig, SearchEngineConfig};
+use a3s_search::RetrievalHealth;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
