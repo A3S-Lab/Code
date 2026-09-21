@@ -88,7 +88,7 @@ jobs:
         env:
           A3S_S3_TEST_ENDPOINT: http://127.0.0.1:9000
           A3S_S3_TEST_REGION: us-east-1
-          A3S_S3_TEST_ACCESS_KEY_ID: a3s-code-test
+          A3S_S3_TEST_ACCESS_KEY_ID: a3s-code-akid
           A3S_S3_TEST_SECRET_ACCESS_KEY: a3s-code-test-secret
           A3S_S3_TEST_BUCKET: a3s-code-tests
           A3S_S3_TEST_FORCE_PATH_STYLE: "true"
