@@ -51,7 +51,7 @@ a3s-search = { version = "=3.1.4", git = "https://github.com/A3S-Lab/Search.git"
 # Flow engine is optional: thin coding builds do not project named workflows.
 # Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }
-a3s-sandbox = { version = "=0.1.4", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "c9b8dfbef2b3133b44c333820ac6e80453552566" }
+a3s-sandbox = { version = "=0.1.4", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "0f93186ac898461f425d5fbc59046863f4ba3e49" }
 # Pure-Rust a3s-vec FTS engine for the workspace lexical index. Optional so
 # minimal builds keep the portable BM25 scorer without pulling the engine.
 a3s-vec = { version = "=0.1.4", optional = true }
