@@ -60,7 +60,7 @@ prompts.
 | Field | Value |
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
-| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__07-32-16` on wheel `a3s_code-8.6.0-cp310-abi3-manylinux_2_28_x86_64.whl` (`INSTALL_ONLY_RC=0`, Harbor exceptions 0); prior install-only `2026-09-22__03-24-05`; agent smoke `2026-09-22__04-29-13` / `bun-sourcemap-leak` completed with 0 Harbor exceptions after host verification binding (reward 0.0 — task not solved). Native `terminal_bench_runner` + full `-k` matrix still required. |
+| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only job `2026-09-22__07-32-16` on wheel `a3s_code-8.6.0` (`INSTALL_ONLY_RC=0`); agent smoke `2026-09-22__07-46-47` failed with Harbor `ValueError` — Harbor PROVIDERS has no `boyue` slug so `access.api_key` stayed empty despite host `BOYUE_API_KEY` (fixed in `a3s_code_agent/agent.py` via `MODEL_CONNECTION.api_key_envs` + `os.environ` fallback). Prior smoke `2026-09-22__04-29-13` / `bun-sourcemap-leak` had 0 Harbor exceptions (reward 0.0). Native `terminal_bench_runner` + full `-k` matrix still required. |
 | `-n` / `-k` | diagnostic `-n 1 -k 1` only |
 | GPU sandbox | WSL2 Ubuntu + Docker; host NVIDIA GeForce RTX 4090 (24564 MiB) |
 | Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); agent exception none |
