@@ -7,7 +7,7 @@ description: 'Workspace-level project instructions as versioned context'
 
 `AGENTS.md` is the workspace-level project instruction file. It lets project rules live with the repo, so every prompt does not need to repeat build commands, code style, safety boundaries, and release flow.
 
-In the filesystem-first architecture, `AGENTS.md` explains how this project works. AgentDir `instructions.md` explains who one durable agent is. Both enter context composition, but neither can override harness permission gates, response contracts, or verification requirements.
+`AGENTS.md` enters context composition with the other project files. It cannot override harness permission gates, response contracts, or verification requirements.
 
 ```md
 # Project Instructions
@@ -30,7 +30,6 @@ In the filesystem-first architecture, `AGENTS.md` explains how this project work
 
 - Secrets, tokens, private credentials, or personal machine paths.
 - Worker-agent role descriptions; put those in `.a3s/agents/`.
-- Durable-agent identity and default output style; put those in `instructions.md`.
 - Reusable checklists; put those in `.a3s/skills/`.
 
 ## Nested Rules

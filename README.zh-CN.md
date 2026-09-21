@@ -34,9 +34,6 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 
 ## 8.7 有什么新内容
 
-- **不再提供文件系统优先的 serve 模式（8.7.0）。** `serve` feature、`AgentDir`
-  主 Agent 布局、cron daemon 和 `AgentDirScriptTool` 已移除。Worker 的
-  `agent_dirs` 扫描仍然保留。
 - **a3s-vec 词法 FTS（8.7.0）。** 工作区 FTS 改用纯 Rust `a3s-vec`
   （`a3s_vec_fts_v1`）。磁盘上的 `zvec_rust_fts_v1` generation 不兼容，会重建。
 - **`web_search` 有可用结果即成功（8.7.0）。** 默认级联是 API，然后 HTTP/RSS，
@@ -1627,7 +1624,7 @@ Go SDK 通过一个长期存在的、经过功能检查的本地来到达该核�
 
 ## Agent 目录与发布
 
-Worker / 子代理定义仍可通过 `agent_dirs` / `register_agent_dir` 从目录加载（供 `task` 目录使用的 YAML/Markdown）。原先的文件系统优先主 Agent 约定（`AgentDir`：`instructions.md` / `schedules/` / `tools/`）以及 cron `serve` 守护进程已移除。
+Worker / 子代理定义通过 `agent_dirs` / `register_agent_dir` 从目录加载（供 `task` 目录使用的 YAML/Markdown）。
 
 `AgentReleaseManifest`承认版本化的`.a3s/asset.acl`合约，推导
 模式感知规范 ACL 和 SHA-256 身份，并验证运行时

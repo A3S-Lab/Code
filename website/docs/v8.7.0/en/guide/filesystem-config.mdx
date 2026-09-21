@@ -5,13 +5,12 @@ description: 'File-based runtime config for models, providers, queues, skill dir
 
 # agent.acl
 
-`agent.acl` is the runtime configuration entry point for filesystem-first agents. It turns model, provider, queue, storage, skill directory, and worker agent directory policy into versioned configuration.
+`agent.acl` is the versioned runtime config for the model, provider, queue, storage, skill directories, and worker agent directories.
 
 An SDK host may pass any `.acl` file explicitly with `Agent.create("agent.acl")`.
 The `a3s code` TUI discovers `.a3s/config.acl` from the workspace and then
-`~/.a3s/config.acl`; it does not require a root `agent.acl`. An AgentDir-local
-`agent.acl` serves that durable agent. The format is the same; discovery and
-scope are different.
+`~/.a3s/config.acl`; it does not require a root `agent.acl`. The format is the
+same; discovery and scope differ.
 
 ## Basic Config
 
@@ -70,24 +69,9 @@ does not receive an explicit SDK `sessionStore`. `storage_backend = "memory"`
 keeps sessions ephemeral. `storage_url` is parsed as custom storage metadata,
 but it does not create a local `FileSessionStore` by itself.
 
-## Inside AgentDir
-
-AgentDir `agent.acl` is optional. When present, `AgentDir::load` parses it into `CodeConfig` and combines it with `instructions.md`, `skills/`, `tools/`, and `schedules/`.
-
-```text
-release-agent/
-├── instructions.md
-├── agent.acl
-├── skills/
-├── tools/
-└── schedules/
-```
-
-Good AgentDir config includes the agent's default model, providers, limits, queue policy, and private skill dirs. Keep environment differences outside the file; use env vars or host injection for development, staging, and production differences.
-
 ## Boundaries
 
 - Config decides what can be connected and how the runtime starts; it does not bypass permission gates.
-- Prefer workspace-relative or AgentDir-relative paths.
+- Prefer workspace-relative paths.
 - Tune automatic delegation together with high-quality `agents/` descriptions.
 - High-risk tools should still go through HITL or allow-lists.

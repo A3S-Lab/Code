@@ -7,7 +7,7 @@ description: '作为一等上下文的项目指令'
 
 `AGENTS.md` 是 workspace 级项目指令文件。它让项目规则随仓库一起版本化，避免每次 prompt 都重复说明构建命令、代码风格、安全边界和发布流程。
 
-在文件系统优先架构里，`AGENTS.md` 负责“这个项目如何工作”；AgentDir 的 `instructions.md` 负责“这个长期 Agent 是谁”。两者都会进入上下文组合流程，但都不能覆盖 harness 的权限门、响应契约或验证要求。
+`AGENTS.md` 与其他项目文件一起进入上下文组合。它不能覆盖 harness 的权限门、响应契约或验证要求。
 
 ```md
 # 项目说明
@@ -30,7 +30,6 @@ description: '作为一等上下文的项目指令'
 
 - 密钥、token、私有凭据或临时个人路径。
 - 某个 worker agent 的角色说明；放进 `.a3s/agents/`。
-- 某个长期 Agent 的身份和默认输出风格；放进 `instructions.md`。
 - 可复用 checklist；放进 `.a3s/skills/`。
 
 ## 嵌套规则

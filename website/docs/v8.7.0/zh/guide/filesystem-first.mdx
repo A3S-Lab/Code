@@ -30,12 +30,6 @@ repo/
 这些约定不是新的提示词系统。`AGENTS.md` 与 Skill 进入 A3S Code 的上下文组装路径；
 工具可见性、权限门、HITL、响应契约与验证仍由 harness 控制。
 
-## 已移除：文件系统优先 AgentDir / serve
-
-原先的主 Agent 目录约定（`instructions.md`、`schedules/`、`tools/`）以及 cron
-`serve_agent_dir` 守护进程已移除。请改用交互式 `AgentSession`、宿主侧调度、
-MCP / SDK 工具注册，以及 `.a3s/agents/` worker。
-
 ## 加载顺序
 
 典型 session 解析 `agent.acl`、绑定工作区，再加载项目说明、Skill、Agent 定义、
@@ -45,4 +39,4 @@ MCP / SDK 工具注册，以及 `.a3s/agents/` worker。
 
 1. 优先使用可在 PR 中审查的文件，而不是不透明的内存默认值。
 2. 保持 harness 权威：文件提供内容；Core 仍拥有安全与验证。
-3. Worker 定义放在 `.a3s/agents/`，不要依赖已删除的 serve 守护进程。
+3. Worker 定义放在 `.a3s/agents/`。

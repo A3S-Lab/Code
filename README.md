@@ -34,9 +34,6 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 
 ## What's new in 8.7
 
-- **No filesystem-first serve mode (8.7.0).** The `serve` feature, `AgentDir`
-  primary-agent layout, cron daemon, and `AgentDirScriptTool` are removed.
-  Worker `agent_dirs` scanning remains.
 - **a3s-vec lexical FTS (8.7.0).** Workspace FTS uses pure-Rust `a3s-vec`
   (`a3s_vec_fts_v1`). On-disk `zvec_rust_fts_v1` generations are incompatible
   and rebuilt.
@@ -1652,11 +1649,8 @@ bridge process.
 
 ## Agent directories and releases
 
-Worker and subagent definitions can still be loaded from directories via
-`agent_dirs` / `register_agent_dir` (YAML/Markdown agent files for the `task`
-catalog). The former filesystem-first primary-agent convention (`AgentDir` with
-`instructions.md` / `schedules/` / `tools/`) and the cron `serve` daemon have
-been removed.
+Worker and subagent definitions load from directories via `agent_dirs` /
+`register_agent_dir` (YAML/Markdown agent files for the `task` catalog).
 
 `AgentReleaseManifest` admits the versioned `.a3s/asset.acl` contract, derives
 schema-aware canonical ACL and a SHA-256 identity, and verifies runtime

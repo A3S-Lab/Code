@@ -5,12 +5,12 @@ description: '模型、服务提供商、队列、技能目录和工作智能体
 
 # agent.acl
 
-`agent.acl` 是文件系统优先形态里的运行配置入口。它负责把模型、provider、并行度、队列、存储、skill 目录和 worker agent 目录固化为可版本化配置。
+`agent.acl` 是模型、provider、队列、存储、Skill 目录和 worker 目录的版本化运行配置。
 
 SDK 宿主可以用 `Agent.create("agent.acl")` 显式传入任意 `.acl` 文件。
 `a3s code` TUI 会从 workspace 向上发现 `.a3s/config.acl`，然后读取
-`~/.a3s/config.acl`；它并不要求仓库根部存在 `agent.acl`。AgentDir 内的
-`agent.acl` 服务于该目录的长期 Agent。三者格式一致，但发现方式和作用范围不同。
+`~/.a3s/config.acl`；它并不要求仓库根部存在 `agent.acl`。格式一致，发现方式和
+作用范围不同。
 
 ## 基础配置
 
@@ -69,24 +69,9 @@ session persistence 路径。`storage_backend = "memory"` 表示 session 是临�
 `storage_url` 会被解析为自定义存储元数据，但它本身不会创建本地
 `FileSessionStore`。
 
-## 智能体目录中的配置
-
-AgentDir 的 `agent.acl` 可以省略；省略时使用默认配置。存在时，`AgentDir::load` 会把它解析成 `CodeConfig`，并与 `instructions.md`、`skills/`、`tools/`、`schedules/` 一起合成长期 Agent。
-
-```text
-release-agent/
-├── instructions.md
-├── agent.acl
-├── skills/
-├── tools/
-└── schedules/
-```
-
-适合放在 AgentDir `agent.acl` 的内容包括该 Agent 默认模型、provider、运行限制、队列策略和私有 skill 目录。不要在这里硬编码部署环境差异；用环境变量或宿主注入区分开发、测试和生产。
-
 ## 配置边界
 
 - 配置决定“可以连接什么”和“默认如何运行”，不决定“模型能越过权限门”。
-- 目录路径应相对 workspace 或 AgentDir，避免依赖个人机器绝对路径。
+- 目录路径应相对 workspace，避免依赖个人机器绝对路径。
 - 自动委派需要和 `agents/` 的描述质量一起调优；低质量 description 会让运行时错误分派。
 - 高风险工具即使被目录发现，也应继续走 HITL 或 allow-list。

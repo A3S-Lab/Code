@@ -16,7 +16,7 @@ repo/
         └── verification-runner.md
 ```
 
-These files are not the main AgentDir. They are invoked by the model-visible
+These files are worker definitions. They are invoked by the model-visible
 `task` tool, the `session.task(...)` and `session.tasks(...)` host helpers, or
 `autoDelegation`. The parent session still owns final synthesis, verification,
 and permission boundaries.

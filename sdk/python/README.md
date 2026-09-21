@@ -851,9 +851,8 @@ the 2.0 SDK surface.
 ## Worker directories
 
 Worker and subagent definitions load from directories via `agent_dirs` /
-`register_agent_dir` (YAML or Markdown files in the `task` catalog). The
-filesystem-first primary agent (`instructions.md`, `schedules/`, `tools/`) and
-`serve` / `ServeAgentDir` are removed. Recurring work belongs to the host.
+`register_agent_dir` (YAML or Markdown files in the `task` catalog).
+Recurring work belongs to the host.
 
 ## License
 

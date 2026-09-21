@@ -13,8 +13,8 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 
 默认 profile 是 `local-code`：Agent 循环、工作区工具、策略、事件，以及纯 Rust
 的 a3s-vec 词法检索。`read` 对 JPEG/PNG/GIF/WebP 返回图片附件；OpenAI 兼容路径
-在工具结果里保留 `image_url`。没有文件系统优先的 `serve` 守护进程；项目规则写在
-`AGENTS.md`，Worker 放在 `.a3s/agents/`。
+在工具结果里保留 `image_url`。项目规则写在 `AGENTS.md`，Worker 放在
+`.a3s/agents/`。
 
 ## 设计规则
 
@@ -46,7 +46,7 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent 会话    | 通过异步 `SessionBuilder` 创建绑定到 Workspace 的 `AgentSession`；支持 `send`、`run`、`stream`、steer、interrupt、取消、保存、恢复和清理。同一会话发生并发冲突时会立即报错。                  |
 | 终端界面      | [`a3s code`](/guide/tui) 把事件流显示成终端对话，并展示工具调用、确认提示、记忆、文件和会话状态。                                                                                             |
-| 项目约定      | [文件系统约定](/guide/filesystem-first) 介绍 `AGENTS.md`、`agent.acl`、`.a3s/agents/` 和 `skills/`。旧的 AgentDir `tools/` 与 `schedules/` 布局已移除。                                       |
+| 项目约定      | [文件系统约定](/guide/filesystem-first) 介绍 `AGENTS.md`、`agent.acl`、`.a3s/agents/` 和 `skills/`。                                                                                          |
 | 工具          | 内置文件、二进制安全的本地下载、搜索、Shell、Git、网页、Batch、结构化输出、QuickJS、Skills、MCP 和子任务工具。模型调用统一经过参数、权限、确认、取消、确定性结果投影与证据记录。              |
 | 命令          | [命令](/guide/commands) 说明 TUI 的斜杠命令，以及如何在 SDK 中注册自己的 `/command`。                                                                                                         |
 | 子任务        | 通过模型可见的 `task`，或宿主侧 `session.task(...)` 与 `session.tasks(...)` 使用内置或自定义 Agent；单项聚焦执行，多项独立任务并发扇出。                                                      |
@@ -62,9 +62,6 @@ A3S Code 是 `a3s code` 背后的 Rust Runtime。也可以嵌进 IDE、Runner、
 
 ## v8.7.0 新增内容
 
-- **不再提供文件系统优先的 serve 模式。** `serve` feature、`AgentDir`
-  主 Agent 布局、cron daemon 和 `AgentDirScriptTool` 已移除。Worker 的
-  `agent_dirs` 扫描仍然保留。
 - **a3s-vec 词法 FTS。** 工作区 FTS 改用纯 Rust `a3s-vec`（`a3s_vec_fts_v1`）。
   磁盘上的 `zvec_rust_fts_v1` generation 不兼容，会重建。
 - **`web_search` 有可用结果即成功。** 默认级联是 API，然后 HTTP/RSS，最后
@@ -347,11 +344,11 @@ await agent.close();
 
 - [A3S Code TUI](/guide/tui) 说明安装、配置发现、斜杠命令和 Effort。
 - [SDK 与 API](/api/#go-module-与桥接程序)说明 Go 模块和桥接程序的安装方式；后续 Go 示例会与 Node.js、Python 一起出现在各通用章节中。
-- [文件系统约定](/guide/filesystem-first) 覆盖 `AGENTS.md`、ACL、Skill 与 `.a3s/agents/` worker。
-- [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。
 - [会话](/guide/sessions) 介绍创建、流式输出、运行状态、保存、恢复和取消。
 - [工具](/guide/tools) 介绍直接调用、错误类型、结构化输出和 QuickJS Program。
+- [安全](/guide/security)、[Hook](/guide/hooks) 与 [验证](/guide/verification) 介绍执行前、执行中和执行后的检查。
 - [工作区检索](/guide/context#workspace-retrieval)介绍显式语义开关、切块、生命周期、质量指标和 CPU-only 安全默认值。
 - [任务](/guide/tasks) 与 [编排](/guide/orchestration) 介绍子 Agent 和固定工作流。
-- [安全](/guide/security)、[Hook](/guide/hooks) 与 [验证](/guide/verification) 介绍执行前、执行中和执行后的检查。
 - [Memory](/guide/memory) 与 [持久化](/guide/persistence) 介绍跨会话信息和任务恢复。
+- [文件系统约定](/guide/filesystem-first) 覆盖 `AGENTS.md`、ACL、Skill 与 `.a3s/agents/` worker。
+- [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。

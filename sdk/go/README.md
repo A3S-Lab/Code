@@ -508,9 +508,6 @@ serializable Agent and Session capabilities, including:
   remote Git, permission/confirmation policies, retention, trajectory,
   deterministic ID/clock replay, delegation, and prompt-slot configuration.
 
-Filesystem-first `serve` / `ServeAgentDir` has been removed. Worker directories
-still load through `agent_dirs`.
-
 Headless hosts can start detached work under immutable IDs and receive the
 authoritative snapshot immediately:
 

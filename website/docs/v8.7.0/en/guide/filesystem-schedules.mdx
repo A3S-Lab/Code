@@ -1,11 +1,9 @@
 ---
-title: 'AgentDir schedules (removed)'
-description: 'AgentDir schedules/ and serve_agent_dir cron loops have been removed'
+title: 'Scheduling'
+description: 'Recurring work is owned by the host'
 ---
 
-# AgentDir schedules (removed)
+# Scheduling
 
-AgentDir `schedules/` and `serve_agent_dir` cron loops are **removed**.
-
-Schedule recurring work in the host process (or an external scheduler) and
-call `AgentSession::send` / SDK `session.send` for each turn.
+Recurring work belongs to the host. A turn still runs through an
+[AgentSession](/guide/sessions).

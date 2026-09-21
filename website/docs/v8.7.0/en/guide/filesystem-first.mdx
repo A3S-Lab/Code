@@ -32,13 +32,6 @@ These conventions are not a new prompt system. `AGENTS.md` and skills enter
 A3S Code's context composition path; tool visibility, permission gates, HITL,
 response contracts, and verification remain harness-controlled.
 
-## Removed: filesystem-first AgentDir / serve
-
-The former primary-agent directory convention (`instructions.md`,
-`schedules/`, `tools/`) and the cron `serve_agent_dir` daemon have been
-removed. Use interactive `AgentSession`s, host schedules outside Core, MCP /
-SDK tool registration, and `.a3s/agents/` workers instead.
-
 ## Loading Order
 
 A typical session parses `agent.acl`, binds a workspace, then loads project
@@ -50,4 +43,4 @@ runtime policy.
 1. Prefer files that can be reviewed in a PR over opaque in-memory defaults.
 2. Keep harness authority: files supply content; Core still owns safety and
    verification.
-3. Put worker definitions under `.a3s/agents/`, not a separate serve daemon.
+3. Put worker definitions under `.a3s/agents/`.
