@@ -474,6 +474,12 @@ pub struct SessionOptions {
     pub effect_isolation: bool,
     /// Host-confirmed completion waivers bound to an effect digest.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Host-supplied completion-gate attestation, consulted once a
+    /// workspace mutation's effect digest exists and before the gate
+    /// decides. See [`crate::completion_attestation::CompletionAttestor`].
+    /// `None` (the default) leaves the gate exactly as it behaves with no
+    /// host configured.
+    pub completion_attestor: Option<Arc<dyn crate::completion_attestation::CompletionAttestor>>,
     /// Admitted plan digest for an implementation run. Empty means ordinary.
     pub plan_run: crate::harness_loop::PlanRunAdmission,
     /// Path-scoped instruction fragments. The AGENTS.md prefix stays stable.

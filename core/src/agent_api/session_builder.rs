@@ -304,6 +304,7 @@ fn finish_agent_session(
     if !opts.completion_waivers.is_empty() {
         config.completion_waivers = opts.completion_waivers.clone();
     }
+    config.completion_attestor = opts.completion_attestor.clone();
     config.plan_run = opts.plan_run.clone();
     config.path_rules = opts.path_rules.clone();
     config.verifier_enabled = opts.verifier_enabled;

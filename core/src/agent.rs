@@ -195,6 +195,10 @@ pub(crate) struct AgentConfig {
     pub host_env: Arc<crate::host_env::HostEnv>,
     /// Host-confirmed waivers. Assistant text cannot populate this list.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Host-supplied completion-gate attestation. `None` means no host
+    /// configured — the gate behaves exactly as before this field existed.
+    /// See [`crate::completion_attestation::CompletionAttestor`].
+    pub completion_attestor: Option<Arc<dyn crate::completion_attestation::CompletionAttestor>>,
     /// Distinguishes an ordinary run from a plan-mode implementation admission.
     pub plan_run: crate::harness_loop::PlanRunAdmission,
     /// Path-scoped rules injected only when a turn targets a matching path.
@@ -254,6 +258,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("continuation_enabled", &self.continuation_enabled)
             .field("max_continuation_turns", &self.max_continuation_turns)
             .field("memory", &self.memory.is_some())
+            .field("completion_attestor", &self.completion_attestor.is_some())
             .finish()
     }
 }
@@ -297,6 +302,7 @@ impl Default for AgentConfig {
             budget_guard: None,
             host_env: Arc::new(crate::host_env::HostEnv::system()),
             completion_waivers: Vec::new(),
+            completion_attestor: None,
             plan_run: crate::harness_loop::PlanRunAdmission::ordinary(),
             path_rules: Vec::new(),
             verifier_enabled: false,

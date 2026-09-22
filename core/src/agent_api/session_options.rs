@@ -831,6 +831,16 @@ impl SessionOptions {
         self
     }
 
+    /// Plug in a host-supplied completion-gate attestor. See
+    /// [`crate::completion_attestation::CompletionAttestor`].
+    pub fn with_completion_attestor(
+        mut self,
+        attestor: Arc<dyn crate::completion_attestation::CompletionAttestor>,
+    ) -> Self {
+        self.completion_attestor = Some(attestor);
+        self
+    }
+
     pub fn with_plan_run(mut self, admission: crate::harness_loop::PlanRunAdmission) -> Self {
         self.plan_run = admission;
         self

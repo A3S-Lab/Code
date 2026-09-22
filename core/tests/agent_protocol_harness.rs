@@ -524,6 +524,148 @@ async fn harness_replay_binds_tool_requests_without_argument_plaintext() {
     harness.close().await;
 }
 
+/// Test attestor that always returns a report bound to whatever digest the
+/// gate is about to check. Proves the positive path: an attestor that binds
+/// correctly lets a write-capable run complete.
+struct AlwaysAttestReport;
+
+#[async_trait::async_trait]
+impl a3s_code_core::completion_attestation::CompletionAttestor for AlwaysAttestReport {
+    async fn attest(
+        &self,
+        request: &a3s_code_core::completion_attestation::CompletionAttestationRequest<'_>,
+    ) -> Option<a3s_code_core::verification::VerificationReport> {
+        let check = a3s_code_core::verification::VerificationCheck::required(
+            "host-attestation",
+            "host",
+            "host-side attestation for the mutated workspace",
+        )
+        .with_status(a3s_code_core::verification::VerificationStatus::Passed);
+        Some(
+            a3s_code_core::verification::VerificationReport::new(
+                format!("attested {} path(s)", request.mutated_paths.len()),
+                vec![check],
+            )
+            .with_effect_digest(request.effect_digest.to_string()),
+        )
+    }
+}
+
+/// Test attestor that always returns a report bound to a digest that is
+/// never the one the gate is checking. Proves the negative path: an
+/// attestor cannot bypass the gate by returning something unbound — the run
+/// must still fail exactly as if no attestor were configured.
+struct AlwaysAttestWrongDigest;
+
+#[async_trait::async_trait]
+impl a3s_code_core::completion_attestation::CompletionAttestor for AlwaysAttestWrongDigest {
+    async fn attest(
+        &self,
+        _request: &a3s_code_core::completion_attestation::CompletionAttestationRequest<'_>,
+    ) -> Option<a3s_code_core::verification::VerificationReport> {
+        let check = a3s_code_core::verification::VerificationCheck::required(
+            "host-attestation",
+            "host",
+            "host-side attestation bound to the wrong digest",
+        )
+        .with_status(a3s_code_core::verification::VerificationStatus::Passed);
+        Some(
+            a3s_code_core::verification::VerificationReport::new(
+                "attested the wrong mutation",
+                vec![check],
+            )
+            .with_effect_digest("sha256:not-the-real-digest".to_string()),
+        )
+    }
+}
+
+#[tokio::test]
+async fn harness_completion_attestor_binds_the_gate_and_lets_a_write_run_succeed() {
+    let workspace = tempfile::tempdir().unwrap();
+    initialize_git_workspace(workspace.path());
+    let manifest = manifest();
+    let release_identity = manifest.artifact().digest().to_string();
+    let arguments = serde_json::json!({
+        "file_path": "remote.txt",
+        "content": "attested content\n"
+    });
+    let client =
+        ScriptedStreamingClient::new(vec![tool_response("write", arguments.clone()), response()]);
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(client))
+            .with_completion_attestor(Arc::new(AlwaysAttestReport)),
+    );
+    let command = start(
+        &release_identity,
+        "attestor-bound-conversation",
+        "attestor-bound-execution",
+    );
+
+    harness.execute(&command).await.unwrap();
+    let page = wait_for_terminal(&harness, &command).await;
+    assert_eq!(
+        page.state,
+        AgentProtocolRunStateV1::Completed,
+        "an attestor-bound report must let the gate allow the run: {:?}",
+        page.events
+            .iter()
+            .find(|record| record.event.event_type == "error")
+            .map(|record| record.event.payload["message"].clone())
+    );
+
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn harness_completion_attestor_cannot_bypass_the_gate_with_a_mismatched_digest() {
+    let workspace = tempfile::tempdir().unwrap();
+    initialize_git_workspace(workspace.path());
+    let manifest = manifest();
+    let release_identity = manifest.artifact().digest().to_string();
+    let arguments = serde_json::json!({
+        "file_path": "remote.txt",
+        "content": "unattested content\n"
+    });
+    let client =
+        ScriptedStreamingClient::new(vec![tool_response("write", arguments.clone()), response()]);
+    let harness = AgentProtocolHarness::new(
+        manifest,
+        Arc::new(Agent::from_config(offline_config()).await.unwrap()),
+        workspace.path().display().to_string(),
+    )
+    .unwrap()
+    .with_session_options(
+        SessionOptions::new()
+            .with_planning_mode(PlanningMode::Disabled)
+            .with_confirmation_manager(Arc::new(a3s_code_core::hitl::AutoApproveConfirmation))
+            .with_llm_client(Arc::new(client))
+            .with_completion_attestor(Arc::new(AlwaysAttestWrongDigest)),
+    );
+    let command = start(
+        &release_identity,
+        "attestor-mismatch-conversation",
+        "attestor-mismatch-execution",
+    );
+
+    harness.execute(&command).await.unwrap();
+    let page = wait_for_terminal(&harness, &command).await;
+    // Same assertion as the no-attestor case: a report bound to a digest
+    // other than the ledger's does not satisfy report_binds_pass, so the
+    // gate rejects it exactly as if the attestor had returned None.
+    assert_unverified_mutation(&page);
+
+    harness.close().await;
+}
+
 #[tokio::test]
 async fn harness_isolates_sessions_and_exports_one_digest_bound_run_patch() {
     let workspace = tempfile::tempdir().unwrap();

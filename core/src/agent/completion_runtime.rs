@@ -110,6 +110,28 @@ impl AgentLoop {
             ));
             return CompletionFlow::Continue;
         }
+        if let Some(attestor) = &self.config.completion_attestor {
+            if !state.mutations.is_empty() {
+                let digest = state.mutations.digest().to_string();
+                let already_attested = state
+                    .verification_reports
+                    .iter()
+                    .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()));
+                if !already_attested {
+                    let mutated_paths: Vec<String> =
+                        state.mutations.paths().map(str::to_string).collect();
+                    let request = crate::completion_attestation::CompletionAttestationRequest {
+                        session_id,
+                        workspace: memory_task_context.workspace.as_path(),
+                        effect_digest: &digest,
+                        mutated_paths: &mutated_paths,
+                    };
+                    if let Some(report) = attestor.attest(&request).await {
+                        state.verification_reports.push(report);
+                    }
+                }
+            }
+        }
         let gate = crate::harness_loop::decide_with_observations(
             &state.mutations,
             &state.verification_reports,
