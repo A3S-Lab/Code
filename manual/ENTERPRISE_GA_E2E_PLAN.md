@@ -144,7 +144,7 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| Enterprise GA | **Not achieved** — tip L6 digests archived on `c9e26504`; L7 Harbor TB-QUAL1 still needs a completed agent smoke without infra exceptions plus full `-k` matrix / CAR receipts or a written product waiver; CLI #148 (Windows Use descendant kill + Code pin) merged |
+| Enterprise GA | **Not achieved** — tip L6 digests archived on `c9e26504`; CLI #148 merged; Harbor agent smoke diagnostic green (`2026-09-22__09-41-11`, exceptions 0, reward 0.0). L7 TB-QUAL1 still needs full `-k` matrix / CAR receipts or a written product waiver |
 
 ## 6. Closure checklist
 

@@ -60,12 +60,12 @@ prompts.
 | Field | Value |
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
-| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only `2026-09-22__07-32-16` (`INSTALL_ONLY_RC=0`). Boyue wiring closed: provider-scoped ACL materialize + `MODEL_CONNECTION`/`os.environ` bind; job `2026-09-22__08-27-10` / `layout-config-recreation2` ran ~68m with live boyue chat (`/v1/models`+`/chat/completions` 200 from inside the container), in-process `BOYUE_API_KEY`, and continuous agent-authored CV scripts under `/app/scratch/` (no `config.json` yet — hard vision task; stopped intentionally). `bun-sourcemap-leak` still blocked by Docker Hub `connection reset by peer` on digest `63c69d9b…` (pull retries in flight). Native `terminal_bench_runner` + full `-k` matrix still required. |
-| `-n` / `-k` | diagnostic `-n 1 -k 1` only |
+| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only `2026-09-22__07-32-16` (`INSTALL_ONLY_RC=0`). Boyue wiring + pinned agent smoke: job `2026-09-22__09-41-11` / `terminal-bench/bun-sourcemap-leak` (`AGENT_SMOKE_RC=0`, Harbor exceptions 0, reward 0.0 — task unsolved). Prior layout mid-run `2026-09-22__08-27-10` (~68m live API + `/app/scratch` CV) remains supporting evidence. Native `terminal_bench_runner` + full `-k` matrix still required for TB-QUAL1. |
+| `-n` / `-k` | diagnostic `-n 1 -k 1` (`A3S_TB_INCLUDE_TASK=terminal-bench/bun-sourcemap-leak`) |
 | GPU sandbox | WSL2 Ubuntu + Docker; host NVIDIA GeForce RTX 4090 (24564 MiB) |
-| Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); agent exception none |
-| Failures classified | other — task incorrect / incomplete solution under verifier; adapter wiring no longer blocked by completion gate |
-| ROADMAP link date | |
+| Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); Harbor agent exception none |
+| Failures classified | other — task incorrect / incomplete solution under verifier; adapter + boyue key/base_url wiring no longer blocked |
+| ROADMAP link date | 2026-09-22 |
 
 ### DM-PROD1
 
