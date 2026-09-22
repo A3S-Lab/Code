@@ -135,6 +135,10 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
     'Node cannot carry JS functions in value-typed SessionOptions; SDKs expose set_budget_guard/setBudgetGuard.',
   ],
   ['sandbox_handle', 'Rust BashSandbox trait object; no SDK-safe sandbox provider yet.'],
+  [
+    'completion_attestor',
+    'Rust CompletionAttestor trait object; host-only completion-gate hook, no cross-language callback shape yet.',
+  ],
   ['mcp_manager', 'Rust McpManager handle; SDKs expose add_mcp/remove_mcp runtime APIs.'],
   ['hook_executor', 'Rust HookExecutor trait object; SDKs expose register_hook instead.'],
   [

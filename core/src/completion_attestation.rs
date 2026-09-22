@@ -12,8 +12,7 @@
 //! [`CompletionAttestor`] closes that gap without touching the gate's
 //! guarantee. It is invoked once the digest and the mutated paths exist, and
 //! strictly *before* [`crate::harness_loop::decide_with_observations`] runs
-//! — see
-//! [`AgentLoop::complete_no_tool_response`](crate::agent::AgentLoop::complete_no_tool_response).
+//! — see `AgentLoop::complete_no_tool_response` (private to the crate).
 //! Its only power is to hand back a
 //! [`crate::verification::VerificationReport`], which the gate still checks
 //! with exactly the same rule it applies to any other report: the digest
