@@ -32,6 +32,22 @@ use crate::verification::VerificationReport;
 use async_trait::async_trait;
 use std::path::Path;
 
+/// One workspace path the mutation ledger recorded, with the content digest
+/// Code itself computed for it
+/// ([`crate::harness_loop::MutationLedger::content_digest_for_path`]).
+///
+/// Handing the attestor this digest — rather than making it re-derive one —
+/// means a host that re-reads the file and hashes it can compare against the
+/// exact value Code's own ledger holds, the same comparison
+/// [`crate::verification::host_report_for_verified_mutation_path_with_content`]
+/// makes for a model-issued shell existence check.
+pub struct MutatedPathRecord<'a> {
+    /// Workspace-relative path, as recorded on the ledger.
+    pub path: &'a str,
+    /// The content digest Code recorded for this path's mutation.
+    pub content_digest: &'a str,
+}
+
 /// Everything a [`CompletionAttestor`] needs to decide whether a workspace
 /// mutation is attestable, without granting it any access the framework
 /// does not already have at the call site.
@@ -44,9 +60,10 @@ pub struct CompletionAttestationRequest<'a> {
     /// returned report must bind via
     /// [`VerificationReport::effect_digest`] for the gate to accept it.
     pub effect_digest: &'a str,
-    /// [`crate::harness_loop::MutationLedger::paths`], collected. May
-    /// contain duplicates (one ledger record per write).
-    pub mutated_paths: &'a [String],
+    /// [`crate::harness_loop::MutationLedger::paths`], deduplicated, each
+    /// paired with its latest recorded content digest
+    /// ([`crate::harness_loop::MutationLedger::content_digest_for_path`]).
+    pub mutated_paths: &'a [MutatedPathRecord<'a>],
 }
 
 /// Host-supplied completion-gate attestation.

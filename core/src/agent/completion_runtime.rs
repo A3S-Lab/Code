@@ -118,8 +118,20 @@ impl AgentLoop {
                     .iter()
                     .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()));
                 if !already_attested {
-                    let mutated_paths: Vec<String> =
-                        state.mutations.paths().map(str::to_string).collect();
+                    let mut seen_paths = std::collections::HashSet::new();
+                    let mutated_paths: Vec<crate::completion_attestation::MutatedPathRecord<'_>> =
+                        state
+                            .mutations
+                            .paths()
+                            .filter(|path| seen_paths.insert(*path))
+                            .map(|path| crate::completion_attestation::MutatedPathRecord {
+                                path,
+                                content_digest: state
+                                    .mutations
+                                    .content_digest_for_path(path)
+                                    .unwrap_or_default(),
+                            })
+                            .collect();
                     let request = crate::completion_attestation::CompletionAttestationRequest {
                         session_id,
                         workspace: memory_task_context.workspace.as_path(),
