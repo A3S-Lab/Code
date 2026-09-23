@@ -1,0 +1,93 @@
+# Temporary: publish @a3s-lab/office using Code's NPM_TOKEN while Office#162
+# is blocked (Office repo token returns scoped PUT 404). Remove after 0.311.x
+# lands on the registry and Office Trusted Publisher / NPM_TOKEN is restored.
+name: Publish Office package (emergency)
+
+on:
+  workflow_dispatch:
+    inputs:
+      office_ref:
+        description: Office git ref to publish (tag or SHA)
+        required: true
+        default: v0.311.2
+      dry_run:
+        description: If true, only npm whoami + pack (no publish)
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-office:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Probe Code NPM_TOKEN
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: npm whoami
+        id: whoami
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          who="$(npm whoami --registry https://registry.npmjs.org/)"
+          echo "npm_user=$who" >> "$GITHUB_OUTPUT"
+          echo "Authenticated as: $who"
+
+      - name: Check out Office
+        if: steps.whoami.outcome == 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/Office
+          ref: ${{ inputs.office_ref }}
+          path: office
+
+      - name: Set up Bun
+        if: steps.whoami.outcome == 'success'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Set up Rust
+        if: steps.whoami.outcome == 'success'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install and build Office
+        if: steps.whoami.outcome == 'success'
+        working-directory: office
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+          bun run build
+          node -e "console.log('version', require('./package.json').version)"
+
+      - name: Pack only (dry run)
+        if: steps.whoami.outcome == 'success' && inputs.dry_run
+        working-directory: office
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm pack --dry-run
+
+      - name: Publish @a3s-lab/office
+        if: steps.whoami.outcome == 'success' && inputs.dry_run == false
+        working-directory: office
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
+
+      - name: Fail if whoami failed
+        if: steps.whoami.outcome != 'success'
+        run: |
+          echo "Code NPM_TOKEN cannot authenticate to npmjs (whoami failed)."
+          exit 1
