@@ -19,6 +19,7 @@ static TEST_FORCE_SYNC_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE: AtomicBool = AtomicBool::new(false);
 /// Serializes tests that flip the process-global `TEST_FORCE_*` atomics so
 /// parallel `multi_thread` suites cannot steal each other's forced failures.
+#[allow(dead_code)] // Referenced only from `#[cfg(test)]` helpers; keep linked in lib builds.
 static TEST_FORCE_LOCK: Mutex<()> = Mutex::new(());
 
 const SNAPSHOT_SETTLE_DELAY: Duration = Duration::from_millis(10);
