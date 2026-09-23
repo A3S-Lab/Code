@@ -984,14 +984,19 @@ async fn test_bash_missing_command() {
 
 #[test]
 fn sandbox_command_keeps_posix_test_visible_to_the_host_shell() {
-    let command = super::command_for_sandbox("test -f hello.txt");
+    let command = super::command_for_sandbox("cd /workspace && test -f hello.txt");
     #[cfg(not(windows))]
-    assert_eq!(command, "test -f hello.txt");
+    assert_eq!(command, "cd /workspace && test -f hello.txt");
     #[cfg(windows)]
     {
-        assert!(command.contains("function test"));
-        assert!(command.contains("test -f hello.txt"));
+        assert!(command.contains("Test-Path -LiteralPath 'hello.txt'"));
+        assert!(command.contains("exit 0"));
+        assert!(command.len() < 400, "{command}");
     }
+    assert_eq!(
+        super::command_for_sandbox("echo core-default-sandbox"),
+        "echo core-default-sandbox"
+    );
 }
 
 #[test]

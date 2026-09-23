@@ -695,20 +695,43 @@ fn session_shell_control(args: &serde_json::Value, ctx: &ToolContext) -> Option<
 
 /// Command text handed to the configured sandbox.
 ///
-/// Unix sandboxes run a POSIX shell, so `test -f` is the command itself.
-/// The Windows native sandbox runs PowerShell and does not define that
-/// builtin. Wrap with the same compatibility shim the host shell uses so a
-/// verification command still exits 0 when the file exists. The completion
-/// gate keeps parsing the original `test -f` text from the tool arguments.
+/// Unix sandboxes run a POSIX shell, so the command is unchanged. The Windows
+/// native sandbox runs PowerShell and does not define `test`. A single
+/// `test -f` / `test -e` check becomes a short `Test-Path` script. The full
+/// host compatibility shim is not prepended: AppContainer rejects command
+/// lines that exceed the Windows limit (error 206). Every other command,
+/// including `echo`, is left unchanged. The completion gate still parses the
+/// original `test -f` text from the tool arguments.
 fn command_for_sandbox(command: &str) -> String {
     #[cfg(windows)]
     {
-        build_powershell_command(command)
+        windows_existence_check(command).unwrap_or_else(|| command.to_string())
     }
     #[cfg(not(windows))]
     {
         command.to_string()
     }
+}
+
+#[cfg(windows)]
+fn windows_existence_check(command: &str) -> Option<String> {
+    let tail = command.rsplit("&&").next()?.trim();
+    if tail.contains(['\n', ';', '|', '>']) {
+        return None;
+    }
+    let path = crate::verification::path_from_existence_check_command(tail)?;
+    if path.contains(['\'', '\n', '\r']) {
+        return None;
+    }
+    let path_type =
+        if tail.contains(" -e ") || tail.starts_with("test -e") || tail.contains("[ -e ") {
+            ""
+        } else {
+            " -PathType Leaf"
+        };
+    Some(format!(
+        "if (Test-Path -LiteralPath '{path}'{path_type}) {{ exit 0 }} else {{ exit 1 }}"
+    ))
 }
 
 fn prefix_session_cwd(command: &str, ctx: &ToolContext) -> String {

@@ -495,6 +495,15 @@ pub(super) async fn spawn_prepared_recovery(
     if reservation.replayed() {
         return Ok(AgentRunSpawn::Replayed { snapshot });
     }
+    if let Some(binding) = checkpoint.capability_binding.clone() {
+        if let Err(error) = run_control
+            .bind_capability_generation(&run_id, binding)
+            .await
+        {
+            run_control.fail_reserved_run_start(&run_id, &error).await;
+            return Err(error.into());
+        }
+    }
     snapshot = run_control.snapshot(&run_id).await.ok_or_else(|| {
         CodeError::Session(format!(
             "newly admitted exact recovery Run '{run_id}' disappeared before execution"
