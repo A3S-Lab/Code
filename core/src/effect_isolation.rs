@@ -405,6 +405,13 @@ fn write_promoted_file(
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let _guard = git_process_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    git_stdout_unlocked(root, args)
+}
+
+fn git_stdout_unlocked(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -600,7 +607,15 @@ pub fn worktree_path_for(source_root: &Path, session_id: &str) -> PathBuf {
     parent.join(format!(".a3s-isolate-{session_id}"))
 }
 
+fn git_process_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
+
 fn is_git_repository(root: &Path) -> bool {
+    let _guard = git_process_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -610,6 +625,9 @@ fn is_git_repository(root: &Path) -> bool {
 }
 
 fn source_revision(root: &Path) -> Result<String> {
+    let _guard = git_process_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -644,6 +662,9 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) {
+        let _guard = super::git_process_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(root)
@@ -1618,15 +1639,26 @@ mod tests {
 
     #[test]
     fn git_stdout_reports_spawn_failure_when_git_is_missing_from_path() {
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("PATH", value),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+
         let root = tempfile::tempdir().unwrap();
         init_repo(root.path());
-        let original = std::env::var_os("PATH");
+        let _guard = super::git_process_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestorePath(std::env::var_os("PATH"));
         std::env::set_var("PATH", "/var/empty-a3s-no-git");
-        let error = git_stdout(root.path(), &["status"]).unwrap_err();
-        match original {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
+        let error = super::git_stdout_unlocked(root.path(), &["status"]).unwrap_err();
+        drop(_restore);
+        drop(_guard);
         assert!(
             error.to_string().contains("git") || error.to_string().contains("failed"),
             "{error}"

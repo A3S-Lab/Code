@@ -377,7 +377,7 @@ impl AgentLoop {
                 }
             }
         }
-        if stored == 0 {
+        if stored == 0 || is_explicit_remember_request(prompt) {
             remember_explicit_preference(&memory, prompt).await;
         }
     }
@@ -1092,6 +1092,11 @@ async fn remember_explicit_preference(memory: &AgentMemory, prompt: &str) {
             "Skipping explicit preference because it appears to contain sensitive material"
         );
         return;
+    }
+    if let Ok(hits) = memory.store.search(&content, 5).await {
+        if hits.iter().any(|hit| hit.content.contains(&content)) {
+            return;
+        }
     }
     let item = MemoryItem::new(content)
         .with_type(MemoryType::Semantic)
