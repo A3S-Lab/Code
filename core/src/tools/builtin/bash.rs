@@ -420,7 +420,7 @@ impl Tool for BashTool {
             if let Some(ref sandbox) = ctx.sandbox {
                 let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
                 let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {
-                    command: command.to_string(),
+                    command: command_for_sandbox(command),
                     guest_workspace: "/workspace".to_string(),
                     timeout_ms,
                     output_observer: output_observer.clone(),
@@ -691,6 +691,24 @@ fn session_shell_control(args: &serde_json::Value, ctx: &ToolContext) -> Option<
         Ok(text) => ToolOutput::success(text),
         Err(error) => ToolOutput::error(error.to_string()),
     })
+}
+
+/// Command text handed to the configured sandbox.
+///
+/// Unix sandboxes run a POSIX shell, so `test -f` is the command itself.
+/// The Windows native sandbox runs PowerShell and does not define that
+/// builtin. Wrap with the same compatibility shim the host shell uses so a
+/// verification command still exits 0 when the file exists. The completion
+/// gate keeps parsing the original `test -f` text from the tool arguments.
+fn command_for_sandbox(command: &str) -> String {
+    #[cfg(windows)]
+    {
+        build_powershell_command(command)
+    }
+    #[cfg(not(windows))]
+    {
+        command.to_string()
+    }
 }
 
 fn prefix_session_cwd(command: &str, ctx: &ToolContext) -> String {
