@@ -141,6 +141,7 @@ dependencies = [
 [[package]]
 name = "a3s-effect"
 version = "0.1.0"
+source = "git+https://github.com/A3S-Lab/Effect.git?rev=8ab8bd432e2608b93a0222320086c4f271c6cf63#8ab8bd432e2608b93a0222320086c4f271c6cf63"
 dependencies = [
  "serde",
  "serde_json",
