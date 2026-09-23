@@ -487,6 +487,8 @@ pub(crate) fn snapshot_workspace_tree(repo_path: &Path) -> Result<WorkspaceTreeS
                 OsString::from("."),
                 OsString::from(":(exclude).a3s-code"),
                 OsString::from(":(exclude).a3s-code/**"),
+                OsString::from(":(exclude).a3s"),
+                OsString::from(":(exclude).a3s/**"),
             ],
             &environment,
         )?;
@@ -570,6 +572,36 @@ pub(crate) fn pin_workspace_tree(
 /// Restore a freshly-created protocol worktree to one persisted result tree.
 /// HEAD remains detached at the configured source revision, so the restored
 /// files continue to appear as the conversation's uncommitted changes.
+/// Put a failed run's worktree back on its baseline after the change set
+/// has been recorded. Untracked files the run created are removed, except
+/// `.a3s`, which holds the fact log.
+pub(crate) fn restore_unverified_worktree(repo_path: &Path, baseline_tree: &str) -> Result<()> {
+    if !is_git_object_id(baseline_tree) {
+        return Err(anyhow!("Agent Harness baseline tree identity is invalid"));
+    }
+    let _ = run_git_success_with_env(
+        repo_path,
+        &[
+            OsString::from("clean"),
+            OsString::from("-fd"),
+            OsString::from("-e"),
+            OsString::from(".a3s"),
+        ],
+        &[],
+    );
+    run_git_success_with_env(
+        repo_path,
+        &[
+            OsString::from("read-tree"),
+            OsString::from("--reset"),
+            OsString::from("-u"),
+            OsString::from(baseline_tree),
+        ],
+        &[],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn restore_workspace_tree(repo_path: &Path, tree_identity: &str) -> Result<()> {
     let tree = tree_identity
         .strip_prefix("git-tree:")

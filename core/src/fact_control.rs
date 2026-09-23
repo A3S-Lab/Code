@@ -274,6 +274,13 @@ async fn read_model_response(
     surface: &SessionSurface,
     attempt: &tokio_util::sync::CancellationToken,
 ) -> Result<crate::llm::LlmResponse, ActorError> {
+    let (evidence_events, usage_binding) = surface
+        .agent
+        .fact_model_evidence(messages, system, tools)
+        .await;
+    for event in evidence_events {
+        record_run_event(surface, event).await;
+    }
     match client
         .complete_streaming(messages, system, tools, attempt.clone())
         .await
@@ -313,6 +320,7 @@ async fn read_model_response(
             }
             if let Some(response) = done {
                 record_usage(surface, &response);
+                record_model_usage_event(surface, usage_binding.as_ref(), &response).await;
                 return Ok(response);
             }
             if surface.cancel.is_cancelled() || attempt.is_cancelled() {
@@ -335,9 +343,34 @@ async fn read_model_response(
                 .await
                 .map_err(model_error)?;
             record_usage(surface, &response);
+            record_model_usage_event(surface, usage_binding.as_ref(), &response).await;
             Ok(response)
         }
     }
+}
+
+async fn record_run_event(surface: &SessionSurface, event: crate::agent::AgentEvent) {
+    if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
+        store.record_event(run_id, event.clone()).await;
+    }
+    if let Some(sender) = &surface.events {
+        let _ = sender.send(event).await;
+    }
+}
+
+async fn record_model_usage_event(
+    surface: &SessionSurface,
+    binding: Option<&crate::harness_evidence::ModelUsageBinding>,
+    response: &crate::llm::LlmResponse,
+) {
+    let Some(binding) = binding else {
+        return;
+    };
+    let Some(event) = crate::agent::AgentLoop::fact_model_usage_event(binding, &response.usage)
+    else {
+        return;
+    };
+    record_run_event(surface, event).await;
 }
 
 fn record_usage(surface: &SessionSurface, response: &crate::llm::LlmResponse) {

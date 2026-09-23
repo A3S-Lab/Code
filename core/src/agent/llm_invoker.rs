@@ -1279,6 +1279,71 @@ async fn record_after_llm(
     }
 }
 
+impl AgentLoop {
+    /// Record the same capability, presentation, and input evidence the
+    /// provider gateway records, for a fact-log completion that does not go
+    /// through that gateway. The usage event is emitted after the provider
+    /// returns.
+    pub(crate) async fn fact_model_evidence(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> (Vec<AgentEvent>, Option<ModelUsageBinding>) {
+        let Some(invocation) = &self.bound_invocation else {
+            return (Vec::new(), None);
+        };
+        let observation = ModelCallObservation::with_presentation_application(
+            ModelInputKindV1::Completion,
+            messages,
+            system,
+            tools,
+            None,
+            estimate_prompt_tokens(messages, system, tools),
+            ModelPresentationApplicationV1::Auxiliary,
+        );
+        let Ok(Some(evidence)) = invocation.capture_model_evidence(observation) else {
+            return (Vec::new(), None);
+        };
+        let usage_binding =
+            ModelUsageBinding::from_input(&evidence.input, evidence.tool_result_context);
+        let (tx, mut rx) = mpsc::channel(4);
+        let call_sequence = evidence.input.call_sequence;
+        let capability = evidence.capability;
+        let presentation = evidence.presentation;
+        let input = evidence.input;
+        if !invocation
+            .send_capability_if_changed(&tx, call_sequence, capability)
+            .await
+        {
+            return (Vec::new(), Some(usage_binding));
+        }
+        let _ = tx
+            .send(AgentEvent::ModelPresentationBound {
+                snapshot: presentation,
+            })
+            .await;
+        let _ = tx
+            .send(AgentEvent::ModelInputBound { snapshot: input })
+            .await;
+        drop(tx);
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        (events, Some(usage_binding))
+    }
+
+    pub(crate) fn fact_model_usage_event(
+        binding: &ModelUsageBinding,
+        usage: &TokenUsage,
+    ) -> Option<AgentEvent> {
+        ModelUsageSnapshotV1::from_binding(binding, usage)
+            .ok()
+            .map(|snapshot| AgentEvent::ModelUsageBound { snapshot })
+    }
+}
+
 async fn record_model_usage(
     invocation: &InvocationContext,
     binding: Option<&ModelUsageBinding>,

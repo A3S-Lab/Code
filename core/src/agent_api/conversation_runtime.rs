@@ -994,6 +994,13 @@ async fn bind_external_run(session: &AgentSession, pinned: &mut PinnedFact, run_
         surface.run_store = Some(Arc::clone(&session.run_store));
         surface.run_id = Some(run_id.to_string());
         *session.cancel_token.lock().await = Some(surface.cancel.clone());
+        let _coordinator = ExecutionCoordinator::prepare(
+            session,
+            run_id,
+            &mut surface.agent,
+            surface.cancel.clone(),
+        )
+        .await;
     }
     *session.current_run_id.lock().await = Some(run_id.to_string());
 }

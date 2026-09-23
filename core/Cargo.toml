@@ -52,7 +52,7 @@ required-features = ["apofasi"]
 
 [dependencies]
 # Internal crates
-a3s-effect = { version = "0.1.0", git = "https://github.com/A3S-Lab/Effect.git", rev = "8ab8bd432e2608b93a0222320086c4f271c6cf63" }
+a3s-effect = { version = "0.1.0", git = "https://github.com/A3S-Lab/Effect.git", rev = "cea4766639b5b7d9c2420bf6cbe792d782acafdb" }
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git", rev = "97a5e885d196be77dc1823ad86238e77d942ed73" }
 a3s-lane = "0.5"

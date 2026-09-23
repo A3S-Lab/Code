@@ -486,6 +486,10 @@ impl AgentProtocolHost {
                 tokio::spawn(async move {
                     let _ = worker.await;
                     let run_id_for_state = run_id.clone();
+                    let failed = session
+                        .run_snapshot(&run_id_for_state)
+                        .await
+                        .is_some_and(|snapshot| snapshot.status == crate::run::RunStatus::Failed);
                     let evidence = tokio::task::spawn_blocking(move || {
                         let result = crate::git::snapshot_workspace_tree(&workspace)?;
                         let patch = crate::git::diff_workspace_trees(
@@ -495,6 +499,10 @@ impl AgentProtocolHost {
                             AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES,
                         )?;
                         crate::git::pin_workspace_tree(&workspace, &pin_identity, &result)?;
+                        if failed {
+                            let _ =
+                                crate::git::restore_unverified_worktree(&workspace, &baseline.tree);
+                        }
                         let patch_bytes = u64::try_from(patch.len())
                             .map_err(|_| anyhow::anyhow!("change-set byte count overflowed"))?;
                         Ok::<_, anyhow::Error>(RunWorkspaceChangeSet {

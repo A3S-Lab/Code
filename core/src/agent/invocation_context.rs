@@ -76,7 +76,7 @@ struct ModelEvidenceState {
     last_capability_digest: Arc<Mutex<Option<String>>>,
 }
 
-pub(super) struct CapturedModelEvidence {
+pub(crate) struct CapturedModelEvidence {
     pub(super) capability: RunCapabilitySnapshotV1,
     pub(super) presentation: ModelPresentationSnapshotV1,
     pub(super) input: ModelInputSnapshotV1,
@@ -225,7 +225,7 @@ impl InvocationContext {
         &self.governance
     }
 
-    pub(super) fn capture_model_evidence(
+    pub(crate) fn capture_model_evidence(
         &self,
         observation: ModelCallObservation<'_>,
     ) -> Result<Option<CapturedModelEvidence>, HarnessEvidenceError> {
@@ -250,7 +250,7 @@ impl InvocationContext {
         }))
     }
 
-    pub(super) async fn send_capability_if_changed(
+    pub(crate) async fn send_capability_if_changed(
         &self,
         tx: &mpsc::Sender<AgentEvent>,
         call_sequence: u64,
