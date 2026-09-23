@@ -10,6 +10,7 @@ use crate::safety_gate::{ToolGateApproval, ToolGateDecision, ToolGateInput, Tool
 use crate::tool_confirmation::{
     ToolConfirmationRequest, ToolConfirmationResolution, ToolConfirmationRuntime,
 };
+use crate::tool_name::canonical_tool_name;
 use crate::tools::{
     HostDirectPolicy, InvocationOrigin, ToolCapabilities, ToolContext, ToolInvocation,
     ToolInvocationLifecycle, ToolInvocationState, ToolInvocationTerminal, ToolInvoker, ToolResult,
@@ -38,10 +39,18 @@ impl ScopedToolInvoker {
         }
     }
 
+    fn canonicalize_invocation_name(invocation: &mut ToolInvocation) {
+        let canonical = canonical_tool_name(&invocation.name);
+        if canonical != invocation.name {
+            invocation.name = canonical.to_string();
+        }
+    }
+
     async fn decide_gate(
         &self,
         invocation: &mut ToolInvocation,
     ) -> Result<ToolGateDecision, String> {
+        Self::canonicalize_invocation_name(invocation);
         let hook_decision = self
             .agent
             .fire_pre_tool_use(
@@ -448,6 +457,7 @@ impl ScopedToolInvoker {
 #[async_trait]
 impl ToolInvoker for ScopedToolInvoker {
     async fn invoke(&self, mut invocation: ToolInvocation, ctx: &ToolContext) -> ToolResult {
+        Self::canonicalize_invocation_name(&mut invocation);
         let started = Instant::now();
         let mut lifecycle = ToolInvocationLifecycle::new();
         let cancellation = ctx.cancellation_token();

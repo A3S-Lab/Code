@@ -1404,6 +1404,42 @@ fn test_allow_by_default_with_mcp_wildcard_deny() {
 }
 
 #[test]
+fn functions_prefixed_read_matches_read_allow_under_deny_default() {
+    // Desktop / OpenAI-style tool names (a3s#658): models emit `functions.read`
+    // while closed local-workspace policies allow `Read(*)`.
+    let policy = PermissionPolicy::new()
+        .deny("Read(/**)")
+        .deny("Read(**/../**)")
+        .allow("Read(*)")
+        .allow("LS(*)");
+    let mut deny_default = policy;
+    deny_default.default_decision = PermissionDecision::Deny;
+
+    assert_eq!(
+        deny_default.check(
+            "functions.read",
+            &json!({"file_path": "Review/.a3s/kb/Sources/11/index.md"})
+        ),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        deny_default.check("functions.ls", &json!({"path": "Review/.a3s/kb"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        deny_default.check("functions.read", &json!({"file_path": "/etc/passwd"})),
+        PermissionDecision::Deny
+    );
+    assert_eq!(
+        deny_default.check(
+            "functions.write",
+            &json!({"file_path": "a.md", "content": "x"})
+        ),
+        PermissionDecision::Deny
+    );
+}
+
+#[test]
 fn test_serialization() {
     let policy = PermissionPolicy::new()
         .allow("Bash(cargo:*)")

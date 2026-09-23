@@ -20,6 +20,7 @@ mod tests;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub use crate::tool_name::canonical_tool_name;
 pub use interactive::{InteractiveApprovalMode, InteractiveToolGuardrail};
 pub use manager::{MatchingRules, PermissionManager};
 pub use policy::PermissionPolicy;

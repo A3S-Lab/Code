@@ -165,6 +165,7 @@ pub(crate) mod test_mutex_poison;
 pub(crate) mod test_support;
 pub(crate) mod text;
 pub(crate) mod tool_confirmation;
+pub mod tool_name;
 pub mod tools;
 pub mod trace;
 pub mod transcript;
