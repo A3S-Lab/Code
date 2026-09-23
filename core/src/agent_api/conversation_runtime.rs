@@ -819,16 +819,14 @@ impl TurnFinish {
         if let Ok(result) = outcome {
             self.persistence.record_usage(&result.usage);
         }
-        if update_history {
-            if let Ok(result) = outcome {
-                if !result.messages.is_empty() {
-                    let mut messages = result.messages.clone();
-                    strip_attachment_annotation(&mut messages);
-                    self.persistence.record_messages(messages);
-                }
+        if let Ok(result) = outcome {
+            if update_history && !result.messages.is_empty() {
+                let mut messages = result.messages.clone();
+                strip_attachment_annotation(&mut messages);
+                self.persistence.record_messages(messages);
             }
+            self.persistence.auto_save_if_enabled().await;
         }
-        self.persistence.auto_save_if_enabled().await;
         *self.cancel_slot.lock().await = None;
         *self.current_run_id.lock().await = None;
     }
