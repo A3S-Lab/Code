@@ -151,6 +151,7 @@ impl InvocationContext {
     /// The session-level channel remains available for direct session tools,
     /// but agent-run tools must use this sender so a background child from an
     /// earlier run cannot be attributed to a later run in the same session.
+    #[allow(dead_code)]
     pub(crate) fn with_agent_events(
         mut self,
         tx: broadcast::Sender<AgentEvent>,

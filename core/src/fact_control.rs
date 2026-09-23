@@ -1411,6 +1411,7 @@ impl FactRun {
         Ok(run)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_projected(
         workspace: &Path,
         session_id: &str,

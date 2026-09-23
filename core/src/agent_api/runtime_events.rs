@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Runtime event tracking for agent runs.
 //!
 //! This module owns the contract from `AgentEvent` to run records, hook

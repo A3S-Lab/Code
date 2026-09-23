@@ -25,6 +25,7 @@ impl AgentLoop {
 
     /// Execute a run whose user message is already present in `messages`.
     /// Resume callers may seed the cumulative accounting state.
+    #[allow(dead_code)]
     pub(crate) async fn execute_from_messages_with_invocation_seeded(
         &self,
         messages: Vec<Message>,

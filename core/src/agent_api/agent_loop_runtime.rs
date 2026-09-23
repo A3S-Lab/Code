@@ -36,6 +36,7 @@ impl PinnedRuntimeProjection {
         &self.command_registry
     }
 
+    #[allow(dead_code)]
     pub(super) fn tool_executor_handle(&self) -> Arc<ToolExecutor> {
         Arc::clone(&self.tool_executor)
     }

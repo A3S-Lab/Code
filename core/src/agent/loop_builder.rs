@@ -149,6 +149,7 @@ impl AgentLoop {
     /// The sink is independent from the run id: call
     /// [`AgentLoop::set_checkpoint_run`] before executing to bind the
     /// run id this execution will use.
+    #[allow(dead_code)]
     pub fn with_checkpoint_sink(mut self, sink: Arc<dyn LoopCheckpointSink>) -> Self {
         self.checkpoint_sink = Some(sink);
         self

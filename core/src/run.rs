@@ -36,6 +36,7 @@ impl RunStatus {
 /// type beside the Run store gives every caller one typed write primitive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RunTerminalTransition {
+    #[allow(dead_code)]
     Completed,
     Cancelled,
     Failed(String),

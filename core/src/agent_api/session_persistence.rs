@@ -52,6 +52,7 @@ impl SessionPersistenceState {
         );
     }
 
+    #[allow(dead_code)]
     pub(super) fn replace_tasks(&mut self, tasks: Vec<crate::planning::Task>) {
         self.tasks = tasks;
     }
@@ -155,6 +156,7 @@ impl SessionPersistenceContext {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn record_result(&self, result: &AgentResult) {
         *write_or_recover(&self.history) = result.messages.clone();
         if !result.verification_reports.is_empty() {

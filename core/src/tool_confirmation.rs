@@ -7,7 +7,6 @@
 use crate::agent::AgentEvent;
 use crate::hitl::{ConfirmationProvider, TimeoutAction};
 use serde_json::Value;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -143,6 +142,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::{broadcast, oneshot};
 
     fn enabled_policy(timeout_ms: u64, timeout_action: TimeoutAction) -> ConfirmationPolicy {

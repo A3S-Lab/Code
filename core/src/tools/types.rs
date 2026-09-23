@@ -26,11 +26,13 @@ pub(crate) struct AgentEventBarrier {
     tx: mpsc::Sender<oneshot::Sender<()>>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct AgentEventBarrierReceiver {
     rx: mpsc::Receiver<oneshot::Sender<()>>,
 }
 
 impl AgentEventBarrier {
+    #[allow(dead_code)]
     pub(crate) fn channel(capacity: usize) -> (Self, AgentEventBarrierReceiver) {
         let (tx, rx) = mpsc::channel(capacity);
         (Self { tx }, AgentEventBarrierReceiver { rx })
@@ -46,6 +48,7 @@ impl AgentEventBarrier {
     }
 }
 
+#[allow(dead_code)]
 impl AgentEventBarrierReceiver {
     pub(crate) async fn recv(&mut self) -> Option<oneshot::Sender<()>> {
         self.rx.recv().await

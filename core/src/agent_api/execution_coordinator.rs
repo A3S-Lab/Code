@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 /// this value, so run control, checkpoint identity, and cancellation cannot
 /// silently diverge between the two modes.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(super) struct ExecutionCoordinator {
     session_id: String,
     run_id: String,
@@ -39,6 +40,7 @@ pub(super) struct ExecutionCoordinator {
     terminal_settled: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[allow(dead_code)]
 impl ExecutionCoordinator {
     /// Acquire a task-scheduler lease using the coordinator's canonical error
     /// mapping. Direct Tool calls use this primitive without taking the
@@ -190,6 +192,15 @@ impl ExecutionCoordinator {
         RunControlState::from_session(session)
             .attach_run_control(&run_id, run_control.clone())
             .await;
+        let invocation = agent_loop
+            .invocation_context(
+                run_id.clone(),
+                Some(session.session_id.as_str()),
+                None,
+                cancellation.clone(),
+            )
+            .with_run_control(run_control.clone());
+        *agent_loop = invocation.bind_agent_loop(agent_loop);
         agent_loop.set_checkpoint_run(&run_id);
 
         Self {

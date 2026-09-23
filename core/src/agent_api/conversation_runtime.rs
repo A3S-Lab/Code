@@ -659,11 +659,7 @@ impl FactSession {
             session_id: session.session_id.clone(),
             client: Arc::clone(&session.llm_client),
             executor: Arc::clone(&session.tool_executor),
-            permission: session
-                .config
-                .permission_policy
-                .clone()
-                .unwrap_or_else(crate::permissions::PermissionPolicy::new),
+            permission: session.config.permission_policy.clone().unwrap_or_default(),
             yolo_lanes: session
                 .config
                 .confirmation_policy
@@ -1281,13 +1277,6 @@ async fn await_host_confirmation(
 
 fn exact_recovery_prompt(checkpoint_identity: &str) -> String {
     format!("<resume exact checkpoint={checkpoint_identity}>")
-}
-
-fn exact_recovery_into_code(error: ExactRecoveryError) -> CodeError {
-    match error {
-        ExactRecoveryError::Checkpoint(error) => CodeError::Session(error.to_string()),
-        ExactRecoveryError::Code(error) => error,
-    }
 }
 
 fn drain_detached_events(

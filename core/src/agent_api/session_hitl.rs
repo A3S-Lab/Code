@@ -5,7 +5,6 @@
 //! pending confirmations.
 
 use super::AgentSession;
-use crate::error::{CodeError, Result};
 use crate::hitl::PendingConfirmationInfo;
 
 pub(super) struct HitlControl<'a> {
@@ -22,22 +21,6 @@ impl<'a> HitlControl<'a> {
             Some(manager) => manager.pending_confirmations().await,
             None => Vec::new(),
         }
-    }
-
-    pub(super) async fn confirm_tool_use(
-        &self,
-        tool_id: &str,
-        approved: bool,
-        reason: Option<String>,
-    ) -> Result<bool> {
-        let Some(manager) = &self.session.config.confirmation_manager else {
-            return Ok(false);
-        };
-
-        manager
-            .confirm(tool_id, approved, reason)
-            .await
-            .map_err(CodeError::Session)
     }
 
     pub(super) async fn cancel_confirmations(&self) -> usize {

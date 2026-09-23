@@ -107,6 +107,7 @@ impl AgentLoop {
     /// The tool body already ran. This attaches the mutation observation the
     /// model and `ToolEnd` see, then binds a host shell check to the ledger
     /// digest. It does not choose the next model call.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_fact_tool_effect(
         &self,
         name: &str,

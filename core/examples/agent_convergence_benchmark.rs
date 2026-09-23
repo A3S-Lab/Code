@@ -30,6 +30,7 @@ const OUTPUT_USD_PER_MILLION: f64 = 10.00;
 struct ScriptedClient {
     responses: Arc<Mutex<VecDeque<LlmResponse>>>,
     calls: Arc<AtomicUsize>,
+    tool_counts: Arc<Mutex<Vec<usize>>>,
 }
 
 impl ScriptedClient {
@@ -37,7 +38,22 @@ impl ScriptedClient {
         Self {
             responses: Arc::new(Mutex::new(responses.into())),
             calls: Arc::new(AtomicUsize::new(0)),
+            tool_counts: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    fn tool_counts(&self) -> Vec<usize> {
+        self.tool_counts
+            .lock()
+            .expect("scripted tool-count lock poisoned")
+            .clone()
+    }
+
+    fn record_tools(&self, tools: &[ToolDefinition]) {
+        self.tool_counts
+            .lock()
+            .expect("scripted tool-count lock poisoned")
+            .push(tools.len());
     }
 
     fn call_count(&self) -> usize {
@@ -60,8 +76,9 @@ impl LlmClient for ScriptedClient {
         &self,
         _messages: &[Message],
         _system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
+        self.record_tools(tools);
         self.next()
     }
 
@@ -69,9 +86,10 @@ impl LlmClient for ScriptedClient {
         &self,
         _messages: &[Message],
         _system: Option<&str>,
-        _tools: &[ToolDefinition],
+        tools: &[ToolDefinition],
         _cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
+        self.record_tools(tools);
         let response = self.next()?;
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -274,21 +292,26 @@ async fn successful_tool_task(agent: &Agent) -> Result<CaseResult> {
 async fn incomplete_response_converges(agent: &Agent) -> Result<CaseResult> {
     let client = Arc::new(ScriptedClient::new(vec![
         text_response("Let me inspect the code..."),
-        text_response("  LET ME inspect the code...  "),
         text_response("must not be consumed"),
     ]));
     let session = agent
         .session_async(
             "/tmp/a3s-convergence-benchmark".to_string(),
-            Some(base_options(client.clone()).with_max_continuation_turns(20)),
+            Some(
+                base_options(client.clone())
+                    .with_continuation(true)
+                    .with_max_continuation_turns(20),
+            ),
         )
         .await?;
     let started = Instant::now();
     let result = session.send("Inspect the workspace.", None).await?;
-    let passed = result.text.contains("no progress was being made") && client.call_count() == 2;
+    let passed = result.text == "Let me inspect the code..."
+        && result.tool_calls_count == 0
+        && client.call_count() == 1;
     Ok(CaseResult::measured(
         "incomplete_response_convergence",
-        "stop_after_one_corrective_continuation",
+        "return_the_model_turn_without_a_continuation",
         Measurements {
             started,
             llm_calls: client.call_count(),
@@ -301,54 +324,45 @@ async fn incomplete_response_converges(agent: &Agent) -> Result<CaseResult> {
     ))
 }
 
-async fn duplicate_tool_converges(agent: &Agent) -> Result<CaseResult> {
+async fn tool_round_cap_stops_repeated_tools(agent: &Agent) -> Result<CaseResult> {
     let workspace = tempfile::tempdir()?;
     let input = json!({"mode": "grep", "query": "never-matches"});
-    let client = Arc::new(ScriptedClient::new(
-        (1..=6)
-            .map(|index| tool_response(&format!("grep-{index}"), "search", input.clone()))
-            .collect(),
-    ));
+    let client = Arc::new(ScriptedClient::new(vec![
+        tool_response("grep-1", "search", input.clone()),
+        tool_response("grep-2", "search", input.clone()),
+        text_response("Stopped after the tool-round cap."),
+        text_response("must not be consumed"),
+    ]));
     let options = base_options(client.clone())
         .with_permission_policy(PermissionPolicy::new().allow("search(*)"))
-        .with_duplicate_tool_call_threshold(2)
-        .with_max_tool_rounds(100);
+        .with_max_tool_rounds(2);
     let session = agent
         .session_async(workspace.path().display().to_string(), Some(options))
         .await?;
     let started = Instant::now();
-    let outcome = session.send("Repeat the same search forever.", None).await;
-    let calls = client.call_count();
-    let (passed, detail) = match outcome {
-        Ok(result) => (false, format!("unexpected success: {}", result.text)),
-        Err(error) => {
-            let detail = error.to_string();
-            (
-                calls == 4
-                    && (detail.contains("failed to converge") || detail.contains("stopping after")),
-                detail,
-            )
-        }
-    };
-    let usage = TokenUsage {
-        prompt_tokens: calls * 10,
-        completion_tokens: calls * 5,
-        total_tokens: calls * 15,
-        cache_read_tokens: None,
-        cache_write_tokens: None,
-    };
+    let result = session
+        .send("Repeat the same search forever.", None)
+        .await?;
+    let tool_counts = client.tool_counts();
+    let passed = result.text == "Stopped after the tool-round cap."
+        && result.tool_calls_count == 2
+        && client.call_count() == 3
+        && tool_counts.len() == 3
+        && tool_counts[0] > 0
+        && tool_counts[1] > 0
+        && tool_counts[2] == 0;
     Ok(CaseResult::measured(
-        "duplicate_tool_convergence",
-        "fail_fast_after_guard_feedback_is_ignored",
+        "tool_round_cap",
+        "one_final_completion_with_an_empty_tool_list",
         Measurements {
             started,
-            llm_calls: calls,
-            tool_attempts: calls,
-            executed_tool_calls: 2,
-            usage: &usage,
+            llm_calls: client.call_count(),
+            tool_attempts: 2,
+            executed_tool_calls: result.tool_calls_count,
+            usage: &result.usage,
         },
         passed,
-        detail,
+        result.text,
     ))
 }
 
@@ -417,7 +431,7 @@ async fn main() -> Result<()> {
     let cases = vec![
         successful_tool_task(&agent).await?,
         incomplete_response_converges(&agent).await?,
-        duplicate_tool_converges(&agent).await?,
+        tool_round_cap_stops_repeated_tools(&agent).await?,
         checkpoint_resume_preserves_accounting(&agent).await?,
     ];
     let passed_cases = cases.iter().filter(|case| case.passed).count();

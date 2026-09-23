@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::{
     agent_loop_runtime::build_pinned_agent_loop,
     execution_coordinator::ExecutionCoordinator,

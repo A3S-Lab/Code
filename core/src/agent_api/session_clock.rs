@@ -1,5 +1,6 @@
 //! Session runtime clock helpers.
 
+#[allow(dead_code)]
 pub(super) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

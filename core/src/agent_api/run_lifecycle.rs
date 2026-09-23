@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Run lifecycle control.
 //!
 //! This module owns how runs are started, cancelled, completed, failed, and
