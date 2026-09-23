@@ -517,6 +517,11 @@ pub(super) async fn spawn_prepared_recovery(
         }
     };
     bind_external_run(session, &mut pinned, &run_id).await;
+    if let Err(error) = seed_exact_recovery(&pinned, &checkpoint.messages) {
+        let error = CodeError::Session(error.to_string());
+        run_control.fail_reserved_run_start(&run_id, &error).await;
+        return Err(error.into());
+    }
     let (events, worker) = spawn_fact_worker(pinned, &prompt, true);
     let abort = worker.abort_handle();
     let worker = ExecutionCoordinator::supervise_stream(worker, vec![abort], lease);
@@ -820,10 +825,10 @@ impl TurnFinish {
                     let mut messages = result.messages.clone();
                     strip_attachment_annotation(&mut messages);
                     self.persistence.record_messages(messages);
-                    self.persistence.auto_save_if_enabled().await;
                 }
             }
         }
+        self.persistence.auto_save_if_enabled().await;
         *self.cancel_slot.lock().await = None;
         *self.current_run_id.lock().await = None;
     }
@@ -1282,6 +1287,20 @@ async fn await_host_confirmation(
             response.approved
         }
     }
+}
+
+fn seed_exact_recovery(pinned: &PinnedFact, history: &[Message]) -> anyhow::Result<()> {
+    let run = pinned.parts.open()?;
+    run.reset_thread_log()?;
+    let mut seed = history.to_vec();
+    if seed
+        .last()
+        .is_some_and(|message| message.role == "assistant")
+    {
+        seed.pop();
+    }
+    run.seed_history(&seed)?;
+    Ok(())
 }
 
 fn exact_recovery_prompt(checkpoint_identity: &str) -> String {

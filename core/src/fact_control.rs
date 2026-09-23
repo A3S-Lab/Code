@@ -1218,6 +1218,25 @@ struct RecordedCall {
     reasoning: Option<String>,
 }
 
+fn seeded_user_text(message: &Message) -> String {
+    let tool_text = message
+        .content
+        .iter()
+        .filter_map(|block| {
+            if let crate::llm::ContentBlock::ToolResult { content, .. } = block {
+                Some(content.as_text())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    if !tool_text.is_empty() {
+        return tool_text;
+    }
+    message.text()
+}
+
 fn assistant_tool_call(call: &RecordedCall) -> Message {
     let mut content = Vec::new();
     if !call.text.is_empty() {
@@ -1531,7 +1550,10 @@ impl FactRun {
                     cycle = 0;
                     log.append(
                         &self.thread,
-                        &[message_fact(format!("m-hist-{turn}"), message.text())],
+                        &[message_fact(
+                            format!("m-hist-{turn}"),
+                            seeded_user_text(message),
+                        )],
                         None,
                     )
                     .map_err(|error| anyhow::anyhow!(error))?;
