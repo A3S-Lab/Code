@@ -1190,6 +1190,25 @@ impl AgentLoop {
     }
 }
 
+impl AgentLoop {
+    /// Deny the model call when the admitted run's budget guard says so.
+    /// The fact log still chooses the next transition.
+    pub(crate) async fn fact_budget_gate(
+        &self,
+        session_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<()> {
+        check_before_llm(
+            self.config.budget_guard.as_ref(),
+            session_id,
+            0,
+            &None,
+            cancel,
+        )
+        .await
+    }
+}
+
 async fn check_before_llm(
     budget_guard: Option<&Arc<dyn BudgetGuard>>,
     session_id: &str,

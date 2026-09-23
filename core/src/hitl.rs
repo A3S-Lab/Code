@@ -5,7 +5,7 @@
 //! When the permission decision is `Ask`, this module handles:
 //! - Interactive confirmation request/response flow
 //! - Timeout handling with configurable actions
-//! - YOLO mode for lane-based auto-approval (skips confirmation for entire lanes)
+//! - Lane names a host records as Allow on `PermissionPolicy`
 
 use crate::agent::AgentEvent;
 use crate::queue::SessionLane;
@@ -41,9 +41,8 @@ pub struct ConfirmationPolicy {
     /// Action to take on timeout (default: Reject)
     pub timeout_action: TimeoutAction,
 
-    /// YOLO mode: lanes that auto-approve without confirmation.
-    /// When a lane is in this set, tools in that lane skip confirmation
-    /// even if `PermissionPolicy` returns `Ask`.
+    /// Lanes the host records as Allow on `PermissionPolicy`.
+    /// This set does not itself skip an Ask decision.
     pub yolo_lanes: HashSet<SessionLane>,
 }
 
@@ -80,24 +79,17 @@ impl ConfirmationPolicy {
         self
     }
 
-    /// Check if a tool should skip confirmation (YOLO lane check)
-    ///
-    /// Returns true if the tool's lane is in YOLO mode, meaning it should
-    /// be auto-approved even when `PermissionPolicy` returns `Ask`.
-    pub fn is_yolo(&self, tool_name: &str) -> bool {
-        if !self.enabled {
-            return true; // HITL disabled = everything auto-approved
-        }
-        let lane = SessionLane::from_tool_name(tool_name);
-        self.yolo_lanes.contains(&lane)
+    /// YOLO lanes are Allow rules on `PermissionPolicy`. This does not skip Ask.
+    pub fn is_yolo(&self, _tool_name: &str) -> bool {
+        false
     }
 
-    /// Check if a tool requires confirmation
+    /// Whether the confirmation manager is enabled.
     ///
-    /// This is the inverse of `is_yolo()` — returns true when HITL is enabled
-    /// and the tool's lane is NOT in YOLO mode.
-    pub fn requires_confirmation(&self, tool_name: &str) -> bool {
-        !self.is_yolo(tool_name)
+    /// Lane auto-approval is not decided here. `PermissionPolicy::check` is the
+    /// only Allow, Deny, or Ask decision.
+    pub fn requires_confirmation(&self, _tool_name: &str) -> bool {
+        self.enabled
     }
 }
 
@@ -212,22 +204,9 @@ pub trait ConfirmationProvider: Send + Sync {
             .unwrap_or(false)
     }
 
-    /// Settle one exact confirmation after its invocation deadline expires.
-    ///
-    /// Providers may override this to emit a native timeout event. The default
-    /// remains targeted and therefore cannot settle another invocation.
-    async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
-        let (approved, action_taken) = match action {
-            TimeoutAction::Reject => (false, "rejected"),
-            TimeoutAction::AutoApprove => (true, "auto_approved"),
-        };
-        self.confirm(
-            tool_id,
-            approved,
-            Some(format!("Confirmation timed out, action: {action_taken}")),
-        )
-        .await
-        .unwrap_or(false)
+    /// A timer must not approve or deny a confirmation.
+    async fn expire(&self, _tool_id: &str, _action: TimeoutAction) -> bool {
+        false
     }
 
     /// Cancel all pending confirmations
@@ -406,34 +385,11 @@ impl ConfirmationManager {
         }
     }
 
-    /// Check for and handle timed out confirmations
+    /// Confirmations settle only when a `confirmation.answered` fact is appended.
     ///
-    /// Returns the number of confirmations that timed out.
+    /// This returns zero and does not approve or deny on a timer.
     pub async fn check_timeouts(&self) -> usize {
-        let policy = self.policy.read().await;
-        let timeout_action = policy.timeout_action;
-        drop(policy);
-
-        let mut timed_out = Vec::new();
-
-        // Find timed out confirmations
-        {
-            let pending_map = self.pending.read().await;
-            for (tool_id, pending) in pending_map.iter() {
-                if pending.is_timed_out() {
-                    timed_out.push(tool_id.clone());
-                }
-            }
-        }
-
-        let mut settled = 0usize;
-        for tool_id in &timed_out {
-            if self.expire(tool_id, timeout_action).await {
-                settled = settled.saturating_add(1);
-            }
-        }
-
-        settled
+        0
     }
 
     /// Get the number of pending confirmations
@@ -483,29 +439,9 @@ impl ConfirmationManager {
         }
     }
 
-    /// Settle one exact pending confirmation as timed out.
-    pub async fn expire(&self, tool_id: &str, action: TimeoutAction) -> bool {
-        let pending = {
-            let mut pending_map = self.pending.write().await;
-            pending_map.remove(tool_id)
-        };
-
-        let Some(confirmation) = pending else {
-            return false;
-        };
-        let (approved, action_taken) = match action {
-            TimeoutAction::Reject => (false, "rejected"),
-            TimeoutAction::AutoApprove => (true, "auto_approved"),
-        };
-        let _ = self.event_tx.send(AgentEvent::ConfirmationTimeout {
-            tool_id: tool_id.to_string(),
-            action_taken: action_taken.to_string(),
-        });
-        let _ = confirmation.response_tx.send(ConfirmationResponse {
-            approved,
-            reason: Some(format!("Confirmation timed out, action: {action_taken}")),
-        });
-        true
+    /// A timer must not approve or deny. The pending confirmation stays parked.
+    pub async fn expire(&self, _tool_id: &str, _action: TimeoutAction) -> bool {
+        false
     }
 
     /// Cancel all pending confirmations

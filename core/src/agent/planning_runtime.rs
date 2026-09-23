@@ -61,6 +61,107 @@ impl AgentLoop {
         }
     }
 
+    /// Publish the pinned plan and goal events, then return.
+    ///
+    /// The fact log still chooses the next tool and model call. This does not
+    /// execute the plan as a second loop.
+    pub(crate) async fn fact_publish_plan(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel: &CancellationToken,
+        run_store: Option<&crate::run::InMemoryRunStore>,
+        run_id: Option<&str>,
+    ) -> Result<()> {
+        if self.config.planning_mode != crate::prompts::PlanningMode::Enabled {
+            return Ok(());
+        }
+        if cancel.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
+        self.emit_plan_event(
+            event_tx,
+            run_store,
+            run_id,
+            AgentEvent::PlanningStart {
+                prompt: prompt.to_string(),
+            },
+        )
+        .await;
+        let goal = if self.config.goal_tracking {
+            Some(
+                self.extract_goal_scoped(prompt, Some(session_id), event_tx, cancel)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let plan = self
+            .plan_scoped(prompt, Some(session_id), event_tx, cancel)
+            .await?;
+        if let Some(goal) = goal {
+            self.emit_plan_event(
+                event_tx,
+                run_store,
+                run_id,
+                AgentEvent::GoalExtracted { goal },
+            )
+            .await;
+        }
+        let total = plan.steps.len();
+        self.emit_plan_event(
+            event_tx,
+            run_store,
+            run_id,
+            AgentEvent::PlanningEnd {
+                estimated_steps: total,
+                plan: plan.clone(),
+            },
+        )
+        .await;
+        self.emit_plan_event(
+            event_tx,
+            run_store,
+            run_id,
+            AgentEvent::TaskUpdated {
+                session_id: session_id.to_string(),
+                tasks: plan.steps.clone(),
+            },
+        )
+        .await;
+        for (index, step) in plan.steps.iter().enumerate() {
+            self.emit_plan_event(
+                event_tx,
+                run_store,
+                run_id,
+                AgentEvent::StepEnd {
+                    step_id: step.id.clone(),
+                    status: crate::planning::TaskStatus::Pending,
+                    step_number: index + 1,
+                    total_steps: total.max(1),
+                },
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    async fn emit_plan_event(
+        &self,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        run_store: Option<&crate::run::InMemoryRunStore>,
+        run_id: Option<&str>,
+        event: AgentEvent,
+    ) {
+        if let Some(tx) = event_tx {
+            let _ = tx.send(event.clone()).await;
+        }
+        if let (Some(store), Some(run_id)) = (run_store, run_id) {
+            store.record_event(run_id, event).await;
+        }
+    }
+
     async fn plan_scoped(
         &self,
         prompt: &str,

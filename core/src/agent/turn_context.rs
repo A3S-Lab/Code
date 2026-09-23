@@ -19,6 +19,23 @@ pub(super) struct TurnContext {
 }
 
 impl AgentLoop {
+    /// System prompt and hook-adjusted prompt for one fact-log model call.
+    ///
+    /// PrePrompt and context providers run here. They do not choose whether
+    /// another model call happens.
+    pub(crate) async fn fact_model_context(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        message_count: usize,
+    ) -> anyhow::Result<(String, Option<String>)> {
+        let system = self.system_prompt();
+        let turn = self
+            .prepare_turn_context(&system, prompt, message_count, Some(session_id), &None)
+            .await?;
+        Ok((turn.effective_prompt, turn.augmented_system))
+    }
+
     pub(super) async fn prepare_turn_context(
         &self,
         effective_system_prompt: &str,

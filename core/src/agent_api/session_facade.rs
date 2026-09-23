@@ -399,6 +399,8 @@ impl AgentSession {
     ///
     /// Returns `true` if an operation was cancelled, `false` if no operation was in progress.
     pub async fn cancel(&self) -> bool {
+        // Cancel the current run token only. The session token stays alive so
+        // the next send or stream can start.
         RunControl::from_session(self).cancel_current().await
     }
 

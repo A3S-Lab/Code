@@ -1316,7 +1316,10 @@ mod extra_llm_tests2 {
                 StreamEvent::ToolUseInputDelta { id, delta } => {
                     saw_input_delta = true;
                     assert_eq!(id.as_deref(), Some("tool-1"));
-                    assert_eq!(delta, r#"{"prompt":"run","skill_name":"hello-skill"}"#);
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&delta).expect("initial tool input delta is json");
+                    assert_eq!(parsed["skill_name"], "hello-skill");
+                    assert_eq!(parsed["prompt"], "run");
                 }
                 StreamEvent::Done(resp) => {
                     final_response = Some(resp);

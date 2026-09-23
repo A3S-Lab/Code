@@ -187,6 +187,30 @@ impl MutationLedger {
         })
     }
 
+    /// True when any record for `path` stored a non-empty content digest.
+    ///
+    /// A later `changed_paths` row hashes tool metadata, not file bytes. Callers
+    /// that need the write's bytes must not treat that later row as the only
+    /// digest.
+    pub fn has_content_digest(&self, path: &str) -> bool {
+        self.records.iter().any(|record| {
+            !record.content_digest.is_empty()
+                && crate::verification::mutation_path_matches(record.path.as_str(), path)
+        })
+    }
+
+    /// True when a recorded content digest for `path` is exactly `digest`.
+    pub fn content_digest_matches(&self, path: &str, digest: &str) -> bool {
+        let digest = digest.trim();
+        if digest.is_empty() {
+            return false;
+        }
+        self.records.iter().any(|record| {
+            record.content_digest == digest
+                && crate::verification::mutation_path_matches(record.path.as_str(), path)
+        })
+    }
+
     /// Record a workspace mutation. Ignores reads and tools that did not
     /// publish a path. `changed_paths` means the workspace already differed,
     /// including a failed or timed-out wrapper. Command text is not parsed.

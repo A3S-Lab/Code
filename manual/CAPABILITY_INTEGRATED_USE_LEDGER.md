@@ -1,6 +1,6 @@
 # Capability integrated-use ledger
 
-Snapshot for Core line `8.6.0` (post HARNESS-CONV5 slim), recorded 2026-09-21.
+Snapshot for Core line `9.0.0` (fact-log control), recorded 2026-09-24.
 
 Every `sdk_capabilities()` id must be **effective**, **efficient**, and
 **integrated/used** (not unit-only). Host-owned advanced surfaces prove the
@@ -20,7 +20,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | Root | Path / fact |
 | --- | --- |
 | Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (historical 29-cap snapshot); `typed_decisions` added via Core inventory + unit evidence below |
-| Layer C | `/tmp/a3s-layer-c-bailian-flash-combined/FINAL.txt` `LAYER_C_PASS` (22/22 final after fail-recovery) |
+| Layer C | `just layer-c-live-e2e` on this cut: `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22). Lexical FTS is a3s-vec 0.1.8. |
 | Efficiency | `/tmp/a3s-goal-integ-use/efficiency.log` (THIN_OK, Active-only, hide-disabled, golden inventory) |
 | Advanced hermetics | `/tmp/a3s-goal-integ-use/advanced-integ.log` + `cap-targeted.log` |
 | SDK discovery | Node / Python / Go project `sdk_capabilities()`; Core inventory now has 30 ids including `typed_decisions` (schema `a3s-code/sdk-capabilities/v2`) |
@@ -68,15 +68,17 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | L0/L1 Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` | PASS |
 | L3 advanced / s3 / otel / headless | advanced-integ + L3 FINAL | PASS |
 | L4 SDK | alignment + Node/Python/Go discovery | PASS |
-| L5 Layer C bailian Flash | combined FINAL `LAYER_C_PASS` | PASS |
-| Efficiency (thin / absence) | THIN_OK; no model-visible `parallel_task`; Active-only | PASS |
+| L5 Layer C bailian Flash | this cut `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`, 22/22 | PASS |
+| Efficiency (thin / absence) | `just harness-convergence-check` on this cut; `local-code` lib 3825 passed; `ci-all` lib 4100 passed | PASS |
+| L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, Go bridge lib 20 passed, alignment check | PASS |
 | L2 F-kernel cov | plan §9 coverage-gated / weekly | Not remeasured this run |
-| L6 / L7 | plan §9 owner-gated (perf / Harbor / CAR) | Not claimed |
+| L6 Actions | no `performance.yml` or `hermetic-integrations.yml` success for this 9.0.0 commit | Not met |
+| L7 Harbor / CAR | TB-QUAL1, DM-PROD1, CAR-01…CAR-05 still in progress; no product waiver | Not met |
 
 ## Verdict
 
 All **30** product capabilities have current-state evidence of effective
-kernels, efficiency/absence constraints, and integrated or host-boundary use.
-Layer C under bailian Flash is green. This closes the Core full-feature
-hermetic + L5 + integrated-use bar. It does **not** by itself authorize a
-crates.io / GitHub Release cut — see plan §9 / §14 for remaining release gates.
+kernels, efficiency constraints, and integrated or host-boundary use on the
+9.0.0 fact-log cut. Layer C under bailian Flash is green for this cut.
+Enterprise GA is **not** achieved: L6 has no Actions success for this commit,
+and L7 has no Harbor or CAR receipt and no product waiver.

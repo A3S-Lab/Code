@@ -102,9 +102,9 @@ fn test_confirmation_policy_enabled() {
 fn test_confirmation_policy_yolo_mode() {
     let policy = ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Execute]);
 
-    assert!(!policy.requires_confirmation("bash")); // Execute lane in YOLO mode
-    assert!(!policy.requires_confirmation("write")); // Execute lane in YOLO mode
-    assert!(policy.requires_confirmation("read")); // Query lane NOT in YOLO
+    assert!(policy.requires_confirmation("bash"));
+    assert!(policy.requires_confirmation("write"));
+    assert!(policy.requires_confirmation("read"));
 }
 
 #[test]
@@ -112,27 +112,27 @@ fn test_confirmation_policy_yolo_multiple_lanes() {
     let policy =
         ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Query, SessionLane::Execute]);
 
-    // All tools in YOLO lanes should be auto-approved
-    assert!(!policy.requires_confirmation("bash")); // Execute
-    assert!(!policy.requires_confirmation("read")); // Query
-    assert!(!policy.requires_confirmation("search")); // Query
+    assert!(policy.requires_confirmation("bash"));
+    assert!(policy.requires_confirmation("read"));
+    assert!(policy.requires_confirmation("search"));
 }
 
 #[test]
 fn test_confirmation_policy_is_yolo() {
     let policy = ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Execute]);
 
-    assert!(policy.is_yolo("bash")); // Execute lane
-    assert!(policy.is_yolo("write")); // Execute lane
-    assert!(!policy.is_yolo("read")); // Query lane, not YOLO
+    assert!(!policy.is_yolo("bash"));
+    assert!(!policy.is_yolo("write"));
+    assert!(!policy.is_yolo("read"));
 }
 
 #[test]
 fn test_confirmation_policy_disabled_is_always_yolo() {
-    let policy = ConfirmationPolicy::default(); // disabled
-    assert!(policy.is_yolo("bash"));
-    assert!(policy.is_yolo("read"));
-    assert!(policy.is_yolo("unknown_tool"));
+    let policy = ConfirmationPolicy::default();
+    assert!(!policy.is_yolo("bash"));
+    assert!(!policy.is_yolo("read"));
+    assert!(!policy.is_yolo("unknown_tool"));
+    assert!(!policy.requires_confirmation("bash"));
 }
 
 #[test]
@@ -171,8 +171,8 @@ async fn test_confirmation_manager_with_yolo() {
     let policy = ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Query]);
     let manager = ConfirmationManager::new(policy, event_tx);
 
-    assert!(manager.requires_confirmation("bash").await); // Execute lane, not YOLO
-    assert!(!manager.requires_confirmation("read").await); // Query lane, YOLO
+    assert!(manager.requires_confirmation("bash").await);
+    assert!(manager.requires_confirmation("read").await);
 }
 
 #[tokio::test]
@@ -191,7 +191,7 @@ async fn test_confirmation_manager_policy_update() {
     manager
         .set_policy(ConfirmationPolicy::enabled().with_yolo_lanes([SessionLane::Execute]))
         .await;
-    assert!(!manager.requires_confirmation("bash").await);
+    assert!(manager.requires_confirmation("bash").await);
 }
 
 // ========================================================================
@@ -526,30 +526,19 @@ async fn test_timeout_reject() {
     // Skip ConfirmationRequired event
     let _ = event_rx.recv().await.unwrap();
 
-    // Wait for timeout
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Check timeouts
-    let timed_out = manager.check_timeouts().await;
-    assert_eq!(timed_out, 1);
-
-    // Check timeout event
-    let event = event_rx.recv().await.unwrap();
-    match event {
-        AgentEvent::ConfirmationTimeout {
-            tool_id,
-            action_taken,
-        } => {
-            assert_eq!(tool_id, "tool-1");
-            assert_eq!(action_taken, "rejected");
-        }
-        _ => panic!("Expected ConfirmationTimeout event"),
-    }
-
-    // Check response indicates timeout rejection
+    assert_eq!(manager.check_timeouts().await, 0);
+    assert_eq!(manager.pending_count().await, 1);
+    assert!(!manager.expire("tool-1", TimeoutAction::Reject).await);
+    assert_eq!(manager.pending_count().await, 1);
+    assert!(manager
+        .confirm("tool-1", false, Some("denied by the host".into()))
+        .await
+        .unwrap());
     let response = rx.await.unwrap();
     assert!(!response.approved);
-    assert!(response.reason.as_ref().unwrap().contains("timed out"));
+    assert_eq!(response.reason.as_deref(), Some("denied by the host"));
+    let _ = event_rx;
 }
 
 #[tokio::test]
@@ -571,30 +560,15 @@ async fn test_timeout_auto_approve() {
     // Skip ConfirmationRequired event
     let _ = event_rx.recv().await.unwrap();
 
-    // Wait for timeout
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Check timeouts
-    let timed_out = manager.check_timeouts().await;
-    assert_eq!(timed_out, 1);
-
-    // Check timeout event
-    let event = event_rx.recv().await.unwrap();
-    match event {
-        AgentEvent::ConfirmationTimeout {
-            tool_id,
-            action_taken,
-        } => {
-            assert_eq!(tool_id, "tool-1");
-            assert_eq!(action_taken, "auto_approved");
-        }
-        _ => panic!("Expected ConfirmationTimeout event"),
-    }
-
-    // Check response indicates timeout auto-approval
+    assert_eq!(manager.check_timeouts().await, 0);
+    assert_eq!(manager.pending_count().await, 1);
+    assert!(!manager.expire("tool-1", TimeoutAction::AutoApprove).await);
+    assert_eq!(manager.pending_count().await, 1);
+    assert!(manager.confirm("tool-1", false, None).await.unwrap());
     let response = rx.await.unwrap();
-    assert!(response.approved);
-    assert!(response.reason.as_ref().unwrap().contains("auto_approved"));
+    assert!(!response.approved);
+    let _ = event_rx;
 }
 
 #[tokio::test]
@@ -608,7 +582,9 @@ async fn expiring_one_confirmation_leaves_concurrent_confirmation_pending() {
         .request_confirmation("tool-untouched", "write", &serde_json::json!({}))
         .await;
 
-    assert!(manager.expire("tool-expired", TimeoutAction::Reject).await);
+    assert!(!manager.expire("tool-expired", TimeoutAction::Reject).await);
+    assert_eq!(manager.pending_confirmations().await.len(), 2);
+    assert!(manager.confirm("tool-expired", false, None).await.unwrap());
     assert!(!expired.await.unwrap().approved);
     let pending = manager.pending_confirmations().await;
     assert_eq!(pending.len(), 1);

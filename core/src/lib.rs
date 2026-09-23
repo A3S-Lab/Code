@@ -104,6 +104,7 @@ pub mod evaluation;
 pub mod event_protocol;
 pub mod execution_identity;
 pub mod external_observation;
+pub mod fact_control;
 #[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;

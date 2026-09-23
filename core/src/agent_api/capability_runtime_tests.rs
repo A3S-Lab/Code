@@ -606,12 +606,14 @@ impl LlmClient for SkillCutoverClient {
 }
 
 async fn test_session(name: &str) -> AgentSession {
+    let workspace = format!("/tmp/{name}");
+    crate::fact_control::reset_session_fact_log(&workspace);
     let agent = Agent::from_config(super::tests::test_config())
         .await
         .unwrap();
     agent
         .build_session(
-            format!("/tmp/{name}"),
+            workspace,
             Arc::new(NoopClient),
             &SessionOptions::new().with_session_id(name),
         )
@@ -619,12 +621,14 @@ async fn test_session(name: &str) -> AgentSession {
 }
 
 async fn test_session_with_client(name: &str, client: Arc<dyn LlmClient>) -> AgentSession {
+    let workspace = format!("/tmp/{name}");
+    crate::fact_control::reset_session_fact_log(&workspace);
     let agent = Agent::from_config(super::tests::test_config())
         .await
         .unwrap();
     agent
         .build_session(
-            format!("/tmp/{name}"),
+            workspace,
             client,
             &SessionOptions::new()
                 .with_session_id(name)

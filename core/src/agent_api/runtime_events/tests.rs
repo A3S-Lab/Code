@@ -286,6 +286,7 @@ async fn forwarder_exposes_structured_user_question() {
         question_id: "ask-session-1-run-1".to_string(),
         question: "Which token?".to_string(),
         options: vec!["left".to_string()],
+        allow_free_text: true,
     };
     agent_tx.send(question.clone()).unwrap();
     barrier.flush().await;

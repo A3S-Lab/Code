@@ -22,8 +22,24 @@ small harness (`local-code`): the agent loop, workspace tools, policy, events,
 and lexical search. Heavier pieces (evaluation, server, headless search) stay
 opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
 
+## Control loop
+
+The fact log is the only control source. The next transition is chosen by
+folding that immutable log (`a3s-effect` `ingest` / `resume`). `send`,
+`stream`, attachment turns, and exact recovery all append or resume there.
+A stored `model.turn` is not sent to the model again. A loop checkpoint does
+not choose the next model call. Confirmation parks until
+`confirmation.answered`. A question parks until `question.answered`, and the
+reopened log still carries `allow_free_text` and the options the host renders.
+Confirmation and questions are not settled by an in-process oneshot or a timer.
+A steer is another `user.message`. A missing tool result runs once on resume.
+The tool-round cap sends one completion with an empty tool list. Workspace
+tools, model adapters, context construction, and session snapshots stay in
+Code.
+
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
+  <a href="#whats-new-in-90">v9.0</a> ·
   <a href="#whats-new-in-87">v8.7</a> ·
   <a href="#why-a3s-code">Why Code</a> ·
   <a href="#capability-map">Capabilities</a> ·
@@ -31,6 +47,13 @@ opt-in. Use it from Rust, Node.js, Python, Go, or `a3s code`.
   <a href="#architecture">Architecture</a> ·
   <a href="#documentation">Documentation</a>
 </p>
+
+## What's new in 9.0
+
+- **Fact-log control (9.0.0).** Coding runs choose the next transition only by
+  folding the fact log. Confirmation and questions park until a fact. No
+  in-process timer approves, denies, or synthesizes an unanswered question.
+  A loop checkpoint does not choose the next model call.
 
 ## What's new in 8.7
 

@@ -10,9 +10,9 @@ use crate::safety_gate::HookDenialFeedback;
 use anyhow::{bail, Result};
 use std::sync::Arc;
 
-pub(super) struct PreToolHookDecision {
-    pub(super) denial: Option<HookDenialFeedback>,
-    pub(super) updated_args: Option<serde_json::Value>,
+pub(crate) struct PreToolHookDecision {
+    pub(crate) denial: Option<HookDenialFeedback>,
+    pub(crate) updated_args: Option<serde_json::Value>,
 }
 
 pub(super) enum PermissionHookDecision {
@@ -24,7 +24,7 @@ pub(super) enum PermissionHookDecision {
 impl AgentLoop {
     /// Fire PreToolUse hook event before tool execution.
     /// Returns structured denial feedback when a hook gates the tool call.
-    pub(super) async fn fire_pre_tool_use(
+    pub(crate) async fn fire_pre_tool_use(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -121,7 +121,7 @@ impl AgentLoop {
     }
 
     /// Fire PostToolUse hook event after tool execution (fire-and-forget).
-    pub(super) async fn fire_post_tool_use(
+    pub(crate) async fn fire_post_tool_use(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -242,6 +242,18 @@ impl AgentLoop {
         } else {
             PlanningStrategy::StepByStep
         }
+    }
+
+    /// Observational PostResponse for a finished fact-log turn.
+    pub(crate) async fn fact_post_response(
+        &self,
+        session_id: &str,
+        response_text: &str,
+        tool_calls_count: usize,
+        usage: &TokenUsage,
+    ) {
+        self.fire_post_response(session_id, response_text, tool_calls_count, usage, 0)
+            .await;
     }
 
     /// Fire PostResponse hook event after the agent loop completes.

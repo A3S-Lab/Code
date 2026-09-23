@@ -439,6 +439,7 @@ async fn test_resume_run_picks_up_from_persisted_checkpoint() {
     let opts = SessionOptions::new()
         .with_session_store(store.clone() as Arc<dyn crate::store::SessionStore>)
         .with_session_id("resume-run-target");
+    crate::fact_control::reset_session_fact_log("/tmp/test-resume-run-target");
     let session = agent
         .build_session(
             "/tmp/test-resume-run-target".into(),
@@ -543,11 +544,14 @@ async fn test_resume_run_preserves_exhausted_tool_budget_for_finalization() {
         result.tool_calls_count, 2,
         "the reserved tool-free finalization turn must not reset or consume the restored tool budget"
     );
-    assert!(result.messages.iter().any(|message| {
-        message
-            .text()
-            .contains("Tool-use budget reached. Stop gathering evidence")
-    }));
+    assert!(
+        result.messages.iter().all(|message| {
+            !message
+                .text()
+                .contains("Tool-use budget reached. Stop gathering evidence")
+        }),
+        "tool-round finalization must not inject a synthetic user message"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

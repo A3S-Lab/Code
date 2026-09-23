@@ -1,11 +1,10 @@
-//! Structured question. Parks without writing, granting permission, or steering.
+//! Structured question. Parks on a fact, without granting permission or steering.
 
 use crate::agent::AgentEvent;
-use crate::ask_user::{self, AskUserError, AskUserResume};
+use crate::ask_user::{self, AskUserError};
 use crate::tools::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::time::Duration;
 
 pub struct AskUserTool;
 
@@ -68,35 +67,61 @@ impl Tool for AskUserTool {
             ctx.run_id().unwrap_or("0")
         );
         let run_id = ctx.session_id.as_deref().unwrap_or("run");
-        let (event, rx) =
-            match ask_user::begin(run_id, &question_id, question, &options, allow_free_text) {
-                Ok(pair) => pair,
-                Err(AskUserError::CapExceeded) => {
-                    return Ok(ToolOutput::error("ask_user question cap exceeded"));
-                }
-                Err(AskUserError::Invalid(message)) => return Ok(ToolOutput::error(message)),
-            };
+        let event = match ask_user::begin(run_id, &question_id, question, &options, allow_free_text)
+        {
+            Ok(event) => event,
+            Err(AskUserError::CapExceeded) => {
+                return Ok(ToolOutput::error("ask_user question cap exceeded"));
+            }
+            Err(AskUserError::Invalid(message)) => return Ok(ToolOutput::error(message)),
+        };
         if let Some(tx) = &ctx.agent_event_tx {
             let _ = tx.send(AgentEvent::UserQuestion {
                 question_id: event.question_id.clone(),
                 question: event.question.clone(),
                 options: event.options.clone(),
+                allow_free_text: event.allow_free_text,
             });
         }
-        let question_id = event.question_id.clone();
-        let resume = match tokio::time::timeout(Duration::from_secs(30), rx).await {
-            Ok(Ok(resume)) => resume,
-            _ => {
-                ask_user::cancel(&question_id);
-                AskUserResume::Unanswered
-            }
+        let thread = crate::fact_control::thread_for_session(run_id);
+        let payload = serde_json::to_value(a3s_effect::ModelDecision::Question {
+            question_id: event.question_id.clone(),
+            question: event.question.clone(),
+            allow_free_text: event.allow_free_text,
+            options: event.options.clone(),
+        })
+        .unwrap_or_else(|error| serde_json::json!({ "kind": "text", "text": error.to_string() }));
+        let log = match a3s_effect::FileLog::open(ctx.workspace.join(".a3s").join("effect-log")) {
+            Ok(log) => log,
+            Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };
-        let content = ask_user::resume_message(&question_id, &resume);
+        if let Err(error) = a3s_effect::LogStore::append(
+            &log,
+            &thread,
+            &[a3s_effect::NewFact {
+                kind: "model.turn".into(),
+                key: format!("ask:{}", event.question_id),
+                payload,
+            }],
+            None,
+        ) {
+            return Ok(ToolOutput::error(error.to_string()));
+        }
+        let content = serde_json::json!({
+            "schema": ask_user::USER_QUESTION_SCHEMA,
+            "question_id": event.question_id,
+            "status": "parked",
+            "allow_free_text": event.allow_free_text,
+            "options": event.options,
+            "permission_grant": false,
+        })
+        .to_string();
         Ok(
             ToolOutput::success(content).with_metadata(serde_json::json!({
-                "schema": ask_user::USER_ANSWER_SCHEMA,
+                "schema": ask_user::USER_QUESTION_SCHEMA,
                 "permission_grant": false,
                 "wrote_files": false,
+                "parked_on_log": true,
             })),
         )
     }
@@ -120,35 +145,39 @@ mod tests {
         let (event_tx, mut events) = tokio::sync::broadcast::channel(4);
         let tool = AskUserTool;
         let ctx = ToolContext::new(root.path().to_path_buf())
-            .with_session_id(session)
+            .with_session_id(&session)
             .with_agent_event_tx(event_tx);
         let args = serde_json::json!({
             "question": "Which name?",
             "options": ["left", "right"]
         });
-        let execute = tokio::spawn(async move { tool.execute(&args, &ctx).await });
-        let answered = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                match events.recv().await {
-                    Ok(crate::agent::AgentEvent::UserQuestion { question_id, .. })
-                        if ask_user::answer(&question_id, "left") =>
-                    {
-                        return;
-                    }
-                    Ok(_) => {}
-                    Err(_) => return,
-                }
+        let output = tool.execute(&args, &ctx).await.unwrap();
+        let event = events.recv().await.unwrap();
+        match event {
+            crate::agent::AgentEvent::UserQuestion {
+                options,
+                allow_free_text,
+                ..
+            } => {
+                assert_eq!(options, vec!["left".to_string(), "right".to_string()]);
+                assert!(!allow_free_text);
             }
-        })
-        .await;
-        assert!(answered.is_ok(), "the parked question was not answerable");
-        let output = execute.await.unwrap().unwrap();
+            other => panic!("expected a question event, got {other:?}"),
+        }
         assert!(output.success);
-        assert!(output.content.contains("\"answer\":\"left\"") || output.content.contains("left"));
+        assert!(output.content.contains("\"status\":\"parked\""));
         let metadata = output.metadata.expect("answer metadata");
         assert_eq!(metadata["permission_grant"], false);
         assert_eq!(metadata["wrote_files"], false);
-        assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+        let thread = crate::fact_control::thread_for_session(&session);
+        let facts = crate::fact_control::read_workspace_facts(root.path(), &thread).unwrap();
+        let turn = facts
+            .iter()
+            .find(|fact| fact.kind == "model.turn")
+            .expect("question fact");
+        assert_eq!(turn.payload["allow_free_text"], false);
+        assert_eq!(turn.payload["options"][0], "left");
+        assert_eq!(turn.payload["options"][1], "right");
 
         let message = crate::llm::Message::tool_result("ask-1", &output.content, false);
         let visible = message.content.iter().find_map(|block| match block {
@@ -159,8 +188,8 @@ mod tests {
             _ => None,
         });
         assert!(
-            visible.is_some_and(|text| text.contains("left")),
-            "the answer must be the next model-visible tool result"
+            visible.is_some_and(|text| text.contains("\"status\":\"parked\"") && text.contains("left")),
+            "the parked question, including its options, is the tool result"
         );
     }
 }

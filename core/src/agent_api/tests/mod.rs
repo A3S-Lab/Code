@@ -14,6 +14,7 @@ pub(crate) use crate::store::SessionStore;
 #[allow(unused_imports)]
 pub(crate) use fixtures::*;
 
+mod fact_log;
 mod fixtures;
 
 mod agents_workers;

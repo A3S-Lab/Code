@@ -142,27 +142,15 @@ impl BlockingRunContext {
 
     pub(super) async fn execute_with_prompt(
         self,
-        messages: &[Message],
-        prompt: &str,
+        _messages: &[Message],
+        _prompt: &str,
         _session_id: &str,
     ) -> Result<AgentResult> {
-        let Self {
-            agent_loop,
-            capability_run,
-            invocation,
-            lifecycle,
-        } = self;
-        let result = settle_capability_run(
-            agent_loop
-                .execute_with_invocation(messages, prompt, &invocation)
-                .await,
-            capability_run,
-        )
-        .await;
-        // Drop the run-owned event sender before waiting for the collector;
-        // otherwise the receiver can never observe channel closure.
-        drop(invocation);
-        lifecycle.complete(result).await
+        let Self { capability_run, .. } = self;
+        let _ = capability_run.close().await;
+        Err(CodeError::Session(
+            "the fact log chooses the next transition".into(),
+        ))
     }
 
     pub(super) async fn execute_from_messages(
@@ -174,31 +162,18 @@ impl BlockingRunContext {
             .await
     }
 
-    /// Execute from a prebuilt message list, seeding the loop's cumulative
-    /// metrics from a checkpoint. Used by `resume_run` so resumed runs
-    /// continue token/tool-call accounting from the checkpoint instead of
-    /// re-starting at zero.
+    /// Checkpoint messages do not choose the next model call.
     pub(super) async fn execute_from_messages_seeded(
         self,
-        messages: Vec<Message>,
+        _messages: Vec<Message>,
         _session_id: &str,
-        seed: Option<crate::agent::ExecutionSeed>,
+        _seed: Option<crate::agent::ExecutionSeed>,
     ) -> Result<AgentResult> {
-        let Self {
-            agent_loop,
-            capability_run,
-            invocation,
-            lifecycle,
-        } = self;
-        let result = settle_capability_run(
-            agent_loop
-                .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
-                .await,
-            capability_run,
-        )
-        .await;
-        drop(invocation);
-        lifecycle.complete(result).await
+        let Self { capability_run, .. } = self;
+        let _ = capability_run.close().await;
+        Err(CodeError::Session(
+            "the fact log chooses the next transition".into(),
+        ))
     }
 }
 
@@ -371,24 +346,22 @@ impl StreamRunContext {
         JoinHandle<()>,
         Vec<tokio::task::AbortHandle>,
     ) {
+        let _ = (messages, prompt);
         let Self {
-            agent_loop,
             capability_run,
-            invocation,
             worker_state,
             forwarder,
             lifecycle,
             rx,
+            ..
         } = self;
         let handle = tokio::spawn(async move {
-            let result = settle_capability_run(
-                agent_loop
-                    .execute_with_invocation(&messages, &prompt, &invocation)
-                    .await,
-                capability_run,
-            )
-            .await;
-            worker_state.complete(result).await;
+            let _ = capability_run.close().await;
+            worker_state
+                .complete(Err::<AgentResult, _>(
+                    "the fact log chooses the next transition",
+                ))
+                .await;
         });
         let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
         (rx, lifecycle, worker_aborts)
@@ -414,24 +387,22 @@ impl StreamRunContext {
         JoinHandle<()>,
         Vec<tokio::task::AbortHandle>,
     ) {
+        let _ = (messages, seed);
         let Self {
-            agent_loop,
             capability_run,
-            invocation,
             worker_state,
             forwarder,
             lifecycle,
             rx,
+            ..
         } = self;
         let handle = tokio::spawn(async move {
-            let result = settle_capability_run(
-                agent_loop
-                    .execute_from_messages_with_invocation_seeded(messages, &invocation, seed)
-                    .await,
-                capability_run,
-            )
-            .await;
-            worker_state.complete(result).await;
+            let _ = capability_run.close().await;
+            worker_state
+                .complete(Err::<AgentResult, _>(
+                    "the fact log chooses the next transition",
+                ))
+                .await;
         });
         let (lifecycle, worker_aborts) = lifecycle.wrap(handle, forwarder);
         (rx, lifecycle, worker_aborts)

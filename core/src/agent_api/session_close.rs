@@ -203,6 +203,8 @@ impl SessionCloseHandle {
                         .await;
                 }
             }
+            *self.current_run_id.lock().await = None;
+            *self.cancel_token.lock().await = None;
         }
 
         // 6. Mark every still-running subagent task cancelled.

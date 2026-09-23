@@ -2092,10 +2092,7 @@ async fn test_agent_hitl_approved() {
     // Spawn a task to approve the confirmation
     let cm_clone = confirmation_manager.clone();
     tokio::spawn(async move {
-        // Wait a bit for the confirmation request to be created
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        // Approve it
-        cm_clone.confirm("tool-1", true, None).await.ok();
+        confirm_when_pending(&cm_clone, "tool-1", true, None).await;
     });
 
     let agent = AgentLoop::new(
@@ -2144,8 +2141,16 @@ async fn test_agent_hitl_wait_does_not_consume_tool_timeout_budget() {
 
     let cm_clone = confirmation_manager.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        cm_clone.confirm("tool-1", true, None).await.ok();
+        for _ in 0..100 {
+            let pending = cm_clone.pending_confirmations().await;
+            if pending.iter().any(|(id, _, _)| id == "tool-1") {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                cm_clone.confirm("tool-1", true, None).await.ok();
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("confirmation tool-1 was not requested");
     });
 
     let started = std::time::Instant::now();
@@ -2202,11 +2207,13 @@ async fn test_agent_hitl_rejected() {
     // Spawn a task to reject the confirmation
     let cm_clone = confirmation_manager.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        cm_clone
-            .confirm("tool-1", false, Some("Too dangerous".to_string()))
-            .await
-            .ok();
+        confirm_when_pending(
+            &cm_clone,
+            "tool-1",
+            false,
+            Some("Too dangerous".to_string()),
+        )
+        .await;
     });
 
     let agent = AgentLoop::new(
@@ -2256,17 +2263,21 @@ async fn test_agent_hitl_timeout_reject() {
         ..Default::default()
     };
 
-    // Don't approve - let it timeout
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
         ToolContext::new(hermetic_root.clone()),
         config,
     );
-    let result = agent.execute(&[], "Echo", None).await.unwrap();
-
-    // Should get timeout rejection response from LLM
-    assert_eq!(result.text, "Timed out, I understand.");
+    let finished = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        agent.execute(&[], "Echo", None),
+    )
+    .await;
+    assert!(
+        finished.is_err(),
+        "a confirmation timer must not approve or deny"
+    );
 }
 
 #[tokio::test]
@@ -2304,18 +2315,21 @@ async fn test_agent_hitl_timeout_auto_approve() {
         ..Default::default()
     };
 
-    // Don't approve - let it timeout and auto-approve
     let agent = AgentLoop::new(
         mock_client,
         tool_executor,
         ToolContext::new(hermetic_root.clone()),
         config,
     );
-    let result = agent.execute(&[], "Echo", None).await.unwrap();
-
-    // Should auto-approve on timeout and execute
-    assert_eq!(result.text, "Auto-approved and executed!");
-    assert_eq!(result.tool_calls_count, 1);
+    let finished = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        agent.execute(&[], "Echo", None),
+    )
+    .await;
+    assert!(
+        finished.is_err(),
+        "a confirmation timer must not approve or deny"
+    );
 }
 
 #[tokio::test]
@@ -2562,6 +2576,23 @@ async fn test_agent_hitl_with_permission_allow_skips_hitl() {
     );
 }
 
+async fn confirm_when_pending(
+    manager: &crate::hitl::ConfirmationManager,
+    tool_id: &str,
+    approved: bool,
+    reason: Option<String>,
+) {
+    for _ in 0..100 {
+        let pending = manager.pending_confirmations().await;
+        if pending.iter().any(|(id, _, _)| id == tool_id) {
+            manager.confirm(tool_id, approved, reason).await.ok();
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("confirmation {tool_id} was not requested");
+}
+
 #[tokio::test]
 async fn test_agent_hitl_multiple_tool_calls() {
     let hermetic_root = crate::test_support::hermetic_workspace();
@@ -2623,13 +2654,10 @@ async fn test_agent_hitl_multiple_tool_calls() {
         ..Default::default()
     };
 
-    // Spawn task to approve both tools
     let cm_clone = confirmation_manager.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        cm_clone.confirm("tool-1", true, None).await.ok();
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        cm_clone.confirm("tool-2", true, None).await.ok();
+        confirm_when_pending(&cm_clone, "tool-1", true, None).await;
+        confirm_when_pending(&cm_clone, "tool-2", true, None).await;
     });
 
     let agent = AgentLoop::new(
@@ -2715,16 +2743,10 @@ async fn test_agent_hitl_partial_approval() {
         ..Default::default()
     };
 
-    // Approve first, reject second
     let cm_clone = confirmation_manager.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        cm_clone.confirm("tool-1", true, None).await.ok();
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        cm_clone
-            .confirm("tool-2", false, Some("Dangerous".to_string()))
-            .await
-            .ok();
+        confirm_when_pending(&cm_clone, "tool-1", true, None).await;
+        confirm_when_pending(&cm_clone, "tool-2", false, Some("Dangerous".to_string())).await;
     });
 
     let agent = AgentLoop::new(
@@ -2769,7 +2791,7 @@ async fn test_agent_hitl_yolo_mode_auto_approves() {
     };
     let confirmation_manager = Arc::new(ConfirmationManager::new(hitl_policy, event_tx));
 
-    let permission_policy = PermissionPolicy::new();
+    let permission_policy = PermissionPolicy::new().allow_yolo_lanes([SessionLane::Query]);
 
     let config = AgentConfig {
         permission_checker: Some(Arc::new(permission_policy)),
@@ -4547,7 +4569,9 @@ async fn test_agent_llm_memory_judge_returns_empty_for_read_only_tool_turns() {
     let config = AgentConfig {
         memory: Some(Arc::new(memory)),
         confirmation_manager: Some(confirmation_manager),
-        permission_checker: Some(Arc::new(PermissionPolicy::new())),
+        permission_checker: Some(Arc::new(
+            PermissionPolicy::new().allow_yolo_lanes([SessionLane::Query]),
+        )),
         ..Default::default()
     };
 

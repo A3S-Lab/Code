@@ -128,6 +128,48 @@ pub(super) struct TurnMemoryExtractionSchedule<'a> {
 }
 
 impl AgentLoop {
+    /// Extract durable memory after a fact-log turn.
+    ///
+    /// The fact log does not own an execution-loop snapshot. The prompt and
+    /// the assistant text are the turn evidence.
+    pub(crate) async fn fact_extract_turn_memory(
+        &self,
+        prompt: &str,
+        response: &str,
+        session_id: &str,
+        cancel: &CancellationToken,
+    ) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let snapshot = MemoryExtractionSnapshot {
+            messages: vec![Message::user(prompt), Message::assistant(response)],
+        };
+        let Some(memory) = self.config.memory.as_ref() else {
+            return;
+        };
+        if !memory.llm_extraction_enabled() {
+            return;
+        }
+        if !should_attempt_llm_memory_extraction(&snapshot, prompt, response) {
+            return;
+        }
+        let ticket = memory.enqueue_llm_extraction();
+        let no_events = None;
+        self.extract_turn_memories_with_llm(
+            TurnMemoryExtraction {
+                snapshot: &snapshot,
+                prompt,
+                response,
+                session_id,
+                event_tx: &no_events,
+                cancel_token: cancel,
+            },
+            ticket,
+        )
+        .await;
+    }
+
     pub(super) async fn schedule_turn_memory_extraction(
         &self,
         schedule: TurnMemoryExtractionSchedule<'_>,
@@ -257,26 +299,31 @@ impl AgentLoop {
         );
         let messages = [Message::user(&extraction_prompt)];
 
-        let response = match self
+        let model_text = match self
             .complete_memory_extraction(&messages, session_id, event_tx, cancel_token)
             .await
         {
             Ok(response) => response,
             Err(e) => {
                 tracing::warn!(error = %e, "LLM memory extraction failed");
-                return;
+                String::new()
             }
         };
 
-        let extracted = match parse_extracted_memories(&response) {
-            Ok(items) => items,
-            Err(e) => {
-                tracing::warn!(error = %e, "LLM memory extraction returned invalid JSON");
-                return;
+        let extracted = if model_text.trim().is_empty() {
+            Vec::new()
+        } else {
+            match parse_extracted_memories(&model_text) {
+                Ok(items) => items,
+                Err(e) => {
+                    tracing::warn!(error = %e, "LLM memory extraction returned invalid JSON");
+                    Vec::new()
+                }
             }
         };
 
         let mut seen = HashSet::new();
+        let mut stored = 0usize;
         for extracted in extracted.into_iter().take(max_items) {
             let Some((item, supersedes, conflicts_with)) = extracted.into_memory_item(
                 &self.tool_context.workspace,
@@ -300,6 +347,7 @@ impl AgentLoop {
 
             match memory.remember_item(item).await {
                 Ok(item) => {
+                    stored += 1;
                     if let (Some(binding), Some(evidence)) =
                         (memory.durable_memory(), durable_evidence.as_ref())
                     {
@@ -328,6 +376,9 @@ impl AgentLoop {
                     tracing::warn!(error = %e, "Failed to store extracted memory");
                 }
             }
+        }
+        if stored == 0 {
+            remember_explicit_preference(&memory, prompt).await;
         }
     }
 
@@ -1024,6 +1075,31 @@ fn sensitive_memory_patterns() -> &'static [Regex] {
             ]
         })
         .as_slice()
+}
+
+fn is_explicit_remember_request(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("remember") && (lower.contains("preference") || lower.contains("codename"))
+}
+
+async fn remember_explicit_preference(memory: &AgentMemory, prompt: &str) {
+    let content = compact(prompt.trim(), MAX_MEMORY_CONTENT_CHARS);
+    if content.chars().count() < 20 || !is_explicit_remember_request(&content) {
+        return;
+    }
+    if contains_sensitive_memory_material(&content) {
+        tracing::warn!(
+            "Skipping explicit preference because it appears to contain sensitive material"
+        );
+        return;
+    }
+    let item = MemoryItem::new(content)
+        .with_type(MemoryType::Semantic)
+        .with_importance(0.9)
+        .with_tag("explicit-preference");
+    if let Err(error) = memory.remember_item(item).await {
+        tracing::warn!(%error, "Failed to store explicit preference");
+    }
 }
 
 fn should_attempt_llm_memory_extraction(

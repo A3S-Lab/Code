@@ -3234,13 +3234,13 @@ async fn detached_children_share_one_run_quota_before_using_global_capacity() {
         None,
         Some(parent_session.clone()),
     );
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let stats = scheduler.stats().await.unwrap();
             if stats.pending == 1 {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await

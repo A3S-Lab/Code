@@ -3,6 +3,7 @@ use super::memory_extraction_runtime::TurnMemoryExtractionSchedule;
 use super::{AgentEvent, AgentLoop};
 use crate::llm::{LlmResponse, Message};
 use crate::prompts::CONTINUATION;
+
 use crate::tools::ToolContext;
 use crate::verification::VerificationSummary;
 use futures::future::join_all;
@@ -35,6 +36,20 @@ pub(super) enum CompletionFlow {
 }
 
 impl AgentLoop {
+    pub(crate) fn fact_completion_gate(
+        &self,
+        ledger: &crate::harness_loop::MutationLedger,
+        reports: &[crate::verification::VerificationReport],
+    ) -> crate::harness_loop::CompletionGate {
+        crate::harness_loop::decide_with_observations(
+            ledger,
+            reports,
+            &self.config.completion_waivers,
+            false,
+            &self.config.external_observations,
+        )
+    }
+
     /// Whether `text` is a synthetic terminal diagnostic emitted when the
     /// model never produced a usable final answer.
     ///

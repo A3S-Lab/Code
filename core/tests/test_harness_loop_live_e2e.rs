@@ -394,7 +394,27 @@ Then stop. Do not invent verification; the host check must be that bash call.",
         contents.trim() == "hello",
         "Allow(Verified) requires matching write content, got {contents:?}"
     );
-    let ok = result.expect("verified host check after a write must Allow(Verified)");
+    let ok = match result {
+        Ok(ok) => ok,
+        Err(error) => {
+            let log_path = workspace
+                .path()
+                .join(".a3s/effect-log/live-verified-mutation.jsonl");
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let tools = log
+                .lines()
+                .filter(|line| {
+                    line.contains("\"kind\":\"tool")
+                        || line.contains("verification_shell_command")
+                        || line.contains("\"file_path\"")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "verified host check after a write must Allow(Verified): {error}\nfact tools:\n{tools}"
+            );
+        }
+    };
     assert!(
         matches!(ok.completion, CompletionTerminal::Verified { .. }),
         "expected CompletionTerminal::Verified, got {:?}",

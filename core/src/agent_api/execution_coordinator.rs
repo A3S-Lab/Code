@@ -206,6 +206,10 @@ impl ExecutionCoordinator {
         &self.run_id
     }
 
+    pub(super) fn run_control(&self) -> Arc<RunControlInbox> {
+        Arc::clone(&self.run_control)
+    }
+
     /// Select the terminal state for one execution result.
     ///
     /// Cancellation is sampled from the coordinator-owned token before any

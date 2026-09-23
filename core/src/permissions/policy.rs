@@ -1,6 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 use super::{MatchingRules, PermissionChecker, PermissionDecision, PermissionRule};
+use crate::queue::SessionLane;
+
+fn yolo_lane_rule(lane: SessionLane) -> String {
+    match lane {
+        SessionLane::Control => "lane:control".to_string(),
+        SessionLane::Query => "lane:query".to_string(),
+        SessionLane::Execute => "lane:execute".to_string(),
+        SessionLane::Generate => "lane:generate".to_string(),
+    }
+}
 
 /// Permission policy configuration
 ///
@@ -81,6 +91,15 @@ impl PermissionPolicy {
         self
     }
 
+    /// Record YOLO lanes as Allow. Deny rules still win. The lane of a tool
+    /// comes from [`SessionLane::from_tool_name`].
+    pub fn allow_yolo_lanes(mut self, lanes: impl IntoIterator<Item = SessionLane>) -> Self {
+        for lane in lanes {
+            self.allow.push(PermissionRule::new(&yolo_lane_rule(lane)));
+        }
+        self
+    }
+
     /// Add an ask rule
     pub fn ask(mut self, rule: &str) -> Self {
         self.ask.push(PermissionRule::new(rule));
@@ -130,9 +149,11 @@ impl PermissionPolicy {
             }
         }
 
-        // 2. Check allow rules
+        // 2. Check allow rules. A YOLO lane rule is Allow for every tool in
+        // that lane, including names `from_tool_name` maps by default.
+        let lane_rule = yolo_lane_rule(SessionLane::from_tool_name(tool_name));
         for rule in &self.allow {
-            if rule.matches(tool_name, args) {
+            if rule.rule == lane_rule || rule.matches(tool_name, args) {
                 return PermissionDecision::Allow;
             }
         }

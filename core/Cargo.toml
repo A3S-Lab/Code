@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-core"
-version = "8.7.0"
+version = "9.0.0"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
@@ -52,6 +52,7 @@ required-features = ["apofasi"]
 
 [dependencies]
 # Internal crates
+a3s-effect = { path = "../../../packages/effect" }
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git", rev = "97a5e885d196be77dc1823ad86238e77d942ed73" }
 a3s-lane = "0.5"
@@ -67,7 +68,7 @@ a3s-sandbox = { version = "=0.1.4", git = "https://github.com/A3S-Lab/Sandbox.gi
 a3s-apofasi = { version = "=0.1.1", git = "https://github.com/A3S-Lab/Apofasi.git", rev = "0bc3961d3183f9d2692c0406967765866bc914d6", default-features = false, features = ["router"], optional = true }
 # Pure-Rust a3s-vec FTS engine for the workspace lexical index. Optional so
 # minimal builds keep the portable BM25 scorer without pulling the engine.
-a3s-vec = { version = "=0.1.4", optional = true }
+a3s-vec = { version = "=0.1.8", optional = true }
 # Async runtime
 tokio = { version = "1.35", features = [
     "rt-multi-thread", "sync", "time", "io-util",

@@ -904,6 +904,18 @@ impl AgentLoop {
             let _ = he.fire(&event).await;
         }
     }
+
+    /// Record GenerateEnd for a fact-log model call. The fold still decides
+    /// whether another call is enabled.
+    pub(crate) async fn fact_observe_model(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        response: &LlmResponse,
+    ) {
+        self.fire_generate_end(session_id, prompt, response, 0)
+            .await;
+    }
 }
 
 #[cfg(test)]

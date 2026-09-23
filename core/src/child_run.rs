@@ -321,13 +321,6 @@ impl DelegatedConfirmationProvider {
             .collect()
     }
 
-    fn parent_forward_ids(&self) -> HashSet<String> {
-        self.forwarded_parent_ids
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
     fn same_as_child(&self, parent: &Arc<dyn ConfirmationProvider>) -> bool {
         self.child_confirmation
             .as_ref()
@@ -509,18 +502,7 @@ impl ConfirmationProvider for DelegatedConfirmationProvider {
         if self.same_as_child(parent) {
             return timed_out;
         }
-        let action = parent.policy().await.timeout_action;
-        let forwarded = self.parent_forward_ids();
-        for info in parent.pending_confirmations().await {
-            if forwarded.contains(&info.tool_id)
-                && info.remaining_ms == 0
-                && parent.expire(&info.tool_id, action).await
-            {
-                timed_out = timed_out.saturating_add(1);
-                self.take_parent_forward(&info.tool_id);
-            }
-        }
-        timed_out
+        timed_out.saturating_add(parent.check_timeouts().await)
     }
 
     async fn cancel(&self, tool_id: &str) -> bool {

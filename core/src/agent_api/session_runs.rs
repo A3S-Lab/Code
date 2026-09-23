@@ -23,17 +23,39 @@ impl<'a> RunControl<'a> {
         request: crate::run_control::SteerRequest,
     ) -> crate::error::Result<crate::run_control::RunControlReceipt> {
         let state = RunControlState::from_session(self.session);
-        let Some(control) = state.current_run_control().await else {
-            return Err(crate::error::CodeError::RunControl(
-                crate::run_control::RunControlError::NoActiveRun,
-            ));
-        };
-        let run_id = control.snapshot_run_id();
-        let request = request.into_protocol(self.session.session_id(), &run_id);
-        control
-            .submit_with_hooks(request, self.session.config.host_env.now_ms())
-            .await
-            .map_err(crate::error::CodeError::from)
+        if let Some(control) = state.current_run_control().await {
+            let run_id = control.snapshot_run_id();
+            let protocol = request.into_protocol(self.session.session_id(), &run_id);
+            return control
+                .submit_with_hooks(protocol, self.session.config.host_env.now_ms())
+                .await
+                .map_err(crate::error::CodeError::from);
+        }
+        let run = super::conversation_runtime::FactSession::from(self.session).open()?;
+        let settled = run.steer(&request.input).await?;
+        let now_ms = self.session.config.host_env.now_ms();
+        Ok(crate::run_control::RunControlReceipt {
+            schema: crate::run_control::RUN_CONTROL_RECEIPT_SCHEMA_V1.to_string(),
+            request_id: request.request_id.unwrap_or_else(|| {
+                settled
+                    .log
+                    .last()
+                    .map(|fact| fact.key.clone())
+                    .unwrap_or_else(|| "steer".to_string())
+            }),
+            session_id: self.session.session_id.clone(),
+            run_id: request
+                .run_id
+                .unwrap_or_else(|| self.session.session_id.clone()),
+            operation: crate::run_control::RunControlOperation::Steer,
+            state: crate::run_control::RunControlReceiptState::Applied,
+            sequence: u64::try_from(settled.log.len()).unwrap_or(u64::MAX),
+            turn_id: None,
+            turn_revision: 0,
+            accepted_at_ms: now_ms,
+            applied_at_ms: Some(now_ms),
+            error: None,
+        })
     }
 
     pub(super) async fn interrupt(

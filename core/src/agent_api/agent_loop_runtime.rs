@@ -36,6 +36,10 @@ impl PinnedRuntimeProjection {
         &self.command_registry
     }
 
+    pub(super) fn tool_executor_handle(&self) -> Arc<ToolExecutor> {
+        Arc::clone(&self.tool_executor)
+    }
+
     pub(super) fn tool_executor(&self) -> &ToolExecutor {
         &self.tool_executor
     }

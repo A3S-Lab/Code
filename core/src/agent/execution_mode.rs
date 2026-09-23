@@ -211,6 +211,17 @@ impl AgentLoop {
         })
     }
 
+    pub(crate) async fn fact_pre_analysis(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        self.run_pre_analysis(prompt, Some(session_id), &None, cancel)
+            .await?;
+        Ok(())
+    }
+
     async fn run_pre_analysis(
         &self,
         prompt: &str,

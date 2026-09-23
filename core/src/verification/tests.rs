@@ -749,6 +749,27 @@ fn path_from_existence_check_command_parses_common_forms() {
     );
     assert!(path_from_existence_check_command("true").is_none());
     assert!(path_from_existence_check_command("cargo test").is_none());
+    assert_eq!(
+        path_from_existence_check_command("cd . && test -f answer.txt").as_deref(),
+        Some("answer.txt")
+    );
+    assert_eq!(
+        path_from_existence_check_command("[[ -f hello.txt ]]").as_deref(),
+        Some("hello.txt")
+    );
+    assert!(path_from_existence_check_command("echo test -f answer.txt").is_none());
+    assert!(path_from_existence_check_command("true && echo ok").is_none());
+    assert_eq!(
+        path_from_existence_check_command("test -f other.txt && test -f answer.txt").as_deref(),
+        Some("other.txt")
+    );
+    assert_eq!(
+        existence_checks("test -f other.txt && test -f answer.txt")
+            .into_iter()
+            .map(|check| check.path)
+            .collect::<Vec<_>>(),
+        vec!["other.txt".to_string(), "answer.txt".to_string()]
+    );
 }
 
 #[test]

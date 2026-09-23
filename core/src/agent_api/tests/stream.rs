@@ -18,6 +18,7 @@ async fn test_stream_updates_history_and_auto_saves() {
         .with_session_store(store.clone())
         .with_session_id("stream-history-test")
         .with_auto_save(true);
+    crate::fact_control::reset_session_fact_log("/tmp/test-stream-history");
     let session = agent
         .build_session(
             "/tmp/test-stream-history".into(),
@@ -173,6 +174,7 @@ async fn test_stream_bridges_subagent_lifecycle_events() {
         .with_session_id("stream-subagents-test")
         .with_confirmation_policy(crate::hitl::ConfirmationPolicy::default())
         .with_planning_mode(PlanningMode::Disabled);
+    crate::fact_control::reset_session_fact_log("/tmp/test-stream-subagents");
     let session = agent
         .build_session("/tmp/test-stream-subagents".into(), client, &opts)
         .unwrap();
@@ -367,6 +369,7 @@ async fn test_stream_cancel_records_interrupted_history_and_auto_saves() {
         .with_session_store(store.clone())
         .with_session_id("stream-cancel-test")
         .with_auto_save(true);
+    crate::fact_control::reset_session_fact_log("/tmp/test-stream-cancel");
     let session = agent
         .build_session(
             "/tmp/test-stream-cancel".into(),
@@ -419,6 +422,7 @@ async fn test_stream_with_attachments_cancel_records_interrupted_history_and_aut
         .with_session_store(store.clone())
         .with_session_id("stream-attachments-cancel-test")
         .with_auto_save(true);
+    crate::fact_control::reset_session_fact_log("/tmp/test-stream-attachments-cancel");
     let session = agent
         .build_session(
             "/tmp/test-stream-attachments-cancel".into(),
@@ -560,4 +564,105 @@ async fn test_cancel_run_only_cancels_matching_current_run() {
         crate::run::RunStatus::Cancelled
     );
     assert!(!session.cancel_run(&run_id).await);
+}
+
+/// A cancelled fact-log turn must close the host stream without a second
+/// provider call. Memory extraction is post-turn work and follows the run
+/// cancellation token.
+#[tokio::test]
+async fn cancelled_fact_stream_settles_without_memory_extraction() {
+    let extraction_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            std::sync::Arc::new(SlowExtractionClient {
+                extraction_calls: std::sync::Arc::clone(&extraction_calls),
+            }),
+            &SessionOptions::new()
+                .with_session_id("cancel-skips-memory-extraction")
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+                .with_memory(std::sync::Arc::new(a3s_memory::InMemoryStore::new())),
+        )
+        .unwrap();
+
+    let (mut events, worker) = session
+        .stream("remember this cancelled turn", None)
+        .await
+        .unwrap();
+    let started = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Some(AgentEvent::TextDelta { .. }) => return,
+                Some(AgentEvent::End { .. }) | Some(AgentEvent::Error { .. }) | None => {
+                    panic!("stream ended before cancellation")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    started.expect("model delta before cancellation");
+    assert!(session.cancel().await);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while events.recv().await.is_some() {}
+    })
+    .await
+    .expect("cancelled stream should close without waiting for memory extraction");
+    tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+        .await
+        .expect("cancelled worker should finish without a memory extraction call")
+        .expect("worker join");
+    assert_eq!(
+        extraction_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(session
+        .history()
+        .iter()
+        .any(|message| message.text().contains("interrupted")));
+}
+
+struct SlowExtractionClient {
+    extraction_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::LlmClient for SlowExtractionClient {
+    async fn complete(
+        &self,
+        _messages: &[crate::llm::Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<crate::llm::LlmResponse> {
+        self.extraction_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        Ok(crate::llm::LlmResponse {
+            message: crate::llm::Message::assistant("[]"),
+            usage: crate::llm::TokenUsage::default(),
+            stop_reason: None,
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[crate::llm::Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        tokio::spawn(async move {
+            let _ = sender
+                .send(crate::llm::StreamEvent::TextDelta("partial".into()))
+                .await;
+            cancel_token.cancelled().await;
+        });
+        Ok(receiver)
+    }
 }

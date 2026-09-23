@@ -1,9 +1,7 @@
 use super::*;
 
 impl AgentSession {
-    /// Submit a user direction to the active run. The request is applied by
-    /// the execution loop at its next safe point and never starts a second
-    /// conversation operation.
+    /// Append a steer as another `user.message` fact and fold the log.
     pub async fn steer(
         &self,
         request: crate::run_control::SteerRequest,

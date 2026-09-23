@@ -410,6 +410,7 @@ async fn live_checkpoint_keeps_source_run_knowledge_across_concurrent_cutover() 
     let agent = Agent::from_config(super::super::tests::test_config())
         .await
         .unwrap();
+    crate::fact_control::reset_session_fact_log("/tmp/projected-knowledge-checkpoint");
     let session = Arc::new(
         agent
             .build_session(

@@ -144,7 +144,9 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| Enterprise GA | **Not achieved** — tip L6 digests archived on `c9e26504`; CLI #148 merged; Harbor agent smoke diagnostic green (`2026-09-22__09-41-11`, exceptions 0, reward 0.0). L7 TB-QUAL1 still needs full `-k` matrix / CAR receipts or a written product waiver |
+| 9.0.0 fact-log cut, local L5 | **PASS** — `just layer-c-live-e2e` wrote `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22) with a3s-vec 0.1.8. Hermetic lib 3825 and `ci-all` lib 4100 passed. This is not an Actions digest. |
+| L6 on the 9.0.0 commit | **Not met** — digests on `c9e26504` and `d3a142e` are other commits |
+| Enterprise GA | **Not achieved** — L6 is not green for this commit. L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |
 
 ## 6. Closure checklist
 

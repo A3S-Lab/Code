@@ -6,6 +6,50 @@ use crate::tools::{ToolContext, ToolExecutor};
 use std::sync::Arc;
 
 impl AgentLoop {
+    pub(crate) fn llm_api_timeout(&self) -> Option<std::time::Duration> {
+        self.config
+            .llm_api_timeout_ms
+            .map(|timeout_ms| std::time::Duration::from_millis(timeout_ms.max(1)))
+    }
+
+    pub(crate) fn permission_checker(
+        &self,
+    ) -> Option<Arc<dyn crate::permissions::PermissionChecker>> {
+        self.config.permission_checker.clone()
+    }
+
+    pub(crate) fn sanitize_tool_output(&self, text: &str) -> String {
+        match self.config.security_provider.as_ref() {
+            Some(provider) => provider.sanitize_output(text),
+            None => text.to_string(),
+        }
+    }
+
+    /// Character budget for the fact-log compactor.
+    ///
+    /// Auto-compact stays off this path until the host enables it. The budget is
+    /// the configured token window times the threshold, at about four characters
+    /// per token, so a filled turn compacts before the next model call.
+    pub(crate) fn fact_compact_after_chars(&self) -> usize {
+        if !self.config.auto_compact {
+            return 1_000_000;
+        }
+        let tokens = (self.config.max_context_tokens as f32 * self.config.auto_compact_threshold)
+            .max(1.0) as usize;
+        tokens.saturating_mul(4).max(1)
+    }
+
+    pub(crate) fn skill_restriction_denial(&self, name: &str) -> Option<(String, String)> {
+        match crate::safety_gate::ToolSafetyGate::new(&self.config).check_skill_restrictions(name) {
+            Some(crate::safety_gate::ToolGateDecision::Deny {
+                output,
+                event_reason,
+                ..
+            }) => Some((output, event_reason)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn new(
         llm_client: Arc<dyn LlmClient>,
         tool_executor: Arc<ToolExecutor>,
@@ -136,5 +180,13 @@ impl AgentLoop {
     /// mutable Session-level reference so policy cannot change mid-run.
     pub(crate) fn hook_executor(&self) -> Option<Arc<dyn crate::hooks::HookExecutor>> {
         self.config.hook_engine.clone()
+    }
+
+    pub(crate) fn tool_executor_handle(&self) -> Arc<ToolExecutor> {
+        Arc::clone(&self.tool_executor)
+    }
+
+    pub(crate) fn tool_context_handle(&self) -> ToolContext {
+        self.tool_context.clone()
     }
 }

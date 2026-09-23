@@ -948,10 +948,58 @@ pub fn merge_shell_verification_metadata(
     Some(metadata)
 }
 
-/// Extract the path from a successful existence check: `test -f PATH`,
-/// `test -e PATH`, or `[ -f PATH ]` / `[ -e PATH ]`.
+/// One shell segment that is only an existence check, plus the path it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExistenceCheck {
+    pub segment: String,
+    pub path: String,
+}
+
+/// Existence checks inside a command.
+///
+/// A segment must itself be `test -f`, `test -e`, `[ -f ]`, `[ -e ]`, or
+/// `[[ -f ]]` / `[[ -e ]]`. `&&`, `||`, `;`, and newlines separate segments, so
+/// a `cd` prefix or a trailing `echo` still counts. A command that merely
+/// mentions those words (`cargo test`, `echo test -f file`, `true`) does not.
+pub(crate) fn existence_checks(command: &str) -> Vec<ExistenceCheck> {
+    shell_segments(command)
+        .into_iter()
+        .filter_map(|segment| {
+            let path = path_from_single_existence_check(segment)?;
+            Some(ExistenceCheck {
+                segment: segment.to_string(),
+                path,
+            })
+        })
+        .collect()
+}
+
+/// Extract the path from the first existence-check segment.
+///
+/// Accepts `test -f PATH`, `test -e PATH`, `[ -f PATH ]`, `[ -e PATH ]`, and
+/// the same checks inside a compound command.
 pub fn path_from_existence_check_command(command: &str) -> Option<String> {
+    existence_checks(command)
+        .into_iter()
+        .next()
+        .map(|check| check.path)
+}
+
+fn path_from_single_existence_check(command: &str) -> Option<String> {
     let trimmed = command.trim();
+    let trimmed = trimmed
+        .strip_prefix("command ")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    if let Some(rest) = trimmed.strip_prefix("[[") {
+        let rest = rest.trim_start();
+        let rest = rest
+            .strip_prefix("-f")
+            .or_else(|| rest.strip_prefix("-e"))?
+            .trim_start();
+        let rest = rest.trim_end().strip_suffix("]]")?.trim();
+        return unquote_shell_token(rest);
+    }
     let rest = if let Some(rest) = trimmed.strip_prefix("test") {
         let rest = rest.trim_start();
         let rest = rest
@@ -972,6 +1020,52 @@ pub fn path_from_existence_check_command(command: &str) -> Option<String> {
             .trim_start()
     };
     unquote_shell_token(rest)
+}
+
+/// Split on unquoted `&&`, `||`, `;`, and newlines. Quotes stay intact so a
+/// path that contains those characters is not a separator.
+fn shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote: Option<char> = None;
+    let chars: Vec<(usize, char)> = command.char_indices().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let (byte, ch) = chars[index];
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            index += 1;
+            continue;
+        }
+        let doubled = index + 1 < chars.len()
+            && ((ch == '&' && chars[index + 1].1 == '&')
+                || (ch == '|' && chars[index + 1].1 == '|'));
+        if doubled || ch == ';' || ch == '\n' {
+            let segment = command[start..byte].trim();
+            if !segment.is_empty() {
+                segments.push(segment);
+            }
+            index += if doubled { 2 } else { 1 };
+            start = chars
+                .get(index)
+                .map(|(next, _)| *next)
+                .unwrap_or(command.len());
+            continue;
+        }
+        index += 1;
+    }
+    let tail = command[start..].trim();
+    if !tail.is_empty() {
+        segments.push(tail);
+    }
+    segments
 }
 
 fn unquote_shell_token(token: &str) -> Option<String> {

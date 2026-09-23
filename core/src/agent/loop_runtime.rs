@@ -374,12 +374,12 @@ impl AgentLoop {
         }
     }
 
-    /// Consume controls only at loop safe points. Steering becomes a normal
-    /// user message in the run-owned transcript; interrupt requests have
-    /// already fired the run cancellation token when accepted.
+    /// Consume controls only at loop safe points. A steer is a `user.message`
+    /// fact on the session log. Interrupt requests have already fired the run
+    /// cancellation token when accepted.
     async fn apply_pending_run_controls(
         control: &crate::run_control::RunControlInbox,
-        state: &mut ExecutionLoopState,
+        _state: &mut ExecutionLoopState,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         snapshot: &crate::run_control::RunControlSnapshot,
         now_ms: u64,
@@ -407,9 +407,6 @@ impl AgentLoop {
             // the inbox confirms that this invocation won the race.
             if receipt.state != crate::run_control::RunControlReceiptState::Applied {
                 continue;
-            }
-            if let Some(input) = &input {
-                state.messages.push(Message::user(input));
             }
             if let Some(tx) = event_tx {
                 tx.send(AgentEvent::RunControlApplied {

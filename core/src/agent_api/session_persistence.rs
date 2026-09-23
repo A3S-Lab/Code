@@ -170,6 +170,10 @@ impl SessionPersistenceContext {
         *write_or_recover(&self.history) = messages;
     }
 
+    pub(super) fn record_usage(&self, usage: &crate::llm::TokenUsage) {
+        write_or_recover(&self.persistence_state).record_usage(usage);
+    }
+
     pub(super) async fn save(&self) -> Result<()> {
         let store = match &self.session_store {
             Some(store) => store,

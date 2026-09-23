@@ -90,7 +90,7 @@ fn session_options(model: &str) -> SessionOptions {
         .with_temperature(0.0)
         .with_continuation(false)
         .with_prompt_slots(SystemPromptSlots::default().with_guidelines(
-            "This is a coding conformance task. Keep a concise plan, gather direct evidence, preserve the specification and test, make only necessary source edits, and do not claim success until the exact test command passes.",
+            "This is a coding conformance task. The first action is exactly `node test.mjs`, before any read of the sources and before any edit. Keep that failing result. Then read the specification, the test, and both source files, and fix only the two source files. Then run exactly `node test.mjs` again. Do not claim the task is verified.",
         ))
 }
 
@@ -156,9 +156,12 @@ async fn real_model_completes_evidence_gated_multi_step_coding_task() {
         std::fs::read_to_string(workspace.path().join("src/normalize.mjs")).unwrap(),
         NORMALIZE_BUG
     );
+    let stats = std::fs::read_to_string(workspace.path().join("src/stats.mjs")).unwrap();
     assert_ne!(
-        std::fs::read_to_string(workspace.path().join("src/stats.mjs")).unwrap(),
-        STATS_BUG
+        stats,
+        STATS_BUG,
+        "stats.mjs was not repaired\n{}",
+        tool_trace(workspace.path())
     );
 
     let verification = tokio::process::Command::new("node")
@@ -201,11 +204,13 @@ async fn real_model_completes_evidence_gated_multi_step_coding_task() {
         .collect::<Vec<_>>();
     assert!(
         bash_ends.iter().any(|code| *code != 0),
-        "missing failing baseline: {bash_ends:?}"
+        "missing failing baseline: {bash_ends:?}\n{}",
+        tool_trace(workspace.path())
     );
     assert!(
         bash_ends.contains(&0),
-        "missing successful verification: {bash_ends:?}"
+        "missing successful verification: {bash_ends:?}\n{}",
+        tool_trace(workspace.path())
     );
     assert!(events.iter().any(|record| matches!(
         &record.event,
@@ -232,4 +237,31 @@ async fn real_model_completes_evidence_gated_multi_step_coding_task() {
     if !denied.is_empty() {
         eprintln!("[long-horizon-real] contained denied requests: {denied:?}");
     }
+}
+
+fn tool_trace(root: &Path) -> String {
+    let dir = root.join(".a3s").join("effect-log");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return format!("no fact log at {}", dir.display());
+    };
+    let mut out = String::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        out.push_str(&path.display().to_string());
+        out.push('\n');
+        for line in text.lines() {
+            if line.contains("\"kind\":\"tool\"")
+                || line.contains("tool.result")
+                || line.contains("file_path")
+                || line.contains("\"kind\":\"text\"")
+            {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
 }

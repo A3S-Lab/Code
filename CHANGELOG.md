@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [9.0.0] - 2026-09-22
+
+### Changed
+
+- Workspace lexical FTS links published `a3s-vec` 0.1.8 (`a3s_vec_fts_v1`).
+  On-disk `zvec_rust_fts_v1` generations stay incompatible and are rebuilt.
+- The fact log is the only coding control source. `send`, `stream`, attachment
+  turns, `resume_run`, and exact recovery choose the next transition with
+  `a3s-effect` (`ingest_coding` / `resume_coding`). A stored model turn is not
+  sent to the model again. A loop checkpoint does not choose the next model
+  call. Confirmation and questions park until a fact and are not settled by an
+  in-process oneshot or a timer. A missing tool result is run once on resume.
+  A steer is another `user.message` fact. The tool-round cap is an empty tool
+  list on the next completion, not a synthetic user message.
+
 ## [Unreleased]
 
 ### Added

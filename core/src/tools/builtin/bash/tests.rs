@@ -550,23 +550,25 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
 
     let execution = tokio::spawn(async move {
         tool.execute(
-            &escalated_args("printf started > started; (sleep 1; printf leaked > leaked) & wait"),
+            &escalated_args("printf started > started; (sleep 8; printf leaked > leaked) & wait"),
             &ctx,
         )
         .await
     });
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let started_at = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while !started.exists() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        std::time::Instant::now()
     })
     .await
     .expect("shell should start before cancellation");
 
     execution.abort();
     let _ = execution.await;
-    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let remain = std::time::Duration::from_secs(9).saturating_sub(started_at.elapsed());
+    tokio::time::sleep(remain).await;
 
     assert!(
         !leaked.exists(),
@@ -593,23 +595,25 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
     let command = format!(
         "Set-Content -LiteralPath '{started_literal}' -Value started; \
          $child = Start-Process -FilePath '{powershell_literal}' -PassThru -WindowStyle Hidden \
-         -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 1; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
+         -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Set-Content -LiteralPath ''{child_started_literal}'' -Value started; Start-Sleep -Seconds 8; Set-Content -LiteralPath ''{leaked_literal}'' -Value leaked'; \
          Wait-Process -Id $child.Id"
     );
 
     let execution = tokio::spawn(async move { tool.execute(&escalated_args(command), &ctx).await });
 
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+    let started_at = tokio::time::timeout(std::time::Duration::from_secs(8), async {
         while !child_started.exists() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        std::time::Instant::now()
     })
     .await
     .expect("descendant should start before cancellation");
 
     execution.abort();
     let _ = execution.await;
-    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let remain = std::time::Duration::from_secs(9).saturating_sub(started_at.elapsed());
+    tokio::time::sleep(remain).await;
 
     assert!(
         !leaked.exists(),
@@ -712,7 +716,7 @@ async fn host_shell_starts_after_native_sandbox_write() {
 
 #[tokio::test]
 #[cfg(windows)]
-async fn windows_native_sandbox_runs_path_node() {
+async fn windows_native_sandbox_runs_workspace_local_node() {
     let node = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path).find_map(|dir| {
             let candidate = dir.join("node.exe");
@@ -723,13 +727,14 @@ async fn windows_native_sandbox_runs_path_node() {
         return;
     };
     let workspace = tempfile::tempdir().unwrap();
+    // AppContainer is fail-closed for host Program Files binaries. Copy node
+    // into the workspace so PATH resolution stays inside the sandbox root.
+    let local_node = workspace.path().join("node.exe");
+    std::fs::copy(&node, &local_node).expect("copy node.exe into workspace");
     std::fs::write(workspace.path().join("probe.mjs"), "process.exit(0)\n").unwrap();
     let sandbox = crate::sandbox::native::NativeBashSandbox::new(workspace.path()).unwrap();
-    // Resolve the absolute host binary: AppContainer PATH may not include the
-    // runner's Node install even when the outer process sees node.exe on PATH.
-    let node_literal = node.to_string_lossy().replace('\'', "''");
     let output = sandbox
-        .exec_command(&format!("& '{node_literal}' probe.mjs"), "/workspace")
+        .exec_command(".\\node.exe probe.mjs", "/workspace")
         .await
         .expect("sandboxed node");
     assert_eq!(

@@ -102,6 +102,50 @@ impl AgentLoop {
         );
     }
 
+    /// Record one fact-log tool result on the completion ledger.
+    ///
+    /// The tool body already ran. This attaches the mutation observation the
+    /// model and `ToolEnd` see, then binds a host shell check to the ledger
+    /// digest. It does not choose the next model call.
+    pub(crate) async fn record_fact_tool_effect(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        exit_code: i32,
+        output: &mut String,
+        metadata: &mut Option<serde_json::Value>,
+        ledger: &mut crate::harness_loop::MutationLedger,
+        reports: &mut Vec<crate::verification::VerificationReport>,
+    ) {
+        ledger.observe_tool(name, exit_code, metadata.as_ref());
+        let mut normalized = NormalizedToolResult {
+            output: output.clone(),
+            exit_code,
+            is_error: exit_code != 0,
+            metadata: metadata.clone(),
+            images: Vec::new(),
+            error_kind: None,
+            trust: crate::llm::ToolResultTrustV1::Trusted,
+            redaction_reviewed: true,
+        };
+        let tool_call = crate::llm::ToolCall {
+            id: String::new(),
+            name: name.to_string(),
+            args: args.clone(),
+        };
+        self.attach_mutation_observation(&tool_call, &mut normalized)
+            .await;
+        Self::collect_verification_report(reports, &normalized.metadata);
+        let mut state = ExecutionLoopState::new_seeded(&[], None);
+        state.mutations = ledger.clone();
+        state.verification_reports = std::mem::take(reports);
+        self.bind_or_synthesize_mutation_path_verification(&mut state, &tool_call, &normalized);
+        *reports = state.verification_reports;
+        *ledger = state.mutations;
+        *output = normalized.output;
+        *metadata = normalized.metadata;
+    }
+
     fn bind_or_synthesize_mutation_path_verification(
         &self,
         state: &mut ExecutionLoopState,
@@ -129,50 +173,81 @@ impl AgentLoop {
                     .and_then(|value| value.as_str())
             });
 
-        let content_match = shell_command.and_then(|command| {
-            let path = crate::verification::path_from_existence_check_command(command)?;
-            let expected = state.mutations.content_digest_for_path(&path)?.to_string();
-            let on_disk = on_disk_content_digest(&self.tool_context.workspace, &path)?;
-            Some((expected, on_disk))
-        });
-        let content_match_refs = content_match
-            .as_ref()
-            .map(|(expected, on_disk)| (expected.as_str(), on_disk.as_str()));
-
-        crate::verification::bind_host_shell_reports_to_mutations_with_content(
-            &mut state.verification_reports,
-            shell_command,
-            &mutation_paths,
-            &digest,
-            content_match_refs,
-        );
-
-        if tool_call.name.eq_ignore_ascii_case("bash") {
-            if let Some(command) = shell_command {
-                if state
-                    .verification_reports
-                    .iter()
-                    .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()))
-                {
-                    return;
-                }
-                // Write-backed mutations require a readable on-disk content match.
-                // Existence-only Verify would allow wrong-content files through.
-                let Some((expected, on_disk)) = content_match_refs else {
-                    return;
-                };
-                if let Some(report) =
-                    crate::verification::host_report_for_verified_mutation_path_with_content(
-                        command,
-                        normalized.exit_code,
-                        &mutation_paths,
-                        &digest,
-                        Some((expected, on_disk)),
-                    )
-                {
-                    state.verification_reports.push(report);
-                }
+        let Some(command) = shell_command else {
+            return;
+        };
+        let checks = crate::verification::existence_checks(command);
+        if checks.is_empty() {
+            return;
+        }
+        let mut existence_only = None;
+        for check in &checks {
+            if !mutation_paths
+                .iter()
+                .any(|mutated| crate::verification::mutation_path_matches(mutated, &check.path))
+            {
+                continue;
             }
+            if !state.mutations.has_content_digest(&check.path) {
+                if existence_only.is_none() {
+                    existence_only = Some(check);
+                }
+                continue;
+            }
+            // A write records the `after` bytes. A later changed_paths row stores
+            // a metadata hash and must not erase that match. Bytes that differ
+            // from every recorded digest do not verify.
+            let Some(on_disk) = on_disk_content_digest(&self.tool_context.workspace, &check.path)
+            else {
+                continue;
+            };
+            if !state
+                .mutations
+                .content_digest_matches(&check.path, &on_disk)
+            {
+                continue;
+            }
+            let pair = (on_disk.as_str(), on_disk.as_str());
+            crate::verification::bind_host_shell_reports_to_mutations_with_content(
+                &mut state.verification_reports,
+                Some(check.segment.as_str()),
+                &mutation_paths,
+                &digest,
+                Some(pair),
+            );
+            if !tool_call.name.eq_ignore_ascii_case("bash") {
+                return;
+            }
+            if state
+                .verification_reports
+                .iter()
+                .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()))
+            {
+                return;
+            }
+            if let Some(report) =
+                crate::verification::host_report_for_verified_mutation_path_with_content(
+                    check.segment.as_str(),
+                    normalized.exit_code,
+                    &mutation_paths,
+                    &digest,
+                    Some(pair),
+                )
+            {
+                state.verification_reports.push(report);
+            }
+            return;
+        }
+        // No recorded file bytes: an existing Passed report may still bind to
+        // an existence check. Do not synthesize a content verification.
+        if let Some(check) = existence_only {
+            crate::verification::bind_host_shell_reports_to_mutations_with_content(
+                &mut state.verification_reports,
+                Some(check.segment.as_str()),
+                &mutation_paths,
+                &digest,
+                None,
+            );
         }
     }
 
@@ -465,6 +540,234 @@ mod tests {
         let text = next_model_text(&agent).await;
         assert!(text.contains("unused binding leaked"));
         assert!(text.contains("src/leaked.rs"));
+    }
+
+    #[tokio::test]
+    async fn fact_log_tool_effect_attaches_observation_and_binds_a_host_existence_check() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("hello.txt"), "hello").expect("fixture");
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+            executor,
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig::default(),
+        );
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        let mut reports = Vec::new();
+        let mut output = "wrote".to_string();
+        let mut metadata = Some(serde_json::json!({
+            "file_path": "hello.txt",
+            "after": "hello"
+        }));
+        agent
+            .record_fact_tool_effect(
+                "write",
+                &serde_json::json!({ "file_path": "hello.txt", "content": "hello" }),
+                0,
+                &mut output,
+                &mut metadata,
+                &mut ledger,
+                &mut reports,
+            )
+            .await;
+        assert!(
+            output.contains("[mutation observation]"),
+            "tool result missing mutation observation: {output}"
+        );
+        let schema = metadata
+            .as_ref()
+            .and_then(|value| value.get("mutation_observation"))
+            .and_then(|observation| observation.get("schema"))
+            .and_then(|schema| schema.as_str());
+        assert!(schema.is_some(), "metadata missing mutation observation");
+
+        let mut bash_output = String::new();
+        let mut bash_metadata = Some(serde_json::json!({ "command": "test -f hello.txt" }));
+        agent
+            .record_fact_tool_effect(
+                "bash",
+                &serde_json::json!({ "command": "test -f hello.txt" }),
+                0,
+                &mut bash_output,
+                &mut bash_metadata,
+                &mut ledger,
+                &mut reports,
+            )
+            .await;
+        let gate = agent.fact_completion_gate(&ledger, &reports);
+        assert!(
+            matches!(
+                gate,
+                crate::harness_loop::CompletionGate::Allow(
+                    crate::harness_loop::CompletionTerminal::Verified { .. }
+                )
+            ),
+            "host existence check should Allow(Verified), got {gate:?} reports={reports:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fact_log_compound_host_check_binds_when_write_content_matches() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+            Arc::clone(&executor),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig::default(),
+        );
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        let mut reports = Vec::new();
+        let write_ctx =
+            ToolContext::new(workspace.path().to_path_buf()).with_session_id("fact-log-bind");
+        let write = executor
+            .execute_with_context(
+                "write",
+                &serde_json::json!({ "file_path": "hello.txt", "content": "hello" }),
+                &write_ctx,
+            )
+            .await
+            .expect("write");
+        assert_eq!(write.exit_code, 0, "{}", write.output);
+        let mut output = write.output;
+        let mut metadata = write.metadata;
+        agent
+            .record_fact_tool_effect(
+                "write",
+                &serde_json::json!({ "file_path": "hello.txt", "content": "hello" }),
+                write.exit_code,
+                &mut output,
+                &mut metadata,
+                &mut ledger,
+                &mut reports,
+            )
+            .await;
+        let bash = executor
+            .execute_with_context(
+                "bash",
+                &serde_json::json!({ "command": "cd . && test -f hello.txt" }),
+                &write_ctx,
+            )
+            .await
+            .expect("bash");
+        assert_eq!(bash.exit_code, 0, "{}", bash.output);
+        let mut bash_metadata = bash.metadata.unwrap_or_else(|| serde_json::json!({}));
+        if let Some(object) = bash_metadata.as_object_mut() {
+            object.insert(
+                "changed_paths".to_string(),
+                serde_json::json!(["hello.txt"]),
+            );
+        }
+        let mut bash_output = bash.output;
+        let mut bash_metadata = Some(bash_metadata);
+        agent
+            .record_fact_tool_effect(
+                "bash",
+                &serde_json::json!({ "command": "cd . && test -f hello.txt" }),
+                bash.exit_code,
+                &mut bash_output,
+                &mut bash_metadata,
+                &mut ledger,
+                &mut reports,
+            )
+            .await;
+        let gate = agent.fact_completion_gate(&ledger, &reports);
+        assert!(
+            matches!(
+                gate,
+                crate::harness_loop::CompletionGate::Allow(
+                    crate::harness_loop::CompletionTerminal::Verified { .. }
+                )
+            ),
+            "compound host check should Allow(Verified), got {gate:?} reports={reports:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fact_log_bash_write_and_existence_check_does_not_self_verify() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        let agent = AgentLoop::new(
+            Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+            Arc::clone(&executor),
+            ToolContext::new(workspace.path().to_path_buf()),
+            crate::agent::AgentConfig::default(),
+        );
+        let command = "printf 'hello' > hello.txt && test -f hello.txt";
+        let bash = executor
+            .execute("bash", &serde_json::json!({ "command": command }))
+            .await
+            .expect("bash");
+        assert_eq!(bash.exit_code, 0, "{}", bash.output);
+        assert!(
+            workspace.path().join("hello.txt").is_file(),
+            "bash did not create hello.txt"
+        );
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        let mut reports = Vec::new();
+        let mut output = bash.output;
+        let mut metadata = bash.metadata;
+        agent
+            .record_fact_tool_effect(
+                "bash",
+                &serde_json::json!({ "command": command }),
+                bash.exit_code,
+                &mut output,
+                &mut metadata,
+                &mut ledger,
+                &mut reports,
+            )
+            .await;
+        assert!(
+            !ledger.is_empty(),
+            "bash write must land on the mutation ledger, metadata={metadata:?}"
+        );
+        let gate = agent.fact_completion_gate(&ledger, &reports);
+        assert!(
+            matches!(gate, crate::harness_loop::CompletionGate::Incomplete { .. }),
+            "a bash write must not verify itself with test -f, got {gate:?} reports={reports:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fact_log_gate_keeps_an_open_external_observation() {
+        let observation = crate::external_observation::ExternalObservationV1::new(
+            "ci",
+            "pipeline",
+            "obs-live-ci",
+            "the required check is still red",
+            crate::external_observation::RequiredAction::WorkspaceChange,
+        )
+        .expect("observation");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().into_owned(),
+        ));
+        let mut config = crate::agent::AgentConfig::default();
+        config.external_observations = vec![observation];
+        let agent = AgentLoop::new(
+            Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+            executor,
+            ToolContext::new(workspace.path().to_path_buf()),
+            config,
+        );
+        let gate = agent.fact_completion_gate(&crate::harness_loop::MutationLedger::default(), &[]);
+        match gate {
+            crate::harness_loop::CompletionGate::Incomplete { message } => {
+                assert!(
+                    message.contains("completion gate: external observation obs-live-ci"),
+                    "{message}"
+                );
+            }
+            other => panic!("open observation must stay incomplete, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -647,6 +647,10 @@ mod tests {
         let config = AgentConfig {
             skill_registry: None,
             confirmation_manager: Some(manager),
+            permission_checker: Some(Arc::new(
+                crate::permissions::PermissionPolicy::new()
+                    .allow_yolo_lanes([crate::queue::SessionLane::Query]),
+            )),
             ..Default::default()
         };
         let gate = ToolSafetyGate::new(&config);
@@ -663,7 +667,7 @@ mod tests {
         assert_eq!(
             decision,
             ToolGateDecision::Execute {
-                reason: ToolGateApproval::ConfirmationNotRequired,
+                reason: ToolGateApproval::PermissionAllow,
             }
         );
     }

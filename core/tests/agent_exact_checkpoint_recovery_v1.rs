@@ -366,7 +366,7 @@ async fn exact_recovery_replays_only_the_same_boundary_identity() {
         .save_loop_checkpoint(&first.run_id, &first)
         .await
         .unwrap();
-    let (_workspace, session, host, release) =
+    let (workspace, session, host, release) =
         host_fixture(Arc::clone(&store), "session-replay").await;
     let request = exact_request(
         &release,
@@ -393,6 +393,10 @@ async fn exact_recovery_replays_only_the_same_boundary_identity() {
     })
     .await
     .expect("exactly recovered run must terminate");
+    assert!(
+        workspace.path().join(".a3s").join("effect-log").is_dir(),
+        "exact recovery resumes the session fact log"
+    );
 
     let second = checkpoint("source-run", "session-replay", 2);
     store

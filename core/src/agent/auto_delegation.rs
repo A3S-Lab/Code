@@ -29,6 +29,40 @@ pub(super) struct AutoDelegationOutcome {
 }
 
 impl AgentLoop {
+    /// Tool arguments for a host-planned delegation. The fact log still decides
+    /// when that tool runs.
+    pub(crate) fn fact_auto_delegation_args(&self, prompt: &str) -> Option<serde_json::Value> {
+        let plan = self
+            .build_auto_delegation_plan(prompt)
+            .or_else(|| self.build_explicit_manual_delegation(prompt))?;
+        Some(json!({
+            "tasks": plan.tasks.iter().map(task_to_args).collect::<Vec<_>>()
+        }))
+    }
+
+    /// One named agent from the user text, when automatic fan-out is off.
+    ///
+    /// Manual delegation still has to run the agent the user named. The fact
+    /// log executes that task; this only supplies its arguments.
+    fn build_explicit_manual_delegation(&self, prompt: &str) -> Option<AutoDelegationPlan> {
+        let config = &self.config.auto_delegation;
+        if config.enabled || !config.allow_manual_delegation {
+            return None;
+        }
+        if !self.tool_executor.registry().contains("task") {
+            return None;
+        }
+        let registry = self.config.agent_registry.as_ref()?;
+        let target = explicit_agent_target(prompt, registry)?;
+        let task = registry
+            .get(&target)
+            .and_then(|agent| score_agent_for_prompt(&agent, prompt, Some(&target)))?;
+        Some(AutoDelegationPlan {
+            reason: "explicit agent named in the request".to_string(),
+            tasks: vec![task],
+        })
+    }
+
     pub(super) async fn maybe_apply_auto_delegation(
         &self,
         prompt: &str,
@@ -259,6 +293,7 @@ fn contains_explicit_reference(prompt: &str, name: &str) -> bool {
         format!("delegate to {name}"),
         format!("ask {name}"),
         format!("ask the {name}"),
+        format!("with agent {name}"),
         format!("使用{name}"),
         format!("使用 {name}"),
         format!("用{name}"),
@@ -579,6 +614,16 @@ mod tests {
         let target = explicit_agent_target("Use @agent-general-purpose for this change", &registry);
 
         assert_eq!(target.as_deref(), Some("general"));
+    }
+
+    #[test]
+    fn explicit_target_matches_with_agent_review() {
+        let registry = AgentRegistry::new();
+        let target = explicit_agent_target(
+            "Review guest.rs by calling the task tool with agent review.",
+            &registry,
+        );
+        assert_eq!(target.as_deref(), Some("review"));
     }
 
     #[test]

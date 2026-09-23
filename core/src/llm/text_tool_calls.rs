@@ -78,6 +78,24 @@ pub fn strip_leaked_tool_protocol(text: &str) -> String {
     prose
 }
 
+/// Tool calls a model wrote as text instead of a structured tool response.
+///
+/// Each item is `(id, name, arguments)`.
+pub fn recover_leaked_tool_calls(text: &str) -> Vec<(String, String, Value)> {
+    split_leaked_tool_calls(text)
+        .1
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| {
+            (
+                call.id.unwrap_or_else(|| format!("leaked-{index}")),
+                call.name,
+                call.input,
+            )
+        })
+        .collect()
+}
+
 struct ParsedCall {
     id: Option<String>,
     name: String,

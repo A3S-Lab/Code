@@ -286,15 +286,27 @@ impl RunControlState {
         let token = self.cancel_token.lock().await.clone();
         if let Some(token) = token {
             token.cancel();
-            if let Some(run_id) = self.current_run_id.lock().await.clone() {
-                let _ = self
-                    .run_store
-                    .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
-                    .await;
-                if let Some(executor) = &self.hook_executor {
-                    executor
-                        .record_run_cancelled(&run_id, &self.session_id, Some("cancelled by host"))
+            let run_id = self.current_run_id.lock().await.clone();
+            if let Some(run_id) = run_id {
+                let settle = async {
+                    let _ = self
+                        .run_store
+                        .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
                         .await;
+                    if let Some(executor) = &self.hook_executor {
+                        executor
+                            .record_run_cancelled(
+                                &run_id,
+                                &self.session_id,
+                                Some("cancelled by host"),
+                            )
+                            .await;
+                    }
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), settle).await;
+                let mut current = self.current_run_id.lock().await;
+                if current.as_deref() == Some(run_id.as_str()) {
+                    *current = None;
                 }
             }
             tracing::info!(session_id = %self.session_id, "Cancelled ongoing operation");

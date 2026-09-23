@@ -361,6 +361,7 @@ fn representative_events() -> Vec<EventCase> {
                 question_id: "q-1".into(),
                 question: "Which file?".into(),
                 options: vec!["a.rs".into()],
+                allow_free_text: false,
             },
             "question_id",
             json!("q-1"),

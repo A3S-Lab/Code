@@ -295,6 +295,7 @@ async fn automatic_delegation_uses_the_run_frozen_projected_agent_registry() {
     config.auto_delegation.auto_parallel = false;
     config.auto_delegation.max_tasks = 1;
     let agent = Agent::from_config(config).await.unwrap();
+    crate::fact_control::reset_session_fact_log("/tmp/capability-automatic-agent");
     let session = agent
         .build_session(
             "/tmp/capability-automatic-agent".to_string(),

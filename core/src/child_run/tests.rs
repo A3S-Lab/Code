@@ -519,7 +519,9 @@ async fn pending_confirm_cancel_and_timeout_forward_to_both_scopes() {
         .request_confirmation("tool-timeout", "bash", &args)
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert_eq!(provider.check_timeouts().await, 2);
+    assert_eq!(provider.check_timeouts().await, 0);
+    assert!(!provider.pending_confirmations().await.is_empty());
+    assert!(provider.confirm("tool-timeout", false, None).await.unwrap());
     assert!(!response.await.unwrap().approved);
     assert!(provider.pending_confirmations().await.is_empty());
 }
@@ -572,8 +574,15 @@ async fn delegated_targeted_settlement_leaves_other_confirmation_pending_in_both
     let untouched = provider
         .request_confirmation("tool-still-pending", "bash", &args)
         .await;
-    assert!(provider.expire("tool-expired", TimeoutAction::Reject).await);
-    assert!(!expired.await.unwrap().approved);
+    assert!(!provider.expire("tool-expired", TimeoutAction::Reject).await);
+    assert_eq!(child.pending_count().await, 2);
+    assert_eq!(parent.pending_count().await, 2);
+    assert!(child.confirm("tool-expired", false, None).await.unwrap());
+    assert!(parent.confirm("tool-expired", false, None).await.unwrap());
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), expired)
+        .await
+        .expect("host confirm must settle the parked confirmation");
+    assert!(!response.unwrap().approved);
     assert_eq!(child.pending_count().await, 1);
     assert_eq!(parent.pending_count().await, 1);
     assert_eq!(

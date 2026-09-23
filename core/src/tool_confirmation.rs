@@ -65,6 +65,7 @@ impl<'a> ToolConfirmationRuntime<'a> {
         })
         .await;
 
+        let _ = request.timeout_action;
         let response = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -79,13 +80,11 @@ impl<'a> ToolConfirmationRuntime<'a> {
                     output: format!("Tool '{}' cancelled by caller", request.tool_name),
                 };
             }
-            response = tokio::time::timeout(Duration::from_millis(request.timeout_ms), rx) => {
-                response
-            }
+            response = rx => response,
         };
 
         match response {
-            Ok(Ok(response)) => {
+            Ok(response) => {
                 self.forward_event(AgentEvent::ConfirmationReceived {
                     tool_id: request.tool_id.to_string(),
                     approved: response.approved,
@@ -107,7 +106,7 @@ impl<'a> ToolConfirmationRuntime<'a> {
                     }
                 }
             }
-            Ok(Err(_)) => {
+            Err(_) => {
                 self.manager.cancel(request.tool_id).await;
                 self.forward_timeout(request.tool_id, "rejected").await;
                 ToolConfirmationResolution::Rejected {
@@ -115,23 +114,6 @@ impl<'a> ToolConfirmationRuntime<'a> {
                         "Tool '{}' confirmation failed: confirmation channel closed",
                         request.tool_name
                     ),
-                }
-            }
-            Err(_) => {
-                self.manager
-                    .expire(request.tool_id, request.timeout_action)
-                    .await;
-                self.forward_timeout(request.tool_id, action_taken(request.timeout_action))
-                    .await;
-
-                match request.timeout_action {
-                    TimeoutAction::Reject => ToolConfirmationResolution::Rejected {
-                        output: format!(
-                            "Tool '{}' execution was REJECTED: user confirmation timed out after {}ms. DO NOT retry this tool call - the user did not approve it. Inform the user that the operation requires their approval and ask them to try again.",
-                            request.tool_name, request.timeout_ms
-                        ),
-                    },
-                    TimeoutAction::AutoApprove => ToolConfirmationResolution::Approved,
                 }
             }
         }
@@ -149,13 +131,6 @@ impl<'a> ToolConfirmationRuntime<'a> {
         if let Some(tx) = self.event_tx {
             tx.send(event).await.ok();
         }
-    }
-}
-
-fn action_taken(action: TimeoutAction) -> &'static str {
-    match action {
-        TimeoutAction::Reject => "rejected",
-        TimeoutAction::AutoApprove => "auto_approved",
     }
 }
 
@@ -343,68 +318,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_rejects_and_forwards_timeout_event() {
-        let (broadcast_tx, _) = broadcast::channel(8);
-        let manager = Arc::new(ConfirmationManager::new(
-            enabled_policy(5, TimeoutAction::Reject),
-            broadcast_tx,
-        ));
-        let (event_tx, mut event_rx) = mpsc::channel(8);
-
-        let runtime = ToolConfirmationRuntime::new(manager.as_ref(), Some(&event_tx));
-        let resolution = runtime
-            .resolve(ToolConfirmationRequest {
-                tool_id: "tool-1",
-                tool_name: "bash",
-                args: &json!({"command": "rm -rf target"}),
-                timeout_ms: 5,
-                timeout_action: TimeoutAction::Reject,
-            })
-            .await;
-
-        let ToolConfirmationResolution::Rejected { output } = resolution else {
-            panic!("expected rejection");
-        };
-        assert!(output.contains("timed out after 5ms"));
-
-        let events = collect_events(&mut event_rx, 2).await;
-        assert!(matches!(events[0], AgentEvent::ConfirmationRequired { .. }));
-        assert!(matches!(
-            events[1],
-            AgentEvent::ConfirmationTimeout { ref action_taken, .. }
-                if action_taken == "rejected"
-        ));
-    }
-
-    #[tokio::test]
-    async fn timeout_auto_approve_returns_approved() {
+    async fn timeout_does_not_approve_or_deny() {
         let (broadcast_tx, _) = broadcast::channel(8);
         let manager = Arc::new(ConfirmationManager::new(
             enabled_policy(5, TimeoutAction::AutoApprove),
             broadcast_tx,
         ));
-        let (event_tx, mut event_rx) = mpsc::channel(8);
-
+        let (event_tx, _event_rx) = mpsc::channel(8);
         let runtime = ToolConfirmationRuntime::new(manager.as_ref(), Some(&event_tx));
-        let resolution = runtime
-            .resolve(ToolConfirmationRequest {
+        let args = json!({"command": "rm -rf target"});
+        let settled = tokio::time::timeout(
+            Duration::from_millis(40),
+            runtime.resolve(ToolConfirmationRequest {
                 tool_id: "tool-1",
-                tool_name: "read",
-                args: &json!({"file_path": "README.md"}),
+                tool_name: "bash",
+                args: &args,
                 timeout_ms: 5,
                 timeout_action: TimeoutAction::AutoApprove,
-            })
-            .await;
-
-        assert_eq!(resolution, ToolConfirmationResolution::Approved);
-
-        let events = collect_events(&mut event_rx, 2).await;
-        assert!(matches!(events[0], AgentEvent::ConfirmationRequired { .. }));
-        assert!(matches!(
-            events[1],
-            AgentEvent::ConfirmationTimeout { ref action_taken, .. }
-                if action_taken == "auto_approved"
-        ));
+            }),
+        )
+        .await;
+        assert!(settled.is_err(), "a timer must not settle confirmation");
+        assert_eq!(manager.pending_count().await, 1);
+        assert!(!manager.expire("tool-1", TimeoutAction::Reject).await);
+        assert_eq!(manager.pending_count().await, 1);
+        assert!(manager.confirm("tool-1", false, None).await.unwrap());
     }
 
     #[tokio::test]
@@ -417,22 +355,23 @@ mod tests {
         let untouched = manager
             .request_confirmation("tool-untouched", "write", &json!({}))
             .await;
-
         let runtime = ToolConfirmationRuntime::new(manager.as_ref(), None);
-        let resolution = runtime
-            .resolve(ToolConfirmationRequest {
+        let args = json!({"command": "sleep 1"});
+        let settled = tokio::time::timeout(
+            Duration::from_millis(40),
+            runtime.resolve(ToolConfirmationRequest {
                 tool_id: "tool-expired",
                 tool_name: "bash",
-                args: &json!({"command": "sleep 1"}),
+                args: &args,
                 timeout_ms: 5,
                 timeout_action: TimeoutAction::Reject,
-            })
-            .await;
-
-        assert!(matches!(
-            resolution,
-            ToolConfirmationResolution::Rejected { .. }
-        ));
+            }),
+        )
+        .await;
+        assert!(settled.is_err(), "a timer must not settle confirmation");
+        let pending = manager.pending_confirmations().await;
+        assert_eq!(pending.len(), 2);
+        assert!(manager.cancel("tool-expired").await);
         let pending = manager.pending_confirmations().await;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, "tool-untouched");

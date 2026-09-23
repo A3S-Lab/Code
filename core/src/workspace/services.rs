@@ -396,6 +396,31 @@ impl WorkspaceServices {
         None
     }
 
+    /// Open the durable a3s-vec projection without starting the whole-workspace
+    /// chunk catalog.
+    ///
+    /// Hosts that only need mind-wiki / titlebar FTS warmup must use this path.
+    /// [`Self::persistent_index`] also starts catalog reconciliation, which
+    /// times out or locks the generation on large monorepos.
+    pub fn open_persistent_index_without_catalog(&self) -> Option<Arc<WorkspacePersistentIndex>> {
+        if let Some(index) = &self.persistent_index {
+            return Some(Arc::clone(index));
+        }
+        if let Some(handles) = self.lazy_lexical.get() {
+            if let Some(index) = &handles.1 {
+                return Some(Arc::clone(index));
+            }
+        }
+        self.lazy_lexical_backend
+            .as_ref()
+            .and_then(|backend| backend.ensure_persistent_index())
+    }
+
+    /// True after the lazy whole-workspace chunk catalog has been started.
+    pub fn chunk_catalog_started(&self) -> bool {
+        self.chunk_catalog.is_some() || self.lazy_lexical.get().is_some()
+    }
+
     fn ensure_lazy_lexical(&self) -> Option<&LazyLexicalHandles> {
         let backend = self.lazy_lexical_backend.as_ref()?;
         Some(self.lazy_lexical.get_or_init(|| {

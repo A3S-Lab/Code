@@ -449,6 +449,8 @@ pub enum AgentEvent {
         question_id: String,
         question: String,
         options: Vec<String>,
+        #[serde(default)]
+        allow_free_text: bool,
     },
 
     /// External task pending (needs SDK processing)

@@ -253,9 +253,17 @@ impl AgentSession {
         approved: bool,
         reason: Option<String>,
     ) -> Result<bool> {
-        HitlControl::from_session(self)
-            .confirm_tool_use(tool_id, approved, reason)
-            .await
+        if let Some(manager) = &self.config.confirmation_manager {
+            if manager
+                .confirm(tool_id, approved, reason.clone())
+                .await
+                .map_err(crate::error::CodeError::Session)?
+            {
+                return Ok(true);
+            }
+        }
+        let run = super::conversation_runtime::FactSession::from(self).open()?;
+        Ok(run.confirm_if_pending(tool_id, approved).await?)
     }
 
     /// Cancel all pending HITL confirmations for this session.
