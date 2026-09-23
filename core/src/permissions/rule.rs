@@ -1,3 +1,4 @@
+use crate::tool_name::canonical_tool_name;
 use serde::{Deserialize, Serialize};
 
 /// A permission rule with pattern matching support
@@ -129,6 +130,8 @@ impl PermissionRule {
 
     /// Check if tool names match (case-insensitive, wildcard-aware)
     fn matches_tool_name(&self, rule_tool: &str, actual_tool: &str) -> bool {
+        let rule_tool = canonical_tool_name(rule_tool);
+        let actual_tool = canonical_tool_name(actual_tool);
         // If the rule contains wildcards, use glob matching on the tool name directly.
         // e.g. "mcp__longvt__*" must use glob, not starts_with, because starts_with
         // treats '*' as a literal character and will never match.
@@ -162,6 +165,7 @@ impl PermissionRule {
 
     /// Build a string representation of arguments for matching
     fn build_arg_string(&self, tool_name: &str, args: &serde_json::Value) -> String {
+        let tool_name = canonical_tool_name(tool_name);
         match tool_name.to_lowercase().as_str() {
             "bash" => {
                 // For Bash, use the command field

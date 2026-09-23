@@ -127,6 +127,10 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
   ],
   ['skill_registry', 'Rust SkillRegistry handle; SDKs expose builtin/dir/inline skill inputs.'],
   [
+    'host_skills',
+    'Rust Skill Arc handles; SDKs expose builtin/dir/inline skill inputs (same boundary as skill_registry).',
+  ],
+  [
     'memory_observers',
     'Rust MemoryObserver trait objects require SDK-specific callback adapters before they can be value-typed options.',
   ],

@@ -17,6 +17,10 @@ static TEST_FORCE_PUBLISH_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_PUBLISH_DROP_RESULT: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_SYNC_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE: AtomicBool = AtomicBool::new(false);
+/// Serializes tests that flip the process-global `TEST_FORCE_*` atomics so
+/// parallel `multi_thread` suites cannot steal each other's forced failures.
+#[allow(dead_code)] // Referenced only from `#[cfg(test)]` helpers; keep linked in lib builds.
+static TEST_FORCE_LOCK: Mutex<()> = Mutex::new(());
 
 const SNAPSHOT_SETTLE_DELAY: Duration = Duration::from_millis(10);
 const PERSISTENT_INDEX_SETTLE_DELAY: Duration = Duration::from_millis(50);
@@ -333,9 +337,20 @@ mod tests {
         WorkspaceLexicalEngine, WorkspacePath, WorkspacePersistentIndex,
     };
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
+    use std::sync::{Arc, MutexGuard};
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
+
+    fn lock_test_force_switches() -> MutexGuard<'static, ()> {
+        let guard = super::TEST_FORCE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        super::TEST_FORCE_PUBLISH_SPAWN_FAILURE.store(false, Ordering::SeqCst);
+        super::TEST_FORCE_PUBLISH_DROP_RESULT.store(false, Ordering::SeqCst);
+        super::TEST_FORCE_SYNC_SPAWN_FAILURE.store(false, Ordering::SeqCst);
+        super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.store(false, Ordering::SeqCst);
+        guard
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn persistent_coordinator_survives_initial_none_before_first_submit() {
@@ -753,6 +768,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn publish_queues_when_inline_worker_spawn_fails() {
+        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -790,6 +806,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn publish_queues_when_inline_worker_drops_its_result() {
+        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -827,6 +844,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_worker_retries_after_forced_spawn_failure_then_cancels() {
+        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -855,6 +873,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_worker_observes_non_retryable_failure_then_cancels() {
+        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -881,7 +900,14 @@ mod tests {
         super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.store(true, Ordering::SeqCst);
         coordinator.submit(catalog.snapshot().expect("catalog snapshot"));
 
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("sync worker must consume the forced non-retryable failure");
+        tokio::time::sleep(Duration::from_millis(20)).await;
         lifetime.cancel();
         coordinator.shutdown();
         assert!(
@@ -893,6 +919,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_worker_resets_retries_when_a_newer_snapshot_arrives_after_non_retryable_failure()
     {
+        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),

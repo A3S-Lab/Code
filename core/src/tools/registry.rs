@@ -291,7 +291,20 @@ impl ToolRegistry {
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let tools = self.tools.read().unwrap();
-        tools.get(name).cloned()
+        let canonical = crate::tool_name::canonical_tool_name(name);
+        if let Some(tool) = tools.get(canonical) {
+            return Some(tool.clone());
+        }
+        let lower = canonical.to_ascii_lowercase();
+        if lower != canonical {
+            if let Some(tool) = tools.get(&lower) {
+                return Some(tool.clone());
+            }
+        }
+        tools
+            .iter()
+            .find(|(registered, _)| registered.eq_ignore_ascii_case(canonical))
+            .map(|(_, tool)| tool.clone())
     }
 
     pub(crate) fn capabilities(
@@ -309,8 +322,7 @@ impl ToolRegistry {
 
     /// Check if a tool exists
     pub fn contains(&self, name: &str) -> bool {
-        let tools = self.tools.read().unwrap();
-        tools.contains_key(name)
+        self.get(name).is_some()
     }
 
     /// Get all tool definitions for LLM
