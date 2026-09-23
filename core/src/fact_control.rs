@@ -910,7 +910,7 @@ impl ExecutorTools {
         }
     }
 
-    async fn save_checkpoint(&self, call: &ToolCall, output: &str) {
+    async fn save_checkpoint(&self, call: &ToolCall, output: &str, is_error: bool) {
         let Some(checkpoint) = &self.checkpoint else {
             return;
         };
@@ -939,7 +939,7 @@ impl ExecutorTools {
                         transcript_text: None,
                         transcript_visibility: Default::default(),
                     },
-                    Message::user(output),
+                    Message::tool_result(&call.id, output, is_error),
                 ],
                 total_usage: crate::llm::TokenUsage::default(),
                 tool_calls_count: turn,
@@ -1008,7 +1008,7 @@ impl ToolRunner for ExecutorTools {
                             reason,
                         })
                         .await;
-                    tools.save_checkpoint(&call, &output).await;
+                    tools.save_checkpoint(&call, &output, true).await;
                     return Ok(serde_json::Value::String(output));
                 }
             }
@@ -1031,7 +1031,7 @@ impl ToolRunner for ExecutorTools {
                         reason: "Blocked by deny rule in permission policy".into(),
                     })
                     .await;
-                tools.save_checkpoint(&call, &output).await;
+                tools.save_checkpoint(&call, &output, true).await;
                 return Ok(serde_json::Value::String(output));
             }
             tools
@@ -1190,7 +1190,9 @@ impl ToolRunner for ExecutorTools {
                     error_kind: result.error_kind.clone(),
                 })
                 .await;
-            tools.save_checkpoint(&call, &output).await;
+            tools
+                .save_checkpoint(&call, &output, result.exit_code != 0)
+                .await;
             Ok(serde_json::Value::String(output))
         })
     }
