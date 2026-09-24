@@ -136,17 +136,20 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | Item | State |
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
-| L6 performance.yml on tip `c9e26504` | **PASS** — run [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466), nine `passed: true` JSON reports; digest `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` in PERFORMANCE_QUALIFICATION |
-| L6 hermetic-integrations on tip `c9e26504` | **PASS** — run [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718); S3/CDP/OTLP `passed: true`; digest `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` in PERFORMANCE_QUALIFICATION |
+| L6 performance.yml on `fa0a92ca` | **PASS** — run [`35947891976`](https://github.com/A3S-Lab/Code/actions/runs/35947891976), nine `passed: true` JSON reports; digest `b5ce0281d5bad5ab47003bd34d93ab11bc7eab1ef8f37c24b10b8fe619010b73` in PERFORMANCE_QUALIFICATION |
+| L6 hermetic-integrations on `fa0a92ca` | **PASS** — CI run [`35947892108`](https://github.com/A3S-Lab/Code/actions/runs/35947892108) job Hermetic integrations; S3/CDP/OTLP `passed: true`; digest `00ee5ea7eb32a09a9fd4cf8eacc40642c4d548319d01822ef3e809f753207269` in PERFORMANCE_QUALIFICATION |
+| L6 performance.yml on prior tip `c9e26504` | **PASS** — run [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466), nine `passed: true` JSON reports; digest `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` in PERFORMANCE_QUALIFICATION |
+| L6 hermetic-integrations on prior tip `c9e26504` | **PASS** — run [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718); S3/CDP/OTLP `passed: true`; digest `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` in PERFORMANCE_QUALIFICATION |
 | L6 performance.yml on `9b28f066` | **PASS** — prior RC [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682); superseded by tip digests above |
 | Standalone patch strip + relock | **Landed** on `9b28f066` |
 | L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green on wheel 8.6.0 job `2026-09-22__07-32-16`; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| 9.0.0 fact-log cut, local L5 | **PASS** — `just layer-c-live-e2e` wrote `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22) with a3s-vec 0.1.8. Hermetic lib 3825 and `ci-all` lib 4100 passed. This is not an Actions digest. |
-| L6 on the 9.0.0 commit | **Not met** — digests on `c9e26504` and `d3a142e` are other commits |
-| Enterprise GA | **Not achieved** — L6 is not green for this commit. L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |
+| 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — `just layer-c-live-e2e` wrote `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22) with a3s-vec 0.1.8. That FINAL does not cover `fa0a92ca`. |
+| L5 Layer C on `fa0a92ca` | **In progress** — the full `just layer-c-live-e2e` matrix for this SHA is running |
+| L6 on the 9.0.0 commit `fa0a92ca` | **PASS** — performance.yml `35947891976` and hermetic-integrations via CI `35947892108`, both `passed: true`, archived above |
+| Enterprise GA | **Not achieved** — L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |
 
 ## 6. Closure checklist
 

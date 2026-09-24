@@ -1,8 +1,9 @@
 # A3S Code Performance Qualification
 
-Status: tip L6 closed on 2026-09-22 for Code
-[`c9e26504`](https://github.com/A3S-Lab/Code/commit/c9e2650409be9e8eaf322e216e37314ac2029cda)
+Status: tip L6 closed on 2026-09-24 for Code
+[`fa0a92ca`](https://github.com/A3S-Lab/Code/commit/fa0a92caad5e9aaffce37f976ae034c12d0e9323)
 — both `performance.yml` and `hermetic-integrations.yml` archived below.
+Enterprise GA remains unmet: L7 has no Harbor or CAR receipt and no product waiver.
 
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
@@ -13,7 +14,9 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
-| Nine release performance profiles (tip)                         | [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466) | `performance-35667548466-1`           | `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` |
+| Nine release performance profiles (9.0.0 `fa0a92ca`)            | [`35947891976`](https://github.com/A3S-Lab/Code/actions/runs/35947891976) | `performance-35947891976-1`           | `b5ce0281d5bad5ab47003bd34d93ab11bc7eab1ef8f37c24b10b8fe619010b73` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 `fa0a92ca`) | [`35947892108`](https://github.com/A3S-Lab/Code/actions/runs/35947892108) | `hermetic-integrations-35947892108-1` | `00ee5ea7eb32a09a9fd4cf8eacc40642c4d548319d01822ef3e809f753207269` |
+| Nine release performance profiles (prior tip `c9e26504`)        | [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466) | `performance-35667548466-1`           | `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (tip) | [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718) | `hermetic-integrations-35667552718-1` | `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` |
 | Nine release performance profiles (prior RC)                    | [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682) | `performance-35639843682-1`           | `17851eb61d21970a46582c277a5fe7704f38f098bfaea074feaf23b19a246a04` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry | [`35642286881`](https://github.com/A3S-Lab/Code/actions/runs/35642286881) | `hermetic-integrations-35642286881-1` | `7cc70e465fe01d22a0ef59e190241b406b2e844cdcc80b76b03816c75074494b` |
@@ -24,6 +27,15 @@ claims.
 GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
+
+Run `35947891976` on commit `fa0a92ca` produced all nine performance reports with
+`passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
+flow-state-graph, code-intelligence, context-memory, durable-memory-semantic-refresh,
+persistence, evaluation-substrate).
+
+Run `35947892108` on commit `fa0a92ca` produced S3-compat, controlled CDP, and
+OpenTelemetry reports with `passed: true`. Hermetic integrations is the CI job
+that calls `hermetic-integrations.yml`.
 
 Run `35667548466` on commit `c9e26504` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
