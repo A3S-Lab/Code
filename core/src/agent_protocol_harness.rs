@@ -267,7 +267,15 @@ impl AgentProtocolHarness {
         // unpublished Session from the supplied checkpoint.
         let create_if_missing = matches!(command, AgentProtocolCommandV1::Start { .. });
         let host = self.host_for(command.identity(), create_if_missing).await?;
-        host.execute(command).await.map_err(Into::into)
+        // Harness close drains an already admitted session. Callers see harness Closed.
+        match host.execute(command).await {
+            Err(AgentProtocolHostError::Code(CodeError::SessionClosed { .. }))
+                if self.is_closed() =>
+            {
+                Err(AgentProtocolHarnessError::Closed)
+            }
+            other => other.map_err(Into::into),
+        }
     }
 
     /// Validate, restore, execute, and publish one portable checkpoint as one
@@ -567,6 +575,10 @@ impl AgentProtocolHarness {
             )
             .await?
             .ok_or(AgentProtocolHarnessError::SessionNotFound)?;
+        if self.is_closed() {
+            session.close().await;
+            return Err(AgentProtocolHarnessError::Closed);
+        }
         let host = Arc::new(AgentProtocolHost::from_verified_manifest(
             &self.manifest,
             Arc::new(session),
