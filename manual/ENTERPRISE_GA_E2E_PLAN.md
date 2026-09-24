@@ -146,8 +146,8 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
-| 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — `just layer-c-live-e2e` wrote `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22) with a3s-vec 0.1.8. That FINAL does not cover `fa0a92ca`. |
-| L5 Layer C on `fa0a92ca` | **In progress** — the full `just layer-c-live-e2e` matrix for this SHA is running |
+| 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — earlier `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22). That FINAL does not cover `fa0a92ca`. |
+| L5 Layer C on `fa0a92ca` | **PASS** — `just layer-c-live-e2e` wrote exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. The runner log ends `LAYER:0`. Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. |
 | L6 on the 9.0.0 commit `fa0a92ca` | **PASS** — performance.yml `35947891976` and hermetic-integrations via CI `35947892108`, both `passed: true`, archived above |
 | Enterprise GA | **Not achieved** — L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |
 
