@@ -159,6 +159,10 @@ pub struct WorkspacePersistentIndex {
     building: AtomicBool,
     #[cfg(feature = "a3s-vec-fts")]
     state: RwLock<Option<PersistentState>>,
+    /// One-shot sync failure owned by this index. A process-global switch is
+    /// stolen by whichever durable worker runs first under parallel tests.
+    #[cfg(all(test, feature = "a3s-vec-fts"))]
+    fail_next_sync: AtomicBool,
 }
 
 #[cfg(feature = "a3s-vec-fts")]
@@ -217,6 +221,8 @@ impl WorkspacePersistentIndex {
                 active_operations: Arc::new((Mutex::new(0), Condvar::new())),
                 building: AtomicBool::new(false),
                 state: RwLock::new(None),
+                #[cfg(test)]
+                fail_next_sync: AtomicBool::new(false),
             });
             // CURRENT publication and generation collection are shared by
             // every session that points at this workspace. Serialize those
@@ -240,6 +246,18 @@ impl WorkspacePersistentIndex {
 
     pub fn engine(&self) -> WorkspaceLexicalEngine {
         self.engine
+    }
+
+    /// Fail the next `sync_snapshot` once with a non-retryable query error.
+    #[cfg(all(test, feature = "a3s-vec-fts"))]
+    pub(crate) fn fail_next_sync_for_test(&self) {
+        self.fail_next_sync.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Self::fail_next_sync_for_test`] is still waiting to fire.
+    #[cfg(all(test, feature = "a3s-vec-fts"))]
+    pub(crate) fn non_retryable_sync_failure_is_armed(&self) -> bool {
+        self.fail_next_sync.load(Ordering::SeqCst)
     }
 
     pub fn is_ready(&self) -> bool {
@@ -370,6 +388,12 @@ impl WorkspacePersistentIndex {
 
         #[cfg(feature = "a3s-vec-fts")]
         {
+            #[cfg(test)]
+            if self.fail_next_sync.swap(false, Ordering::SeqCst) {
+                return Err(WorkspaceIndexError::InvalidQuery(
+                    "forced non-retryable sync failure".into(),
+                ));
+            }
             let _operation = self.begin_operation()?;
             self.building.store(true, Ordering::Release);
             let _building = BuildActivityGuard(&self.building);

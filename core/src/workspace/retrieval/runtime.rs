@@ -16,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 static TEST_FORCE_PUBLISH_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_PUBLISH_DROP_RESULT: AtomicBool = AtomicBool::new(false);
 static TEST_FORCE_SYNC_SPAWN_FAILURE: AtomicBool = AtomicBool::new(false);
-static TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE: AtomicBool = AtomicBool::new(false);
 /// Serializes tests that flip the process-global `TEST_FORCE_*` atomics so
 /// parallel `multi_thread` suites cannot steal each other's forced failures.
 #[allow(dead_code)] // Referenced only from `#[cfg(test)]` helpers; keep linked in lib builds.
@@ -175,17 +174,8 @@ async fn sync_snapshot_with_retry(
         // already at revision 1 and the index stays Absent.
         let (tx, rx) = tokio::sync::oneshot::channel();
         let force_spawn_failure = TEST_FORCE_SYNC_SPAWN_FAILURE.swap(false, Ordering::SeqCst);
-        let force_non_retryable =
-            TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.swap(false, Ordering::SeqCst);
         let spawn_result = if force_spawn_failure {
             Err(std::io::Error::other("forced sync spawn failure"))
-        } else if force_non_retryable {
-            drop(persistent);
-            drop(snapshot);
-            let _ = tx.send(Err(WorkspaceIndexError::InvalidQuery(
-                "forced non-retryable sync failure".into(),
-            )));
-            Ok(())
         } else {
             std::thread::Builder::new()
                 .name("a3s-persistent-sync".to_owned())
@@ -204,7 +194,9 @@ async fn sync_snapshot_with_retry(
                 let retryable = retryable_index_error(&error);
                 tracing::warn!(%error, retryable, retries, "workspace persistent index update failed");
                 if !retryable {
-                    let Some(newer_snapshot) = wait_for_index_retry(
+                    // The same snapshot stays failed. A newer catalog revision
+                    // is the only reason to build again.
+                    let Some(true) = wait_for_index_retry(
                         Duration::from_secs(1),
                         lifetime,
                         pending_updates,
@@ -214,9 +206,7 @@ async fn sync_snapshot_with_retry(
                     else {
                         return;
                     };
-                    if newer_snapshot {
-                        retries = 0;
-                    }
+                    retries = 0;
                     continue;
                 }
                 let delay = PERSISTENT_INDEX_RETRY_DELAYS
@@ -348,7 +338,6 @@ mod tests {
         super::TEST_FORCE_PUBLISH_SPAWN_FAILURE.store(false, Ordering::SeqCst);
         super::TEST_FORCE_PUBLISH_DROP_RESULT.store(false, Ordering::SeqCst);
         super::TEST_FORCE_SYNC_SPAWN_FAILURE.store(false, Ordering::SeqCst);
-        super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.store(false, Ordering::SeqCst);
         guard
     }
 
@@ -873,7 +862,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_worker_observes_non_retryable_failure_then_cancels() {
-        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -897,11 +885,11 @@ mod tests {
         .expect("persistent index");
         let lifetime = CancellationToken::new();
         let coordinator = PersistentIndexCoordinator::start(index.clone(), lifetime.clone());
-        super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.store(true, Ordering::SeqCst);
+        index.fail_next_sync_for_test();
         coordinator.submit(catalog.snapshot().expect("catalog snapshot"));
 
         tokio::time::timeout(Duration::from_secs(5), async {
-            while super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.load(Ordering::SeqCst) {
+            while index.non_retryable_sync_failure_is_armed() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -919,7 +907,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_worker_resets_retries_when_a_newer_snapshot_arrives_after_non_retryable_failure()
     {
-        let _force_guard = lock_test_force_switches();
         let temp = tempfile::tempdir().expect("temporary workspace");
         let catalog = WorkspaceChunkCatalog::new_with_engine(
             ChunkingConfig::default(),
@@ -938,7 +925,7 @@ mod tests {
         .expect("persistent index");
         let lifetime = CancellationToken::new();
         let coordinator = PersistentIndexCoordinator::start(index.clone(), lifetime.clone());
-        super::TEST_FORCE_SYNC_NON_RETRYABLE_FAILURE.store(true, Ordering::SeqCst);
+        index.fail_next_sync_for_test();
         coordinator.submit(catalog.snapshot().expect("first snapshot"));
 
         tokio::time::sleep(Duration::from_millis(30)).await;
