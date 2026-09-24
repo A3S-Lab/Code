@@ -54,6 +54,10 @@ Code.
   folding the fact log. Confirmation and questions park until a fact. No
   in-process timer approves, denies, or synthesizes an unanswered question.
   A loop checkpoint does not choose the next model call.
+- **Enterprise GA is not achieved.** `fa0a92ca` has a Layer C pass and archived
+  L6 Actions reports. L7 still needs a full Harbor `TB-QUAL1` job, a
+  `DM-PROD1` host report, and `CAR-01`…`CAR-05` receipts. No product waiver
+  names those gates.
 
 ## What's new in 8.7
 

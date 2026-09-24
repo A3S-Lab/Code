@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-process oneshot or a timer. A missing tool result is run once on resume.
   A steer is another `user.message` fact. The tool-round cap is an empty tool
   list on the next completion, not a synthetic user message.
+- Enterprise GA is not achieved. `fa0a92ca` records Layer C
+  `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` and L6 Actions reports
+  with `passed: true`. L7 Harbor `TB-QUAL1`, `DM-PROD1`, and `CAR-01`…`CAR-05`
+  have no close receipt and no product waiver.
 
 ## [Unreleased]
 
