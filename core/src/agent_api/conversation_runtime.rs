@@ -542,6 +542,17 @@ pub(super) async fn resume_run(
     let _lease = ExecutionCoordinator::admit(session, "resume-run").await?;
     let Some(checkpoint) = load_resume_checkpoint_if_present(session, checkpoint_run_id).await?
     else {
+        if session_fact_log_is_empty(session) {
+            return Err(if session.session_store.is_none() {
+                CodeError::Session(
+                    "resume_run requires a session_store on this session".to_string(),
+                )
+            } else {
+                CodeError::Session(format!(
+                    "no loop checkpoint found for run '{checkpoint_run_id}'"
+                ))
+            });
+        }
         let pinned = prepare_pinned(session, "", false).await?;
         let settled = async {
             let run = pinned.parts.open()?;
@@ -595,6 +606,13 @@ pub(super) async fn resume_run(
     pinned.finish.publish(&resume_prompt, &gated, false).await;
     pinned.close().await;
     gated.map_err(|error| CodeError::Session(error.to_string()))
+}
+
+fn session_fact_log_is_empty(session: &AgentSession) -> bool {
+    let thread = crate::fact_control::thread_for_session(&session.session_id);
+    crate::fact_control::read_workspace_facts(session.workspace.as_path(), &thread)
+        .map(|facts| facts.is_empty())
+        .unwrap_or(true)
 }
 
 async fn load_resume_checkpoint_if_present(
