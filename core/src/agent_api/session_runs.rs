@@ -31,6 +31,8 @@ impl<'a> RunControl<'a> {
                 .await
                 .map_err(crate::error::CodeError::from);
         }
+        // The live inbox belongs to the active run. After it settles, a steer
+        // is another user message folded on the same fact log.
         let run = super::conversation_runtime::FactSession::from(self.session).open()?;
         let settled = run.steer(&request.input).await?;
         let now_ms = self.session.config.host_env.now_ms();

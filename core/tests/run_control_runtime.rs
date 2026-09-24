@@ -9,8 +9,8 @@ use a3s_code_core::llm::{
 };
 use a3s_code_core::permissions::PermissionPolicy;
 use a3s_code_core::{
-    Agent, AgentEvent, CodeError, InterruptRequest, PlanningMode, RunControlError,
-    RunControlOperation, RunControlReceiptState, RunStatus, SessionOptions, SteerRequest,
+    Agent, AgentEvent, InterruptRequest, PlanningMode, RunControlOperation, RunControlReceiptState,
+    RunStatus, SessionOptions, SteerRequest,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -98,13 +98,16 @@ struct CoordinatedSteerClient {
 
 impl CoordinatedSteerClient {
     fn saw_steer(&self) -> bool {
+        self.saw_user_text(STEER_INPUT)
+    }
+
+    fn saw_user_text(&self, text: &str) -> bool {
         self.observed_messages
             .lock()
             .unwrap()
             .iter()
-            .skip(1)
             .flatten()
-            .any(|message| message.role == "user" && message.text().contains(STEER_INPUT))
+            .any(|message| message.role == "user" && message.text().contains(text))
     }
 }
 
@@ -310,10 +313,16 @@ async fn steer_crosses_the_public_session_boundary_at_the_next_safe_point() {
             )
         }));
     assert!(session.run_control_snapshot().await.is_none());
-    assert!(matches!(
-        session.steer(SteerRequest::new("too late")).await,
-        Err(CodeError::RunControl(RunControlError::NoActiveRun))
-    ));
+    // The finished run's inbox is gone. A later steer is another user message.
+    let late = session
+        .steer(SteerRequest::new("too late"))
+        .await
+        .expect("settled steer is another user message");
+    assert_eq!(late.state, RunControlReceiptState::Applied);
+    assert!(
+        client.saw_user_text("too late"),
+        "late steer must reach the model as a user message"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

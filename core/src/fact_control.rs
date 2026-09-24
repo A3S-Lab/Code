@@ -164,6 +164,39 @@ fn interrupted_response() -> crate::llm::LlmResponse {
     }
 }
 
+async fn complete_detached(
+    client: Arc<dyn LlmClient>,
+    messages: &[Message],
+    system: Option<&str>,
+    tools: &[ToolDefinition],
+) -> Result<crate::llm::LlmResponse, ActorError> {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match client
+        .complete_streaming(messages, system, tools, cancel)
+        .await
+    {
+        Ok(mut events) => {
+            let mut done = None;
+            while let Some(event) = events.recv().await {
+                if let crate::llm::StreamEvent::Done(response) = event {
+                    done = Some(response);
+                }
+            }
+            if let Some(response) = done {
+                return Ok(response);
+            }
+            client
+                .complete(messages, system, tools)
+                .await
+                .map_err(model_error)
+        }
+        Err(_) => client
+            .complete(messages, system, tools)
+            .await
+            .map_err(model_error),
+    }
+}
+
 fn model_error(error: anyhow::Error) -> ActorError {
     if let Some(message) = crate::llm::non_retryable_llm_error_message(&error) {
         return ActorError::Defect(message.to_string());
@@ -182,10 +215,7 @@ async fn model_response(
     surface: Option<SessionSurface>,
 ) -> Result<crate::llm::LlmResponse, ActorError> {
     let Some(surface) = surface else {
-        return client
-            .complete(&messages, system.as_deref(), &tools)
-            .await
-            .map_err(model_error);
+        return complete_detached(client, &messages, system.as_deref(), &tools).await;
     };
     surface
         .agent
@@ -451,18 +481,18 @@ async fn apply_run_controls(surface: &SessionSurface, messages: &mut Vec<Message
         if receipt.state != crate::run_control::RunControlReceiptState::Applied {
             continue;
         }
-        if let Some(events) = &surface.events {
-            let _ = events
-                .send(crate::agent::AgentEvent::RunControlApplied {
-                    request_id: receipt.request_id,
-                    operation: receipt.operation,
-                    turn_id: receipt.turn_id,
-                    turn_revision: receipt.turn_revision,
-                    input,
-                    reason,
-                })
-                .await;
-        }
+        record_run_event(
+            surface,
+            crate::agent::AgentEvent::RunControlApplied {
+                request_id: receipt.request_id,
+                operation: receipt.operation,
+                turn_id: receipt.turn_id,
+                turn_revision: receipt.turn_revision,
+                input,
+                reason,
+            },
+        )
+        .await;
     }
 }
 
@@ -857,6 +887,12 @@ impl Completion for LiveCompletion {
             )
             .await?;
             if let Some(surface) = &surface {
+                if surface.cancel.is_cancelled() {
+                    apply_run_controls(surface, &mut messages).await;
+                    return Ok(ModelDecision::Text {
+                        text: "(Response interrupted by the user.)".into(),
+                    });
+                }
                 let prompt = request
                     .messages
                     .first()
