@@ -889,8 +889,14 @@ impl Completion for LiveCompletion {
             if let Some(surface) = &surface {
                 if surface.cancel.is_cancelled() {
                     apply_run_controls(surface, &mut messages).await;
+                    let text = "(Response interrupted by the user.)";
+                    messages.push(Message::assistant(text));
+                    *surface
+                        .transcript
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = messages;
                     return Ok(ModelDecision::Text {
-                        text: "(Response interrupted by the user.)".into(),
+                        text: text.to_string(),
                     });
                 }
                 let prompt = request
