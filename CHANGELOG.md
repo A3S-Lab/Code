@@ -94,9 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - L7 disposition: `DM-PROD1` closed with a host pack (all seven dimensions,
   `HYGIENE_OK`). `TB-QUAL1` is waived by product decision (2026-09-26); only a
   diagnostic Harbor trial with a retained native `verifier_result` exists.
-  `CAR-01`…`CAR-05` certification runs through Cloud
-  [#273](https://github.com/A3S-Lab/Cloud/pull/273). Because `TB-QUAL1` is
-  waived, Enterprise GA is not claimed.
+  `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` are out of scope: A3S Cloud, the
+  only party that could certify them, was retired by product decision
+  (2026-09-26). The Code-side contracts they describe remain in place. Because
+  `TB-QUAL1` is waived and CAR is not certified, Enterprise GA is not claimed.
 - Apofasi typed decisions stay under `[Unreleased]` and are not in this cut.
 
 ## [8.7.0] - 2026-09-21

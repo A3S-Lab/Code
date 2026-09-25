@@ -57,7 +57,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **Go 模块路径改为 `sdk/go/v9`。** 请把导入从 `sdk/go/v8` 改过来。
 - **发布状态。** 9.0.0 是渠道发布，不是企业 GA。RC `b91462d3` 通过 L0–L6、
   L8，以及使用 bailian Flash 的 Layer C。`DM-PROD1` 已用主机报告关闭。
-  `TB-QUAL1` 按产品决定豁免，因此不宣称企业 GA。见
+  `TB-QUAL1` 按产品决定豁免；A3S Cloud 已下线，CAR 不在范围内。因此不宣称企业 GA。见
   [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md)。
   npm/crates.io/PyPI 请用 **9.0.0**。
 

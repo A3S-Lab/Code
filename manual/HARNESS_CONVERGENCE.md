@@ -86,10 +86,10 @@ prompts.
 
 | Gate | External run / artifact | Blocking party cleared |
 | --- | --- | --- |
-| `CAR-01` | Partial: Cloud tip pin PR [#273](https://github.com/A3S-Lab/Cloud/pull/273) run [`36169895230`](https://github.com/A3S-Lab/Cloud/actions/runs/36169895230) — Box Runtime profiles **success**; Cloud recovery/control-plane lib compile failed under `RUSTFLAGS=-D warnings` (unused imports / dead_code). Not CERTIFIED. | Cloud control-plane tip hygiene |
-| `CAR-03` | | |
-| `CAR-04` | | |
-| `CAR-05` | Box advertised Runtime profiles green on same run (provider pin Box **3.2.5**); full CAR-05 workload matrix still skipped after step-22 failure. | Cloud + Box |
+| `CAR-01` | Out of scope: A3S Cloud retired by product decision (2026-09-26); last partial run was Cloud [`36180557882`](https://github.com/A3S-Lab/Cloud/actions/runs/36180557882) (Box profiles, recovery, Skill hydration green) | n/a |
+| `CAR-03` | Out of scope (Cloud retired) | n/a |
+| `CAR-04` | Out of scope (Cloud retired) | n/a |
+| `CAR-05` | Out of scope (Cloud retired) | n/a |
 
 When a row is complete, paste the secret-free link into the matching ROADMAP
 exit cell and flip status to Delivered.

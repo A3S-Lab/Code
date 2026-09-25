@@ -69,8 +69,9 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
 - **Go module path is `sdk/go/v9`.** Update imports from `sdk/go/v8`.
 - **Release status.** 9.0.0 is a channel release, not Enterprise GA. RC
   `b91462d3` passes L0–L6, L8, and Layer C with bailian Flash. `DM-PROD1` is
-  closed with a host pack. `TB-QUAL1` is waived by product decision, which
-  rules out the Enterprise GA claim. See
+  closed with a host pack. `TB-QUAL1` is waived by product decision and CAR
+  is out of scope since A3S Cloud was retired, which rules out the Enterprise
+  GA claim. See
   [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md).
   Prefer **9.0.0** on npm/crates.io/PyPI.
 
