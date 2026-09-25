@@ -138,6 +138,8 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | Item | State |
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
+| L6 performance.yml on tip `ee8f68ad` | **PASS** — run [`36092780724`](https://github.com/A3S-Lab/Code/actions/runs/36092780724), nine `passed: true`; digest `731386c0407e38bf8a14bcec939c438fdcc86a1cea9fff1e4b2a1a5eec21656b` |
+| L6 hermetic-integrations on tip `ee8f68ad` | **PASS** — run [`36122389323`](https://github.com/A3S-Lab/Code/actions/runs/36122389323); digest `4ac6d54e8867a5365e12ab70124949756121de5ad1984f6a5be2d6e7492906d3` |
 | L6 performance.yml on tip `91d34757` | **PASS** — run [`36089389830`](https://github.com/A3S-Lab/Code/actions/runs/36089389830), nine `passed: true` JSON reports; digest `6f6abcd483e49cbe6ca26adea9bbab461fa4c51cab60c0961fde5f52b4e06349` in PERFORMANCE_QUALIFICATION |
 | L6 hermetic-integrations on tip `91d34757` | **PASS** — run [`36089393353`](https://github.com/A3S-Lab/Code/actions/runs/36089393353); S3/CDP/OTLP `passed: true`; digest `18f3d7a42e5a8bba0e828e1d4d4be8e472f18818993a3036da5712d23ad82620` in PERFORMANCE_QUALIFICATION |
 | L6 performance.yml on `fa0a92ca` | **PASS** — run [`35947891976`](https://github.com/A3S-Lab/Code/actions/runs/35947891976), nine `passed: true` JSON reports; digest `b5ce0281d5bad5ab47003bd34d93ab11bc7eab1ef8f37c24b10b8fe619010b73` in PERFORMANCE_QUALIFICATION |
@@ -151,6 +153,7 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
 | 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — earlier `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22). That FINAL does not cover `fa0a92ca`. |
+| L5 Layer C on tip `ee8f68ad` | **PASS** — `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. `test_context_tools_real_llm` recovered after stream-worker join timeout fix. |
 | L5 Layer C on `fa0a92ca` | **PASS** — `just layer-c-live-e2e` wrote exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. The runner log ends `LAYER:0`. Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. |
 | L6 on the 9.0.0 commit `fa0a92ca` | **PASS** — performance.yml `35947891976` and hermetic-integrations via CI `35947892108`, both `passed: true`, archived above |
 | Enterprise GA | **Not achieved** — L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |

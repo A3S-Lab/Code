@@ -105,7 +105,7 @@ async fn run_prompt(session: &AgentSession, prompt: &str, snapshot_path: Option<
     let mut starts = HashMap::<String, (String, Value)>::new();
     let mut calls = Vec::new();
 
-    let (final_text, terminal_error) = tokio::time::timeout(REAL_LLM_TIMEOUT, async {
+    let timed = tokio::time::timeout(REAL_LLM_TIMEOUT, async {
         let mut terminal_error = None;
         let text = loop {
             let event = rx
@@ -156,10 +156,26 @@ async fn run_prompt(session: &AgentSession, prompt: &str, snapshot_path: Option<
         };
         (text, terminal_error)
     })
-    .await
-    .expect("real-LLM context-tool scenario timed out");
+    .await;
 
-    handle.await.expect("stream worker joins");
+    // The event loop can finish while the stream worker is still blocked on a
+    // provider call. Cap the join so Layer C cannot hang for hours after End.
+    const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
+    let (final_text, terminal_error) = match timed {
+        Ok(outcome) => {
+            match tokio::time::timeout(JOIN_TIMEOUT, handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => panic!("stream worker joins: {error}"),
+                Err(_) => panic!("stream worker did not join within {JOIN_TIMEOUT:?}"),
+            }
+            outcome
+        }
+        Err(_) => {
+            handle.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+            panic!("real-LLM context-tool scenario timed out");
+        }
+    };
     assert!(
         starts.is_empty(),
         "tool starts without matching ends: {starts:?}"

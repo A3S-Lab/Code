@@ -1,6 +1,6 @@
 # Capability integrated-use ledger
 
-Snapshot for Core line `9.0.0` (fact-log control), recorded 2026-09-24.
+Snapshot for Core line `9.0.0` (fact-log control), recorded 2026-09-25.
 
 Every `sdk_capabilities()` id must be **effective**, **efficient**, and
 **integrated/used** (not unit-only). Host-owned advanced surfaces prove the
@@ -20,7 +20,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | Root | Path / fact |
 | --- | --- |
 | Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (historical 29-cap snapshot); `typed_decisions` added via Core inventory + unit evidence below |
-| Layer C | `just layer-c-live-e2e` on fact-log code `fa0a92ca`: `FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. The runner log ends `LAYER:0`. Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. Lexical FTS is a3s-vec 0.1.8. The earlier pass on `74356768` is a different commit. |
+| Layer C | Tip `ee8f68ad` evidence `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. `test_context_tools_real_llm` recovered after a stream-worker join timeout fix (rerun 4/4). Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. Lexical FTS is a3s-vec 0.1.8. Prior pass on `fa0a92ca` remains archived. |
 | Efficiency | `/tmp/a3s-goal-integ-use/efficiency.log` (THIN_OK, Active-only, hide-disabled, golden inventory) |
 | Advanced hermetics | `/tmp/a3s-goal-integ-use/advanced-integ.log` + `cap-targeted.log` |
 | SDK discovery | Node / Python / Go project `sdk_capabilities()`; Core inventory now has 30 ids including `typed_decisions` (schema `a3s-code/sdk-capabilities/v2`) |
@@ -68,17 +68,17 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | L0/L1 Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` | PASS |
 | L3 advanced / s3 / otel / headless | advanced-integ + L3 FINAL | PASS |
 | L4 SDK | alignment + Node/Python/Go discovery | PASS |
-| L5 Layer C bailian Flash | `fa0a92ca` `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`, 22/22, log `LAYER:0` | PASS |
+| L5 Layer C bailian Flash | Tip `ee8f68ad` `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` (`LAYER_C_PASS`, 22/22; context_tools recovered after join-timeout fix) | PASS |
 | Efficiency (thin / absence) | `just harness-convergence-check` on this cut; `local-code` lib 3825 passed; `ci-all` lib 4100 passed | PASS |
 | L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, Go bridge lib 20 passed, alignment check | PASS |
 | L2 F-kernel cov | plan §9 coverage-gated / weekly | Not remeasured this run |
-| L6 Actions | `fa0a92ca` performance.yml `35947891976` and hermetic-integrations via CI `35947892108`, both `passed: true`, archived in PERFORMANCE_QUALIFICATION | PASS |
+| L6 Actions | Tip `ee8f68ad` performance.yml `36092780724` and hermetic-integrations `36122389323`, both `passed: true`, archived in PERFORMANCE_QUALIFICATION | PASS |
 | L7 Harbor / CAR | TB-QUAL1, DM-PROD1, CAR-01…CAR-05 still in progress; no product waiver | Not met |
 
 ## Verdict
 
 All **30** product capabilities have current-state evidence of effective
 kernels, efficiency constraints, and integrated or host-boundary use on the
-9.0.0 fact-log cut. Layer C under bailian Flash and L6 Actions are green for
-`fa0a92ca`. Enterprise GA is not achieved: L7 has no Harbor or CAR receipt and
-no product waiver.
+9.0.0 fact-log tip `ee8f68ad`. Layer C under bailian Flash and L6 Actions are
+green for this tip. Enterprise GA is not achieved: L7 has no Harbor or CAR
+receipt and no product waiver.

@@ -1,11 +1,11 @@
 # A3S Code Performance Qualification
 
 Status: tip L6 closed on 2026-09-25 for Code
-[`91d34757`](https://github.com/A3S-Lab/Code/commit/91d34757359a58d00fdf3f42844e1481ed611e4a)
+[`ee8f68ad`](https://github.com/A3S-Lab/Code/commit/ee8f68ad352c1e2d05d4e1ad393983cdce7d1878)
 — both `performance.yml` and `hermetic-integrations.yml` archived below.
-Prior fact-log qualification commit remains
-[`fa0a92ca`](https://github.com/A3S-Lab/Code/commit/fa0a92caad5e9aaffce37f976ae034c12d0e9323).
-Enterprise GA remains unmet: L7 has no Harbor or CAR receipt and no product waiver.
+CI is green on this tip after TUI vendor test deps. Prior tip L6 pair remains
+on `91d34757`. Enterprise GA remains unmet: L7 has no Harbor or CAR receipt
+and no product waiver.
 
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
@@ -16,7 +16,9 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| Nine release performance profiles (9.0.0 tip `ee8f68ad`)        | [`36092780724`](https://github.com/A3S-Lab/Code/actions/runs/36092780724) | `performance-36092780724-1`           | `731386c0407e38bf8a14bcec939c438fdcc86a1cea9fff1e4b2a1a5eec21656b` |
 | Nine release performance profiles (9.0.0 tip `91d34757`)        | [`36089389830`](https://github.com/A3S-Lab/Code/actions/runs/36089389830) | `performance-36089389830-1`           | `6f6abcd483e49cbe6ca26adea9bbab461fa4c51cab60c0961fde5f52b4e06349` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 tip `ee8f68ad`) | [`36122389323`](https://github.com/A3S-Lab/Code/actions/runs/36122389323) | `hermetic-integrations-36122389323-1` | `4ac6d54e8867a5365e12ab70124949756121de5ad1984f6a5be2d6e7492906d3` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 tip `91d34757`) | [`36089393353`](https://github.com/A3S-Lab/Code/actions/runs/36089393353) | `hermetic-integrations-36089393353-1` | `18f3d7a42e5a8bba0e828e1d4d4be8e472f18818993a3036da5712d23ad82620` |
 | Nine release performance profiles (9.0.0 `fa0a92ca`)            | [`35947891976`](https://github.com/A3S-Lab/Code/actions/runs/35947891976) | `performance-35947891976-1`           | `b5ce0281d5bad5ab47003bd34d93ab11bc7eab1ef8f37c24b10b8fe619010b73` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 `fa0a92ca`) | [`35947892108`](https://github.com/A3S-Lab/Code/actions/runs/35947892108) | `hermetic-integrations-35947892108-1` | `00ee5ea7eb32a09a9fd4cf8eacc40642c4d548319d01822ef3e809f753207269` |
