@@ -799,6 +799,42 @@ fn session_options_map_model_context_window() {
 }
 
 #[test]
+fn session_options_map_harness_compose() {
+    let mut session_options = PySessionOptions::new();
+    session_options.harness = Some(PyHarnessComposeOptions {
+        tool_budget: Some(3),
+        compact_after_chars: Some(64),
+        system: vec!["compose".to_string()],
+        parts: vec![
+            "system".into(),
+            "tools".into(),
+            "budget".into(),
+            "infer".into(),
+        ],
+    });
+    let opts = build_rust_session_options(session_options).unwrap();
+    let harness = opts.harness.expect("harness");
+    assert_eq!(harness.tool_budget, Some(3));
+    assert_eq!(harness.compact_after_chars, Some(64));
+    assert_eq!(harness.system, vec!["compose".to_string()]);
+    assert_eq!(
+        harness.parts,
+        vec![
+            a3s_code_core::HarnessPartId::System,
+            a3s_code_core::HarnessPartId::Tools,
+            a3s_code_core::HarnessPartId::Budget,
+            a3s_code_core::HarnessPartId::Infer,
+        ]
+    );
+
+    let invalid = PyHarnessComposeOptions {
+        parts: vec!["parallel_task".into()],
+        ..PyHarnessComposeOptions::default()
+    };
+    assert!(invalid.to_core().is_err());
+}
+
+#[test]
 fn session_options_reject_zero_model_context_window() {
     pyo3::prepare_freethreaded_python();
     let mut session_options = PySessionOptions::new();

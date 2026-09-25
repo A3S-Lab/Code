@@ -485,6 +485,9 @@ fn apply_py_host_contract_options(
     if let Some(enabled) = source.verifier_enabled {
         options = options.with_verifier(enabled);
     }
+    if let Some(harness) = &source.harness {
+        options = options.with_harness(harness.to_core()?);
+    }
     Ok(options)
 }
 

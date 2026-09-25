@@ -51,6 +51,125 @@ impl PyHostEnvConfig {
     }
 }
 
+/// Meta Harness compose recipe for ``SessionOptions.harness``.
+///
+/// Omit the option to keep the legacy ``coding_actor`` stock tree. When set,
+/// ordered ``parts`` select stock Moore components. Kernel permission overlay
+/// and completion gate stay Core-owned.
+#[pyclass(name = "HarnessComposeOptions")]
+#[derive(Clone, Default)]
+pub(super) struct PyHarnessComposeOptions {
+    /// Tool-call budget for the stock scheduler (``budget`` part).
+    #[pyo3(get, set)]
+    pub(super) tool_budget: Option<u32>,
+    /// Compaction character threshold (``compact`` part).
+    #[pyo3(get, set)]
+    pub(super) compact_after_chars: Option<usize>,
+    /// Extra system prompts merged into the ``system`` part.
+    #[pyo3(get, set)]
+    pub(super) system: Vec<String>,
+    /// Ordered stock parts: ``system``, ``tools``, ``budget``, ``compact``, ``infer``.
+    #[pyo3(get, set)]
+    pub(super) parts: Vec<String>,
+}
+
+#[pymethods]
+impl PyHarnessComposeOptions {
+    #[new]
+    #[pyo3(signature = (tool_budget=None, compact_after_chars=None, system=None, parts=None))]
+    fn new(
+        tool_budget: Option<u32>,
+        compact_after_chars: Option<usize>,
+        system: Option<Vec<String>>,
+        parts: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            tool_budget,
+            compact_after_chars,
+            system: system.unwrap_or_default(),
+            parts: parts.unwrap_or_default(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HarnessComposeOptions(tool_budget={:?}, compact_after_chars={:?}, system={:?}, parts={:?})",
+            self.tool_budget, self.compact_after_chars, self.system, self.parts
+        )
+    }
+}
+
+impl PyHarnessComposeOptions {
+    pub(super) fn to_core(&self) -> PyResult<a3s_code_core::HarnessComposeOptions> {
+        a3s_code_core::HarnessComposeOptions::compose(
+            self.parts.clone(),
+            self.tool_budget,
+            self.compact_after_chars,
+            self.system.clone(),
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
+
+/// Typed Meta Harness builders for ``SessionOptions.harness``.
+///
+/// .. code-block:: python
+///
+///     opts = SessionOptions()
+///     opts.harness = Harness.compose(
+///         parts=[Harness.system(), Harness.tools(), Harness.budget(), Harness.compact(), Harness.infer()],
+///         tool_budget=4,
+///     )
+#[pyclass(name = "Harness")]
+pub(super) struct PyHarness;
+
+#[pymethods]
+impl PyHarness {
+    #[staticmethod]
+    pub(super) fn system() -> String {
+        "system".into()
+    }
+
+    #[staticmethod]
+    pub(super) fn tools() -> String {
+        "tools".into()
+    }
+
+    #[staticmethod]
+    pub(super) fn budget() -> String {
+        "budget".into()
+    }
+
+    #[staticmethod]
+    pub(super) fn compact() -> String {
+        "compact".into()
+    }
+
+    #[staticmethod]
+    pub(super) fn infer() -> String {
+        "infer".into()
+    }
+
+    /// Validate and return a compose recipe for ``SessionOptions.harness``.
+    #[staticmethod]
+    #[pyo3(signature = (parts=None, tool_budget=None, compact_after_chars=None, system=None))]
+    pub(super) fn compose(
+        parts: Option<Vec<String>>,
+        tool_budget: Option<u32>,
+        compact_after_chars: Option<usize>,
+        system: Option<Vec<String>>,
+    ) -> PyResult<PyHarnessComposeOptions> {
+        let options = PyHarnessComposeOptions {
+            tool_budget,
+            compact_after_chars,
+            system: system.unwrap_or_default(),
+            parts: parts.unwrap_or_default(),
+        };
+        let _ = options.to_core()?;
+        Ok(options)
+    }
+}
+
 /// Explicit allow/deny/ask tool permission policy.
 #[pyclass(name = "PermissionPolicy")]
 #[derive(Clone)]

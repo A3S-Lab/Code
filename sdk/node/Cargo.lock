@@ -20,10 +20,11 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "8.7.0"
+version = "9.0.0"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
+ "a3s-effect",
  "a3s-flow",
  "a3s-lane",
  "a3s-memory",
@@ -83,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-node"
-version = "8.7.0"
+version = "9.0.0"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -113,6 +114,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "a3s-effect"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "044abc27a2da3caeb2c3636fd80b97b22f422034e46618a5ba2073397573b07c"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -280,9 +295,9 @@ dependencies = [
 
 [[package]]
 name = "a3s-vec"
-version = "0.1.4"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c4220df078de9c350aea98e0f9187890cec066e4d3ee242170a2ab762ed80f"
+checksum = "755d3beefad8e7662372f5d6e3b049346ce48ae6329f622a82fd0e97c5cedf95"
 dependencies = [
  "bincode",
  "bitmaps",
@@ -301,7 +316,6 @@ dependencies = [
  "thiserror 1.0.69",
  "unicode-general-category",
  "unicode-normalization",
- "zvec-core",
 ]
 
 [[package]]
@@ -4949,6 +4963,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -5998,17 +6013,4 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
-]
-
-[[package]]
-name = "zvec-core"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "405f855596d420dee8f61a86e6fa2b84cca6fe493095338f241aafb3ea88d235"
-dependencies = [
- "crc32fast",
- "rayon",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]

@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+- Meta Harness: ``SessionOptions.harness`` and ``Harness.compose`` for stock
+  parts (``system``, ``tools``, ``budget``, ``compact``, ``infer``). Omit the
+  option to keep the legacy ``coding_actor`` tree.
+- Expose ``SessionOptions.verifier_enabled`` getter/setter so Python hosts can
+  opt into the Core read-only verifier (#163).
+
 ## [8.7.0] - 2026-09-21
 
 - Bundled Core 8.7.0: removed filesystem-first `serve` / `AgentDir`

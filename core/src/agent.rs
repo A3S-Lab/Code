@@ -201,6 +201,8 @@ pub(crate) struct AgentConfig {
     pub path_rules: Vec<crate::path_instructions::PathRule>,
     /// Opt-in read-only verifier. Default sessions do not spend a second model call.
     pub verifier_enabled: bool,
+    /// Optional Meta Harness compose recipe for fact-log control.
+    pub harness: Option<crate::meta_harness::HarnessComposeOptions>,
     /// Host-supplied external observations bound into this run.
     pub external_observations: Vec<crate::external_observation::ExternalObservationV1>,
     /// Outcome-conditioned constraints the promoting host has already recorded.
@@ -300,6 +302,7 @@ impl Default for AgentConfig {
             plan_run: crate::harness_loop::PlanRunAdmission::ordinary(),
             path_rules: Vec::new(),
             verifier_enabled: false,
+            harness: None,
             external_observations: Vec::new(),
             outcome_ledger: crate::outcome_memory::OutcomeLedger::default(),
         }

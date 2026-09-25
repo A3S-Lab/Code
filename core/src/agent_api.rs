@@ -487,6 +487,11 @@ pub struct SessionOptions {
     pub path_rules: Vec<crate::path_instructions::PathRule>,
     /// Opt-in read-only verifier. Default is off so local-code spends no extra model call.
     pub verifier_enabled: bool,
+    /// Optional Meta Harness compose recipe (`components: [...]` style).
+    ///
+    /// When unset, the stock `coding_actor` tree is admitted. Kernel policy
+    /// (permissions + completion gate) stays Core-owned either way.
+    pub harness: Option<crate::meta_harness::HarnessComposeOptions>,
     /// Typed external observations bound into the run.
     pub external_observations: Vec<crate::external_observation::ExternalObservationV1>,
     /// Outcome ledger written by the promoting host.

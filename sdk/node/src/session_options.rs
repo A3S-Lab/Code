@@ -115,6 +115,91 @@ pub struct AutoDelegationOptions {
     pub max_tasks: Option<u32>,
 }
 
+/// Host-facing Meta Harness compose recipe.
+///
+/// Omit `SessionOptions.harness` to keep the legacy `coding_actor` stock tree.
+/// When set, ordered `parts` select stock Moore components (`system`, `tools`,
+/// `budget`, `compact`, `infer`). Kernel permission overlay and completion gate
+/// stay Core-owned and cannot be disabled from this object.
+#[napi(object)]
+#[derive(Default, Clone)]
+pub struct HarnessComposeOptions {
+    /// Tool-call budget for the stock scheduler (`budget` part).
+    pub tool_budget: Option<u32>,
+    /// Compaction character threshold (`compact` part).
+    pub compact_after_chars: Option<u32>,
+    /// Extra system prompts merged into the `system` part.
+    pub system: Option<Vec<String>>,
+    /// Ordered stock parts: `system`, `tools`, `budget`, `compact`, `infer`.
+    /// Empty / omitted selects the full stock tree.
+    pub parts: Option<Vec<String>>,
+}
+
+/// Typed Meta Harness builders for SessionOptions.harness.
+///
+/// ```js
+/// agent.session('.', {
+///   harness: Harness.compose({
+///     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+///     toolBudget: 4,
+///   }),
+/// });
+/// ```
+#[napi]
+pub struct Harness;
+
+#[napi]
+impl Harness {
+    /// Stock `system` part id.
+    #[napi]
+    pub fn system() -> String {
+        "system".into()
+    }
+
+    /// Stock `tools` catalog part id.
+    #[napi]
+    pub fn tools() -> String {
+        "tools".into()
+    }
+
+    /// Stock `budget` part id.
+    #[napi]
+    pub fn budget() -> String {
+        "budget".into()
+    }
+
+    /// Stock `compact` part id.
+    #[napi]
+    pub fn compact() -> String {
+        "compact".into()
+    }
+
+    /// Stock `infer` / scheduler part id.
+    #[napi]
+    pub fn infer() -> String {
+        "infer".into()
+    }
+
+    /// Validate and return a compose recipe for `SessionOptions.harness`.
+    #[napi]
+    pub fn compose(options: HarnessComposeOptions) -> napi::Result<HarnessComposeOptions> {
+        let _ = js_harness_to_core(&options)?;
+        Ok(options)
+    }
+}
+
+fn js_harness_to_core(
+    options: &HarnessComposeOptions,
+) -> napi::Result<a3s_code_core::HarnessComposeOptions> {
+    a3s_code_core::HarnessComposeOptions::compose(
+        options.parts.clone().unwrap_or_default(),
+        options.tool_budget,
+        options.compact_after_chars.map(|value| value as usize),
+        options.system.clone().unwrap_or_default(),
+    )
+    .map_err(|error| napi::Error::from_reason(error.to_string()))
+}
+
 /// Host-provided deterministic ID and clock configuration.
 ///
 /// Set both fields when replaying a run so session/run IDs and timestamps are
@@ -368,6 +453,17 @@ pub struct SessionOptions {
     pub allow_process_host_sandbox: Option<bool>,
     /// Opt-in read-only verifier. Default is off.
     pub verifier_enabled: Option<bool>,
+    /// Meta Harness compose recipe. Omit for the legacy `coding_actor` stock tree.
+    ///
+    /// ```js
+    /// agent.session('.', {
+    ///   harness: Harness.compose({
+    ///     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+    ///     toolBudget: 4,
+    ///   }),
+    /// });
+    /// ```
+    pub harness: Option<HarnessComposeOptions>,
     /// HITL confirmation policy configuration.
     ///
     /// Pass a confirmation policy to enable Human-in-the-Loop confirmation for tool execution.
@@ -1233,6 +1329,9 @@ fn apply_host_contract_options(
     }
     if let Some(enabled) = options.verifier_enabled {
         opts = opts.with_verifier(enabled);
+    }
+    if let Some(harness) = &options.harness {
+        opts = opts.with_harness(js_harness_to_core(harness)?);
     }
     Ok(opts)
 }

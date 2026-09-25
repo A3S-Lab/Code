@@ -366,6 +366,8 @@ work on top of the existing admission/budget/cancellation/evidence stages.
 | `HARNESS-CONV5` | Delivered | Breaking thin library/SDK `default` ≈ `local-code` / a3s-vec only (no `advanced-harness`, no `server`, no default `headless-search`); SDK Moli helpers cfg-gated behind `headless-search`; `a3s` CLI pins `scientific`; Advanced/server/headless are explicit features; `a3s-flow` is behind `dynamic-workflow` | `cargo check -p a3s-code-core` (default) and coding-only SDK crates compile without Advanced/server/Moli/Flow; scientific/full and product profiles documented |
 | `HARNESS-CONV6` | Delivered | Prompt ownership tightened: Core keeps `AgentStyle` → hard permission overlays and `SystemPromptSlots`; specialty markdown bodies documented as a replaceable default pack; hosts own rubric/reviewer prompts | Docs/API comments + hermetic/live `PROMPT-ALIGN1` gates |
 | `HARNESS-CONV7` | Code prep Delivered / external In progress | Code wrap-up index [HARNESS_CONVERGENCE.md](manual/HARNESS_CONVERGENCE.md); runbooks for [TB-QUAL1](manual/TERMINAL_BENCH.md), [DM-PROD1](manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md), [CAR checklist](manual/CLOUD_HARNESS_CONFORMANCE.md); DeepSeek/prompt live suites retained | Reproducible Harbor/host/Cloud·Box reports without secret leakage; paste links into ROADMAP when Delivered |
+| `META-HARNESS1` | Delivered | Composable Meta Harness on one fact log: crates.io `a3s-effect` 0.1.0 stock parts + `HarnessGraph`; Core `SessionOptions.harness` / kernel admission; Node/Python stock `Harness.compose`; default remains `coding_actor` | Effect compose tests; `meta_harness` admission tests; SDK SessionOptions mapping; [META_HARNESS.md](manual/META_HARNESS.md) |
+| `META-HARNESS2` | Planned | Node/Python host-authored Moore components / `tool({ spec, run })` analogue over the same fact log; typed host-component registry; still non-bypassable kernel | SDK custom-component surface + hermetic FFI tests; no second imperative loop |
 
 #### Harness convergence refuse list
 
@@ -374,8 +376,15 @@ Do not accept work that:
 - ships a product reviewer system prompt or scientific scoring rubric inside Core;
 - restores `serve` / `s3` / `advanced-harness` into library or SDK `default`;
 - adds unified IDE approval chrome to Core to “match Cursor”;
-- opens new orchestration or durable-memory dual paths after `HARNESS-CONV4`;
+- opens a second *imperative* orchestration loop or durable-memory dual path after
+  `HARNESS-CONV4` (restoring `parallel_task` as a second engine, or a second
+  message loop beside fact-log `ingest` / `resume`);
+- bypasses Core permission projection or the completion gate from host compose;
 - folds evaluation Gate semantics into the baseline coding agent loop (Advanced stays opt-in).
+
+**Allowed:** Meta Harness multi-component trees on the single fact log
+(`system` / `tools` / `budget` / `compact` / `infer` via `SessionOptions.harness`
+or `a3s-effect` compose). See [META_HARNESS.md](manual/META_HARNESS.md).
 
 First-principles packaging target: embedders that `cargo add a3s-code-core` receive a
 coding harness; Advanced and server surfaces require explicit features. Scientific

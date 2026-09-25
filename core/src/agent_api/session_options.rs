@@ -855,6 +855,12 @@ impl SessionOptions {
         self
     }
 
+    /// Admit a Meta Harness compose recipe for this session's fact-log actor.
+    pub fn with_harness(mut self, harness: crate::meta_harness::HarnessComposeOptions) -> Self {
+        self.harness = Some(harness);
+        self
+    }
+
     pub fn with_external_observations(
         mut self,
         observations: Vec<crate::external_observation::ExternalObservationV1>,

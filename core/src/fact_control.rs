@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use a3s_effect::{
-    answer_fact, coding_actor, confirm_fact, ingest_coding, message_fact, resume_coding,
-    ActorError, CodingPhase, CodingServices, CodingView, Compactor, Completion, CompletionRequest,
-    Exit, FileLog, HarnessConfig, LogStore, ModelDecision, NewFact, ToolCall, ToolRunner, ToolSpec,
+    answer_fact, confirm_fact, ingest_coding, message_fact, resume_coding, ActorError, CodingPhase,
+    CodingServices, CodingView, Compactor, Completion, CompletionRequest, Exit, FileLog,
+    HarnessConfig, HarnessGraph, LogStore, ModelDecision, NewFact, ToolCall, ToolRunner, ToolSpec,
 };
 use anyhow::Result;
 
@@ -104,6 +104,7 @@ pub(crate) struct SessionSurface {
     pub(crate) ledger: Arc<Mutex<crate::harness_loop::MutationLedger>>,
     pub(crate) reports: Arc<Mutex<Vec<crate::verification::VerificationReport>>>,
     pub(crate) run_control: Option<Arc<crate::run_control::RunControlInbox>>,
+    pub(crate) harness: Option<crate::meta_harness::HarnessComposeOptions>,
 }
 
 /// Exports one portable checkpoint after a tool result lands on the log.
@@ -1440,6 +1441,34 @@ impl FactRun {
         config: HarnessConfig,
         run_id: impl Into<String>,
     ) -> Result<Self> {
+        Self::open_composed(dir, completion, tools, config, run_id, None)
+    }
+
+    /// Admit an optional Meta Harness compose recipe (default = stock actor).
+    pub fn open_composed(
+        dir: impl Into<PathBuf>,
+        completion: Arc<dyn Completion>,
+        tools: Arc<dyn ToolRunner>,
+        config: HarnessConfig,
+        run_id: impl Into<String>,
+        compose: Option<&crate::meta_harness::HarnessComposeOptions>,
+    ) -> Result<Self> {
+        let step_limit = config.step_limit();
+        let (graph, _kernel) = crate::meta_harness::admit_from_compose(compose, config)?;
+        Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph)
+    }
+
+    /// Admit an explicit Meta Harness graph. Kernel policy (permissions +
+    /// completion gate) remains Core-owned and cannot be cleared by the graph.
+    pub fn open_with_graph(
+        dir: impl Into<PathBuf>,
+        completion: Arc<dyn Completion>,
+        tools: Arc<dyn ToolRunner>,
+        step_limit: u32,
+        run_id: impl Into<String>,
+        graph: HarnessGraph,
+    ) -> Result<Self> {
+        let _kernel = crate::meta_harness::KernelPolicy::default().admit();
         let dir = dir.into();
         let capped = Arc::new(CappedCompletion {
             inner: completion,
@@ -1450,14 +1479,12 @@ impl FactRun {
             tools,
             compactor: Arc::new(NoopCompact),
         });
-        let limit = config.step_limit();
-        let actor = coding_actor(config);
         Ok(Self {
             dir,
             thread: THREAD.to_string(),
-            actor,
+            actor: graph.into_actor(),
             services,
-            limit,
+            limit: step_limit,
         })
     }
 
@@ -1553,6 +1580,7 @@ impl FactRun {
         )
         .map_err(|error| anyhow::anyhow!(error))?
         .with_tool_round_cap(cap);
+        let harness = surface.harness.clone();
         let checkpoint = surface.checkpoint.map(|checkpoint| CheckpointState {
             sink: checkpoint.sink,
             run_id: checkpoint.run_id,
@@ -1560,7 +1588,7 @@ impl FactRun {
             capability_binding: checkpoint.capability_binding,
             turns: Arc::new(AtomicUsize::new(0)),
         });
-        let mut run = Self::open(
+        let mut run = Self::open_composed(
             log_dir(workspace),
             Arc::new(completion),
             Arc::new(ExecutorTools {
@@ -1579,6 +1607,7 @@ impl FactRun {
             }),
             config,
             session_id,
+            harness.as_ref(),
         )?;
         run.thread = thread_for_session(session_id);
         Ok(run)
@@ -2238,6 +2267,7 @@ mod tests {
             ledger: Arc::new(Mutex::new(crate::harness_loop::MutationLedger::default())),
             reports: Arc::new(Mutex::new(Vec::new())),
             run_control: None,
+            harness: None,
         };
         let run = FactRun::open_projected(
             workspace.path(),
@@ -2759,6 +2789,7 @@ mod tests {
             ledger: Arc::new(Mutex::new(crate::harness_loop::MutationLedger::default())),
             reports: Arc::new(Mutex::new(Vec::new())),
             run_control: None,
+            harness: None,
         };
         let (completion, _) = LiveCompletion::new(
             client.clone(),

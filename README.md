@@ -37,6 +37,12 @@ The tool-round cap sends one completion with an empty tool list. Workspace
 tools, model adapters, context construction, and session snapshots stay in
 Code.
 
+Code is a **Meta Harness**: hosts may compose stock Moore components
+(`system`, `tools`, `budget`, `compact`, `infer`) on that same log via
+`SessionOptions.harness` / `Harness.compose`. Omitting the option keeps the
+legacy `coding_actor` tree. Permission projection and the completion gate stay
+Core-owned. See [Meta Harness](manual/META_HARNESS.md).
+
 <p align="center">
   <a href="#start-in-60-seconds">Start</a> ·
   <a href="#whats-new-in-90">v9.0</a> ·
@@ -1726,6 +1732,7 @@ the v1 schema or claiming external Runtime certification.
 | [Advanced Developer Manual](manual/ADVANCED_DEVELOPER_MANUAL.md) · [Chinese](manual/ADVANCED_DEVELOPER_MANUAL_CN.md) | Extension contracts, security, lifecycle, and production integration                                                                                          |
 | [SDK API Design](manual/SDK_API_DESIGN.md)                                                                           | Cross-language API conventions and alignment                                                                                                                  |
 | [Harness Convergence](manual/HARNESS_CONVERGENCE.md)                                                               | Thin-default wrap-up, refuse list, and local verification for `HARNESS-CONV4`–`CONV7`                                                                          |
+| [Meta Harness](manual/META_HARNESS.md)                                                                             | Composable Moore components on one fact log; stock parts; SDK `Harness.compose`; non-bypassable kernel                                                                         |
 | [First-Principles E2E](manual/FIRST_PRINCIPLES_E2E.md)                                                             | Layer A–D verification matrix for harness, live ACL, and external TB/DM/CAR gates                                                                              |
 | [Capability Verification](manual/CAPABILITY_VERIFICATION.md)                                                         | First-principles evidence ledger for every advertised capability, SDK runtime gates, evidence-gap closure, and performance policy                             |
 | [Scoped Capability Architecture](manual/SCOPED_CAPABILITY_ARCHITECTURE.md)                                           | A3S Use ownership, typed scopes, immutable generations, reversible effects, migration gates, and verification invariants                                      |

@@ -16,8 +16,11 @@ Layer A–D verification matrix used by the E2E goal.
 | `CAR-01`…`CAR-05` | Checklist ready | [CLOUD_HARNESS_CONFORMANCE.md](CLOUD_HARNESS_CONFORMANCE.md) |
 
 Refuse list (do not reopen): Core reviewer/rubric prompts; restore `server` /
-`advanced-harness` to library default; Core unified approval UI; new dual
-orchestration/memory paths; baseline evaluation Gate semantics.
+`advanced-harness` to library default; Core unified approval UI; a second
+*imperative* message loop or completion-gate / permission bypass; baseline
+evaluation Gate semantics. **Allowed:** multi-component Meta Harness trees on
+one fact log (`SessionOptions.harness` / `a3s-effect` compose) —
+see [META_HARNESS.md](META_HARNESS.md).
 
 ## Local verification (Code)
 

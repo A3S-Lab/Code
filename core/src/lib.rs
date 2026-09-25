@@ -105,6 +105,7 @@ pub mod event_protocol;
 pub mod execution_identity;
 pub mod external_observation;
 pub mod fact_control;
+pub mod meta_harness;
 #[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;
@@ -184,6 +185,10 @@ pub use agent_api::ProjectedFlowHandle;
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentSession, ProjectedUiHandle, ReadFileOptions, SessionBuilder,
     SessionOptions, ToolCallResult,
+};
+pub use meta_harness::{
+    admit_default_graph, admit_from_compose, admit_spec_graph, parse_harness_part,
+    parse_harness_parts, HarnessComposeOptions, HarnessPartId, KernelPolicy,
 };
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,

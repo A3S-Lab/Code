@@ -19,6 +19,8 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyS3WorkspaceBackend>()?;
     m.add_class::<PyRemoteGitBackendConfig>()?;
     m.add_class::<PyHostEnvConfig>()?;
+    m.add_class::<PyHarnessComposeOptions>()?;
+    m.add_class::<PyHarness>()?;
     m.add_class::<PyPermissionPolicy>()?;
     m.add_class::<PyConfirmationPolicy>()?;
     m.add_class::<PyArtifactStoreLimits>()?;

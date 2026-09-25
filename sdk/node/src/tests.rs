@@ -589,6 +589,47 @@ fn verification_report_json() -> serde_json::Value {
 }
 
 #[test]
+fn harness_compose_maps_to_rust_session_options() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            tool_budget: Some(3),
+            compact_after_chars: Some(64),
+            system: Some(vec!["compose".into()]),
+            parts: Some(vec![
+                "system".into(),
+                "tools".into(),
+                "budget".into(),
+                "infer".into(),
+            ]),
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    let harness = opts.harness.expect("harness");
+    assert_eq!(harness.tool_budget, Some(3));
+    assert_eq!(harness.compact_after_chars, Some(64));
+    assert_eq!(harness.system, vec!["compose".to_string()]);
+    assert_eq!(
+        harness.parts,
+        vec![
+            a3s_code_core::HarnessPartId::System,
+            a3s_code_core::HarnessPartId::Tools,
+            a3s_code_core::HarnessPartId::Budget,
+            a3s_code_core::HarnessPartId::Infer,
+        ]
+    );
+
+    let invalid = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            parts: Some(vec!["parallel_task".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }));
+    assert!(invalid.is_err());
+}
+
+#[test]
 fn artifact_store_limits_maps_to_rust_session_options() {
     let opts = js_session_options_to_rust(Some(SessionOptions {
         artifact_store_limits: Some(ArtifactStoreLimits {

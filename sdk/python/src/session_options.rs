@@ -155,6 +155,8 @@ pub(super) struct PySessionOptions {
     pub(super) allow_process_host_sandbox: Option<bool>,
     /// Opt-in read-only verifier. Default is off.
     pub(super) verifier_enabled: Option<bool>,
+    /// Meta Harness compose recipe. Omit for the legacy ``coding_actor`` stock tree.
+    pub(super) harness: Option<PyHarnessComposeOptions>,
     /// Optional Python-side BudgetGuard. The framework calls
     /// `check_before_llm(session_id, estimated_tokens)`,
     /// `record_after_llm(session_id, usage_dict)`, and
@@ -287,6 +289,7 @@ impl Clone for PySessionOptions {
             read_only_session: self.read_only_session,
             allow_process_host_sandbox: self.allow_process_host_sandbox,
             verifier_enabled: self.verifier_enabled,
+            harness: self.harness.clone(),
             budget_guard: pyo3::Python::with_gil(|py| {
                 self.budget_guard.as_ref().map(|o| o.clone_ref(py))
             }),
@@ -378,6 +381,7 @@ impl PySessionOptions {
             read_only_session: None,
             allow_process_host_sandbox: None,
             verifier_enabled: None,
+            harness: None,
             budget_guard: None,
             budget_guard_timeout_ms: DEFAULT_BUDGET_GUARD_TIMEOUT_MS,
             immutable_content_adapter: None,
@@ -1073,6 +1077,30 @@ impl PySessionOptions {
     #[setter]
     fn set_allow_process_host_sandbox(&mut self, value: Option<bool>) {
         self.allow_process_host_sandbox = value;
+    }
+
+    /// Opt-in read-only verifier. Default is off (`None` / unset).
+    #[getter]
+    fn get_verifier_enabled(&self) -> Option<bool> {
+        self.verifier_enabled
+    }
+
+    #[setter]
+    fn set_verifier_enabled(&mut self, value: Option<bool>) {
+        self.verifier_enabled = value;
+    }
+
+    /// Meta Harness compose recipe. Omit for the legacy ``coding_actor`` stock tree.
+    ///
+    /// Prefer ``Harness.compose(...)`` so stock part names are validated early.
+    #[getter]
+    fn get_harness(&self) -> Option<PyHarnessComposeOptions> {
+        self.harness.clone()
+    }
+
+    #[setter]
+    fn set_harness(&mut self, value: Option<PyHarnessComposeOptions>) {
+        self.harness = value;
     }
 
     /// Host-supplied BudgetGuard. Any Python object implementing some

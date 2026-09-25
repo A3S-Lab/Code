@@ -26,8 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Honor `NO_PROXY` / `no_proxy` on explicit `HTTP(S)_PROXY` clients used by MCP
+  HTTP transports, OAuth, and model HTTP (`build_reqwest_client`) (#171).
+- Python `SessionOptions.verifier_enabled` getter/setter so hosts can opt into
+  the Core read-only verifier (#163).
+- Rolling context compaction mechanically re-pins the original `## Goal` when
+  the summarizer omits it (#174).
+
 ### Added
 
+- **Meta Harness composition.** Hosts compose stock Moore components
+  (`system`, `tools`, `budget`, `compact`, `infer`) on the single fact log via
+  `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io
+  `a3s-effect` 0.1.0. Omit the option to keep the legacy `coding_actor` tree.
+  Permission overlay and completion gate remain Core-owned. Manual:
+  [META_HARNESS.md](manual/META_HARNESS.md). Host-authored SDK components are
+  tracked as `META-HARNESS2`.
 - Optional typed System-1 decisions via A3S Apofasi: Cargo features `apofasi`
   (lexical + script router), `apofasi-infer` (Candle checkpoints), and
   `apofasi-metal` (Apple Silicon Metal). Host API:
