@@ -44,7 +44,7 @@ the repository's own definition of done.
 | --- | --- |
 | Fact-log control implemented | `core/src/fact_control.rs`, CHANGELOG `[9.0.0]`, `a3s-effect` |
 | Versions bumped to 9.0.0 | Core / TUI / Node / Python / Go bridge Cargo + package metadata |
-| Tip RC | Coverage-close tip pending push (maps SessionClosed→Closed for L2); prior tip `b8a13494` / `ee8f68ad` for L5/L6 |
+| Tip RC | `15d2a863` (L2 SessionClosed→Closed coverage close on top of `b8a13494` / `ee8f68ad` L5/L6) |
 | L0/L1 + L5 + L6 on tip | harness-convergence PASS; Layer C `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` `LAYER_C_PASS`; L6 Actions `36092780724` / `36122389323` |
 | Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
 | L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
