@@ -49,9 +49,9 @@ the repository's own definition of done.
 | Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
 | L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
 | L8 §7 9.0.0 pins | **PASS (hermetic)** — fact_log 34/34; effect park + tool_round_cap; bm25 a3s-vec FTS 17/17 |
-| L7 Harbor / CAR / DM | Still open (no waiver). Tip `b91462d3`: L0–L6 + L8 PASS; Layer C PASS (`/tmp/a3s-layer-c-b91462d3`). Flash diag job `2026-09-26__02-14-59` retained native `verifier_result` (reward 0.0, exceptions 0, host completion-gate binds). **TB-QUAL1 in flight**: `.harbor-tb-qual1/jobs/2026-09-26__02-24-52` — 330 trials (`-n 2 -k 5`, complete `terminal-bench@4.0.0`, Flash). Cloud PR [#273](https://github.com/A3S-Lab/Cloud/pull/273) Box profiles green on run `36169895230`; Cloud recovery suite blocked on control-plane `-D warnings` dead_code. DM-PROD1 host pack PASS at `/tmp/dm-prod1-host-b7b239a8` (Boyue embeddings + Redis CAS/leases; all six dimensions). |
-| No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm) |
-| Docs site | Current archived line `docs/v8.7.0`; no `docs/v9.0.0` |
+| L7 Harbor / CAR / DM | End-state A (channel release). Tip `b91462d3`: L0–L6 + L8 PASS; Layer C PASS (`/tmp/a3s-layer-c-b91462d3`). **DM-PROD1 closed**: host pack `/tmp/dm-prod1-host-b7b239a8` (all six dimensions, `HYGIENE_OK`). **TB-QUAL1 waived by product decision (2026-09-26)**; supporting diagnostic only (job `2026-09-26__02-14-59`, native `verifier_result` retained); full `-k 5` job stopped at 3/330 trials. CAR-01…05 certification runs through Cloud [#273](https://github.com/A3S-Lab/Cloud/pull/273). The TB waiver forbids the Enterprise GA claim. |
+| `v9.0.0` tag / Release | Pending the release workflow; published channels are **8.6.0** until it completes (the `v8.7.0` release run failed CI) |
+| Docs site | Current line `docs/v9.0.0`; `v8.7.0` was tagged but never published and has no archive |
 | Out of 9.0.0 CHANGELOG body | Apofasi typed decisions live under `[Unreleased]` |
 
 ---

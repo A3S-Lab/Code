@@ -60,20 +60,30 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   folding the fact log. Confirmation and questions park until a fact. No
   in-process timer approves, denies, or synthesizes an unanswered question.
   A loop checkpoint does not choose the next model call.
-- **Enterprise GA is not achieved.** `fa0a92ca` has a Layer C pass and archived
-  L6 Actions reports. L7 still needs a full Harbor `TB-QUAL1` job, a
-  `DM-PROD1` host report, and `CAR-01`…`CAR-05` receipts. No product waiver
-  names those gates. Sequenced closure:
+- **Meta Harness (9.0.0).** Hosts compose ordered `components: [...]` over the
+  one fact log: stock `system`, `tools`, `budget`, `compact`, `infer`, plus
+  registered `host:<id>` mounts. Permission projection and the completion gate
+  stay Core-owned; a host `CompletionAttestor` supplies digest-bound evidence,
+  not a bypass. Omit `harness` to keep `coding_actor`. See
+  [manual/META_HARNESS.md](manual/META_HARNESS.md).
+- **Go module path is `sdk/go/v9`.** Update imports from `sdk/go/v8`.
+- **Release status.** 9.0.0 is a channel release, not Enterprise GA. RC
+  `b91462d3` passes L0–L6, L8, and Layer C with bailian Flash. `DM-PROD1` is
+  closed with a host pack. `TB-QUAL1` is waived by product decision, which
+  rules out the Enterprise GA claim. See
   [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md).
+  Prefer **9.0.0** on npm/crates.io/PyPI.
 
 ## What's new in 8.7
+
+8.7.0 was tagged but never published; its changes first ship in 9.0.0.
 
 - **a3s-vec lexical FTS (8.7.0).** Workspace FTS uses pure-Rust `a3s-vec`
   (`a3s_vec_fts_v1`). On-disk `zvec_rust_fts_v1` generations are incompatible
   and rebuilt.
 - **`web_search` usable rows succeed (8.7.0).** Default cascade is API, then
   HTTP/RSS, then headless. Non-empty usable rows are `complete` or `partial`
-  success (#161). Prefer **8.7.0** on npm/crates.io/PyPI.
+  success (#161).
 
 ### Earlier in 8.6
 
@@ -137,8 +147,8 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   includes this fix; crates.io also published **8.5.10**, but that cut's
   Release workflow failed musl and did not complete the full Node matrix.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v8.7` line;
-current package **8.7.0**).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.0` line;
+current package **9.0.0**).
 
 ### Earlier lines
 

@@ -137,9 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Full multi-channel cut: crates.io `a3s-code-core`, GitHub Release `v8.7.0`,
-  npm `@a3s-lab/code`, Python bootstrap / wheels, and Go module tag
-  `sdk/go/v8.7.0`.
+- The `v8.7.0` tag exists, but its release workflow failed CI and nothing was
+  published: crates.io, npm, and PyPI stayed at 8.6.0 and there is no GitHub
+  Release. These changes first ship in 9.0.0.
 
 
 ## [8.6.0] - 2026-09-18
