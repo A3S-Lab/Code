@@ -157,6 +157,18 @@ const INTENTIONAL_SESSION_OPTION_OMISSIONS = new Map([
     'memory_maintenance',
     'Rust MemoryMaintenanceJob trait objects; SDKs observe health, while custom jobs require a typed callback provider.',
   ],
+  [
+    'completion_attestor',
+    'Rust CompletionAttestor trait object; host-only gate binder with no cross-language callback shape yet.',
+  ],
+  [
+    'host_harness_registry',
+    'Rust HostHarnessRegistry trait object; SDKs pass host:<id> names while Moore factories stay Rust-side.',
+  ],
+  [
+    'host_harness_assembler',
+    'Rust HostHarnessAssembler trait object; full custom graphs stay Rust-side embedders only.',
+  ],
 ]);
 
 const SESSION_OPTION_ALIASES = new Map([

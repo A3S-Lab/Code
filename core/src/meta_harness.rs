@@ -10,7 +10,7 @@
 //! factories stay Rust-side (no second imperative loop, no Effect-TS embed).
 
 use a3s_effect::{
-    budget, coding_scheduler, compact, compose_coding_actor, component, system, tools,
+    budget, coding_scheduler, compact, component, compose_coding_actor, system, tools,
     CodingServices, ErasedComponent, HarnessConfig, HarnessGraph, HarnessView, MetaHarnessSpec,
     ToolSpec,
 };
@@ -164,9 +164,7 @@ pub fn parse_harness_component(name: &str) -> anyhow::Result<HarnessComponentRef
             anyhow::bail!("host harness mount requires a non-empty id after 'host:'");
         }
         if id.contains(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')) {
-            anyhow::bail!(
-                "invalid host harness id '{id}': use ascii alphanumeric, '_' or '-'"
-            );
+            anyhow::bail!("invalid host harness id '{id}': use ascii alphanumeric, '_' or '-'");
         }
         return Ok(HarnessComponentRef::Host(id.to_ascii_lowercase()));
     }
@@ -464,7 +462,10 @@ mod tests {
             vec!["base".into()],
         )
         .expect("compose");
-        assert!(options.parts.is_empty(), "host mounts force components path");
+        assert!(
+            options.parts.is_empty(),
+            "host mounts force components path"
+        );
         let refs = options.resolved_components().expect("refs");
         assert_eq!(
             refs,
@@ -583,10 +584,7 @@ mod tests {
             .resolved_components()
             .unwrap()
             .iter()
-            .any(|entry| matches!(
-                entry,
-                HarnessComponentRef::Stock(HarnessPartId::Compact)
-            )));
+            .any(|entry| matches!(entry, HarnessComponentRef::Stock(HarnessPartId::Compact))));
         let (graph, _) =
             admit_from_compose_with_registry(Some(&options), None, config).expect("admit");
         assert_eq!(graph.actor().name, "a3s-code");
@@ -643,7 +641,11 @@ mod tests {
         assert!(policy.permission_overlay && policy.completion_gate);
 
         let options = HarnessComposeOptions {
-            parts: vec![HarnessPartId::System, HarnessPartId::Budget, HarnessPartId::Infer],
+            parts: vec![
+                HarnessPartId::System,
+                HarnessPartId::Budget,
+                HarnessPartId::Infer,
+            ],
             tool_budget: Some(2),
             ..HarnessComposeOptions::default()
         };
@@ -697,10 +699,7 @@ mod tests {
     #[test]
     fn host_prefix_is_case_insensitive_and_normalizes_id() {
         let upper = parse_harness_component("HOST:Intent_Stamp").expect("HOST:");
-        assert_eq!(
-            upper,
-            HarnessComponentRef::Host("intent_stamp".into())
-        );
+        assert_eq!(upper, HarnessComponentRef::Host("intent_stamp".into()));
         assert_eq!(
             host_component_id(" Intent_Stamp "),
             "host:intent_stamp".to_string()

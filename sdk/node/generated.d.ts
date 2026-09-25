@@ -446,6 +446,32 @@ export interface AutoDelegationOptions {
   maxTasks?: number
 }
 /**
+ * Host-facing Meta Harness compose recipe.
+ *
+ * Omit `SessionOptions.harness` to keep the legacy `coding_actor` stock tree.
+ * Prefer ordered `components: [...]` (stock names or `host:<id>`).
+ * Legacy `parts` remains for stock-only recipes. Kernel permission overlay
+ * and completion gate stay Core-owned and cannot be disabled from this object.
+ */
+export interface HarnessComposeOptions {
+  /** Tool-call budget for the stock scheduler (`budget` part). */
+  toolBudget?: number
+  /** Compaction character threshold (`compact` part). */
+  compactAfterChars?: number
+  /** Extra system prompts merged into the `system` part. */
+  system?: Array<string>
+  /**
+   * Ordered stock parts: `system`, `tools`, `budget`, `compact`, `infer`.
+   * Used when `components` is empty / omitted.
+   */
+  parts?: Array<string>
+  /**
+   * Ordered assemble list. When set, takes precedence over
+   * `parts`. Entries are stock names or `host:<id>` (Rust registry).
+   */
+  components?: Array<string>
+}
+/**
  * Host-provided deterministic ID and clock configuration.
  *
  * Set both fields when replaying a run so session/run IDs and timestamps are
@@ -751,6 +777,19 @@ export interface SessionOptions {
   allowProcessHostSandbox?: boolean
   /** Opt-in read-only verifier. Default is off. */
   verifierEnabled?: boolean
+  /**
+   * Meta Harness compose recipe. Omit for the legacy `coding_actor` stock tree.
+   *
+   * ```js
+   * agent.session('.', {
+   *   harness: Harness.compose({
+   *     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+   *     toolBudget: 4,
+   *   }),
+   * });
+   * ```
+   */
+  harness?: HarnessComposeOptions
   /**
    * HITL confirmation policy configuration.
    *
@@ -1494,6 +1533,40 @@ export declare class LocalWorkspaceBackend {
   root: string
   /** Create a local filesystem workspace backend rooted at `root`. */
   constructor(root: string)
+}
+/**
+ * Typed Meta Harness builders for SessionOptions.harness.
+ *
+ * ```js
+ * agent.session('.', {
+ *   harness: Harness.compose({
+ *     components: [
+ *       Harness.system(),
+ *       Harness.tools(),
+ *       Harness.host('intent_stamp'),
+ *       Harness.budget(),
+ *       Harness.infer(),
+ *     ],
+ *     toolBudget: 4,
+ *   }),
+ * });
+ * ```
+ */
+export declare class Harness {
+  /** Stock `system` part id. */
+  static system(): string
+  /** Stock `tools` catalog part id. */
+  static tools(): string
+  /** Stock `budget` part id. */
+  static budget(): string
+  /** Stock `compact` part id. */
+  static compact(): string
+  /** Stock `infer` / scheduler part id. */
+  static infer(): string
+  /** Host Moore mount id (`host:<id>`). Requires a Rust `HostHarnessRegistry`. */
+  static host(id: string): string
+  /** Validate and return a compose recipe for `SessionOptions.harness`. */
+  static compose(options: HarnessComposeOptions): HarnessComposeOptions
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {

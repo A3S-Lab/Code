@@ -496,8 +496,7 @@ pub struct SessionOptions {
     /// (permissions + completion gate) stays Core-owned either way.
     pub harness: Option<crate::meta_harness::HarnessComposeOptions>,
     /// Registry for `host:<id>` mounts referenced from [`Self::harness`].
-    pub host_harness_registry:
-        Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessRegistry>>,
+    pub host_harness_registry: Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessRegistry>>,
     /// Full custom graph assembler. When set, replaces stock/compose admission.
     pub host_harness_assembler:
         Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessAssembler>>,

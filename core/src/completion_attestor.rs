@@ -175,11 +175,7 @@ mod tests {
     fn empty_ledger_skips_attestor() {
         struct PanicAttestor;
         impl CompletionAttestor for PanicAttestor {
-            fn attest(
-                &self,
-                _: &str,
-                _: &[MutatedPathRecord],
-            ) -> Option<VerificationReport> {
+            fn attest(&self, _: &str, _: &[MutatedPathRecord]) -> Option<VerificationReport> {
                 panic!("must not run on empty ledger");
             }
         }

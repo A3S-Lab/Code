@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, Harness, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -321,6 +321,7 @@ module.exports.FileSessionStore = FileSessionStore
 module.exports.MemorySessionStore = MemorySessionStore
 module.exports.DefaultSecurityProvider = DefaultSecurityProvider
 module.exports.LocalWorkspaceBackend = LocalWorkspaceBackend
+module.exports.Harness = Harness
 module.exports.ToolPresentationMode = ToolPresentationMode
 module.exports.BrowserBackend = BrowserBackend
 module.exports.Session = Session

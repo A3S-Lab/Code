@@ -343,7 +343,7 @@ pub use meta_harness::{
     admit_from_compose_with_registry, admit_spec_graph, host_component_id, parse_harness_component,
     parse_harness_components, parse_harness_part, parse_harness_parts, BuiltinHostHarnessRegistry,
     HarnessComponentRef, HarnessComposeOptions, HarnessPartId, HostHarnessAssembler,
-    HostHarnessRegistry, INTENT_STAMP_MARKER, KernelPolicy,
+    HostHarnessRegistry, KernelPolicy, INTENT_STAMP_MARKER,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{

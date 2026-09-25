@@ -59,6 +59,14 @@ pub struct FactRun {
     limit: u32,
 }
 
+/// Optional host mounts for Meta Harness admission.
+#[derive(Default)]
+pub struct FactRunHostMounts<'a> {
+    pub compose: Option<&'a crate::meta_harness::HarnessComposeOptions>,
+    pub registry: Option<&'a dyn crate::meta_harness::HostHarnessRegistry>,
+    pub assembler: Option<&'a dyn crate::meta_harness::HostHarnessAssembler>,
+}
+
 struct CappedCompletion {
     inner: Arc<dyn Completion>,
     run_id: String,
@@ -1457,7 +1465,18 @@ impl FactRun {
         run_id: impl Into<String>,
         compose: Option<&crate::meta_harness::HarnessComposeOptions>,
     ) -> Result<Self> {
-        Self::open_composed_with_hosts(dir, completion, tools, config, run_id, compose, None, None)
+        Self::open_composed_with_hosts(
+            dir,
+            completion,
+            tools,
+            config,
+            run_id,
+            FactRunHostMounts {
+                compose,
+                registry: None,
+                assembler: None,
+            },
+        )
     }
 
     /// Admit compose with optional host registry / full assembler.
@@ -1467,18 +1486,19 @@ impl FactRun {
         tools: Arc<dyn ToolRunner>,
         config: HarnessConfig,
         run_id: impl Into<String>,
-        compose: Option<&crate::meta_harness::HarnessComposeOptions>,
-        registry: Option<&dyn crate::meta_harness::HostHarnessRegistry>,
-        assembler: Option<&dyn crate::meta_harness::HostHarnessAssembler>,
+        hosts: FactRunHostMounts<'_>,
     ) -> Result<Self> {
         let step_limit = config.step_limit();
-        let graph = if let Some(assembler) = assembler {
+        let graph = if let Some(assembler) = hosts.assembler {
             let graph = assembler.assemble(config)?;
             let _kernel = crate::meta_harness::KernelPolicy::default().admit();
             graph
         } else {
-            let (graph, _kernel) =
-                crate::meta_harness::admit_from_compose_with_registry(compose, registry, config)?;
+            let (graph, _kernel) = crate::meta_harness::admit_from_compose_with_registry(
+                hosts.compose,
+                hosts.registry,
+                config,
+            )?;
             graph
         };
         Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph)
@@ -1635,9 +1655,11 @@ impl FactRun {
             }),
             config,
             session_id,
-            harness.as_ref(),
-            host_registry.as_deref(),
-            host_assembler.as_deref(),
+            FactRunHostMounts {
+                compose: harness.as_ref(),
+                registry: host_registry.as_deref(),
+                assembler: host_assembler.as_deref(),
+            },
         )?;
         run.thread = thread_for_session(session_id);
         Ok(run)
