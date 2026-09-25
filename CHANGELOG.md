@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Meta Harness arbitrary assemble (`META-HARNESS2`).** Tardigrade-style
+  `components: [...]` accepts stock parts and `host:<id>` mounts via
+  `HostHarnessRegistry` / `HostHarnessAssembler`. Node/Python expose
+  `Harness.host` + `components`. Builtin `intent_stamp` host component supports
+  hermetic and Layer C proofs. F31 kernels (`meta_harness.rs`,
+  `completion_attestor.rs`) join the ≥95% F-table gate. Live suite:
+  `test_meta_harness_compose_live_e2e` (file/digest/gate oracles only).
 - **Host-only `CompletionAttestor` (#160).** `SessionOptions::with_completion_attestor`
   supplies a Passed, digest-bound `VerificationReport` after the mutation ledger
   digest exists and before the completion gate decides. There is no `Observe`
@@ -47,8 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io
   `a3s-effect` 0.1.0. Omit the option to keep the legacy `coding_actor` tree.
   Permission overlay and completion gate remain Core-owned. Manual:
-  [META_HARNESS.md](manual/META_HARNESS.md). Host-authored SDK components are
-  tracked as `META-HARNESS2`.
+  [META_HARNESS.md](manual/META_HARNESS.md).
 - Optional typed System-1 decisions via A3S Apofasi: Cargo features `apofasi`
   (lexical + script router), `apofasi-infer` (Candle checkpoints), and
   `apofasi-metal` (Apple Silicon Metal). Host API:

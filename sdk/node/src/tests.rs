@@ -601,6 +601,7 @@ fn harness_compose_maps_to_rust_session_options() {
                 "budget".into(),
                 "infer".into(),
             ]),
+            components: None,
         }),
         ..Default::default()
     }))
@@ -616,6 +617,29 @@ fn harness_compose_maps_to_rust_session_options() {
             a3s_code_core::HarnessPartId::Tools,
             a3s_code_core::HarnessPartId::Budget,
             a3s_code_core::HarnessPartId::Infer,
+        ]
+    );
+
+    let host = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            components: Some(vec![
+                "system".to_string(),
+                Harness::host("intent_stamp".to_string()).expect("host id"),
+                "infer".to_string(),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    let host_harness = host.harness.expect("host harness");
+    assert!(host_harness.parts.is_empty());
+    assert_eq!(
+        host_harness.components,
+        vec![
+            "system".to_string(),
+            "host:intent_stamp".to_string(),
+            "infer".to_string(),
         ]
     );
 

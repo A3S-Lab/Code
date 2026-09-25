@@ -49,6 +49,7 @@ fallback without override remains ACL `default_model`
 | F05 | Agent protocol v1 | `agent_protocol_*` + host/harness integration | `test_agent_protocol_live_e2e` | `agent_protocol.rs`, `_host`, `_harness` |
 | F06 | Oversized event projection | from_run_page / bound payload unit | issue-fix / protocol live | `agent_protocol.rs`, `event_protocol.rs` |
 | F07 | Harness loop + verify gate | harness_loop + verification unit | `test_harness_loop_live_e2e` | `harness_loop.rs`, `verification.rs` |
+| F31 | Meta Harness compose | `meta_harness` unit (stock/host mounts, fail-closed); `completion_attestor` unit | `test_meta_harness_compose_live_e2e` | `meta_harness.rs`, `completion_attestor.rs` |
 | F08 | Baseline tools | builtin tool unit; capabilities hermetic | `test_harness_capabilities_live_e2e` | `tools/builtin/*` (core), `bash.rs` |
 | F09 | Adversarial cancel / hygiene | effect_isolation discard; cancel unit | `test_deepseek_adversarial_e2e` | `effect_isolation.rs` |
 | F10 | Update plan | update_plan tool unit | `test_update_plan_live_e2e` | plan tool + `agent/plan_execution.rs` (kernel paths) |

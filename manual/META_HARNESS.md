@@ -6,7 +6,7 @@ and completion-gate enrollment) stays Core-owned and non-bypassable.
 
 Related: [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md),
 [ADR-003](../../use/docs/adr-003-native-code-harness-boundary.md) (addendum),
-`a3s-effect` `compose` module.
+`a3s-effect` `compose` module, first-principles gate **F31**.
 
 ## Positioning
 
@@ -14,10 +14,10 @@ Related: [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md),
 { view, transitions } = f(log)
 ```
 
-Hosts mount stock or custom components. The runtime folds the log, enables
-keyed transitions, and runs them until nothing remains. Dual *imperative*
-message loops are forbidden; **one log + many components** is the intended
-orchestration model.
+Hosts mount ordered components the way Tardigrade mounts `components: [...]`.
+The runtime folds the log, enables keyed transitions, and runs them until
+nothing remains. Dual *imperative* message loops are forbidden; **one log +
+many components** is the intended orchestration model.
 
 Product default remains today's `coding_actor` sugar so existing Agent /
 Session behavior does not regress when `SessionOptions.harness` is omitted.
@@ -47,21 +47,43 @@ Session behavior does not regress when `SessionOptions.harness` is omitted.
 | `compact` | Compaction threshold slot |
 | `infer` | Scheduler subtree (stock mount has **no** key prefix for log stability) |
 
+## Host components (`host:<id>`)
+
+Hosts register Moore factories via `HostHarnessRegistry` and mount them from
+the same `components: [...]` list as `host:<id>`. Builtin registry ships
+`intent_stamp` (injects `a3s.meta_harness.intent_stamp.v1` into the system
+view) for hermetic / Layer C proofs. Full custom trees use
+`HostHarnessAssembler` / `admit_component_tree` (Rust embedders).
+
+SDK surfaces pass **ids + config**, not JS/Python Effect runtimes.
+
 Nested host `infer([...])` mounts **do** namespace child keys under `infer/` so
 siblings cannot collide. CI / unit tests assert that discipline.
 
 ## Composition cookbook
 
-### Rust (`a3s-effect`)
+### Rust (`a3s-effect` + Core)
 
 ```rust
 use a3s_effect::{budget, coding_actor, compact, compose_coding_actor, system, tools, HarnessGraph};
+use a3s_code_core::{admit_component_tree, BuiltinHostHarnessRegistry, HarnessComposeOptions};
 
 // Sugar for the stock tree (bit-compatible default):
 let actor = coding_actor(config);
 
-// Explicit graph from a MetaHarnessSpec / HarnessGraph:
-let graph = HarnessGraph::coding(config);
+// Tardigrade-style assemble (stock + host):
+let recipe = HarnessComposeOptions::compose(
+    vec![
+        "system".into(),
+        "tools".into(),
+        "host:intent_stamp".into(),
+        "budget".into(),
+        "infer".into(),
+    ],
+    Some(4),
+    None,
+    vec!["careful coding agent".into()],
+)?;
 ```
 
 ### SessionOptions (Core / SDKs)
@@ -69,10 +91,16 @@ let graph = HarnessGraph::coding(config);
 Omit `harness` → legacy `coding_actor`.
 
 ```js
-// Node
+// Node — prefer `components`
 agent.session('.', {
   harness: Harness.compose({
-    parts: [Harness.system(), Harness.tools(), Harness.budget(), Harness.compact(), Harness.infer()],
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.host('intent_stamp'),
+      Harness.budget(),
+      Harness.infer(),
+    ],
     toolBudget: 4,
     system: ['You are a careful coding agent.'],
   }),
@@ -83,13 +111,36 @@ agent.session('.', {
 # Python
 opts = SessionOptions()
 opts.harness = Harness.compose(
-    parts=[Harness.system(), Harness.tools(), Harness.budget(), Harness.compact(), Harness.infer()],
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.host("intent_stamp"),
+        Harness.budget(),
+        Harness.infer(),
+    ],
     tool_budget=4,
     system=["You are a careful coding agent."],
 )
 ```
 
-Unknown part names fail closed at compose / session conversion.
+Unknown part names and unknown `host:<id>` values fail closed. `host:*` mounts
+require `SessionOptions::with_host_harness_registry` (or the builtin registry in
+tests).
+
+## Verification
+
+| Layer | Gate |
+| --- | --- |
+| Hermetic | `cargo test -p a3s-code-core --lib meta_harness` |
+| F-kernel ≥95% | `meta_harness.rs` + `completion_attestor.rs` in `scripts/f_table_coverage.sh` (F31) |
+| Layer C live | `test_meta_harness_compose_live_e2e` (file/digest/gate oracles only) |
+
+F31 tip evidence (2026-09-25): `A3S_F_TABLE_EVIDENCE=/tmp/a3s-f31-meta-harness
+A3S_F_TABLE_MIN_LINE_PCT=95 scripts/f_table_coverage.sh` →
+`ALL_F_TABLE_KERNELS_GE_95` with `meta_harness.rs` **99.20%** and
+`completion_attestor.rs` **95.00%**. Hermetic suites cover stock/host partition,
+fail-closed unknown mounts, default/parts/components resolve paths, and mixed
+trees including `compact` — not golden assistant prose.
 
 ## Non-goals
 
@@ -98,8 +149,8 @@ Unknown part names fail closed at compose / session conversion.
 - Restoring `parallel_task` as a second orchestration engine.
 - Making `advanced-harness` the library default.
 - Embedding DSH / Cordis / a JavaScript Effect runtime.
-- Node/Python host-authored Moore components in this cut (`META-HARNESS2`).
-  Rust already supports `compose_coding_actor(vec![component(...), ...])`.
+- Letting Node/Python author Moore `step`/`output` closures inside the SDK
+  (host factories stay Rust-side; SDKs pass `host:<id>` only).
 
 ## Safety checks
 
@@ -107,3 +158,4 @@ Unknown part names fail closed at compose / session conversion.
 - Kernel middleware must still strip permissions and enroll the completion gate
   even if a malicious host component enables `model.turn` without them.
 - Nested `infer` mounts must not advertise un-prefixed child transition keys.
+- Live suites must not assert provider-specific assistant prose.

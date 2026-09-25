@@ -339,8 +339,11 @@ pub use llm::{
     ModelGenerationPoolError, ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
 };
 pub use meta_harness::{
-    admit_default_graph, admit_from_compose, admit_spec_graph, parse_harness_part,
-    parse_harness_parts, HarnessComposeOptions, HarnessPartId, KernelPolicy,
+    admit_component_tree, admit_default_graph, admit_from_compose,
+    admit_from_compose_with_registry, admit_spec_graph, host_component_id, parse_harness_component,
+    parse_harness_components, parse_harness_part, parse_harness_parts, BuiltinHostHarnessRegistry,
+    HarnessComponentRef, HarnessComposeOptions, HarnessPartId, HostHarnessAssembler,
+    HostHarnessRegistry, INTENT_STAMP_MARKER, KernelPolicy,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{

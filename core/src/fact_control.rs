@@ -105,6 +105,10 @@ pub(crate) struct SessionSurface {
     pub(crate) reports: Arc<Mutex<Vec<crate::verification::VerificationReport>>>,
     pub(crate) run_control: Option<Arc<crate::run_control::RunControlInbox>>,
     pub(crate) harness: Option<crate::meta_harness::HarnessComposeOptions>,
+    pub(crate) host_harness_registry:
+        Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessRegistry>>,
+    pub(crate) host_harness_assembler:
+        Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessAssembler>>,
 }
 
 /// Exports one portable checkpoint after a tool result lands on the log.
@@ -1453,8 +1457,30 @@ impl FactRun {
         run_id: impl Into<String>,
         compose: Option<&crate::meta_harness::HarnessComposeOptions>,
     ) -> Result<Self> {
+        Self::open_composed_with_hosts(dir, completion, tools, config, run_id, compose, None, None)
+    }
+
+    /// Admit compose with optional host registry / full assembler.
+    pub fn open_composed_with_hosts(
+        dir: impl Into<PathBuf>,
+        completion: Arc<dyn Completion>,
+        tools: Arc<dyn ToolRunner>,
+        config: HarnessConfig,
+        run_id: impl Into<String>,
+        compose: Option<&crate::meta_harness::HarnessComposeOptions>,
+        registry: Option<&dyn crate::meta_harness::HostHarnessRegistry>,
+        assembler: Option<&dyn crate::meta_harness::HostHarnessAssembler>,
+    ) -> Result<Self> {
         let step_limit = config.step_limit();
-        let (graph, _kernel) = crate::meta_harness::admit_from_compose(compose, config)?;
+        let graph = if let Some(assembler) = assembler {
+            let graph = assembler.assemble(config)?;
+            let _kernel = crate::meta_harness::KernelPolicy::default().admit();
+            graph
+        } else {
+            let (graph, _kernel) =
+                crate::meta_harness::admit_from_compose_with_registry(compose, registry, config)?;
+            graph
+        };
         Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph)
     }
 
@@ -1581,6 +1607,8 @@ impl FactRun {
         .map_err(|error| anyhow::anyhow!(error))?
         .with_tool_round_cap(cap);
         let harness = surface.harness.clone();
+        let host_registry = surface.host_harness_registry.clone();
+        let host_assembler = surface.host_harness_assembler.clone();
         let checkpoint = surface.checkpoint.map(|checkpoint| CheckpointState {
             sink: checkpoint.sink,
             run_id: checkpoint.run_id,
@@ -1588,7 +1616,7 @@ impl FactRun {
             capability_binding: checkpoint.capability_binding,
             turns: Arc::new(AtomicUsize::new(0)),
         });
-        let mut run = Self::open_composed(
+        let mut run = Self::open_composed_with_hosts(
             log_dir(workspace),
             Arc::new(completion),
             Arc::new(ExecutorTools {
@@ -1608,6 +1636,8 @@ impl FactRun {
             config,
             session_id,
             harness.as_ref(),
+            host_registry.as_deref(),
+            host_assembler.as_deref(),
         )?;
         run.thread = thread_for_session(session_id);
         Ok(run)
@@ -2268,6 +2298,8 @@ mod tests {
             reports: Arc::new(Mutex::new(Vec::new())),
             run_control: None,
             harness: None,
+            host_harness_registry: None,
+            host_harness_assembler: None,
         };
         let run = FactRun::open_projected(
             workspace.path(),
@@ -2790,6 +2822,8 @@ mod tests {
             reports: Arc::new(Mutex::new(Vec::new())),
             run_control: None,
             harness: None,
+            host_harness_registry: None,
+            host_harness_assembler: None,
         };
         let (completion, _) = LiveCompletion::new(
             client.clone(),

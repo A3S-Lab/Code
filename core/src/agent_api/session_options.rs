@@ -874,6 +874,28 @@ impl SessionOptions {
         self
     }
 
+    /// Install a host Moore-component registry for `host:<id>` mounts.
+    pub fn with_host_harness_registry(
+        mut self,
+        registry: std::sync::Arc<dyn crate::meta_harness::HostHarnessRegistry>,
+    ) -> Self {
+        self.host_harness_registry = Some(registry);
+        self
+    }
+
+    /// Install a full custom Meta Harness assembler (Rust embedders).
+    ///
+    /// Takes precedence over [`Self::with_harness`]. Kernel policy still
+    /// applies when the assembler returns a graph via
+    /// [`crate::meta_harness::admit_component_tree`] / `HarnessGraph`.
+    pub fn with_host_harness_assembler(
+        mut self,
+        assembler: std::sync::Arc<dyn crate::meta_harness::HostHarnessAssembler>,
+    ) -> Self {
+        self.host_harness_assembler = Some(assembler);
+        self
+    }
+
     pub fn with_external_observations(
         mut self,
         observations: Vec<crate::external_observation::ExternalObservationV1>,

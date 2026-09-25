@@ -811,6 +811,7 @@ fn session_options_map_harness_compose() {
             "budget".into(),
             "infer".into(),
         ],
+        components: Vec::new(),
     });
     let opts = build_rust_session_options(session_options).unwrap();
     let harness = opts.harness.expect("harness");
@@ -824,6 +825,25 @@ fn session_options_map_harness_compose() {
             a3s_code_core::HarnessPartId::Tools,
             a3s_code_core::HarnessPartId::Budget,
             a3s_code_core::HarnessPartId::Infer,
+        ]
+    );
+
+    let host = PyHarnessComposeOptions {
+        components: vec![
+            "system".into(),
+            a3s_code_core::host_component_id("intent_stamp"),
+            "infer".into(),
+        ],
+        ..PyHarnessComposeOptions::default()
+    };
+    let host_core = host.to_core().unwrap();
+    assert!(host_core.parts.is_empty());
+    assert_eq!(
+        host_core.components,
+        vec![
+            "system".into(),
+            "host:intent_stamp".into(),
+            "infer".into(),
         ]
     );
 

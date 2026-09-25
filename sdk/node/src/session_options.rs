@@ -118,9 +118,9 @@ pub struct AutoDelegationOptions {
 /// Host-facing Meta Harness compose recipe.
 ///
 /// Omit `SessionOptions.harness` to keep the legacy `coding_actor` stock tree.
-/// When set, ordered `parts` select stock Moore components (`system`, `tools`,
-/// `budget`, `compact`, `infer`). Kernel permission overlay and completion gate
-/// stay Core-owned and cannot be disabled from this object.
+/// Prefer Tardigrade-style `components: [...]` (stock names or `host:<id>`).
+/// Legacy `parts` remains for stock-only recipes. Kernel permission overlay
+/// and completion gate stay Core-owned and cannot be disabled from this object.
 #[napi(object)]
 #[derive(Default, Clone)]
 pub struct HarnessComposeOptions {
@@ -131,8 +131,11 @@ pub struct HarnessComposeOptions {
     /// Extra system prompts merged into the `system` part.
     pub system: Option<Vec<String>>,
     /// Ordered stock parts: `system`, `tools`, `budget`, `compact`, `infer`.
-    /// Empty / omitted selects the full stock tree.
+    /// Used when `components` is empty / omitted.
     pub parts: Option<Vec<String>>,
+    /// Tardigrade-style ordered assemble list. When set, takes precedence over
+    /// `parts`. Entries are stock names or `host:<id>` (Rust registry).
+    pub components: Option<Vec<String>>,
 }
 
 /// Typed Meta Harness builders for SessionOptions.harness.
@@ -140,7 +143,13 @@ pub struct HarnessComposeOptions {
 /// ```js
 /// agent.session('.', {
 ///   harness: Harness.compose({
-///     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+///     components: [
+///       Harness.system(),
+///       Harness.tools(),
+///       Harness.host('intent_stamp'),
+///       Harness.budget(),
+///       Harness.infer(),
+///     ],
 ///     toolBudget: 4,
 ///   }),
 /// });
@@ -180,6 +189,15 @@ impl Harness {
         "infer".into()
     }
 
+    /// Host Moore mount id (`host:<id>`). Requires a Rust `HostHarnessRegistry`.
+    #[napi]
+    pub fn host(id: String) -> napi::Result<String> {
+        let formatted = a3s_code_core::host_component_id(&id);
+        let _ = a3s_code_core::parse_harness_component(&formatted)
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        Ok(formatted)
+    }
+
     /// Validate and return a compose recipe for `SessionOptions.harness`.
     #[napi]
     pub fn compose(options: HarnessComposeOptions) -> napi::Result<HarnessComposeOptions> {
@@ -191,8 +209,14 @@ impl Harness {
 fn js_harness_to_core(
     options: &HarnessComposeOptions,
 ) -> napi::Result<a3s_code_core::HarnessComposeOptions> {
+    let list = options
+        .components
+        .clone()
+        .filter(|entries| !entries.is_empty())
+        .or_else(|| options.parts.clone())
+        .unwrap_or_default();
     a3s_code_core::HarnessComposeOptions::compose(
-        options.parts.clone().unwrap_or_default(),
+        list,
         options.tool_budget,
         options.compact_after_chars.map(|value| value as usize),
         options.system.clone().unwrap_or_default(),

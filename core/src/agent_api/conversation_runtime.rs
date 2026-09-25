@@ -1125,6 +1125,8 @@ async fn prepare_pinned(
             reports: Arc::new(std::sync::Mutex::new(Vec::new())),
             run_control,
             harness: session.config.harness.clone(),
+            host_harness_registry: session.config.host_harness_registry.clone(),
+            host_harness_assembler: session.config.host_harness_assembler.clone(),
         });
     if owned_run {
         if let Some(cancel) = parts.surface.as_ref().map(|surface| surface.cancel.clone()) {

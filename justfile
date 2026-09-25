@@ -609,6 +609,7 @@ layer-c-live-e2e:
       test_agent_protocol_live_e2e
       test_harness_loop_live_e2e
       test_harness_capabilities_live_e2e
+      test_meta_harness_compose_live_e2e
       test_deepseek_adversarial_e2e
       test_update_plan_live_e2e
       test_prompt_capability_real_llm

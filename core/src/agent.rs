@@ -206,6 +206,13 @@ pub(crate) struct AgentConfig {
     pub completion_attestor: Option<Arc<dyn crate::completion_attestor::CompletionAttestor>>,
     /// Optional Meta Harness compose recipe for fact-log control.
     pub harness: Option<crate::meta_harness::HarnessComposeOptions>,
+    /// Host Moore component registry for `host:<id>` mounts in compose.
+    pub host_harness_registry:
+        Option<Arc<dyn crate::meta_harness::HostHarnessRegistry>>,
+    /// Full custom graph assembler (Rust embedders). Takes precedence over
+    /// [`Self::harness`] when set.
+    pub host_harness_assembler:
+        Option<Arc<dyn crate::meta_harness::HostHarnessAssembler>>,
     /// Host-supplied external observations bound into this run.
     pub external_observations: Vec<crate::external_observation::ExternalObservationV1>,
     /// Outcome-conditioned constraints the promoting host has already recorded.
@@ -307,6 +314,8 @@ impl Default for AgentConfig {
             verifier_enabled: false,
             completion_attestor: None,
             harness: None,
+            host_harness_registry: None,
+            host_harness_assembler: None,
             external_observations: Vec::new(),
             outcome_ledger: crate::outcome_memory::OutcomeLedger::default(),
         }

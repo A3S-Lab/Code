@@ -53,9 +53,10 @@ impl PyHostEnvConfig {
 
 /// Meta Harness compose recipe for ``SessionOptions.harness``.
 ///
-/// Omit the option to keep the legacy ``coding_actor`` stock tree. When set,
-/// ordered ``parts`` select stock Moore components. Kernel permission overlay
-/// and completion gate stay Core-owned.
+/// Omit the option to keep the legacy ``coding_actor`` stock tree. Prefer
+/// Tardigrade-style ``components`` (stock names or ``host:<id>``). Legacy
+/// ``parts`` remains for stock-only recipes. Kernel permission overlay and
+/// completion gate stay Core-owned.
 #[pyclass(name = "HarnessComposeOptions")]
 #[derive(Clone, Default)]
 pub(super) struct PyHarnessComposeOptions {
@@ -68,41 +69,52 @@ pub(super) struct PyHarnessComposeOptions {
     /// Extra system prompts merged into the ``system`` part.
     #[pyo3(get, set)]
     pub(super) system: Vec<String>,
-    /// Ordered stock parts: ``system``, ``tools``, ``budget``, ``compact``, ``infer``.
+    /// Ordered stock parts. Used when ``components`` is empty.
     #[pyo3(get, set)]
     pub(super) parts: Vec<String>,
+    /// Tardigrade-style ordered assemble list. When non-empty, takes precedence
+    /// over ``parts``.
+    #[pyo3(get, set)]
+    pub(super) components: Vec<String>,
 }
 
 #[pymethods]
 impl PyHarnessComposeOptions {
     #[new]
-    #[pyo3(signature = (tool_budget=None, compact_after_chars=None, system=None, parts=None))]
+    #[pyo3(signature = (tool_budget=None, compact_after_chars=None, system=None, parts=None, components=None))]
     fn new(
         tool_budget: Option<u32>,
         compact_after_chars: Option<usize>,
         system: Option<Vec<String>>,
         parts: Option<Vec<String>>,
+        components: Option<Vec<String>>,
     ) -> Self {
         Self {
             tool_budget,
             compact_after_chars,
             system: system.unwrap_or_default(),
             parts: parts.unwrap_or_default(),
+            components: components.unwrap_or_default(),
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "HarnessComposeOptions(tool_budget={:?}, compact_after_chars={:?}, system={:?}, parts={:?})",
-            self.tool_budget, self.compact_after_chars, self.system, self.parts
+            "HarnessComposeOptions(tool_budget={:?}, compact_after_chars={:?}, system={:?}, parts={:?}, components={:?})",
+            self.tool_budget, self.compact_after_chars, self.system, self.parts, self.components
         )
     }
 }
 
 impl PyHarnessComposeOptions {
     pub(super) fn to_core(&self) -> PyResult<a3s_code_core::HarnessComposeOptions> {
+        let list = if !self.components.is_empty() {
+            self.components.clone()
+        } else {
+            self.parts.clone()
+        };
         a3s_code_core::HarnessComposeOptions::compose(
-            self.parts.clone(),
+            list,
             self.tool_budget,
             self.compact_after_chars,
             self.system.clone(),
@@ -117,7 +129,13 @@ impl PyHarnessComposeOptions {
 ///
 ///     opts = SessionOptions()
 ///     opts.harness = Harness.compose(
-///         parts=[Harness.system(), Harness.tools(), Harness.budget(), Harness.compact(), Harness.infer()],
+///         components=[
+///             Harness.system(),
+///             Harness.tools(),
+///             Harness.host("intent_stamp"),
+///             Harness.budget(),
+///             Harness.infer(),
+///         ],
 ///         tool_budget=4,
 ///     )
 #[pyclass(name = "Harness")]
@@ -150,11 +168,21 @@ impl PyHarness {
         "infer".into()
     }
 
+    /// Host Moore mount id (``host:<id>``). Requires a Rust ``HostHarnessRegistry``.
+    #[staticmethod]
+    pub(super) fn host(id: &str) -> PyResult<String> {
+        let formatted = a3s_code_core::host_component_id(id);
+        a3s_code_core::parse_harness_component(&formatted)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(formatted)
+    }
+
     /// Validate and return a compose recipe for ``SessionOptions.harness``.
     #[staticmethod]
-    #[pyo3(signature = (parts=None, tool_budget=None, compact_after_chars=None, system=None))]
+    #[pyo3(signature = (parts=None, components=None, tool_budget=None, compact_after_chars=None, system=None))]
     pub(super) fn compose(
         parts: Option<Vec<String>>,
+        components: Option<Vec<String>>,
         tool_budget: Option<u32>,
         compact_after_chars: Option<usize>,
         system: Option<Vec<String>>,
@@ -164,6 +192,7 @@ impl PyHarness {
             compact_after_chars,
             system: system.unwrap_or_default(),
             parts: parts.unwrap_or_default(),
+            components: components.unwrap_or_default(),
         };
         let _ = options.to_core()?;
         Ok(options)

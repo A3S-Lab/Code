@@ -32,6 +32,8 @@ KERNELS=(
   core/src/event_protocol.rs
   core/src/harness_loop.rs
   core/src/verification.rs
+  core/src/meta_harness.rs
+  core/src/completion_attestor.rs
   core/src/tools/builtin/bash.rs
   core/src/tools/builtin/mod.rs
   core/src/effect_isolation.rs

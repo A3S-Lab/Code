@@ -311,6 +311,12 @@ fn finish_agent_session(
         config.completion_attestor = opts.completion_attestor.clone();
     }
     config.harness = opts.harness.clone();
+    if opts.host_harness_registry.is_some() {
+        config.host_harness_registry = opts.host_harness_registry.clone();
+    }
+    if opts.host_harness_assembler.is_some() {
+        config.host_harness_assembler = opts.host_harness_assembler.clone();
+    }
     config.external_observations = opts.external_observations.clone();
     config.outcome_ledger = opts.outcome_ledger.clone();
 
