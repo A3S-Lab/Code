@@ -3255,6 +3255,35 @@ struct BridgeSessionOptions {
     read_only_session: Option<bool>,
     allow_process_host_sandbox: Option<bool>,
     verifier_enabled: Option<bool>,
+    harness: Option<BridgeHarnessCompose>,
+}
+
+/// Meta Harness compose recipe; mirrors Node/Python `HarnessComposeOptions`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BridgeHarnessCompose {
+    tool_budget: Option<u32>,
+    compact_after_chars: Option<usize>,
+    system: Vec<String>,
+    parts: Vec<String>,
+    components: Vec<String>,
+}
+
+impl BridgeHarnessCompose {
+    fn into_core(self) -> Result<a3s_code_core::HarnessComposeOptions, BridgeFailure> {
+        let list = if self.components.is_empty() {
+            self.parts
+        } else {
+            self.components
+        };
+        a3s_code_core::HarnessComposeOptions::compose(
+            list,
+            self.tool_budget,
+            self.compact_after_chars,
+            self.system,
+        )
+        .map_err(|error| BridgeFailure::new("INVALID_REQUEST", format!("harness: {error}")))
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -3502,6 +3531,15 @@ impl BridgeSessionOptions {
         }
         if let Some(enabled) = self.verifier_enabled {
             options = options.with_verifier(enabled);
+        }
+        if let Some(harness) = self.harness {
+            // SDK hosts cannot inject a Rust registry; `host:<id>` resolves
+            // against Core's builtin components.
+            options = options
+                .with_harness(harness.into_core()?)
+                .with_host_harness_registry(std::sync::Arc::new(
+                    a3s_code_core::BuiltinHostHarnessRegistry,
+                ));
         }
         if let Some(value) = self.max_parse_retries {
             options = options.with_parse_retries(value);
@@ -4340,6 +4378,65 @@ mod tests {
         let slots = options.prompt_slots.unwrap();
         assert_eq!(slots.role.as_deref(), Some("reviewer"));
         assert_eq!(slots.guidelines.as_deref(), Some("be precise"));
+    }
+
+    #[test]
+    fn harness_components_map_to_core_compose() {
+        let bridge: BridgeSessionOptions = serde_json::from_value(json!({
+            "harness": {
+                "components": ["system", "tools", "host:intent_stamp", "budget", "infer"],
+                "tool_budget": 4,
+                "system": ["careful coding agent"]
+            }
+        }))
+        .unwrap();
+        let options = bridge.into_core(None).unwrap();
+        let harness = options.harness.as_ref().expect("harness");
+        assert_eq!(
+            harness.components,
+            vec!["system", "tools", "host:intent_stamp", "budget", "infer"]
+        );
+        assert!(
+            harness.parts.is_empty(),
+            "host mounts use the components path"
+        );
+        assert_eq!(harness.tool_budget, Some(4));
+        assert_eq!(harness.system, vec!["careful coding agent".to_string()]);
+
+        // The SDK installs the builtin registry, so the host mount admits.
+        let registry = options
+            .host_harness_registry
+            .as_deref()
+            .expect("SDK sessions resolve host mounts through the builtin registry");
+        let config = a3s_effect::HarnessConfig::new(2, 100, 8, 1, vec![], vec![]).expect("config");
+        let (_, policy) =
+            a3s_code_core::admit_from_compose_with_registry(Some(harness), Some(registry), config)
+                .expect("host:intent_stamp admits through the SDK registry");
+        assert!(policy.permission_overlay && policy.completion_gate);
+    }
+
+    #[test]
+    fn harness_stock_parts_and_unknown_components() {
+        let stock: BridgeSessionOptions = serde_json::from_value(json!({
+            "harness": {"parts": ["system", "tools", "infer"]}
+        }))
+        .unwrap();
+        let harness = stock.into_core(None).unwrap().harness.expect("harness");
+        assert_eq!(harness.parts.len(), 3);
+
+        let unknown: BridgeSessionOptions = serde_json::from_value(json!({
+            "harness": {"components": ["system", "not-a-part"]}
+        }))
+        .unwrap();
+        let error = unknown
+            .into_core(None)
+            .expect_err("unknown part fails closed");
+        assert_eq!(error.code, "INVALID_REQUEST");
+
+        let typo = serde_json::from_value::<BridgeSessionOptions>(json!({
+            "harness": {"component": ["system"]}
+        }));
+        assert!(typo.is_err(), "unknown harness keys are rejected");
     }
 
     #[test]

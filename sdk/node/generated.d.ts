@@ -783,7 +783,7 @@ export interface SessionOptions {
    * ```js
    * agent.session('.', {
    *   harness: Harness.compose({
-   *     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+   *     components: [Harness.system(), Harness.tools(), Harness.host('intent_stamp'), Harness.infer()],
    *     toolBudget: 4,
    *   }),
    * });
@@ -1563,7 +1563,7 @@ export declare class Harness {
   static compact(): string
   /** Stock `infer` / scheduler part id. */
   static infer(): string
-  /** Host Moore mount id (`host:<id>`). Requires a Rust `HostHarnessRegistry`. */
+  /** Host mount id (`host:<id>`), resolved against Core's builtin host components. */
   static host(id: string): string
   /** Validate and return a compose recipe for `SessionOptions.harness`. */
   static compose(options: HarnessComposeOptions): HarnessComposeOptions

@@ -313,6 +313,37 @@ type SessionOptions struct {
 	ReadOnlySession            *bool                           `json:"read_only_session,omitempty"`
 	AllowProcessHostSandbox    *bool                           `json:"allow_process_host_sandbox,omitempty"`
 	VerifierEnabled            *bool                           `json:"verifier_enabled,omitempty"`
+	// Harness composes the Meta Harness. Nil keeps the default coding_actor tree.
+	Harness *HarnessOptions `json:"harness,omitempty"`
+}
+
+// Stock Meta Harness parts for HarnessOptions.Components.
+const (
+	HarnessSystem  = "system"
+	HarnessTools   = "tools"
+	HarnessBudget  = "budget"
+	HarnessCompact = "compact"
+	HarnessInfer   = "infer"
+)
+
+// HarnessHost returns the `host:<id>` mount for a component registered in the
+// Rust HostHarnessRegistry. Unknown ids fail when the session is created.
+func HarnessHost(id string) string {
+	return "host:" + id
+}
+
+// HarnessOptions is the Meta Harness compose recipe, matching Node/Python
+// Harness.compose. Permission projection and the completion gate stay
+// Core-owned and cannot be disabled from here.
+type HarnessOptions struct {
+	// Components is the ordered assemble list of stock parts and HarnessHost
+	// mounts. When non-empty it takes precedence over Parts.
+	Components []string `json:"components,omitempty"`
+	// Parts is the legacy stock-only order.
+	Parts             []string `json:"parts,omitempty"`
+	ToolBudget        *uint32  `json:"tool_budget,omitempty"`
+	CompactAfterChars *uint    `json:"compact_after_chars,omitempty"`
+	System            []string `json:"system,omitempty"`
 }
 
 type CompletionWaiver struct {

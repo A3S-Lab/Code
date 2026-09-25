@@ -123,9 +123,27 @@ opts.harness = Harness.compose(
 )
 ```
 
-Unknown part names and unknown `host:<id>` values fail closed. `host:*` mounts
-require `SessionOptions::with_host_harness_registry` (or the builtin registry in
-tests).
+```go
+// Go
+budget := uint32(4)
+opts := &code.SessionOptions{
+	Harness: &code.HarnessOptions{
+		Components: []string{
+			code.HarnessSystem, code.HarnessTools, code.HarnessHost("intent_stamp"),
+			code.HarnessBudget, code.HarnessInfer,
+		},
+		ToolBudget: &budget,
+		System:     []string{"You are a careful coding agent."},
+	},
+}
+```
+
+Unknown part names fail closed when the session is created; unknown `host:<id>`
+values fail closed on the first run. Rust embedders supply
+`SessionOptions::with_host_harness_registry`. Node, Python, and Go sessions that
+set `harness` install `BuiltinHostHarnessRegistry`, so SDK `host:<id>` mounts
+resolve against Core's builtin components (currently `intent_stamp`); custom
+host components need a Rust embedder.
 
 ## Verification
 

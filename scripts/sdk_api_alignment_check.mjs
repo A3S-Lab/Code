@@ -466,6 +466,37 @@ function goStructFields(source, name) {
   ];
 }
 
+function goJsonTags(source, name) {
+  const match = source.match(
+    new RegExp(`^type\\s+${name}\\s+struct\\s*\\{([\\s\\S]*?)^\\}`, 'm'),
+  );
+  assert.ok(match, `could not find Go struct ${name}`);
+  // `json:"-"` fields travel over the callback transport; key them by the
+  // snake_case field name so they still count as present.
+  return [...match[1].matchAll(/^\s*([A-Z][A-Za-z0-9]*)\s+[^`\n]*`json:"([a-z0-9_-]+)/gm)].map(
+    ([, field, tag]) =>
+      tag === '-' ? field.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase() : tag,
+  );
+}
+
+// Core/Node option name -> Go JSON key (`top` or `top.nested`) where Go groups
+// related options into one typed struct instead of flat fields.
+const GO_SESSION_OPTION_ALIASES = new Map([
+  ['role', 'prompt_slots.role'],
+  ['guidelines', 'prompt_slots.guidelines'],
+  ['response_style', 'prompt_slots.response_style'],
+  ['output_language', 'prompt_slots.output_language'],
+  ['extra', 'prompt_slots.extra'],
+  ['trajectory_path', 'trajectory.path'],
+  ['trajectory_mode', 'trajectory.mode'],
+  ['trajectory_max_text_bytes', 'trajectory.max_text_bytes'],
+  ['trajectory_include_messages', 'trajectory.include_messages'],
+  ['memory_store', 'file_memory_dir'],
+  ['session_store', 'file_session_store_dir'],
+  ['auto_parallel', 'auto_parallel_delegation'],
+  ['planning', 'planning_mode'],
+]);
+
 function expected(coreMethods, omissions, aliases) {
   return [
     ...new Set(
@@ -706,42 +737,43 @@ assertContainsAll('Go Session', goSession, [
   'OutcomeLedgerSnapshot',
 ]);
 assert.ok(!goSession.includes('ParallelTask'), 'Go Session must not expose ParallelTask (HARNESS-CONV4)');
-assertContainsAll('Go SessionOptions', goSessionOptions, [
-  'Model',
-  'AgentDirs',
-  'SkillDirs',
-  'SearchConfig',
-  'FileMemoryDir',
-  'FileSessionStoreDir',
-  'SecurityProvider',
-  'SessionID',
-  'TenantID',
-  'Principal',
-  'AgentTemplateID',
-  'CorrelationID',
-  'PlanningMode',
-  'GoalTracking',
-  'AutoSave',
-  'ToolTimeoutMS',
-  'LLMAPITimeoutMS',
-  'AutoCompact',
-  'MaxContextTokens',
-  'Temperature',
-  'ThinkingBudget',
-  'MaxToolRounds',
-  'MaxParallelTasks',
-  'PromptSlots',
-  'ImmutableContentAdapter',
-  'CommandEnv',
-  'CompletionWaivers',
-  'EffectIsolation',
-  'ExternalObservations',
-  'OutcomeLedger',
-  'PathRules',
-  'PlanRun',
-  'ReadOnlySession',
-  'VerifierEnabled',
+// Go must cover the same Core-derived surface as Node/Python. Every required
+// SessionOptions name resolves to a Go JSON key, either top-level or inside the
+// nested struct Go groups it under; a new Core field fails here until Go maps it.
+const goSessionOptionKeys = new Set(goJsonTags(go, 'SessionOptions'));
+const goNestedKeys = {
+  prompt_slots: new Set(goJsonTags(go, 'PromptSlots')),
+  trajectory: new Set(goJsonTags(go, 'TrajectoryConfig')),
+};
+const missingGoSessionOptions = requiredSessionOptions.filter((name) => {
+  const alias = GO_SESSION_OPTION_ALIASES.get(name) ?? name;
+  const [top, nested] = alias.split('.');
+  if (!goSessionOptionKeys.has(top)) return true;
+  return nested !== undefined && !goNestedKeys[top]?.has(nested);
+});
+assert.deepEqual(
+  missingGoSessionOptions,
+  [],
+  `Go SessionOptions is missing Core options: ${missingGoSessionOptions.join(', ')}`,
+);
+const normalizeGo = (name) => name.replace(/_/g, '').toLowerCase();
+// Go idioms: the constructor is a package function, and context-taking calls
+// block, so `*_async` variants collapse into the synchronous Go method.
+const GO_METHOD_ALIASES = new Map([
+  ['create', 'NewAgent'],
+  ['replace_session_async', 'ReplaceSession'],
 ]);
+const goConstructors = [...go.matchAll(/^func\s+(New[A-Z][A-Za-z0-9]*)\s*\(/gm)].map((m) => m[1]);
+for (const [label, goNames, required] of [
+  ['Go Agent', [...goAgent, ...goConstructors], requiredAgent],
+  ['Go Session', goSession, requiredSession],
+]) {
+  const present = new Set(goNames.map(normalizeGo));
+  const missing = required.filter(
+    (name) => !present.has(normalizeGo(GO_METHOD_ALIASES.get(name) ?? name)),
+  );
+  assert.deepEqual(missing, [], `${label} is missing Core methods: ${missing.join(', ')}`);
+}
 assertContainsAll('Go StateGraphRuntime', goMethods(go, 'StateGraphRuntime'), [
   'BranchID',
   'Version',

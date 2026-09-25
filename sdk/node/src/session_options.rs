@@ -189,7 +189,7 @@ impl Harness {
         "infer".into()
     }
 
-    /// Host Moore mount id (`host:<id>`). Requires a Rust `HostHarnessRegistry`.
+    /// Host mount id (`host:<id>`), resolved against Core's builtin host components.
     #[napi]
     pub fn host(id: String) -> napi::Result<String> {
         let formatted = a3s_code_core::host_component_id(&id);
@@ -482,7 +482,7 @@ pub struct SessionOptions {
     /// ```js
     /// agent.session('.', {
     ///   harness: Harness.compose({
-    ///     parts: [Harness.system, Harness.tools, Harness.budget, Harness.compact, Harness.infer],
+    ///     components: [Harness.system(), Harness.tools(), Harness.host('intent_stamp'), Harness.infer()],
     ///     toolBudget: 4,
     ///   }),
     /// });
@@ -1355,7 +1355,13 @@ fn apply_host_contract_options(
         opts = opts.with_verifier(enabled);
     }
     if let Some(harness) = &options.harness {
-        opts = opts.with_harness(js_harness_to_core(harness)?);
+        // SDK hosts cannot inject a Rust registry; `host:<id>` resolves against
+        // Core's builtin components.
+        opts = opts
+            .with_harness(js_harness_to_core(harness)?)
+            .with_host_harness_registry(std::sync::Arc::new(
+                a3s_code_core::BuiltinHostHarnessRegistry,
+            ));
     }
     Ok(opts)
 }

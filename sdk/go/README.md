@@ -364,6 +364,39 @@ profile drift, and child runs inherit the parent profile without broadening it.
 provider through a typed object. The older `DefaultSecurity` boolean remains
 available for wire compatibility but is deprecated; do not set both options.
 
+## Meta Harness composition
+
+Compose the harness from ordered components on the one fact log, the same
+recipe Node's and Python's `Harness.compose` send:
+
+```go
+budget := uint32(4)
+session, err := agent.Session(ctx, ".", &code.SessionOptions{
+	Harness: &code.HarnessOptions{
+		Components: []string{
+			code.HarnessSystem,
+			code.HarnessTools,
+			code.HarnessHost("intent_stamp"),
+			code.HarnessBudget,
+			code.HarnessInfer,
+		},
+		ToolBudget: &budget,
+		System:     []string{"You are a careful coding agent."},
+	},
+})
+if err != nil {
+	return err
+}
+defer session.Close(context.Background())
+```
+
+Leave `Harness` nil to keep the default `coding_actor` tree. `HarnessHost`
+mounts one of Core's builtin host components (currently `intent_stamp`);
+custom host components need a Rust embedder with its own `HostHarnessRegistry`.
+Unknown stock parts are rejected when the session is created, and an
+unregistered host id fails closed on the first run. Permission projection and
+the completion gate stay Core-owned and cannot be disabled here.
+
 ## Streaming
 
 Every event uses the shared, lossless `EventEnvelopeV1` shape. `Event.Type` is

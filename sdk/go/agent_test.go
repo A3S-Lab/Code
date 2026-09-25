@@ -228,6 +228,30 @@ func TestToolPresentationProfileUsesTypedSessionOption(t *testing.T) {
 	}
 }
 
+func TestHarnessOptionsMatchBridgeWire(t *testing.T) {
+	budget := uint32(4)
+	encoded, err := json.Marshal(SessionOptions{
+		Harness: &HarnessOptions{
+			Components: []string{
+				HarnessSystem, HarnessTools, HarnessHost("intent_stamp"), HarnessBudget, HarnessInfer,
+			},
+			ToolBudget: &budget,
+			System:     []string{"careful coding agent"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"harness":{"components":["system","tools","host:intent_stamp","budget","infer"],"tool_budget":4,"system":["careful coding agent"]}}`
+	if string(encoded) != want {
+		t.Fatalf("harness JSON = %s, want %s", encoded, want)
+	}
+	omitted, err := json.Marshal(SessionOptions{})
+	if err != nil || string(omitted) != `{}` {
+		t.Fatalf("omitted harness must keep the default tree, got %s, %v", omitted, err)
+	}
+}
+
 func TestCreateSessionAndCloseWithInjectedRuntime(t *testing.T) {
 	runtime := &fakeRuntime{
 		request: func(

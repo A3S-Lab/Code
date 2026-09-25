@@ -111,6 +111,7 @@ name = "a3s-code-go-bridge"
 version = "9.0.0"
 dependencies = [
  "a3s-code-core",
+ "a3s-effect",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -8231,9 +8232,9 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "a3s-sandbox"
-version = "0.2.0"
-
-[[patch.unused]]
 name = "a3s-apofasi"
 version = "0.1.2"
+
+[[patch.unused]]
+name = "a3s-sandbox"
+version = "0.2.0"

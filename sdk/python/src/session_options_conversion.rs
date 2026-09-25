@@ -486,7 +486,13 @@ fn apply_py_host_contract_options(
         options = options.with_verifier(enabled);
     }
     if let Some(harness) = &source.harness {
-        options = options.with_harness(harness.to_core()?);
+        // SDK hosts cannot inject a Rust registry; `host:<id>` resolves against
+        // Core's builtin components.
+        options = options
+            .with_harness(harness.to_core()?)
+            .with_host_harness_registry(std::sync::Arc::new(
+                a3s_code_core::BuiltinHostHarnessRegistry,
+            ));
     }
     Ok(options)
 }
