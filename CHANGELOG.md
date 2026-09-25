@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requires `a3s-sandbox` 0.2.1, whose `NativeSandbox` is shared across
+  threads and applies network grants through `&self`.
 - Workspace lexical FTS links published `a3s-vec` 0.1.8 (`a3s_vec_fts_v1`).
   On-disk `zvec_rust_fts_v1` generations stay incompatible and are rebuilt.
 - The fact log is the only coding control source. `send`, `stream`, attachment

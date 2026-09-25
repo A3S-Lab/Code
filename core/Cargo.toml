@@ -66,7 +66,7 @@ a3s-search = { version = "=3.1.4", git = "https://github.com/A3S-Lab/Search.git"
 # Flow engine is optional: thin coding builds do not project named workflows.
 # Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }
-a3s-sandbox = { version = "=0.2.0", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "d381943061b157fb0e63973372d138cb6f78ffde" }
+a3s-sandbox = { version = "=0.2.1", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "2b8687892bbb4a5e3d6e74fca42949a3f186d236" }
 # Typed System-1 decisions (Apofasi). Optional so thin coding builds stay
 # ML-free; lexical/router path only unless `apofasi-infer` is enabled.
 a3s-apofasi = { version = "=0.1.1", git = "https://github.com/A3S-Lab/Apofasi.git", rev = "0bc3961d3183f9d2692c0406967765866bc914d6", default-features = false, features = ["router"], optional = true }
