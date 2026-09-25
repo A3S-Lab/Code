@@ -10,7 +10,7 @@
 //! the file and compare like-for-like without reaching into harness internals
 //! (follow-up shape from community PR #172).
 //!
-//! The attestor may only supply a [`VerificationReport`](crate::verification::VerificationReport).
+//! The attestor may only supply a [`VerificationReport`].
 //! The gate still requires a Passed, digest-bound report. The attestor is not a
 //! tool and is not model-grantable. There is no `Observe` policy that lets an
 //! unverified mutation complete.

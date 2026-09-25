@@ -671,6 +671,7 @@ fn refuse_hidden_foreign_write(ctx: &ToolContext) -> Option<ToolOutput> {
 /// exactly this origin. The grant is digest-pinned: if the session policy
 /// moved since the sandbox snapshot the model observed, application refuses
 /// and the model must re-request.
+#[allow(clippy::result_large_err)]
 fn resolve_network_grant(
     args: &serde_json::Value,
     sandbox: Option<&dyn crate::sandbox::BashSandbox>,
