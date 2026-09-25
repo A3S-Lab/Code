@@ -119,7 +119,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   init、宿主 checkpoint 钩子。
 - **8.0+** — Run 拥有的时空组合、generation-exact 能力、可移植检查点、收敛工作流。
   完整历史见 [CHANGELOG.md](CHANGELOG.md)。Go 模块路径：
-  `github.com/A3S-Lab/Code/sdk/go/v8`。
+  `github.com/A3S-Lab/Code/sdk/go/v9`。
 
 ## 60 秒内起步
 
@@ -1352,7 +1352,7 @@ optimistic GraphPatch → new version or explicit rejection
 |铁Rust| [`a3s-code-core`](https://crates.io/crates/a3s-code-core) |完整的运行时 API 和扩展特征 |
 | Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) |用于异步生命周期、流、工具、存储、编排、MCP 和状态图的本机 N-API 绑定
 |Python | [`a3s-code`](https://pypi.org/project/a3s-code/) |具有同步和异步应用程序 API 的原生 PyO3/bootstrap 包 |
-|去 | [`github.com/A3S-Lab/Code/sdk/go/v8`](sdk/go/README.md) | Pure-Go 客户端，具有用于会话、流、工具、临时语义检索、运行、验证和 MCP 的版本化本地桥 |
+|去 | [`github.com/A3S-Lab/Code/sdk/go/v9`](sdk/go/README.md) | Pure-Go 客户端，具有用于会话、流、工具、临时语义检索、运行、验证和 MCP 的版本化本地桥 |
 
 ```bash
 # Node.js
@@ -1362,7 +1362,7 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 
 # Go
-go get github.com/A3S-Lab/Code/sdk/go/v8
+go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
 v8.3.0 中的 Python 发布工作流程使用稳定的 `cp310-abi3` 接口，

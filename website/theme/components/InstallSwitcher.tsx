@@ -95,7 +95,7 @@ const installCommands = [
     packageName: 'sdk/go/v8',
     prompt: '$',
     icons: [{ color: '#56c4dc', path: siGo.path, title: siGo.title }],
-    commands: ['go get github.com/A3S-Lab/Code/sdk/go/v8'],
+    commands: ['go get github.com/A3S-Lab/Code/sdk/go/v9'],
   },
 ] as const;
 

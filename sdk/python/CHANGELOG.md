@@ -4,9 +4,14 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [9.0.0] - 2026-09-26
+
+- Bundled Core 9.0.0: the fact log is the only coding control source
+  (``a3s-effect`` ``ingest_coding`` / ``resume_coding``).
 - Meta Harness: ``SessionOptions.harness`` and ``Harness.compose`` for stock
-  parts (``system``, ``tools``, ``budget``, ``compact``, ``infer``). Omit the
-  option to keep the legacy ``coding_actor`` tree.
+  parts (``system``, ``tools``, ``budget``, ``compact``, ``infer``), plus
+  ordered ``components`` with ``Harness.host("<id>")`` mounts. Omit the option
+  to keep the legacy ``coding_actor`` tree.
 - Expose ``SessionOptions.verifier_enabled`` getter/setter so Python hosts can
   opt into the Core read-only verifier (#163).
 

@@ -149,7 +149,7 @@ current package **8.7.0**).
 - **8.0+** — run-owned spacetime, generation-exact capabilities, portable
   checkpoints, convergent workflows. Full history:
   [CHANGELOG.md](CHANGELOG.md). Go module path:
-  `github.com/A3S-Lab/Code/sdk/go/v8`.
+  `github.com/A3S-Lab/Code/sdk/go/v9`.
 
 ## Start in 60 seconds
 
@@ -1390,7 +1390,7 @@ one auditable shared model.
 | Rust     | [`a3s-code-core`](https://crates.io/crates/a3s-code-core)      | Complete runtime API and extension traits                                                                                            |
 | Node.js  | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) | Native N-API bindings for async lifecycle, streams, tools, stores, orchestration, MCP, and state graph                               |
 | Python   | [`a3s-code`](https://pypi.org/project/a3s-code/)               | Native PyO3/bootstrap package with sync and async application APIs                                                                   |
-| Go       | [`github.com/A3S-Lab/Code/sdk/go/v8`](sdk/go/README.md)        | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
+| Go       | [`github.com/A3S-Lab/Code/sdk/go/v9`](sdk/go/README.md)        | Pure-Go client with a versioned local bridge for sessions, streams, tools, ephemeral semantic retrieval, runs, verification, and MCP |
 
 ```bash
 # Node.js
@@ -1400,7 +1400,7 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 
 # Go
-go get github.com/A3S-Lab/Code/sdk/go/v8
+go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
 The Python release workflow in v8.4.0 uses the stable `cp310-abi3` interface,

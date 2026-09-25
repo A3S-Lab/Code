@@ -14,7 +14,7 @@ versioned JSONL protocol.
 Add the Go module:
 
 ```bash
-go get github.com/A3S-Lab/Code/sdk/go/v8
+go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
 Download the `a3s-code-go-bridge` asset for the same A3S Code release from
@@ -83,7 +83,7 @@ import (
 	"fmt"
 	"log"
 
-	code "github.com/A3S-Lab/Code/sdk/go/v8"
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
 )
 
 func main() {
