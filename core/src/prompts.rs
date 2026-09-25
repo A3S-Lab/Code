@@ -79,7 +79,7 @@ pub const AGENT_CODE_REVIEW: &str = include_str!("../prompts/agents/code_review.
 // Session — Context Compaction
 // ============================================================================
 
-/// User template for context compaction. Placeholder: `{conversation}`
+/// User template for context compaction. Placeholders: `{goal}`, `{conversation}`
 pub const CONTEXT_COMPACT: &str = include_str!("../prompts/common/context_compact.md");
 
 /// Prefix for compacted summary messages

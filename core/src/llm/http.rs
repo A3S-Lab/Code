@@ -370,16 +370,22 @@ pub(crate) fn build_reqwest_client(
     }
 
     let proxy_config = explicit_proxy_config_from_env();
+    // Explicit Proxy::{http,https} start with no_proxy=None. Attach the
+    // process NO_PROXY / no_proxy list so localhost and named MCP hosts
+    // bypass the proxy the same way curl and the system stack do.
+    let no_proxy = reqwest::NoProxy::from_env();
     if let Some(http_proxy) = proxy_config.http.as_deref() {
         builder = builder.proxy(
             reqwest::Proxy::http(http_proxy)
-                .with_context(|| format!("Invalid HTTP proxy URL: {http_proxy}"))?,
+                .with_context(|| format!("Invalid HTTP proxy URL: {http_proxy}"))?
+                .no_proxy(no_proxy.clone()),
         );
     }
     if let Some(https_proxy) = proxy_config.https.as_deref() {
         builder = builder.proxy(
             reqwest::Proxy::https(https_proxy)
-                .with_context(|| format!("Invalid HTTPS proxy URL: {https_proxy}"))?,
+                .with_context(|| format!("Invalid HTTPS proxy URL: {https_proxy}"))?
+                .no_proxy(no_proxy),
         );
     }
 
@@ -512,7 +518,14 @@ mod tests {
     }
 
     fn clear_proxy_env() {
-        for key in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"] {
+        for key in [
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+        ] {
             unsafe { env::remove_var(key) };
         }
     }
@@ -763,6 +776,44 @@ mod tests {
 
         let client = build_reqwest_client(None, None);
         assert!(client.is_ok());
+        clear_proxy_env();
+    }
+
+    #[test]
+    fn test_build_reqwest_client_accepts_no_proxy_with_proxies() {
+        let _guard = proxy_env_lock().lock().unwrap();
+        clear_proxy_env();
+        unsafe {
+            env::set_var("HTTP_PROXY", "http://proxy.example:3128");
+            env::set_var("HTTPS_PROXY", "http://proxy.example:3128");
+            env::set_var("NO_PROXY", "playwright-mcp,localhost,127.0.0.1");
+        }
+
+        assert!(
+            reqwest::NoProxy::from_env().is_some(),
+            "NO_PROXY must parse into a reqwest exclusion list"
+        );
+        let client = build_reqwest_client(None, None);
+        assert!(
+            client.is_ok(),
+            "client must build when proxies and NO_PROXY are both set"
+        );
+        clear_proxy_env();
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_no_proxy_from_env_prefers_lowercase_var() {
+        let _guard = proxy_env_lock().lock().unwrap();
+        clear_proxy_env();
+        unsafe {
+            env::set_var("no_proxy", "lower.example");
+            env::set_var("NO_PROXY", "upper.example");
+        }
+
+        // reqwest reads lowercase first; ensure the env we clear/set matches
+        // what build_reqwest_client will attach via NoProxy::from_env().
+        assert!(reqwest::NoProxy::from_env().is_some());
         clear_proxy_env();
     }
 }

@@ -30,6 +30,7 @@ use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_co
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const WRITE_TOKEN: &str = "issue139-write-token-c4e1";
+const SECRET_TOKEN: &str = "issue139-secret-token-7a2b";
 const MCP_TOKEN: &str = "issue137-mcp-token-9b2f";
 const LARGE_MARKER: &str = "issue138-large-marker-7d01";
 const HOST_TOKEN: &str = "issue140-host-token-a8c3";
@@ -132,11 +133,15 @@ fn protocol_identity(session_id: &str, run_id: &str) -> AgentProtocolRunIdentity
 /// #139: multi-step tool streaming must keep non-empty tool names across turns.
 /// Gateways that re-send `"name":""` on argument deltas previously wiped the
 /// accumulated name and poisoned the next request with a 400.
+///
+/// The second turn reads a host-written secret that never appears in prompts,
+/// so the model cannot pass by echoing first-turn text without calling `read`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_streaming_tool_names_survive_multi_step_rounds() {
     let agent = configured_agent().await;
     let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("secret.txt"), SECRET_TOKEN).expect("host secret");
     let session = agent
         .session_async(
             workspace.path().to_string_lossy().to_string(),
@@ -201,7 +206,8 @@ async fn live_streaming_tool_names_survive_multi_step_rounds() {
 
     let second = observe(
         &session,
-        "Read token.txt with the read tool and return only the file contents. Do not invent the token.",
+        "Call the read tool on secret.txt and return only that file's contents. \
+         Do not guess. The contents are not in this conversation.",
     )
     .await;
     assert!(
@@ -221,11 +227,11 @@ async fn live_streaming_tool_names_survive_multi_step_rounds() {
         second.tool_starts
     );
     let read_ok = second.tool_ends.iter().any(|(name, code, output, _)| {
-        name == "read" && *code == 0 && output.contains(WRITE_TOKEN)
+        name == "read" && *code == 0 && output.contains(SECRET_TOKEN)
     });
     assert!(
         read_ok,
-        "second turn must read the written token via tools: {:?}",
+        "second turn must read the host secret via tools (not conversation echo): {:?}",
         second
             .tool_ends
             .iter()

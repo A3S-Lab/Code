@@ -157,9 +157,16 @@ pub(crate) async fn compact_messages(
         .clamp(512, 600_000);
     let conversation_text = truncate_middle(&conversation_text, max_summary_chars);
 
+    // Pin the original goal outside the LLM path. Rolling compaction must not
+    // drop paths/constraints when a later summary forgets the ## Goal section.
+    let pinned_goal = extract_pinned_goal(messages);
+    let goal_for_prompt = pinned_goal.as_deref().unwrap_or("");
     let summarization_prompt = crate::prompts::render(
         crate::prompts::CONTEXT_COMPACT,
-        &[("conversation", &conversation_text)],
+        &[
+            ("goal", goal_for_prompt),
+            ("conversation", &conversation_text),
+        ],
     );
 
     // Call LLM to generate summary
@@ -179,7 +186,10 @@ pub(crate) async fn compact_messages(
         .message_token_limit
         .saturating_sub(summary_overhead)
         .clamp(1, MAX_COMPACT_SUMMARY_TOKENS);
+    // Pin the goal after truncation so a token trim cannot drop it, and so a
+    // second rewrite does not treat freeform summary text as the Goal body.
     let summary_text = truncate_summary_to_token_limit(summary_text.trim(), summary_token_limit);
+    let summary_text = ensure_goal_section(&summary_text, pinned_goal.as_deref());
     tracing::debug!("Generated summary: {} chars", summary_text.len());
 
     let summary_message = Message::user_wire(&format!(
@@ -303,6 +313,109 @@ fn truncate_summary_to_token_limit(summary: &str, token_limit: usize) -> String 
         MARKER,
         &summary[tail_start..]
     )
+}
+
+/// Prefer a previously pinned `## Goal` body; otherwise the first product user turn.
+fn extract_pinned_goal(messages: &[Message]) -> Option<String> {
+    for message in messages.iter().rev() {
+        if message.role != "user" {
+            continue;
+        }
+        let text = message.text();
+        if let Some(goal) = goal_section_body(&text) {
+            return Some(goal);
+        }
+    }
+
+    messages.iter().find_map(|message| {
+        if message.role != "user" || !message.is_product_transcript() {
+            return None;
+        }
+        let text = message.text();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // Skip prior compact summaries that lost their Goal section.
+        if trimmed.starts_with(crate::prompts::CONTEXT_SUMMARY_PREFIX.trim())
+            || trimmed.contains("[Context Summary:")
+        {
+            return None;
+        }
+        Some(trimmed.to_string())
+    })
+}
+
+fn goal_section_body(text: &str) -> Option<String> {
+    let marker = "## Goal";
+    let start = text.find(marker)?;
+    let after = &text[start + marker.len()..];
+    let after = after.strip_prefix('\r').unwrap_or(after);
+    let after = after.strip_prefix('\n').unwrap_or(after);
+    let end = after
+        .find("\n## ")
+        .or_else(|| after.find("\n# "))
+        .unwrap_or(after.len());
+    let body = after[..end].trim();
+    if body.is_empty() {
+        None
+    } else {
+        Some(body.to_string())
+    }
+}
+
+/// Force a durable `## Goal` section when a pinned goal is known.
+fn ensure_goal_section(summary: &str, pinned_goal: Option<&str>) -> String {
+    let Some(goal) = pinned_goal.map(str::trim).filter(|goal| !goal.is_empty()) else {
+        return summary.to_string();
+    };
+
+    let trimmed = summary.trim();
+    let goal_block = format!("## Goal\n{goal}");
+    if trimmed == goal_block || trimmed.starts_with(&format!("{goal_block}\n")) {
+        return trimmed.to_string();
+    }
+
+    let remainder = strip_goal_section(trimmed);
+    if remainder.is_empty() {
+        goal_block
+    } else if remainder.starts_with("## ") {
+        format!("{goal_block}\n\n{remainder}")
+    } else {
+        // Keep freeform model text under a heading so the Goal body stays a
+        // single extractable section across rolling compaction.
+        format!("{goal_block}\n\n## Summary\n{remainder}")
+    }
+}
+
+/// Remove an existing `## Goal` section so a pinned goal can replace it.
+fn strip_goal_section(text: &str) -> String {
+    let marker = "## Goal";
+    let Some(start) = text.find(marker) else {
+        return text.to_string();
+    };
+
+    let after = &text[start + marker.len()..];
+    let after = after.strip_prefix('\r').unwrap_or(after);
+    let after = after.strip_prefix('\n').unwrap_or(after);
+    let rest_rel = after
+        .find("\n## ")
+        .or_else(|| after.find("\n# "))
+        .unwrap_or(after.len());
+
+    let prefix = text[..start].trim();
+    let suffix = if rest_rel < after.len() {
+        after[rest_rel..].trim_start_matches('\n').trim()
+    } else {
+        // No following heading: drop the Goal-only block, keep prefix only.
+        ""
+    };
+
+    [prefix, suffix]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn safe_recent_start(messages: &[Message], desired_start: usize) -> usize {
@@ -939,7 +1052,18 @@ mod tests {
         .unwrap()
         .expect("history should compact");
 
-        assert_eq!(compacted.summary, "durable compact summary");
+        assert!(
+            compacted.summary.contains("## Goal"),
+            "pinned product goal must survive even when the model omits it"
+        );
+        assert!(
+            compacted.summary.contains("history"),
+            "first product user turn is the pinned goal"
+        );
+        assert!(
+            compacted.summary.contains("durable compact summary"),
+            "model summary body must remain after Goal pinning"
+        );
         assert_eq!(compacted.messages[0].role, "user");
         assert!(
             !compacted.messages[0].is_product_transcript(),
@@ -949,10 +1073,117 @@ mod tests {
         assert!(prompts[0].contains("cargo test -p a3s-code-core"));
         assert!(prompts[0].contains("all 42 tests passed"));
         assert!(prompts[0].contains("latest verified state must survive"));
+        assert!(
+            prompts[0].contains("Pinned original goal"),
+            "compaction prompt must surface the pinned goal to the model"
+        );
         let systems = client.systems.lock().unwrap();
         assert!(systems[0]
             .as_deref()
             .is_some_and(|system| system.contains("untrusted data")));
+    }
+
+    #[tokio::test]
+    async fn rolling_compaction_reinserts_goal_when_model_drops_it() {
+        let original_goal = "Write /app/build_part.py and save the part to /app/part.FCStd using PartDesign";
+        let prior_summary = format!(
+            "{}## Goal\n{original_goal}\n\n## Current State\nScanned drawings; ambiguities remain.",
+            crate::prompts::CONTEXT_SUMMARY_PREFIX
+        );
+        let mut messages = vec![Message::user_wire(&prior_summary)];
+        for i in 0..30 {
+            messages.push(make_text_msg(
+                if i % 2 == 0 { "assistant" } else { "user" },
+                &format!("pixel scan step {i}"),
+            ));
+        }
+
+        struct GoalDroppingClient;
+        #[async_trait::async_trait]
+        impl LlmClient for GoalDroppingClient {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
+                Ok(LlmResponse {
+                    message: Message::assistant(
+                        "Looking at the full drawing, I can now see the overall layout clearly.",
+                    ),
+                    usage: TokenUsage::default(),
+                    stop_reason: Some("stop".to_string()),
+                    token_logprobs: Vec::new(),
+                    meta: None,
+                })
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+                _cancel_token: tokio_util::sync::CancellationToken,
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
+                anyhow::bail!("streaming is not used by compaction")
+            }
+        }
+
+        let llm_client: Arc<dyn LlmClient> = Arc::new(GoalDroppingClient);
+        let compacted = compact_messages(
+            "goal-pin",
+            &messages,
+            &llm_client,
+            CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+        )
+        .await
+        .unwrap()
+        .expect("history should compact");
+
+        let goal = goal_section_body(&compacted.summary).expect("## Goal must be present");
+        assert_eq!(goal, original_goal);
+        assert!(compacted.summary.contains("/app/build_part.py"));
+        assert!(compacted.summary.contains("/app/part.FCStd"));
+        assert!(compacted.summary.contains("PartDesign"));
+    }
+
+    #[test]
+    fn ensure_goal_section_replaces_wrong_goal_body() {
+        let pinned = "Keep /app/build_part.py";
+        let summary = "## Goal\nWrong later narration\n\n## Current State\nok";
+        let fixed = ensure_goal_section(summary, Some(pinned));
+        assert_eq!(goal_section_body(&fixed).as_deref(), Some(pinned));
+        assert!(fixed.contains("## Current State\nok"));
+    }
+
+    #[test]
+    fn ensure_goal_section_keeps_freeform_body_after_pin() {
+        let pinned = "Ship the part";
+        let fixed = ensure_goal_section("assistant narration without headings", Some(pinned));
+        assert_eq!(
+            fixed,
+            "## Goal\nShip the part\n\n## Summary\nassistant narration without headings"
+        );
+        assert_eq!(goal_section_body(&fixed).as_deref(), Some(pinned));
+        // Idempotent: a second pass must not swallow the freeform body.
+        assert_eq!(ensure_goal_section(&fixed, Some(pinned)), fixed);
+    }
+
+    #[test]
+    fn extract_pinned_goal_prefers_prior_summary_goal() {
+        let summary = format!(
+            "{}## Goal\nShip /app/part.FCStd\n\n## Current State\ndoing scans",
+            crate::prompts::CONTEXT_SUMMARY_PREFIX
+        );
+        let messages = vec![
+            Message::user("ignored first product ask"),
+            Message::user_wire(&summary),
+            make_text_msg("assistant", "scanning"),
+        ];
+        assert_eq!(
+            extract_pinned_goal(&messages).as_deref(),
+            Some("Ship /app/part.FCStd")
+        );
     }
 
     #[test]

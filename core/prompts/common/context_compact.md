@@ -4,7 +4,9 @@ of what has already happened.
 
 Requirements:
 - Keep the summary under 600 words.
-- Preserve the **original user goal** verbatim in a "Goal" section.
+- Preserve the **original user goal** verbatim in a "Goal" section. When a pinned
+  goal is supplied below, copy it exactly into `## Goal` — do not paraphrase,
+  shorten, or replace it with later assistant narration.
 - List every file that was **read, written, or modified** with a one-line note on
   what changed.
 - List every **shell command** that was run and its outcome (success / error / output
@@ -36,6 +38,9 @@ Output format:
 <what is done> / <what remains>
 
 ---
+
+Pinned original goal (copy verbatim under ## Goal; leave empty only if unknown):
+{goal}
 
 Conversation:
 {conversation}
