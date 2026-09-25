@@ -20,6 +20,10 @@ name = "durable_memory_semantic_refresh_benchmark"
 required-features = ["durable-memory-sqlite"]
 
 [[example]]
+name = "durable_memory_prod1_host"
+required-features = ["dm-prod1-host"]
+
+[[example]]
 name = "workspace_persistent_index_benchmark"
 required-features = ["a3s-vec-fts"]
 
@@ -166,6 +170,10 @@ chrono = { version = "0.4", features = ["serde"] }
 rquickjs = { version = "0.11.0", features = ["futures"] }
 
 # S3-compatible workspace backend (optional, gated by `s3` feature)
+# Redis client for the `DM-PROD1` host qualification harness only. The remote
+# vector index and distributed lease live in
+# `examples/durable_memory_prod1_host`; no library module depends on Redis.
+redis = { version = "0.32.7", default-features = false, features = ["tokio-comp", "script"], optional = true }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "rustls"], optional = true }
 aws-credential-types = { version = "1", optional = true }
 aws-smithy-types = { version = "1", optional = true }
@@ -212,6 +220,12 @@ dynamic-workflow = ["state-graph", "dep:a3s-flow"]
 advanced-harness = ["evaluation", "research", "state-graph", "dynamic-workflow"]
 # Enable the locally durable SQLite vector index for semantic-memory hosts.
 durable-memory-sqlite = ["a3s-memory/sqlite"]
+# Build the `DM-PROD1` host qualification harness
+# (`examples/durable_memory_prod1_host`). It injects a Redis-backed
+# `VectorIndex` and a Redis lease into `DurableMemorySession`, so it is the only
+# surface that needs the Redis client. Deliberately excluded from every release
+# profile and from `ci-all`.
+dm-prod1-host = ["dep:redis"]
 # Enable browser-backed search plus managed browser lifecycle
 # APIs. Moli is the runtime default and is downloaded on first headless use when
 # no packaged or user-provided executable is available; Chrome/Chromium and
