@@ -1,0 +1,17 @@
+[package]
+name = "a3s-code-tui"
+version = "9.0.0"
+edition = "2021"
+description = "A3S Code full-screen TUI: scrollback, prompt, and slash entry on a3s-code 9.0.0"
+license = "MIT"
+
+[dependencies]
+a3s-code-core = { version = "9.0.0", path = "../core", default-features = true }
+a3s-prompt-textarea = { version = "0.1.0", path = "vendor/prompt-textarea" }
+anyhow = "1"
+async-trait = "0.1"
+crossterm = { version = "0.28", features = ["event-stream"] }
+nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "5b74652" }
+ratatui = { version = "0.29", features = ["crossterm", "unstable-widget-ref"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = "0.7"

@@ -148,6 +148,9 @@ cd /path/to/your/project
 a3s code
 ```
 
+`a3s code` 打开 A3S 全屏 TUI：回滚记录、提示行和 `/` 命令。模型来自 ACL
+`default_model`。提交的一轮运行在 a3s-code 9.0.0 的事实日志会话上。
+
 ```bash
 # 更新
 brew update && brew upgrade a3s
@@ -1670,8 +1673,8 @@ v1 架构或声明外部运行时认证。
 
 - 核心是一个可嵌入的运行时，而不是托管代理服务或终端
   小部件库。
-- 单独的 A3S CLI 拥有交互式 TUI、帐户适配器、演示文稿
-  策略和可选的 A3S 操作系统集成。
+- A3S CLI 启动全屏 Code TUI（`crates/code/tui`）。帐户适配器、展示策略和可选的
+  A3S OS 集成仍在 CLI 中。
 - 托管自己的用户身份、凭证访问、部署策略和信任
   关于直接主机工具调用的决策。
 - 沙箱、持久性、自动压缩、目标、委托和图表

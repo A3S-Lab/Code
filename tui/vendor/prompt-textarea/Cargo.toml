@@ -1,0 +1,24 @@
+[package]
+name = "a3s-prompt-textarea"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Prompt text area vendored from grok-build for the A3S Code TUI"
+publish = false
+
+[dependencies]
+crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
+ratatui = { version = "0.29", features = ["crossterm", "unstable-widget-ref"] }
+ratatui-core = "0.1"
+textwrap = "0.16"
+tui-scrollbar = "0.2"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+
+[features]
+default = []
+debug-logs = ["dep:tracing"]
+
+[dependencies.tracing]
+version = "0.1"
+optional = true

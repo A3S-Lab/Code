@@ -172,6 +172,10 @@ cd /path/to/your/project
 a3s code
 ```
 
+`a3s code` opens the A3S full-screen TUI: scrollback, a prompt, and `/`
+commands. The model is ACL `default_model`. A submitted turn runs on the
+a3s-code 9.0.0 fact-log session.
+
 ```bash
 # Update
 brew update && brew upgrade a3s
@@ -1703,8 +1707,8 @@ the v1 schema or claiming external Runtime certification.
 
 - Core is an embeddable runtime, not a hosted agent service or a terminal
   widget library.
-- The separate A3S CLI owns the interactive TUI, account adapters, presentation
-  policy, and optional A3S OS integration.
+- The A3S CLI launches the full-screen Code TUI (`crates/code/tui`). Account
+  adapters, presentation policy, and optional A3S OS integration stay in the CLI.
 - Hosts own user identity, credential access, deployment policy, and trust
   decisions around direct host tool calls.
 - Sandboxing, persistence, automatic compaction, goals, delegation, and graph
