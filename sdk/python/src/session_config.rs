@@ -168,7 +168,7 @@ impl PyHarness {
         "infer".into()
     }
 
-    /// Host Moore mount id (``host:<id>``). Requires a Rust ``HostHarnessRegistry``.
+    /// Host mount id (``host:<id>``), resolved against Core's builtin host components.
     #[staticmethod]
     pub(super) fn host(id: &str) -> PyResult<String> {
         let formatted = a3s_code_core::host_component_id(id);

@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requires `a3s-sandbox` 0.2.1, whose `NativeSandbox` is shared across
+  threads and applies network grants through `&self`.
 - Workspace lexical FTS links published `a3s-vec` 0.1.8 (`a3s_vec_fts_v1`).
   On-disk `zvec_rust_fts_v1` generations stay incompatible and are rebuilt.
 - The fact log is the only coding control source. `send`, `stream`, attachment
@@ -53,7 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Meta Harness arbitrary assemble (`META-HARNESS2`).** Ordered
   `components: [...]` accepts stock parts and `host:<id>` mounts via
   `HostHarnessRegistry` / `HostHarnessAssembler`. Node/Python expose
-  `Harness.host` + `components`. Builtin `intent_stamp` host component supports
+  `Harness.host` + `components`; Go exposes `SessionOptions.Harness`
+  (`HarnessOptions`, `HarnessHost`, stock part constants). SDK sessions that set
+  `harness` install `BuiltinHostHarnessRegistry`, so `host:<id>` mounts resolve
+  from Node, Python, and Go instead of failing closed for lack of a registry. Builtin `intent_stamp` host component supports
   hermetic and Layer C proofs. F31 kernels (`meta_harness.rs`,
   `completion_attestor.rs`) join the ≥95% F-table gate. Live suite:
   `test_meta_harness_compose_live_e2e` (file/digest/gate oracles only).

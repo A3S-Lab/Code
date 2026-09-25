@@ -654,6 +654,27 @@ fn harness_compose_maps_to_rust_session_options() {
 }
 
 #[test]
+fn harness_host_mount_installs_builtin_registry() {
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            components: Some(vec![
+                "system".into(),
+                "host:intent_stamp".into(),
+                "infer".into(),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    assert!(opts.harness.is_some());
+    assert!(
+        opts.host_harness_registry.is_some(),
+        "SDK sessions resolve host mounts through Core's builtin registry"
+    );
+}
+
+#[test]
 fn artifact_store_limits_maps_to_rust_session_options() {
     let opts = js_session_options_to_rust(Some(SessionOptions {
         artifact_store_limits: Some(ArtifactStoreLimits {

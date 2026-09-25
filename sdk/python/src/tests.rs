@@ -840,11 +840,7 @@ fn session_options_map_harness_compose() {
     assert!(host_core.parts.is_empty());
     assert_eq!(
         host_core.components,
-        vec![
-            "system".into(),
-            "host:intent_stamp".into(),
-            "infer".into(),
-        ]
+        vec!["system".into(), "host:intent_stamp".into(), "infer".into(),]
     );
 
     let invalid = PyHarnessComposeOptions {
@@ -852,6 +848,24 @@ fn session_options_map_harness_compose() {
         ..PyHarnessComposeOptions::default()
     };
     assert!(invalid.to_core().is_err());
+}
+
+#[test]
+fn session_options_host_mount_installs_builtin_registry() {
+    let mut session_options = PySessionOptions::new();
+    session_options.harness = Some(PyHarnessComposeOptions {
+        tool_budget: None,
+        compact_after_chars: None,
+        system: Vec::new(),
+        parts: Vec::new(),
+        components: vec!["system".into(), "host:intent_stamp".into(), "infer".into()],
+    });
+    let opts = build_rust_session_options(session_options).unwrap();
+    assert!(opts.harness.is_some());
+    assert!(
+        opts.host_harness_registry.is_some(),
+        "SDK sessions resolve host mounts through Core's builtin registry"
+    );
 }
 
 #[test]
