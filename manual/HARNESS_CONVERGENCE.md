@@ -74,7 +74,7 @@ prompts.
 
 | Field | Value |
 | --- | --- |
-| Host / environment | darwin host + kense-redis `127.0.0.1:6379` DB 15; tip Code `b7b239a8` (RC `b91462d3` stack) |
+| Host / environment | darwin host + kense-redis `127.0.0.1:6379` DB 15; tip Code `be467457` (RC `b91462d3` stack) |
 | Embedding provider + model | Boyue OpenAI-compatible `text-embedding-3-small` (1536-d); pack `/tmp/dm-prod1-host-be467457` |
 | Remote CAS + lease policy | Redis `VectorIndex` IndexRevisionCas + `SET NX EX` lease with fence tokens; failover via CLIENT KILL |
 | Horizons / multi-agent load | Five minutes-scale horizons (initial publication, candidate activation, single-node drift, consolidation/decay, steady state) + 8 independent Redis writers racing one prefix (1 commit / 7 `RevisionConflict`, convergence to 8 records); caveats retained per row in the report |

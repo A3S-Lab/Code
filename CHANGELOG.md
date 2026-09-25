@@ -91,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channel release, not Enterprise GA. RC `b91462d3`: L0–L6 and L8 pass;
   Layer C `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`
   (includes `test_meta_harness_compose_live_e2e`).
-- L7 disposition: `DM-PROD1` closed with a host pack (all six dimensions,
+- L7 disposition: `DM-PROD1` closed with a host pack (all seven dimensions,
   `HYGIENE_OK`). `TB-QUAL1` is waived by product decision (2026-09-26); only a
   diagnostic Harbor trial with a retained native `verifier_result` exists.
   `CAR-01`…`CAR-05` certification runs through Cloud
