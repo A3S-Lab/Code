@@ -48,7 +48,8 @@ the repository's own definition of done.
 | L0/L1 + L5 + L6 on tip | harness-convergence PASS; Layer C `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` `LAYER_C_PASS`; L6 Actions `36092780724` / `36122389323` |
 | Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
 | L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
-| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open; Harbor diagnostic smoke on `terminal-bench/bun-sourcemap-leak` (agent setup may hang on `apt-get`) |
+| L8 §7 9.0.0 pins | **PASS (hermetic)** — fact_log 34/34; effect park + tool_round_cap; bm25 a3s-vec FTS 17/17 |
+| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open; diagnostic smoke `2026-09-25__19-11-53` on `bun-sourcemap-leak` (agent running after apt/`ca_certificates` skip fix) |
 | No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm) |
 | Docs site | Current archived line `docs/v8.7.0`; no `docs/v9.0.0` |
 | Out of 9.0.0 CHANGELOG body | Apofasi typed decisions live under `[Unreleased]` |
