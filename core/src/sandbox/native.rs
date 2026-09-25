@@ -43,7 +43,6 @@ impl NativeBashSandbox {
         self.inner.probe().await
     }
 }
-
 struct OutputObserverAdapter {
     inner: Arc<dyn CommandOutputObserver>,
 }
@@ -77,6 +76,18 @@ fn execution_output(output: a3s_sandbox::CommandOutput) -> SandboxExecutionOutpu
 
 #[async_trait]
 impl BashSandbox for NativeBashSandbox {
+    fn policy_digest(&self) -> Option<String> {
+        Some(self.inner.policy_digest())
+    }
+
+    fn apply_network_grant(
+        &self,
+        grant: a3s_sandbox::NetworkGrant,
+        expected_base_digest: &str,
+    ) -> Result<String> {
+        self.inner.apply_network_grant(grant, expected_base_digest)
+    }
+
     async fn exec_command(&self, command: &str, _guest_workspace: &str) -> Result<SandboxOutput> {
         let output = self.inner.exec_command(command).await?;
         Ok(SandboxOutput {
@@ -108,6 +119,32 @@ impl BashSandbox for NativeBashSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_applies_digest_pinned_grant_on_the_live_sandbox() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = NativeBashSandbox::new(workspace.path()).unwrap();
+        let base = sandbox
+            .policy_digest()
+            .expect("native backend exposes a digest");
+        let new_digest = sandbox
+            .apply_network_grant(
+                a3s_sandbox::NetworkGrant::new("api.example.com", Some(443)).unwrap(),
+                &base,
+            )
+            .expect("grant must apply on the deny-all baseline");
+        assert_ne!(new_digest, base);
+        assert!(sandbox.policy_digest().is_some());
+
+        // Stale lineage refuses: the digest moved since the approval.
+        let error = sandbox
+            .apply_network_grant(
+                a3s_sandbox::NetworkGrant::new("other.example.com", Some(443)).unwrap(),
+                &base,
+            )
+            .expect_err("stale digest must refuse");
+        assert!(error.to_string().contains("digest"), "{error}");
+    }
 
     #[tokio::test]
     async fn adapter_preserves_native_backend_and_output() {

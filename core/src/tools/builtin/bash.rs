@@ -317,13 +317,28 @@ impl Tool for BashTool {
                 },
                 "sandbox_permissions": {
                     "type": "string",
-                    "enum": ["use_default", "require_escalated"],
+                    "enum": ["use_default", "require_escalated", "request_network_grant"],
                     "default": "use_default",
-                    "description": "Execution boundary. Omit or use 'use_default' for the configured workspace sandbox; this fails closed when no sandbox is installed. Use 'require_escalated' only after a sandbox denial when host execution is necessary; interactive hosts must authorize that request."
+                    "description": "Execution boundary. Omit or use 'use_default' for the configured workspace sandbox; this fails closed when no sandbox is installed. Use 'require_escalated' only after a sandbox denial when host execution is necessary; interactive hosts must authorize that request. Use 'request_network_grant' after a network denial: it asks the user to allow exactly one origin (network_grant.host/port) inside the sandbox and then runs the command sandboxed."
                 },
                 "justification": {
                     "type": "string",
                     "description": "Required with sandbox_permissions='require_escalated'. Briefly explain why the command cannot run inside the workspace sandbox."
+                },
+                "network_grant": {
+                    "type": "object",
+                    "properties": {
+                        "host": {
+                            "type": "string",
+                            "description": "Exact host to allow (no wildcards). Grant semantics never alias localhost with 127.0.0.1."
+                        },
+                        "port": {
+                            "type": "integer",
+                            "description": "Optional port pin. Omit to allow any port on the host."
+                        }
+                    },
+                    "required": ["host"],
+                    "description": "Required with sandbox_permissions='request_network_grant'. The user must authorize this exact origin."
                 }
             },
             "required": ["command"],
@@ -340,9 +355,10 @@ impl Tool for BashTool {
     }
 
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
-        args.get("sandbox_permissions")
-            .and_then(serde_json::Value::as_str)
-            == Some("require_escalated")
+        matches!(
+            args.get("sandbox_permissions").and_then(|v| v.as_str()),
+            Some("require_escalated") | Some("request_network_grant")
+        )
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
@@ -358,29 +374,34 @@ impl Tool for BashTool {
         };
         let command = prefix_session_cwd(command, ctx);
         let command = command.as_str();
-        let require_escalated = match args
+        let raw_mode = args
             .get("sandbox_permissions")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("use_default")
-        {
+            .unwrap_or("use_default");
+        let require_escalated = match raw_mode {
             "use_default" => false,
-            "require_escalated" => true,
+            "require_escalated" => {
+                if args
+                    .get("justification")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    return Ok(ToolOutput::error(
+                        "justification is required when sandbox_permissions is require_escalated",
+                    ));
+                }
+                true
+            }
+            // The grant itself is applied right before the sandboxed run
+            // below, so a denied grant never falls through to the host.
+            "request_network_grant" => false,
             value => {
                 return Ok(ToolOutput::error(format!(
                     "unsupported sandbox_permissions value: {value}"
                 )))
             }
         };
-        if require_escalated
-            && args
-                .get("justification")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            return Ok(ToolOutput::error(
-                "justification is required when sandbox_permissions is require_escalated",
-            ));
-        }
+        let request_network_grant = raw_mode == "request_network_grant";
         if let Some(denied) = refuse_hidden_foreign_write(ctx) {
             return Ok(denied);
         }
@@ -416,8 +437,32 @@ impl Tool for BashTool {
             });
             return Ok(denied);
         }
+        if request_network_grant && ctx.sandbox.is_none() {
+            let message = "request_network_grant requires a configured sandbox";
+            let mut denied = ToolOutput::error(message);
+            denied.metadata = Some(serde_json::json!({
+                "sandboxed": false,
+                "sandbox_available": false,
+            }));
+            denied.error_kind = Some(ToolErrorKind::Unsupported {
+                message: message.to_string(),
+            });
+            return Ok(denied);
+        }
         if !require_escalated {
             if let Some(ref sandbox) = ctx.sandbox {
+                // Gate 10: the host confirmation layer has already surfaced
+                // this exact origin to the user (requires_confirmation covers
+                // request_network_grant); apply the digest-pinned grant and
+                // run the command sandboxed under the widened policy.
+                let grant_metadata = if request_network_grant {
+                    match resolve_network_grant(args, Some(sandbox.as_ref())) {
+                        Ok(value) => Some(value),
+                        Err(output) => return Ok(output),
+                    }
+                } else {
+                    None
+                };
                 let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
                 let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {
                     command: command_for_sandbox(command),
@@ -501,19 +546,20 @@ impl Tool for BashTool {
                     return Ok(timed_out);
                 }
 
+                let mut base_metadata = serde_json::json!({
+                    "exit_code": result.exit_code,
+                    "sandboxed": true,
+                    "output": capture_metadata,
+                });
+                if let Some(grant) = grant_metadata {
+                    base_metadata["network_grant"] = grant;
+                }
                 let changed_paths = observed_changes(ctx, before_porcelain).await;
                 return Ok(ToolOutput {
                     content: output,
                     success: result.exit_code == 0,
                     metadata: crate::verification::merge_shell_verification_metadata(
-                        Some(with_changed_paths(
-                            serde_json::json!({
-                                "exit_code": result.exit_code,
-                                "sandboxed": true,
-                                "output": capture_metadata,
-                            }),
-                            &changed_paths,
-                        )),
+                        Some(with_changed_paths(base_metadata, &changed_paths)),
                         Some(ctx.workspace.as_path()),
                         command,
                         result.exit_code,
@@ -615,6 +661,68 @@ fn refuse_hidden_foreign_write(ctx: &ToolContext) -> Option<ToolOutput> {
     ) {
         Ok(()) => None,
         Err(error) => Some(ToolOutput::error(error)),
+    }
+}
+
+/// Resolve and apply a host-approved network grant for the bash tool.
+///
+/// The caller has already routed the request through host confirmation
+/// (`requires_confirmation`), so reaching this point means the user approved
+/// exactly this origin. The grant is digest-pinned: if the session policy
+/// moved since the sandbox snapshot the model observed, application refuses
+/// and the model must re-request.
+fn resolve_network_grant(
+    args: &serde_json::Value,
+    sandbox: Option<&dyn crate::sandbox::BashSandbox>,
+) -> Result<serde_json::Value, ToolOutput> {
+    let Some(sandbox) = sandbox else {
+        return Err(ToolOutput::error(
+            "request_network_grant requires a configured sandbox",
+        ));
+    };
+    let grant_args = args.get("network_grant");
+    let host = grant_args
+        .and_then(|g| g.get("host"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|host| !host.is_empty());
+    let Some(host) = host else {
+        return Err(ToolOutput::error(
+            "network_grant.host is required when sandbox_permissions is request_network_grant",
+        ));
+    };
+    let port = match grant_args
+        .and_then(|g| g.get("port"))
+        .and_then(|v| v.as_u64())
+    {
+        Some(raw) => match u16::try_from(raw) {
+            Ok(port) => Some(port),
+            Err(_) => {
+                return Err(ToolOutput::error(format!(
+                    "network_grant.port {raw} is out of range"
+                )))
+            }
+        },
+        None => None,
+    };
+    let grant = match a3s_sandbox::NetworkGrant::new(host, port) {
+        Ok(grant) => grant,
+        Err(error) => return Err(ToolOutput::error(error.to_string())),
+    };
+    let Some(base) = sandbox.policy_digest() else {
+        return Err(ToolOutput::error(
+            "this sandbox backend does not expose a policy digest; grants are unavailable",
+        ));
+    };
+    match sandbox.apply_network_grant(grant, &base) {
+        Ok(digest) => Ok(serde_json::json!({
+            "host": host,
+            "port": port,
+            "policy_digest": digest,
+        })),
+        Err(error) => Err(ToolOutput::error(format!(
+            "network grant refused: {error}. Re-check the current policy and re-request."
+        ))),
     }
 }
 

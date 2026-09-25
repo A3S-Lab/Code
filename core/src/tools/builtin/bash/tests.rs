@@ -4,8 +4,8 @@ use crate::workspace::CommandOutputSummary;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 const TEST_ESCALATION_JUSTIFICATION: &str =
     "This test explicitly exercises the approved host command runner.";
@@ -1864,3 +1864,171 @@ async fn detach_of_cd_command_returns_tool_error() {
 
 #[path = "sandbox_soak.rs"]
 mod sandbox_soak;
+
+// ------------------------------------------------------------------
+// Gate 10: request_network_grant flow
+// ------------------------------------------------------------------
+
+struct GrantingSandbox {
+    applied: Mutex<Vec<(String, Option<u16>, String)>>,
+    digest: AtomicU64,
+}
+
+#[async_trait]
+impl BashSandbox for GrantingSandbox {
+    async fn exec_command(
+        &self,
+        command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        Ok(SandboxOutput {
+            stdout: format!("ran: {command}"),
+            stderr: String::new(),
+            exit_code: 0,
+        })
+    }
+
+    async fn shutdown(&self) {}
+
+    fn policy_digest(&self) -> Option<String> {
+        Some(format!("digest-{}", self.digest.load(Ordering::SeqCst)))
+    }
+
+    fn apply_network_grant(
+        &self,
+        grant: a3s_sandbox::NetworkGrant,
+        expected_base_digest: &str,
+    ) -> anyhow::Result<String> {
+        if Some(expected_base_digest.to_string()) != self.policy_digest() {
+            anyhow::bail!("stale digest");
+        }
+        self.digest.fetch_add(1, Ordering::SeqCst);
+        self.applied.lock().unwrap().push((
+            grant.host.clone(),
+            grant.port,
+            expected_base_digest.to_string(),
+        ));
+        Ok(self.policy_digest().unwrap_or_default())
+    }
+}
+
+#[tokio::test]
+async fn test_bash_request_network_grant_applies_and_runs_sandboxed() {
+    let tool = BashTool;
+    let sandbox = Arc::new(GrantingSandbox {
+        applied: Mutex::new(Vec::new()),
+        digest: AtomicU64::new(7),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf())
+        .with_sandbox(Arc::clone(&sandbox) as Arc<dyn BashSandbox>);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "curl https://api.example.com/v1",
+                "sandbox_permissions": "request_network_grant",
+                "network_grant": {"host": "api.example.com", "port": 443},
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.success, "content: {}", result.content);
+    assert!(result.content.contains("ran: curl"));
+    let metadata = result.metadata.expect("metadata");
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["network_grant"]["host"], "api.example.com");
+    assert_eq!(metadata["network_grant"]["port"], 443);
+    assert_eq!(metadata["network_grant"]["policy_digest"], "digest-8");
+    let applied = sandbox.applied.lock().unwrap();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].0, "api.example.com");
+    assert_eq!(applied[0].1, Some(443));
+}
+
+#[tokio::test]
+async fn test_bash_request_network_grant_requires_host() {
+    let tool = BashTool;
+    let sandbox = Arc::new(GrantingSandbox {
+        applied: Mutex::new(Vec::new()),
+        digest: AtomicU64::new(1),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf()).with_sandbox(sandbox);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "curl https://api.example.com/v1",
+                "sandbox_permissions": "request_network_grant",
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("network_grant.host is required"));
+}
+
+#[tokio::test]
+async fn test_bash_request_network_grant_refuses_wildcard_host() {
+    let tool = BashTool;
+    let sandbox = Arc::new(GrantingSandbox {
+        applied: Mutex::new(Vec::new()),
+        digest: AtomicU64::new(1),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf()).with_sandbox(sandbox);
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "curl https://example.com/v1",
+                "sandbox_permissions": "request_network_grant",
+                "network_grant": {"host": "*.example.com"},
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("invalid network grant host"));
+}
+
+#[tokio::test]
+async fn test_bash_request_network_grant_without_sandbox_errors() {
+    let tool = BashTool;
+    let workspace = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": "curl https://api.example.com/v1",
+                "sandbox_permissions": "request_network_grant",
+                "network_grant": {"host": "api.example.com"},
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(result.content.contains("requires a configured sandbox"));
+}
+
+#[test]
+fn test_bash_request_network_grant_requires_confirmation() {
+    let tool = BashTool;
+    assert!(tool.requires_confirmation(&serde_json::json!({
+        "sandbox_permissions": "request_network_grant",
+        "network_grant": {"host": "api.example.com"},
+    })));
+    assert!(!tool.requires_confirmation(&serde_json::json!({
+        "sandbox_permissions": "use_default",
+    })));
+}

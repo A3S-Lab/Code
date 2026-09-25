@@ -123,6 +123,24 @@ pub trait BashSandbox: Send + Sync {
 
     /// Shut down the sandbox (best-effort, infallible from caller's perspective).
     async fn shutdown(&self);
+
+    /// Snapshot of the active policy digest for grant lineage, when the
+    /// backend supports host-approved grants.
+    fn policy_digest(&self) -> Option<String> {
+        None
+    }
+
+    /// Apply a host-approved network grant: the only sanctioned broadening
+    /// path. `expected_base_digest` pins the approval to the exact policy the
+    /// user confirmed against. The default refuses: custom backends opt in
+    /// explicitly.
+    fn apply_network_grant(
+        &self,
+        _grant: a3s_sandbox::NetworkGrant,
+        _expected_base_digest: &str,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("this sandbox backend does not support policy grants")
+    }
 }
 
 // ============================================================================
