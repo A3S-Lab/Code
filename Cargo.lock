@@ -230,6 +230,9 @@ name = "a3s-prompt-textarea"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "itertools 0.14.0",
+ "pretty_assertions",
+ "rand 0.9.5",
  "ratatui",
  "ratatui-core",
  "textwrap",
@@ -242,6 +245,7 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.1.4"
+source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=c9b8dfbef2b3133b44c333820ac6e80453552566#c9b8dfbef2b3133b44c333820ac6e80453552566"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2214,6 +2218,12 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
@@ -5164,6 +5174,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
+name = "pretty_assertions"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
+dependencies = [
+ "diff",
+ "yansi",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7958,6 +7978,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
+name = "yansi"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
 name = "yasna"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8163,3 +8189,7 @@ dependencies = [
 [[patch.unused]]
 name = "a3s-apofasi"
 version = "0.1.2"
+
+[[patch.unused]]
+name = "a3s-sandbox"
+version = "0.1.5"

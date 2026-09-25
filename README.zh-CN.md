@@ -51,7 +51,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   检查点不决定下一次模型调用。
 - **企业 GA 尚未达到。** `fa0a92ca` 已有 Layer C 通过记录和归档的 L6 Actions
   报告。L7 仍需要完整的 Harbor `TB-QUAL1` 作业、一份 `DM-PROD1` 主机报告，以及
-  `CAR-01`…`CAR-05` 收条。没有产品豁免点名这些门禁。
+  `CAR-01`…`CAR-05` 收条。没有产品豁免点名这些门禁。收口顺序见
+  [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md)。
 
 ## 8.7 有什么新内容
 

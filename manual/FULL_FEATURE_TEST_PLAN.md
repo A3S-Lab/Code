@@ -357,6 +357,11 @@ These are first-class cases because they broke real providers or builds:
 | **Leaked tool markup** | WorkBuddy / Claude / DSML recovery | `llm::text_tool_calls` | issue-form / Flash |
 | **Unverified mutation** | Completion gate | verification / harness_loop unit | `test_harness_loop_live_e2e` |
 | **Session reopen flock** | Cross-process reopen | session persistence unit | cluster resume |
+| **9.0.0 log-only control** | Next transition only from fact-log fold; stored model turn not resent | `packages/effect` text-turn/resume; `core/src/agent_api/tests/fact_log.rs` send/stream/resume | Layer C |
+| **9.0.0 park-until-fact** | Confirm/question settle only on answer facts | Effect confirmation/question + file_reopen park suites | — |
+| **9.0.0 resume tool-once** | Missing tool result runs once on resume | Effect failed-tool resume + file_reopen | — |
+| **9.0.0 empty-tool cap** | Tool-round cap is empty tool list on next completion | `packages/effect/tests/tool_round_cap.rs` | — |
+| **9.0.0 a3s-vec FTS** | `a3s_vec_fts_v1`; incompatible `zvec_rust_fts_v1` rebuilds | Workspace FTS generation / retrieval hermetics | — |
 
 Add new pins to this table on every user-visible fix; do not rely on CHANGELOG
 alone.
@@ -452,9 +457,14 @@ CAPABILITY_INTEGRATED_USE   ──► dated 29-id E+E+I snapshot
 SDK_CAPABILITY_MATRIX       ──► language entrypoints
 THIS PLAN                   ──► join + unit/integ/E2E taxonomy + train + gaps + pin
 ENTERPRISE_GA_E2E_PLAN      ──► L0–L8 GA board + TD-PERF complex Flash latency
+V9_0_0_COMPLETION_ROADMAP   ──► sequenced 9.0.0 fact-log channel/GA closure
 test-cases/                 ──► unit / integration / soak case oracles
 layer_c_model.rs            ──► L5 Flash pin + bailian typo remap
 ```
+
+For finishing the 9.0.0 cut itself, follow
+[V9_0_0_COMPLETION_ROADMAP.md](V9_0_0_COMPLETION_ROADMAP.md) (scope freeze →
+re-qualify tip → L7 disposition → multi-channel publish).
 
 ---
 

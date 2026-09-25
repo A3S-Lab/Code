@@ -57,7 +57,8 @@ Code.
 - **Enterprise GA is not achieved.** `fa0a92ca` has a Layer C pass and archived
   L6 Actions reports. L7 still needs a full Harbor `TB-QUAL1` job, a
   `DM-PROD1` host report, and `CAR-01`…`CAR-05` receipts. No product waiver
-  names those gates.
+  names those gates. Sequenced closure:
+  [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md).
 
 ## What's new in 8.7
 

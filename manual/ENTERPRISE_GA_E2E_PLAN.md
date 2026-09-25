@@ -8,6 +8,8 @@ an L6 digest substitute.
 
 This plan joins:
 
+- [V9_0_0_COMPLETION_ROADMAP.md](V9_0_0_COMPLETION_ROADMAP.md) — sequenced
+  first-principles closure of the 9.0.0 fact-log line (channel release vs GA)
 - [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md) — L0–L8 train and
   release handoff
 - [FIRST_PRINCIPLES_E2E.md](FIRST_PRINCIPLES_E2E.md) — Layers A–D
@@ -136,6 +138,8 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | Item | State |
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
+| L6 performance.yml on tip `91d34757` | **PASS** — run [`36089389830`](https://github.com/A3S-Lab/Code/actions/runs/36089389830), nine `passed: true` JSON reports; digest `6f6abcd483e49cbe6ca26adea9bbab461fa4c51cab60c0961fde5f52b4e06349` in PERFORMANCE_QUALIFICATION |
+| L6 hermetic-integrations on tip `91d34757` | **PASS** — run [`36089393353`](https://github.com/A3S-Lab/Code/actions/runs/36089393353); S3/CDP/OTLP `passed: true`; digest `18f3d7a42e5a8bba0e828e1d4d4be8e472f18818993a3036da5712d23ad82620` in PERFORMANCE_QUALIFICATION |
 | L6 performance.yml on `fa0a92ca` | **PASS** — run [`35947891976`](https://github.com/A3S-Lab/Code/actions/runs/35947891976), nine `passed: true` JSON reports; digest `b5ce0281d5bad5ab47003bd34d93ab11bc7eab1ef8f37c24b10b8fe619010b73` in PERFORMANCE_QUALIFICATION |
 | L6 hermetic-integrations on `fa0a92ca` | **PASS** — CI run [`35947892108`](https://github.com/A3S-Lab/Code/actions/runs/35947892108) job Hermetic integrations; S3/CDP/OTLP `passed: true`; digest `00ee5ea7eb32a09a9fd4cf8eacc40642c4d548319d01822ef3e809f753207269` in PERFORMANCE_QUALIFICATION |
 | L6 performance.yml on prior tip `c9e26504` | **PASS** — run [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466), nine `passed: true` JSON reports; digest `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` in PERFORMANCE_QUALIFICATION |
