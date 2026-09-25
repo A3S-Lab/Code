@@ -12,10 +12,13 @@ mod session;
 mod slash;
 mod transcript;
 
-pub use model::{resolve_acl_file, resolve_acl_model, ResolvedModel};
+pub use model::{
+    merge_launch_layers, resolve_acl_file, resolve_acl_model, LaunchLayers, MergedLaunch,
+    ResolvedModel,
+};
 pub use screen::run_fullscreen;
 pub use scrollback::{HorizontalLayout, LayoutConfig};
-pub use session::submit_configured_turn;
+pub use session::{submit_configured_turn, ConfiguredTurn};
 pub use slash::{parse_invocation, parse_slash, FuzzyMatcher, SlashInvocation, SLASH_COMMANDS};
 pub use transcript::Scrollback;
 

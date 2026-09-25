@@ -19,9 +19,20 @@ fn arg_value(flag: &str) -> Option<String> {
 #[tokio::main]
 async fn main() {
     let workspace = PathBuf::from(arg_value("--workspace").unwrap_or_else(|| ".".into()));
-    let config = PathBuf::from(arg_value("--config").unwrap_or_else(|| "config.acl".into()));
+    let explicit = arg_value("--explicit-config")
+        .or_else(|| arg_value("--config"))
+        .map(PathBuf::from);
+    let home = arg_value("--home").map(PathBuf::from);
     let model = arg_value("--model").unwrap_or_default();
-    if let Err(error) = a3s_code_tui::run_fullscreen(&workspace, &config, &model, None).await {
+    if let Err(error) = a3s_code_tui::run_fullscreen(
+        &workspace,
+        explicit.as_deref(),
+        home.as_deref(),
+        &model,
+        None,
+    )
+    .await
+    {
         eprintln!("A3S Code TUI: {error}");
         std::process::exit(1);
     }

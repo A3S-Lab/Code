@@ -23,11 +23,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+use crate::model::LaunchLayers;
 use crate::scrollback::{HorizontalLayout, LayoutConfig};
 use crate::session::submit_configured_turn;
 use crate::slash::{matching_commands, parse_slash, MAX_VISIBLE_SUGGESTIONS};
 use crate::transcript::Scrollback;
-use crate::{resolve_acl_file, PRODUCT_NAME};
+use crate::{merge_launch_layers, PRODUCT_NAME};
 
 /// Paint one frame and read keys until `/exit`.
 ///
@@ -35,12 +36,19 @@ use crate::{resolve_acl_file, PRODUCT_NAME};
 /// that waits on the terminal stays behind that paint.
 pub async fn run_fullscreen(
     workspace: &Path,
-    acl_path: &Path,
+    explicit_config: Option<&Path>,
+    home: Option<&Path>,
     fallback_model: &str,
     mut on_first_frame: Option<Box<dyn FnOnce() + Send>>,
 ) -> anyhow::Result<()> {
-    let acl_text = std::fs::read_to_string(acl_path).unwrap_or_default();
-    let model_id = acl_model(acl_path).unwrap_or_else(|| fallback_model.to_string());
+    let layers = LaunchLayers {
+        workspace: workspace.to_path_buf(),
+        explicit_config: explicit_config.map(Path::to_path_buf),
+        home: home.map(Path::to_path_buf),
+    };
+    let model_id = merge_launch_layers(&layers)
+        .map(|merged| merged.model_id)
+        .unwrap_or_else(|_| fallback_model.to_string());
     if !stdout().is_terminal() {
         println!("{PRODUCT_NAME}");
         println!("model: {model_id}");
@@ -117,16 +125,8 @@ pub async fn run_fullscreen(
                     Some(_) => scrollback.push_assistant("unknown command"),
                     None => {
                         scrollback.push_user(&line);
-                        match submit_configured_turn(
-                            workspace,
-                            &acl_text,
-                            None,
-                            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                            &line,
-                        )
-                        .await
-                        {
-                            Ok(reply) => scrollback.push_assistant(&reply),
+                        match submit_configured_turn(&layers, None, &line).await {
+                            Ok(turn) => scrollback.push_assistant(&turn.text),
                             Err(error) => scrollback.push_assistant(&error.to_string()),
                         }
                     }
@@ -150,10 +150,6 @@ pub async fn run_fullscreen(
         }
     }
     Ok(())
-}
-
-fn acl_model(path: &Path) -> Option<String> {
-    resolve_acl_file(path).ok().map(|model| model.model_id)
 }
 
 fn bare_enter(key: &KeyEvent) -> bool {
