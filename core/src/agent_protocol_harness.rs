@@ -269,12 +269,8 @@ impl AgentProtocolHarness {
         let host = self.host_for(command.identity(), create_if_missing).await?;
         // Harness close drains an already admitted session. Callers see harness Closed.
         match host.execute(command).await {
-            Err(AgentProtocolHostError::Code(CodeError::SessionClosed { .. }))
-                if self.is_closed() =>
-            {
-                Err(AgentProtocolHarnessError::Closed)
-            }
-            other => other.map_err(Into::into),
+            Ok(receipt) => Ok(receipt),
+            Err(error) => Err(map_host_execute_error(error, self.is_closed())),
         }
     }
 
@@ -594,6 +590,18 @@ impl AgentProtocolHarness {
     }
 }
 
+fn map_host_execute_error(
+    error: AgentProtocolHostError,
+    harness_closed: bool,
+) -> AgentProtocolHarnessError {
+    match error {
+        AgentProtocolHostError::Code(CodeError::SessionClosed { .. }) if harness_closed => {
+            AgentProtocolHarnessError::Closed
+        }
+        other => other.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +642,36 @@ mod tests {
             assert!(!error.to_string().is_empty());
             assert!(!format!("{error:?}").is_empty());
         }
+    }
+
+    #[test]
+    fn session_closed_during_harness_drain_maps_to_closed() {
+        let closed = map_host_execute_error(
+            AgentProtocolHostError::Code(CodeError::SessionClosed {
+                session_id: "s".into(),
+            }),
+            true,
+        );
+        assert!(matches!(closed, AgentProtocolHarnessError::Closed));
+
+        let open = map_host_execute_error(
+            AgentProtocolHostError::Code(CodeError::SessionClosed {
+                session_id: "s".into(),
+            }),
+            false,
+        );
+        assert!(matches!(
+            open,
+            AgentProtocolHarnessError::Host(AgentProtocolHostError::Code(
+                CodeError::SessionClosed { .. }
+            ))
+        ));
+
+        let other = map_host_execute_error(AgentProtocolHostError::RunNotFound, true);
+        assert!(matches!(
+            other,
+            AgentProtocolHarnessError::Host(AgentProtocolHostError::RunNotFound)
+        ));
     }
 
     #[test]

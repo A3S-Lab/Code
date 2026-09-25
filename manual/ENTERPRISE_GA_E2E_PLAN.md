@@ -138,6 +138,7 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | Item | State |
 | --- | --- |
 | L0/L1/L3/L4/L5 + integrated-use | Closed on the prior FULL_FEATURE status for this line |
+| L2 F-kernel cov (≥95%) | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `core/src/agent_protocol_harness.rs` **95.16%** after SessionClosed→Closed mapper unit test |
 | L6 performance.yml on tip `ee8f68ad` | **PASS** — run [`36092780724`](https://github.com/A3S-Lab/Code/actions/runs/36092780724), nine `passed: true`; digest `731386c0407e38bf8a14bcec939c438fdcc86a1cea9fff1e4b2a1a5eec21656b` |
 | L6 hermetic-integrations on tip `ee8f68ad` | **PASS** — run [`36122389323`](https://github.com/A3S-Lab/Code/actions/runs/36122389323); digest `4ac6d54e8867a5365e12ab70124949756121de5ad1984f6a5be2d6e7492906d3` |
 | L6 performance.yml on tip `91d34757` | **PASS** — run [`36089389830`](https://github.com/A3S-Lab/Code/actions/runs/36089389830), nine `passed: true` JSON reports; digest `6f6abcd483e49cbe6ca26adea9bbab461fa4c51cab60c0961fde5f52b4e06349` in PERFORMANCE_QUALIFICATION |

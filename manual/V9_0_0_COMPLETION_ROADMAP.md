@@ -44,12 +44,13 @@ the repository's own definition of done.
 | --- | --- |
 | Fact-log control implemented | `core/src/fact_control.rs`, CHANGELOG `[9.0.0]`, `a3s-effect` |
 | Versions bumped to 9.0.0 | Core / TUI / Node / Python / Go bridge Cargo + package metadata |
-| L5 + L6 on `fa0a92ca` | Layer C `LAYER_C_PASS`; Actions `35947891976` / `35947892108` |
-| 30-cap integrated-use ledger | PASS on fact-log cut; Enterprise GA explicitly not claimed |
-| Tip ahead of qualification | `fa0a92ca` ≺ HEAD (TUI + ACL + model-bind commits) |
-| No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm); `v8.7.0` tag exists without GitHub Release |
+| Tip RC | Coverage-close tip pending push (maps SessionClosed→Closed for L2); prior tip `b8a13494` / `ee8f68ad` for L5/L6 |
+| L0/L1 + L5 + L6 on tip | harness-convergence PASS; Layer C `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` `LAYER_C_PASS`; L6 Actions `36092780724` / `36122389323` |
+| Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
+| L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
+| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open; Harbor diagnostic smoke on `terminal-bench/bun-sourcemap-leak` (agent setup may hang on `apt-get`) |
+| No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm) |
 | Docs site | Current archived line `docs/v8.7.0`; no `docs/v9.0.0` |
-| Release cut | FULL_FEATURE §13 **Blocked** until §14 gates or waiver |
 | Out of 9.0.0 CHANGELOG body | Apofasi typed decisions live under `[Unreleased]` |
 
 ---

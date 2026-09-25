@@ -70,7 +70,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, alignment + discovery | PASS |
 | L5 Layer C bailian Flash | Tip `ee8f68ad` `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` (`LAYER_C_PASS`, 22/22; context_tools recovered after join-timeout fix) | PASS |
 | Efficiency (thin / absence) | `just harness-convergence-check` on this cut; `local-code` lib 3825 passed; `ci-all` lib 4100 passed | PASS |
-| L2 F-kernel cov | plan §9 coverage-gated / weekly | Not remeasured this run |
+| L2 F-kernel cov | `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; worst prior miss `agent_protocol_harness.rs` now **95.16%** | PASS |
 | L6 Actions | Tip `ee8f68ad` performance.yml `36092780724` and hermetic-integrations `36122389323`, both `passed: true`, archived in PERFORMANCE_QUALIFICATION | PASS |
 | L7 Harbor / CAR | TB-QUAL1, DM-PROD1, CAR-01…CAR-05 still in progress; no product waiver | Not met |
 
