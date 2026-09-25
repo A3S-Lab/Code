@@ -67,10 +67,9 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | --- | --- | --- |
 | L0/L1 Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` | PASS |
 | L3 advanced / s3 / otel / headless | advanced-integ + L3 FINAL | PASS |
-| L4 SDK | alignment + Node/Python/Go discovery | PASS |
+| L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, alignment + discovery | PASS |
 | L5 Layer C bailian Flash | Tip `ee8f68ad` `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` (`LAYER_C_PASS`, 22/22; context_tools recovered after join-timeout fix) | PASS |
 | Efficiency (thin / absence) | `just harness-convergence-check` on this cut; `local-code` lib 3825 passed; `ci-all` lib 4100 passed | PASS |
-| L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, Go bridge lib 20 passed, alignment check | PASS |
 | L2 F-kernel cov | plan §9 coverage-gated / weekly | Not remeasured this run |
 | L6 Actions | Tip `ee8f68ad` performance.yml `36092780724` and hermetic-integrations `36122389323`, both `passed: true`, archived in PERFORMANCE_QUALIFICATION | PASS |
 | L7 Harbor / CAR | TB-QUAL1, DM-PROD1, CAR-01…CAR-05 still in progress; no product waiver | Not met |
