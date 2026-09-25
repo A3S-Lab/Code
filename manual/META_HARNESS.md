@@ -32,7 +32,10 @@ Session behavior does not regress when `SessionOptions.harness` is omitted.
 4. Confirm / question park until answer facts (no timers).
 5. Kernel wrappers always apply: permission strip before the model catalog;
    mutating success still requires the completion gate / host waiver bound to
-   an effect digest. Host components cannot disable these.
+   an effect digest. Host components cannot disable these. A host may install
+   `SessionOptions::with_completion_attestor` to supply a Passed, digest-bound
+   report once the live digest exists — that is evidence, not an `Observe`
+   bypass (#160).
 
 ## Stock components
 

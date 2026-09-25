@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Host-only `CompletionAttestor` (#160).** `SessionOptions::with_completion_attestor`
+  supplies a Passed, digest-bound `VerificationReport` after the mutation ledger
+  digest exists and before the completion gate decides. There is no `Observe`
+  bypass — the gate remains non-bypassable; the attestor is not a tool and is
+  not model-grantable.
 - **Meta Harness composition.** Hosts compose stock Moore components
   (`system`, `tools`, `budget`, `compact`, `infer`) on the single fact log via
   `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io

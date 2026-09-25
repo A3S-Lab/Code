@@ -855,6 +855,19 @@ impl SessionOptions {
         self
     }
 
+    /// Install a host-only [`CompletionAttestor`](crate::CompletionAttestor).
+    ///
+    /// Invoked with the live mutation digest and paths after they exist and
+    /// before the completion gate decides. The gate still requires a Passed,
+    /// digest-bound report — this is not an `Observe` / bypass mode (#160).
+    pub fn with_completion_attestor(
+        mut self,
+        attestor: std::sync::Arc<dyn crate::completion_attestor::CompletionAttestor>,
+    ) -> Self {
+        self.completion_attestor = Some(attestor);
+        self
+    }
+
     /// Admit a Meta Harness compose recipe for this session's fact-log actor.
     pub fn with_harness(mut self, harness: crate::meta_harness::HarnessComposeOptions) -> Self {
         self.harness = Some(harness);

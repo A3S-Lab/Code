@@ -957,13 +957,19 @@ fn gate_result(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let reports = surface
+    let mut reports = surface
         .reports
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    surface
+        .agent
+        .merge_completion_attestor(&ledger, &mut reports);
+    if let Ok(mut lock) = surface.reports.lock() {
+        *lock = reports.clone();
+    }
     result.verification_reports = reports.clone();
-    match surface.agent.fact_completion_gate(&ledger, &reports) {
+    match surface.agent.decide_fact_completion_gate(&ledger, &reports) {
         crate::harness_loop::CompletionGate::Allow(terminal) => {
             result.completion = terminal;
             Ok(result)

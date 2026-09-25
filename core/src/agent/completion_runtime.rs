@@ -41,6 +41,17 @@ impl AgentLoop {
         ledger: &crate::harness_loop::MutationLedger,
         reports: &[crate::verification::VerificationReport],
     ) -> crate::harness_loop::CompletionGate {
+        let mut reports = reports.to_vec();
+        self.merge_completion_attestor(ledger, &mut reports);
+        self.decide_fact_completion_gate(ledger, &reports)
+    }
+
+    /// Decide the gate without re-running the attestor (reports already merged).
+    pub(crate) fn decide_fact_completion_gate(
+        &self,
+        ledger: &crate::harness_loop::MutationLedger,
+        reports: &[crate::verification::VerificationReport],
+    ) -> crate::harness_loop::CompletionGate {
         crate::harness_loop::decide_with_observations(
             ledger,
             reports,
@@ -48,6 +59,20 @@ impl AgentLoop {
             false,
             &self.config.external_observations,
         )
+    }
+
+    /// Merge a host [`CompletionAttestor`](crate::CompletionAttestor) report
+    /// into `reports` (mutates in place for fact-path result visibility).
+    pub(crate) fn merge_completion_attestor(
+        &self,
+        ledger: &crate::harness_loop::MutationLedger,
+        reports: &mut Vec<crate::verification::VerificationReport>,
+    ) {
+        crate::completion_attestor::merge_attested_report(
+            self.config.completion_attestor.as_ref(),
+            ledger,
+            reports,
+        );
     }
 
     /// Whether `text` is a synthetic terminal diagnostic emitted when the
@@ -125,6 +150,7 @@ impl AgentLoop {
             ));
             return CompletionFlow::Continue;
         }
+        self.merge_completion_attestor(&state.mutations, &mut state.verification_reports);
         let gate = crate::harness_loop::decide_with_observations(
             &state.mutations,
             &state.verification_reports,

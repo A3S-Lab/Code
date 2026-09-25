@@ -487,6 +487,9 @@ pub struct SessionOptions {
     pub path_rules: Vec<crate::path_instructions::PathRule>,
     /// Opt-in read-only verifier. Default is off so local-code spends no extra model call.
     pub verifier_enabled: bool,
+    /// Host-only completion attestor (#160). Trait hook; omitted from serializable SDKs.
+    pub completion_attestor:
+        Option<std::sync::Arc<dyn crate::completion_attestor::CompletionAttestor>>,
     /// Optional Meta Harness compose recipe (`components: [...]` style).
     ///
     /// When unset, the stock `coding_actor` tree is admitted. Kernel policy

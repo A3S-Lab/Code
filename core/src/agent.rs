@@ -201,6 +201,9 @@ pub(crate) struct AgentConfig {
     pub path_rules: Vec<crate::path_instructions::PathRule>,
     /// Opt-in read-only verifier. Default sessions do not spend a second model call.
     pub verifier_enabled: bool,
+    /// Host-only completion attestor. Invoked with the live mutation digest
+    /// before the gate decides. Not a tool and not model-grantable (#160).
+    pub completion_attestor: Option<Arc<dyn crate::completion_attestor::CompletionAttestor>>,
     /// Optional Meta Harness compose recipe for fact-log control.
     pub harness: Option<crate::meta_harness::HarnessComposeOptions>,
     /// Host-supplied external observations bound into this run.
@@ -302,6 +305,7 @@ impl Default for AgentConfig {
             plan_run: crate::harness_loop::PlanRunAdmission::ordinary(),
             path_rules: Vec::new(),
             verifier_enabled: false,
+            completion_attestor: None,
             harness: None,
             external_observations: Vec::new(),
             outcome_ledger: crate::outcome_memory::OutcomeLedger::default(),

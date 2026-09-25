@@ -307,6 +307,9 @@ fn finish_agent_session(
     config.plan_run = opts.plan_run.clone();
     config.path_rules = opts.path_rules.clone();
     config.verifier_enabled = opts.verifier_enabled;
+    if opts.completion_attestor.is_some() {
+        config.completion_attestor = opts.completion_attestor.clone();
+    }
     config.harness = opts.harness.clone();
     config.external_observations = opts.external_observations.clone();
     config.outcome_ledger = opts.outcome_ledger.clone();

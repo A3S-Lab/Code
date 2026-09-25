@@ -88,6 +88,7 @@ pub mod code_intelligence;
 pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
+pub mod completion_attestor;
 pub mod config;
 pub mod content_digest;
 pub mod context;
@@ -105,7 +106,6 @@ pub mod event_protocol;
 pub mod execution_identity;
 pub mod external_observation;
 pub mod fact_control;
-pub mod meta_harness;
 #[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;
@@ -119,6 +119,7 @@ pub mod llm;
 pub mod loop_checkpoint;
 pub mod mcp;
 pub mod memory;
+pub mod meta_harness;
 #[cfg(feature = "headless-search")]
 pub mod moli_runtime;
 pub mod orchestration;
@@ -186,10 +187,6 @@ pub use agent_api::{
     Agent, AgentRunSpawn, AgentSession, ProjectedUiHandle, ReadFileOptions, SessionBuilder,
     SessionOptions, ToolCallResult,
 };
-pub use meta_harness::{
-    admit_default_graph, admit_from_compose, admit_spec_graph, parse_harness_part,
-    parse_harness_parts, HarnessComposeOptions, HarnessPartId, KernelPolicy,
-};
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
@@ -229,6 +226,7 @@ pub use cognitive_context::{
     COGNITIVE_PACKAGE_BINDING_SCHEMA, OKF_KNOWLEDGE_CITATION_SCHEMA,
     OKF_KNOWLEDGE_READ_REQUEST_SCHEMA, OKF_KNOWLEDGE_SEARCH_REQUEST_SCHEMA,
 };
+pub use completion_attestor::{merge_attested_report, CompletionAttestor};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,
@@ -339,6 +337,10 @@ pub use llm::{
     LlmClient, LlmResponse, Message, ModelGenerationAdmission, ModelGenerationAdmissionError,
     ModelGenerationConcurrency, ModelGenerationPermit, ModelGenerationPool,
     ModelGenerationPoolError, ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
+};
+pub use meta_harness::{
+    admit_default_graph, admit_from_compose, admit_spec_graph, parse_harness_part,
+    parse_harness_parts, HarnessComposeOptions, HarnessPartId, KernelPolicy,
 };
 #[cfg(feature = "headless-search")]
 pub use moli_runtime::{
