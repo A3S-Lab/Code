@@ -1,11 +1,10 @@
 # A3S Code Performance Qualification
 
 Status: tip L6 closed on 2026-09-25 for Code
-[`ee8f68ad`](https://github.com/A3S-Lab/Code/commit/ee8f68ad352c1e2d05d4e1ad393983cdce7d1878)
+[`b91462d3`](https://github.com/A3S-Lab/Code/commit/b91462d3995c9267014eef4975953a4843de233b)
 — both `performance.yml` and `hermetic-integrations.yml` archived below.
-CI is green on this tip after TUI vendor test deps. Prior tip L6 pair remains
-on `91d34757`. Enterprise GA remains unmet: L7 has no Harbor or CAR receipt
-and no product waiver.
+Prior tip L6 pairs remain on `ee8f68ad` / `91d34757`. Enterprise GA remains
+unmet until L7 Harbor TB-QUAL1, DM-PROD1, and CAR receipts close (no waiver).
 
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
@@ -16,6 +15,8 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| Nine release performance profiles (9.0.0 tip `b91462d3`)        | [`36160896419`](https://github.com/A3S-Lab/Code/actions/runs/36160896419) | `performance-36160896419-1`           | `11edc0a40a51cbfeb21aeaa3d285a912ab1c8d5b6b387af672c2fae0e1c3f778` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 tip `b91462d3`) | [`36165517450`](https://github.com/A3S-Lab/Code/actions/runs/36165517450) | `hermetic-integrations-36165517450-1` | `e64b01f81748078f47a78effd54572bef91a2dccacadbe8ad4f2f960dc1c338f` |
 | Nine release performance profiles (9.0.0 tip `ee8f68ad`)        | [`36092780724`](https://github.com/A3S-Lab/Code/actions/runs/36092780724) | `performance-36092780724-1`           | `731386c0407e38bf8a14bcec939c438fdcc86a1cea9fff1e4b2a1a5eec21656b` |
 | Nine release performance profiles (9.0.0 tip `91d34757`)        | [`36089389830`](https://github.com/A3S-Lab/Code/actions/runs/36089389830) | `performance-36089389830-1`           | `6f6abcd483e49cbe6ca26adea9bbab461fa4c51cab60c0961fde5f52b4e06349` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 tip `ee8f68ad`) | [`36122389323`](https://github.com/A3S-Lab/Code/actions/runs/36122389323) | `hermetic-integrations-36122389323-1` | `4ac6d54e8867a5365e12ab70124949756121de5ad1984f6a5be2d6e7492906d3` |
@@ -34,14 +35,22 @@ GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
 
+Run `36160896419` on commit `b91462d3` produced all nine performance reports with
+`passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
+flow-state-graph, code-intelligence, context-memory, durable-memory-semantic-refresh,
+persistence, evaluation-substrate).
+
+Run `36165517450` on commit `b91462d3` produced S3-compat, controlled CDP, and
+OpenTelemetry reports with `passed: true`. Hermetic integrations is the CI job
+that calls `hermetic-integrations.yml`.
+
 Run `35947891976` on commit `fa0a92ca` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
 flow-state-graph, code-intelligence, context-memory, durable-memory-semantic-refresh,
 persistence, evaluation-substrate).
 
 Run `35947892108` on commit `fa0a92ca` produced S3-compat, controlled CDP, and
-OpenTelemetry reports with `passed: true`. Hermetic integrations is the CI job
-that calls `hermetic-integrations.yml`.
+OpenTelemetry reports with `passed: true`.
 
 Run `35667548466` on commit `c9e26504` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,

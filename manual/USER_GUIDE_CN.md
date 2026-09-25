@@ -10,7 +10,7 @@ Shape 请查阅带版本的网站文档。
 | Rust    | `cargo add a3s-code-core`                  | 原生异步 Core API                               |
 | Node.js | `npm install @a3s-lab/code`                | N-API Native Module                             |
 | Python  | `pip install a3s-code`                     | 从对应 GitHub Release 获取的 PyO3 Native Module |
-| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v8` | Pure-Go Client 与版本完全一致的 Bridge Process  |
+| Go      | `go get github.com/A3S-Lab/Code/sdk/go/v9` | Pure-Go Client 与版本完全一致的 Bridge Process  |
 
 Node.js 和 Python 应优先使用异步生命周期 API。Go Module 与 Bridge Asset 必须来自同一
 个 Release。Rust 的 Session 构建以异步为先，因为 Store、MCP Discovery、Workspace

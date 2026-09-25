@@ -7,6 +7,7 @@ containers and verification; A3S Code owns the model loop and native tools.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import tempfile
 from pathlib import Path
@@ -14,6 +15,31 @@ from pathlib import Path
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+# ACL `env("…")` lookups run inside the task container. Forward only known
+# provider credential/base-url names from the Harbor host process; never dump
+# the full host environment into the trial.
+_PROVIDER_ENV_FORWARD = (
+    "ANTHROPIC_API_KEY",
+    "BOYUE_API_KEY",
+    "BOYUE_BASE_URL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENROUTER_API_KEY",
+)
+
+
+def _forwarded_provider_env() -> dict[str, str]:
+    forwarded: dict[str, str] = {}
+    for key in _PROVIDER_ENV_FORWARD:
+        value = os.environ.get(key)
+        if value:
+            forwarded[key] = value
+    return forwarded
 
 
 class A3SCodeAgent(BaseAgent):
@@ -32,7 +58,7 @@ class A3SCodeAgent(BaseAgent):
         return "a3s-code"
 
     def version(self) -> str:
-        return "8.2.2-terminal-bench"
+        return "9.0.0-terminal-bench"
 
     async def setup(self, environment: BaseEnvironment) -> None:
         binary = self._get_env(self.BINARY_ENV)
@@ -58,9 +84,13 @@ class A3SCodeAgent(BaseAgent):
             await environment.upload_file(
                 Path(codex_auth).expanduser(), "/run/a3s/codex-auth.json"
             )
+        # Config must be world-readable inside the trial container: Harbor
+        # often execs the agent as a non-root user while uploads land as root.
+        # chmod 600 caused intermittent startup_failed (EACCES on config.acl),
+        # e.g. matrix job 2026-09-25__19-47-26 / risk-scorer-replay.
         await environment.exec(
-            "chmod 755 /run/a3s/terminal_bench_runner && chmod 600 /run/a3s/config.acl "
-            "&& if [ -f /run/a3s/codex-auth.json ]; then chmod 600 /run/a3s/codex-auth.json; fi",
+            "chmod 755 /run/a3s/terminal_bench_runner && chmod 644 /run/a3s/config.acl "
+            "&& if [ -f /run/a3s/codex-auth.json ]; then chmod 644 /run/a3s/codex-auth.json; fi",
             user="root",
         )
 
@@ -76,6 +106,10 @@ class A3SCodeAgent(BaseAgent):
             prompt_path = Path(temp_dir) / "instruction.md"
             prompt_path.write_text(instruction, encoding="utf-8")
             await environment.upload_file(prompt_path, "/run/a3s/instruction.md")
+            await environment.exec(
+                "chmod 644 /run/a3s/instruction.md",
+                user="root",
+            )
 
         command = (
             "/run/a3s/terminal_bench_runner "
@@ -100,18 +134,20 @@ class A3SCodeAgent(BaseAgent):
             f"> {shlex.quote(str(self.environment_logs_dir / 'a3s-code.stdout.txt'))} "
             f"2> {shlex.quote(str(self.environment_logs_dir / 'a3s-code.stderr.txt'))}"
         )
+        exec_env = {
+            # Harbor's task container is the isolation boundary. Opt into
+            # process-host bash when bubblewrap is absent so default bash
+            # does not require a require_escalated trial round (#140).
+            "A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX": "1",
+            "A3S_CODE_TRAJECTORY_PATH": str(
+                self.environment_logs_dir / "a3s-code.trajectory.jsonl"
+            ),
+        }
+        exec_env.update(_forwarded_provider_env())
         result = await environment.exec(
             command,
             cwd=workdir,
-            env={
-                # Harbor's task container is the isolation boundary. Opt into
-                # process-host bash when bubblewrap is absent so default bash
-                # does not require a require_escalated trial round (#140).
-                "A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX": "1",
-                "A3S_CODE_TRAJECTORY_PATH": str(
-                    self.environment_logs_dir / "a3s-code.trajectory.jsonl"
-                ),
-            },
+            env=exec_env,
         )
         report = None
         report_read_error = None

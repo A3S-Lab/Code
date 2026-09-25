@@ -49,9 +49,9 @@ the repository's own definition of done.
 | Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
 | L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
 | L8 §7 9.0.0 pins | **PASS (hermetic)** — fact_log 34/34; effect park + tool_round_cap; bm25 a3s-vec FTS 17/17 |
-| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open; diagnostic smoke `2026-09-25__19-11-53` on `bun-sourcemap-leak` (agent running after apt/`ca_certificates` skip fix) |
-| No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm) |
-| Docs site | Current archived line `docs/v8.7.0`; no `docs/v9.0.0` |
+| L7 Harbor / CAR / DM | End-state A (channel release). Tip `b91462d3`: L0–L6 + L8 PASS; Layer C PASS (`/tmp/a3s-layer-c-b91462d3`). **DM-PROD1 closed**: host pack `/tmp/dm-prod1-host-be467457` (all seven dimensions, `HYGIENE_OK`). **TB-QUAL1 waived by product decision (2026-09-26)**; supporting diagnostic only (job `2026-09-26__02-14-59`, native `verifier_result` retained); full `-k 5` job stopped at 3/330 trials. CAR-01/03/04/05 out of scope: A3S Cloud retired by product decision (2026-09-26). The TB waiver and uncertified CAR forbid the Enterprise GA claim. |
+| `v9.0.0` tag / Release | Pending the release workflow; published channels are **8.6.0** until it completes (the `v8.7.0` release run failed CI) |
+| Docs site | Current line `docs/v9.0.0`; `v8.7.0` was tagged but never published and has no archive |
 | Out of 9.0.0 CHANGELOG body | Apofasi typed decisions live under `[Unreleased]` |
 
 ---
@@ -249,7 +249,7 @@ Durations are capacity sketches, not SLAs.
 | Decision | Value | Notes |
 | --- | --- | --- |
 | End-state | **B — Enterprise GA** | L7 close receipts required; waiver path forbidden for the GA claim |
-| RC base | **Current tip** (`91d34757` and successors on this line) | Re-qualify; do not ship on `fa0a92ca`-only digests |
+| RC base | **Current tip** (`b91462d3`) | Re-qualify; do not ship on `fa0a92ca`-only digests |
 | Apofasi | **Out of 9.0.0** | Remains `[Unreleased]` unless a later cut expands scope |
 | Publish | Only after P0–P4 (close path) + P3 | No crates.io 9.0.0 before L7 receipts |
 

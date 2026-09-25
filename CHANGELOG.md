@@ -5,58 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [9.0.0] - 2026-09-22
-
-### Changed
-
-- Workspace lexical FTS links published `a3s-vec` 0.1.8 (`a3s_vec_fts_v1`).
-  On-disk `zvec_rust_fts_v1` generations stay incompatible and are rebuilt.
-- The fact log is the only coding control source. `send`, `stream`, attachment
-  turns, `resume_run`, and exact recovery choose the next transition with
-  `a3s-effect` (`ingest_coding` / `resume_coding`). A stored model turn is not
-  sent to the model again. A loop checkpoint does not choose the next model
-  call. Confirmation and questions park until a fact and are not settled by an
-  in-process oneshot or a timer. A missing tool result is run once on resume.
-  A steer is another `user.message` fact. The tool-round cap is an empty tool
-  list on the next completion, not a synthetic user message.
-- Enterprise GA is not achieved. `fa0a92ca` records Layer C
-  `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` and L6 Actions reports
-  with `passed: true`. L7 Harbor `TB-QUAL1`, `DM-PROD1`, and `CAR-01`…`CAR-05`
-  have no close receipt and no product waiver.
-
 ## [Unreleased]
-
-### Fixed
-
-- Honor `NO_PROXY` / `no_proxy` on explicit `HTTP(S)_PROXY` clients used by MCP
-  HTTP transports, OAuth, and model HTTP (`build_reqwest_client`) (#171).
-- Python `SessionOptions.verifier_enabled` getter/setter so hosts can opt into
-  the Core read-only verifier (#163).
-- Rolling context compaction mechanically re-pins the original `## Goal` when
-  the summarizer omits it (#174).
 
 ### Added
 
-- **Meta Harness arbitrary assemble (`META-HARNESS2`).** Ordered
-  `components: [...]` accepts stock parts and `host:<id>` mounts via
-  `HostHarnessRegistry` / `HostHarnessAssembler`. Node/Python expose
-  `Harness.host` + `components`. Builtin `intent_stamp` host component supports
-  hermetic and Layer C proofs. F31 kernels (`meta_harness.rs`,
-  `completion_attestor.rs`) join the ≥95% F-table gate. Live suite:
-  `test_meta_harness_compose_live_e2e` (file/digest/gate oracles only).
-- **Host-only `CompletionAttestor` (#160).** `SessionOptions::with_completion_attestor`
-  supplies a Passed, digest-bound `VerificationReport` after the mutation ledger
-  digest exists and before the completion gate decides. There is no `Observe`
-  bypass — the gate remains non-bypassable; the attestor is not a tool and is
-  not model-grantable. Tip also pairs each mutated path with its ledger content
-  digest (`MutatedPathRecord`) so hosts can re-read and compare like-for-like
-  (shape absorbed from community PR #172).
-- **Meta Harness composition.** Hosts compose stock Moore components
-  (`system`, `tools`, `budget`, `compact`, `infer`) on the single fact log via
-  `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io
-  `a3s-effect` 0.1.0. Omit the option to keep the legacy `coding_actor` tree.
-  Permission overlay and completion gate remain Core-owned. Manual:
-  [META_HARNESS.md](manual/META_HARNESS.md).
 - Optional typed System-1 decisions via A3S Apofasi: Cargo features `apofasi`
   (lexical + script router), `apofasi-infer` (Candle checkpoints), and
   `apofasi-metal` (Apple Silicon Metal). Host API:
@@ -80,6 +32,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the task state. Ignored Layer C tests pin
   `boyue/bailian/deepseek-v4-flash` to declared
   `boyue/bailian/deepseek-v4.1-flash` and reject the `bailina` typo.
+
+## [9.0.0] - 2026-09-26
+
+### Changed
+
+- Workspace lexical FTS links published `a3s-vec` 0.1.8 (`a3s_vec_fts_v1`).
+  On-disk `zvec_rust_fts_v1` generations stay incompatible and are rebuilt.
+- The fact log is the only coding control source. `send`, `stream`, attachment
+  turns, `resume_run`, and exact recovery choose the next transition with
+  `a3s-effect` (`ingest_coding` / `resume_coding`). A stored model turn is not
+  sent to the model again. A loop checkpoint does not choose the next model
+  call. Confirmation and questions park until a fact and are not settled by an
+  in-process oneshot or a timer. A missing tool result is run once on resume.
+  A steer is another `user.message` fact. The tool-round cap is an empty tool
+  list on the next completion, not a synthetic user message.
+
+### Added
+
+- **Meta Harness arbitrary assemble (`META-HARNESS2`).** Ordered
+  `components: [...]` accepts stock parts and `host:<id>` mounts via
+  `HostHarnessRegistry` / `HostHarnessAssembler`. Node/Python expose
+  `Harness.host` + `components`. Builtin `intent_stamp` host component supports
+  hermetic and Layer C proofs. F31 kernels (`meta_harness.rs`,
+  `completion_attestor.rs`) join the ≥95% F-table gate. Live suite:
+  `test_meta_harness_compose_live_e2e` (file/digest/gate oracles only).
+- **Host-only `CompletionAttestor` (#160).** `SessionOptions::with_completion_attestor`
+  supplies a Passed, digest-bound `VerificationReport` after the mutation ledger
+  digest exists and before the completion gate decides. There is no `Observe`
+  bypass — the gate remains non-bypassable; the attestor is not a tool and is
+  not model-grantable. Tip also pairs each mutated path with its ledger content
+  digest (`MutatedPathRecord`) so hosts can re-read and compare like-for-like
+  (shape absorbed from community PR #172).
+- **Meta Harness composition.** Hosts compose stock Moore components
+  (`system`, `tools`, `budget`, `compact`, `infer`) on the single fact log via
+  `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io
+  `a3s-effect` 0.1.0. Omit the option to keep the legacy `coding_actor` tree.
+  Permission overlay and completion gate remain Core-owned. Manual:
+  [META_HARNESS.md](manual/META_HARNESS.md).
+- `DM-PROD1` host qualification harness (`dm-prod1-host` feature,
+  `core/examples/durable_memory_prod1_host`): Redis `VectorIndex` with
+  index-revision CAS, fenced `SET NX EX` lease, restart, failover, and drift
+  measured against a real OpenAI-compatible embedding provider. Not part of any
+  release profile. Runbook:
+  [DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md).
+
+### Fixed
+
+- Honor `NO_PROXY` / `no_proxy` on explicit `HTTP(S)_PROXY` clients used by MCP
+  HTTP transports, OAuth, and model HTTP (`build_reqwest_client`) (#171).
+- Python `SessionOptions.verifier_enabled` getter/setter so hosts can opt into
+  the Core read-only verifier (#163).
+- Rolling context compaction mechanically re-pins the original `## Goal` when
+  the summarizer omits it (#174).
+
+### Notes
+
+- Channel release, not Enterprise GA. RC `b91462d3`: L0–L6 and L8 pass;
+  Layer C `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`
+  (includes `test_meta_harness_compose_live_e2e`).
+- L7 disposition: `DM-PROD1` closed with a host pack (all seven dimensions,
+  `HYGIENE_OK`). `TB-QUAL1` is waived by product decision (2026-09-26); only a
+  diagnostic Harbor trial with a retained native `verifier_result` exists.
+  `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` are out of scope: A3S Cloud, the
+  only party that could certify them, was retired by product decision
+  (2026-09-26). The Code-side contracts they describe remain in place. Because
+  `TB-QUAL1` is waived and CAR is not certified, Enterprise GA is not claimed.
+- Apofasi typed decisions stay under `[Unreleased]` and are not in this cut.
 
 ## [8.7.0] - 2026-09-21
 
@@ -119,9 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Full multi-channel cut: crates.io `a3s-code-core`, GitHub Release `v8.7.0`,
-  npm `@a3s-lab/code`, Python bootstrap / wheels, and Go module tag
-  `sdk/go/v8.7.0`.
+- The `v8.7.0` tag exists, but its release workflow failed CI and nothing was
+  published: crates.io, npm, and PyPI stayed at 8.6.0 and there is no GitHub
+  Release. These changes first ship in 9.0.0.
 
 
 ## [8.6.0] - 2026-09-18

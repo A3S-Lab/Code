@@ -49,18 +49,26 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **事实日志控制（9.0.0）。** 编码运行只通过折叠事实日志选择下一步转移。确认和
   提问停到事实出现。进程内计时器不会批准、拒绝，或合成一个未回答的问题。循环
   检查点不决定下一次模型调用。
-- **企业 GA 尚未达到。** `fa0a92ca` 已有 Layer C 通过记录和归档的 L6 Actions
-  报告。L7 仍需要完整的 Harbor `TB-QUAL1` 作业、一份 `DM-PROD1` 主机报告，以及
-  `CAR-01`…`CAR-05` 收条。没有产品豁免点名这些门禁。收口顺序见
+- **Meta Harness（9.0.0）。** 宿主在同一份事实日志上组合有序的
+  `components: [...]`：内置 `system`、`tools`、`budget`、`compact`、`infer`，
+  以及已注册的 `host:<id>` 组件。权限投影和完成门禁仍由 Core 掌控；宿主
+  `CompletionAttestor` 提供绑定摘要的证据，不是绕过。不传 `harness` 时保持
+  `coding_actor`。见 [manual/META_HARNESS.md](manual/META_HARNESS.md)。
+- **Go 模块路径改为 `sdk/go/v9`。** 请把导入从 `sdk/go/v8` 改过来。
+- **发布状态。** 9.0.0 是渠道发布，不是企业 GA。RC `b91462d3` 通过 L0–L6、
+  L8，以及使用 bailian Flash 的 Layer C。`DM-PROD1` 已用主机报告关闭。
+  `TB-QUAL1` 按产品决定豁免；A3S Cloud 已下线，CAR 不在范围内。因此不宣称企业 GA。见
   [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md)。
+  npm/crates.io/PyPI 请用 **9.0.0**。
 
 ## 8.7 有什么新内容
+
+8.7.0 打了 tag 但从未发布；这些改动首次随 9.0.0 发布。
 
 - **a3s-vec 词法 FTS（8.7.0）。** 工作区 FTS 改用纯 Rust `a3s-vec`
   （`a3s_vec_fts_v1`）。磁盘上的 `zvec_rust_fts_v1` generation 不兼容，会重建。
 - **`web_search` 有可用结果即成功（8.7.0）。** 默认级联是 API，然后 HTTP/RSS，
   最后 headless。非空可用行是 `complete` 或 `partial` 成功（#161）。
-  npm/crates.io/PyPI 请用 **8.7.0**。
 
 ### 更早的 8.6
 
@@ -108,8 +116,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   `*-unknown-linux-musl` Node SDK 构建通过。当前 npm 版本已包含该修复；
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v8.7` 文档线；
-当前包版本 **8.7.0**）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.0` 文档线；
+当前包版本 **9.0.0**）。
 
 ### 更早的版本线
 
@@ -119,7 +127,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   init、宿主 checkpoint 钩子。
 - **8.0+** — Run 拥有的时空组合、generation-exact 能力、可移植检查点、收敛工作流。
   完整历史见 [CHANGELOG.md](CHANGELOG.md)。Go 模块路径：
-  `github.com/A3S-Lab/Code/sdk/go/v8`。
+  `github.com/A3S-Lab/Code/sdk/go/v9`。
 
 ## 60 秒内起步
 
@@ -1352,7 +1360,7 @@ optimistic GraphPatch → new version or explicit rejection
 |铁Rust| [`a3s-code-core`](https://crates.io/crates/a3s-code-core) |完整的运行时 API 和扩展特征 |
 | Node.js | [`@a3s-lab/code`](https://www.npmjs.com/package/@a3s-lab/code) |用于异步生命周期、流、工具、存储、编排、MCP 和状态图的本机 N-API 绑定
 |Python | [`a3s-code`](https://pypi.org/project/a3s-code/) |具有同步和异步应用程序 API 的原生 PyO3/bootstrap 包 |
-|去 | [`github.com/A3S-Lab/Code/sdk/go/v8`](sdk/go/README.md) | Pure-Go 客户端，具有用于会话、流、工具、临时语义检索、运行、验证和 MCP 的版本化本地桥 |
+|去 | [`github.com/A3S-Lab/Code/sdk/go/v9`](sdk/go/README.md) | Pure-Go 客户端，具有用于会话、流、工具、临时语义检索、运行、验证和 MCP 的版本化本地桥 |
 
 ```bash
 # Node.js
@@ -1362,7 +1370,7 @@ npm install @a3s-lab/code
 python -m pip install a3s-code
 
 # Go
-go get github.com/A3S-Lab/Code/sdk/go/v8
+go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
 v8.3.0 中的 Python 发布工作流程使用稳定的 `cp310-abi3` 接口，

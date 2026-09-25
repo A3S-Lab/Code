@@ -20,7 +20,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | Root | Path / fact |
 | --- | --- |
 | Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` EXIT:0 (historical 29-cap snapshot); `typed_decisions` added via Core inventory + unit evidence below |
-| Layer C | Tip `ee8f68ad` evidence `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. `test_context_tools_real_llm` recovered after a stream-worker join timeout fix (rerun 4/4). Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. Lexical FTS is a3s-vec 0.1.8. Prior pass on `fa0a92ca` remains archived. |
+| Layer C | Tip RC `b91462d3` evidence `/tmp/a3s-layer-c-b91462d3/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (full matrix, incl. `test_meta_harness_compose_live_e2e`). Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. Prior tip `ee8f68ad` / `fa0a92ca` archives remain supporting. |
 | Efficiency | `/tmp/a3s-goal-integ-use/efficiency.log` (THIN_OK, Active-only, hide-disabled, golden inventory) |
 | Advanced hermetics | `/tmp/a3s-goal-integ-use/advanced-integ.log` + `cap-targeted.log` |
 | SDK discovery | Node / Python / Go project `sdk_capabilities()`; Core inventory now has 30 ids including `typed_decisions` (schema `a3s-code/sdk-capabilities/v2`) |
@@ -68,7 +68,7 @@ See also: [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md),
 | L0/L1 Layer A | `/tmp/a3s-goal-integ-use/layer-a.FINAL.txt` | PASS |
 | L3 advanced / s3 / otel / headless | advanced-integ + L3 FINAL | PASS |
 | L4 SDK | Node `npm test`, Python pytest, Go `test ./...`, alignment + discovery | PASS |
-| L5 Layer C bailian Flash | Tip `ee8f68ad` `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` (`LAYER_C_PASS`, 22/22; context_tools recovered after join-timeout fix) | PASS |
+| L5 Layer C bailian Flash | Tip RC `b91462d3` `/tmp/a3s-layer-c-b91462d3/FINAL.txt` (`LAYER_C_PASS`, full matrix incl. meta_harness compose; pin → `boyue/bailian/deepseek-v4.1-flash`) | PASS |
 | Efficiency (thin / absence) | `just harness-convergence-check` on this cut; `local-code` lib 3825 passed; `ci-all` lib 4100 passed | PASS |
 | L2 F-kernel cov | `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; worst prior miss `agent_protocol_harness.rs` now **95.16%** on tip `15d2a863`/`cdba052b` | PASS |
 | L8 §7 9.0.0 pins | Tip hermetics: `fact_log` 34/34; effect `tool_round_cap` + park 5/5; bm25/a3s-vec FTS 17/17 | PASS (hermetic) |

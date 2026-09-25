@@ -63,33 +63,33 @@ prompts.
 | Field | Value |
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
-| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): install-only `2026-09-22__07-32-16` (`INSTALL_ONLY_RC=0`). Boyue wiring + pinned agent smoke: job `2026-09-22__09-41-11` / `terminal-bench/bun-sourcemap-leak` (`AGENT_SMOKE_RC=0`, Harbor exceptions 0, reward 0.0 — task unsolved). Prior layout mid-run `2026-09-22__08-27-10` (~68m live API + `/app/scratch` CV) remains supporting evidence. Native `terminal_bench_runner` + full `-k` matrix still required for TB-QUAL1. |
-| `-n` / `-k` | diagnostic `-n 1 -k 1` (`A3S_TB_INCLUDE_TASK=terminal-bench/bun-sourcemap-leak`) |
-| GPU sandbox | WSL2 Ubuntu + Docker; host NVIDIA GeForce RTX 4090 (24564 MiB) |
-| Trials with native `verifier_result` | `1/1` present (`reward: 0.0`); Harbor agent exception none |
-| Failures classified | other — task incorrect / incomplete solution under verifier; adapter + boyue key/base_url wiring no longer blocked |
-| ROADMAP link date | 2026-09-22 |
+| Job / artifact digests | Diagnostic only (not TB-QUAL1 close): tip RC `b91462d3` Flash job `2026-09-26__02-14-59` / `bun-sourcemap-leak__QqXF2Yf` — Harbor exceptions 0, native `verifier_result.rewards.reward=0.0` retained, host completion-gate binds exercised (`boyue/bailian/deepseek-v4-flash`). Prior install-only `2026-09-22__07-32-16` and smoke `2026-09-22__09-41-11` remain supporting. Full tagged dataset `-k 5` still required for TB-QUAL1. |
+| `-n` / `-k` | Diagnostic close: `-n 1 -k 1` on `bun-sourcemap-leak`. TB-QUAL1 in flight: job dir `.harbor-tb-qual1/jobs/2026-09-26__02-24-52` with `-n 2 -k 5` on complete `terminal-bench@4.0.0` (Flash). |
+| GPU sandbox | Docker Desktop on darwin host for tip Flash runs; prior WSL2+RTX 4090 evidence retained for GPU-tagged tasks |
+| Trials with native `verifier_result` | Diagnostic `1/1` present (`reward: 0.0`); Harbor agent exception none. Full-matrix retention pending TB-QUAL1 job completion. |
+| Failures classified | Diagnostic: other — task incorrect / incomplete under verifier; host completion-gate + verifier retention no longer blocked. Full-matrix classification pending. |
+| ROADMAP link date | 2026-09-26 (diagnostic stamped; full TB-QUAL1 `-k 5` matrix **deferred by product** — Harbor job stopped) |
 
 ### DM-PROD1
 
 | Field | Value |
 | --- | --- |
-| Host / environment | |
-| Embedding provider + model | |
-| Remote CAS + lease policy | |
-| Horizons / multi-agent load | |
-| Restart + drift report path | |
-| Secret hygiene review | pass / fail |
-| ROADMAP link date | |
+| Host / environment | darwin host + kense-redis `127.0.0.1:6379` DB 15; tip Code `be467457` (RC `b91462d3` stack) |
+| Embedding provider + model | Boyue OpenAI-compatible `text-embedding-3-small` (1536-d); pack `/tmp/dm-prod1-host-be467457` |
+| Remote CAS + lease policy | Redis `VectorIndex` IndexRevisionCas + `SET NX EX` lease with fence tokens; failover via CLIENT KILL |
+| Horizons / multi-agent load | Five minutes-scale horizons (initial publication, candidate activation, single-node drift, consolidation/decay, steady state) + 8 independent Redis writers racing one prefix (1 commit / 7 `RevisionConflict`, convergence to 8 records); caveats retained per row in the report |
+| Restart + drift report path | `/tmp/dm-prod1-host-be467457/report.json` `sha256:208e333fedb188eccd64475cbf5c493d4c06c96fc42db2e9ebf0148af145664a` (`passed: true`, all seven dimensions PASS); 2 restart cycles with stable history/binding/serving digests plus checkpoint resume settling `Unchanged` at 0 provider requests |
+| Secret hygiene review | pass (`HYGIENE_OK`; 4 credential markers and 25 plaintext strings scanned across every pack file) |
+| ROADMAP link date | 2026-09-26 (ROADMAP `DM-PROD1` row Delivered with this path, report digest, and caveats) |
 
 ### CAR close
 
 | Gate | External run / artifact | Blocking party cleared |
 | --- | --- | --- |
-| `CAR-01` | | |
-| `CAR-03` | | |
-| `CAR-04` | | |
-| `CAR-05` | | |
+| `CAR-01` | Out of scope: A3S Cloud retired by product decision (2026-09-26); last partial run was Cloud [`36180557882`](https://github.com/A3S-Lab/Cloud/actions/runs/36180557882) (Box profiles, recovery, Skill hydration green) | n/a |
+| `CAR-03` | Out of scope (Cloud retired) | n/a |
+| `CAR-04` | Out of scope (Cloud retired) | n/a |
+| `CAR-05` | Out of scope (Cloud retired) | n/a |
 
 When a row is complete, paste the secret-free link into the matching ROADMAP
 exit cell and flip status to Delivered.
