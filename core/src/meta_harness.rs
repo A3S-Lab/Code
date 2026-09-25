@@ -1,4 +1,4 @@
-//! Non-bypassable Meta Harness kernel policy and Tardigrade-style assemble.
+//! Non-bypassable Meta Harness kernel policy and ordered assemble.
 //!
 //! Hosts mount ordered Moore components on one fact log (`components: [...]`).
 //! Entries are stock parts (`system` / `tools` / `budget` / `compact` / `infer`)
@@ -9,8 +9,6 @@
 //! [`admit_component_tree`]. SDKs pass the declarative recipe; host Moore
 //! factories stay Rust-side (no second imperative loop, no Effect-TS embed).
 
-use std::sync::Arc;
-
 use a3s_effect::{
     budget, coding_scheduler, compact, compose_coding_actor, component, system, tools,
     CodingServices, ErasedComponent, HarnessConfig, HarnessGraph, HarnessView, MetaHarnessSpec,
@@ -19,7 +17,7 @@ use a3s_effect::{
 
 pub use a3s_effect::HarnessPartId;
 
-/// One entry in a Tardigrade-style `components: [...]` assemble list.
+/// One entry in an ordered `components: [...]` assemble list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HarnessComponentRef {
     Stock(HarnessPartId),
@@ -38,8 +36,8 @@ pub struct HarnessComposeOptions {
     pub system: Vec<String>,
     /// Ordered stock parts. Used when [`Self::components`] is empty.
     pub parts: Vec<HarnessPartId>,
-    /// Tardigrade-style ordered assemble list. When non-empty, takes precedence
-    /// over [`Self::parts`]. Entries are stock names or `host:<id>`.
+    /// Ordered assemble list. When non-empty, takes precedence over
+    /// [`Self::parts`]. Entries are stock names or `host:<id>`.
     pub components: Vec<String>,
 }
 
@@ -80,7 +78,7 @@ impl HarnessComposeOptions {
         Ok(default_stock_components())
     }
 
-    /// Build from a Tardigrade-style `components: [...]` list.
+    /// Build from an ordered `components: [...]` list.
     ///
     /// Stock names: `system`, `tools`, `budget`, `compact`, `infer`.
     /// Host mounts: `host:<id>` (resolved at admit time via
@@ -110,7 +108,7 @@ impl HarnessComposeOptions {
     }
 }
 
-/// Default Tardigrade stock order when neither `components` nor `parts` is set.
+/// Default stock order when neither `components` nor `parts` is set.
 fn default_stock_components() -> Vec<HarnessComponentRef> {
     vec![
         HarnessComponentRef::Stock(HarnessPartId::System),

@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Meta Harness arbitrary assemble (`META-HARNESS2`).** Tardigrade-style
+- **Meta Harness arbitrary assemble (`META-HARNESS2`).** Ordered
   `components: [...]` accepts stock parts and `host:<id>` mounts via
   `HostHarnessRegistry` / `HostHarnessAssembler`. Node/Python expose
   `Harness.host` + `components`. Builtin `intent_stamp` host component supports
@@ -48,7 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supplies a Passed, digest-bound `VerificationReport` after the mutation ledger
   digest exists and before the completion gate decides. There is no `Observe`
   bypass — the gate remains non-bypassable; the attestor is not a tool and is
-  not model-grantable.
+  not model-grantable. Tip also pairs each mutated path with its ledger content
+  digest (`MutatedPathRecord`) so hosts can re-read and compare like-for-like
+  (shape absorbed from community PR #172).
 - **Meta Harness composition.** Hosts compose stock Moore components
   (`system`, `tools`, `budget`, `compact`, `infer`) on the single fact log via
   `SessionOptions.harness` / Node·Python `Harness.compose`. Depends on crates.io

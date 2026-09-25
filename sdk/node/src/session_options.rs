@@ -118,7 +118,7 @@ pub struct AutoDelegationOptions {
 /// Host-facing Meta Harness compose recipe.
 ///
 /// Omit `SessionOptions.harness` to keep the legacy `coding_actor` stock tree.
-/// Prefer Tardigrade-style `components: [...]` (stock names or `host:<id>`).
+/// Prefer ordered `components: [...]` (stock names or `host:<id>`).
 /// Legacy `parts` remains for stock-only recipes. Kernel permission overlay
 /// and completion gate stay Core-owned and cannot be disabled from this object.
 #[napi(object)]
@@ -133,7 +133,7 @@ pub struct HarnessComposeOptions {
     /// Ordered stock parts: `system`, `tools`, `budget`, `compact`, `infer`.
     /// Used when `components` is empty / omitted.
     pub parts: Option<Vec<String>>,
-    /// Tardigrade-style ordered assemble list. When set, takes precedence over
+    /// Ordered assemble list. When set, takes precedence over
     /// `parts`. Entries are stock names or `host:<id>` (Rust registry).
     pub components: Option<Vec<String>>,
 }

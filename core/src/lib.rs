@@ -226,7 +226,7 @@ pub use cognitive_context::{
     COGNITIVE_PACKAGE_BINDING_SCHEMA, OKF_KNOWLEDGE_CITATION_SCHEMA,
     OKF_KNOWLEDGE_READ_REQUEST_SCHEMA, OKF_KNOWLEDGE_SEARCH_REQUEST_SCHEMA,
 };
-pub use completion_attestor::{merge_attested_report, CompletionAttestor};
+pub use completion_attestor::{merge_attested_report, CompletionAttestor, MutatedPathRecord};
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
     OsConfig, ProviderConfig,

@@ -1,8 +1,8 @@
 //! Live Meta Harness compose E2E (Layer C).
 //!
-//! Asserts kernel outcomes for a Tardigrade-style `components: [...]` tree that
-//! mixes stock parts with a host Moore mount. Oracles are digests, files, and
-//! gate terminals — not assistant wording.
+//! Asserts kernel outcomes for an ordered `components: [...]` tree that mixes
+//! stock parts with a host Moore mount. Oracles are digests, files, and gate
+//! terminals — not assistant wording.
 //!
 //! Opt-in:
 //!
@@ -35,7 +35,7 @@ impl CompletionAttestor for DigestBindingAttestor {
     fn attest(
         &self,
         digest: &str,
-        paths: &[String],
+        paths: &[a3s_code_core::MutatedPathRecord],
     ) -> Option<a3s_code_core::verification::VerificationReport> {
         if paths.is_empty() {
             return None;

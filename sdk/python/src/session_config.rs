@@ -54,7 +54,7 @@ impl PyHostEnvConfig {
 /// Meta Harness compose recipe for ``SessionOptions.harness``.
 ///
 /// Omit the option to keep the legacy ``coding_actor`` stock tree. Prefer
-/// Tardigrade-style ``components`` (stock names or ``host:<id>``). Legacy
+/// Ordered ``components`` list (stock names or ``host:<id>``). Legacy
 /// ``parts`` remains for stock-only recipes. Kernel permission overlay and
 /// completion gate stay Core-owned.
 #[pyclass(name = "HarnessComposeOptions")]
@@ -72,7 +72,7 @@ pub(super) struct PyHarnessComposeOptions {
     /// Ordered stock parts. Used when ``components`` is empty.
     #[pyo3(get, set)]
     pub(super) parts: Vec<String>,
-    /// Tardigrade-style ordered assemble list. When non-empty, takes precedence
+    /// Ordered assemble list. When non-empty, takes precedence
     /// over ``parts``.
     #[pyo3(get, set)]
     pub(super) components: Vec<String>,

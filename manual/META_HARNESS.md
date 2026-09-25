@@ -14,7 +14,7 @@ Related: [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md),
 { view, transitions } = f(log)
 ```
 
-Hosts mount ordered components the way Tardigrade mounts `components: [...]`.
+Hosts mount ordered components via `components: [...]`.
 The runtime folds the log, enables keyed transitions, and runs them until
 nothing remains. Dual *imperative* message loops are forbidden; **one log +
 many components** is the intended orchestration model.
@@ -71,7 +71,7 @@ use a3s_code_core::{admit_component_tree, BuiltinHostHarnessRegistry, HarnessCom
 // Sugar for the stock tree (bit-compatible default):
 let actor = coding_actor(config);
 
-// Tardigrade-style assemble (stock + host):
+// Ordered assemble (stock + host):
 let recipe = HarnessComposeOptions::compose(
     vec![
         "system".into(),
@@ -144,7 +144,7 @@ trees including `compact` — not golden assistant prose.
 
 ## Non-goals
 
-- Porting Tardigrade / Effect TS into Code.
+- Porting Effect TS into Code.
 - Letting host components forge completion waivers or skip permission projection.
 - Restoring `parallel_task` as a second orchestration engine.
 - Making `advanced-harness` the library default.
