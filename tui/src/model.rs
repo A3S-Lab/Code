@@ -82,7 +82,11 @@ pub fn merge_launch_layers(layers: &LaunchLayers) -> Result<MergedLaunch, String
         ));
     };
     let provider = provider.to_string();
-    if provider.is_empty() || model.is_empty() || config.llm_config(&provider, model).is_none() {
+    let declared = config
+        .find_provider(&provider)
+        .and_then(|provider_config| provider_config.find_model(model))
+        .is_some();
+    if provider.is_empty() || model.is_empty() || !declared {
         return Err(format!(
             "merged model `{model_id}` is not declared by the merged providers"
         ));

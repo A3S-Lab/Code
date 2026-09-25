@@ -109,7 +109,8 @@ providers "userprov" {
 "#;
     let workspace_acl = r#"
 providers "workprov" {
-  apiKey = "work-key"
+  apiKey = env("ANTHROPIC_API_KEY")
+  baseUrl = "http://127.0.0.1:9"
   models "work-model" {
     name = "Work"
   }
@@ -119,6 +120,7 @@ providers "workprov" {
     write_acl(&workspace.join(".a3s/config.acl"), workspace_acl);
     let merged_model = "workprov/work-model";
     let _env = EnvVar::set("A3S_DEFAULT_MODEL", Some(merged_model));
+    let _api_key = EnvVar::set("ANTHROPIC_API_KEY", None);
     let expected = cli_merged_model(user_acl, workspace_acl, Some(merged_model));
     let layers = LaunchLayers {
         workspace: workspace.clone(),
