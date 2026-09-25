@@ -1085,7 +1085,8 @@ mod tests {
 
     #[tokio::test]
     async fn rolling_compaction_reinserts_goal_when_model_drops_it() {
-        let original_goal = "Write /app/build_part.py and save the part to /app/part.FCStd using PartDesign";
+        let original_goal =
+            "Write /app/build_part.py and save the part to /app/part.FCStd using PartDesign";
         let prior_summary = format!(
             "{}## Goal\n{original_goal}\n\n## Current State\nScanned drawings; ambiguities remain.",
             crate::prompts::CONTEXT_SUMMARY_PREFIX

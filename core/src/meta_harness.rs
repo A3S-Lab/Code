@@ -110,7 +110,10 @@ impl KernelPolicy {
 
 /// Build the default graph under kernel policy.
 pub fn admit_default_graph(config: HarnessConfig) -> (HarnessGraph, KernelPolicy) {
-    (HarnessGraph::coding(config), KernelPolicy::default().admit())
+    (
+        HarnessGraph::coding(config),
+        KernelPolicy::default().admit(),
+    )
 }
 
 /// Build a graph from a Meta Harness spec under kernel policy.
@@ -155,8 +158,7 @@ mod tests {
 
     #[test]
     fn default_admission_builds_stock_graph() {
-        let config =
-            HarnessConfig::new(4, 1_000, 8, 1, vec!["s".into()], vec![]).expect("config");
+        let config = HarnessConfig::new(4, 1_000, 8, 1, vec!["s".into()], vec![]).expect("config");
         let (graph, policy) = admit_default_graph(config);
         assert_eq!(graph.actor().name, "a3s-code");
         assert!(policy.permission_overlay);
