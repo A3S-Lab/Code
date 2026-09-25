@@ -49,7 +49,7 @@ the repository's own definition of done.
 | Integrated-use ledger | Refreshed 2026-09-25 for tip; Enterprise GA still not claimed |
 | L2 F-kernel cov | **PASS** — `/tmp/a3s-llvm-cov-f95/FINAL.txt` `ALL_F_TABLE_KERNELS_GE_95_PASS scored=42`; `agent_protocol_harness.rs` **95.16%** |
 | L8 §7 9.0.0 pins | **PASS (hermetic)** — fact_log 34/34; effect park + tool_round_cap; bm25 a3s-vec FTS 17/17 |
-| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open; diagnostic smoke `2026-09-25__19-11-53` on `bun-sourcemap-leak` (agent running after apt/`ca_certificates` skip fix) |
+| L7 Harbor / CAR / DM | TB-QUAL1 / DM-PROD1 / CAR still open. RC tip `b91462d3`: L0/L1 PASS; L6 tip digests `36160896419` / `36165517450`; L8 hermetic pins PASS; Flash Layer C re-qual in progress (`/tmp/a3s-layer-c-b91462d3`). Native TB Flash diag `2026-09-26__01-28-19` live with host completion-gate binds. Cloud tip pin to code-core **9.0.0** @ `b91462d3` compiles + A1.3 contracts green (local; not yet CAR-certified). DM supporting hermetic pack only (`/tmp/dm-prod1-b91462d3`) — remote CAS/embed host rows still open. Leaderboard `-k 5` + DM host pack + tip Cloud Box A1 receipts still required — **no waiver**. |
 | No `v9.0.0` tag / Release | Latest published channels still **8.6.0** (crates.io / npm) |
 | Docs site | Current archived line `docs/v8.7.0`; no `docs/v9.0.0` |
 | Out of 9.0.0 CHANGELOG body | Apofasi typed decisions live under `[Unreleased]` |
@@ -249,7 +249,7 @@ Durations are capacity sketches, not SLAs.
 | Decision | Value | Notes |
 | --- | --- | --- |
 | End-state | **B — Enterprise GA** | L7 close receipts required; waiver path forbidden for the GA claim |
-| RC base | **Current tip** (`91d34757` and successors on this line) | Re-qualify; do not ship on `fa0a92ca`-only digests |
+| RC base | **Current tip** (`b91462d3`) | Re-qualify; do not ship on `fa0a92ca`-only digests |
 | Apofasi | **Out of 9.0.0** | Remains `[Unreleased]` unless a later cut expands scope |
 | Publish | Only after P0–P4 (close path) + P3 | No crates.io 9.0.0 before L7 receipts |
 

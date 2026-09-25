@@ -221,12 +221,6 @@ pub(super) fn classify_failure(
             TerminalReason::EvidenceMissing,
         );
     }
-    if progress.stream_closed_without_terminal_event {
-        return (
-            ExecutionResultOutcomeV1::Failed,
-            TerminalReason::StreamClosedWithoutTerminalEvent,
-        );
-    }
     // Provider clients preserve terminal HTTP responses as a typed error. Do
     // not infer this class from rendered text: bodies are bounded and may be
     // localized or omit the word "provider" entirely.
@@ -249,6 +243,34 @@ pub(super) fn classify_failure(
         );
     }
     let message = error.to_string().to_ascii_lowercase();
+    let remembered = progress
+        .last_error
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Stream may close without End after a rendered provider rejection (for
+    // example DeepSeek HTTP 402). Prefer provider_rejected over the generic
+    // stream-closed class so TB diagnostics do not hide quota/auth failures.
+    if remembered.contains("http 401")
+        || remembered.contains("http 402")
+        || remembered.contains("http 403")
+        || remembered.contains("insufficient balance")
+        || message.contains("http 401")
+        || message.contains("http 402")
+        || message.contains("http 403")
+        || message.contains("insufficient balance")
+    {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::ProviderRejected,
+        );
+    }
+    if progress.stream_closed_without_terminal_event {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::StreamClosedWithoutTerminalEvent,
+        );
+    }
     if message.contains("deadline") || message.contains("execution timeout") {
         return (
             ExecutionResultOutcomeV1::TimedOut,
@@ -330,6 +352,19 @@ mod tests {
             reason,
             TerminalReason::StreamClosedWithoutTerminalEvent
         ));
+    }
+
+    #[test]
+    fn remembered_http_402_outranks_stream_closed_class() {
+        let mut progress = RunProgress::new();
+        progress.stream_closed_without_terminal_event = true;
+        progress.remember_error(
+            "deepseek API returned HTTP 402: Insufficient Balance (request_id: test)",
+        );
+        let error = anyhow::anyhow!("A3S Code stream ended without a terminal event");
+        let (outcome, reason) = classify_failure(&progress, &error);
+        assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+        assert!(matches!(reason, TerminalReason::ProviderRejected));
     }
 
     #[test]

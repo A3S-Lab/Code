@@ -546,24 +546,36 @@ async fn test_dropping_bash_execution_kills_shell_before_later_side_effects() {
     let temp = tempfile::tempdir().unwrap();
     let ctx = ToolContext::new(temp.path().to_path_buf());
     let started = temp.path().join("started");
+    let child_started = temp.path().join("child-started");
     let leaked = temp.path().join("leaked");
 
+    // Wait for the descendant to exist before aborting. Aborting after only
+    // `started` can race the background fork under parallel lib-test load and
+    // falsely look like a process-group kill failure.
     let execution = tokio::spawn(async move {
         tool.execute(
-            &escalated_args("printf started > started; (sleep 8; printf leaked > leaked) & wait"),
+            &escalated_args(
+                "printf started > started; \
+                 (printf ready > child-started; sleep 8; printf leaked > leaked) & \
+                 wait",
+            ),
             &ctx,
         )
         .await
     });
 
-    let started_at = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while !started.exists() {
+    let started_at = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !child_started.exists() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        assert!(
+            started.exists(),
+            "parent shell marker must exist once the descendant has started"
+        );
         std::time::Instant::now()
     })
     .await
-    .expect("shell should start before cancellation");
+    .expect("descendant should start before cancellation");
 
     execution.abort();
     let _ = execution.await;

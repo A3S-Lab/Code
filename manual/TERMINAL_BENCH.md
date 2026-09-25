@@ -20,17 +20,30 @@ over task vocabulary (for example, `design` or `findall`) and therefore cannot
 silently route the writable session to a read-only style. Search mode remains a
 model decision through the normal A3S Code tool descriptions.
 
-Build the static runner from the Code crate:
+Build the static runner from the Code crate. Match the Harbor task image
+architecture (`uname -m` inside the container). Docker Desktop on Apple
+Silicon often runs `x86_64` TB images; native Linux aarch64 hosts use
+`aarch64-unknown-linux-musl`:
 
 ```bash
+# x86_64 Harbor task images (common on Docker Desktop):
+cargo zigbuild --locked --target x86_64-unknown-linux-musl \
+  --release --no-default-features --example terminal_bench_runner
+
+# aarch64 Harbor task images:
 cargo zigbuild --locked --target aarch64-unknown-linux-musl \
   --release --no-default-features --example terminal_bench_runner
 ```
 
+The runner binds Harbor host Passed verification reports to Core completion-gate
+mutation digests (same contract as the Python Harbor smoke adapter). Harbor's
+native verifier remains the task acceptance authority.
+
 Run an official Terminal-Bench 4.0 task with the local Codex login:
 
 ```bash
-A3S_CODE_TERMINAL_BENCH_BINARY="$PWD/target/aarch64-unknown-linux-musl/release/examples/terminal_bench_runner" \
+TB_TARGET=x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl
+A3S_CODE_TERMINAL_BENCH_BINARY="$PWD/target/${TB_TARGET}/release/examples/terminal_bench_runner" \
 A3S_CODE_CONFIG="$PWD/../../.a3s/config.acl" \
 A3S_CODEX_AUTH_FILE="$HOME/.codex/auth.json" \
 A3S_CODEX_MODEL=gpt-6-astra \
@@ -40,6 +53,10 @@ harbor run -d terminal-bench/terminal-bench@4.0.0 \
   -a a3s_code_agent:A3SCodeAgent \
   -t terminal-bench/<task> -n 1 -k 1 -y
 ```
+
+DeepSeek (or other ACL providers) can replace Codex by pointing
+`A3S_CODE_CONFIG` at an ACL that sets `default_model` and `providers` from env
+(see monorepo `scripts/harbor/native-tb.acl`) and omitting the Codex env vars.
 
 For a leaderboard-compatible run, use the complete tagged dataset, five
 attempts per task, and a GPU-capable sandbox as required by Terminal-Bench:
