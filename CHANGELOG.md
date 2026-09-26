@@ -104,6 +104,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (2026-09-26). The Code-side contracts they describe remain in place. Because
   `TB-QUAL1` is waived and CAR is not certified, Enterprise GA is not claimed.
 - Apofasi typed decisions stay under `[Unreleased]` and are not in this cut.
+- Full multi-channel cut: crates.io `a3s-code-core`, npm `@a3s-lab/code` (8 platform
+  packages), PyPI `a3s-code` bootstrap and native wheels, Go module tag
+  `sdk/go/v9.0.0`, and GitHub Release `v9.0.0`. Depends on crates.io
+  `a3s-sandbox` 0.2.1.
 
 ## [8.7.0] - 2026-09-21
 

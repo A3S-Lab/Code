@@ -10,7 +10,7 @@ extension into a per-user cache, and exposes the normal `a3s_code` API.
 The v8.4.0 release uses one CPython 3.10 stable-ABI (`cp310-abi3`) wheel per
 platform. That wheel is installable by CPython 3.10, 3.11, 3.12, 3.13, and
 3.14. Supported native targets are macOS arm64/x86_64, Linux x86_64
-(glibc 2.28+), Linux arm64 (glibc 2.39+ / `manylinux_2_39_aarch64`), and
+(glibc 2.28+), Linux arm64 (glibc 2.28+ / `manylinux_2_28_aarch64`), and
 Windows arm64/x86_64. Every supported wheel contains its target Moli sidecar
 and provenance record. Linux musl is intentionally omitted because upstream
 Moli publishes no musl asset; use a system/explicit browser or another backend
