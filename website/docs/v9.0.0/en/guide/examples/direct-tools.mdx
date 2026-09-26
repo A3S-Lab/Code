@@ -30,7 +30,7 @@ async fn main() -> a3s_code_core::Result<()> {
     let agent = Agent::new("agent.acl").await?;
     let session = agent.session_builder(".").build().await?;
 
-    let allowed = HashSet::from(["search", "read", "generate_object"]);
+    let allowed = HashSet::from(["glob", "grep", "read", "generate_object"]);
     let check = |name: &str| -> a3s_code_core::Result<()> {
         allowed
             .contains(name)
@@ -42,10 +42,11 @@ async fn main() -> a3s_code_core::Result<()> {
             })
     };
 
-    check("search")?;
+    check("glob")?;
     let files = session.glob("**/*.rs").await?;
     println!("glob found {} Rust files", files.len());
 
+    check("grep")?;
     let matches = session.grep("Agent::new").await?;
     println!("grep found {} matching lines", matches.lines().count());
 
@@ -299,6 +300,10 @@ privileged host operations. Most calls (`read`, `glob`, `grep`) are purely
 deterministic; `generate_object` is the exception — it still calls the model
 to fill a schema-validated JSON object, but you drive it explicitly rather than
 through a free-form agent turn.
+
+`readFile` / `read_file` / `ReadFile` returns the `read` tool's view: each line is
+prefixed with a right-aligned line number and a tab, and long files end with a
+continuation hint. Strip the prefix before parsing file content.
 
 A runnable version ships at
 `sdk/node/examples/basic/test_generate_object.ts` (Python:

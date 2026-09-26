@@ -87,6 +87,22 @@ sessions_dir = ".a3s/sessions"
 `sessionStore: new FileSessionStore(...)` /
 `opts.session_store = FileSessionStore(...)`。
 
+<a id="proxies"></a>
+
+## 代理
+
+模型 HTTP 客户端、MCP HTTP 传输（SSE 与 streamable HTTP）以及 MCP OAuth 只从显式
+环境变量读取代理：
+
+| 变量                          | 作用                                                 |
+| ----------------------------- | ---------------------------------------------------- |
+| `http_proxy` / `HTTP_PROXY`   | `http://` 请求使用的代理                             |
+| `https_proxy` / `HTTPS_PROXY` | `https://` 请求使用的代理；未设置时回退到 HTTP 代理  |
+| `NO_PROXY` / `no_proxy`       | 绕过上述代理的主机，例如 `localhost` 或内部 MCP 主机 |
+
+这些客户端关闭了系统代理发现，因此变量未设置就表示直连。代理 URL 无效时，客户端
+构建会以 `Invalid HTTP proxy URL` 或 `Invalid HTTPS proxy URL` 失败。
+
 ## 私有服务提供商检查
 
 真实服务提供商的冒烟测试应通过 `A3S_CONFIG_FILE` 指向本地且被 Git 忽略的 ACL 文件。

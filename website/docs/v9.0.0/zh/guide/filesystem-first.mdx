@@ -12,28 +12,29 @@ A3S Code 从工作区文件系统加载持久化的项目行为。需要长期�
 ```text
 repo/
 ├── AGENTS.md          # 持久化项目说明
-├── agent.acl          # 模型、provider、队列与委派配置
 └── .a3s/
+    ├── config.acl     # 模型、provider、队列与委派配置
     ├── agents/        # task / autoDelegation 的 worker
     └── skills/        # 可复用 Skill
 ```
 
 ## 路径表
 
-| 路径                      | 用途                       | 何时使用                               |
-| ------------------------- | -------------------------- | -------------------------------------- |
-| `AGENTS.md`               | 稳定的工作区说明           | 代码风格、验证命令、安全边界需要持久化 |
-| `agent.acl`               | 模型、provider、队列与委派 | 运行时策略应随仓库版本化               |
-| `.a3s/agents/`            | Worker / 子代理定义        | 父 Agent 需要 `task` 或自动委派        |
-| `.a3s/skills/`、`skills/` | 可复用 Skill               | 多任务共享清单、领域流程或操作规则     |
+| 路径              | 用途                                   | 加载方式                                                                    |
+| ----------------- | -------------------------------------- | --------------------------------------------------------------------------- |
+| `AGENTS.md`       | 稳定的工作区说明                       | 自动加载，从 Git 根目录逐级到 workspace。见 [AGENTS.md](/guide/agents-md)。 |
+| `.a3s/config.acl` | 模型、provider、队列、skill 目录与委派 | TUI 会自动发现。SDK 宿主把 ACL 路径或字符串传给 `Agent.create`。            |
+| `.a3s/agents/`    | Worker / 子代理定义                    | 自动加载，同时加载 `~/.a3s/agents` 和兼容用的 `.claude/agents` 目录。       |
+| `.a3s/skills/`    | 可复用 Skill                           | 仅在列入 ACL `skill_dirs` 或 session `skillDirs` 时加载；不会隐式扫描。     |
 
 这些约定不是新的提示词系统。`AGENTS.md` 与 Skill 进入 A3S Code 的上下文组装路径；
 工具可见性、权限门、HITL、响应契约与验证仍由 harness 控制。
 
 ## 加载顺序
 
-典型 session 解析 `agent.acl`、绑定工作区，再加载项目说明、Skill、Agent 定义、
-直接工具、MCP 连接与运行时策略。
+`Agent.create` 解析 ACL 配置，并把配置的 `skill_dirs` 加载进 agent 级 skill registry。
+随后每个 session 绑定工作区，再加载项目说明、session skill 目录、Agent 定义、worker
+agent、直接工具、MCP 连接与运行时策略。
 
 ## 设计规则
 

@@ -15,13 +15,14 @@ A3S Code 会保留工具注册表。`toolNames()` 返回当前会话的工具表
 
 ## 工具表面
 
-| 层级                       | 工具                                                                        | 注册规则                                                                                                                                                      |
-| -------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 受工作区能力限制的内置工具 | `read`、`write`、`edit`、`patch`、`download`、`search`、`ls`、`bash`、`git` | 仅在 `WorkspaceServices` 声明具备所需能力时注册；`search` 提供 grep/glob 模式，并在可读取文件时增加 BM25；`download` 还要求可写的本地工作区。                 |
-| 运行时内置工具             | `web_fetch`、`web_search`、`batch`、`program`                               | 由核心工具执行器注册。`batch` 和 `program` 接收当前有作用域的调用器，因此内部工具既受会话表面限制，也继承调用方的治理作用域。                                 |
-| 会话启动工具               | `task`、`generate_object`、`search_skills`、`Skill`                         | 构建 `AgentSession` 时加入。`task` 是唯一模型可见的委派 schema（含多条目扇出）。`parallel_task` 别名已移除（`HARNESS-CONV4`）。关闭手动委派后会移除委派能力。 |
-| TUI 工作流工具             | `dynamic_workflow`，以及 `/login` 后可选的宿主运行时工具                    | 由 `a3s code` 宿主注册。`dynamic_workflow` 通过 A3S Flow 回放支撑 `ultracode` 和 DeepResearch；宿主运行时工具属于登录后集成。                                 |
-| 动态集成                   | `mcp__<server>__<tool>` 与宿主注册工具                                      | 从 MCP 管理器或宿主代码发现后加入。                                                                                                                           |
+| 层级                       | 工具                                                                        | 注册规则                                                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 受工作区能力限制的内置工具 | `read`、`write`、`edit`、`patch`、`download`、`search`、`ls`、`bash`、`git` | 仅在 `WorkspaceServices` 声明具备所需能力时注册；`search` 提供 grep/glob 模式，并在可读取文件时增加 BM25；`download` 还要求可写的本地工作区。 |
+| 代码智能                   | `code_symbols`、`code_navigation`、`code_diagnostics`                       | 仅当工作区携带代码智能提供者（`WorkspaceServicesBuilder::code_intelligence`）时注册。默认本地后端没有提供者。                                 |
+| 运行时内置工具             | `web_fetch`、`web_search`、`update_plan`、`ask_user`、`batch`、`program`    | 由核心工具执行器注册。`batch` 和 `program` 接收当前有作用域的调用器，因此内部工具既受会话表面限制，也继承调用方的治理作用域。                 |
+| 会话启动工具               | `task`、`generate_object`、`search_skills`、`Skill`                         | 构建 `AgentSession` 时加入。`task` 是唯一模型可见的委派 schema；多条目扇出通过 `task` 完成。关闭手动委派后会移除委派能力。                    |
+| TUI 工作流工具             | `dynamic_workflow`，以及 `/login` 后可选的宿主运行时工具                    | 由 `a3s code` 宿主注册。`dynamic_workflow` 通过 A3S Flow 回放支撑 `ultracode` 和 DeepResearch；宿主运行时工具属于登录后集成。                 |
+| 动态集成                   | `mcp__<server>__<tool>` 与宿主注册工具                                      | 从 MCP 管理器或宿主代码发现后加入。                                                                                                           |
 
 当某个工作流依赖特定模型工具可见时，在测试或应用诊断中使用 `toolNames()` /
 `toolDefinitions()` 验证。工具可见性不是安全授权。`send`、`run`、`stream`
@@ -29,6 +30,72 @@ A3S Code 会保留工具注册表。`toolNames()` 返回当前会话的工具表
 取消、递归调用保护、输出净化、制品上限与工作区路径检查。`session.tool(...)`
 这类直接 SDK 调用使用另一条显式策略，见下文。`activeTools()` 回答的是另一个问题：
 当前操作中有哪些工具调用正在运行。
+
+## 工具呈现配置
+
+呈现配置（`a3s.code.tool-presentation-profile.v1`，`core/src/tools/presentation.rs`）
+决定模型在某个提示词下看到哪些工具定义。它只改变呈现；权限策略、确认和沙箱仍然治理
+每一次调用。
+
+| 模式       | 面向模型的定义                                            |
+| ---------- | --------------------------------------------------------- |
+| `adaptive` | 默认值。按提示词选择相关的子集。                          |
+| `direct`   | 权限可见性允许的全部定义。                                |
+| `code`     | 把 `program` 作为通往其他工具的紧凑代码网关。             |
+| `disabled` | 不提供工具。`session.tool(...)` 等宿主直连 API 不受影响。 |
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{SessionOptions, ToolPresentationProfileV1};
+
+let options = SessionOptions::new()
+    .with_tool_presentation_profile(ToolPresentationProfileV1::direct());
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { ToolPresentationMode } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  toolPresentationProfile: {
+    schema: 'a3s.code.tool-presentation-profile.v1',
+    mode: ToolPresentationMode.Direct,
+  },
+});
+console.log(session.toolPresentationProfile());
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import SessionOptions, ToolPresentationProfile
+
+opts = SessionOptions()
+opts.tool_presentation_profile = ToolPresentationProfile.direct()
+session = agent.session("/repo", opts)
+print(session.tool_presentation_profile())
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	ToolPresentationProfile: code.NewToolPresentationProfile(code.ToolPresentationDirect),
+})
+if err != nil {
+	log.Fatal(err)
+}
+profile, err := session.ToolPresentationProfile(ctx)
+```
+
+</Tab>
+</Tabs>
 
 ## 统一调用内核
 
@@ -296,10 +363,13 @@ Lifecycle 见[工作区检索](/guide/context#workspace-retrieval)。
 ### 结构门控的网页搜索
 
 `web_search` 会在元数据中报告 `complete`、`partial` 或 `failed`。默认路径先执行
-无头浏览器引擎；只有合并结果未达到结构化检索要求时，才运行普通 HTTP/RSS 引擎；
-前两层仍不足时，才运行原生 API。因此浏览器发现和池创建都是惰性的。A3S Code v8.5.1
-锁定 `a3s-search` v3.1.0（a3s-search v3.1.0），并默认使用打包或共享缓存中的 Moli Runtime。精简 Rust
-嵌入可以关闭 default features；Chrome 和 Lightpanda 仍需显式配置。
+已配置的原生 API 引擎；只有合并结果未达到结构化检索要求时，才运行普通 HTTP/RSS
+引擎；前两层仍不足时，才运行无头浏览器引擎
+（`core/src/tools/builtin/web_search/fallback.rs`）。`cascade_order` 可以覆盖该顺序。
+无头层只存在于启用 `headless-search` 特性的构建中（`scientific` 和 `full` 包含该特性，
+Core 默认特性不包含），浏览器发现和池创建都是惰性的。基于 Moli 的无头引擎随
+`a3s-search` v3.1.0 引入；A3S Code 9.0.0 锁定 `a3s-search` 3.1.4，并在运行无头层时使用
+打包或共享缓存中的 Moli Runtime。Chrome 和 Lightpanda 仍需显式配置。
 
 Moli 会依次检查显式可执行文件、包内 Sidecar、已校验的按用户缓存和可发现的系统安装，
 然后才通过 HTTPS 下载固定版本。缓存由跨进程安装锁和原子收据保护，因此多个
@@ -334,6 +404,16 @@ headless。有可用结果就是成功的工具结果：门槛达到时为 `comp
 HTTP 408 和 HTTP 5xx 使用类型化 `transport`；HTTP 429 使用 `rate_limited`，并在
 服务端提供时携带解析后的 `Retry-After` 延迟；工具外层截止时间使用 `timeout`。其他
 HTTP 状态错误保持普通状态失败，除非运行时掌握可以安全重试的类型化证据。
+
+### 网页工具代理
+
+`web_fetch`、`download` 和 `web_search` 按以下顺序选择一个代理：`search.headless.proxy_url`
+配置，然后是 `HTTPS_PROXY`、`https_proxy`、`HTTP_PROXY` 或 `http_proxy`，最后是 macOS
+系统代理。`web_search` 单次调用的 `proxy` 参数优先于以上全部来源。选中代理后，这些工具
+的每个请求都经过该代理，且不会参考 `NO_PROXY`（`core/src/tools/builtin/safe_http.rs`）；
+如果某个目标必须直连，请为该进程取消代理变量。没有代理时，这些工具直接连接经过校验的
+公网地址。`core/src/llm/http.rs` 中的 `NO_PROXY` 处理适用于模型 provider、MCP HTTP 和
+OAuth 客户端，不适用于网页工具。
 
 ## 直接工具调用
 
@@ -530,7 +610,7 @@ await session.program({
 QuickJS VM 不获得文件系统、网络、子进程或环境变量权限。脚本唯一有用的能力来自 `ctx`，这些方法会回到 A3S Code 的受控工具执行路径。PTC 会返回可读的 `ToolResult.output`，结构化数据位于 `ToolResult.metadataJson`。原始大输出不应反复塞进 prompt；应先总结发现、证据引用、风险和建议下一步。
 
 在 `a3s code` 中，`DynamicWorkflowRuntime` 也会使用 PTC。默认 TUI PTC allow-list
-不会允许递归调用 `program`、`dynamic_workflow` 和已移除的 `parallel_task` 别名。
+不会允许递归调用 `program` 和 `dynamic_workflow`。
 QuickJS 可以用单个 `tasks` 项调用 `task`，但会阻止直接多任务扇出。动态工作流需要本地
 并行子智能体时，会调度名为 `task` 的 Flow 步骤，由 TUI 宿主在 QuickJS 外执行。完成
 `/login` 且会话中已经注册宿主运行时工具后，动态工作流的
@@ -563,3 +643,6 @@ const report = await session.verifyCommands('发布就绪检查', [
   },
 ]);
 ```
+
+`session.verifyCommands(...)` 返回的报告是宿主证据。它没有绑定到回合的 mutation
+effect digest，因此不能关闭完成门禁；见[验证](/guide/verification#完成门禁)。

@@ -18,7 +18,7 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 ```rust
 use a3s_code_core::{
-    hitl::{ConfirmationPolicy, TimeoutAction},
+    hitl::ConfirmationPolicy,
     permissions::PermissionPolicy,
     Agent, AgentEvent, SessionOptions,
 };
@@ -38,8 +38,7 @@ async fn main() -> a3s_code_core::Result<()> {
         .ask("bash(git push:*)")
         .ask("bash(npm publish:*)")
         .ask("bash(*)");
-    let confirmation_policy =
-        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+    let confirmation_policy = ConfirmationPolicy::enabled();
 
     let session = agent
         .session_builder(".")
@@ -102,11 +101,7 @@ const session = agent.session(process.cwd(), {
     defaultDecision: 'ask',
   },
   // 把 `ask` 模式转为人工确认流程。
-  confirmationPolicy: {
-    enabled: true,
-    defaultTimeoutMs: 120000,
-    timeoutAction: 'reject',
-  },
+  confirmationPolicy: { enabled: true },
 });
 
 // 以流式方式执行，并在确认请求到达时逐个处理。
@@ -151,17 +146,13 @@ def main() -> None:
         default_decision="ask",
     )
     # 把 `ask` 模式转为人工确认流程。
-    opts.confirmation_policy = ConfirmationPolicy(
-        enabled=True,
-        default_timeout_ms=120_000,
-        timeout_action="reject",
-    )
+    opts.confirmation_policy = ConfirmationPolicy(enabled=True)
 
     session = agent.session(".", opts)
 
     # 以流式方式执行，并在确认请求到达时逐个处理。
     for event in session.stream("Bump the version and push the release"):
-        if event.event_type == "confirmation_required":
+        if event.type == "confirmation_required":
             # 查询待处理请求，以显示更完整的信息。
             pending = session.pending_confirmations()
             first = pending[0] if pending else {}
@@ -203,8 +194,6 @@ func main() {
 	}
 	defer agent.Close(ctx)
 
-	enabled := true
-	timeoutMS := uint64(120_000)
 	session, err := agent.Session(
 		ctx,
 		".",
@@ -215,11 +204,7 @@ func main() {
 				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
 				DefaultDecision: "ask",
 			},
-			ConfirmationPolicy: &code.ConfirmationPolicy{
-				Enabled:          &enabled,
-				DefaultTimeoutMS: &timeoutMS,
-				TimeoutAction:    "reject",
-			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{Enabled: code.Ptr(true)},
 		},
 	)
 	if err != nil {
@@ -423,7 +408,8 @@ func main() {
   `allow`、`deny` 或 `ask` 之一）。真实仓库优先使用 `ask`，仅对自动化确实需要的部分逐步放开。
 - 设置 `enabled: true` 的 `confirmationPolicy` 才会把 `ask` 决策变成会暂停的
   `confirmation_required` 事件。通过 `session.confirmToolUse(toolId, approved, reason?)`
-  逐个处理；若在 `defaultTimeoutMs` 内未收到答复，则由 `timeoutAction`（`reject`）决定结果。
+  逐个处理。确认会让运行挂起，直到收到该答复（或被取消）；`defaultTimeoutMs` 和
+  `timeoutAction` 不会结束这次等待。未启用确认策略时，`ask` 决策会直接执行工具。
 - 除非最终步骤由受控自动化负责，否则 release 和 publish 操作（`bash(git push*)`、
   `bash(npm publish*)`）应保持在 `ask` 或 `deny` 路径上。
 - `session.tool()`、`session.bash()`、`session.git()` 这类宿主直接调用都是特权操作。

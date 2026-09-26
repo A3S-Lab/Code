@@ -30,7 +30,8 @@ Session behavior does not regress when `SessionOptions.harness` is omitted.
 3. Transition keys are unique across the tree (`DuplicateTransition`); finished
    keys are not re-run.
 4. Confirm / question park until answer facts (no timers).
-5. Kernel wrappers always apply: permission strip before the model catalog;
+5. Kernel wrappers always apply: the permission policy decides every tool call
+   before it executes;
    mutating success still requires the completion gate / host waiver bound to
    an effect digest. Host components cannot disable these. A host may install
    `SessionOptions::with_completion_attestor` to supply a Passed, digest-bound
@@ -173,7 +174,7 @@ trees including `compact` — not golden assistant prose.
 ## Safety checks
 
 - Default composition == today's `coding_actor` until hosts opt in.
-- Kernel middleware must still strip permissions and enroll the completion gate
+- Kernel middleware must still enforce the permission policy and enroll the completion gate
   even if a malicious host component enables `model.turn` without them.
 - Nested `infer` mounts must not advertise un-prefixed child transition keys.
 - Live suites must not assert provider-specific assistant prose.

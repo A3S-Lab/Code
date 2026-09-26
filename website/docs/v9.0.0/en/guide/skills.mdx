@@ -46,6 +46,15 @@ const session = agent.session('/repo', {
 Use `skillDirs` for skill files. Use `agentDirs` for worker/subagent
 definitions.
 
+Skill directories are loaded only when configured: through `skill_dirs` in the
+agent ACL (shared by every session of that agent) or through session
+`skillDirs` / `skill_dirs` / `SkillDirs`. There is no implicit
+`.a3s/skills` scan. Each directory is walked recursively in sorted order; a
+skill is either a `*.md` file or a `SKILL.md` inside a subdirectory. Symlinks
+that resolve outside the directory are ignored, and a missing directory loads
+zero skills. When two files declare the same `name`, the later one replaces the
+earlier one and a warning is logged.
+
 ## Inline Skills
 
 ```ts
@@ -62,7 +71,8 @@ const session = agent.session('/repo', {
 
 ## Skill Tool
 
-`search_skills` finds relevant skills:
+`search_skills` finds relevant skills (`limit` is 1 to 20, default 5), and the
+model runs one with the `Skill` tool (`skill_name`, optional `prompt`):
 
 ```ts
 await session.tool('search_skills', {
@@ -78,5 +88,5 @@ a model-visible management tool.
 When a skill is invoked through the `Skill` tool, `allowed-tools` is
 fail-secure: omitted frontmatter grants no tools to that skill invocation.
 Declare the smallest needed allow-list. Ordinary session tool calls are not
-restricted by active skills unless `enforceActiveSkillToolRestrictions` is
-explicitly enabled for legacy behavior.
+restricted by active skills unless `enforceActiveSkillToolRestrictions` /
+`enforce_active_skill_tool_restrictions` is explicitly enabled.

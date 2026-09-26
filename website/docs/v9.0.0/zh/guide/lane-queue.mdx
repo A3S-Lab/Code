@@ -5,14 +5,24 @@ description: '可选外部与混合分发基础设施'
 
 # 执行通道队列
 
-普通 session 默认不启用队列。Lane queue 是显式的高级基础设施，独立于 `task` 和自动 subagent 委派。
+普通会话默认不启用队列。执行通道队列是可选的高级基础设施，面向需要外部或混合
+分发的应用，独立于 `task` 和自动子智能体委派。
 
 不要把这层可选分发设施与始终启用的
 [Agent 级任务调度器](/guide/tasks#agent-wide-priority-scheduler)混淆。任务调度器内部使用 `a3s-lane`
-优先级队列，在不同 Session 之间共享本地执行容量；Lane queue 则把选中的工作交给
-本地、外部或混合 handler。
+优先级队列，在不同会话之间共享本地执行容量；执行通道队列则把选中的工作交给
+本地、外部或混合处理器。
 
-只有需要外部 worker、混合本地/远程执行、队列指标、死信或多机器分发时才启用 lane queue。
+## 何时使用
+
+在以下场景使用队列：
+
+- 由外部 worker 完成选中的任务
+- 在本地与远程执行器之间混合路由
+- 队列指标、死信或分发可观测性
+- 多机器工作分发
+
+## 配置会话
 
 ```ts
 const session = agent.session('/repo', {
@@ -28,19 +38,19 @@ await session.setLaneHandler('execute', {
 });
 ```
 
-lane 名称是 `control`、`query`、`execute` 和 `generate`。
+通道名称是 `control`、`query`、`execute` 和 `generate`。
 
-外部 worker 完成任务时调用：
+## 外部完成
 
 ```ts
 const pending = await session.pendingExternalTasks();
 
 if (pending.length > 0) {
-  await session.completeExternalTask(pending[0].id, {
+  await session.completeExternalTask(pending[0].task_id, {
     success: true,
-    result: { summary: 'worker completed the task' },
+    result: { summary: 'completed by worker' },
   });
 }
 ```
 
-普通本地 agent session 不需要引入队列。
+请显式使用队列。普通本地会话不要引入它。

@@ -104,6 +104,7 @@ for (const task of pending) {
 }
 
 console.log('lane queue drained');
+session.close();
 ```
 
 </Tab>
@@ -138,6 +139,7 @@ for task in pending:
     )
 
 print("lane queue drained")
+session.close()
 ```
 
 </Tab>
@@ -212,4 +214,6 @@ func main() {
 - 每个待处理任务都带有 `task_id`、`session_id`、`lane`、`command_type`、`payload` 和 `timeout_ms`。工作完成后，把 `task_id` 传回给 `completeExternalTask` / `complete_external_task` / `CompleteExternalTask`。
 - 结果结构为 `{ success, result?, error? }`——`result` 可承载任意可 JSON 序列化的载荷，`error` 是失败时的可选消息。`completeExternalTask` / `complete_external_task` 在找到并完成任务时返回 `true`，否则返回 `false`。
 - 在 Python 中这些队列方法是同步的；在 Node 中 `setLaneHandler`、`pendingExternalTasks` 和 `completeExternalTask` 返回 promise，而 `hasQueue` 是同步的。
+- 只有在某次运行正把工作路由到该 lane 时才会出现任务。请在 `send` 或 `stream` 执行期间由
+  worker 循环轮询队列；像本最小示例这样在 `setLaneHandler` 之后立即清空，得到的是空队列。
 - Go 队列调用接收 `context.Context`；Node 返回 promise；Python 使用同步方法。

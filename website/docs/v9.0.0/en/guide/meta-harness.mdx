@@ -1,0 +1,245 @@
+---
+title: 'Meta Harness'
+description: 'Compose the fact-log actor from stock parts and host components without a second loop'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Meta Harness
+
+Meta Harness decides how the coding actor is assembled. The actor reads the
+session's [fact log](/guide/architecture#fact-log-control) and produces a view
+plus the next transition. Meta Harness lets a host choose the ordered list of
+components in that actor. It does not add a second loop, a second event stream,
+or a way around permissions and the completion gate.
+
+If you do not set `harness`, the session uses the default `coding_actor` tree:
+the stock parts in their default order. Nothing changes for existing embedders.
+
+## Invariants
+
+| Invariant           | What it means                                                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| One fact log        | Every component reads the same log. The next transition still comes only from folding it.                                              |
+| Ordered components  | `components` is an ordered list. Each entry is a stock part or a `host:<id>` mount.                                                    |
+| Kernel policy stays | `KernelPolicy::admit()` always sets `permission_overlay` and `completion_gate` to `true`. A composed graph cannot turn either one off. |
+| Host code is Rust   | Host components are Rust factories behind `HostHarnessRegistry`. SDKs pass `host:<id>` strings only; they cannot ship component code.  |
+| Not model-grantable | The model cannot add, remove, or reorder components. The recipe comes from `SessionOptions`.                                           |
+
+## Stock parts
+
+| Part      | Role in the view                                                                                                                                    |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system`  | Contributes system lines. `system: [...]` in the recipe replaces the configured lines.                                                              |
+| `tools`   | Contributes the tool specs from the session's tool executor.                                                                                        |
+| `budget`  | Ends the turn with `budget.denied` once the tool budget is used (8 successful tool results per turn in a live session). `tool_budget` overrides it. |
+| `compact` | Triggers compaction past a character threshold. `compact_after_chars` overrides it.                                                                 |
+| `infer`   | The coding scheduler: model calls, tool calls, confirmation and question parking, resume.                                                           |
+
+With no `components` and no `parts`, the order is `system`, `tools`, `budget`,
+`compact`, `infer`. Part names are case-insensitive. Any other stock name fails
+with `unknown harness part '<name>'; expected system|tools|budget|compact|infer`.
+
+`parts` is the older stock-only list. When `components` is non-empty it wins.
+A stock-only list keeps the spec-based graph, so cause keys stay stable. Any
+`host:` entry switches to the ordered component tree.
+
+## Host components
+
+A host component is one Moore component: initial state, a fold over facts, and
+an output that adds to the view. The host registers it under an id and
+references it as `host:<id>`. Ids must be non-empty ASCII letters, digits, `_`,
+or `-`. They are lowercased.
+
+```rust
+pub trait HostHarnessRegistry: Send + Sync {
+    fn mount(
+        &self,
+        id: &str,
+        config: &HarnessConfig,
+    ) -> anyhow::Result<ErasedComponent<CodingServices, HarnessView>>;
+}
+```
+
+`BuiltinHostHarnessRegistry` ships one component, `intent_stamp`. It adds the
+system line `INTENT_STAMP_MARKER` (`a3s.meta_harness.intent_stamp.v1`). Tests
+use it to prove that a host mount reached the view. Unknown ids fail with
+`unknown builtin host harness component '<id>'; known: intent_stamp`.
+
+Rust embedders that need a whole custom graph can install a
+`HostHarnessAssembler`. It returns a `HarnessGraph` and takes precedence over
+`with_harness`. `admit_component_tree(name, components)` builds a graph from an
+explicit component list under the same kernel policy.
+
+## Compose a session
+
+The examples below build the same tree: stock `system` and `tools`, the
+built-in `intent_stamp` host component, then `budget` and `infer`.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    host_component_id, BuiltinHostHarnessRegistry, HarnessComposeOptions, SessionOptions,
+};
+
+let harness = HarnessComposeOptions::compose(
+    vec![
+        "system".into(),
+        "tools".into(),
+        host_component_id("intent_stamp"),
+        "budget".into(),
+        "infer".into(),
+    ],
+    Some(4),
+    None,
+    vec!["You are a careful coding agent.".into()],
+)?;
+
+let options = SessionOptions::new()
+    .with_harness(harness)
+    .with_host_harness_registry(Arc::new(BuiltinHostHarnessRegistry));
+
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  harness: Harness.compose({
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.host('intent_stamp'),
+      Harness.budget(),
+      Harness.infer(),
+    ],
+    toolBudget: 4,
+    system: ['You are a careful coding agent.'],
+  }),
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.host("intent_stamp"),
+        Harness.budget(),
+        Harness.infer(),
+    ],
+    tool_budget=4,
+    system=["You are a careful coding agent."],
+)
+session = agent.session("/repo", opts)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+import code "github.com/A3S-Lab/Code/sdk/go/v9"
+
+agent, err := code.NewAgent(ctx, "agent.acl")
+if err != nil {
+	return err
+}
+defer agent.Close(ctx)
+
+budget := uint32(4)
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	Harness: &code.HarnessOptions{
+		Components: []string{
+			code.HarnessSystem,
+			code.HarnessTools,
+			code.HarnessHost("intent_stamp"),
+			code.HarnessBudget,
+			code.HarnessInfer,
+		},
+		ToolBudget: &budget,
+		System:     []string{"You are a careful coding agent."},
+	},
+})
+if err != nil {
+	return err
+}
+defer session.Close(ctx)
+```
+
+</Tab>
+</Tabs>
+
+Recipe fields:
+
+| Rust (`HarnessComposeOptions`) | Node.js             | Python                | Go                  |
+| ------------------------------ | ------------------- | --------------------- | ------------------- |
+| `components`                   | `components`        | `components`          | `Components`        |
+| `parts`                        | `parts`             | `parts`               | `Parts`             |
+| `tool_budget`                  | `toolBudget`        | `tool_budget`         | `ToolBudget`        |
+| `compact_after_chars`          | `compactAfterChars` | `compact_after_chars` | `CompactAfterChars` |
+| `system`                       | `system`            | `system`              | `System`            |
+
+## What SDKs can and cannot do
+
+Node.js, Python, and Go pass the declarative recipe to Core. When `harness` is
+set, each SDK installs `BuiltinHostHarnessRegistry`, so `host:intent_stamp` is
+the only host id they can resolve.
+
+| SDKs can                                                | SDKs cannot                                          |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| Reorder or drop stock parts                             | Supply host component code                           |
+| Mount `host:intent_stamp`                               | Install a custom `HostHarnessRegistry` or assembler  |
+| Override `tool_budget`, `compact_after_chars`, `system` | Disable permission projection or the completion gate |
+| Omit `harness` to keep the default tree                 | Run a second loop beside the fact log                |
+
+Custom host components require a Rust embedder that calls
+`with_host_harness_registry` or `with_host_harness_assembler`.
+
+## Failure modes
+
+| When                | Cause                                                  | Error                                                                                   |
+| ------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Building the recipe | Unknown stock part                                     | `unknown harness part '<name>'; expected system\|tools\|budget\|compact\|infer`         |
+| Building the recipe | `host:` with an empty or invalid id                    | `host harness mount requires a non-empty id after 'host:'` or `invalid host harness id` |
+| First run           | `host:*` entries but no registry installed (Rust only) | `harness components include host:* mounts but no HostHarnessRegistry was installed`     |
+| First run           | Id not known to the installed registry                 | `unknown builtin host harness component '<id>'; known: intent_stamp`                    |
+
+Recipe errors surface immediately: `HarnessComposeOptions::compose` returns an
+error, Node.js `Harness.compose` throws, Python `Harness.compose` raises
+`ValueError`, and the Go bridge rejects the session request with
+`INVALID_REQUEST` and a `harness:` message. The registry resolves ids when a run
+opens its fact run, so an unknown host id fails the first `send` or `stream`,
+not session creation.
+
+## Relation to the completion gate
+
+The completion gate is part of the kernel, not a stock part. No recipe removes
+it. A run that mutated the workspace still needs a Passed verification report
+bound to the effect digest, or a host waiver for that digest, before it counts
+as complete. See [Verification](/guide/verification).
+
+A Rust host can supply that evidence with
+`SessionOptions::with_completion_attestor`. The attestor runs after the
+mutations exist and before the gate decides. It receives the effect digest and
+the mutated paths, and may return a report. It is not a tool, the model cannot
+grant it, and the gate still checks the report status and digest.

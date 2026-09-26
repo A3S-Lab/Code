@@ -110,9 +110,9 @@ session = agent.session('.', SessionOptions())
 session.register_hook(
     'observe-env-read',
     'pre_tool_use',
-    {'pathPattern': '**/.env*'},
+    {'path_pattern': '**/.env*'},
     {'priority': 100},
-    lambda: {'action': 'continue'},
+    lambda event: {'action': 'continue'},
 )
 
 print("active hooks:", session.hook_count())  # 1
@@ -196,9 +196,11 @@ Notes:
   `retry` with a reason and `delayMs` (Node), `delay_ms` (Python), or `DelayMS`
   (Go). The denied tool result exposes `error_kind.type = "hook_denied"`, plus
   `retryable` and `retry_after_ms`, so hosts do not need to parse output text.
-- The matcher (`{ pathPattern: '**/.env*' }`) scopes the hook to events whose
+- The matcher (`{ pathPattern: '**/.env*' }` in Node, `{'path_pattern': ...}` in
+  Python, `HookMatcher{PathPattern: ...}` in Go) scopes the hook to events whose
   path matches the pattern, and `{ priority: 100 }` orders hooks on the same
   event (lower values run first).
+- Callbacks receive the event as their only argument.
 - Node hook callbacks must **not** throw — an uncaught throw can abort the
   process. Keep the handler body total and always return a decision.
 - `hookCount` / `hook_count` / `HookCount` reflects the number of currently

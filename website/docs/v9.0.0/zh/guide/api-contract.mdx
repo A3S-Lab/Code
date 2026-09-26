@@ -443,8 +443,9 @@ console.log(resumed.history());
 ```
 
 核心持久化会把对话、制品、追踪、运行记录、验证报告和子智能体任务快照一起提交为
-带版本号的 `SessionSnapshotV1`。文件或内存存储会原子发布这个聚合快照。旧式分片
-记录仍可加载；自定义存储必须显式实现聚合保存。
+带版本号的 `SessionSnapshotV1`。文件或内存存储会原子发布这个聚合快照。较早的分片
+记录仍可加载；自定义存储必须显式实现聚合保存。工作区 `.a3s/effect-log/` 下的事实
+日志是编码回合的控制来源，不属于快照。
 
 Node 进程需要及时释放会话级后台资源时，调用 `session.close()`。`close()` 是完整的
 优雅停止入口：把 `session.isClosed` 设为 `true`（之后 `send` / `stream` 会以
@@ -650,7 +651,10 @@ session 内部 hook 可统一订阅,不必关心 host 用什么传输发过来�
 
 ### 循环检查点与运行恢复
 
-配置了 `SessionStore` 后,agent loop **每次 tool round 结束**会持久化一个 `LoopCheckpoint`(按 `run_id` 索引)。任何拥有同一个 store 的节点都能从最近的边界 rehydrate:
+配置了 `SessionStore` 后，智能体循环会在每个写入事实日志的工具结果之后持久化一个
+`LoopCheckpoint`（按 `run_id` 索引）。任何拥有同一个存储的节点都能恢复该运行：检查点
+为一个全新的事实日志线程播种，再由折叠该日志选择下一步。检查点本身从不选择下一次
+模型调用。
 
 ```ts
 // Node.js：宿主探测到 A 节点失效后，在 B 节点上恢复：
@@ -682,12 +686,17 @@ if err != nil {
 result, err := session.ResumeRun(ctx, "run-id-from-node-a")
 ```
 
-resume 出来的会**分配一个全新的 run id** — 框架不假装旧 run 还在继续,新旧 run 的关系是 host 的元数据。两个可区分的错误路径方便 host 端调度分支:
+恢复的工作会记录为一个**新**运行；检查点所属的运行不被修改。没有检查点时，如果会话
+已有事实日志，`resumeRun` 会折叠该日志（静止的日志不执行任何步骤）。只有在日志也为空
+时，才会出现下面两种错误：
 
-- `"resume_run requires a session_store"` — host 应该回退到新建 session。
-- `"no loop checkpoint found for run 'X'"`：宿主可以稍后重试（可能正好遇到检查点写入竞态），也可以把该运行视为已丢失。
+- `"resume_run requires a session_store on this session"`：宿主应该回退到新建会话。
+- `"no loop checkpoint found for run 'X'"`：该运行从未写出检查点，或检查点已在运行
+  结束时删除。
 
-**边界策略**:checkpoint 只在 tool round **之间**取,不在工具执行中途取。进程在工具执行中途死掉时,这一轮的工作会丢失,LLM 从前一个边界重新思考。这是用"重试成本"换"正确性" — 把非幂等工具(write、bash)在边界两侧重跑比让 LLM 重想要糟得多。
+日志中缺少结果的工具调用会在恢复时执行一次，因此宿主应让非幂等工具经过确认或使用
+幂等键。需要精确、可安全重放的恢复标识时，使用
+`spawnRecoveryWithRunId(checkpointRunId, runId)`。
 
 ### 长时间会话的保留上限
 
@@ -748,8 +757,8 @@ dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
 | `{decision:'soft', resource, consumed, limit, message?}` | 发射 `BudgetThresholdHit('soft')` 事件,继续执行                                 |
 | `{decision:'deny',  resource, reason}`                   | 中止调用,Python 抛 `RuntimeError("Budget exhausted...")`/Node reject 同样的错误 |
 
-guard 对象上缺失的方法会使用宽松默认值（Allow / no-op）。Python 回调异常会回退为
-Allow；Go 回调报错、超时或返回无法解析的决策时会 fail-closed 为 Deny。
+guard 对象上缺失的方法会使用宽松默认值（Allow / no-op）。Python 与 Go 回调报错、
+超时或返回无法解析的决策时会 fail-closed 为 Deny。
 
 ```python
 # Python：通过 SessionOptions 在创建会话前挂载
@@ -801,7 +810,7 @@ err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
 
 Node 回调接收单个 `ctx` 对象，且**绝不能 throw**；请用 `try/catch` 包裹并返回显式决策。
 卡住或无法解析的 `check*` 回调会 fail-closed 为 `deny`。Python 回调使用位置参数，
-异常会被捕获并视为 Allow。Go handler 接收带类型的 context，报错或超时会 fail-closed。
+异常会 fail-closed。Go handler 接收带类型的 context，报错或超时会 fail-closed。
 
-Node 用 `setBudgetGuard(null)` 清除；Python 把 `opts.budget_guard` 设回 `None` 后重建
-session；Go 调用 `session.SetBudgetGuard(ctx, nil)`。
+清除时，Node 向 `session.setBudgetGuard` 传入 `null`；Python 调用
+`session.set_budget_guard(None)`；Go 调用 `session.SetBudgetGuard(ctx, nil)`。

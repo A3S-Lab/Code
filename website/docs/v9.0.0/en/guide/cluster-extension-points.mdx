@@ -255,8 +255,13 @@ opts = SessionOptions()
 opts.budget_guard = MyGuard()
 session = agent.session('/path/to/project', opts)
 
-# To clear: set opts.budget_guard = None and re-create the session.
+# Clear the guard
+session.set_budget_guard(None)
 ```
+
+Python guards may also define `check_before_tool(session_id, tool_name)`.
+`session.set_budget_guard(guard, timeout_ms=5000)` installs a guard on a live
+session. Exceptions, malformed decisions, and timeouts fail closed.
 
 </Tab>
 <Tab label="Go">
@@ -340,7 +345,7 @@ The native guard decision shape is equivalent across all four SDKs:
 | `{ decision: 'soft', resource, consumed, limit, message? }` | Emits `BudgetThresholdHit` (kind `soft`) and proceeds.                                                               |
 | `{ decision: 'deny', resource, reason }`                    | Aborts the LLM call. Python raises `RuntimeError("Budget exhausted...")`; Node rejects with `"Budget exhausted..."`. |
 
-Robustness is intentional but SDK-specific: a **missing guard method** is treated as the permissive default. Python callback errors fall back to Allow. Node callbacks must not throw. Go errors, timeouts, and malformed `check*` returns fail closed as `deny`.
+A **missing guard method** is treated as the permissive default in every SDK. Callback errors, timeouts, and malformed `check*` returns fail closed as `deny` in Python and Go; Node callbacks must not throw, and hung or unreadable Node `check*` callbacks also fail closed.
 
 ## Cluster event vocabulary
 
@@ -475,7 +480,7 @@ func main() {
 
 ## Loop checkpoints and run resumption
 
-With a `sessionStore` / `session_store` configured, the agent loop persists a checkpoint after **each completed tool round**, keyed by run id. Any node that shares the same store can rehydrate the run and continue it.
+With a `sessionStore` / `session_store` configured, the agent loop persists a loop checkpoint after **each tool result** that lands on the fact log, keyed by run id. Any node that shares the same store can recover the run. The checkpoint supplies facts, not decisions: the recovering node seeds a fresh fact-log thread from it and folds that log, which chooses the next step.
 
 <Tabs>
 <Tab label="Rust">
@@ -576,12 +581,12 @@ func main() {
 </Tab>
 </Tabs>
 
-A **new run id** is allocated for the resumed work — the original run is left intact in the store. Two error paths are worth handling:
+The resumed work is recorded as a **new run**; the checkpoint's run is left intact in the store. When no checkpoint exists but the session's fact log already has facts, `resume_run` folds that log instead. The two errors below fire only when the fact log is also empty:
 
-- **`resume_run requires a session_store`** — no store was configured; fall back to a fresh session.
-- **`no loop checkpoint found for run 'X'`** — the run never reached its first checkpoint, or it was pruned; retry later or treat the run as lost.
+- **`resume_run requires a session_store on this session`**: no store was configured; fall back to a fresh session.
+- **`no loop checkpoint found for run 'X'`**: the run never reached its first checkpoint, or the checkpoint was deleted when the run ended; treat the run as settled or lost.
 
-Because checkpoints are taken only **between tool rounds, never mid-tool**, a resumed run never replays a half-executed tool. See [Persistence](/guide/persistence) for store details.
+A tool call whose result is missing from the log runs once on resume. Hosts that need an exact, replay-safe recovery id use `spawnRecoveryWithRunId`. See [Persistence](/guide/persistence) for the full rules.
 
 ## Retention caps for long-running sessions
 

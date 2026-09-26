@@ -45,9 +45,16 @@ Git 根目录逐级走到当前 workspace，每层目录最多选择一份文件
 优先级也越高。`AGENTS.override.md` 只替换同一目录中的普通 `AGENTS.md`，不会清除父目录
 规则。找不到 Git 根目录时，只检查当前 workspace。
 
-空文件会跳过。默认总预算为 32 KiB，可通过 `project_doc_max_bytes` 调整；设为 0 可关闭
-项目指令加载。A3S Code 只接受项目根目录内的 UTF-8 普通文件，会忽略符号链接候选和不安全
-的后备文件名。经过边界约束的最终指令链属于 session 必读上下文，不会被通用检索预算静默丢弃。
+在项目指令链之前，A3S Code 会从 `~/.a3s` 加载一份个人文件：非空时使用
+`AGENTS.override.md`，否则使用 `AGENTS.md`。设置 `user_instructions_dir` 可改用其他
+目录。个人指令排在最前，因此项目文件可以细化它。
+
+空文件会被跳过，并尝试同一目录中的下一个候选文件名。个人文件与项目指令链共享同一
+预算：默认 32 KiB，可通过 `project_doc_max_bytes` 调整，上限为 1 MiB（更大的值会被
+截断到上限并记录 warning）。设为 0 会关闭所有自动指令加载。超过剩余预算的文件会在
+UTF-8 边界处截断，之后的文件不再加载。A3S Code 只接受项目根目录内的 UTF-8 普通文件，
+会忽略符号链接候选和不安全的后备文件名。经过边界约束的最终指令链属于 session 必读
+上下文，不会被通用检索预算静默丢弃。
 
 只有当子目录规则确实不同，才添加嵌套 `AGENTS.md`。例如桌面端、API 端或某个 SDK
 的构建工具链不同，可以在对应目录下放局部规则。不要为了重复根部说明而复制文件；
@@ -56,6 +63,7 @@ Git 根目录逐级走到当前 workspace，每层目录最多选择一份文件
 ```acl
 project_doc_max_bytes = 65536
 project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+user_instructions_dir = "/home/me/.config/a3s"
 ```
 
 ## 与其他约定的关系
@@ -63,10 +71,10 @@ project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 ```text
 repo/
 ├── AGENTS.md          # 项目级长期指令
-├── agent.acl          # 运行配置
 └── .a3s/
-    ├── agents/        # worker/subagent 定义
-    └── skills/        # 可复用技能
+    ├── config.acl     # 运行配置（TUI 会自动发现；SDK 宿主可传入任意 ACL）
+    ├── agents/        # worker/subagent 定义，自动加载
+    └── skills/        # 可复用技能，列入 skill_dirs 后加载
 ```
 
-`AGENTS.md` 应该告诉 Agent 项目事实和工作边界；`agent.acl` 告诉运行时如何连接模型和目录；`agents/` 与 `skills/` 提供可被发现的角色和流程。
+`AGENTS.md` 应该告诉 Agent 项目事实和工作边界；ACL 配置告诉运行时如何连接模型和目录；`agents/` 与 `skills/` 提供可被发现的角色和流程。

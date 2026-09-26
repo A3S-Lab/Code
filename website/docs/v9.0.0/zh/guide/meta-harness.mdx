@@ -1,0 +1,234 @@
+---
+title: 'Meta Harness 组合'
+description: '用内置部件和宿主组件组合事实日志 Actor，不引入第二套循环'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Meta Harness
+
+Meta Harness 决定编码 Actor 如何组装。Actor 读取会话的
+[事实日志](/guide/architecture#fact-log-control)，产出视图和下一步转移。
+Meta Harness 让宿主选择这个 Actor 中组件的有序列表。它不会增加第二套循环、
+第二条事件流，也不提供绕过权限或完成门禁的途径。
+
+不设置 `harness` 时，会话使用默认的 `coding_actor` 组件树，即按默认顺序排列的内置部件。已有嵌入方不受影响。
+
+## 不变量
+
+| 不变量           | 含义                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------ |
+| 一份事实日志     | 所有组件读取同一份日志。下一步转移仍然只来自对它的折叠。                                               |
+| 有序组件         | `components` 是有序列表。每一项是内置部件或 `host:<id>` 挂载。                                         |
+| 内核策略不可关闭 | `KernelPolicy::admit()` 总是把 `permission_overlay` 和 `completion_gate` 设为 `true`，组合图无法关闭。 |
+| 宿主代码是 Rust  | 宿主组件是 `HostHarnessRegistry` 背后的 Rust 工厂。SDK 只能传 `host:<id>` 字符串，不能提供组件代码。   |
+| 模型不能授予     | 模型不能增加、删除或重排组件。组合配方来自 `SessionOptions`。                                          |
+
+## 内置部件
+
+| 部件      | 在视图中的作用                                                                                         |
+| --------- | ------------------------------------------------------------------------------------------------------ |
+| `system`  | 提供 system 行。配方中的 `system: [...]` 会替换配置中的行。                                            |
+| `tools`   | 提供会话工具执行器中的工具规格。                                                                       |
+| `budget`  | 工具预算用完后以 `budget.denied` 结束本轮（实时会话中每轮 8 次成功工具结果）。`tool_budget` 覆盖该值。 |
+| `compact` | 超过字符阈值时触发压缩。`compact_after_chars` 覆盖该阈值。                                             |
+| `infer`   | 编码调度器：模型调用、工具调用、确认与提问的停靠，以及恢复。                                           |
+
+既没有 `components` 也没有 `parts` 时，顺序为 `system`、`tools`、`budget`、
+`compact`、`infer`。部件名不区分大小写。其他内置名称会报错：
+`unknown harness part '<name>'; expected system|tools|budget|compact|infer`。
+
+`parts` 是较早的纯内置列表。`components` 非空时以它为准。纯内置列表保持基于
+spec 的图，因此 cause key 保持稳定。只要出现 `host:` 项，就改走有序组件树。
+
+## 宿主组件
+
+宿主组件是一个 Moore 组件：初始状态、对事实的折叠，以及向视图追加内容的输出。
+宿主以 id 注册它，并用 `host:<id>` 引用。id 必须非空，只能包含 ASCII 字母、
+数字、`_` 或 `-`，并会转为小写。
+
+```rust
+pub trait HostHarnessRegistry: Send + Sync {
+    fn mount(
+        &self,
+        id: &str,
+        config: &HarnessConfig,
+    ) -> anyhow::Result<ErasedComponent<CodingServices, HarnessView>>;
+}
+```
+
+`BuiltinHostHarnessRegistry` 自带一个组件 `intent_stamp`。它追加 system 行
+`INTENT_STAMP_MARKER`（`a3s.meta_harness.intent_stamp.v1`），测试用它证明宿主
+挂载确实进入了视图。未知 id 会报错：
+`unknown builtin host harness component '<id>'; known: intent_stamp`。
+
+需要完整自定义图的 Rust 嵌入方可以安装 `HostHarnessAssembler`。它返回
+`HarnessGraph`，优先级高于 `with_harness`。`admit_component_tree(name, components)`
+在同样的内核策略下，用显式组件列表构建图。
+
+## 组合会话
+
+下面的示例构建同一棵树：内置 `system` 和 `tools`，内置的 `intent_stamp` 宿主组件，
+然后是 `budget` 和 `infer`。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{
+    host_component_id, BuiltinHostHarnessRegistry, HarnessComposeOptions, SessionOptions,
+};
+
+let harness = HarnessComposeOptions::compose(
+    vec![
+        "system".into(),
+        "tools".into(),
+        host_component_id("intent_stamp"),
+        "budget".into(),
+        "infer".into(),
+    ],
+    Some(4),
+    None,
+    vec!["You are a careful coding agent.".into()],
+)?;
+
+let options = SessionOptions::new()
+    .with_harness(harness)
+    .with_host_harness_registry(Arc::new(BuiltinHostHarnessRegistry));
+
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  harness: Harness.compose({
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.host('intent_stamp'),
+      Harness.budget(),
+      Harness.infer(),
+    ],
+    toolBudget: 4,
+    system: ['You are a careful coding agent.'],
+  }),
+});
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.host("intent_stamp"),
+        Harness.budget(),
+        Harness.infer(),
+    ],
+    tool_budget=4,
+    system=["You are a careful coding agent."],
+)
+session = agent.session("/repo", opts)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+import code "github.com/A3S-Lab/Code/sdk/go/v9"
+
+agent, err := code.NewAgent(ctx, "agent.acl")
+if err != nil {
+	return err
+}
+defer agent.Close(ctx)
+
+budget := uint32(4)
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	Harness: &code.HarnessOptions{
+		Components: []string{
+			code.HarnessSystem,
+			code.HarnessTools,
+			code.HarnessHost("intent_stamp"),
+			code.HarnessBudget,
+			code.HarnessInfer,
+		},
+		ToolBudget: &budget,
+		System:     []string{"You are a careful coding agent."},
+	},
+})
+if err != nil {
+	return err
+}
+defer session.Close(ctx)
+```
+
+</Tab>
+</Tabs>
+
+配方字段：
+
+| Rust（`HarnessComposeOptions`） | Node.js             | Python                | Go                  |
+| ------------------------------- | ------------------- | --------------------- | ------------------- |
+| `components`                    | `components`        | `components`          | `Components`        |
+| `parts`                         | `parts`             | `parts`               | `Parts`             |
+| `tool_budget`                   | `toolBudget`        | `tool_budget`         | `ToolBudget`        |
+| `compact_after_chars`           | `compactAfterChars` | `compact_after_chars` | `CompactAfterChars` |
+| `system`                        | `system`            | `system`              | `System`            |
+
+## SDK 能做什么，不能做什么
+
+Node.js、Python 和 Go 把声明式配方交给 Core。设置 `harness` 时，每个 SDK 都会安装
+`BuiltinHostHarnessRegistry`，因此它们能解析的宿主 id 只有 `host:intent_stamp`。
+
+| SDK 可以                                            | SDK 不可以                                    |
+| --------------------------------------------------- | --------------------------------------------- |
+| 重排或去掉内置部件                                  | 提供宿主组件代码                              |
+| 挂载 `host:intent_stamp`                            | 安装自定义 `HostHarnessRegistry` 或 assembler |
+| 覆盖 `tool_budget`、`compact_after_chars`、`system` | 关闭权限投影或完成门禁                        |
+| 省略 `harness`，保持默认树                          | 在事实日志之外再跑一套循环                    |
+
+自定义宿主组件需要 Rust 嵌入方调用 `with_host_harness_registry` 或
+`with_host_harness_assembler`。
+
+## 失败模式
+
+| 时机     | 原因                                      | 错误                                                                                    |
+| -------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| 构建配方 | 未知内置部件                              | `unknown harness part '<name>'; expected system\|tools\|budget\|compact\|infer`         |
+| 构建配方 | `host:` 后的 id 为空或不合法              | `host harness mount requires a non-empty id after 'host:'` 或 `invalid host harness id` |
+| 首次运行 | 有 `host:*` 项但没有安装注册表（仅 Rust） | `harness components include host:* mounts but no HostHarnessRegistry was installed`     |
+| 首次运行 | 已安装的注册表不认识该 id                 | `unknown builtin host harness component '<id>'; known: intent_stamp`                    |
+
+配方错误会立即出现：`HarnessComposeOptions::compose` 返回错误，Node.js
+`Harness.compose` 抛出异常，Python `Harness.compose` 抛出 `ValueError`，Go 桥接
+以 `INVALID_REQUEST` 和 `harness:` 消息拒绝会话请求。注册表在运行打开事实运行时
+解析 id，所以未知宿主 id 会让首次 `send` 或 `stream` 失败，而不是在创建会话时失败。
+
+## 与完成门禁的关系
+
+完成门禁属于内核，不是内置部件，任何配方都无法去掉它。修改过工作区的运行仍然
+需要一份绑定变更 digest 的 Passed 验证报告，或覆盖该 digest 的宿主豁免，才算完成。
+参见[验证](/guide/verification)。
+
+Rust 宿主可以用 `SessionOptions::with_completion_attestor` 提供这份证据。
+attestor 在修改已经发生之后、门禁判定之前运行。它接收变更 digest 和被修改的路径，
+可以返回一份报告。它不是工具，模型不能授予它，门禁仍会检查报告状态和 digest。

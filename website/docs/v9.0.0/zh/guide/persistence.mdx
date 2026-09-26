@@ -1,23 +1,23 @@
 ---
 title: '持久化'
-description: '保存与恢复会话'
+description: '保存与恢复会话，以及被中断的运行如何从事实日志恢复'
 ---
 
 import { Tab, Tabs } from '@rspress/core/theme';
 
 # 持久化
 
-持久化让会话可以跨进程恢复，也让产品界面拥有稳定的会话标识。
+持久化让会话可以跨进程恢复，也让产品界面拥有稳定的会话标识。恢复后的会话可以
+重新填充任务列表、执行记录、制品和交付摘要，不必重放已经完成的运行。
 
-恢复后的会话可以重新填充任务列表、执行记录、制品和交付摘要，不必重放已经完成的运行。
+A3S Code 维护四种相关但不同的记录：
 
-A3S Code 会持久化三种相关但不同的对象：
-
-| 对象                | 写入方                           | 恢复入口                               | 用途                                                                                         |
-| ------------------- | -------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `SessionSnapshotV1` | `session.save()` 或 `autoSave`   | `agent.resumeSession(id, options)`     | 恢复一个带版本号的完整代次，其中包含对话、制品、追踪、运行记录、验证报告与子智能体任务快照。 |
-| 循环检查点          | 智能体循环运行期间               | `session.resumeRun(runId)`             | 从上一个完成的工具回合边界继续被中断的运行。进程内正常完成的运行会删除这个检查点。           |
-| 工作流检查点        | `parallelResumable` / 工作流阶段 | `parallelResumable(specs, workflowId)` | 进程重启后跳过已经完成的编排步骤。                                                           |
+| 记录                | 写入方                                     | 读取方                                         | 用途                                                                                                 |
+| ------------------- | ------------------------------------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 事实日志            | 每个编码回合（`send`、`stream`、附件回合） | 下一个回合、`resumeRun` 与精确恢复             | 唯一的控制来源。下一次状态转移只由折叠这份日志决定。                                                 |
+| `SessionSnapshotV1` | `session.save()` 或 `autoSave`             | `agent.resumeSession(id, options)`             | 恢复一个带版本号的完整代次，其中包含对话、制品、追踪、运行记录、验证报告与子智能体任务快照。         |
+| 循环检查点          | 每个写入事实日志的工具结果                 | `resumeRun(runId)` 与 `spawnRecoveryWithRunId` | 运行中状态的可移植证据，保存在 `SessionStore` 中，供其他进程或节点恢复。运行在进程内结束时会被删除。 |
+| 工作流检查点        | `parallelResumable` / 工作流组合子         | `parallelResumable(specs, workflowId)`         | 进程重启后跳过已经完成的编排步骤。                                                                   |
 
 ## 文件会话存储
 
@@ -101,6 +101,28 @@ if err := session.Save(ctx); err != nil {
 Go 通过 `FileSessionStoreDir` 选择内置文件存储；自定义 `SessionStore` trait
 实现仍属于 Rust 嵌入能力。
 
+## 事实日志是控制来源
+
+每个编码回合都会把不可变事实追加到工作区 `.a3s/effect-log/` 下的会话日志中。
+会话标识是简短 ASCII 标识时，线程名就是会话标识；否则使用十六进制编码形式，因此
+同一工作区中的两个会话会折叠两份独立日志。`send`、`stream`、附件回合、
+`resumeRun` 与精确恢复都用同一种方式选择下一步：用 `a3s-effect` 折叠日志
+（新事实用 `ingest_coding`，继续执行用 `resume_coding`）。参见
+`core/src/fact_control.rs`。
+
+这对持久化与恢复有具体影响：
+
+- 已保存的 `model.turn` 事实不会再次发送给模型。
+- 循环检查点和会话快照都不会决定下一次模型调用，只有日志会。
+- 确认会停驻，直到出现 `confirmation.answered` 事实；提问会停驻，直到出现
+  `question.answered` 事实。进程内通道或定时器都不会替它们做决定。
+- 日志中缺少结果的工具调用会在恢复时执行一次。
+- 引导（steer）只是另一个 `user.message` 事实。
+- 达到工具回合上限后，下一次补全会携带空工具列表。
+
+事实日志保存在工作区中，而不在 `SessionSnapshotV1` 中。如果希望重启后的进程继续
+一个停驻的运行，请把工作区（至少是 `.a3s/effect-log/`）与会话存储一起保留。
+
 ## 原子快照代次
 
 `session.save()` 会把当前持久化状态收集成一个 `SessionSnapshotV1`，并且只调用一次
@@ -117,33 +139,33 @@ Go 通过 `FileSessionStoreDir` 选择内置文件存储；自定义 `SessionSto
 运行或追踪分片”的组合。内存存储在同一把锁下发布同一个聚合快照。两者都报告
 `SessionStoreCapabilities { atomic_session_snapshots: true }`。
 
-历史文件仍可读取。裸 `SessionData` 会在加载时与旧制品、追踪、运行、验证和
-子智能体分片位置合并，再通过 v1 内存形状恢复。保存新聚合快照后，单个信封会成为
-权威代次。已经具有聚合外形、但模式损坏或版本不支持的文档会直接被拒绝，不会重新
-解释成旧式数据。
+较早的文件仍可读取。裸 `SessionData` 会在加载时与制品、追踪、运行、验证报告和
+子智能体任务的分片位置合并，再通过 v1 内存形状恢复。保存新聚合快照后，单个信封
+会成为权威代次。已经具有聚合外形、但模式损坏或版本不支持的文档会直接被拒绝，
+不会重新解释成分片数据。
 
 自定义存储必须显式实现 `save_snapshot`。默认实现返回错误，不会把聚合快照拆成
-多次独立写入，也不会把空操作当成成功。默认 `load_snapshot` 只用于尽力组装旧式
-数据；宿主可以通过 `capabilities()` 区分这种行为与原子后端。
+多次独立写入，也不会把空操作当成成功。默认 `load_snapshot` 只尽力组装分片；
+宿主可以通过 `capabilities()` 区分这种行为与原子后端。
 
-## 可协商的耐久性（v8.5.1）
+## 可协商的耐久性
 
-`SessionStoreCapabilities` 现在也会声明可选的 KRN-6 保证。内置适配器仅在真正
-兑现语义时置位；宿主必须先协商再依赖：
+`SessionStoreCapabilities` 还会声明可选保证。内置适配器只在实现了相应语义时
+置位；宿主必须先检查标志再依赖：
 
 | 能力                          | 含义                                                                                    |
 | ----------------------------- | --------------------------------------------------------------------------------------- |
 | `aggregate_cas`               | `save_snapshot_cas` 仅在期望 digest 匹配（或省略）时提交。                              |
 | `append_only_event_log`       | 文件存储在每次原子替换前后追加仅含 digest 的 Intent/Committed WAL 记录。                |
-| `lease_fencing`               | `acquire_writer_lease` 发布耐久 epoch；接管后旧持有者在提交时 fail-closed。             |
+| `lease_fencing`               | `acquire_writer_lease` 发布耐久 epoch；接管后旧持有者 fail-closed。                     |
 | `encrypted_at_rest`           | `FileSessionStore::with_encryption_key` 用 AES-256-GCM 密封文档；错误密钥 fail-closed。 |
 | `watch`                       | `watch_commits` 在耐久提交后投递仅含 digest 的 `SessionStoreCommitEventV1`。            |
 | `reference_aware_artifact_gc` | Artifact 保留会钉住宿主 URI 根，避免限额驱逐删除仍可达内容。                            |
 
-即使启用静态加密，仅含 digest 的 WAL 也保持未加密。memory / file 适配器继续声明
-它们已经兑现的原子快照；新标志默认不声明，直到完成配置。
+即使启用静态加密，仅含 digest 的 WAL 也保持未加密。除
+`atomic_session_snapshots` 外，其他标志在完成配置前都不会声明。
 
-## 恢复
+## 恢复会话
 
 <Tabs>
 <Tab label="Rust">
@@ -190,42 +212,54 @@ resumed, err := agent.ResumeSession(ctx, "release-review", &code.SessionOptions{
 </Tabs>
 
 `resumeSession` 恢复的是已保存的会话快照。它不同于 `resumeRun`：用户继续一个
-已保存对话时用 `resumeSession`；只有存在中断运行的检查点时，才用
-`resumeRun(runId)`。恢复操作会在恢复任何历史或运行时证据前先校验快照模式。
+已保存对话时用 `resumeSession`；继续一个被中断的运行时用 `resumeRun(runId)`。
+恢复操作会在恢复任何历史或运行时证据前先校验快照模式。
 
-## 记忆与会话
+## 恢复被中断的运行
 
-会话持久化保存对话和可回放证据；记忆保存可复用任务事实。当你需要既可
-恢复、又能从重复任务中学习的工作流时，两者一起使用。
+`session.resumeRun(runId)`（Node.js）/ `session.resume_run(run_id)`（Python）/
+`session.ResumeRun(ctx, runID)`（Go）/ `AgentSession::resume_run`（Rust）用于
+继续尚未落定的工作，例如进程崩溃之后，或确认仍在停驻时。下一步由事实日志决定：
 
-## 循环检查点与运行恢复
+1. 如果 `SessionStore` 中有 `runId` 的循环检查点，且该检查点属于本会话，就把它的
+   对话记录写入该会话一个全新的事实日志线程，然后折叠日志。检查点只提供事实，
+   不决定下一次模型调用。
+2. 否则，如果会话的事实日志已经有事实，就按原样折叠该日志。静止的日志不会执行
+   任何步骤。
+3. 否则调用失败。未配置存储时错误为
+   `resume_run requires a session_store on this session`；配置了存储时错误为
+   `no loop checkpoint found for run '<id>'`。
 
-配置了 `SessionStore` 后，智能体循环会在每个完成的工具回合之后持久化一个
-`LoopCheckpoint`。边界策略很严格：检查点**只**在工具回合之间产生，绝不在工具
-执行中途产生。如果进程在某个工具执行时崩溃，那一轮的工作会在恢复时丢失，由
-大语言模型从上一个检查点重新推演——在错误边界一侧重跑非幂等工具（写入、命令行）
-比让模型重新思考更糟。
+每次调用最多折叠 32 步。使用了检查点时，恢复的工作会记录为一个新运行（检查点所属
+的运行不被修改），检查点中的 token 用量与工具调用次数会累加到结果中，并且完成门禁
+生效：修改了工作区的回合，只有在存在绑定到该修改的 Passed 验证报告时才能完成。
 
-`session.resumeRun(runId)`（Node）/ `session.resume_run(run_id)`（Python）/
-`session.ResumeRun(ctx, runID)`（Go）——
-对应核心的 `AgentSession::resume_run(checkpoint_run_id)`——会加载该运行标识下
-最新的检查点，并从最后一个边界回放循环。由于检查点存放在共享存储中，恢复可以
-发生在**任何**共享该存储的节点上。累计计量会延续而不是从零重启：`total_usage`
-和 `tool_calls_count` 从检查点继续累加。恢复出的工作会分配新的运行标识；新旧运行
-的关系由宿主通过元数据表达，框架不予解释。
+<Tabs>
+<Tab label="Rust">
 
-已正常完成的运行不通过 `resumeRun` 恢复；它们的最终状态应通过 `runs()`、
-`runEvents(runId)`、制品、验证报告和会话快照查看。
+```rust
+let result = session.resume_run("run-abc123").await?;
+println!("{}", result.usage.total_tokens);
+```
+
+</Tab>
+<Tab label="Node.js">
 
 ```ts
 const result = await session.resumeRun('run-abc123');
 console.log(result.totalTokens);
 ```
 
+</Tab>
+<Tab label="Python">
+
 ```python
 result = session.resume_run('run-abc123')
 print(result.total_tokens)
 ```
+
+</Tab>
+<Tab label="Go">
 
 ```go
 result, err := session.ResumeRun(ctx, "run-abc123")
@@ -235,43 +269,54 @@ if err != nil {
 fmt.Println(result.Usage.TotalTokens)
 ```
 
-Go 也通过 `ParallelResumable(ctx, specs, workflowID)` 暴露工作流检查点编排。
+</Tab>
+</Tabs>
 
-当会话没有配置 `sessionStore`（或给定标识下不存在检查点）时，
-`resume_run` 会拒绝。`SessionStore` 新增了 `save_loop_checkpoint` /
-`load_loop_checkpoint` / `delete_loop_checkpoint`；文件存储采用崩溃安全的原子
-写入。`LoopCheckpoint::ensure_loadable()` 在反序列化之后立即被调用，会拒绝
-来自未来且不兼容的检查点模式版本，因此 `resume_run` 和实时运行的接收端都不会
-对无法读取的检查点采取行动。
+需要精确、可安全重放的恢复标识的无界面宿主，使用
+`spawnRecoveryWithRunId(checkpointRunId, runId)`（Python 为
+`spawn_recovery_with_run_id`，Go 为 `SpawnRecoveryWithRunID`）。它要求
+`checkpointRunId` 存在检查点，以宿主选定的 `runId` 准入恢复，并在后台工作线程中
+继续折叠事实日志。重放同一个恢复 `runId` 会返回已有快照，不会再次执行。检查点
+所属的运行本身保持不可变。
 
-参见 CHANGELOG `[3.3.0]`——"Loop checkpoints + run resumption"——以及
-`[3.4.0]` 的 "LoopCheckpoint::ensure_loadable()"。
+已完成的运行不会被恢复。它们的最终状态可通过 `runs()`、`runEvents(runId)`、
+制品、验证报告和会话快照查看。
+
+### 循环检查点格式
+
+每个工具结果写入事实日志后，会通过会话的检查点接收端写出一个 `LoopCheckpoint`。
+它记录工具调用及其结果、运行与会话标识、运行的能力绑定、回合计数和工具调用次数。
+`SessionStore` 提供 `save_loop_checkpoint`、`load_loop_checkpoint` 与
+`delete_loop_checkpoint`；文件存储采用原子写入。`LoopCheckpoint::ensure_loadable()`
+会拒绝来自未来模式版本的检查点，`ensure_owned_by` 会拒绝属于其他运行或会话的
+检查点。运行在进程内结束（完成、失败或取消）时，其检查点会被删除。
 
 ## 工作流检查点
 
-`WorkflowCheckpoint` 是工具回合 `LoopCheckpoint` 在上一层的步骤边界对应物：
-它把已完成的编排步骤记入日志，使被中断的工作流从最长的已完成前缀恢复。它的
-字段是 `schema_version`、`workflow_id`、`steps` 和 `checkpoint_ms`，模式由
-`WORKFLOW_CHECKPOINT_SCHEMA_VERSION` 常量固定。恢复的运行会跳过已记录的步骤，
-只重新派发其余的。
+`WorkflowCheckpoint` 把已完成的编排步骤记入日志，使被中断的工作流从最长的已完成
+前缀恢复。它的字段是 `schema_version`、`workflow_id`、`steps` 和
+`checkpoint_ms`，模式由 `WORKFLOW_CHECKPOINT_SCHEMA_VERSION` 常量固定。恢复的
+运行会跳过已记录的步骤，只重新派发其余的。
 
-`SessionStore` 新增了 `save_workflow_checkpoint` / `load_workflow_checkpoint` /
-`delete_workflow_checkpoint`（默认为空操作；文件存储采用崩溃安全的原子写入）。
-来自未来且不兼容的模式版本会在加载时通过
-`WorkflowCheckpoint::ensure_loadable()` 被拒绝。
+`SessionStore` 提供 `save_workflow_checkpoint` / `load_workflow_checkpoint` /
+`delete_workflow_checkpoint`（默认为空操作；文件存储采用原子写入）。来自未来且
+不兼容的模式版本会在加载时被 `WorkflowCheckpoint::ensure_loadable()` 拒绝。
 
-这与编排语法配套使用——参见
-[编排](/guide/orchestration)和
-[多机执行](/guide/multi-machine)。
-
-参见 CHANGELOG `[3.4.0]`——"WorkflowCheckpoint"。
+Go 通过 `ParallelResumable(ctx, specs, workflowID)` 暴露同一套日志。参见
+[编排](/guide/orchestration)和[多机执行](/guide/multi-machine)。
 
 ## 在其他节点恢复
 
-两种检查点类型都是可序列化的。配合共享的 `SessionStore` 和可插拔执行器，宿主
-就能在与启动节点**不同**的节点上恢复被中断的运行或工作流——框架持有可序列化
-契约，宿主负责放置与传输。
+循环检查点与工作流检查点都可序列化，并保存在共享的 `SessionStore` 中。因此宿主
+可以在与启动节点不同的节点上恢复被中断的运行或工作流。对运行而言，恢复节点会用
+检查点为自己的事实日志播种，再从那里折叠。框架持有可序列化契约，宿主负责放置与
+传输。
+
+## 记忆与会话
+
+会话持久化保存对话和可回放证据；记忆保存可复用任务事实。当你需要既可恢复、又能
+从重复任务中学习的工作流时，两者一起使用。
 
 ## 运维注意事项
 
-包含私有提示词、工具输出或路径的存储不应公开提交。
+会话存储和 `.a3s/effect-log/` 可能包含提示词、工具输出或私有路径，不应公开提交。

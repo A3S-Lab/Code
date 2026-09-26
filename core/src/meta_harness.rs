@@ -187,7 +187,8 @@ pub fn host_component_id(id: impl AsRef<str>) -> String {
 /// Kernel flags that host components cannot clear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelPolicy {
-    /// Permission overlay strips tool definitions before the model sees them.
+    /// Permission policy decides every tool call before it executes; host
+    /// components cannot disable it.
     pub permission_overlay: bool,
     /// Mutating runs require verification / host waiver bound to an effect digest.
     pub completion_gate: bool,

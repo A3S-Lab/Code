@@ -104,6 +104,7 @@ for (const task of pending) {
 }
 
 console.log('lane queue drained');
+session.close();
 ```
 
 </Tab>
@@ -138,6 +139,7 @@ for task in pending:
     )
 
 print("lane queue drained")
+session.close()
 ```
 
 </Tab>
@@ -210,5 +212,8 @@ Notes:
 - Each pending task carries `task_id`, `session_id`, `lane`, `command_type`, `payload`, and `timeout_ms`. Pass the `task_id` back to `completeExternalTask` / `complete_external_task` / `CompleteExternalTask` once the work is done.
 - The result shape is `{ success, result?, error? }` — `result` holds any JSON-serializable payload, and `error` is an optional message for failures. `completeExternalTask` / `complete_external_task` returns `true` if the task was found and completed, `false` otherwise.
 - In Python these queue methods are synchronous; in Node `setLaneHandler`, `pendingExternalTasks`, and `completeExternalTask` return promises, while `hasQueue` is synchronous.
+- Tasks only appear while a run is routing work to the lane. Poll the queue from a
+  worker loop while `send` or `stream` is in flight; a drain right after
+  `setLaneHandler`, as in this minimal example, finds an empty queue.
 - Go queue calls accept a `context.Context`; Node returns promises; Python uses
   synchronous methods.

@@ -5,12 +5,12 @@ description: 'HTTP/JSON protocol for serving git operations to non-local workspa
 
 # RFC: Remote Workspace Git Backend
 
-| Field   | Value                                                          |
-| ------- | -------------------------------------------------------------- |
-| Status  | **Implemented** in v2.6.x (`core/src/workspace/remote_git.rs`) |
-| Owner   | `crates/code` workspace subsystem                              |
-| Tracks  | Phase 4.1 of S3 / non-local workspace hardening                |
-| Related | `S3WorkspaceBackend`, `WorkspaceGit*` trait family             |
+| Field   | Value                                                |
+| ------- | ---------------------------------------------------- |
+| Status  | **Implemented** (`core/src/workspace/remote_git.rs`) |
+| Owner   | A3S Code workspace subsystem                         |
+| Tracks  | Phase 4.1 of S3 / non-local workspace hardening      |
+| Related | `S3WorkspaceBackend`, `WorkspaceGit*` trait family   |
 
 This document is retained as the protocol specification — clients and
 servers speaking this surface should match the wire shapes defined
@@ -261,10 +261,10 @@ Client mapping:
 | 400     | `Err(anyhow!("bad request: {message}"))`    |
 | 401/403 | `Err(anyhow!("auth failed: {message}"))`    |
 | 404     | `Err(anyhow!("not found: {message}"))`      |
-| 409     | typed conflict — see below                  |
+| 409/422 | typed conflict — see below                  |
 | 5xx     | `Err(anyhow!("gitserver internal: {...}"))` |
 
-The client introduces one typed error for backwards-compatible recovery:
+Both 409 and 422 responses map to one typed error for recoverable conflicts:
 
 ```rust
 #[derive(Debug, Clone, thiserror::Error)]
@@ -332,7 +332,7 @@ caps in the request where applicable (`max_log_entries`), and surfaces
 ## 10. Rust Client Design
 
 ```rust
-// core/src/workspace/remote_git.rs   (feature = "remote-git")
+// core/src/workspace/remote_git.rs
 
 #[derive(Debug, Clone)]
 pub struct RemoteGitBackendConfig {
@@ -351,6 +351,7 @@ pub struct RemoteGitBackend {
     http:           reqwest::Client,
     base_url:       String,
     repo_id:        String,
+    bearer_token:   Option<String>,
     max_diff_bytes: u64,
     max_log_entries: usize,
 }
@@ -362,31 +363,26 @@ impl WorkspaceGit for RemoteGitBackend { /* see §5 */ }
 impl WorkspaceGitStashProvider for RemoteGitBackend { /* see §5 */ }
 ```
 
-Composition factory mirrors the S3 path:
+`RemoteGitBackend::new(cfg)` returns `Result<Arc<RemoteGitBackend>>`; it
+fails when only one half of the mTLS pair is configured or the PEM files cannot
+be read. The attachment point on `WorkspaceServices` is:
 
 ```rust
 impl WorkspaceServices {
-    /// Attach a remote git provider to an existing filesystem backend.
+    /// Attach a remote git provider to an existing backend.
     pub fn with_remote_git(
         self: Arc<Self>,
         cfg: RemoteGitBackendConfig,
-    ) -> Arc<Self> { ... }
+    ) -> Result<Arc<Self>> { ... }
 }
 ```
 
-Or as a top-level convenience for an S3 + remote-git workspace:
+It returns a new `WorkspaceServices` with `git` and `git_stash` wired to the
+remote backend, resets `git_worktree` to `None`, and preserves every other
+field. Hosts that assemble services by hand can use the builder instead:
 
 ```rust
-pub fn s3_with_remote_git(
-    s3:  S3BackendConfig,
-    git: RemoteGitBackendConfig,
-) -> Arc<WorkspaceServices> { ... }
-```
-
-Wiring follows the existing builder pattern:
-
-```rust
-let backend = Arc::new(RemoteGitBackend::new(cfg));
+let backend = RemoteGitBackend::new(cfg)?;
 let git:   Arc<dyn WorkspaceGit>              = backend.clone();
 let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
 
@@ -423,18 +419,22 @@ gitserver cost; no new dependency or hook surface is needed.
 
 ### S3 workspace + remote git
 
+Requires the `s3` Cargo feature of `a3s-code-core`.
+
 ```rust
-let ws = WorkspaceServices::s3_with_remote_git(
+let ws = WorkspaceServices::s3(
     S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
         .endpoint("https://s3.example.invalid")
         .force_path_style(true)
         .enable_search(true),
+)
+.with_remote_git(
     RemoteGitBackendConfig::new(
         "https://git.example.invalid",
         "sessions/example",
     )
     .bearer_token(token),
-);
+)?;
 
 let session = agent
     .session_builder("s3://workspace/sessions/example")
@@ -443,9 +443,9 @@ let session = agent
     .await?;
 ```
 
-Tools registered for this session: `read`, `write`, `edit`, `patch`, `ls`,
-`grep`, `glob`, `git`. (`bash` remains hidden — object storage cannot
-host a shell.)
+The session registers the workspace tools the S3 backend supports (such as
+`read`, `write`, `edit`, `patch`, `ls`, and `search`) plus `git`. `bash`
+remains hidden because object storage cannot host a shell.
 
 ### Local filesystem + remote git (mixed)
 
@@ -454,12 +454,13 @@ git operations through a sandboxed service (e.g. for audit / rate limiting).
 
 ```rust
 let local = WorkspaceServices::local("/workspaces/repo");
-let ws    = local.with_remote_git(remote_cfg);   // overrides local git provider
+let ws    = local.with_remote_git(remote_cfg)?;  // overrides local git provider
 ```
 
 ## 13. Open Questions
 
-These should be resolved before Phase 4.2 (implementation) starts.
+These were recorded before implementation. The recommendations describe how
+the current client behaves.
 
 1. **Diff format pinning.** The local backend returns raw `git diff`
    stdout. Should the remote API guarantee a specific diff dialect (POSIX
@@ -482,7 +483,7 @@ These should be resolved before Phase 4.2 (implementation) starts.
    Do we surface a "hook output" channel in responses? Recommendation:
    include hook stderr in the `checkout` / `stash` response when
    non-empty; document that hook failures map to HTTP 422 with a
-   `HOOK_FAILED` code.
+   `HOOK_FAILED` code. The client surfaces 422 as `RemoteGitConflict`.
 
 5. **Schema versioning.** First-cut endpoints are under `/v1/`. When
    should we bump to `/v2/`? Recommendation: only on incompatible
@@ -505,10 +506,9 @@ These should be resolved before Phase 4.2 (implementation) starts.
 - **Hooks management.** Listing / configuring server-side hooks from the
   client.
 
-## 15. Implementation Notes (shipped in v2.6.x)
+## 15. Implementation Notes
 
-The original draft sketched an 8-step implementation plan; what
-actually shipped (Phase 4.2 plus Phase 5.x follow-ups) is:
+The implementation differs from the original draft in these ways:
 
 1. `RemoteGitBackend` / `RemoteGitBackendConfig` / `RemoteGitConflict`
    live in `core/src/workspace/remote_git.rs`. No
@@ -518,20 +518,17 @@ actually shipped (Phase 4.2 plus Phase 5.x follow-ups) is:
 2. `WorkspaceGit` and `WorkspaceGitStashProvider` implemented in full.
    `WorkspaceGitWorktreeProvider` deliberately omitted (see §8).
 3. `WorkspaceServices::with_remote_git` is the public attachment
-   point. The internal helper `with_git_provider` (added in v2.6.x
-   follow-up) handles the actual struct-literal copy so future fields
-   on `WorkspaceServices` cannot be silently dropped by the decorator.
-4. mTLS is supported in addition to bearer token (`client_cert_pem`
-   - `client_key_pem`), shipped in a Phase 5.2 follow-up that also
-     updated §6 above.
-5. `diff` is hardened against unbounded responses: HTTP body is
-   streamed with a hard cap of `max_diff_bytes * 4` (Phase 6.2). The
-   soft `max_diff_bytes` display truncation continues to apply
-   post-decode.
-6. Test surface: 25+ wiremock-backed unit tests in `remote_git.rs`,
-   one end-to-end test driving the `git` built-in tool through the
-   remote backend, plus the workspace-wide conformance suite added
-   in Phase 6.3.
-7. README and CHANGELOG updated; rustls-tls backend selected to match
-   the AWS SDK.
-8. SDK exposure landed in Phase 5.1 (Node + Python).
+   point and returns `Result<Arc<WorkspaceServices>>`. The internal
+   helper `with_git_provider` copies every other field so new fields on
+   `WorkspaceServices` cannot be silently dropped.
+4. mTLS is supported in addition to the bearer token
+   (`client_cert_pem` with `client_key_pem`; see §6).
+5. `diff` is hardened against unbounded responses: the HTTP body is
+   streamed with a hard cap of `max_diff_bytes * 4` (floor 64 KiB). The
+   soft `max_diff_bytes` display truncation still applies after decode.
+6. Tests: wiremock-backed unit tests in
+   `core/src/workspace/remote_git/tests.rs`.
+7. `reqwest` uses the `rustls-tls` backend, matching the AWS SDK.
+8. SDK exposure: Node.js `remoteGit`, Python `remote_git`
+   (`RemoteGitBackendConfig`), and Go `SessionOptions.RemoteGit`. Each
+   attaches on top of a configured non-local workspace backend.

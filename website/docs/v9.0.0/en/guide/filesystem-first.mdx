@@ -13,20 +13,20 @@ not a separate product runtime.
 ```text
 repo/
 ├── AGENTS.md          # durable project instructions
-├── agent.acl          # model, provider, queue, and delegation config
 └── .a3s/
+    ├── config.acl     # model, provider, queue, and delegation config
     ├── agents/        # worker agents for task / autoDelegation
     └── skills/        # reusable skills
 ```
 
 ## Path Map
 
-| Path                      | Purpose                                                   | Use it when                                                                          |
-| ------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `AGENTS.md`               | Stable workspace instructions                             | Code style, verification commands, safety boundaries, and release flow must persist. |
-| `agent.acl`               | Model, provider, queue, skill dirs, and delegation config | Runtime policy should be versioned with the repo.                                    |
-| `.a3s/agents/`            | Worker/subagent definitions                               | A parent agent needs `task` or automatic delegation.                                 |
-| `.a3s/skills/`, `skills/` | Reusable skills                                           | Many tasks share checklists, domain flow, or operating rules.                        |
+| Path              | Purpose                                                   | How it loads                                                                                     |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `AGENTS.md`       | Stable workspace instructions                             | Automatically, from the Git root down to the workspace. See [AGENTS.md](/guide/agents-md).       |
+| `.a3s/config.acl` | Model, provider, queue, skill dirs, and delegation config | The TUI discovers it. SDK hosts pass an ACL path or string to `Agent.create`.                    |
+| `.a3s/agents/`    | Worker/subagent definitions                               | Automatically, together with `~/.a3s/agents` and the `.claude/agents` compatibility directories. |
+| `.a3s/skills/`    | Reusable skills                                           | Only when listed in ACL `skill_dirs` or session `skillDirs`; there is no implicit skills scan.   |
 
 These conventions are not a new prompt system. `AGENTS.md` and skills enter
 A3S Code's context composition path; tool visibility, permission gates, HITL,
@@ -34,9 +34,10 @@ response contracts, and verification remain harness-controlled.
 
 ## Loading Order
 
-A typical session parses `agent.acl`, binds a workspace, then loads project
-instructions, skills, agent definitions, direct tools, MCP connections, and
-runtime policy.
+`Agent.create` parses the ACL config and loads the configured `skill_dirs` into
+an agent-wide skill registry. Each session then binds a workspace and loads
+project instructions, session skill directories, agent definitions, worker
+agents, direct tools, MCP connections, and runtime policy.
 
 ## Design Rules
 

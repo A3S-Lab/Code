@@ -3,6 +3,7 @@ import {
   useLocation,
   useNav,
   usePage,
+  usePages,
   useSite,
   useVersion,
 } from '@rspress/core/runtime';
@@ -31,6 +32,7 @@ import { NavScreenLangs } from '@rspress/core/dist/theme/components/NavScreen/Na
 import { useNavScreen } from '@rspress/core/dist/theme/components/NavHamburger/useNavScreen.js';
 import '@rspress/core/dist/theme/components/Nav/index.css';
 import '@rspress/core/dist/theme/components/NavHamburger/index.css';
+import { useMemo } from 'react';
 import { createPortal } from 'react-dom';
 
 function versionHref(
@@ -61,23 +63,63 @@ function versionHref(
   return `/${parts.join('/')}`;
 }
 
+function normalizeRoute(route: string) {
+  const trimmed = removeBase(route)
+    .replace(/\.html$/, '')
+    .replace(/\/index$/, '')
+    .replace(/\/+$/, '');
+  return trimmed === '' ? '/' : trimmed;
+}
+
+// Pages are version-specific (a page can be new in one version or removed in
+// another), so link to the same page only when the target version has it.
+function guideIndexPath(pathname: string, currentVersion: string) {
+  const parts = removeBase(pathname).split('/').filter(Boolean);
+  if (parts[0] === currentVersion) {
+    parts.shift();
+  }
+  const lang = parts[0] === 'en' ? '/en' : '';
+  return `${lang}/guide/`;
+}
+
 function NavVersions() {
   const { pathname } = useLocation();
   const { page } = usePage();
+  const { pages } = usePages();
   const { site } = useSite();
   const currentVersion = useVersion();
   const defaultVersion = site.multiVersion.default ?? '';
   const versions = site.multiVersion.versions ?? [];
-  const items = versions.map((version) => ({
-    text: version,
-    link: versionHref(
+  const cleanUrls = site.route?.cleanUrls ?? false;
+  const routes = useMemo(
+    () => new Set(pages.map((entry) => normalizeRoute(entry.routePath))),
+    [pages],
+  );
+  const items = versions.map((version) => {
+    const samePage = versionHref(
       page.pageType === '404' ? '/' : pathname,
       currentVersion,
       version,
       defaultVersion,
-      site.route?.cleanUrls ?? false,
-    ),
-  }));
+      cleanUrls,
+    );
+    if (routes.has(normalizeRoute(samePage))) {
+      return { text: version, link: samePage };
+    }
+    const guideIndex = versionHref(
+      guideIndexPath(pathname, currentVersion),
+      defaultVersion,
+      version,
+      defaultVersion,
+      cleanUrls,
+    );
+    return {
+      text: version,
+      link: routes.has(normalizeRoute(guideIndex))
+        ? guideIndex
+        : versionHref('/', defaultVersion, version, defaultVersion, cleanUrls),
+    };
+  });
 
   return items.length > 1 ? (
     <NavMenuItemWithChildren

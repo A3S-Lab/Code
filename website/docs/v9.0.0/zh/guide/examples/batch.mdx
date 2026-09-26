@@ -7,8 +7,9 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 # 批处理
 
-SDK 中并没有 `batch()` 方法。当宿主工作流或某个 agent 回合已经有一组清晰、相互独立、
-确定性的步骤时，你可以直接用会话提供的确定性辅助方法（`readFile`、`grep`、`glob`、`ls`、
+SDK 中没有 `batch()` 辅助方法。在 agent 回合内，模型可以用内置的 `batch` 工具把工具调用
+分组执行（最多 32 个调用，按依赖步骤运行，并发数有上限）。当宿主工作流已经有一组清晰、
+相互独立、确定性的步骤时，你可以直接用会话提供的确定性辅助方法（`readFile`、`grep`、`glob`、`ls`、
 `git`）把它们组合起来，并自行汇总结果。这样"批处理"就完全在你的掌控之中：无需任何模型调用，
 执行顺序明确，且除非你主动调用，否则不会执行任何破坏性操作。
 
@@ -20,6 +21,14 @@ SDK 中并没有 `batch()` 方法。当宿主工作流或某个 agent 回合已�
 ```rust
 use a3s_code_core::Agent;
 use serde_json::Value;
+
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+fn file_text(view: &str) -> String {
+    view.lines()
+        .filter_map(|line| line.split_once('\t').map(|(_, text)| text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 #[tokio::main]
 async fn main() -> a3s_code_core::Result<()> {
@@ -35,7 +44,7 @@ async fn main() -> a3s_code_core::Result<()> {
         session.read_file("scripts/release.sh"),
     )?;
 
-    let package: Value = serde_json::from_str(&package)?;
+    let package: Value = serde_json::from_str(&file_text(&package))?;
     let version = package["version"].as_str().unwrap_or_default();
     let mut mismatches = Vec::new();
     if !changelog.contains(version) {
@@ -66,6 +75,16 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 const session = agent.session('/path/to/project');
 
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+const fileText = (view: string) =>
+  view
+    .split('\n')
+    .flatMap((line) => {
+      const tab = line.indexOf('\t');
+      return tab === -1 ? [] : [line.slice(tab + 1)];
+    })
+    .join('\n');
+
 // Node.js 辅助方法是异步的，可用 Promise.all 组合互不依赖的读取。
 const [pkg, changelog, releaseScript] = await Promise.all([
   session.readFile('package.json'),
@@ -73,7 +92,7 @@ const [pkg, changelog, releaseScript] = await Promise.all([
   session.readFile('scripts/release.sh'),
 ]);
 
-const pkgVersion = JSON.parse(pkg).version;
+const pkgVersion = JSON.parse(fileText(pkg)).version;
 const mismatches = [];
 if (!changelog.includes(pkgVersion))
   mismatches.push(`CHANGELOG.md is missing ${pkgVersion}`);
@@ -94,6 +113,12 @@ session.close();
 import json
 from a3s_code import Agent, SessionOptions
 
+
+# readFile 返回带行号的行；保留每行行号制表符之后的文本。
+def file_text(view: str) -> str:
+    return "\n".join(line.split("\t", 1)[1] for line in view.splitlines() if "\t" in line)
+
+
 agent = Agent.create("agent.acl")
 session = agent.session("/path/to/project", SessionOptions())
 
@@ -102,7 +127,7 @@ pkg = session.read_file("package.json")
 changelog = session.read_file("CHANGELOG.md")
 release_script = session.read_file("scripts/release.sh")
 
-pkg_version = json.loads(pkg)["version"]
+pkg_version = json.loads(file_text(pkg))["version"]
 mismatches = []
 if pkg_version not in changelog:
     mismatches.append(f"CHANGELOG.md is missing {pkg_version}")
@@ -129,6 +154,17 @@ import (
 
 	code "github.com/A3S-Lab/Code/sdk/go/v9"
 )
+
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+func fileText(view string) string {
+	var lines []string
+	for _, line := range strings.Split(view, "\n") {
+		if _, text, ok := strings.Cut(line, "\t"); ok {
+			lines = append(lines, text)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 func main() {
 	ctx := context.Background()
@@ -159,7 +195,7 @@ func main() {
 	var metadata struct {
 		Version string `json:"version"`
 	}
-	if err := json.Unmarshal([]byte(pkg), &metadata); err != nil {
+	if err := json.Unmarshal([]byte(fileText(pkg)), &metadata); err != nil {
 		log.Fatal(err)
 	}
 	var mismatches []string

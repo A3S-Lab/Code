@@ -48,7 +48,7 @@ Lane names are `control`, `query`, `execute`, and `generate`.
 const pending = await session.pendingExternalTasks();
 
 if (pending.length > 0) {
-  await session.completeExternalTask(pending[0].id, {
+  await session.completeExternalTask(pending[0].task_id, {
     success: true,
     result: { summary: 'completed by worker' },
   });

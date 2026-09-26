@@ -7,7 +7,7 @@ description: 'Placing orchestration steps across machines via the AgentExecutor 
 
 A3S Code runs multi-agent orchestration as a _grammar_ expressed in code, then
 places the resulting steps wherever you want them to run. The split is drawn
-along the **framework / host boundary**, introduced in `[3.4.0]`:
+along the **framework / host boundary**:
 
 - The **framework** owns the orchestration grammar and the serializable data
   contracts. It never decides where a step runs.
@@ -24,7 +24,8 @@ The framework's contract is two serializable types:
   `description`, `prompt`, and optional `max_steps`, `parent_session_id`,
   `output_schema`.
 - `StepOutcome` — the result of running one spec: `task_id`, `session_id`,
-  `agent`, `output`, `success`, and optional `structured`.
+  `agent`, `output`, `success`, optional `structured`, and `source_anchors`
+  (source anchors observed by successful child tool calls).
 
 Both serialize cleanly, so a host may ship a spec to another node and persist an
 outcome in a checkpoint. The combinators that compose specs are written purely
@@ -204,6 +205,20 @@ outcomes = session.parallel_resumable([
     {"task_id": "a", "agent": "explore", "description": "survey", "prompt": "Map the auth module"},
     {"task_id": "b", "agent": "review", "description": "audit", "prompt": "Review error handling"},
 ], "release-audit")
+```
+
+Go exposes the same grammar as `session.Parallel(ctx, specs, budgetTokens)`,
+`session.Pipeline(ctx, items, stages)`, and
+`session.ParallelResumable(ctx, specs, workflowID)`:
+
+```go
+outcomes, err := session.ParallelResumable(ctx, []code.AgentStepSpec{
+	{TaskID: "a", Agent: "explore", Description: "survey", Prompt: "Map the auth module"},
+	{TaskID: "b", Agent: "review", Description: "audit", Prompt: "Review error handling"},
+}, "release-audit")
+if err != nil {
+	return err
+}
 ```
 
 Because the checkpoint is serializable and the executor is a parameter, a host

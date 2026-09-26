@@ -1,6 +1,6 @@
 ---
 title: SDK 与 API
-description: 安装 A3S Code 的 Rust、Node.js、Python 和 Go SDK，并找到对应 API 文档。
+description: 安装 A3S Code 的 Rust、Node.js、Python 和 Go SDK，并对照 9.0.0 在四种 SDK 中的公开接口。
 ---
 
 import { Tab, Tabs } from '@rspress/core/theme';
@@ -17,7 +17,7 @@ A3S Code 提供 Rust、Node.js、Python 和 Go SDK。想直接使用终端应用
 | Rust     | `a3s-code-core`                     | [docs.rs](https://docs.rs/a3s-code-core)           | 使用完整 Runtime API 或实现扩展 Trait |
 | Node.js  | `@a3s-lab/code`                     | [npm](https://www.npmjs.com/package/@a3s-lab/code) | 在 Node.js 应用中订阅异步事件流       |
 | Python   | `a3s-code`                          | [PyPI](https://pypi.org/project/a3s-code/)         | 在 Python 中使用同步或异步 API        |
-| Go       | `github.com/A3S-Lab/Code/sdk/go/v9` | [见下方安装说明](#go-module-与桥接程序)            | 通过纯 Go API 使用原生 Runtime        |
+| Go       | `github.com/A3S-Lab/Code/sdk/go/v9` | [见下方安装说明](#go-模块与桥接程序)               | 通过纯 Go API 使用原生 Runtime        |
 
 ## 安装
 
@@ -35,10 +35,87 @@ python -m pip install a3s-code
 go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
-## Python Wheel 平台（v8.5.1）
+## 公开接口对照
 
-PyPI 上的 `a3s-code` 是一个纯 Python Bootstrap。首次导入时，它会从 v8.5.1
-GitHub Release 下载匹配的 Native Wheel，并根据 SHA-256 Manifest 校验。Native
+四种 SDK 暴露同一套 Core 接口。`scripts/sdk_api_alignment_check.mjs` 负责约束：
+Core 中每个公开的 `Agent`、`AgentSession` 与 `SessionOptions` 成员都必须出现在
+Node.js、Python 和 Go 中，或被列为有意省略。该检查目前覆盖 16 个 Agent 成员、
+116 个 Session 成员、62 个 SessionOptions 字段、52 种事件类型和 30 项产品能力。
+
+### Agent
+
+| 操作            | Rust                                  | Node.js                         | Python                          | Go                                |
+| --------------- | ------------------------------------- | ------------------------------- | ------------------------------- | --------------------------------- |
+| 从 ACL 配置创建 | `Agent::new(path).await`              | `Agent.create(path)`            | `Agent.create(path)`            | `code.Create(ctx, path)`          |
+| 打开会话        | `agent.session(workspace, options)`   | `agent.session(workspace, opt)` | `agent.session(workspace, opt)` | `agent.Session(ctx, ws, opt)`     |
+| 恢复快照        | `agent.resume_session_async(id, opt)` | `agent.resumeSession(id, opt)`  | `agent.resume_session(id, opt)` | `agent.ResumeSession(ctx, id, o)` |
+| 列出活动会话    | `agent.list_sessions().await`         | `agent.listSessions()`          | `agent.list_sessions()`         | `agent.ListSessions(ctx)`         |
+| 关闭全部        | `agent.close().await`                 | `agent.close()`                 | `agent.close()`                 | `agent.Close(ctx)`                |
+
+Rust 另有 `Agent::session_builder`（用于接收宿主持有的 trait 对象，例如 MCP
+管理器）和 `Agent::from_config`；它们是 Agent 级的有意省略。
+
+### Session
+
+| 操作         | Rust                                 | Node.js                          | Python                               | Go                                    |
+| ------------ | ------------------------------------ | -------------------------------- | ------------------------------------ | ------------------------------------- |
+| 执行一个回合 | `send(prompt, None).await`           | `send(prompt)`                   | `send(prompt)` / `send_async`        | `Run(ctx, prompt)` / `Send`           |
+| 流式执行回合 | `stream(prompt, None).await`         | `stream(prompt)`                 | `stream(prompt)`                     | `Stream(ctx, ...)`                    |
+| 保存快照     | `save().await`                       | `save()`                         | `save()`                             | `Save(ctx)`                           |
+| 恢复运行     | `resume_run(run_id).await`           | `resumeRun(runId)`               | `resume_run(run_id)`                 | `ResumeRun(ctx, runID)`               |
+| 精确恢复     | `spawn_recovery_with_run_id(cp, id)` | `spawnRecoveryWithRunId(cp, id)` | `spawn_recovery_with_run_id(cp, id)` | `SpawnRecoveryWithRunID(ctx, cp, id)` |
+| 运行记录     | `runs()` / `run_events(id)`          | `runs()` / `runEvents(id)`       | `runs()` / `run_events(id)`          | `Runs(ctx)` / `RunEvents(ctx, id)`    |
+| 直接调用工具 | `tool(name, args).await`             | `tool(name, args)`               | `tool(name, args)`                   | `Tool(ctx, name, args)`               |
+| 关闭         | `close().await`                      | `close()`                        | `close()`                            | `Close(ctx)`                          |
+
+Session 级的有意省略是返回运行时内部对象或接收 trait 对象的 Rust 访问器，例如
+`memory`、`session_store`、`agent_executor`、`command_registry`、
+`register_hook_handler`、`register_dynamic_tool`、`tool_with_events`、`workflow`
+以及投影的 Flow/UI 作用域。Node.js、Python 和 Go 通过值配置、回调、直接工具或
+MCP 获得同样的行为。
+
+### SessionOptions
+
+大多数配置都是可序列化值，在各 SDK 中含义相同。下表列出 9.0 的 harness 与提示词
+相关字段：
+
+| 配置项            | Rust                                        | Node.js                                                                                   | Python                                                                                           | Go                             |
+| ----------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------ |
+| Meta Harness 配方 | `with_harness(HarnessComposeOptions)`       | `harness: Harness.compose({...})`                                                         | `harness = Harness.compose(...)`                                                                 | `Harness *HarnessOptions`      |
+| 完成证明器        | `with_completion_attestor(Arc<dyn ...>)`    | 不暴露                                                                                    | 不暴露                                                                                           | 不暴露                         |
+| 只读验证器        | `with_verifier(bool)`（`verifier_enabled`） | `verifierEnabled`                                                                         | `verifier_enabled`                                                                               | `VerifierEnabled *bool`        |
+| 提示词槽位        | `with_prompt_slots(SystemPromptSlots)`      | `role`、`guidelines`、`responseStyle`、`outputLanguage`、`extra`                          | `role`、`guidelines`、`response_style`、`output_language`、`extra`                               | `PromptSlots *PromptSlots`     |
+| 轨迹记录          | `with_rl_trajectory(RlTrajectoryConfig)`    | `trajectoryPath`、`trajectoryMode`、`trajectoryMaxTextBytes`、`trajectoryIncludeMessages` | `trajectory_path`、`trajectory_mode`、`trajectory_max_text_bytes`、`trajectory_include_messages` | `Trajectory *TrajectoryConfig` |
+
+验证器默认关闭。完成证明器是 Rust trait 钩子，在完成门禁之前运行，无法绕过门禁。
+harness 部件包括 `system`、`tools`、`budget`、`compact`、`infer` 以及 `host:<id>`
+挂载（Node.js 为 `Harness.host(id)`，Go 为 `HarnessHost(id)`）；宿主挂载通过 Rust
+`HostHarnessRegistry` 解析。组合规则见 [Meta Harness](/guide/meta-harness)。
+
+其他 SessionOptions 省略项都是 Rust trait 对象或运行时句柄，例如 `llm_client`、
+`context_providers`、`permission_checker`、`mcp_manager`、`hook_executor`、
+`budget_guard`（其他 SDK 改为安装预算回调）以及宿主 harness 注册表与装配器。Go
+把少数配置写成嵌套结构或目录：`FileSessionStoreDir`、`FileMemoryDir` 与
+`PlanningMode`。
+
+### 事件
+
+流式输出与运行事件日志都携带带版本号的 `EventEnvelopeV1` 记录：
+
+| SDK     | 信封                                                                     | 类型目录                   |
+| ------- | ------------------------------------------------------------------------ | -------------------------- |
+| Rust    | `EventEnvelopeV1 { version, event_type, payload, metadata }`             | `AGENT_EVENT_TYPES_V1`     |
+| Node.js | `EventEnvelopeV1`（`version`、`type`、`payload`、`metadata`）            | `agentEventTypesV1()`      |
+| Python  | `AgentEvent`（`version`、`event_type`、`payload_json`、`metadata_json`） | `AGENT_EVENT_TYPES_V1`     |
+| Go      | `code.Event{Version, Type, Payload, Metadata}`                           | `code.AgentEventTypesV1()` |
+
+`version` 恒为 `1`（`EVENT_ENVELOPE_V1_VERSION`、`code.EventEnvelopeV1Version`）。
+类型字段是开放字符串：宿主必须保留未来新增的未知类型及其载荷，而不是拒绝它们。
+
+## Python Wheel 平台
+
+PyPI 上的 `a3s-code` 是一个纯 Python Bootstrap。首次导入时，它会从 GitHub
+Releases 下载与自身版本匹配的 Native Wheel，并根据 SHA-256 Manifest 校验。Native
 Wheel 使用 CPython 3.10 Stable ABI（`cp310-abi3`），同一个 Asset 支持 CPython
 3.10 至 3.14：
 
@@ -47,15 +124,15 @@ Wheel 使用 CPython 3.10 Stable ABI（`cp310-abi3`），同一个 Asset 支持 
 | Apple Silicon macOS | `macosx_11_0_arm64`      | macOS 11+   | Moli arm64 |
 | Intel macOS         | `macosx_12_0_x86_64`     | macOS 12+   | Moli x64   |
 | Linux x86_64        | `manylinux_2_28_x86_64`  | glibc 2.28+ | Moli x64   |
-| Linux arm64         | `manylinux_2_39_aarch64` | glibc 2.39+ | Moli arm64 |
+| Linux arm64         | `manylinux_2_28_aarch64` | glibc 2.28+ | Moli arm64 |
 | Windows x86_64      | `win_amd64`              | Windows 10+ | Moli x64   |
 | Windows arm64       | `win_arm64`              | Windows 10+ | Moli arm64 |
 
 每个 Wheel 都包含 `a3s_code/moli/<moli executable>` 和来源记录。Bootstrap 会把
 Native Extension 与 Sidecar 解压到按用户共享的缓存；进程锁与原子替换确保多个
 应用同时首次启动时只安装一次，后续进程复用同一个已校验的 Moli。Linux musl
-没有列出，因为上游 Moli 没有 musl 资产；该平台请使用系统/显式 Moli，或选择
-Chrome/Lightpanda 后端。
+没有列出，因为固定版本的 Moli Release 没有 musl 资产；该平台请使用系统/显式
+Moli，或选择 Chrome/Lightpanda 后端。
 
 Intel Mac 使用 macOS 12 或更高版本时，应使用实际运行应用的同一个解释器安装：
 
@@ -109,6 +186,8 @@ bash .github/setup-workspace.sh
 cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge
 ```
 
+默认源码构建不包含 Moli Runtime API；需要时加上 `--features headless-search`。
+
 `code.Create` 会对传输协议、事件协议和完整操作清单执行 fail-closed 握手。
 Go 错误使用稳定的 `*code.Error` 错误码，Context 取消和 Deadline 仍可通过
 `errors.Is` 判断。桥接程序覆盖完整的可序列化 Agent/Session 能力，以及由 Go
@@ -122,7 +201,7 @@ Rust 原生扩展机制；其他 SDK 通过等价的值配置、回调、直接�
 
 ### 优先级调度器接口
 
-v6.9 为四种 SDK 增加相同的 Agent 级调度器控制。创建 Session 时选择 `urgent`、
+四种 SDK 都提供相同的 Agent 级调度器控制。创建 Session 时选择 `urgent`、
 `interactive`、`foreground`、`background` 或 `maintenance`，再从 Agent 或任意
 同级 Session 读取共享占用快照：
 
@@ -180,16 +259,20 @@ Hook、MCP、队列、确定性重放和编排。Rust 还可以接收自定义 `
 
 ## 产品能力发现
 
-本版本只有一份产品级能力契约。每个官方 SDK 的
-`sdk_capabilities()`（或对应语言名称）都会返回相同顺序的 带 baseline/advanced 分级的能力清单。
-每条记录包含稳定 ID、分类、规范操作名、描述和 `host_owned` 标志。
-`host_owned` 只表示策略、凭据或外部生命周期由谁提供，不表示 SDK 不支持该操作。
-
-能力清单覆盖 Agent/Runtime 生命周期、受治理工具、代码智能、Workspace 检索与工具、
-记忆与 Cognitive Package、A3S Use 任务、模型适配器、结构化输出、MCP 与 Skill、
-规划与优先级调度、可编程工作流、持久化、State Graph、发布/协议契约、网页搜索、
-Moli、S3、Agent Server、OpenTelemetry、对话、运行观测和治理。应用应通过清单
+本版本只有一份产品级能力契约。每个官方 SDK 的 `sdkCapabilities()`（或对应语言
+名称）都会以模式 `a3s-code/sdk-capabilities/v2` 返回相同顺序的能力清单。每条记录
+包含稳定 ID、分类、规范操作名、描述、`hostOwned` 标志和 `tier`。`hostOwned` 只
+表示策略、凭据或外部生命周期由谁提供，不表示 SDK 不支持该操作。应用应通过清单
 协商可选能力，不要根据包文件或版本号猜测支持情况。
+
+| 分级       | 能力 ID                                                                                                                                                                                                                                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseline` | `agent_runtime`, `conversation`, `run_control`, `governed_tools`, `workspace_tools`, `workspace_retrieval`, `model_adapters`, `structured_output`, `mcp_and_skills`, `planning_delegation`, `priority_scheduling`, `persistence`, `governance`, `run_observability`, `context_memory`, `web_search`, `web_fetch`, `program` |
+| `advanced` | `code_intelligence`, `cognitive_packages`, `use_runtime_tasks`, `programmable_workflows`, `state_graph`, `agent_release_contract`, `agent_protocol`, `evaluation_substrate`, `typed_decisions`, `moli_runtime`, `s3_workspace`, `opentelemetry`                                                                             |
+
+部分 advanced 记录描述的能力需要 Core Cargo 特性（见[特性开关](#特性开关)）。
+`typed_decisions` 需要 `apofasi` 特性；任何发布组合都不包含它，它也不属于 9.0.0
+发布内容。
 
 <Tabs>
 <Tab label="Rust">
@@ -236,18 +319,40 @@ fmt.Println(code.SDKCapabilitiesSchema(), len(capabilities))
 </Tab>
 </Tabs>
 
+## 特性开关
+
+`a3s-code-core` 把可选能力分组为 Cargo 发布组合，默认是 `local-code`。
+
+| 特性                    | 新增内容                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| `minimal`               | 仅包含受治理的智能体循环、工作区工具、身份与事件                                   |
+| `local-code`（默认）    | `minimal` 加上 a3s-vec FTS 词法检索、`grep` 三元组剪枝与 `web_fetch` PDF 文本      |
+| `scientific`            | `local-code` 加上 `durable-memory-sqlite`、`headless-search` 与 `advanced-harness` |
+| `server`                | `local-code` 加上 `s3` 与 `telemetry`                                              |
+| `full`                  | `scientific` 加上 `server`                                                         |
+| `advanced-harness`      | 评测、研究、状态图与动态工作流（Flow 投影）                                        |
+| `headless-search`       | 浏览器驱动的网页搜索与 Moli Runtime API                                            |
+| `s3`                    | S3 兼容工作区后端                                                                  |
+| `telemetry`             | OpenTelemetry OTLP 导出（`telemetry_otel::TelemetryConfig`）                       |
+| `durable-memory-sqlite` | 语义记忆的持久 SQLite 向量索引                                                     |
+
+没有 `headless-search` 时，`web_search` 仍使用 HTTP/RSS 与原生 API 引擎。Node.js、
+Python 与 Go 桥接 crate 默认启用 `a3s-vec-fts`，并提供各自的 `advanced-harness`、
+`server`（仅 S3）与 `headless-search` 特性。OTLP 导出器见[遥测](/guide/telemetry)。
+
 ## Moli Runtime 与网页搜索
 
-`web_search` 使用 `a3s-search` v3.1.0，并默认用 Moli 执行 JavaScript 渲染搜索。
-Runtime 的解析顺序固定为：显式 `browserPath`/`A3S_CODE_MOLI_EXECUTABLE`、打包
-Sidecar、已校验的共享缓存、可发现的系统 Moli，最后才通过 HTTPS 下载固定版本。
-缓存按用户、版本和目标平台隔离；独占安装锁与原子收据确保多个
-`a3s-code` 进程同时启动时不会重复安装。严格离线时可设置
+启用 `headless-search` 后，`web_search` 使用 `a3s-search` 3.1.4，并默认用 Moli
+执行 JavaScript 渲染搜索。Runtime 的解析顺序固定为：显式
+`browserPath`/`A3S_CODE_MOLI_EXECUTABLE`、打包 Sidecar、已校验的共享缓存、可发现的
+系统 Moli，最后才通过 HTTPS 下载固定版本。缓存按用户、版本和目标平台隔离；独占
+安装锁与原子收据确保多个 `a3s-code` 进程同时启动时不会重复安装。严格离线时可设置
 `autoDownloadMoli: false`（或对应语言字段）。
 
 诊断调用只读；Ensure 调用只有在默认自动配置开启且 Release Manifest/SHA-256 校验
-通过后才可能下载。v8.5.1 的上游 Moli 没有 Linux musl 资产；该平台请提供系统/显式
-Moli，或选择 Chrome/Lightpanda 后端。
+通过后才可能下载。固定版本的 Moli Release 没有 Linux musl 资产；该平台请提供
+系统/显式 Moli，或选择 Chrome/Lightpanda 后端。这些函数只存在于以
+`headless-search` 编译的构建中。
 
 <Tabs>
 <Tab label="Rust">

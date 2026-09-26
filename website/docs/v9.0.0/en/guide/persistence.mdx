@@ -1,24 +1,24 @@
 ---
 title: 'Persistence'
-description: 'Saving and resuming sessions'
+description: 'Saving and resuming sessions, and how interrupted runs recover from the fact log'
 ---
 
 import { Tab, Tabs } from '@rspress/core/theme';
 
 # Persistence
 
-Persistence lets a session survive process restarts and gives product surfaces a stable session ID.
+Persistence lets a session survive process restarts and gives product surfaces
+a stable session ID. A resumed session can repopulate task lists, execution
+history, artifacts, and delivery summaries without replaying the completed run.
 
-A resumed session can repopulate task lists, execution history, artifacts, and
-delivery summaries without replaying the completed run.
+A3S Code keeps four related but different records:
 
-A3S Code persists three related but different things:
-
-| Object              | Written by                            | Resumed by                             | Purpose                                                                                                                                            |
-| ------------------- | ------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SessionSnapshotV1` | `session.save()` or `autoSave`        | `agent.resumeSession(id, options)`     | Rehydrate one versioned generation containing the conversation, artifacts, traces, run records, verification reports, and subagent task snapshots. |
-| Loop checkpoint     | Agent loop while a run is in progress | `session.resumeRun(runId)`             | Continue an interrupted run from the last completed tool-round boundary. Completed in-process runs delete this checkpoint.                         |
-| Workflow checkpoint | `parallelResumable` / workflow phases | `parallelResumable(specs, workflowId)` | Skip already-completed orchestration steps after a process restart.                                                                                |
+| Record              | Written by                                        | Read by                                         | Purpose                                                                                                                                               |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fact log            | Every coding turn (`send`, `stream`, attachments) | The next turn, `resumeRun`, and exact recovery  | The only control source. The next transition is chosen by folding this log.                                                                           |
+| `SessionSnapshotV1` | `session.save()` or `autoSave`                    | `agent.resumeSession(id, options)`              | Rehydrate one versioned generation with the conversation, artifacts, traces, run records, verification reports, and subagent task snapshots.          |
+| Loop checkpoint     | Each tool result that lands on the fact log       | `resumeRun(runId)` and `spawnRecoveryWithRunId` | Portable evidence of a run in progress, stored in the `SessionStore` so another process or node can recover it. Deleted when the run ends in-process. |
+| Workflow checkpoint | `parallelResumable` / workflow combinators        | `parallelResumable(specs, workflowId)`          | Skip orchestration steps that already completed after a process restart.                                                                              |
 
 ## File Session Store
 
@@ -102,6 +102,33 @@ if err := session.Save(ctx); err != nil {
 Go selects the built-in file store with `FileSessionStoreDir`; custom
 `SessionStore` trait implementations remain a Rust embedding capability.
 
+## The Fact Log Is The Control Source
+
+Every coding turn appends immutable facts to a per-session log in the
+workspace, under `.a3s/effect-log/`. The thread name is the session ID when it
+is a short ASCII identifier, and a hex-encoded form otherwise, so two sessions
+in one workspace fold two separate logs. `send`, `stream`, attachment turns,
+`resumeRun`, and exact recovery all choose the next step the same way: they
+fold the log with `a3s-effect` (`ingest_coding` for a new fact,
+`resume_coding` to continue). See `core/src/fact_control.rs`.
+
+This has concrete consequences for persistence and recovery:
+
+- A stored `model.turn` fact is never sent to the model again.
+- A loop checkpoint or a session snapshot does not choose the next model call.
+  Only the log does.
+- A confirmation parks until a `confirmation.answered` fact arrives, and a
+  question parks until a `question.answered` fact arrives. No in-process
+  channel or timer settles them.
+- A tool call whose result is missing from the log runs once on resume.
+- A steer is another `user.message` fact.
+- When the tool-round cap is reached, the next completion is sent with an empty
+  tool list.
+
+The fact log lives in the workspace, not in `SessionSnapshotV1`. Keep the
+workspace (or at least `.a3s/effect-log/`) together with the session store if
+you expect a restarted process to continue a parked run.
+
 ## Atomic Snapshot Generations
 
 `session.save()` gathers the current persisted state into one
@@ -120,24 +147,24 @@ generation or the next one, not a new conversation paired with old run or trace
 fragments. The memory store publishes the same aggregate under one lock. Both
 report `SessionStoreCapabilities { atomic_session_snapshots: true }`.
 
-Historical files remain readable. A bare `SessionData` file is combined with
-the legacy artifact/trace/run/verification/subagent fragment locations during
-load, then restored through the v1 in-memory shape. Once a new aggregate is
-saved, the single envelope is authoritative. A document that already looks like
-an aggregate but has a malformed or unsupported schema is rejected rather than
-reinterpreted as legacy data.
+Older files remain readable. A bare `SessionData` file is combined with the
+fragment locations for artifacts, traces, runs, verification reports, and
+subagent tasks during load, then restored through the v1 in-memory shape. Once
+a new aggregate is saved, the single envelope is authoritative. A document that
+already looks like an aggregate but has a malformed or unsupported schema is
+rejected rather than reinterpreted as fragment data.
 
 Custom stores must implement `save_snapshot` explicitly. Its default returns an
 error; it does not fan an aggregate out into independent writes or silently
-acknowledge a no-op. The default `load_snapshot` exists only as best-effort
-legacy assembly, and `capabilities()` lets a host distinguish that behavior
+acknowledge a no-op. The default `load_snapshot` only assembles fragments on a
+best-effort basis, and `capabilities()` lets a host distinguish that behavior
 from an atomic backend.
 
-## Negotiated durability (v8.5.1)
+## Negotiated Durability
 
-`SessionStoreCapabilities` now also advertises optional KRN-6 guarantees.
-Built-in adapters only set a flag when they prove the semantic; hosts must
-negotiate before relying on it:
+`SessionStoreCapabilities` also advertises optional guarantees. A built-in
+adapter sets a flag only when it implements the semantic; hosts must check the
+flag before relying on it:
 
 | Capability                    | Meaning                                                                                           |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -149,10 +176,9 @@ negotiate before relying on it:
 | `reference_aware_artifact_gc` | Artifact retention pins host URI roots so limit eviction cannot drop reachable content.           |
 
 The digest-only WAL stays unencrypted even when encryption at rest is enabled.
-Memory and file adapters continue to advertise the atomic snapshot they already
-proved; the new flags default to unadvertised until configured.
+Flags other than `atomic_session_snapshots` stay unadvertised until configured.
 
-## Resume
+## Resume A Session
 
 <Tabs>
 <Tab label="Rust">
@@ -200,48 +226,59 @@ resumed, err := agent.ResumeSession(ctx, "release-review", &code.SessionOptions{
 
 `resumeSession` restores a saved session snapshot. It is not the same as
 `resumeRun`: use `resumeSession` when the user is continuing a saved
-conversation, and use `resumeRun(runId)` only when a run checkpoint exists for
-an interrupted run. Resume validates the snapshot schema before restoring any
-history or runtime evidence.
+conversation, and use `resumeRun(runId)` to continue an interrupted run.
+Resume validates the snapshot schema before restoring any history or runtime
+evidence.
 
-## Memory And Sessions
+## Resume An Interrupted Run
 
-Session persistence stores conversation and replay evidence. Memory stores
-reusable task facts. Use both when you want resumable workflows that also learn
-from repeated tasks.
+`session.resumeRun(runId)` (Node.js) / `session.resume_run(run_id)` (Python) /
+`session.ResumeRun(ctx, runID)` (Go) / `AgentSession::resume_run` (Rust)
+continues work that stopped before it settled, for example after a crash or
+while a confirmation was parked. The fact log decides what happens next:
 
-## Loop Checkpoints and Run Resumption
+1. If the `SessionStore` holds a loop checkpoint for `runId`, and the
+   checkpoint belongs to this session, its transcript is written into a fresh
+   fact-log thread for the session. The log is then folded. The checkpoint
+   supplies facts; it does not pick the next model call.
+2. Otherwise, if the session's fact log already has facts, that log is folded
+   as it is. A quiescent log takes no step.
+3. Otherwise the call fails. Without a store the error says
+   `resume_run requires a session_store on this session`; with a store it says
+   `no loop checkpoint found for run '<id>'`.
 
-When a `SessionStore` is configured, the agent loop persists a `LoopCheckpoint`
-after each completed tool round. The boundary policy is strict: checkpoints are
-taken **only** between tool rounds, never mid-tool. If a process dies while a
-tool is executing, that round's work is lost on resume and the LLM
-re-deliberates from the previous checkpoint — re-running a non-idempotent tool
-(write, bash) on the wrong side of the boundary is worse than re-asking the LLM.
+Resume folds at most 32 steps per call. When a checkpoint is used, the resumed
+work is recorded as a new run (the checkpoint's run is not modified), the
+checkpoint's token usage and tool-call count are added to the result, and the
+completion gate applies: a turn that mutated the workspace completes only with
+a Passed verification report bound to that mutation.
 
-`session.resumeRun(runId)` (Node) / `session.resume_run(run_id)` (Python) /
-`session.ResumeRun(ctx, runID)` (Go) — core
-`AgentSession::resume_run(checkpoint_run_id)` — loads the latest checkpoint
-stored under that run ID and replays the loop from the last boundary. Because
-the checkpoint lives in the shared store, resume can happen on **any** node that
-shares it. Cumulative accounting continues rather than restarting at zero:
-`total_usage` and `tool_calls_count` carry forward from the checkpoint. A new run
-ID is allocated for the resumed work; the old-to-new relationship is host
-metadata, not interpreted by the framework.
+<Tabs>
+<Tab label="Rust">
 
-Completed runs are not resumed through `resumeRun`; their final state is
-available through `runs()`, `runEvents(runId)`, artifacts, verification reports,
-and session snapshots.
+```rust
+let result = session.resume_run("run-abc123").await?;
+println!("{}", result.usage.total_tokens);
+```
+
+</Tab>
+<Tab label="Node.js">
 
 ```ts
 const result = await session.resumeRun('run-abc123');
 console.log(result.totalTokens);
 ```
 
+</Tab>
+<Tab label="Python">
+
 ```python
 result = session.resume_run('run-abc123')
 print(result.total_tokens)
 ```
+
+</Tab>
+<Tab label="Go">
 
 ```go
 result, err := session.ResumeRun(ctx, "run-abc123")
@@ -251,47 +288,65 @@ if err != nil {
 fmt.Println(result.Usage.TotalTokens)
 ```
 
-Go also exposes workflow checkpoint orchestration through
-`ParallelResumable(ctx, specs, workflowID)`.
+</Tab>
+</Tabs>
 
-`resume_run` rejects when the session has no `sessionStore` configured (or when
-no checkpoint exists for the given ID). `SessionStore` gains
-`save_loop_checkpoint` / `load_loop_checkpoint` / `delete_loop_checkpoint`; the
-file store's writes are crash-atomic. `LoopCheckpoint::ensure_loadable()` is
-called right after deserialization and rejects checkpoints from a future,
-incompatible schema version, so neither `resume_run` nor the live-run sink acts
-on an unreadable checkpoint.
+Headless hosts that need an exact, replay-safe recovery identity use
+`spawnRecoveryWithRunId(checkpointRunId, runId)` (`spawn_recovery_with_run_id`
+in Python, `SpawnRecoveryWithRunID` in Go). It requires a checkpoint for
+`checkpointRunId`, admits the recovery under the host-chosen `runId`, and
+resumes the fact log in a detached worker. Replaying the same recovery `runId`
+returns the existing snapshot instead of executing again. The checkpoint run
+itself stays immutable.
 
-See CHANGELOG `[3.3.0]` — "Loop checkpoints + run resumption" — and `[3.4.0]`
-"LoopCheckpoint::ensure_loadable()".
+Completed runs are not resumed. Their final state is available through
+`runs()`, `runEvents(runId)`, artifacts, verification reports, and session
+snapshots.
+
+### Loop checkpoint format
+
+A `LoopCheckpoint` is written through the session's checkpoint sink after each
+tool result lands on the fact log. It records the tool call and its result,
+the run and session IDs, the run's capability binding, a turn counter, and the
+tool-call count. `SessionStore` provides `save_loop_checkpoint`,
+`load_loop_checkpoint`, and `delete_loop_checkpoint`; the file store writes
+atomically. `LoopCheckpoint::ensure_loadable()` rejects checkpoints from a
+future schema version, and `ensure_owned_by` rejects a checkpoint that belongs
+to another run or session. When a run ends in-process (completed, failed, or
+cancelled), its checkpoint is deleted.
 
 ## Workflow Checkpoints
 
-`WorkflowCheckpoint` is the step-boundary analogue of the tool-round
-`LoopCheckpoint`, one level up: it journals completed orchestration steps so an
-interrupted workflow resumes from the longest completed prefix. Its fields are
+`WorkflowCheckpoint` journals completed orchestration steps so an interrupted
+workflow resumes from the longest completed prefix. Its fields are
 `schema_version`, `workflow_id`, `steps`, and `checkpoint_ms`, with the schema
-pinned by the `WORKFLOW_CHECKPOINT_SCHEMA_VERSION` constant. A resuming run skips
-the recorded steps and re-dispatches only the rest.
+pinned by the `WORKFLOW_CHECKPOINT_SCHEMA_VERSION` constant. A resuming run
+skips the recorded steps and re-dispatches only the rest.
 
-`SessionStore` gains `save_workflow_checkpoint` / `load_workflow_checkpoint` /
-`delete_workflow_checkpoint` (default no-ops; the file store writes
-crash-atomically). Loads from a future, incompatible schema version are rejected
-via `WorkflowCheckpoint::ensure_loadable()`.
+`SessionStore` provides `save_workflow_checkpoint` /
+`load_workflow_checkpoint` / `delete_workflow_checkpoint` (default no-ops; the
+file store writes atomically). Loads from a future, incompatible schema version
+are rejected by `WorkflowCheckpoint::ensure_loadable()`.
 
-This pairs with the orchestration grammar — see
-[Orchestration](/guide/orchestration) and
+Go exposes the same journal through `ParallelResumable(ctx, specs, workflowID)`.
+See [Orchestration](/guide/orchestration) and
 [Multi-Machine](/guide/multi-machine).
 
-See CHANGELOG `[3.4.0]` — "WorkflowCheckpoint".
+## Resuming On A Different Node
 
-## Resuming on a Different Node
+Loop and workflow checkpoints are serializable and live in the shared
+`SessionStore`. A host can therefore recover an interrupted run or workflow on
+a different node from the one that started it. For a run, the recovering node
+seeds its own fact log from the checkpoint and folds from there. The framework
+owns the serializable contract; the host owns placement and transport.
 
-Both checkpoint types are serializable. Combined with a shared `SessionStore`
-and a pluggable executor, this lets a host resume an interrupted run or workflow
-on a **different** node from the one that started it — the framework owns the
-serializable contract, the host owns placement and transport.
+## Memory And Sessions
+
+Session persistence stores conversation and replay evidence. Memory stores
+reusable task facts. Use both when you want resumable workflows that also learn
+from repeated tasks.
 
 ## Operational Notes
 
-Keep session stores out of public commits when they may contain prompts, tool output, or private file paths.
+Keep session stores and `.a3s/effect-log/` out of public commits when they may
+contain prompts, tool output, or private file paths.

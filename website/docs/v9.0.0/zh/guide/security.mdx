@@ -1,42 +1,189 @@
 ---
 title: '安全'
-description: '权限策略、HITL、hook 与验证关卡'
+description: '权限策略、HITL、hook 与验证门禁'
 ---
 
 # 安全
 
-A3S Code 在创建 session 时暴露安全控制，并通过 session hook 暴露生命周期回调。宿主直接调用 `session.tool()`、`session.bash()` 等 API 时，应把它们视为宿主侧特权操作；是否把这些能力暴露给用户，由宿主应用自己判断。
+A3S Code 在创建 session 时暴露安全控制，并通过 session 生命周期 hook 暴露回调。
+宿主直接调用 `session.tool()`、`session.bash()` 等 API 时，应把它们视为宿主侧特权
+操作；是否把这些能力暴露给用户，由调用它们的应用自己决定。
 
-委派子运行会继承所选 subagent 或 worker spec 的有边界权限。使用 `confirmationInheritance` 控制子运行的 Ask 决策，并把高风险发布命令放在显式 policy 后面。
+委派子运行会把自己的本地权限与父级权限检查器取交集，并继承父进程的沙箱。子运行
+可以收窄能力，但不能替换宿主边界。子运行本地的审批行为只适用于子策略引入的 `Ask`；
+父级 `Ask`，以及两级策略都允许之后由工具自身发起的提权，仍由父级确认提供者处理。
+缺少提供者时会在发出 HITL 请求之前失败关闭。高风险的发布命令应放在显式策略之后。
 
-权限确认界面应该向用户说明操作、原因、影响范围和风险，而不只是放两个按钮。
+权限提示应说明操作、原因、范围和风险，而不只是给出两个按钮。
+
+## 强制执行边界
+
+权限策略决定一个操作是允许、拒绝还是需要审批，但它本身并不限制进程。每个本地
+A3S Code session 都会在构建能力之前绑定一个具体的原生 `BashSandbox`。同一个 handle
+会传递给直接工具、模型治理的工具、workflow、Skill 和委派运行。宿主只应使用
+`SessionOptions::with_sandbox_handle` 把默认实现替换为等价的边界；非本地 workspace
+后端保留其显式的命令执行器契约。
+
+Core 与 Code TUI 通过 `NativeBashSandbox` 适配器使用 A3S 自有的 `a3s-sandbox` Rust
+库（固定为 0.2.1）。适配器以该库的 `a3s_bash_baseline` 策略为起点，其网络配置拒绝
+所有出站连接。它为宿主平台选择原生边界：macOS 上的 Seatbelt、Linux 上的 Bubblewrap
+命名空间加 seccomp、Windows 上的 AppContainer 加 kill-on-close Job Object，并在启用
+Bash 之前探测该边界。不需要也不会选择 Node.js、npm 包或任何全局运行时。
+
+就绪之前必须完成能力探测。macOS 需要系统自带的 `/usr/bin/sandbox-exec`；Linux 需要
+`/usr/bin/bwrap` 以及允许的非特权用户命名空间；Windows 使用系统 Program Files 目录中
+的 PowerShell 7 和原生 AppContainer API。TUI 在启用延迟创建的 handle 之前，会通过真实
+的操作系统边界运行一条有界命令。探测失败会把该 handle 标记为不可用，此时 Default 模式
+可以请求一次精确的宿主提权调用，Auto 模式则拒绝 Bash。嵌入式 Core session 同样失败
+关闭：初始化失败会安装一个只返回错误的 handle，而不是回退到本地 workspace 执行器；
+在受治理的本地运行中，没有配置沙箱时默认 `bash` 会被拒绝。
+
+适配器失败关闭，从不静默地在宿主上重试。它拒绝网络出站、本地监听和 Unix socket；
+把写入限制在 workspace 和一个私有 scratch 目录；保护顶层的 `.git`、`.a3s`、`.agents`、
+`.codex`、`.claude`、`.vscode`、`.idea` 目录以及 `.gitmodules` 和 `.mcp.json` 控制
+文件；屏蔽常见凭据存储；并清除环境中的密钥。委派任务、Skill 和 workflow 步骤保留同一
+个 handle。
+
+### Process-host 显式启用
+
+有些部署已经在外层容器或虚拟机中运行 A3S Code（例如 Harbor 或 Terminal-Bench），
+原生沙箱无法在其中初始化。仅在这种情况下，宿主可以设置 `allow_process_host_sandbox`
+（Rust `SessionOptions::with_allow_process_host_sandbox(true)`、Node.js
+`allowProcessHostSandbox`、Python `allow_process_host_sandbox`、Go
+`AllowProcessHostSandbox`），或设置环境变量 `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX`
+（`1`、`true`、`yes` 或 `on`）。原生初始化失败时，session 会直接在宿主上运行
+`bash -c`，带进程组清理和有界输出，而不是安装只返回错误的 handle。这会移除本地边界，
+外层隔离成为唯一的边界。宿主提供的 `sandbox_handle` 始终优先，非本地 workspace
+后端保留自己的命令执行器。
+
+### 网络授权
+
+基线没有网络。Code 不提供更宽的网络配置，也不提供通用的 mediated-HTTP 选项。沙箱内
+`bash` 访问网络的唯一方式是按调用授权：工具调用设置
+`sandbox_permissions: "request_network_grant"` 并提供 `network_grant: { host, port }`。
+host 必须是精确名称（不支持通配符；`localhost` 与 `127.0.0.1` 是不同的 host），port
+可选。该调用需要确认。批准后，沙箱只为这一个 origin 启用受中介的访问，并绑定到当前
+策略 digest；过期的 digest 会被拒绝，授权会记录在结果元数据的 `network_grant` 中，
+包含 `host`、`port` 和 `policy_digest`。使用 `sandbox_permissions: "require_escalated"`
+的调用必须提供 `justification`，并且在沙箱外运行前同样需要确认。
+
+### 进程内文件工具与凭据
+
+内置文件工具在进程内执行，因此 TUI 另外启用了 Core 的本地 workspace 凭据策略。它覆盖
+直接读取和区间读取、写入、编辑、补丁，以及基于 manifest 和回退路径的 grep。显式的敏感
+路径失败关闭，宽泛的 grep 会略过受保护的候选文件，源码树中的硬链接别名会在变更前被
+拒绝。普通包存储中的硬链接仍可使用，除非它们指向已发现的凭据 inode。只读 Git diff
+只为允许的变更路径重新生成输出，类似选项的 revision 不能变成 Git 参数，显示的 remote
+会去掉嵌入的 HTTP 凭据和查询 token。
+
+发布门禁在 macOS、Linux 和 Windows 上运行原生后端。它证明普通 workspace 写入和离线
+工具链命令仍然可用，同时越界写入、符号链接写入、受保护元数据变更、凭据读取、网络
+出站、本地监听和 Unix socket 仍被阻止。
+
+终端执行模式按如下方式应用该边界：
+
+| 模式    | 进程行为                           | 审批行为                                                                                  |
+| ------- | ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| Default | 普通 Bash 在已安装的沙箱中运行。   | 只有显式宿主逃逸、缺少沙箱、受保护元数据变更、修改性 Git 调用或带注解的外部副作用会询问。 |
+| Plan    | Bash 和变更操作不可用。            | 越界操作直接拒绝，不会排队等待之后执行。                                                  |
+| Auto    | 普通 Bash 只在已安装的沙箱中运行。 | 关闭 HITL；任何无法留在边界内的操作都被拒绝。                                             |
+
+## 威胁模型
+
+受保护的资产包括活动 workspace 之外的宿主文件、仓库和智能体控制元数据、凭据存储、
+宿主网络与监听能力、进程生命周期，以及用户审批某个具体操作的权限。模型输出、仓库内容、
+命令输出、抓取的内容、Skill 指令和 MCP 结果都是不可信输入。恶意依赖或子进程被假定能够
+提前关闭输出管道、fork 后代进程、创建符号链接、检查自身环境，并尝试文件系统、socket
+或网络逃逸。
+
+可信计算基包括正在运行的 CLI/Core 二进制、经过校验的发布支持树、所选沙箱提供者与
+操作系统强制机制，以及调用直接 SDK 辅助方法的宿主代码。已配置的 MCP 服务器或原生集成
+是另行信任的扩展；缺少或不安全的行为注解会触发确认，而不会被当作只读。
+
+信任不免除进程归属。每个本地 stdio MCP 服务器都领导一个专用 Unix 进程组。关闭或丢弃
+其传输会停止管道任务、清空待处理请求、回收领导进程并终止后代进程。stderr 管道被独立
+读取，诊断输出不会阻塞协议流量。
+
+这一本地边界不声称能在内核层面抵御被攻破的沙箱提供者、CLI 二进制或操作系统，也不会
+把宿主直连的特权 SDK 变成终端用户授权。对于敌意多租户代码、内核攻击抵抗或 OCI 级隔离，
+请使用更强的工作负载提供者。
+
+## 调用入口
+
+每条 session 自有路径都进入同一个有作用域的调用内核：
+
+| 入口                                                     | 实际 origin                                    | 信任处理                                                          |
+| -------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+| 模型工具调用                                             | Agent                                          | 适用模式策略、权限、工具自身提权和 HITL。                         |
+| 模型发起的 `batch`、`program`、workflow 或公开自定义嵌套 | Governed nested                                | 每个子调用重新进入同一策略。                                      |
+| 宿主直接调用普通自定义工具                               | 顶层为 Host direct                             | 被选中的顶层调用受信任；公开的嵌套调用变为 governed nested。      |
+| 宿主直接调用内置 `batch`、`program` 或 dynamic workflow  | Host direct，随后为 trusted host-direct nested | 只有宿主选择的内置子调用保留控制面权限。                          |
+| 从宿主上下文创建的 Skill、Task、worker 或其他模型子运行  | 子运行中为 Agent                               | 在模型调度前移除环境中的宿主直连权限。                            |
+| 委派子运行的权限或确认                                   | Governed nested/Agent                          | 子策略与父级取交集；父级 `Ask` 和工具自身提权仍由父级提供者处理。 |
+| 工具行为元数据                                           | 在当前 origin 上提权                           | 可以要求确认，但不能削弱 `Ask` 或 `Deny`。                        |
+
+底层 `ToolRegistry` 和独立的 `ProgramExecutor` API 是有意不受治理的构建块，供自己
+拥有 registry 的宿主使用。AgentSession 和 TUI 不会把这些 API 作为回退路径。
+
+## 完整 TUI 决策矩阵
+
+下表单元格是模型调用和普通 governed nested 调用的最终结果。“拒绝”表示不会创建确认
+事件。“确认一次”表示只有一个精确的调用 ID 处于待处理状态；取消或过期不会结算其他提示。
+
+| 模式    | 沙箱   | 普通 Bash                          | 显式宿主 Bash                      | 受保护元数据变更 | 工具自身确认 | 带注解的外部副作用 |
+| ------- | ------ | ---------------------------------- | ---------------------------------- | ---------------- | ------------ | ------------------ |
+| Default | 就绪   | 在沙箱中执行                       | 确认该调用一次；仅批准后在宿主执行 | 确认该变更一次   | 确认一次     | 确认一次           |
+| Default | 不可用 | 确认该调用一次；仅批准后在宿主执行 | 确认该调用一次；仅批准后在宿主执行 | 确认该变更一次   | 确认一次     | 确认一次           |
+| Plan    | 就绪   | 拒绝                               | 拒绝                               | 拒绝             | 拒绝         | 拒绝               |
+| Plan    | 不可用 | 拒绝                               | 拒绝                               | 拒绝             | 拒绝         | 拒绝               |
+| Auto    | 就绪   | 在沙箱中执行                       | 拒绝                               | 拒绝             | 拒绝         | 拒绝               |
+| Auto    | 不可用 | 拒绝                               | 拒绝                               | 拒绝             | 拒绝         | 拒绝               |
+
+origin 只以如下方式修改该矩阵：
+
+| origin/调用形态                      | 与矩阵的关系                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Agent 或普通 governed nested         | 完全使用矩阵。                                                                                                          |
+| 宿主直接调用自定义工具               | 被选中的顶层调用跳过面向模型的权限/HITL；每个公开嵌套调用回到矩阵。                                                     |
+| 受信任的内置 host-direct nested      | 因宿主提供了内置编排及其子调用，跳过面向模型的权限/HITL。hook、预算、超时、取消、递归检查、沙箱选择和输出清理仍然生效。 |
+| 在任何宿主直连调用内产生的模型子运行 | 回到 Agent 行，完全使用矩阵。                                                                                           |
+
+决策优先级失败关闭：先是活动 Skill 限制和硬性护栏，然后是 hook 阻断、origin 权限、
+模式/权限策略、工具自身提权、确认是否可用，最后才是执行。终端策略始终使用
+`TimeoutAction::Reject`；TUI 不接受 Core 通用的 `AutoApprove` 选项。
+
+应把原生沙箱视为本地强制提供者，而不是整个技术栈的执行契约。A3S Code 负责智能体
+策略及其 `BashSandbox` 接口。A3S Runtime 负责持久、与提供者无关的 Task 和 Service
+生命周期与调度。A3S Box 负责 OCI 和更强的隔离。A3S Observer 和 A3S Sentry 可以作为纵深
+防御补充执行证据和自适应运行时强制，但不替代确定性的逐进程沙箱边界。
 
 ## 安全下载
 
-`download` 是有边界的工作区修改操作，不是任意网络或文件系统原语。它只会在会话拥有
-可写本地工作区时注册。模型选择的调用与其他修改一样经过权限策略、HITL 确认、Hook、
-超时、取消和工作区检查。直接调用 `session.tool('download', ...)` 仍是宿主特权操作，
-嵌入应用必须先完成授权。
+`download` 是有界的 workspace 变更，而不是不受限制的网络或文件系统原语。只有当
+session 拥有可写的本地 workspace 时才会注册。模型选择的调用与其他变更一样经过权限策略、
+HITL 确认、hook、超时、取消和 workspace 检查。直接调用 `session.tool('download', ...)`
+仍是宿主特权操作，需要在嵌入应用中完成授权。
 
-网络边界只接受 HTTP(S)，拒绝 URL 用户信息和非公网目标，并逐跳重新校验有限次数的
-重定向。直接连接会拒绝包含任何私网或保留地址的 DNS 结果，并把该跳验证后的公网地址
-固定给请求。跨源重定向会移除凭据和资源校验器。显式代理模式由已配置代理解析域名，
-但仍保留字面主机与重定向检查。
+其网络边界只接受 HTTP(S)，拒绝 user information 和非公网目标，并对每一个有界重定向
+跳转重新校验。直连会拒绝包含任何私有或保留地址的 DNS 应答，并为该跳固定已校验的公网
+地址。跨 origin 重定向会丢弃凭据和资源校验器。显式代理模式把主机名解析交给配置的代理，
+但保留字面地址和重定向检查。
 
-对象存储和发行系统经常用签名查询参数授权，所以实际请求会保留它们；诊断信息和
-`source_anchors` 会移除这些参数，成功或失败的工具元数据不会暴露签名。
+签名查询参数会被保留，因为对象存储和发布系统需要它们来授权请求。它们会从诊断信息和
+`source_anchors` 中移除，因此成功或失败的工具结果都不会在元数据中泄露这些密钥。
 
-目标路径必须位于本地工作区内，且不能跨越符号链接。内容在字节数和时间上限内流式写入
-相邻临时文件；严格 Range 校验、可选 `expected_sha256`、先同步后提升与原子替换会阻止
-不完整或未验证内容进入最终路径。取消或失败会清理临时文件，`overwrite` 默认 `false`。
+目标路径必须位于本地 workspace 之下，且不能穿过符号链接。内容在字节和时间限制下流式
+写入相邻的临时文件。严格的 Range 校验、可选的 `expected_sha256`、提升前同步以及原子替换，
+确保不完整或未经校验的数据不会出现在最终路径。取消和失败会删除临时文件；`overwrite`
+默认为 `false`。
 
-完整参数契约见[工具](/guide/tools#二进制安全的本地下载)。
+完整参数契约见[工具](/guide/tools#binary-safe-local-downloads)。
 
-## 权限策略与 Hook
+## 权限策略
 
 ```ts title=permissions.ts
 const session = agent.session('/repo', {
-  // !callout(1:7) 执行前生效
+  // !callout(1:7) Applied before execution
   permissionPolicy: {
     deny: ['bash(rm -rf*)', 'write(**/.env*)'],
     ask: ['bash(git push*)', 'bash(npm publish*)'],
@@ -47,7 +194,25 @@ const session = agent.session('/repo', {
 });
 ```
 
-Hook API 的管理面包括注册、计数和卸载：
+规则使用 `Tool(pattern)` 或裸 `Tool` 名称，工具名匹配不区分大小写；支持
+`mcp__github__*` 这样的工具通配符。旧的 `grep`、`glob`、`bm25` 规则会被改写为对应的
+`search` 模式。求值顺序是**先 deny，再 allow，再 ask，最后 `defaultDecision`**
+（`core/src/permissions/policy.rs`）。因此同一调用同时命中 `allow` 和 `ask` 时，
+`allow` 生效：不要让希望保护的 `ask` 模式落在更宽的 `allow` 模式之内。
+`defaultDecision` 默认为 `ask`，`enabled: false` 会允许一切。
+
+发布或生产 session 应避免宽松的默认值。让危险命令显式且可审计。
+
+## 确认
+
+`ask` 决策、声明需要确认的工具（例如使用 `require_escalated` 或
+`request_network_grant` 的 `bash`），以及带注解的外部副作用，都会变成针对一个精确调用
+的待处理确认。没有可用的确认提供者时，调用会在发出 HITL 请求之前失败关闭。委派子运行
+对父级 `Ask` 和工具自身提权保留父级确认提供者。
+
+## 钩子
+
+钩子在 session 上注册，包含事件类型、匹配器、可选配置和处理函数：
 
 ```ts
 session.registerHook(
@@ -62,4 +227,9 @@ console.log(session.hookCount());
 session.unregisterHook('observe-secret-read');
 ```
 
-发布流程应要求测试、包检查、CI 和 provider 验证证据。
+## 验证
+
+修改过 workspace 的回合不能靠助手文本完成。完成门禁要求一份绑定到该回合 mutation
+effect digest 的 Passed 验证报告，或针对该 digest 的宿主 waiver；见
+[验证](/guide/verification#完成门禁)。验证报告和摘要可以从 session 和部分结果字段中获取。
+发布流程应要求测试、包检查、CI 检查和提供者证据。

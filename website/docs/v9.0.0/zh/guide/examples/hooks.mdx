@@ -106,9 +106,9 @@ session = agent.session('.', SessionOptions())
 session.register_hook(
     'observe-env-read',
     'pre_tool_use',
-    {'pathPattern': '**/.env*'},
+    {'path_pattern': '**/.env*'},
     {'priority': 100},
-    lambda: {'action': 'continue'},
+    lambda event: {'action': 'continue'},
 )
 
 print("active hooks:", session.hook_count())  # 1
@@ -188,8 +188,13 @@ func main() {
 - 钩子回调返回一个决策。返回 `{ action: "continue" }`（Node）/
   `{"action": "continue"}`（Python）/
   `&code.HookResponse{Action: "continue"}`（Go）即可让 Agent 继续执行。
-- 匹配器（`{ pathPattern: '**/.env*' }`）将钩子限定到路径匹配该模式的事件，而
+- 永久拒绝返回带原因的 `block`。临时拒绝返回带原因的 `retry`，并附上 `delayMs`（Node）、
+  `delay_ms`（Python）或 `DelayMS`（Go）。被拒绝的工具结果会暴露
+  `error_kind.type = "hook_denied"` 以及 `retryable` 和 `retry_after_ms`，宿主无需解析输出文本。
+- 匹配器（Node 为 `{ pathPattern: '**/.env*' }`，Python 为 `{'path_pattern': ...}`，
+  Go 为 `HookMatcher{PathPattern: ...}`）将钩子限定到路径匹配该模式的事件，而
   `{ priority: 100 }` 用于对同一事件上的多个钩子排序（数值越小越先执行）。
+- 回调只接收一个参数，即事件本身。
 - Node 钩子回调**不得**抛出异常——未捕获的抛出可能会终止进程。请让处理逻辑保持完备，
   并始终返回一个决策。
 - `hookCount` / `hook_count` / `HookCount` 反映当前已注册钩子的数量，在测试中可方便地断言注册与

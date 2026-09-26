@@ -94,6 +94,21 @@ session store by itself. SDK hosts can always pass
 `sessionStore: new FileSessionStore(...)` /
 `opts.session_store = FileSessionStore(...)` directly.
 
+## Proxies
+
+Model HTTP clients, MCP HTTP transports (SSE and streamable HTTP), and MCP
+OAuth read the proxy only from explicit environment variables:
+
+| Variable                      | Effect                                                                      |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `http_proxy` / `HTTP_PROXY`   | Proxy for `http://` requests                                                |
+| `https_proxy` / `HTTPS_PROXY` | Proxy for `https://` requests; falls back to the HTTP proxy                 |
+| `NO_PROXY` / `no_proxy`       | Hosts that bypass either proxy, such as `localhost` or an internal MCP host |
+
+System proxy discovery is disabled on these clients, so an unset variable means
+a direct connection. An invalid proxy URL fails client construction with
+`Invalid HTTP proxy URL` or `Invalid HTTPS proxy URL`.
+
 ## Private Provider Checks
 
 Real-provider smoke tests should point at a local, git-ignored ACL file through

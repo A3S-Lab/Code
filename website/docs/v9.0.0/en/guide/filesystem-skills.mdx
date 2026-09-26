@@ -7,13 +7,14 @@ description: 'Organize reusable skills and checklists in workspace skill directo
 
 `skills/` stores reusable skills. Skills express stable process, checklists, domain terms, and tool-use guidance. A skill is not a worker agent and does not start an independent session.
 
-A3S Code commonly uses two locations:
+The conventional location is:
 
 ```text
 repo/.a3s/skills/          # workspace-level skills
 ```
 
-Workspace skills are loaded through `skillDirs` or `agent.acl` `skill_dirs`.
+Skill directories are never scanned implicitly. Load them through ACL
+`skill_dirs` (shared by every session of the agent) or session `skillDirs`.
 Worker definitions use `agentDirs`; do not put skill directories in `agentDirs`.
 
 ## Skill File
@@ -53,6 +54,21 @@ const session = agent.session('/repo', {
   skillDirs: ['./.a3s/skills'],
 });
 ```
+
+```acl
+skill_dirs = ["./.a3s/skills"]
+```
+
+Each directory is walked recursively. A skill is either a `*.md` file or a
+`SKILL.md` inside a subdirectory, so both layouts work:
+
+```text
+.a3s/skills/release-readiness.md
+.a3s/skills/migration/SKILL.md
+```
+
+A missing directory loads zero skills. When two files declare the same `name`,
+the later one replaces the earlier one and a warning is logged.
 
 The model can use `search_skills` to find relevant skills. File skills and inline skills share discovery semantics. As directories grow, keep `name` and `description` searchable and unambiguous.
 

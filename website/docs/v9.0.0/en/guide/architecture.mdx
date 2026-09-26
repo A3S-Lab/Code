@@ -15,13 +15,144 @@ CodeConfig + SessionOptions
   -> ResolvedSessionConfig
   -> AgentSession
        -> single-flight run admission
-       -> safe-point run-control inbox
-       -> InvocationContext
+       -> FactRun (one per run)
+            ├─ fact log   .a3s/effect-log/<thread>.jsonl
+            ├─ fold       -> view + next transition
+            ├─ kernel     -> permission projection, completion gate
             ├─ LLM invoker  -> provider calls
             ├─ tool invoker -> model, nested, delegated, and host-direct calls
             └─ events       -> EventEnvelopeV1 -> Rust / Node / Python / Go consumers
        -> SessionSnapshotV1 -> atomic store generation
 ```
+
+## Fact-Log Control
+
+The coding loop is a fold over an append-only fact log. Nothing else chooses
+the next step: not a loop checkpoint, not an in-memory flag, not a timer. Each
+run opens a `FactRun` for the session and settles it by appending a fact and
+folding the log again. The fold is `a3s-effect`: a new prompt enters through
+`ingest_coding`, and `resume_coding` continues an existing log
+(`core/src/fact_control.rs`).
+
+### The fact log
+
+The log for a session lives at `<workspace>/.a3s/effect-log/<thread>.jsonl`.
+The thread is the session ID when that ID is at most 128 characters of
+`A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. Other session IDs map to a stable
+`s-<hex>` thread.
+
+| Fact kind               | Appended when                                   |
+| ----------------------- | ----------------------------------------------- |
+| `user.message`          | A prompt or an applied steer arrives            |
+| `model.turn`            | The model returns text or a tool call           |
+| `tool.result`           | A tool call finishes, is denied, or is blocked  |
+| `confirmation.answered` | The host approves or rejects a parked tool call |
+| `question.answered`     | The host answers a parked `ask_user` question   |
+| `compaction.done`       | The `compact` part summarizes older facts       |
+| `budget.denied`         | The `budget` part refuses another tool call     |
+
+### Fold and next transition
+
+Folding the log yields a view (system lines, messages, tool specs, pending
+confirmation or question, assistant text) and a phase: `idle`, `infer`,
+`compact`, `confirm`, `question`, `tool`, `deny`, or `done`. The phase is the
+next transition. `infer` calls the model, `tool` runs the recorded call,
+`compact` summarizes, and `done` ends the run. The actor that folds the log is
+assembled by [Meta Harness](/guide/meta-harness); without a recipe it is the
+default stock tree.
+
+A run is bounded by a step limit of 32 transitions per `send`, `stream`, or
+`resume_run`. Reaching it stops the run with a `StepLimit` error rather than
+silently continuing. When a session is resumed from stored
+history into an empty log, prior turns are recorded as `model.turn` facts, so
+they are not sent to the model again. An existing log is left as it is.
+
+### Parking
+
+`confirm` and `question` are parked phases. The fold stops there and waits for
+a fact. The fact log has no timeout for a parked call.
+
+- A tool call whose permission decision is Ask parks in `confirm`. During a live
+  run, the session's confirmation manager asks the host and emits
+  `confirmation_required`. `confirm_tool_use(tool_id, approved, reason)` settles
+  it. The answer is appended as `confirmation.answered`, and the fold continues.
+  Any timeout belongs to the host's confirmation policy, not to the log.
+- An `ask_user` call parks in `question` and emits `user_question`. The answer
+  is appended as `question.answered`. A run that asks more questions than the
+  cap fails with `ask_user question cap exceeded`.
+
+Because the answer is a fact, a parked call survives a process restart. After
+restart, `confirm_tool_use` for the parked tool ID appends the answer and the
+fold resumes from the log.
+
+### Resume
+
+`resume_run` folds the log and continues from its phase. When a loop checkpoint
+exists for the run, the thread's log is first rebuilt from the checkpoint
+transcript; the checkpoint supplies history, not the next model call. A `tool`
+phase whose result is missing runs that tool once. A quiescent log resumes
+with zero steps.
+
+### Steer
+
+`steer` does not start a second turn. At the next provider call the run
+drains its control inbox, appends each steer as a `user.message` fact, and
+sends it with that request. `interrupt` cancels cooperatively; the run records
+the result and cleans up before it reaches `cancelled`.
+
+### Tool budget and tool-round cap
+
+Two counters limit tool work. Both count successful tool results since the
+latest `user.message`, so an applied steer resets them.
+
+- The stock `budget` part allows 8 successful tool results per turn in a live
+  session, unless a Meta Harness recipe sets `tool_budget`. A tool call after
+  that records `budget.denied` and ends the turn without running the tool.
+- `max_tool_rounds` is the tool-round cap. It comes from the ACL
+  `max_tool_rounds` key, or per session from
+  `SessionOptions::with_max_tool_rounds` (Node.js `maxToolRounds`, Python
+  `max_tool_rounds`, Go `MaxToolRounds`). Once the cap is reached, the next completion request
+  carries an empty tool list, so the model must answer in text. There is no
+  separate finalization message.
+
+## Kernel Wrappers
+
+Two checks wrap every fact run. They belong to the kernel, so a Meta Harness
+recipe cannot remove them (`KernelPolicy::admit()` always enables both).
+
+### Permission projection
+
+Every tool call the model returns is projected through the session's
+`PermissionPolicy` before the fold stores it:
+
+- A policy **deny** is final. The call is recorded with a `Permission denied`
+  result and a `permission_denied` event.
+- A policy **allow** runs the tool. A YOLO lane is recorded as allow before the
+  check, so it does not turn an Ask into a prompt.
+- An **ask** defers to the session permission checker. For example, the plan
+  mode guardrail denies a write that the default policy would ask about. If the
+  checker still asks, the call parks in `confirm`.
+- A session without a confirmation manager has confirmation disabled, so an
+  Ask runs the tool.
+
+Active skill restrictions are applied at the same point and produce a denial
+result.
+
+### Completion gate
+
+A run that mutated the workspace is complete only when a Passed verification
+report bound to the mutation digest exists, or a host waiver covers that
+digest. At the end of the run the kernel first merges a report from the host
+`CompletionAttestor`, if one is installed, and then decides:
+
+- **Allow** sets the result's completion to verified, waived, or narrative (no
+  mutation).
+- **Incomplete** or **Continue** returns an error instead of a completed
+  result.
+
+Once the latest folded fact is a tool result and the gate already allows
+completion, the run finishes without another provider call. Assistant text is
+never accepted as evidence. See [Verification](/guide/verification).
 
 ## Async-First Session Construction
 
@@ -93,10 +224,10 @@ requested output. Filesystem instructions, Skills, and host context remain
 separate inputs, so changing the default prompt does not shadow runtime policy
 or remove tool capability.
 
-Each active Run owns a bounded control inbox. `steer` appends a new user
-direction to the same transcript at the next provider or tool safe point;
-`interrupt` requests cooperative cancellation and lets normal cleanup,
-checkpointing, hooks, and event persistence finish. Idempotency keys, immutable
+Each active Run owns a bounded control inbox. `steer` is appended to the fact
+log as a `user.message` at the next provider call (see
+[Steer](#steer)); `interrupt` requests cooperative cancellation and lets normal
+cleanup, checkpointing, hooks, and event persistence finish. Idempotency keys, immutable
 Run IDs, optional turn revisions, and deadlines prevent retries or stale UI
 state from affecting a newer turn. Compaction and recovery retain the objective,
 constraints, acceptance criteria, decisions, and verification evidence needed

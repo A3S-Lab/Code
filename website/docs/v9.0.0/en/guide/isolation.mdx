@@ -20,6 +20,61 @@ Relative file, search, shell, and git operations are evaluated from the session
 workspace. Security providers and hooks are session options; validate the exact
 policy path you depend on before using them as a production boundary.
 
+Shell commands additionally run inside the session's native process sandbox
+with network denied by default. See
+[Security](/guide/security#enforced-execution-boundary) for the sandbox, the
+process-host opt-in, and per-call network grants.
+
+## Effect Isolation
+
+Effect isolation keeps a session's writes off the source checkout until the
+host promotes them. With it enabled, session construction binds a Git worktree
+at the source's current `HEAD` in a sibling directory named
+`.a3s-isolate-<session_id>` next to the source root, and the session's tools
+and shell work there. A source root that is not a Git repository fails closed:
+session creation returns an `isolation unavailable` error instead of falling
+back to shared writes.
+
+```rust
+let options = SessionOptions::new().with_effect_isolation(true);
+```
+
+```ts
+const session = agent.session('/repo', { effectIsolation: true });
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	EffectIsolation: code.Ptr(true),
+})
+```
+
+Python `SessionOptions` in 9.0.0 has no public setter for this field.
+
+Promotion is a Rust host operation:
+`a3s_code_core::effect_isolation::promote_current(session_id)` captures the
+worktree change set, applies it to the source tree once, and returns
+`Applied { digest }`, `Idempotent { digest }` for a replayed digest, or
+`Conflict { bound_revision, current_revision }` when the source `HEAD` moved
+since binding (nothing is applied). Discarding the worktree never touches the
+source. Node.js and Go hosts that promote changes themselves can record the
+applied digest with `session.notePromotedDigest(digest)` or
+`session.NotePromotedDigest(ctx, digest)`.
+
+A read-only session (`with_read_only_session(true)`, Node.js
+`readOnlySession`, Go `ReadOnlySession`) does not create an isolation worktree.
+The flag only skips isolation binding; it does not remove write tools. Use a
+permission policy to deny writes.
+
+## Path Rules
+
+`path_rules` (Rust `with_path_rules`, Node.js `pathRules`, Go `PathRules`) are
+path-scoped instruction fragments, each `{ glob, text }`. When a tool call or
+plan targets a matching path, the matching text is added to the model context
+within a fixed byte budget (`core/src/path_instructions.rs`). They guide the
+model; they are not access control. Enforce path boundaries with permission
+rules and the workspace sandbox.
+
 ## Delegated Context
 
 `task` and automatic subagent delegation isolate child reasoning. The parent

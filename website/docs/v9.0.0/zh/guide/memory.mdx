@@ -1,61 +1,31 @@
 ---
 title: '记忆'
-description: '会话记忆存储与显式召回'
+description: '会话记忆存储、大语言模型抽取、召回与宿主绑定的持久记忆'
 ---
 
 # 记忆
 
-记忆用于记录可复用事实，帮助驾驭层复用经验。
+记忆用于记录以往工作中可复用的事实，帮助驾驭层复用经验，而不是把所有内容塞进每次
+提示词。A3S Code 有两层：
+
+- **会话记忆**：每个会话默认拥有的 `MemoryStore`。运行时从已完成的回合中抽取记忆，
+  并在每个回合前召回相关条目。
+- **持久记忆**：可选的、由宿主绑定的 A3S Memory 仓库（`DurableMemorySession`）。
+  召回只准入宿主显式激活的节点。这是 Rust 宿主集成面。
 
 ## 默认存储
 
-每个会话默认都有记忆存储。普通 SDK 会话若不传入自定义存储，会使用
-`<workspace>/.a3s/memory` 下的文件存储。`a3s code` TUI 使用和 `/memory` 面板相同的
-`memory_dir`；默认是 `~/.a3s/memory`，所以不同项目会共享这份长期记忆，除非你配置
-项目本地路径。可以通过配置中的 `memory_dir` 移动默认位置，也可以给单个会话
-传入带类型的存储对象来覆盖默认后端。若文件存储初始化失败，会话会降级到
-内存存储，并通过初始化警告暴露该问题。
-
-## 大语言模型抽取
-
-有可用记忆存储时，默认启用大语言模型记忆抽取。每个已完成且非空的回合都会提交给
-当前模型。是否存在能改变未来回答或行动的信息，由模型判断，而不是由关键词列表、
-工具类型或回合长度启发式规则判断。没有符合条件的内容时，模型必须返回空的
-`items` 数组。工具调用及其结果只作为判断上下文，绝不会被机械地复制进长期记忆。
-
-系统只接受持久的 `semantic`（语义）或 `procedural`（过程）记忆，并要求来源、
-重要度、置信度、作用域以及未来价值理由均通过校验。运行时会拒绝格式错误的输出和
-明显的凭据；这些是结构与安全检查，不负责判断语义价值。
-
-模型会收到一组有数量上限的相关记忆，并可把给定标识标记为 `supersedes`
-（取代）或 `conflicts_with`（冲突）。运行时会校验这些关系、移除已确认被取代的
-条目并保留冲突。流式宿主会在发布最终事件前注册抽取任务，按先进先出顺序处理回合，
-并在优雅关闭时等待已经受理的抽取任务。
-
-`rememberSuccess` 和 `rememberFailure` 仍是显式 SDK 操作。普通智能体运行时不会
-因为工具结果而自动调用它们。
-
-## 存储清理
-
-默认存储只会合并规范化后完全重复的内容。标点仍有意义；表述不同但相关的内容会保持
-独立，除非大语言模型通过 `supersedes` 显式合并。存储层不会根据关键词重叠推断
-语义等价。
-
-配置自动清理后，系统会删除陈旧且重要度低的记忆；但精选记忆会受到强保护：
-固定或受保护的条目、频繁召回的条目、已合并的记忆，以及带 `supersedes` 或
-`conflicts_with` 关系元数据的条目，都不会因为容量上限被直接裁掉。
-
-可以在 `config.acl` 中调整抽取上限：
+每个会话都有记忆存储。若不传入自定义存储，会话使用已加载配置中 `memory_dir` 指定的
+文件存储；未设置 `memory_dir` 时使用 `<workspace>/.a3s/memory`。若文件存储无法创建，
+会话会降级到内存存储，并通过初始化警告暴露该问题。
 
 ```acl
-memory {
-  llmExtraction = true
-  llmExtractionMaxItems = 5
-  llmExtractionMaxInputChars = 8000
-}
+memory_dir = "./.a3s/memory"
 ```
 
-## 手动写入与召回
+## 覆盖存储
+
+为单个会话传入带类型的存储对象即可覆盖后端：
 
 ```ts
 import { FileMemoryStore } from '@a3s-lab/code';
@@ -63,22 +33,188 @@ import { FileMemoryStore } from '@a3s-lab/code';
 const session = agent.session('/repo', {
   memoryStore: new FileMemoryStore('./.a3s/memory'),
 });
-
-await session.rememberSuccess(
-  'release preflight',
-  ['bash', 'grep'],
-  'provider 验证通过',
-);
-const related = await session.recallSimilar('release provider verification', 5);
-const recent = await session.memoryRecent(10);
-const tagged = await session.recallByTags(['grep'], 10);
 ```
 
-Memory 是辅助上下文，当前任务的验证证据仍来自当前命令和 trace。
+```python
+from a3s_code import FileMemoryStore, SessionOptions
 
-## 持久记忆模式
+opts = SessionOptions()
+opts.memory_store = FileMemoryStore("./.a3s/memory")
+session = agent.session("/repo", opts)
+```
 
-生产环境的持久记忆绑定必须使用 **Active recall**
-（`DurableMemorySession::active_recall`）。仅候选的 **shadow** 模式
-（`ShadowCandidates` / `::shadow`）已**移除**（`HARNESS-CONV4` / `CAP-GA1`）。
-抽取仍可写入有证据支撑的 Candidate 节点；宿主需显式激活后，recall 才会准入。
+## 自动召回
+
+每次调用模型前，Core 会召回最多五条与当前提示词相似的会话记忆，并加入有预算的上下文
+组装（见[上下文](/guide/context)）。存在持久记忆绑定时，其准入的 Active 节点也会
+加入；两层返回相同的规范化文本时，只使用一次持久记忆条目。
+
+## 大语言模型抽取
+
+有可用记忆存储时，默认启用大语言模型记忆抽取。每个提示词和回复都非空的已完成回合
+都会提交给当前模型。是否存在能改变未来回答或行动的信息，由模型判断，而不是由关键词
+列表或工具类型启发式规则判断。没有符合条件的内容时，模型必须返回空的 `items` 数组。
+工具调用及其结果只作为判断上下文，绝不会被机械地复制进长期记忆。
+
+自动输出刻意收窄。运行时只接受表示持久事实、偏好和决策的 `semantic` 记忆，或表示
+可复用流程与失败教训的 `procedural` 记忆。每个条目必须带有通过校验的 `source`、
+`scope` 和非空的未来价值 `reason`，且 `importance` 不低于 0.70、`confidence` 不低于
+0.75。存储的元数据还会记录工作区、会话 ID 以及 `a3s.memory.durable.v1` 模式。运行时
+会拒绝格式错误的输出，以及明显的 API 密钥、令牌、密码赋值和私钥；这些检查只校验结构与
+安全，不判断语义价值。
+
+抽取提示词最多包含五条相关的已有记忆。模型可以用 `supersedes` 标记被直接取代或合并的
+记忆，用 `conflicts_with` 标记应保持可见的矛盾。运行时只接受它提供给模型的关系 ID，
+移除已确认被取代的条目、保留冲突，并在之后的召回中附带关系注解。
+
+抽取任务在每个会话内按先进先出排队。流式运行在最终事件之后于后台抽取，因此慢抽取
+不会拖慢回复；非流式 `send` 会在返回前完成抽取。优雅关闭会话时，最多等待五秒，以完成
+关闭前已受理的抽取。
+
+在配置文件中调整抽取：
+
+```acl
+memory {
+  llm_extraction = true
+  llm_extraction_max_items = 5
+  llm_extraction_max_input_chars = 8000
+}
+```
+
+## 存储清理
+
+默认记忆存储遇到规范化后完全重复的内容时，会返回规范条目，提高其重要度，并保留有用的
+标签、来源和关系元数据。表述不同但相关的内容会保持独立，除非大语言模型通过
+`supersedes` 显式合并。
+
+配置自动清理后，系统会删除陈旧且重要度低的记忆，但会强保护精选记忆：固定或受保护的
+条目、频繁召回的条目、已合并的记忆，以及带 `supersedes` 或 `conflicts_with` 关系
+元数据的条目。
+
+## 显式写入与召回
+
+`rememberSuccess` 和 `rememberFailure` 是显式 SDK 操作，供确实需要存储这类记录的宿主
+使用。智能体运行时不会为每个工具结果调用它们。
+
+```ts
+await session.rememberSuccess(
+  'release preflight',
+  ['bash', 'search'],
+  'Release checks passed after provider verification',
+);
+await session.rememberFailure(
+  'provider verification',
+  'missing PROVIDER_BASE_URL',
+  ['bash'],
+);
+
+const related = await session.recallSimilar('release provider verification', 5);
+const recent = await session.memoryRecent(10);
+const tagged = await session.recallByTags(['release'], 10);
+```
+
+```python
+session.remember_success(
+    "release preflight",
+    ["bash", "search"],
+    "Release checks passed after provider verification",
+)
+related = session.recall_similar("release provider verification", 5)
+recent = session.memory_recent(10)
+tagged = session.recall_by_tags(["release"], 10)
+```
+
+```go
+err := session.RememberSuccess(ctx, "release preflight",
+	[]string{"bash", "search"}, "Release checks passed after provider verification")
+related, err := session.RecallSimilar(ctx, "release provider verification", 5)
+recent, err := session.MemoryRecent(ctx, 10)
+```
+
+召回的记忆只是辅助上下文，验证证据仍来自当前命令和 trace。
+
+## 持久记忆（Rust 宿主）
+
+Rust 宿主可以用 `SessionOptions::with_durable_memory` 把会话绑定到一个确切的 A3S Memory
+仓库命名空间。Code 负责抽取、激活门禁与上下文准入；仓库负责命名空间隔离、修订历史和
+原子变更集；宿主负责构造仓库、嵌入提供方和向量索引，并选择租户、主体和作用域。
+
+### Active recall
+
+`DurableMemorySession::active_recall` 是唯一的绑定模式
+（`DurableMemoryMode::ActiveRecall`）：
+
+1. 抽取会把有证据支撑的 **Candidate** 节点写入命名空间。Candidate 永远不会被查询进
+   提示词上下文。
+2. 宿主通过 `activate_candidate(DurableMemoryActivation)` 激活某个确切的候选修订。
+   激活需要新的 Manual 或 Verification 决策证据；大语言模型给出的置信度和重要度不能
+   授权激活。
+3. 召回执行有上限、仅限 Active 的词法查询（`a3s.memory.lexical.word-cjk-bigram.v1`），
+   可选地再做有限次数的一跳 `RelatedTo` 读取。`DurableMemoryRecallPolicy::try_new`
+   接收结果上限和最低词法分数；`try_with_related_lookups` 开启关系读取（默认为零）。
+4. 最终上下文组装完成后，Code 为每个选中的节点修订记录一次准入。过期或非 Active 的
+   准入会在调用模型前移除。只有节点确实被使用时，宿主才调用 `record_use`。
+
+```rust
+use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySession, SessionOptions};
+use a3s_memory::repository::{FileMemoryRepository, MemoryNamespace};
+use std::sync::Arc;
+
+let repository = Arc::new(FileMemoryRepository::open(".a3s/memory-v2").await?);
+let namespace = MemoryNamespace::try_new("tenant-acme", "principal-alice", "repo-a3s-code")?;
+let recall = DurableMemoryRecallPolicy::try_new(5, 0.40)?.try_with_related_lookups(8)?;
+
+let options = SessionOptions::new().with_durable_memory(DurableMemorySession::active_recall(
+    repository, namespace, recall,
+));
+```
+
+Code 会用命名空间补全缺省的 `tenant_id` 和 `principal`；显式传入的值必须与之一致。
+活动仓库对象不会被序列化。会话快照保存不含机密的 `DurableMemoryBindingV1`，恢复时
+宿主必须重新注入等价绑定，否则恢复以失败关闭。
+
+### 语义召回与刷新
+
+`DurableMemorySemanticRecall::new` 把宿主提供的 `EmbeddingProvider` 与调用方拥有的
+A3S Memory `VectorIndex` 组合起来，再用 `with_semantic_recall` 挂载。查询时，Code 嵌入
+查询文本，只搜索由命名空间和服务代派生的分区，从仓库重新读取每个候选，并要求其为
+`Active` 状态且节点修订和内容摘要完全一致。经过校验的词法排名与语义排名通过倒数排名
+融合合并（`a3s.code.memory.hybrid.rrf-k60.v1`）。任何嵌入、向量或校验失败都会丢弃
+语义分支并保留词法结果。
+
+向量不会被隐式更新。可以按需从完整的、仅 Active 的仓库快照刷新：
+
+```rust
+use a3s_memory::vector::VectorMutationConsistency;
+use tokio_util::sync::CancellationToken;
+
+let receipt = durable_memory
+    .refresh_semantic_recall_requiring(
+        VectorMutationConsistency::IndexRevisionCas,
+        CancellationToken::new(),
+    )
+    .await?;
+```
+
+也可以使用会话拥有的定时刷新，它总是要求索引修订 CAS：
+
+```rust
+use a3s_code_core::memory::{MemoryMaintenanceOptions, ScheduledSemanticRefresh};
+use std::time::Duration;
+
+let maintenance = MemoryMaintenanceOptions::new()
+    .with_semantic_refresh(ScheduledSemanticRefresh::try_new(Duration::from_secs(300))?);
+let options = options.with_memory_maintenance(maintenance);
+```
+
+宿主可以通过 `memoryMaintenanceHealth()`（Node）、`memory_maintenance_health()`
+（Python）或 `MemoryMaintenanceHealth`（Go）读取维护健康状态。
+
+### 生产资格验证工具
+
+`core/examples/durable_memory_prod1_host` 是宿主资格验证工具（`DM-PROD1`），它针对真实的
+OpenAI 兼容嵌入提供方，验证带索引修订 CAS 的 Redis `VectorIndex`、带栅栏的租约、重启、
+故障转移与漂移。它需要 `dm-prod1-host` 特性，不属于任何发布配置。参见
+[DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](https://github.com/A3S-Lab/Code/blob/main/manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md)
+和完整集成手册
+[DURABLE_MEMORY.md](https://github.com/A3S-Lab/Code/blob/main/manual/DURABLE_MEMORY.md)。

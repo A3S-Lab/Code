@@ -65,15 +65,16 @@ checkpoint。
 
 key 的大小写风格因 SDK 而异：
 
-| 概念            | Node（camelCase） | Python（snake_case） |
-| --------------- | ----------------- | -------------------- |
-| step id         | `taskId`          | `task_id`            |
-| tool-round 上限 | `maxSteps`        | `max_steps`          |
-| 父 session      | `parentSessionId` | `parent_session_id`  |
-| 强制模式约束    | `outputSchema`    | `output_schema`      |
+| 概念            | Node（camelCase） | Python（snake_case） | Go（struct 字段） |
+| --------------- | ----------------- | -------------------- | ----------------- |
+| step id         | `taskId`          | `task_id`            | `TaskID`          |
+| tool-round 上限 | `maxSteps`        | `max_steps`          | `MaxSteps`        |
+| 父 session      | `parentSessionId` | `parent_session_id`  | `ParentSessionID` |
+| 强制模式约束    | `outputSchema`    | `output_schema`      | `OutputSchema`    |
 
-`agent`、`description`、`prompt`、`output`、`success` 与 `structured` 在两个 SDK
-中拼写相同。
+`agent`、`description`、`prompt`、`output`、`success` 与 `structured` 在 Node 和
+Python 中拼写相同；Go 使用导出字段 `Agent`、`Description`、`Prompt`、`Output`、
+`Success` 与 `Structured`。
 
 ## `parallel`：带屏障的扇出 [#parallel--barrier-fan-out]
 
@@ -132,6 +133,23 @@ for outcome in outcomes:
         print("failed:", outcome["task_id"], outcome["output"])
 ```
 
+```go
+result, err := session.Parallel(ctx, []code.AgentStepSpec{
+	{TaskID: "explore", Agent: "explore", Description: "Risky changes",
+		Prompt: "Find risky changed files in this diff."},
+	{TaskID: "verify", Agent: "verification", Description: "Test gaps",
+		Prompt: "Identify missing or weak verification."},
+	{TaskID: "review", Agent: "review", Description: "Correctness",
+		Prompt: "Review the diff for correctness risks."},
+}, nil)
+if err != nil {
+	return err
+}
+for _, outcome := range result.Outcomes {
+	fmt.Println(outcome.TaskID, outcome.Success, outcome.Output)
+}
+```
+
 ## `pipeline`：阶段之间无屏障
 
 `session.pipeline(items, stages)` 让每个 item **独立地**流经一连串阶段——阶段之间
@@ -144,6 +162,8 @@ _单条链_，而不是逐阶段屏障会带来的"每阶段最慢之和"。
 
 - Node：`(ctx) => spec | null`，其中 `ctx = { previous: StepOutcome | null, item }`
 - Python：`stage(ctx) -> spec | None`，其中 `ctx = {"previous": <dict|None>, "item": <item>}`
+- Go：`code.PipelineStage`，即 `func(ctx, code.PipelineContext) (*code.AgentStepSpec, error)`，
+  其中 `PipelineContext{Previous *StepOutcome, Item any}`；返回 `nil, nil` 停止该链
 
 阶段可以基于上一个 outcome 分支——例如"验证 review 阶段产出的发现"。
 
@@ -156,6 +176,8 @@ _单条链_，而不是逐阶段屏障会带来的"每阶段最慢之和"。
 - **Node：** 超过 `timeoutMs`（第 3 个参数，默认 `30000`）仍挂起的阶段会 fail
   closed——被当作 `null` 处理，仅停止该条链。
 - **Python：** 抛异常的阶段 callable 会被捕获并当作 `None`（仅停止该条链）。
+- **Go：** 返回 error 的阶段会停止该条链，`Pipeline` 会连同已收集的 outcomes 一起
+  返回该 error。
 
 > Node pipeline 阶段回调**绝不能 throw。** 在当前 napi 版本中，返回值转换时的 JS
 > throw 会中止进程（与 `setBudgetGuard` 相同的 fail-closed 约束）。务必把阶段逻辑
@@ -216,10 +238,37 @@ outcomes = session.pipeline(
 )
 ```
 
+```go
+outcomes, err := session.Pipeline(ctx,
+	[]any{"src/auth.ts", "src/payments.ts"},
+	[]code.PipelineStage{
+		func(_ context.Context, c code.PipelineContext) (*code.AgentStepSpec, error) {
+			return &code.AgentStepSpec{
+				TaskID:      fmt.Sprintf("explore-%v", c.Item),
+				Agent:       "explore",
+				Description: "Inspect file",
+				Prompt:      fmt.Sprintf("Summarize the responsibilities and risks of %v.", c.Item),
+			}, nil
+		},
+		func(_ context.Context, c code.PipelineContext) (*code.AgentStepSpec, error) {
+			if c.Previous == nil {
+				return nil, nil
+			}
+			return &code.AgentStepSpec{
+				TaskID:      fmt.Sprintf("review-%v", c.Item),
+				Agent:       "review",
+				Description: "Review of prior finding",
+				Prompt:      "Review this summary for correctness risks:\n" + c.Previous.Output,
+			}, nil
+		},
+	})
+```
+
 ## 可恢复 / 可迁移工作流
 
 `session.parallelResumable(specs, workflowId)`（Node）/
-`session.parallel_resumable(specs, workflow_id)`（Python）是 `parallel` 加上一份
+`session.parallel_resumable(specs, workflow_id)`（Python）/
+`session.ParallelResumable(ctx, specs, workflowID)`（Go）是 `parallel` 加上一份
 日志。它映射到 `execute_steps_parallel_resumable`。
 
 它在每个 step 边界把一份 `WorkflowCheckpoint` 写入 session store。恢复时它跳过已完
@@ -230,8 +279,8 @@ outcomes = session.pipeline(
 由于 checkpoint 可序列化、executor 是一个参数，宿主可以通过传入另一个节点的
 executor，在**另一个节点**上恢复被中断的工作流（迁移）。
 
-该组合子**要求已配置 session store**——两个 SDK 方法在缺少 store 时都会 reject/
-raise（Node 的错误信息是 `parallelResumable requires a sessionStore`）。
+该组合子**要求已配置 session store**——各 SDK 方法在缺少 store 时都会 reject 或
+raise（Node 的错误信息是 `parallelResumable requires a sessionStore on the session`）。
 
 `WorkflowCheckpoint` 的模式字段为 `schema_version` / `workflow_id` / `steps` /
 `checkpoint_ms`。由*未来的*、不兼容的 `schema_version` 写入的检查点在加载时
@@ -271,6 +320,17 @@ outcomes = session.parallel_resumable(specs, "release-batch-42")
 outcomes = session.parallel_resumable(specs, "release-batch-42")
 ```
 
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+})
+if err != nil {
+	return err
+}
+// 使用同一个 workflow id 重新运行会跳过已完成的步骤。
+outcomes, err := session.ParallelResumable(ctx, specs, "release-batch-42")
+```
+
 ## 跨扇出任务的共享预算 [#shared-budget]
 
 默认情况下，每个子代理各自统计自己的 LLM 成本。给 `parallel` 传入一个 token
@@ -305,6 +365,16 @@ outcomes = session.parallel(specs)
 # 传入预算 → {"outcomes": [...], "budget": {"consumed_tokens", "limit_tokens"}}。
 res = session.parallel(specs, budget_tokens=500_000)
 print(res["budget"]["consumed_tokens"], res["budget"]["limit_tokens"])
+```
+
+Go 始终返回 `*code.ParallelResult`；只有传入上限时 `Budget` 才非 nil。
+
+```go
+limit := uint64(500_000)
+result, err := session.Parallel(ctx, specs, &limit)
+if err == nil && result.Budget != nil {
+	fmt.Println(result.Budget.ConsumedTokens, *result.Budget.LimitTokens)
+}
 ```
 
 ## 循环直到完成（`execute_loop`）[#looping]
@@ -374,7 +444,7 @@ combinator——属于 Rust / 嵌入层 API。
 
 ## 受模式约束的步骤输出 [#schema-forced-step-output]
 
-携带 `output_schema`（Node 中为 `outputSchema`）的任务规格会强制步骤返回符合该 JSON
+携带 `output_schema`（Node 中为 `outputSchema`，Go 中为 `OutputSchema`）的任务规格会强制步骤返回符合该 JSON
 Schema 的值；经校验的对象落在 `StepOutcome.structured` 中。这复用了与 A3S Code 其余
 部分相同的结构化输出强转 + 修复机制。强转失败会把该 step **降级为不成功**
 （`success: false`），因此调用方绝不会把未经校验的文本当作承诺的对象。

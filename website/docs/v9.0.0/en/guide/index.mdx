@@ -19,14 +19,15 @@ tool results. Project rules live in `AGENTS.md`, and workers live under
 
 ## Design rules
 
-| Rule                        | Meaning                                                                                                |
-| --------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Thin default                | Core `default` = `local-code`. Advanced evaluation, server, and headless search are explicit features. |
-| Grep ≠ a3s-vec              | Exact `grep` owns matches; trigram pruning only narrows candidates and fails open. Use `bm25` to rank. |
-| One delegation path         | Multi-item fan-out uses `task` / `session.tasks`. Do not restore `parallel_task`.                      |
-| Active-only memory          | Durable serving is `active_recall`. Candidate shadow mode is refused.                                  |
-| Evidence before Gate claims | Incomplete or retention-gapped evidence cannot satisfy Gate evaluation.                                |
-| Host owns product policy    | Reviewer rubrics, Cloud audit, and UI approvals stay outside Core.                                     |
+| Rule                        | Meaning                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| One control source          | The fact log chooses every coding transition. Checkpoints and timers do not.                            |
+| Thin default                | Core `default` = `local-code`. Advanced evaluation, server, and headless search are explicit features.  |
+| Grep ≠ a3s-vec              | Exact `grep` owns matches; trigram pruning only narrows candidates and fails open. Use `bm25` to rank.  |
+| One delegation path         | Multi-item fan-out uses the `task` tool or `session.tasks`.                                             |
+| Kernel owns governance      | Permission projection and the completion gate wrap every run; a Meta Harness recipe cannot remove them. |
+| Evidence before Gate claims | Incomplete or retention-gapped evidence cannot satisfy Gate evaluation.                                 |
+| Host owns product policy    | Reviewer rubrics, audit, and UI approvals stay outside Core.                                            |
 
 Install the [`a3s` CLI](https://github.com/A3S-Lab/a3s) when you want to work in
 a terminal. When building a product, use the Rust crate, Node.js package,
@@ -47,6 +48,7 @@ same events, so every UI does not need its own agent loop.
 | Area            | What A3S Code provides                                                                                                                                                                                                                                                   |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Agent sessions  | Create a Workspace-bound `AgentSession` with `SessionBuilder`; send, run, stream, steer, interrupt, cancel, save, resume, and close it. Concurrent transcript operations fail immediately instead of racing.                                                             |
+| Control loop    | [Fact-log control](/guide/architecture#fact-log-control) folds one append-only log per session to choose the next step. [Meta Harness](/guide/meta-harness) lets hosts compose the actor that folds it.                                                                  |
 | User interfaces | [`a3s code`](/guide/tui) renders the event stream in a terminal. Applications can render the same `AgentEvent` stream in their own interface.                                                                                                                            |
 | Project files   | [Filesystem conventions](/guide/filesystem-first) explain `AGENTS.md`, ACL config, `.a3s/agents/`, and `skills/`.                                                                                                                                                        |
 | Tools           | Built-in files, binary-safe local downloads, search, shell, Git, web, batch, structured output, QuickJS, Skills, MCP, and child-task tools. Model calls pass through argument, permission, confirmation, cancellation, deterministic result projection, and evidence.    |
@@ -59,218 +61,74 @@ same events, so every UI does not need its own agent loop.
 | Workspaces      | [Workspace backends](/guide/workspace-backends) support local files, application-provided workspaces, optional S3-compatible storage, and remote Git services. The native Harness can isolate conversations in detached Git worktrees.                                   |
 | Retrieval       | [Workspace retrieval](/guide/context#workspace-retrieval) adds an asynchronous session-owned text catalog, a3s-vec FTS/BM25, optional host embeddings, A3S Memory exact vectors, hybrid RRF, and optional deterministic CPU reranking without a vector database service. |
 | Events          | `EventEnvelopeV1` is shared by Rust, Node.js, Python, and Go. Unknown event payloads and metadata are preserved.                                                                                                                                                         |
-| Save and resume | Session snapshots, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                                |
-| Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data.                                                                                                                                                |
+| Save and resume | Session snapshots, the fact log, run events, traces, artifacts, loop/workflow checkpoints, and memory stores make sessions recoverable.                                                                                                                                  |
+| Verification    | [Verification](/guide/verification) runs named checks and returns reports, summaries, artifacts, traces, and replay data. Mutating runs need digest-bound evidence to complete.                                                                                          |
 
 ## What is new in v9.0.0
 
-- **Fact-log control.** Coding runs choose the next transition only by folding
-  the fact log. Confirmation and questions park until an answer fact; no
-  in-process timer settles them. A missing tool result runs once on resume.
+v9.0.0 also carries the changes tagged as v8.7.0. That tag was never published,
+so they first ship here.
+
+### Changed
+
+- **Fact-log control.** The fact log is the only coding control source.
+  `send`, `stream`, attachment turns, `resume_run`, and exact recovery choose
+  the next transition by folding it. A stored model turn is not sent to the
+  model again, and a loop checkpoint does not choose the next model call.
+  Confirmations and questions park until an answer fact arrives. A missing
+  tool result runs once on resume. A steer is another `user.message` fact. The
+  tool-round cap sends an empty tool list on the next completion instead of a
+  synthetic user message. See [Architecture](/guide/architecture#fact-log-control).
+- **Go module major is v9.** Import `github.com/A3S-Lab/Code/sdk/go/v9`.
+- **a3s-vec lexical FTS.** Workspace FTS uses pure-Rust `a3s-vec` 0.1.8
+  (`a3s_vec_fts_v1`) through the `a3s-vec-fts` feature. Release packages no
+  longer stage a native FTS sidecar. Older on-disk FTS generations are
+  incompatible and are rebuilt.
+- **Sandbox.** Core requires `a3s-sandbox` 0.2.1.
+- **Thinner builds.** Thin coding builds no longer link `a3s-flow`; named Flow
+  capability projection needs the `dynamic-workflow` feature (included in
+  `advanced-harness`). PDF text extraction in `web_fetch` is behind
+  `web-fetch-pdf` (included in `local-code`). The `server` profile is
+  `local-code` + `s3` + `telemetry`.
+- **`web_search` success contract.** The cascade tries API, then HTTP/RSS,
+  then headless. Non-empty usable rows succeed as `complete` or `partial`; the
+  structural gate only decides whether to continue the cascade. JSON output
+  stays a result array. Empty results, unknown engines, and invalid arguments
+  are still errors (#161).
+
+### Added
+
 - **Meta Harness.** Hosts compose ordered `components` over the one fact log:
-  stock `system`, `tools`, `budget`, `compact`, `infer`, plus registered
-  `host:<id>` mounts. Permission projection and the completion gate stay
-  Core-owned. Omit `harness` to keep the default `coding_actor` tree.
-- **Go module major is v9.** Import `github.com/A3S-Lab/Code/sdk/go/v9`
-  instead of the v8 module path.
+  stock `system`, `tools`, `budget`, `compact`, and `infer`, plus `host:<id>`
+  mounts from a `HostHarnessRegistry`. Node.js and Python expose `Harness`;
+  Go exposes `SessionOptions.Harness`. Omit `harness` to keep the default tree.
+  See [Meta Harness](/guide/meta-harness).
+- **Host-only `CompletionAttestor` (#160).** A Rust host can install
+  `SessionOptions::with_completion_attestor`. It receives the mutation digest
+  and each mutated path with its content digest (`MutatedPathRecord`), and may
+  return a verification report before the completion gate decides. The gate
+  still requires a Passed, digest-bound report.
+- **Go planning override.** Go `Session` exposes `SetPlanningMode` and
+  `ClearPlanningModeOverride`, matching Node.js and Python.
 
-## Also in v9.0.0 (tagged as v8.7.0, never published)
+### Removed
 
-- **a3s-vec lexical FTS.** Workspace FTS uses pure-Rust `a3s-vec`
-  (`a3s_vec_fts_v1`). On-disk `zvec_rust_fts_v1` generations are incompatible
-  and rebuilt.
-- **`web_search` usable rows succeed.** The default cascade is API, then
-  HTTP/RSS, then headless. Non-empty usable rows are `complete` or `partial`
-  success; the structural gate only continues the cascade. JSON stays a result
-  array (#161).
+- The filesystem-first agent mode: the `serve` feature, the `AgentDir`
+  primary-agent convention (`instructions.md`, `schedules/`, `tools/`), the
+  cron daemon, and `AgentDirScriptTool`. Worker and subagent `agent_dirs`
+  scanning remains.
 
-## What is new in v8.6.0
+### Fixed
 
-- **Image `read` + OpenAI tool images.** `read` returns JPEG/PNG/GIF/WebP as
-  `Attachment` image results, matching the tool description. OpenAI-compatible
-  clients keep tool-result `image_url` parts instead of flattening them to text
-  (#156 / #152).
-- **Orphan isolation cleanup.** Empty non-worktree `.a3s-isolate-*` siblings are
-  cleared before `create_worktree`, so crashed runs no longer leave bind flakes
-  on the next isolation attempt (#155).
-- **Layer C live headroom.** Bailian Flash live outer budgets for workspace
-  retrieval and the harness loop are aligned to 420s without softening kernel
-  assertions (#155).
-- Still includes the 8.5 completion-gate, Search 3.1.4, SDK host contract, GLM
-  `base_url` join, and trigram `grep` work.
+- `NO_PROXY` / `no_proxy` is honored when an explicit `HTTP(S)_PROXY` is set
+  for MCP HTTP transports, OAuth, and model HTTP clients (#171). See
+  [Providers](/guide/providers#proxies).
+- Python `SessionOptions.verifier_enabled` has a getter and setter (#163).
+- Rolling context compaction re-pins the original `## Goal` when the summary
+  omits it (#174).
 
-## What is new in v8.5.6
-
-- **Unverified workspace mutations do not complete.** A turn that changed the
-  workspace stays incomplete unless a Passed verification report is bound to
-  that mutation digest, or a host waiver covers that digest. Assistant text
-  does not count, and a host waiver is not model-grantable.
-- **Search 3.1.4.** Named engines can use the opt-in billed providers
-  `tinyfish`, `bocha`, `aliyun`, `tencent`, and `firecrawl`. They stay out of
-  the default cascade.
-- **SDK host contract.** Node, Python, and Go expose
-  `sync_global_mcp_servers` / `global_mcp_status`, session review, outcome
-  ledger records, and the serializable SessionOptions fields already on Core.
-  Trait-object host hooks stay omitted.
-
-## What is new in v8.5.5
-
-- **GLM Coding Plan `base_url` join.** Bases like
-  `https://open.bigmodel.cn/api/coding/paas/v4` join to `/chat/completions`
-  without a `/v1` suffix or a duplicated `/paas/v4` path segment.
-- **Faster literal `grep` (`CODE-G1`, since 8.5.1).** Builds a fail-open
-  trigram cache under `.a3s-code/grep-trigram`. Exact regex still runs in
-  Code; durable a3s-vec FTS is not opened on this path.
-- **Session-store WAL flock (since 8.5.1).** Concurrent writers re-read the
-  durable max sequence under flock; a corrupt WAL can be quarantined so the
-  host keeps going from snapshots.
-- Still includes the 8.4 smaller harness and the 8.3 durability/trust work.
-
-## Earlier v8.4.0 additions
-
-- Library and SDK **defaults are thin**: `a3s-code-core` defaults to
-  `local-code` (pure-Rust `a3s-vec-fts`); Node/Python/Go SDK crates default to
-  `a3s-vec-fts`. Enable `advanced-harness`, `server`, and/or
-  `headless-search` explicitly when product embeds need them.
-- Model-visible **`parallel_task` is removed**; multi-item fan-out uses the
-  `task` tool. Matching Node/Python/Go helpers are gone.
-- Durable memory serving is **Active-only** (`active_recall`). Candidate
-  shadow mode is removed; extraction may still write Candidates until the host
-  activates them.
-- Built-in **`update_plan`** checklist tool plus host
-  `set_output_language` / `outputLanguage` across Rust and SDKs.
-- SDK capabilities ship as **`a3s-code/sdk-capabilities/v2`** with
-  `tier: baseline | advanced`.
-- Gate-mode evaluation fail-closes on incomplete evidence; first-principles E2E
-  and harness wrap-up runbooks live under `manual/FIRST_PRINCIPLES_E2E.md` and
-  `manual/HARNESS_CONVERGENCE.md`.
-- Carries forward the 8.3 durability/trust kernel (negotiable session stores,
-  typed tool-result trust, workspace source snapshots, fallible FFI init, and
-  host-owned immutable-content / checkpoint hooks).
-
-## Earlier v8.3.0 additions
-
-- Session-store durability is negotiable (KRN-6). Built-in memory and file
-  adapters advertise exact guarantees such as aggregate CAS, append-only WAL,
-  writer lease fencing, optional AES-256-GCM encryption at rest, commit watch
-  notifications, and reference-aware artifact GC.
-- Every tool result carries a typed trust label (KRN-5): trusted, workspace
-  data, or external. Sessions expose secret-free `model_middleware_health`
-  counters on Rust and all four SDKs.
-- Workspace retrieval binds results to a tamper-evident source snapshot
-  (KRN-4). Persistent BM25/a3s-vec indexing is release-qualified on Windows and
-  Linux, including stripping Windows `\\?\` verbatim paths before native opens.
-- Node.js and Python FFI runtime initialization is fallible (KRN-9).
-  `TASK_ADMISSION_AT_CAPACITY` maps consistently across SDKs.
-- Linux arm64 Python wheels ship as `manylinux_2_39_aarch64` (glibc 2.39+);
-  x86_64 Linux remains `manylinux_2_28`.
-
-## Earlier v8.2.0 additions
-
-- `steer` adds a newer instruction to the active Run at its next safe point;
-  `interrupt` cooperatively stops provider, Tool, workflow, and delegated work.
-  Idempotent receipts and optional expected-turn fields prevent duplicate or
-  stale UI actions.
-- `pre_run_control` can gate a control request and `post_run_control` observes
-  every durable receipt transition. `run_control_applied` is available through
-  the shared event protocol and persisted Run history.
-- The default prompt now composes a compact operating loop, a runtime authority
-  contract, repository Tool schemas, and safety boundaries. It treats files,
-  Tool output, and web content as untrusted data and requires evidence before a
-  completion claim without replacing host permissions or approvals.
-- Real-provider release tests exercise both configured DeepSeek models across
-  tools and Hook rewrites, long-horizon coding, SubAgents, Skills, PTC,
-  replayable dynamic workflows, and live steer/interrupt behavior.
-- Dynamic workflows no longer need a duplicate permission grant for their
-  private `program` implementation step, while inner Tool calls remain fully
-  governed. QuickJS `ctx.readFile()` now returns file text; `ctx.read()` keeps
-  the line-numbered Tool result for audit-oriented code.
-
-## Earlier v8.1 additions
-
-- `web_search` is powered by `a3s-search` v3.1.0. Google, Baidu, Bing, and
-  Brave browser engines use Moli by default; Chrome/Chromium and Lightpanda
-  remain explicit compatibility backends. The first-use runtime is selected in
-  this order: package sidecar, verified per-user cache, system executable, and
-  finally a digest-pinned HTTPS download.
-- The Moli installer uses an atomic staging/receipt protocol and a
-  cross-process lock at `~/.cache/a3s-code/moli` (or `A3S_CODE_MOLI_CACHE_DIR`).
-  A second A3S Code process waits for the first install and reuses the same
-  executable. Set `autoDownloadMoli: false` when a host must fail closed rather
-  than access the network.
-- Rust, Node.js, Python, and Go expose the same `sdk_capabilities` inventory,
-  state-graph operations, Moli diagnostics, and typed search configuration.
-  Use the inventory to feature-detect a build instead of parsing package files.
-- Native Node packages and Python wheels include their target Moli sidecar and
-  provenance metadata. Linux musl packages explicitly carry an
-  `MOLI_UNAVAILABLE` marker because upstream Moli does not publish a musl
-  binary; those hosts must provide a system Moli executable or choose another
-  backend.
-
-## Earlier v7.0 additions
-
-- Session-owned Workspace Retrieval builds one bounded text catalog
-  asynchronously, reuses incremental BM25 postings, and can publish exact
-  in-memory vector partitions without delaying session construction or adding
-  a vector database.
-- Dense semantics are explicitly host-enabled. Exact search, glob, BM25, Code
-  Intelligence, RRF, and the optional deterministic reranker run locally on
-  CPU; a host can inject an in-process CPU embedding callback when semantic
-  search is useful.
-- Rust, Node.js, Python, and Go expose typed line, fixed-window, and recursive
-  chunking, readiness and batching metrics, optional deterministic reranking,
-  cancellation, current-source digest verification, and bounded cleanup.
-  Non-text assets are rejected before chunking or embedding.
-- Product builds use a3s-vec for lexical FTS/BM25 and A3S Memory for exact
-  semantic vectors. Native lexical handles are bounded and temporary; semantic
-  vectors are released with the owning session.
-- Model-bound run evidence records the effective capability and policy
-  identity, retrieval generation, input shape, repeated Tool-result context,
-  and normalized usage without retaining new prompt, source, vector,
-  credential, or endpoint plaintext.
-
-Go consumers must use the v7 module path:
-`github.com/A3S-Lab/Code/sdk/go/v9`.
-
-v6.9 introduced the shared priority/FIFO scheduler, bounded personal and
-project instruction chains, governed lifecycle hooks, isolated Harness Git
-worktrees, deterministic Tool-result evidence, and exact cognitive-package
-generation bindings.
-
-v6.8 presents one compact `search` schema for grep, glob, and dependency-free
-BM25 ranking, plus one model-visible `task` schema for focused or bounded
-fan-out delegation. Legacy direct host aliases remain readable without
-consuming model schema tokens. The same release adds exact, replay-safe run
-admission for headless hosts and exposes its snapshot/replay result through the
-Node.js, Python, and Go SDKs.
-
-The v6.7 local `download` tool streams HTTP(S) resources through SSRF-safe
-redirect validation into adjacent temporary files, supports adaptive 1–4
-connection Range transfers, and can verify a 64-character
-`expected_sha256` before atomic promotion. It is a permission- and HITL-governed
-workspace mutation and is not registered for remote workspace backends. See
-[Tools](/guide/tools#binary-safe-local-downloads).
-
-Search uses a structurally gated cascade: a Moli tier included in the default
-Core feature set, HTTP/RSS engines, then native APIs. A completed
-cascade that remains below the structural retrieval requirements fails closed
-instead of presenting weak candidates as successful evidence. No external
-semantic verifier or reranker is required. Delegated contexts share bulkheads,
-retry budgets, and identical-request coalescing; see
-[Tools](/guide/tools#structurally-gated-web-search).
-
-A run roughly follows this path:
-
-```text
-Agent / AgentSession
-  -> collect project context
-  -> optional plan
-  -> select tools or child tasks
-  -> check permission and ask the user when needed
-  -> execution
-  -> publish events and verification results
-  -> save the session
-```
+Earlier releases are recorded in the
+[CHANGELOG](https://github.com/A3S-Lab/Code/blob/main/CHANGELOG.md).
 
 ## Install
 
@@ -308,10 +166,9 @@ cargo add a3s-code-core
 go get github.com/A3S-Lab/Code/sdk/go/v9
 ```
 
-The v8.5.1 Python package supports CPython 3.10–3.14 through one
-`cp310-abi3` wheel per platform. Intel Macs use the `macosx_12_0_x86_64` wheel
-and require macOS 12 or newer. See [Python wheel platforms](/api/#python-wheel-platforms-v820)
-for the bootstrap flow and the `No module named pip` repair command.
+The Python package requires CPython 3.10 or newer and ships one `abi3` wheel
+per platform. See [SDKs and APIs](/api/) for wheel platforms, the Go bridge,
+and the bootstrap flow.
 
 ## Configure
 
@@ -337,26 +194,18 @@ providers "provider" {
   }
 }
 
+agent_dirs = ["./.a3s/agents"]
+skill_dirs = ["./skills"]
 storage_backend = "file"
 sessions_dir = ".a3s/sessions"
-
-search {
-  headless {
-    backend = "moli"
-    auto_download_moli = true
-    max_tabs = 4
-  }
-}
 ```
 
 `auto_parallel = false` disables automatic parallel child-agent fan-out only.
 Manual `task` calls and SDK `session.tasks(...)` fan-out remain available unless
 manual delegation is disabled separately.
 
-The Moli sidecar is selected automatically by the SDK package. For a source
-checkout or a minimal Core build, set `A3S_CODE_MOLI_EXECUTABLE` to a verified
-executable, or let the first search call download the pinned release into the
-shared cache.
+Local session persistence pairs `storage_backend = "file"` with
+`sessions_dir`. SDK embeds can pass a typed `FileSessionStore` instead.
 
 ## Use the TUI
 
@@ -365,11 +214,12 @@ Run `a3s code` from the workspace you want the agent to inspect:
 ```bash
 a3s code
 a3s code resume <session-id>
-a3s code update
+a3s self update
 ```
 
-The TUI discovers config from `A3S_CONFIG_FILE`, then `.a3s/config.acl` walking
-upward from the current directory, then `~/.a3s/config.acl`.
+Without `--config` or `A3S_CONFIG_FILE`, the TUI merges `~/.a3s/config.acl`
+with the nearest `.a3s/config.acl` found walking upward from the current
+directory. See [A3S Code TUI](/guide/tui#configuration).
 
 Common first-run flow:
 
@@ -429,10 +279,37 @@ the async path while discovering tools.
 Calls such as `session.tool(...)` come from your application, not the model.
 Check access in your application before exposing them to users.
 
+## Use an SDK
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/workspace', {
+  planningMode: 'auto',
+  permissionPolicy: {
+    allow: ['read(*)', 'search(*)'],
+    ask: ['bash(*)', 'write(*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+
+const result = await session.send('Find the authentication entry points.');
+console.log(result.text);
+console.log(result.verificationSummaryText);
+
+session.close();
+await agent.close();
+```
+
 ## Continue reading
 
-- [A3S Code TUI](/guide/tui) explains installation, config discovery, slash commands, and effort profiles.
-- [SDKs and APIs](/api/#go-module-and-bridge) explains Go module and bridge installation; the Go examples then stay beside Node.js and Python throughout the shared guides.
+- [Architecture](/guide/architecture) explains fact-log control, the kernel wrappers, and the invocation boundaries.
+- [Meta Harness](/guide/meta-harness) explains how hosts compose the coding actor.
+- [A3S Code TUI](/guide/tui) explains installation, configuration, slash commands, and effort profiles.
+- [SDKs and APIs](/api/) explains Go module and bridge installation; the Go examples then stay beside Node.js and Python throughout the shared guides.
 - [Sessions](/guide/sessions) covers creation, streaming, run state, saving, resuming, and cancellation.
 - [Tools](/guide/tools) covers direct calls, typed errors, structured output, and QuickJS programs.
 - [Security](/guide/security), [hooks](/guide/hooks), and [verification](/guide/verification) cover checks before, during, and after execution.

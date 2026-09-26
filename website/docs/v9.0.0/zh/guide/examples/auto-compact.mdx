@@ -166,3 +166,147 @@ func main() {
 （0.0–1.0，默认 0.8）；调低它可以更早触发压缩。四种 SDK 都能通过各自的
 history API 检查当前会话。四种 SDK 也都提供直接读取最近记忆的接口：
 `memoryRecent` / `memory_recent` / `MemoryRecent`。
+
+## Meta Harness 配方中的压缩
+
+如果会话使用显式的 [Meta Harness](/guide/meta-harness) 配方，压缩是其中的一个
+内置部件。`compactAfterChars` / `compact_after_chars` 设置该部件的字符阈值，
+`toolBudget` / `tool_budget` 限制调度器的工具调用次数。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, HarnessComposeOptions, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let harness = HarnessComposeOptions {
+        tool_budget: Some(40),
+        compact_after_chars: Some(120_000),
+        components: ["system", "tools", "budget", "compact", "infer"]
+            .map(String::from)
+            .to_vec(),
+        ..Default::default()
+    };
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_harness(harness))
+        .build()
+        .await?;
+
+    let result = session.send("继续重构解析器", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  harness: Harness.compose({
+    toolBudget: 40,
+    compactAfterChars: 120_000,
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.budget(),
+      Harness.compact(),
+      Harness.infer(),
+    ],
+  }),
+});
+
+const result = await session.send('继续重构解析器');
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.budget(),
+        Harness.compact(),
+        Harness.infer(),
+    ],
+    tool_budget=40,
+    compact_after_chars=120_000,
+)
+session = agent.session("/repo", opts)
+
+result = session.send("继续重构解析器")
+print(result.text)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Harness: &code.HarnessOptions{
+			Components: []string{
+				code.HarnessSystem,
+				code.HarnessTools,
+				code.HarnessBudget,
+				code.HarnessCompact,
+				code.HarnessInfer,
+			},
+			ToolBudget:        code.Ptr(uint32(40)),
+			CompactAfterChars: code.Ptr(uint(120_000)),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "继续重构解析器")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
+</Tabs>

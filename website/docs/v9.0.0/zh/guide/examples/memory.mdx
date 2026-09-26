@@ -82,8 +82,8 @@ await session.rememberSuccess(
 );
 await session.rememberFailure(
   'migration attempt',
-  ['bash'],
   'psql connection refused on port 5432',
+  ['bash'],
 );
 
 // 稍后按时间、工具标签或语义相似度召回。
@@ -113,8 +113,8 @@ session.remember_success(
 )
 session.remember_failure(
     "migration attempt",
-    ["bash"],
     "psql connection refused on port 5432",
+    ["bash"],
 )
 
 # 稍后按时间、工具标签或语义相似度召回。
@@ -184,6 +184,7 @@ func main() {
 
 四种 SDK 都暴露显式的记忆写入与查询辅助方法。Go 对应
 `RememberSuccess`、`RememberFailure`、`RecallSimilar`、`RecallByTags`、
-`MemoryRecent` 以及 working/short-term memory 方法。remember 方法接收简短
-任务描述、涉及的工具列表（同时作为可搜索标签）以及结果文本。若默认文件 store
+`MemoryRecent` 以及 working/short-term memory 方法。`rememberSuccess` 接收简短
+任务描述、涉及的工具列表（同时作为可搜索标签）以及结果文本；`rememberFailure`
+依次接收任务、错误文本和工具列表。若默认文件 store
 无法创建，会话会回退到进程内 memory，并暴露初始化告警。

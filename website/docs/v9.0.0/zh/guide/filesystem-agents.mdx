@@ -5,7 +5,11 @@ description: '用 .a3s/agents 定义可被 task 和自动委派调用的工作�
 
 # agents/ 角色目录
 
-`agents/` 目录存放 worker/subagent 定义。推荐使用 `.a3s/agents/` 作为 A3S 原生位置；迁移项目可以继续读取 `.claude/agents/`，但新文档和新项目应优先使用 `.a3s/agents/`。
+`agents/` 目录存放 worker/subagent 定义。A3S Code 会按顺序自动扫描
+`~/.claude/agents`、`~/.a3s/agents`、`<workspace>/.claude/agents` 和
+`<workspace>/.a3s/agents`，后加载的同名定义会替换先前的定义。新项目优先使用
+`.a3s/agents/`；读取 `.claude/agents/` 是为了兼容。目录会被递归扫描 `.md`、`.yaml` 和
+`.yml` 文件，解析到目录之外的符号链接会被跳过。
 
 ```text
 repo/
@@ -37,6 +41,15 @@ Review security risks first. Return blockers, evidence paths, and required verif
 
 `name` 是调用名，`description` 决定自动委派时是否匹配，正文是该 worker 的角色说明。工具字段收窄 worker 可见能力；不要依赖 worker 自己“承诺不做危险事”。
 
+- `tools`（也可写作 `allowedTools` 或 `allowed_tools`）会成为子运行的仅允许权限
+  策略。
+- `disallowedTools`（也可写作 `disallowed-tools` 或 `disallowed_tools`）追加 deny
+  规则，优先级高于 allowlist。
+- 两个字段都接受逗号分隔字符串或 YAML 列表。设置任一字段时，子运行的确认继承默认
+  为 `auto_approve`。
+- `kind` 字段（`read_only`、`planner`、`implementer`、`verifier`、`reviewer` 或
+  `custom`）会让文件按 worker agent spec 解析，与 `workerAgents` 接受的结构相同。
+
 ## 手动委派
 
 ```ts
@@ -63,7 +76,9 @@ const session = agent.session('/repo', {
 });
 ```
 
-自动委派依赖 agent 描述和置信度评分。写 description 时要说清楚“何时使用”，而不是只写角色口号。
+自动委派会在本地把请求与每个 agent 的名称和描述进行评分；路由步骤没有模型调用。写
+description 时要说清楚“何时使用”，而不是只写角色口号。评分与扇出上限见
+[任务](/guide/tasks)。
 
 ## 最佳实践
 

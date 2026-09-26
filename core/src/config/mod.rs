@@ -165,7 +165,7 @@ pub struct CodeConfig {
     #[serde(default, alias = "project_doc_fallback_filenames")]
     pub project_doc_fallback_filenames: Vec<String>,
 
-    /// Maximum tool execution rounds per turn (default: 25)
+    /// Maximum tool execution rounds per turn (default: 50)
     #[serde(default, alias = "max_tool_rounds")]
     pub max_tool_rounds: Option<usize>,
 

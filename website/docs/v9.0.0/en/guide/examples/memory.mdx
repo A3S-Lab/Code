@@ -84,8 +84,8 @@ await session.rememberSuccess(
 );
 await session.rememberFailure(
   'migration attempt',
-  ['bash'],
   'psql connection refused on port 5432',
+  ['bash'],
 );
 
 // Recall later — by recency, by tool tags, or by semantic similarity.
@@ -115,8 +115,8 @@ session.remember_success(
 )
 session.remember_failure(
     "migration attempt",
-    ["bash"],
     "psql connection refused on port 5432",
+    ["bash"],
 )
 
 # Recall later — by recency, by tool tags, or by semantic similarity.
@@ -190,7 +190,8 @@ func main() {
 
 All four SDKs expose explicit memory write/query helpers. In Go these are
 `RememberSuccess`, `RememberFailure`, `RecallSimilar`, `RecallByTags`,
-`MemoryRecent`, and the working/short-term memory methods. The remember methods
-take a short task description, the tools involved (also used as tags), and the
-outcome text. If the default file store cannot be created, the session falls
+`MemoryRecent`, and the working/short-term memory methods. `rememberSuccess` takes
+a short task description, the tools involved (also used as tags), and the
+outcome text; `rememberFailure` takes the task, the error text, and then the
+tools. If the default file store cannot be created, the session falls
 back to in-process memory and exposes an init warning.

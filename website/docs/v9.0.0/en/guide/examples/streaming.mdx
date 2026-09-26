@@ -50,7 +50,7 @@ async fn main() -> a3s_code_core::Result<()> {
     }
     lifecycle
         .await
-        .map_err(|error| CodeError::Internal(error.into()))??;
+        .map_err(|error| CodeError::Internal(error.into()))?;
     println!("\n[stream] complete");
 
     session.close().await;

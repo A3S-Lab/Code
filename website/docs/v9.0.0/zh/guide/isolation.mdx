@@ -17,6 +17,50 @@ const session = agent.session('/repo');
 相对文件、搜索、shell 和 Git 操作都从会话工作区求值。Security Provider 与钩子属于
 会话选项；把它们当作生产边界前，应验证依赖的精确策略路径。
 
+Shell 命令还会在 session 的原生进程沙箱中运行，默认拒绝网络。沙箱、process-host
+显式启用以及按调用的网络授权见[安全](/guide/security#强制执行边界)。
+
+## 效果隔离
+
+效果隔离让 session 的写入在宿主提升之前不落到源检出目录。启用后，session 构建时会
+在源根目录旁的同级目录 `.a3s-isolate-<session_id>` 中，以源仓库当前 `HEAD` 绑定一个
+Git worktree，session 的工具和 shell 都在其中工作。源根目录不是 Git 仓库时失败关闭：
+session 创建会返回 `isolation unavailable` 错误，而不是回退到共享写入。
+
+```rust
+let options = SessionOptions::new().with_effect_isolation(true);
+```
+
+```ts
+const session = agent.session('/repo', { effectIsolation: true });
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	EffectIsolation: code.Ptr(true),
+})
+```
+
+9.0.0 的 Python `SessionOptions` 没有该字段的公开 setter。
+
+提升是 Rust 宿主操作：`a3s_code_core::effect_isolation::promote_current(session_id)`
+捕获 worktree 的变更集，只向源树应用一次，并返回 `Applied { digest }`；重放同一
+digest 时返回 `Idempotent { digest }`；如果绑定后源 `HEAD` 已移动，则返回
+`Conflict { bound_revision, current_revision }`，且不应用任何内容。丢弃 worktree 从不
+触碰源树。自行提升变更的 Node.js 和 Go 宿主可以用 `session.notePromotedDigest(digest)`
+或 `session.NotePromotedDigest(ctx, digest)` 记录已应用的 digest。
+
+只读 session（`with_read_only_session(true)`、Node.js `readOnlySession`、Go
+`ReadOnlySession`）不会创建隔离 worktree。该标志只跳过隔离绑定，不会移除写入工具。
+需要禁止写入时请使用权限策略。
+
+## 路径规则
+
+`path_rules`（Rust `with_path_rules`、Node.js `pathRules`、Go `PathRules`）是按路径
+作用的指令片段，每项为 `{ glob, text }`。当工具调用或计划指向匹配路径时，匹配的文本会
+在固定字节预算内加入模型上下文（`core/src/path_instructions.rs`）。它们用于引导模型，
+不是访问控制。路径边界应通过权限规则和 workspace 沙箱强制执行。
+
 ## 委派上下文
 
 `task` 与自动子智能体委派会隔离子运行推理。父 Agent 只接收紧凑结果，而不是完整

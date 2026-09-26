@@ -17,13 +17,14 @@ render starts, output, errors, and completion without parsing terminal text.
 
 ## Tool Surface
 
-| Layer                    | Tools                                                                       | Registration rule                                                                                                                                                                                                                              |
-| ------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace-gated builtins | `read`, `write`, `edit`, `patch`, `download`, `search`, `ls`, `bash`, `git` | Registered only when `WorkspaceServices` advertises the required capability. `search` exposes grep/glob modes and adds BM25 when reads are available; `download` additionally requires a writable local workspace.                             |
-| Runtime builtins         | `web_fetch`, `web_search`, `batch`, `program`                               | Registered by the core tool executor. `batch` and `program` receive the current scoped invoker, so their usable inner tools depend on the session surface and keep the caller's governance scope.                                              |
-| Session bootstrap tools  | `task`, `generate_object`, `search_skills`, `Skill`                         | Added while building an `AgentSession`. `task` is the single model-visible delegation schema (including multi-item fan-out). The `parallel_task` alias is removed (`HARNESS-CONV4`). Delegation disappears when manual delegation is disabled. |
-| TUI workflow tools       | `dynamic_workflow` and, after `/login`, optional host runtime tools         | Registered by the `a3s code` host. `dynamic_workflow` powers `ultracode` and DeepResearch with A3S Flow replay; host runtime tools are login-gated integrations.                                                                               |
-| Dynamic integrations     | `mcp__<server>__<tool>` and host-registered tools                           | Added from MCP managers or host code after discovery.                                                                                                                                                                                          |
+| Layer                    | Tools                                                                       | Registration rule                                                                                                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Workspace-gated builtins | `read`, `write`, `edit`, `patch`, `download`, `search`, `ls`, `bash`, `git` | Registered only when `WorkspaceServices` advertises the required capability. `search` exposes grep/glob modes and adds BM25 when reads are available; `download` additionally requires a writable local workspace. |
+| Code intelligence        | `code_symbols`, `code_navigation`, `code_diagnostics`                       | Registered only when the workspace carries a code-intelligence provider (`WorkspaceServicesBuilder::code_intelligence`). The default local backend has none.                                                       |
+| Runtime builtins         | `web_fetch`, `web_search`, `update_plan`, `ask_user`, `batch`, `program`    | Registered by the core tool executor. `batch` and `program` receive the current scoped invoker, so their usable inner tools depend on the session surface and keep the caller's governance scope.                  |
+| Session bootstrap tools  | `task`, `generate_object`, `search_skills`, `Skill`                         | Added while building an `AgentSession`. `task` is the only model-visible delegation schema; multi-item fan-out goes through `task`. Delegation disappears when manual delegation is disabled.                      |
+| TUI workflow tools       | `dynamic_workflow` and, after `/login`, optional host runtime tools         | Registered by the `a3s code` host. `dynamic_workflow` powers `ultracode` and DeepResearch with A3S Flow replay; host runtime tools are login-gated integrations.                                                   |
+| Dynamic integrations     | `mcp__<server>__<tool>` and host-registered tools                           | Added from MCP managers or host code after discovery.                                                                                                                                                              |
 
 Use `toolNames()` / `toolDefinitions()` in tests or application diagnostics when
 a workflow depends on a specific model-visible tool. Tool visibility is not a
@@ -35,6 +36,73 @@ as `session.tool(...)` are host control-plane calls with a different explicit
 policy, described below.
 Use `activeTools()` for a different question: which tool calls are currently
 running in an active operation.
+
+## Tool Presentation Profiles
+
+A presentation profile (`a3s.code.tool-presentation-profile.v1`,
+`core/src/tools/presentation.rs`) decides which tool definitions the model sees
+for a prompt. It changes presentation only; permission policy, confirmation,
+and the sandbox still govern every call.
+
+| Mode       | Model-facing definitions                                               |
+| ---------- | ---------------------------------------------------------------------- |
+| `adaptive` | Default. A prompt-sensitive selector presents a relevant subset.       |
+| `direct`   | Every definition that permission visibility admits.                    |
+| `code`     | `program` as a compact code gateway to the other tools.                |
+| `disabled` | No tools. Host-direct APIs such as `session.tool(...)` are unaffected. |
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{SessionOptions, ToolPresentationProfileV1};
+
+let options = SessionOptions::new()
+    .with_tool_presentation_profile(ToolPresentationProfileV1::direct());
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { ToolPresentationMode } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  toolPresentationProfile: {
+    schema: 'a3s.code.tool-presentation-profile.v1',
+    mode: ToolPresentationMode.Direct,
+  },
+});
+console.log(session.toolPresentationProfile());
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import SessionOptions, ToolPresentationProfile
+
+opts = SessionOptions()
+opts.tool_presentation_profile = ToolPresentationProfile.direct()
+session = agent.session("/repo", opts)
+print(session.tool_presentation_profile())
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	ToolPresentationProfile: code.NewToolPresentationProfile(code.ToolPresentationDirect),
+})
+if err != nil {
+	log.Fatal(err)
+}
+profile, err := session.ToolPresentationProfile(ctx)
+```
+
+</Tab>
+</Tabs>
 
 ## One Invocation Kernel
 
@@ -353,12 +421,16 @@ retry policy; the fan-out layer never replays a branch based on error text.
 ### Structurally gated web search
 
 `web_search` reports `complete`, `partial`, or `failed` in metadata. Its default
-path executes headless engines first, conventional HTTP/RSS engines only when
-the combined structural retrieval requirements are not met, and native APIs
-only when both earlier tiers remain insufficient. Browser discovery and pool creation are
-therefore lazy. A3S Code v8.5.1 pins `a3s-search` v3.1.0 and uses the packaged
-or shared-cache Moli runtime by default. Minimal Rust embeddings can disable
-default features; Chrome and Lightpanda remain explicit configured backends.
+path executes configured native API engines first, conventional HTTP/RSS
+engines only when the combined structural retrieval requirements are not met,
+and headless engines only when both earlier tiers remain insufficient
+(`core/src/tools/builtin/web_search/fallback.rs`). `cascade_order` overrides
+the order. The headless tier exists only in builds with the `headless-search`
+feature (included in `scientific` and `full`, not in the Core default), and
+browser discovery and pool creation are lazy. Moli-backed headless engines
+arrived with `a3s-search` v3.1.0; A3S Code 9.0.0 pins `a3s-search` 3.1.4 and
+uses the packaged or shared-cache Moli runtime when the headless tier runs.
+Chrome and Lightpanda remain explicit configured backends.
 
 Moli resolution checks an explicit executable, the package sidecar, the verified
 per-user cache, and a discoverable system installation before attempting an
@@ -405,6 +477,19 @@ HTTP 5xx responses use the typed `transport` kind. HTTP 429 uses
 one; the outer tool deadline uses `timeout`. Other HTTP status failures remain
 ordinary status errors unless the runtime has typed evidence that retrying is
 safe.
+
+### Web tool proxies
+
+`web_fetch`, `download`, and `web_search` choose one proxy in this order: the
+`search.headless.proxy_url` setting, then `HTTPS_PROXY`, `https_proxy`,
+`HTTP_PROXY`, or `http_proxy`, then the macOS system proxy. A per-call
+`web_search` `proxy` argument takes precedence over all of these. When a proxy is
+selected, every request from these tools goes through it and `NO_PROXY` is not
+consulted (`core/src/tools/builtin/safe_http.rs`); unset the proxy variables
+for the process if a destination must be reached directly. Without a proxy,
+these tools connect directly to validated public addresses. The `NO_PROXY`
+handling in `core/src/llm/http.rs` applies to model provider, MCP HTTP, and
+OAuth clients, not to the web tools.
 
 ## Structured Output with `generate_object`
 
@@ -609,8 +694,8 @@ consume the same script call budget.
 The QuickJS VM receives no filesystem, network, subprocess, or environment permissions. The only useful capabilities are the `ctx` methods wired back to A3S Code tools. PTC returns a readable `ToolResult.output` and structured data in `ToolResult.metadataJson`. Keep large raw output out of the prompt; summarize findings, evidence refs, risks, and suggested next actions.
 
 In `a3s code`, PTC is also used by `DynamicWorkflowRuntime`. Recursive
-`program`, `dynamic_workflow`, and the removed `parallel_task` alias are kept out
-of the default TUI PTC allow-list. QuickJS may call `task` with one item, but
+`program` and `dynamic_workflow` are kept out of the default TUI PTC
+allow-list. QuickJS may call `task` with one item, but
 direct multi-item fan-out is blocked. A dynamic workflow schedules a Flow step
 named `task` for local fan-out; the TUI host executes it outside QuickJS. After
 `/login`,
@@ -658,3 +743,7 @@ const report = await session.verifyCommands('release readiness', [
   },
 ]);
 ```
+
+A report from `session.verifyCommands(...)` is host evidence. It is not bound
+to a turn's mutation effect digest, so it does not close the completion gate;
+see [Verification](/guide/verification#the-completion-gate).

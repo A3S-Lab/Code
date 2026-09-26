@@ -23,16 +23,30 @@ const session = agent.session('/repo', {
 });
 ```
 
-## 选项用途
+Python 在 `SessionOptions` 上使用相同名称的 snake_case 形式（例如
+`opts.max_tool_rounds = 24`）。Go 使用指针字段，例如
+`MaxToolRounds: code.Ptr(uint(24))` 和 `ToolTimeoutMS: code.Ptr(uint64(120000))`。
 
-这些 option 的意图：
+## 选项与默认值
 
-- `maxToolRounds` 是单个 turn 的 tool iteration 预算。
-- `maxParseRetries` 是格式错误工具调用的恢复预算。
-- `toolTimeoutMs` 是每个 tool 的超时时间，单位毫秒。
-- `circuitBreakerThreshold` 是连续 provider 失败阈值。
-- `autoCompact` 和 `autoCompactThreshold` 控制 context compaction 行为。
-- `continuationEnabled` 和 `maxContinuationTurns` 控制 continuation injection。
+| Node.js 选项                 | 默认值                 | 用途                                                   |
+| ---------------------------- | ---------------------- | ------------------------------------------------------ |
+| `maxToolRounds`              | `50`                   | 单个回合的工具迭代预算。                               |
+| `maxParseRetries`            | `2`                    | 格式错误工具调用的恢复预算。                           |
+| `toolTimeoutMs`              | 无                     | 每个工具的超时时间，单位毫秒。                         |
+| `llmApiTimeoutMs`            | 由 provider 客户端决定 | 每个模型的 HTTP 超时时间，单位毫秒。                   |
+| `circuitBreakerThreshold`    | `3`                    | 连续 provider 失败多少次后中止回合。                   |
+| `duplicateToolCallThreshold` | `3`                    | 连续出现多少次相同工具签名后，重复调用保护使回合失败。 |
+| `autoCompact`                | `false`                | 启用自动上下文压缩。                                   |
+| `autoCompactThreshold`       | `0.80`                 | 触发压缩的上下文窗口占比（上下文窗口默认 200000）。    |
+| `continuationEnabled`        | `true`                 | 模型过早停止时注入 continuation。                      |
+| `maxContinuationTurns`       | `3`                    | 每次执行最多注入的 continuation 次数。                 |
+| `maxExecutionTimeMs`         | 无                     | 执行循环超过该时长后中止。                             |
+
+回合达到 `maxToolRounds` 时，运行时不会注入收尾消息，而是以空工具列表发送下一次
+补全请求，迫使模型用文本回答；见 `core/src/fact_control.rs` 中的
+`fact_log_tool_round_cap_uses_an_empty_tool_list` 测试。修改过 workspace 的回合仍然
+必须通过[完成门禁](/guide/verification#完成门禁)。
 
 ## 实用默认值
 
@@ -54,7 +68,9 @@ session 会把 run 历史、trace events 和 subagent task 快照保存在内存
 | `max_trace_events`            | trace sink 超过上限后，每次新写入都会丢弃最旧的一条 event。                                                          |
 | `max_terminal_subagent_tasks` | 超过上限后丢弃最旧的**终态**（completed / failed / cancelled）subagent task 快照。**running 的任务永远不会被丢弃。** |
 
-所有上限都是软上限：触发时在插入处丢弃最旧条目，绝不返回错误。
+默认值为 64 个 run、每个 run 2048 条 event、每个 run 8 MiB event 数据、8192 条
+trace event，以及 512 个终态 subagent task。所有上限都是软上限：触发时在插入处丢弃
+最旧条目，绝不返回错误。
 
 ```ts
 const session = agent.session('/repo', {
@@ -145,19 +161,19 @@ session.setBudgetGuard({
 });
 ```
 
-Node.js 桥接层采用**失败即拒绝**策略：`check_*` 回调若未在 `timeoutMs` 内返回，
-或返回无法解析的值，都会被当作**拒绝**处理。预算控制绝不能在预算守卫卡住时悄悄
-自我失效（参见更新日志 `[3.3.0]` 中 Node.js 预算守卫的“失败时放行”修复）。
-
-回调**绝不能抛出异常。** 受 napi-rs 约束，回调抛出的异常会在返回值转换阶段中止宿主
-进程。请用 `try/catch` 包裹逻辑并返回一个决策（例如拒绝），而不是抛异常。卡住的情况
-由“失败即拒绝”的超时机制安全处理，详见更新日志 [3.3.0] 的已知限制。
+Node.js 桥接层采用**失败即拒绝**策略（`sdk/node/src/workflow_budget.rs`）：`check*`
+回调抛出异常、返回无法解析的值（包括 Promise），或未在 `timeoutMs` 内返回，都会被
+当作**拒绝**处理。预算守卫失败或卡住时，预算控制绝不会悄悄自我失效。回调必须是同步的。
+`recordAfterLlm` 内部的失败会被忽略。
 
 ### Python：会话选项 `budget_guard`
 
 Python 在 `budget_guard` 这个 `SessionOptions` 字段上提供一个 `BudgetGuard` 形态的
-对象。未定义的方法视为放行且不执行操作。Python 回调使用**位置参数**，框架会捕获
-它们抛出的任何异常（抛异常的 `check_*` 默认视为放行）：
+对象，并受 `budget_guard_timeout_ms` 约束（默认 5000，必须大于零）。
+`session.set_budget_guard(guard, timeout_ms)` 可在运行中的 session 上替换它；传入
+`None` 可清除。未定义的方法视为放行且不执行操作。Python 回调使用**位置参数**。
+`check_*` 方法中的异常、格式错误的决策或超时都会失败关闭为**拒绝**
+（`sdk/python/src/orchestration_bridge.rs`）：
 
 ```python
 class MyBudgetGuard:
@@ -179,5 +195,31 @@ opts.budget_guard = MyBudgetGuard()
 session = agent.session('/repo', opts)
 ```
 
-决策返回字典 `{"decision": "deny", "resource": ..., "reason": ...}`（以及
-`"soft"` / `"allow"`）在两个 SDK 上具有相同结构。
+### Go：`session.SetBudgetGuard(ctx, handlers)`
+
+Go 回调接收类型化上下文，并返回 `*code.BudgetDecision`。`Timeout` 默认为 5 秒。
+未设置的处理函数视为放行；返回错误、超时或无法解析的决策都会拒绝。传入 `nil`
+处理函数可清除守卫。
+
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(ctx context.Context, value code.BudgetLLMContext) (*code.BudgetDecision, error) {
+		if overMonthlyCap(value.SessionID) {
+			return &code.BudgetDecision{Decision: "deny", Resource: "llm_tokens", Reason: "monthly cap"}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+	RecordAfterLLM: func(ctx context.Context, value code.BudgetUsageContext) error {
+		addSpend(value.SessionID, value.Usage.TotalTokens)
+		return nil
+	},
+	CheckBeforeTool: func(ctx context.Context, value code.BudgetToolContext) (*code.BudgetDecision, error) {
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+	Timeout: 5 * time.Second,
+})
+```
+
+决策结构 `{"decision": "deny", "resource": ..., "reason": ...}`（以及带 `resource`、
+`consumed`、`limit`、`message` 的 `"soft"`，或 `"allow"`）在 Node.js、Python 和 Go
+SDK 中相同。

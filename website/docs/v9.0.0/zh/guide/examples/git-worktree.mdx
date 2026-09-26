@@ -197,8 +197,11 @@ func main() {
 		Command: "worktree", Subcommand: "create",
 		Name: "feature-auth", Path: worktree,
 	})
-	if err != nil || created.ExitCode != 0 {
-		log.Fatalf("创建失败：%v %s", err, created.Output)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if created.ExitCode != 0 {
+		log.Fatalf("创建失败：%s", created.Output)
 	}
 	list, err := session.Git(ctx, code.GitOptions{
 		Command: "worktree", Subcommand: "list",
@@ -211,8 +214,11 @@ func main() {
 	removed, err := session.Git(ctx, code.GitOptions{
 		Command: "worktree", Subcommand: "remove", Path: worktree,
 	})
-	if err != nil || removed.ExitCode != 0 {
-		log.Fatalf("删除失败：%v %s", err, removed.Output)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if removed.ExitCode != 0 {
+		log.Fatalf("删除失败：%s", removed.Output)
 	}
 }
 ```

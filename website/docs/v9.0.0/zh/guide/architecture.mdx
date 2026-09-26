@@ -14,13 +14,127 @@ CodeConfig + SessionOptions
   -> ResolvedSessionConfig
   -> AgentSession
        -> single-flight run admission
-       -> safe-point run-control inbox
-       -> InvocationContext
+       -> FactRun（每次运行一个）
+            ├─ fact log   .a3s/effect-log/<thread>.jsonl
+            ├─ fold       -> view + next transition
+            ├─ kernel     -> permission projection, completion gate
             ├─ LLM invoker  -> provider calls
             ├─ tool invoker -> model、nested、delegated 与 host-direct calls
             └─ events       -> EventEnvelopeV1 -> Rust / Node / Python / Go consumers
        -> SessionSnapshotV1 -> atomic store generation
 ```
+
+<a id="fact-log-control"></a>
+
+## 事实日志控制
+
+编码循环是对一份只追加事实日志的折叠。除此之外没有任何东西决定下一步：
+不是循环检查点，不是内存标志，也不是计时器。每次运行为会话打开一个 `FactRun`，
+通过追加事实并重新折叠日志推进。折叠由 `a3s-effect` 完成：新的提示经
+`ingest_coding` 进入，`resume_coding` 则在已有日志上继续
+（`core/src/fact_control.rs`）。
+
+### 事实日志
+
+会话日志位于 `<workspace>/.a3s/effect-log/<thread>.jsonl`。当会话 ID 不超过
+128 个字符，且只包含 `A-Z`、`a-z`、`0-9`、`_`、`.`、`:` 或 `-` 时，thread 就是
+会话 ID。其他会话 ID 映射为稳定的 `s-<hex>` thread。
+
+| 事实类型                | 何时追加                           |
+| ----------------------- | ---------------------------------- |
+| `user.message`          | 收到提示词或已应用的 steer         |
+| `model.turn`            | 模型返回文本或工具调用             |
+| `tool.result`           | 工具调用完成、被拒绝或被拦截       |
+| `confirmation.answered` | 宿主批准或拒绝一个停靠的工具调用   |
+| `question.answered`     | 宿主回答一个停靠的 `ask_user` 问题 |
+| `compaction.done`       | `compact` 部件对较早的事实做了摘要 |
+| `budget.denied`         | `budget` 部件拒绝再次调用工具      |
+
+### 折叠与下一步转移
+
+折叠日志得到一个视图（system 行、消息、工具规格、待确认或待回答的问题、助手文本）
+和一个阶段：`idle`、`infer`、`compact`、`confirm`、`question`、`tool`、`deny`
+或 `done`。阶段就是下一步转移。`infer` 调用模型，`tool` 执行已记录的调用，
+`compact` 做摘要，`done` 结束运行。折叠日志的 Actor 由
+[Meta Harness](/guide/meta-harness) 组装；没有配方时使用默认内置组件树。
+
+每次 `send`、`stream` 或 `resume_run` 最多执行 32 次转移。达到上限时运行以
+`StepLimit` 错误停止，而不是悄悄继续。当会话从已保存历史恢复到一份空日志时，
+之前的回合会记录为 `model.turn` 事实，因此不会再次发送给模型。已有日志保持不变。
+
+### 停靠
+
+`confirm` 和 `question` 是停靠阶段。折叠在这里停下，等待一个事实。事实日志不会
+为停靠的调用设置超时。
+
+- 权限判定为 Ask 的工具调用停靠在 `confirm`。实时运行中，会话的确认管理器询问宿主
+  并发出 `confirmation_required`。`confirm_tool_use(tool_id, approved, reason)`
+  结束停靠。答案以 `confirmation.answered` 追加，折叠继续。任何超时都属于宿主的
+  确认策略，而不属于日志。
+- `ask_user` 调用停靠在 `question` 并发出 `user_question`。答案以
+  `question.answered` 追加。提问次数超过上限的运行会以
+  `ask_user question cap exceeded` 失败。
+
+因为答案是事实，停靠的调用可以跨进程重启保留。重启后，对停靠的工具 ID 调用
+`confirm_tool_use` 会追加答案，折叠从日志继续。
+
+### 恢复
+
+`resume_run` 折叠日志并从其阶段继续。如果该运行存在循环检查点，会先用检查点中的
+对话记录重建 thread 的日志；检查点提供历史，而不是下一次模型调用。结果缺失的
+`tool` 阶段会把该工具执行一次。静止的日志以零步恢复。
+
+<a id="steer"></a>
+
+### Steer
+
+`steer` 不会启动第二个回合。在下一次服务提供商调用时，运行会清空控制收件箱，把每个
+steer 作为 `user.message` 事实追加，并随该请求一起发送。`interrupt` 协作式取消；
+运行会记录结果并完成清理，然后才进入 `cancelled`。
+
+### 工具预算与工具轮次上限
+
+有两个计数器限制工具工作。二者都统计最近一次 `user.message` 之后的成功工具结果，
+因此已应用的 steer 会重置它们。
+
+- 内置 `budget` 部件在实时会话中每轮允许 8 次成功工具结果，除非 Meta Harness
+  配方设置了 `tool_budget`。超过后的工具调用会记录 `budget.denied`，并在不执行
+  工具的情况下结束本轮。
+- `max_tool_rounds` 是工具轮次上限。它来自 ACL 键 `max_tool_rounds`，或按会话来自
+  `SessionOptions::with_max_tool_rounds`（Node.js `maxToolRounds`、Python
+  `max_tool_rounds`、Go `MaxToolRounds`）。达到上限后，下一次补全请求携带空工具
+  列表，模型只能用文本回答。没有单独的收尾消息。
+
+## 内核包装
+
+每个事实运行都被两项检查包裹。它们属于内核，Meta Harness 配方无法去掉
+（`KernelPolicy::admit()` 总是同时启用二者）。
+
+### 权限投影
+
+模型返回的每个工具调用，在折叠存储之前都会经过会话的 `PermissionPolicy` 投影：
+
+- 策略 **deny** 是最终结果。调用会被记录为 `Permission denied` 结果，并发出
+  `permission_denied` 事件。
+- 策略 **allow** 会执行工具。YOLO lane 在检查前就记录为 allow，因此不会把 Ask
+  变成确认提示。
+- **ask** 交给会话权限检查器。例如，计划模式护栏会拒绝默认策略本应询问的写操作。
+  如果检查器仍然询问，调用停靠在 `confirm`。
+- 没有确认管理器的会话关闭了确认，因此 Ask 会直接执行工具。
+
+活动 Skill 的限制也在同一位置生效，并产生拒绝结果。
+
+### 完成门禁
+
+修改过工作区的运行，只有存在绑定变更 digest 的 Passed 验证报告，或宿主豁免覆盖
+该 digest 时，才算完成。运行结束时，内核先合并宿主 `CompletionAttestor`（如果已
+安装）给出的报告，然后判定：
+
+- **Allow** 把结果的 completion 设为 verified、waived 或 narrative（没有修改）。
+- **Incomplete** 或 **Continue** 返回错误，而不是已完成的结果。
+
+当最近折叠的事实是工具结果，并且门禁已经允许完成时，运行无需再调用服务提供商
+即可结束。助手文本永远不算证据。参见[验证](/guide/verification)。
 
 ## 异步优先的会话构建
 
@@ -81,8 +195,8 @@ let session = agent
 只描述目标输出。文件系统指令、Skills 与宿主上下文仍是独立输入，因此优化默认提示词
 不会遮蔽运行时策略，也不会移除工具能力。
 
-每个活动 Run 都拥有一个有界控制收件箱。`steer` 在下一个服务提供商或工具安全点把
-新用户指令追加到同一份对话记录；`interrupt` 发出协作取消请求，同时让正常清理、
+每个活动 Run 都拥有一个有界控制收件箱。`steer` 在下一次服务提供商调用时作为
+`user.message` 追加到事实日志（参见 [Steer](#steer)）；`interrupt` 发出协作取消请求，同时让正常清理、
 检查点、钩子和事件持久化完成。幂等键、不可变 Run ID、可选回合修订号与截止时间会
 阻止重试或过期界面状态影响较新的回合。上下文压缩与恢复会保留继续任务所需的目标、
 约束、验收标准、已作决定与验证证据，不会静默改变范围。

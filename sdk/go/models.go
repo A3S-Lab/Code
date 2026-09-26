@@ -327,7 +327,7 @@ const (
 )
 
 // HarnessHost returns the `host:<id>` mount for a component registered in the
-// Rust HostHarnessRegistry. Unknown ids fail when the session is created.
+// Rust HostHarnessRegistry. Unknown ids fail closed on the first run.
 func HarnessHost(id string) string {
 	return "host:" + id
 }

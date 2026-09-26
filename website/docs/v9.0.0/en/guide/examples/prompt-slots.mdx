@@ -229,53 +229,68 @@ async fn main() -> a3s_code_core::Result<()> {
 <Tab label="Node.js">
 
 ```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const workspace = '/repo';
+
 // 1. Custom role only.
-let session = agent.session(workspace, {
+const roleOnly = agent.session(workspace, {
   role: 'You are a senior Rust developer who specializes in async programming.',
 });
+roleOnly.close();
 
 // 2. Role + guidelines + response style.
-session = agent.session(workspace, {
+const reviewer = agent.session(workspace, {
   role: 'You are a Python code reviewer.',
   guidelines: 'Always check for type hints. Flag any use of `eval()`.',
   responseStyle: 'Reply in bullet points. Be concise.',
 });
+reviewer.close();
 
 // 3. Extra freeform instructions only.
-session = agent.session(workspace, {
+const extraOnly = agent.session(workspace, {
   extra: "Always end your response with '-- A3S'",
 });
+extraOnly.close();
 
 // Core tool behavior is preserved regardless of the slots.
-session = agent.session(workspace, {
+const fileManager = agent.session(workspace, {
   role: 'You are a minimalist file manager.',
   guidelines: 'Only create files when explicitly asked.',
 });
-const result = await session.send(
+const result = await fileManager.send(
   "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 );
+console.log(result.text);
+fileManager.close();
 ```
 
 </Tab>
 <Tab label="Python">
 
 ```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create('agent.acl')
+workspace = '/repo'
+
 # 1. Custom role only.
 opts = SessionOptions()
 opts.role = 'You are a senior Rust developer who specializes in async programming.'
-session = agent.session(workspace, opts)
+agent.session(workspace, opts).close()
 
 # 2. Role + guidelines + response style.
 opts = SessionOptions()
 opts.role = 'You are a Python code reviewer.'
 opts.guidelines = 'Always check for type hints. Flag any use of `eval()`.'
 opts.response_style = 'Reply in bullet points. Be concise.'
-session = agent.session(workspace, opts)
+agent.session(workspace, opts).close()
 
 # 3. Extra freeform instructions only.
 opts = SessionOptions()
 opts.extra = "Always end your response with '-- A3S'"
-session = agent.session(workspace, opts)
+agent.session(workspace, opts).close()
 
 # Core tool behavior is preserved regardless of the slots.
 opts = SessionOptions()
@@ -285,6 +300,8 @@ session = agent.session(workspace, opts)
 result = session.send(
     "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 )
+print(result.text)
+session.close()
 ```
 
 </Tab>

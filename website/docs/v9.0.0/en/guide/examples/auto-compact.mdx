@@ -171,3 +171,148 @@ the context window (0.0–1.0, default 0.8) at which compaction kicks in; lower 
 compact earlier. Inspect the live session with the SDK's history API. Rust,
 Node.js, Python, and Go also expose direct recent-memory queries
 (`memoryRecent` / `memory_recent` / `MemoryRecent`).
+
+## Compaction in a Meta Harness recipe
+
+If the session uses an explicit [Meta Harness](/guide/meta-harness) recipe,
+compaction is one of its stock parts. `compactAfterChars` / `compact_after_chars`
+sets that part's character threshold, and `toolBudget` / `tool_budget` caps
+tool calls for the scheduler.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, HarnessComposeOptions, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let harness = HarnessComposeOptions {
+        tool_budget: Some(40),
+        compact_after_chars: Some(120_000),
+        components: ["system", "tools", "budget", "compact", "infer"]
+            .map(String::from)
+            .to_vec(),
+        ..Default::default()
+    };
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_harness(harness))
+        .build()
+        .await?;
+
+    let result = session.send("Continue refactoring the parser", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/repo', {
+  harness: Harness.compose({
+    toolBudget: 40,
+    compactAfterChars: 120_000,
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.budget(),
+      Harness.compact(),
+      Harness.infer(),
+    ],
+  }),
+});
+
+const result = await session.send('Continue refactoring the parser');
+console.log(result.text);
+
+session.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.budget(),
+        Harness.compact(),
+        Harness.infer(),
+    ],
+    tool_budget=40,
+    compact_after_chars=120_000,
+)
+session = agent.session("/repo", opts)
+
+result = session.send("Continue refactoring the parser")
+print(result.text)
+
+session.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Harness: &code.HarnessOptions{
+			Components: []string{
+				code.HarnessSystem,
+				code.HarnessTools,
+				code.HarnessBudget,
+				code.HarnessCompact,
+				code.HarnessInfer,
+			},
+			ToolBudget:        code.Ptr(uint32(40)),
+			CompactAfterChars: code.Ptr(uint(120_000)),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Continue refactoring the parser")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
+</Tabs>

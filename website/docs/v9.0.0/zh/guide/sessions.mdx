@@ -71,6 +71,25 @@ let session = agent
 Node 与 Python 的事件流迭代器会在终止边界等待这段生命周期清理。迭代器完整消费
 并报告结束后，立即开始下一次对话操作不会继承上一个事件流留下的过期忙碌状态。
 
+## Run 如何推进
+
+每个会话有一份事实日志，位于 `<workspace>/.a3s/effect-log/<thread>.jsonl`。
+`send` 或 `stream` 把提示词作为 `user.message` 事实追加，然后折叠日志来选择每一步：
+调用模型、执行工具、压缩、停靠或结束。一次运行最多 32 步，超过后以 `StepLimit`
+错误停止。完整模型见[事实日志控制](/guide/architecture#fact-log-control)。
+
+这对宿主意味着：
+
+- **确认会停靠。** 需要批准的工具调用会发出 `confirmation_required` 并等待。用
+  `confirmToolUse` 回答（Rust 与 Python 为 `confirm_tool_use`，Go 为
+  `ConfirmToolUse`）。答案记录为事实，因此重启后同样有效。日志本身没有超时。
+- **提问会停靠。** `ask_user` 调用会发出 `user_question` 并等待回答。
+- **每轮工具工作有上限。** 内置工具预算在 8 次成功工具结果后结束本轮。工具轮次
+  上限（`maxToolRounds`，Python `max_tool_rounds`，Go `MaxToolRounds`）会让下一次
+  模型调用看不到工具，只能用文本回答。
+- **Steer 是事实。** 已应用的 steer 是另一条 `user.message`，因此也会重置这两个
+  计数器。
+
 ## 发送消息
 
 <Tabs>
@@ -216,7 +235,8 @@ if err := <-stream.Done; err != nil {
 ## 调整或中断活动 Run
 
 Run Control 修改正在执行的操作，不会启动第二个对话 Turn。`steer` 把更新后的用户指令
-排入下一个安全点；`interrupt` 协作式取消当前 Provider 与工具工作，并等待受监督清理
+排队；在下一次服务提供商调用时，它作为 `user.message` 追加到事实日志并随该请求发送。
+`interrupt` 协作式取消当前 Provider 与工具工作，并等待受监督清理
 完成后再把 Run 置为 `cancelled`。
 
 <Tabs>
@@ -373,6 +393,11 @@ session, err := agent.ResumeSession(ctx, "release-review", options)
 `ResumeRun(ctx, runID)` 对应同样的两层持久化。参见
 [持久化](/guide/persistence)。
 
+如果该运行有检查点，`resumeRun` 会用检查点中的对话记录重建会话的事实日志。之前的
+模型回合记录为事实，不会再次发送给模型。没有检查点时，它折叠已有日志。两种情况下
+都由折叠选择下一步：结果缺失的工具调用执行一次，静止的日志以零步恢复。既没有
+检查点也没有日志时，调用会失败，并指出缺少会话存储或检查点。
+
 ## 生命周期与关闭
 
 `session.close()` 是一次完整的优雅停止。首次调用会把会话切换到
@@ -446,8 +471,6 @@ if err == nil && len(ids) > 0 {
 err = agent.Close(ctx)
 ```
 
-参见更新日志 `[3.3.0]` 中的“会话与智能体生命周期控制”。
-
 ## 宿主身份标签
 
 `SessionOptions` 携带四个不透明的身份字段，宿主可以在创建会话时附加。
@@ -489,8 +512,6 @@ session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
 	CorrelationID:   "trace-example",
 })
 ```
-
-参见更新日志 `[3.3.0]` 中的“宿主提供的身份标签”。
 
 ## 运行记录与回放
 

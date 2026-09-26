@@ -21,9 +21,8 @@ Context can come from:
 - trace events
 
 AGENTS.md injection, skills discovery, memory APIs, direct tool results,
-delegated task helpers, and `traceEvents()` are part of the documented Node SDK
-surface. Validate MCP context behavior against your own live integrations
-before documenting it as product behavior.
+delegated task helpers, and `traceEvents()` are available from every SDK.
+Custom context providers are a Rust-host extension point (see below).
 
 ## Assembly
 
@@ -31,7 +30,60 @@ before documenting it as product behavior.
 sources -> ContextItem -> rank -> dedupe -> budget -> render
 ```
 
+Context is resolved once at the start of each turn. `ContextAssembler`
+deduplicates items, always keeps required items such as AGENTS.md, then ranks
+the rest by score and relevance. The default balanced policy selects at most 12
+items and 4,000 estimated tokens, with at most 6 items and 2,500 tokens from any
+one source, so a single provider cannot crowd out the others. The selected
+items are rendered into the system prompt.
+
 Long grep output, logs, and child transcripts should be preserved outside the prompt and summarized into prompt-safe evidence. Use `session.traceEvents()` for compact runtime evidence.
+
+## Context providers (Rust Host)
+
+A context provider implements the `ContextProvider` trait from
+`a3s_code_core::context`. All providers registered on a session are queried
+concurrently with the turn's prompt; empty results are dropped. A provider that
+fails is skipped with a warning unless its `failure_mode()` returns
+`ContextProviderFailureMode::FailClosed`, in which case the turn fails.
+`on_turn_complete` is an optional hook called after each turn.
+
+```rust
+use a3s_code_core::context::{
+    ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType,
+};
+use a3s_code_core::SessionOptions;
+use std::sync::Arc;
+
+struct ReleaseNotes;
+
+#[async_trait::async_trait]
+impl ContextProvider for ReleaseNotes {
+    fn name(&self) -> &str {
+        "release-notes"
+    }
+
+    async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
+        let mut result = ContextResult::new(self.name());
+        if query.query.contains("release") {
+            result.add_item(
+                ContextItem::new("freeze", ContextType::Resource, "Release freeze starts Friday.")
+                    .with_relevance(0.9),
+            );
+        }
+        Ok(result)
+    }
+}
+
+let options = SessionOptions::new()
+    .with_context_provider(Arc::new(ReleaseNotes))
+    .with_fs_context("/repo/docs");
+```
+
+`with_fs_context(root)` registers the built-in `FileSystemContextProvider`.
+The module also ships ripgrep, static, skill-catalog, and recent-workspace-file
+providers. Node.js, Python, and Go do not expose custom context providers; use
+AGENTS.md, skills, memory, or workspace retrieval from those SDKs.
 
 ## Exact Cognitive Packages (Rust Host)
 
@@ -75,7 +127,7 @@ Python, or Go session option.
 
 ## Session-owned workspace retrieval
 
-A3S Code 8 can build a bounded retrieval index for one workspace and one
+A3S Code can build a bounded retrieval index for one workspace and one
 session. Construction runs asynchronously, results are verified against the
 current source, and every vector is released when the session closes. The
 runtime does not install or require a vector database.
@@ -144,7 +196,9 @@ interrupts the wait.
 
 ### Backend and ranking boundary
 
-a3s-vec owns lexical FTS/BM25 postings in product builds; a minimal build can
+a3s-vec owns lexical FTS/BM25 postings in product builds (engine id
+`a3s_vec_fts_v1`, enabled by the default `local-code` feature through
+`a3s-vec-fts`); a minimal build can
 explicitly use the portable BM25 implementation. A lexical initialization or
 query failure is reported as bounded lexical degradation and cannot change the
 A3S Memory semantic authority. The SDKs expose typed lexical options and no
@@ -249,19 +303,6 @@ tasks with Recall@5 1.0, MRR 0.5, 1.0x document request amplification, zero
 non-text inputs, and complete vector release. This is a portability gate, not
 a claim that one model or reranker is best for every repository.
 
-The `v7.0.1` post-release rerun at Code `5aa9642` repeated every gate on
-2026-08-17:
-
-| SDK     | Exact tasks / one-Search protocols | DeepSeek turn p50 / p95 | Tokens |
-| ------- | ---------------------------------: | ----------------------: | -----: |
-| Node.js |                              3 / 3 |      16,033 / 16,538 ms | 14,540 |
-| Python  |                              3 / 3 |      15,552 / 23,751 ms | 14,784 |
-| Go      |                              3 / 3 |      16,636 / 19,009 ms | 14,171 |
-
-All three arms retained Recall@5 1.0, MRR 0.5, 1.0x document-request
-amplification, zero non-text inputs, and complete post-close release. These
-remote timings are diagnostic rather than local retrieval latency objectives.
-
 Before rendering a result, A3S Code rereads the authoritative file and verifies
 the full-file digest and exact chunk byte range. Deleted, stale, unreadable, or
 superseded candidates are not exposed. See the
@@ -271,7 +312,7 @@ for production thresholds, rollback rules, and reproducible evaluation.
 
 ## Compaction
 
-Enable automatic compaction for long sessions:
+Automatic compaction is off by default. Enable it for long sessions:
 
 ```ts
 const session = agent.session('/repo', {
@@ -281,15 +322,46 @@ const session = agent.session('/repo', {
 });
 ```
 
-When `maxContextTokens` is omitted, Core uses the selected model's declared
-context window when available. Before each model request, Core accounts for the
-system prompt, conversation, tool calls and results, and exposed tool schemas.
-At the configured threshold it bounds oversized tool output, summarizes the
-older safe prefix, keeps recent messages, and continues the same task. The
-summary participates in later compactions, so long sessions can roll forward
-through repeated compression; this does not enlarge the model's physical
-single-request context window. A successful `context_compacted` event includes
-the cumulative summary so hosts that supply external history can persist the
-same compact generation across turns.
+```python
+opts = SessionOptions()
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+opts.max_context_tokens = 128_000
+session = agent.session("/repo", opts)
+```
 
-Python exposes the same override as `max_context_tokens`.
+```go
+enabled := true
+threshold := float32(0.75)
+maxTokens := uint(128_000)
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	AutoCompact:          &enabled,
+	AutoCompactThreshold: &threshold,
+	MaxContextTokens:     &maxTokens,
+})
+```
+
+The default threshold is 0.80. When `maxContextTokens` is omitted, Core uses
+the selected model's declared context window when available. Before each model
+request, Core accounts for the system prompt, conversation, tool calls and
+results, and exposed tool schemas. At the threshold it:
+
+1. Prunes or truncates oversized older tool output, leaving a marker that tells
+   the model to re-read the file or re-run the command.
+2. Summarizes the older prefix with the model, treating every transcript entry
+   as untrusted data. The summary is capped at 8,000 tokens.
+3. Keeps up to the 20 most recent messages intact (half of a shorter history)
+   and aims to land at 60% of the trigger watermark.
+
+Compaction never loses the task goal. Before summarizing, Core pins the goal
+outside the model: the most recent `## Goal` section in a user message (for
+example, from an earlier summary), otherwise the first user turn. If the new
+summary omits or rewrites that section, Core puts the pinned `## Goal` back.
+Rolling compactions therefore keep the original paths and constraints even
+when a later summary forgets them.
+
+The summary participates in later compactions, so long sessions can roll
+forward through repeated compression; this does not enlarge the model's
+physical single-request context window. A successful `context_compacted` event
+includes the cumulative summary so hosts that supply external history can
+persist the same compact generation across turns.

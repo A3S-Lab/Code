@@ -6,8 +6,7 @@ description: '通过 AgentExecutor 扩展边界将编排步骤分布到多台机
 # 多机器
 
 A3S Code 把多智能体编排表达为代码中的一套*语法*（grammar），再把由此产生的步骤
-放到你希望它运行的任何地方。这一划分沿着**框架 / 宿主边界**展开，于
-`[3.4.0]` 引入：
+放到你希望它运行的任何地方。这一划分沿着**框架 / 宿主边界**展开：
 
 - **框架**拥有编排语法和可序列化的数据契约。它从不决定步骤在哪里运行。
 - **宿主**拥有放置（placement）、传输和调度——哪个节点执行某个步骤、step 规格如何
@@ -23,7 +22,8 @@ A3S Code 把多智能体编排表达为代码中的一套*语法*（grammar）�
   `description`、`prompt`，以及可选的 `max_steps`、`parent_session_id`、
   `output_schema`。
 - `StepOutcome`——运行一个 spec 的结果：`task_id`、`session_id`、`agent`、
-  `output`、`success`，以及可选的 `structured`。
+  `output`、`success`、可选的 `structured`，以及 `source_anchors`（成功的子工具
+  调用观察到的源码锚点）。
 
 两者都能干净地序列化，因此宿主可以把一个 spec 送到另一个节点，并把 outcome 持久化
 到 checkpoint。组合这些 spec 的 combinators 完全针对 `AgentExecutor` trait 编写，
@@ -194,6 +194,20 @@ outcomes = session.parallel_resumable([
     {"task_id": "a", "agent": "explore", "description": "survey", "prompt": "Map the auth module"},
     {"task_id": "b", "agent": "review", "description": "audit", "prompt": "Review error handling"},
 ], "release-audit")
+```
+
+Go 以 `session.Parallel(ctx, specs, budgetTokens)`、
+`session.Pipeline(ctx, items, stages)` 与
+`session.ParallelResumable(ctx, specs, workflowID)` 暴露同一套语法：
+
+```go
+outcomes, err := session.ParallelResumable(ctx, []code.AgentStepSpec{
+	{TaskID: "a", Agent: "explore", Description: "survey", Prompt: "Map the auth module"},
+	{TaskID: "b", Agent: "review", Description: "audit", Prompt: "Review error handling"},
+}, "release-audit")
+if err != nil {
+	return err
+}
 ```
 
 因为 checkpoint 是可序列化的，且 executor 是一个参数，宿主可以通过传入另一个节点的

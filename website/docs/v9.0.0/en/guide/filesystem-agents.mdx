@@ -5,7 +5,13 @@ description: 'Define worker agents for task and automatic delegation'
 
 # agents/ Role Directory
 
-`agents/` stores worker/subagent definitions. Prefer `.a3s/agents/` for new A3S projects. Migration projects may still read `.claude/agents/`, but new docs and projects should use `.a3s/agents/`.
+`agents/` stores worker/subagent definitions. A3S Code scans `~/.claude/agents`,
+`~/.a3s/agents`, `<workspace>/.claude/agents`, and `<workspace>/.a3s/agents`
+automatically, in that order, and a later definition with the same name
+replaces an earlier one. Prefer `.a3s/agents/` for new projects; `.claude/agents/`
+is read for compatibility. Directories are scanned recursively for `.md`,
+`.yaml`, and `.yml` files, and symlinks that resolve outside the directory are
+skipped.
 
 ```text
 repo/
@@ -38,6 +44,16 @@ Review security risks first. Return blockers, evidence paths, and required verif
 
 `name` is the call name. `description` drives automatic routing. The body describes the worker role. Tool fields narrow visible capabilities; do not rely on the worker merely promising not to do risky things.
 
+- `tools` (also `allowedTools` or `allowed_tools`) becomes an allow-only
+  permission policy for the child run.
+- `disallowedTools` (also `disallowed-tools` or `disallowed_tools`) adds deny
+  rules that win over the allowlist.
+- Either field accepts a comma-separated string or a YAML list. When one is
+  set, the child's confirmation inheritance defaults to `auto_approve`.
+- A `kind` field (`read_only`, `planner`, `implementer`, `verifier`,
+  `reviewer`, or `custom`) parses the file as a worker agent spec, the same
+  shape accepted by `workerAgents`.
+
 ## Manual Delegation
 
 ```ts
@@ -64,7 +80,10 @@ const session = agent.session('/repo', {
 });
 ```
 
-Automatic delegation depends on descriptions and confidence scoring. Write descriptions that say when to use the agent, not just what the role is called.
+Automatic delegation scores the request locally against each agent's name and
+description; there is no model call in the routing step. Write descriptions
+that say when to use the agent, not just what the role is called. See
+[Tasks](/guide/tasks) for the scoring and fan-out limits.
 
 ## Practices
 

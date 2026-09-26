@@ -80,6 +80,30 @@ Node and Python stream iterators wait for that lifecycle cleanup at the terminal
 boundary. Once a fully consumed iterator reports completion, an immediate next
 conversation operation will not inherit a stale busy state from that stream.
 
+## How a Run Advances
+
+Each session has one fact log at `<workspace>/.a3s/effect-log/<thread>.jsonl`.
+A `send` or `stream` appends the prompt as a `user.message` fact and folds the
+log to choose each next step: call the model, run a tool, compact, park, or
+finish. A run takes at most 32 steps before it stops with a `StepLimit` error.
+See [Fact-log control](/guide/architecture#fact-log-control) for the full model.
+
+What this means for a host:
+
+- **Confirmations park.** A tool call that needs approval emits
+  `confirmation_required` and waits. Answer it with `confirmToolUse` (Rust and
+  Python `confirm_tool_use`, Go `ConfirmToolUse`).
+  The answer is recorded as a fact, so it also works after a restart. The log
+  has no timeout of its own.
+- **Questions park.** An `ask_user` call emits `user_question` and waits for
+  the answer.
+- **Tool work is bounded per turn.** The stock tool budget ends a turn after 8
+  successful tool results. The tool-round cap (`maxToolRounds`, Python
+  `max_tool_rounds`, Go `MaxToolRounds`) makes the next model call see no tools,
+  so it must answer in text.
+- **Steer is a fact.** An applied steer is another `user.message`, so it also
+  resets both counters.
+
 ## Send
 
 <Tabs>
@@ -242,8 +266,9 @@ branch and retain the payload for future event types.
 ## Steer and Interrupt an Active Run
 
 Run control changes an operation already in progress; it does not start a
-second transcript turn. `steer` queues a newer user direction for the next
-safe point. `interrupt` cancels current provider and Tool work cooperatively,
+second transcript turn. `steer` queues a newer user direction; at the next
+provider call it is appended to the fact log as a `user.message` and sent with
+that request. `interrupt` cancels current provider and Tool work cooperatively,
 then lets supervised cleanup settle before the Run becomes `cancelled`.
 
 <Tabs>
@@ -406,6 +431,14 @@ This resumes a saved session snapshot; interrupted run checkpoints use
 `ResumeRun(ctx, runID)` for the same two persistence levels.
 See [Persistence](/guide/persistence).
 
+With a checkpoint for that run, `resumeRun` rebuilds the session's fact log
+from the checkpoint transcript. Prior model turns are recorded as facts and are
+not sent to the model again. Without a checkpoint, it folds the existing log.
+Either way the fold chooses the next step: a tool call whose result is missing
+runs once, and a quiescent log resumes with zero steps. With neither a
+checkpoint nor a log, it fails and names the missing session store or
+checkpoint.
+
 ## Lifecycle and Close
 
 `session.close()` is a full graceful stop. The first call flips the session
@@ -483,8 +516,6 @@ if err == nil && len(ids) > 0 {
 err = agent.Close(ctx)
 ```
 
-See CHANGELOG `[3.3.0]` — "Session / Agent lifecycle control".
-
 ## Host Identity Labels
 
 `SessionOptions` carries four opaque identity fields that the host can attach
@@ -521,14 +552,12 @@ print(session.tenant_id, session.principal)
 
 ```go
 session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
-	TenantID:       "tenant-example",
-	Principal:      "principal-example",
+	TenantID:        "tenant-example",
+	Principal:       "principal-example",
 	AgentTemplateID: "agent-template-example",
-	CorrelationID:  "trace-example",
+	CorrelationID:   "trace-example",
 })
 ```
-
-See CHANGELOG `[3.3.0]` — "Host-provided identity labels".
 
 ## Run Replay
 

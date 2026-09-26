@@ -10,10 +10,11 @@ accepts one focused child or several independent children for concurrent fan-out
 Child context stays isolated from the parent conversation, and only compact
 results return instead of full transcripts.
 
-The same delegation core also powers automatic subagent delegation. Enable it
-when the runtime should proactively start specialist child agents for
-high-confidence work, and disable only automatic parallel fan-out with
-`autoParallel: false` when you want serial automatic delegation.
+The same `task` tool also carries automatic subagent delegation: when enabled,
+the runtime plans a `task` call for high-confidence specialist matches before
+the model's first decision. Host code that already knows the shape of the work can
+call `session.task(...)` / `session.tasks(...)` directly, or use the
+programmable [Orchestration](/guide/orchestration) combinators.
 
 Web clients can present these states as a plan and a separate list of child-agent
 runs, keyed by task ID.
@@ -50,6 +51,30 @@ const task = await session.task({
 if (task.exitCode !== 0) throw new Error(task.output);
 console.log(task.output);
 ```
+
+```python
+task = session.task({
+    "agent": "explore",
+    "description": "Inspect auth module",
+    "prompt": "Return files inspected, findings, risks, and confidence.",
+})
+if task.exit_code != 0:
+    raise RuntimeError(task.output)
+```
+
+```go
+task, err := session.Task(ctx, code.DelegateTaskOptions{
+	Agent:       "explore",
+	Description: "Inspect auth module",
+	Prompt:      "Return files inspected, findings, risks, and confidence.",
+})
+if err == nil && task.ExitCode != 0 {
+	err = errors.New(task.Output)
+}
+```
+
+Each item takes `agent`, `description`, and `prompt`, plus optional
+`background` and `maxSteps` / `max_steps`.
 
 A child agent should return a compact contract:
 
@@ -102,11 +127,9 @@ the submitted task count.
 `session.task(...)` and `session.tasks(...)` return `ToolResult` values from the
 same `task` tool. Read `output` for the compact child summary and check
 `exitCode` before treating the result as successful. `maxParallelTasks` in
-session options and `max_parallel_tasks` in ACL bound sibling fan-out.
-
-Prefer `task` / `session.tasks` for all fan-out. Model-visible and SDK
-`parallel_task` / `parallelTask` helpers are **removed** (`HARNESS-CONV4`). Use
-multi-item `task` only.
+session options and `max_parallel_tasks` in ACL bound sibling fan-out. Multi-item
+`task` is the only fan-out tool; there is no separate parallel-task tool or SDK
+helper.
 
 <span id="agent-wide-priority-scheduler"></span>
 
@@ -262,7 +285,21 @@ to finish before scheduler shutdown completes.
 
 ## Automatic Delegation
 
-Automatic delegation is opt-in. The runtime scores the current request against built-in and custom agent descriptions, then launches up to `maxTasks` child runs when confidence is high enough.
+Automatic delegation is opt-in. At the start of a turn, the runtime scores the request locally against every visible agent's name and
+description (built-in, directory-loaded, and worker agents; `general` is only
+chosen when named). This is a deterministic match, not a model call. When the
+request names an agent, only that agent is planned. Otherwise agents whose
+confidence reaches
+`minConfidence` become items of one `task` call that takes the place of the
+model's first decision in the turn. The fact log records and runs it like any
+other tool call, including the confirmation policy. The children's compact
+results return to the parent model as the tool result, and the parent still
+makes the final decision.
+
+- At most `min(maxTasks, maxParallelTasks)` children start per request.
+- `autoParallel: false` / `auto_parallel = false` keeps automatic delegation
+  but limits it to the single best match.
+- Defaults: disabled, `minConfidence` 0.72, `maxTasks` 4, `autoParallel` true.
 
 ```ts
 const session = agent.session('/repo', {
@@ -281,7 +318,15 @@ auto_delegation {
 }
 ```
 
-`autoParallel: false` / `auto_parallel = false` is the global kill switch for automatic parallel child-agent fan-out. Manual `task` fan-out and `session.tasks(...)` remain available.
+`autoParallel` never affects manual `task` fan-out or `session.tasks(...)`.
+
+With automatic delegation disabled, naming an agent in the request (for example
+`@review` or "use the verification subagent") still delegates to exactly that
+agent. To remove the model-visible `task` tool entirely, set
+`manualDelegationEnabled: false` (Node), `manual_delegation_enabled = False`
+(Python), `ManualDelegationEnabled` (Go), or `allow_manual_delegation = false`
+inside the ACL `auto_delegation` block. This also turns off automatic
+delegation, because both paths run through the `task` tool.
 
 ## Agent Directories
 
@@ -292,7 +337,12 @@ const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
 const loaded = session.registerAgentDir('./more-agents');
 ```
 
-A3S scans configured `agent_dirs`, project/user `.a3s/agents`, and Claude-compatible `.claude/agents` migration paths. Prefer `.a3s/agents` for new projects.
+Definitions are registered in this order, and a later definition with the same
+name replaces an earlier one: ACL `agent_dirs`, `~/.claude/agents`,
+`~/.a3s/agents`, `<workspace>/.claude/agents`, `<workspace>/.a3s/agents`,
+session `agentDirs`, then `workerAgents`. Directories are scanned recursively
+for `.md`, `.yaml`, and `.yml` files. Prefer `.a3s/agents` for new projects;
+`.claude/agents` is read for compatibility.
 
 Markdown agent files support frontmatter:
 
@@ -338,7 +388,8 @@ Control how child runs resolve Ask decisions with `confirmationInheritance`:
 - `'deny_on_ask'`: child runs fail immediately when encountering an Ask
 - `'inherit_parent'`: child runs inherit the parent's confirmation policy
 
-Legacy lifecycle control-plane APIs are removed. Applications that need UI state should consume streaming events, run replay, and Node `cancelRun(runId)`.
+Applications that need UI state for child runs consume streaming events and run
+replay, and cancel active Node work with `cancelRun(runId)`.
 
 ## Programmable orchestration
 

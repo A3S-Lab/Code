@@ -49,12 +49,20 @@ ordinary `AGENTS.md` only in its own directory; it does not discard guidance
 from parent directories. If no Git root exists, A3S Code checks only the
 selected workspace.
 
-Empty files are skipped. The combined default budget is 32 KiB and can be
-changed with `project_doc_max_bytes`; zero disables project instruction loading.
-A3S Code accepts regular UTF-8 files inside the project root and ignores
-symlink candidates and unsafe fallback names. The effective bounded chain is
-mandatory session context, so the generic retrieval budget cannot silently
-drop it.
+Before the project chain, A3S Code loads one personal document from
+`~/.a3s`: `AGENTS.override.md` if it is non-empty, otherwise `AGENTS.md`. Set
+`user_instructions_dir` to use a different directory. Personal guidance comes
+first, so project files can refine it.
+
+An empty file is skipped and the next candidate name in that directory is
+tried. The personal document and the project chain share one budget: 32 KiB by
+default, configurable with `project_doc_max_bytes` up to a 1 MiB ceiling
+(larger values are clamped with a warning). Zero disables all automatic
+instruction loading. A file that exceeds the remaining budget is truncated at a
+UTF-8 boundary, and later files are not loaded. A3S Code accepts regular UTF-8
+files inside the project root and ignores symlink candidates and unsafe
+fallback names. The effective bounded chain is mandatory session context, so
+the generic retrieval budget cannot silently drop it.
 
 Use nested `AGENTS.md` files only when subdirectories truly differ, such as a
 desktop app, API package, or SDK with a different toolchain. Do not copy the
@@ -64,6 +72,7 @@ agents to identify the current source of truth.
 ```acl
 project_doc_max_bytes = 65536
 project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
+user_instructions_dir = "/home/me/.config/a3s"
 ```
 
 ## Relationship To Other Conventions
@@ -71,10 +80,10 @@ project_doc_fallback_filenames = ["TEAM_GUIDE.md", ".agents.md"]
 ```text
 repo/
 ├── AGENTS.md          # project-level durable instructions
-├── agent.acl          # runtime config
 └── .a3s/
-    ├── agents/        # worker/subagent definitions
-    └── skills/        # reusable skills
+    ├── config.acl     # runtime config (the TUI discovers it; SDK hosts pass any ACL)
+    ├── agents/        # worker/subagent definitions, loaded automatically
+    └── skills/        # reusable skills, loaded when listed in skill_dirs
 ```
 
-`AGENTS.md` gives the agent project facts and working boundaries. `agent.acl` tells the runtime how to connect models and directories. `agents/` and `skills/` provide discoverable roles and reusable process.
+`AGENTS.md` gives the agent project facts and working boundaries. The ACL config tells the runtime how to connect models and directories. `agents/` and `skills/` provide discoverable roles and reusable process.

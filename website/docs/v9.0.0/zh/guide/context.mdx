@@ -5,15 +5,83 @@ description: '可靠编程智能体的预算化上下文组装'
 
 # 上下文
 
-A3S Code 把上下文当作有预算的资源。
+A3S Code 把上下文当作有预算的资源。模型应当只看到当前决策所需的最小有用上下文，
+而不是所有可用的文件、skill、memory 和工具日志。
 
-上下文来源包括用户 prompt、历史、AGENTS.md、skills、memory、文件搜索、直接工具结果、MCP、委派子运行摘要和 trace event。AGENTS.md 注入、skills discovery、memory API、直接工具结果、委派 helper 和 `traceEvents()` 属于 Node SDK 文档表面；MCP context 行为应针对你的 live integration 单独验证。
+## 来源
+
+上下文可以来自：
+
+- 用户 prompt 和对话历史
+- AGENTS.md 项目指令
+- skills 和智能体定义
+- memory store
+- 文件搜索和直接工具结果
+- MCP 工具和 context provider
+- 委派任务摘要
+- trace event
+
+AGENTS.md 注入、skills discovery、memory API、直接工具结果、委派 helper 和
+`traceEvents()` 在所有 SDK 中都可用。自定义 context provider 是 Rust 宿主扩展点
+（见下文）。
+
+## 组装
 
 ```text
 sources -> ContextItem -> rank -> dedupe -> budget -> render
 ```
 
+上下文在每个轮次开始时解析一次。`ContextAssembler` 先去重，始终保留 AGENTS.md 等
+必需项，再按分数和相关度对其余项排序。默认的 balanced 策略最多选择 12 项、4,000
+个估算 token，且任一来源最多 6 项、2,500 个 token，因此单个 provider 不会挤掉其他
+来源。选中的项会渲染进 system prompt。
+
 长 grep 输出、日志和委派子运行 transcript 不应直接塞进 prompt；应保存在 prompt 之外，再总结成适合 prompt 的证据。紧凑运行证据可通过 `session.traceEvents()` 获取。
+
+## Context provider（Rust 宿主）
+
+Context provider 实现 `a3s_code_core::context` 中的 `ContextProvider` trait。会话上
+注册的所有 provider 会用该轮次的 prompt 并发查询；空结果会被丢弃。失败的 provider
+会记录 warning 并被跳过，除非它的 `failure_mode()` 返回
+`ContextProviderFailureMode::FailClosed`，此时该轮次失败。`on_turn_complete` 是每轮
+结束后调用的可选 hook。
+
+```rust
+use a3s_code_core::context::{
+    ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType,
+};
+use a3s_code_core::SessionOptions;
+use std::sync::Arc;
+
+struct ReleaseNotes;
+
+#[async_trait::async_trait]
+impl ContextProvider for ReleaseNotes {
+    fn name(&self) -> &str {
+        "release-notes"
+    }
+
+    async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
+        let mut result = ContextResult::new(self.name());
+        if query.query.contains("release") {
+            result.add_item(
+                ContextItem::new("freeze", ContextType::Resource, "Release freeze starts Friday.")
+                    .with_relevance(0.9),
+            );
+        }
+        Ok(result)
+    }
+}
+
+let options = SessionOptions::new()
+    .with_context_provider(Arc::new(ReleaseNotes))
+    .with_fs_context("/repo/docs");
+```
+
+`with_fs_context(root)` 会注册内置的 `FileSystemContextProvider`。该模块还提供
+ripgrep、static、skill-catalog 和 recent-workspace-file provider。Node.js、Python 和
+Go 不暴露自定义 context provider；在这些 SDK 中请使用 AGENTS.md、skills、memory 或
+工作区检索。
 
 ## 精确认知包（Rust 宿主）
 
@@ -47,7 +115,7 @@ Rust 宿主集成面，不是 Node.js、Python 或 Go 的会话选项。
 
 ## Session 绑定的工作区检索
 
-A3S Code 8 可以为一个工作区的一个 Session 构建有界检索索引。构建过程异步运行，
+A3S Code 可以为一个工作区的一个 Session 构建有界检索索引。构建过程异步运行，
 结果会与当前源文件再次校验，Session 关闭时所有向量都会释放。Runtime 不会安装或
 要求使用向量数据库。
 
@@ -77,11 +145,12 @@ Artifact 校验、Cache 与凭据仍由宿主负责。
 
 ### 异步向量投影生命周期（非持久化向量库）
 
-这里使用的是 Session 独占的精确内存向量索引，不是持久化或跨 Session 共享的
-Vector Database。Session 构建会在 Corpus Embedding 完成前返回；后台 Indexer 读取
+语义服务投影是 Session 独占的精确 A3S Memory 向量索引，不是持久化或跨 Session 共享
+的 Vector Database。产品构建另外使用 Session 本地的 a3s-vec FTS Collection 做词法
+排序，其 Collection Handle 短生命周期且有界。Session 构建会在 Corpus Embedding 完成前返回；后台 Indexer 读取
 已准入文本，以 File 为单位原子发布不可变 Partition，并在源文件 Revision 变化后异步
 Reconcile，未变化的文件不会重复 Embedding。重新创建 Session 会生成新的 Projection；
-关闭 Session 会取消未完成的 Provider Work，并要求 Vector Record 与已计量 Byte 归零。
+关闭 Session 会取消未完成的 Provider Work，并释放全部语义与词法状态。
 
 ```text
 构建 Session -> 立即返回
@@ -102,6 +171,14 @@ Partial Fallback，取消查询或关闭 Session 会中断等待。
 | `ready`    | 当前源 Generation 已达到完整 Coverage | Semantic 与 Hybrid Query 使用完整的已发布 Generation  |
 | `degraded` | 保留有效 Partition，并报告有界失败    | 词法路径继续服务，Semantic Result 显示 Partial Status |
 | `closed`   | 取消 Indexing 并释放全部向量          | 再次使用 Semantic Retrieval 前必须重建 Session        |
+
+### 后端与排序边界
+
+产品构建中由 a3s-vec 负责词法 FTS/BM25 Posting（引擎 ID `a3s_vec_fts_v1`，由默认
+`local-code` Feature 通过 `a3s-vec-fts` 启用）；最小构建可以显式使用可移植的 BM25
+实现。词法初始化或查询失败会作为有界的词法降级报告，不能改变 A3S Memory 的语义
+权威。SDK 暴露带类型的词法选项，不提供原始后端名称选择器。临时词法 Collection 会在
+正常关闭时删除；进程崩溃残留受宿主操作系统临时目录策略约束。
 
 ### 排序
 
@@ -187,17 +264,6 @@ DeepSeek Fixture 完成 3/3 精确任务，Recall@5 为 1.0、MRR 为 0.5、Docu
 Amplification 为 1.0x、Non-text Input 为零，并完整释放向量。它是 Portability Gate，
 不代表某个模型或 Reranker 对所有仓库都最优。
 
-Code `5aa9642` 在 2026-08-17 完成了 `v7.0.1` 发布后复验：
-
-| SDK     | 精确任务 / 单次 Search 协议 | DeepSeek Turn p50 / p95 | Tokens |
-| ------- | --------------------------: | ----------------------: | -----: |
-| Node.js |                       3 / 3 |      16,033 / 16,538 ms | 14,540 |
-| Python  |                       3 / 3 |      15,552 / 23,751 ms | 14,784 |
-| Go      |                       3 / 3 |      16,636 / 19,009 ms | 14,171 |
-
-三个 SDK 均保持 Recall@5 1.0、MRR 0.5、1.0x Document Request Amplification、
-零 Non-text Input 与完整的关闭后释放。这些远程耗时只用于诊断，不是本地检索延迟目标。
-
 渲染结果前，A3S Code 会重新读取权威文件，并校验 Full-file Digest 与精确 Chunk Byte
 Range。Deleted、Stale、Unreadable 或 Superseded Candidate 不会暴露。生产阈值、回滚
 规则和可复现评估见
@@ -206,7 +272,7 @@ Range。Deleted、Stale、Unreadable 或 Superseded Candidate 不会暴露。生
 
 ## 上下文压缩
 
-长会话可启用自动压缩：
+自动压缩默认关闭。长会话可启用它：
 
 ```ts
 const session = agent.session('/repo', {
@@ -216,6 +282,39 @@ const session = agent.session('/repo', {
 });
 ```
 
-未设置 `maxContextTokens` 时，Core 会优先使用当前模型声明的上下文窗口。每次模型请求前，Core 会统计 system prompt、会话消息、工具调用与结果以及暴露给模型的工具 schema；达到阈值后，它会限制过大的工具输出、总结较早且边界安全的消息、保留近期消息，并继续当前任务。压缩摘要还会参与后续压缩，因此长会话可以持续滚动压缩；这不会扩大模型单次请求的物理上下文窗口。压缩成功时，`context_compacted` 事件会携带累计摘要，使用外部历史的宿主可以把同一压缩代持久化到后续轮次。
+```python
+opts = SessionOptions()
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+opts.max_context_tokens = 128_000
+session = agent.session("/repo", opts)
+```
 
-Python SDK 中对应的字段是 `max_context_tokens`。
+```go
+enabled := true
+threshold := float32(0.75)
+maxTokens := uint(128_000)
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	AutoCompact:          &enabled,
+	AutoCompactThreshold: &threshold,
+	MaxContextTokens:     &maxTokens,
+})
+```
+
+默认阈值为 0.80。未设置 `maxContextTokens` 时，Core 会优先使用当前模型声明的上下文
+窗口。每次模型请求前，Core 会统计 system prompt、会话消息、工具调用与结果以及暴露
+给模型的工具 schema。达到阈值后，它会：
+
+1. 剪裁或截断较早的过大工具输出，并留下提示模型重新读取文件或重新运行命令的标记。
+2. 用模型总结较早的前缀，并把每条 transcript 都当作不可信数据。摘要上限为 8,000
+   个 token。
+3. 完整保留最多 20 条最近消息（较短历史保留一半），目标是降到触发水位的 60%。
+
+压缩不会丢失任务目标。总结之前，Core 会在模型之外固定目标：优先取用户消息中最近
+的 `## Goal` 段（例如来自之前的摘要），否则取第一条用户轮次。如果新摘要遗漏或改写
+了该段，Core 会把固定的 `## Goal` 放回去。因此即使后续摘要遗忘了原始路径和约束，
+滚动压缩也会保留它们。
+
+压缩摘要还会参与后续压缩，因此长会话可以持续滚动压缩；这不会扩大模型单次请求的
+物理上下文窗口。压缩成功时，`context_compacted` 事件会携带累计摘要，使用外部历史
+的宿主可以把同一压缩代持久化到后续轮次。

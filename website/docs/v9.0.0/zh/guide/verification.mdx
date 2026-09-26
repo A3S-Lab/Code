@@ -7,15 +7,221 @@ import { Tab, Tabs } from '@rspress/core/theme';
 
 # 验证
 
-运行时将"完成"视为必须被**证明**的事实，而不仅仅是被声明的结果。当模型说某个任务已完成时，这句话本身毫无价值。自 8.5.6 起，工作区变更不能完成这一轮，除非有一份 Passed 的验证报告绑定该变更 digest，或宿主豁免覆盖该 digest。宿主豁免不能由模型授予。验证把声明转化为证据：你声明一组*必须*成功的命令，运行时执行它们，结果会携带一份你可以检视、据以拦截或呈现给用户的报告。
+Harness 把“完成”视为必须**被证明**的事情，而不是一句声明。修改过 workspace
+的回合不能靠助手文本完成。只有当一份 Passed 验证报告绑定到该回合精确的 mutation
+effect digest，或者宿主为该 digest 提供了 waiver 时，回合才会完成。报告绑定和
+waiver 都不能由模型的文字产生。
 
-验证是会话级的。Rust 核心运行每条命令，记录其退出状态和输出，并将每份报告汇总为一份随回合结果一同返回的摘要。
+验证以 session 为作用域。Rust core 执行每条命令，记录退出状态与输出，并把所有报告
+汇总成一份摘要，随回合结果一同返回。
 
-产品界面可以先展示交付摘要，再列出支持结论的命令输出和文件级改动。
+产品 UI 可以先展示交付摘要，再展示支撑它的命令输出和文件级变更。
 
-## 运行验证命令
+## 完成门禁
 
-一条验证命令就是一个小而具名的检查：一个 `id`、一个 `kind`、一段可读的 `description`，以及要运行的 `command`。当某个失败应被视为硬失败而非警告时，将该检查标记为 `required`。
+每个回合都止于完成门禁（`core/src/harness_loop.rs`）。门禁检查本回合的 mutation
+ledger、回合内收集的验证报告、宿主 waiver，以及绑定到 session 的外部观测，并按以下
+顺序判定：
+
+1. 仍要求 workspace 变更的外部观测会让回合保持打开。只有这种情况可以消耗唯一一次
+   continuation 回合；否则回合不完整。
+2. 写入未被观测到的后台 workspace 子任务会让回合不完整。
+3. workspace 观测不完整时回合不完整。waiver 或只覆盖部分路径列表的报告都不能关闭它。
+4. ledger 为空（没有 workspace 变更）时以 `Narrative` 完成。
+5. `effect_digest` 等于 ledger digest 的宿主 waiver 以 `Waived` 完成。
+6. 绑定到 ledger digest 且所有 required check 都为 Passed 的报告以 `Verified` 完成。
+7. 其他情况均为不完整。
+
+最后一种情况下回合失败，并返回包含 digest 的消息：
+
+```text
+completion gate: workspace mutation <digest> has no bound Passed verification
+and no host waiver. Assistant text does not count. ...
+```
+
+`send()` 和 `stream()` 会把它作为错误返回。mutation 门禁路径不会消耗 continuation
+回合：没有新的工具证据，再多一个模型回合也无法关闭门禁。成功的 Rust `AgentResult`
+在 `completion` 中给出结果：
+
+| `CompletionTerminal`         | 含义                                               |
+| ---------------------------- | -------------------------------------------------- |
+| `Narrative`                  | 没有 workspace 变更，最终回答即可。                |
+| `Verified { effect_digest }` | required check 已通过，且绑定到 mutation digest。  |
+| `Waived { effect_digest }`   | 宿主 waiver 覆盖了该 digest。这不是验证通过。      |
+| `Distinct`                   | 计划步骤关闭了不同的 digest；不会生成合并 digest。 |
+
+### Mutation effect digest
+
+ledger 按回合记录：
+
+- 成功的 `write`、`edit`、`patch` 和 `download` 调用，以及写入内容的 SHA-256
+  content digest；
+- 工具元数据报告的 `changed_paths`（例如来自 `bash`），即使命令失败也会记录；
+- 嵌套工具调用的效果；
+- 不属于任何已记录工具、通过比较回合前后 workspace 发现的变更路径（排除 `.a3s`
+  和 `.git`）。
+
+effect digest 是对已记录的 `tool|path|content_digest` 行计算的 SHA-256。之后再写入
+同一路径会改变 digest，因此绑定到旧状态的报告不再匹配。
+
+### 什么样的报告能绑定为 Passed
+
+只有同时满足以下条件的报告才能通过门禁：
+
+- `effect_digest` 等于当前 ledger digest；
+- 至少包含一个 required check，并且每个 required check 都是 `passed`；
+- 报告状态既不是 `failed` 也不是 `needs_review`。
+
+报告在收集前会检查作者身份。工具元数据可以携带 `verification_report` 和
+`verification_author`；作者为 `editor` 的报告会被拒绝，宿主和 verifier 报告会被接受。
+内置 `bash` 通过两种方式产生证据：
+
+- 覆盖某条 workspace preset 命令（见[预设](#验证预设)）或当前 `/goal` 验收标准
+  （来自 `.a3s/loops/*/ACCEPTANCE.md`）的命令，会为该检查生成 `shell:<id>` 报告。
+  这种报告本身不带 digest。
+- 如果同一条命令还包含存在性检查（`test -f`、`test -e`、`[ -f ... ]`、`[ -e ... ]`、
+  `[[ -f ... ]]` 或 `[[ -e ... ]]`），且其中指定的变更路径当前磁盘内容的 SHA-256
+  等于 ledger 记录的 digest，运行时会把尚未绑定的 required-pass 报告绑定到 ledger
+  digest。如果命令以 0 退出且没有报告被绑定，会合成一份宿主报告
+  `shell:mutation_path_verify:<path>`。没有记录内容的存在性检查可以绑定已有的
+  Passed 报告，但永远不会合成报告。
+
+通过 `verifyCommands()` 或 `recordVerificationReports()` 记录到 session 的报告不带
+effect digest，也不会作为后续回合门禁的输入。它们适合宿主侧发布检查和摘要；若需要
+用宿主证据关闭一个进行中的回合，请使用 [completion attestor](#completion-attestor)。
+
+## 宿主 Waiver
+
+`CompletionWaiverV1 { effect_digest, reason }` 是宿主或用户针对某个精确 digest
+确认的例外。两个字段都不能为空。模型无法通过文字创建它，`Waived` 也与 `Verified`
+分开报告。waiver 在构建 session 时固定，因此适用于 digest 已知的回放和恢复流程。
+
+```rust
+use a3s_code_core::harness_loop::CompletionWaiverV1;
+use a3s_code_core::SessionOptions;
+
+let waiver = CompletionWaiverV1::new(digest, "Reviewed by the release owner")
+    .ok_or_else(|| a3s_code_core::CodeError::Config("waiver needs digest and reason".into()))?;
+let options = SessionOptions::new().with_completion_waivers(vec![waiver]);
+```
+
+```ts
+const session = agent.session('/repo', {
+  completionWaivers: [
+    { effect_digest: digest, reason: 'Reviewed by the release owner' },
+  ],
+});
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	CompletionWaivers: []code.CompletionWaiver{
+		{EffectDigest: digest, Reason: "Reviewed by the release owner"},
+	},
+})
+```
+
+9.0.0 的 Python `SessionOptions` 没有设置 completion waiver 的公开 setter。
+
+## Completion Attestor
+
+运行第三方工作的宿主在构建 session 时无法预知 digest。`CompletionAttestor`
+（`core/src/completion_attestor.rs`）在不引入旁路的前提下解决这个问题：
+
+- 它在 ledger digest 产生之后、门禁判定之前被调用；ledger 为空时跳过。
+- 它接收 digest，以及每个变更路径对应的 `MutatedPathRecord { path, content_digest }`，
+  宿主可以重新读取文件并与记录的内容比较。
+- 它可以返回一份 `VerificationReport`。该报告作为宿主报告被接受并追加到本回合报告中，
+  但仍必须满足绑定条件：digest 错误、缺少 required check，或 required check 不是
+  Passed，都会让回合保持不完整。
+- 它只在 Rust 中提供（`SessionOptions::with_completion_attestor`），不是工具，不能
+  授予模型，也没有让未验证变更完成的仅观察模式。
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::verification::{VerificationCheck, VerificationReport, VerificationStatus};
+use a3s_code_core::{CompletionAttestor, MutatedPathRecord, SessionOptions};
+
+struct HostCiAttestor;
+
+impl CompletionAttestor for HostCiAttestor {
+    fn attest(
+        &self,
+        effect_digest: &str,
+        paths: &[MutatedPathRecord],
+    ) -> Option<VerificationReport> {
+        if !paths.iter().all(|record| host_ci_accepts(&record.path, &record.content_digest)) {
+            return None;
+        }
+        let check = VerificationCheck::required("host:ci", "test", "Host CI accepted the change")
+            .with_status(VerificationStatus::Passed);
+        Some(VerificationReport::new("host-ci", vec![check]).with_effect_digest(effect_digest))
+    }
+}
+
+fn host_ci_accepts(_path: &str, _content_digest: &str) -> bool {
+    // Host-specific: re-read the file, compare the digest, consult CI.
+    false
+}
+
+let options = SessionOptions::new().with_completion_attestor(Arc::new(HostCiAttestor));
+```
+
+## 只读 Verifier
+
+`verifier_enabled` 默认关闭。开启后，如果回合修改了 workspace，运行时会在门禁之前
+额外运行一个 verifier 回合。该回合不会呈现 `write`、`edit`、`patch`、`download`、
+`Skill`、`task` 或 `batch`。包含 `>`、`rm `、`mv ` 或 `tee ` 的 bash 命令，以及会修改
+状态的 `git` 形式（`checkout`、创建分支、带消息或未跟踪文件的 `stash`、创建或删除
+`worktree`）都会被拒绝。它的报告作为 verifier 报告被接受，但仍必须绑定；Failed 或
+NeedsReview 结果仍不算通过。每个回合最多运行一次 verifier。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::SessionOptions;
+
+let options = SessionOptions::new().with_verifier(true);
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const session = agent.session('/repo', { verifierEnabled: true });
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import SessionOptions
+
+opts = SessionOptions()
+opts.verifier_enabled = True
+session = agent.session('/repo', opts)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	VerifierEnabled: code.Ptr(true),
+})
+```
+
+</Tab>
+</Tabs>
+
+## 执行验证命令
+
+一条验证命令是一个小的、具名的检查：`id`、`kind`、可读的 `description`，以及要执行的
+`command`。当失败应被视为硬性失败而非警告时，把检查标记为 `required`。
+`verifyCommands()` 会以宿主控制的提权调用通过 `bash` 执行每条命令，应用给定超时，
+并把报告记录到 session。
 
 <Tabs>
 <Tab label="Rust">
@@ -27,14 +233,14 @@ let commands = vec![
     VerificationCommand::required(
         "build",
         "build",
-        "项目可以编译",
+        "Project compiles",
         "cargo build --all-features",
     )
     .with_timeout_ms(120_000),
     VerificationCommand::required(
         "tests",
         "test",
-        "单元测试通过",
+        "Unit tests pass",
         "cargo test",
     ),
 ];
@@ -102,7 +308,7 @@ report, err := session.VerifyCommands(ctx, "release-readiness", []code.Verificat
 	{
 		ID:          "build",
 		Kind:        "build",
-		Description: "项目可以编译",
+		Description: "Project compiles",
 		Command:     "cargo build --all-features",
 		Required:    true,
 		TimeoutMS:   code.Ptr(uint64(120000)),
@@ -110,7 +316,7 @@ report, err := session.VerifyCommands(ctx, "release-readiness", []code.Verificat
 	{
 		ID:          "tests",
 		Kind:        "test",
-		Description: "单元测试通过",
+		Description: "Unit tests pass",
 		Command:     "cargo test",
 		Required:    true,
 	},
@@ -124,19 +330,26 @@ fmt.Println(report)
 </Tab>
 </Tabs>
 
-`subject`（此处为 `release-readiness`）为这一批检查命名，使同一会话内的多次验证在报告中保持彼此独立。
+`subject`（此处为 `release-readiness`）为这批检查打标签，使同一 session 内的多次验证
+在报告中保持区分。报告使用 schema `a3s.verification_report.v1`；检查状态为
+`passed`、`failed`、`needs_review` 和 `skipped`。Rust 调用方还可以用
+`VerificationCommand::with_expect_exit` 要求特定退出码。
 
-## 读取回合结束后的摘要
+## 读取回合后摘要
 
-每个回合的 `send()` 结果同样携带只读的验证字段，因此你无需单独发起一次验证调用即可据结果拦截。用这些字段判断该回合是否真正完成了它所声称的工作。
+每个回合的 `send()` 结果都携带只读的验证字段，因此无需单独发起验证调用即可基于结果
+做判断。用这些字段确认回合是否真正完成了它声称的事情。
 
 <Tabs>
 <Tab label="Rust">
 
 ```rust
-let result = session.send("应用修复并运行检查", None).await?;
+let result = session
+    .send("Apply the fix and run the checks", None)
+    .await?;
 let summary = result.verification_summary();
 
+println!("{:?}", result.completion);
 println!("{:?}", summary.status);
 println!("{}", summary.pending_required_check_count);
 println!("{}", summary.failed_check_count);
@@ -145,7 +358,7 @@ println!("{}", result.verification_summary_text());
 
 if summary.failed_check_count > 0 {
     return Err(a3s_code_core::CodeError::Session(
-        "当前回合声称已完成，但验证失败".to_string(),
+        "turn reported done but verification failed".to_string(),
     ));
 }
 ```
@@ -187,7 +400,7 @@ if result.failed_verification_count > 0:
 <Tab label="Go">
 
 ```go
-result, err := session.Run(ctx, "应用修复并运行检查")
+result, err := session.Run(ctx, "Apply the fix and run the checks")
 if err != nil {
 	return err
 }
@@ -200,16 +413,19 @@ fmt.Println(summary.ReportCount)
 fmt.Println(result.VerificationSummaryText)
 
 if summary.FailedCheckCount > 0 {
-	return errors.New("回合声称完成，但验证失败")
+	return errors.New("turn reported done but verification failed")
 }
 ```
 
 </Tab>
 </Tabs>
 
+被门禁拒绝的回合不会返回这些字段：调用会直接返回完成门禁错误。
+
 ## 检视报告与摘要
 
-除了逐回合的字段之外，会话还暴露完整的报告集合、一份结构化摘要、可用的预设，以及一份可读的概要。该概要是向人展示某回合*为何*通过或失败的最快方式。
+除了每回合的字段，session 还暴露完整的报告集合、结构化摘要、可用预设，以及一段可读
+的摘要文本。摘要文本是向人展示回合*为何*通过或失败的最快方式。
 
 <Tabs>
 <Tab label="Rust">
@@ -221,7 +437,7 @@ let presets = session.verification_presets();
 let text = session.verification_summary_text();
 
 println!(
-    "{} 份报告，状态 {:?}，{} 个预设",
+    "{} reports, status {:?}, {} presets",
     reports.len(),
     summary.status,
     presets.len()
@@ -239,7 +455,7 @@ const reports = session.verificationReports();
 const summary = session.verificationSummary();
 const presets = session.verificationPresets();
 
-// 会话辅助方法和独立格式化函数都能生成可读文本。
+// Either the session helper or the standalone formatter yields readable text.
 console.log(session.verificationSummaryText());
 console.log(formatVerificationSummary(summary));
 ```
@@ -252,7 +468,7 @@ reports = session.verification_reports()
 summary = session.verification_summary()
 presets = session.verification_presets()
 
-# 会话辅助方法返回可直接打印的可读摘要。
+# The session helper returns a ready-to-print human-readable digest.
 print(session.verification_summary_text())
 ```
 
@@ -284,8 +500,22 @@ fmt.Println(text)
 </Tab>
 </Tabs>
 
-`verificationPresets()` 返回根据 workspace 文件推断出的检查模板，例如
-`Cargo.toml`、`package.json`、`pyproject.toml` 和 `go.mod`。请把它们当作起点：
+摘要包含 `status`、`report_count`、`required_check_count`、
+`pending_required_check_count`、`failed_check_count`、`residual_risk_count`、
+`pending_subjects` 和 `failed_subjects`。
+
+### 验证预设
+
+`verificationPresets()` 返回根据项目文件推断出的检查模板：
+
+| 预设             | 检测依据                                                    | 命令                                                                                                                 |
+| ---------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `rust-default`   | `Cargo.toml`                                                | `cargo fmt -- --check`、`cargo check`、`cargo test`（required）；`cargo clippy -- -D warnings`（optional）           |
+| `node-default`   | `package.json` 中的 `test`、`typecheck`、`lint` 脚本        | `test` 为 required；`typecheck` 和 `lint` 为 optional；通过检测到的包管理器执行（`packageManager`、lockfile 或 npm） |
+| `python-default` | `pyproject.toml`、`tests/`、`pytest.ini`、Ruff 或 mypy 配置 | `python -m pytest`（配置了测试时为 required）；`python -m ruff check .` 与 `python -m mypy .`（已配置时为 optional） |
+| `go-default`     | `go.mod`                                                    | `go test ./...`（required）；`go vet ./...`（optional）                                                              |
+
+覆盖其中某条命令的 `bash` 命令会生成 `shell:<id>` 报告，见上文。请把预设当作起点：
 在用来拦截发布或用户可见自动化之前，应审查命令、超时和 required 标记是否适合该项目。
 
 ## A3S Code 自身如何完成资格认证

@@ -246,5 +246,8 @@ Notes:
 - `completeExternalTask` / `complete_external_task` returns `true` when the task was found
   and completed, `false` otherwise. In Python these queue methods are synchronous; in Node
   `pendingExternalTasks` and `completeExternalTask` return promises.
+- Tasks only appear while a run is routing work to the lane. Poll the queue from a
+  worker loop while `send` or `stream` is in flight; a drain right after
+  `setLaneHandler`, as in this minimal example, finds an empty queue.
 - Go uses `PendingExternalTasks` and `CompleteExternalTask`; both accept the
   caller's `context.Context`.

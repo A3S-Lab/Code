@@ -254,8 +254,13 @@ opts = SessionOptions()
 opts.budget_guard = MyGuard()
 session = agent.session('/path/to/project', opts)
 
-# 如需清除：把 opts.budget_guard 设为 None，再重新创建会话。
+# 清除预算守卫
+session.set_budget_guard(None)
 ```
+
+Python 守卫还可以定义 `check_before_tool(session_id, tool_name)`。
+`session.set_budget_guard(guard, timeout_ms=5000)` 可在运行中的会话上安装守卫。
+异常、无法解析的决策和超时都会 fail-closed。
 
 </Tab>
 <Tab label="Go">
@@ -339,7 +344,7 @@ Go 回调遵循相同的 fail-closed 契约：回调报错、超时或返回无�
 | `{ decision: 'soft', resource, consumed, limit, message? }` | 发出 `BudgetThresholdHit`（kind 为 `soft`）并继续执行。                                                            |
 | `{ decision: 'deny', resource, reason }`                    | 中止 LLM 调用。Python 抛出 `RuntimeError("Budget exhausted...")`；Node 以 `"Budget exhausted..."` 拒绝（reject）。 |
 
-这种健壮性是刻意为之，但各 SDK 的失败语义略有不同：**缺失的守卫方法**会被当作宽松默认值处理。Python 回调出错会回退为 Allow。Node 回调不能 throw。Go 回调报错、超时或返回无法解析的 `check*` 决策时，会 fail-closed 为 `deny`。
+在所有 SDK 中，**缺失的守卫方法**都会被当作宽松默认值处理。在 Python 与 Go 中，回调出错、超时或返回无法解析的 `check*` 决策时，会 fail-closed 为 `deny`；Node 回调不能 throw，挂起或无法读取的 Node `check*` 回调同样 fail-closed。
 
 ## 集群事件词汇
 
@@ -473,7 +478,7 @@ func main() {
 
 ## 循环检查点与运行恢复
 
-配置了 `sessionStore` / `session_store` 后，智能体循环会在**每一轮工具调用完成之后**持久化一个检查点，以运行 id 作为键。任何共享同一存储的节点都可以重新水合该运行并继续它。
+配置了 `sessionStore` / `session_store` 后，智能体循环会在**每个写入事实日志的工具结果**之后持久化一个循环检查点，以运行 id 作为键。任何共享同一存储的节点都可以恢复该运行。检查点提供的是事实而不是决策：恢复节点用它为一个全新的事实日志线程播种，再折叠该日志，由日志选择下一步。
 
 <Tabs>
 <Tab label="Rust">
@@ -574,12 +579,12 @@ func main() {
 </Tab>
 </Tabs>
 
-系统会为恢复的工作分配一个**新的运行 id**——存储中的原始运行保持不变。有两条错误路径值得处理：
+恢复的工作会记录为一个**新运行**；存储中检查点所属的运行保持不变。如果不存在检查点，但会话的事实日志已有事实，`resume_run` 会改为折叠该日志。只有在事实日志也为空时，才会出现下面两种错误：
 
-- **`resume_run requires a session_store`** —— 未配置存储；回退到一个全新会话。
-- **`no loop checkpoint found for run 'X'`** —— 该运行从未到达其第一个检查点，或已被清理；稍后重试，或将该运行视为丢失。
+- **`resume_run requires a session_store on this session`**：未配置存储；回退到一个全新会话。
+- **`no loop checkpoint found for run 'X'`**：该运行从未到达其第一个检查点，或检查点已在运行结束时删除；将该运行视为已落定或已丢失。
 
-由于检查点只在**工具轮次之间、绝不在工具执行中途**生成，恢复的运行永远不会重放一个执行到一半的工具。存储细节参见[持久化](/guide/persistence)。
+日志中缺少结果的工具调用会在恢复时执行一次。需要精确、可安全重放的恢复标识的宿主使用 `spawnRecoveryWithRunId`。完整规则参见[持久化](/guide/persistence)。
 
 ## 长时运行会话的保留上限
 

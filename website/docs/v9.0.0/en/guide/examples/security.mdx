@@ -20,7 +20,7 @@ against a real repository.
 
 ```rust
 use a3s_code_core::{
-    hitl::{ConfirmationPolicy, TimeoutAction},
+    hitl::ConfirmationPolicy,
     permissions::PermissionPolicy,
     Agent, AgentEvent, SessionOptions,
 };
@@ -40,8 +40,7 @@ async fn main() -> a3s_code_core::Result<()> {
         .ask("bash(git push:*)")
         .ask("bash(npm publish:*)")
         .ask("bash(*)");
-    let confirmation_policy =
-        ConfirmationPolicy::enabled().with_timeout(120_000, TimeoutAction::Reject);
+    let confirmation_policy = ConfirmationPolicy::enabled();
 
     let session = agent
         .session_builder(".")
@@ -104,11 +103,7 @@ const session = agent.session(process.cwd(), {
     defaultDecision: 'ask',
   },
   // Turn the `ask` patterns into a human-in-the-loop confirmation flow.
-  confirmationPolicy: {
-    enabled: true,
-    defaultTimeoutMs: 120000,
-    timeoutAction: 'reject',
-  },
+  confirmationPolicy: { enabled: true },
 });
 
 // Stream execution and resolve confirmations as they arrive.
@@ -153,17 +148,13 @@ def main() -> None:
         default_decision="ask",
     )
     # Turn the `ask` patterns into a human-in-the-loop confirmation flow.
-    opts.confirmation_policy = ConfirmationPolicy(
-        enabled=True,
-        default_timeout_ms=120_000,
-        timeout_action="reject",
-    )
+    opts.confirmation_policy = ConfirmationPolicy(enabled=True)
 
     session = agent.session(".", opts)
 
     # Stream execution and resolve confirmations as they arrive.
     for event in session.stream("Bump the version and push the release"):
-        if event.event_type == "confirmation_required":
+        if event.type == "confirmation_required":
             # Look up the pending request for richer display.
             pending = session.pending_confirmations()
             first = pending[0] if pending else {}
@@ -205,8 +196,6 @@ func main() {
 	}
 	defer agent.Close(ctx)
 
-	enabled := true
-	timeoutMS := uint64(120_000)
 	session, err := agent.Session(
 		ctx,
 		".",
@@ -217,11 +206,7 @@ func main() {
 				Ask:             []string{"write(*)", "edit(*)", "bash(git push:*)", "bash(npm publish:*)", "bash(*)"},
 				DefaultDecision: "ask",
 			},
-			ConfirmationPolicy: &code.ConfirmationPolicy{
-				Enabled:          &enabled,
-				DefaultTimeoutMS: &timeoutMS,
-				TimeoutAction:    "reject",
-			},
+			ConfirmationPolicy: &code.ConfirmationPolicy{Enabled: code.Ptr(true)},
 		},
 	)
 	if err != nil {
@@ -427,8 +412,10 @@ extension point; all SDKs expose the built-in provider shown here.
   and open up only what automation needs.
 - A `confirmationPolicy` with `enabled: true` is what turns `ask` decisions into a
   pausing `confirmation_required` event. Resolve each one with
-  `session.confirmToolUse(toolId, approved, reason?)`; if no answer arrives within
-  `defaultTimeoutMs`, `timeoutAction` (`reject`) decides the outcome.
+  `session.confirmToolUse(toolId, approved, reason?)`. A confirmation parks the run
+  until that answer (or a cancellation) arrives; `defaultTimeoutMs` and
+  `timeoutAction` do not settle it. Without an enabled confirmation policy, an
+  `ask` decision runs the tool.
 - Keep release and publish actions (`bash(git push*)`, `bash(npm publish*)`) on the
   `ask` or `deny` path unless automation owns the final step.
 - Direct host calls such as `session.tool()`, `session.bash()`, and `session.git()`

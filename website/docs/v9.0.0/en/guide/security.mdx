@@ -32,8 +32,10 @@ and delegated runs. Hosts use `SessionOptions::with_sandbox_handle` only to
 replace this default with an equivalent boundary; non-local workspace backends
 retain their explicit command-runner contract.
 
-Core and the Code TUI use the A3S-owned `a3s-sandbox` Rust library through its
-`NativeBashSandbox` adapter. It selects the native boundary for the host
+Core and the Code TUI use the A3S-owned `a3s-sandbox` Rust library (pinned to
+0.2.1) through its `NativeBashSandbox` adapter. The adapter starts from the
+library's `a3s_bash_baseline` policy, whose network profile denies all egress.
+It selects the native boundary for the host
 platform—Seatbelt on macOS, Bubblewrap namespaces plus seccomp on Linux, and
 AppContainer plus a kill-on-close Job Object on Windows—and probes that
 boundary before enabling Bash. No Node.js, npm package, or global runtime
@@ -47,14 +49,48 @@ bounded command through the actual OS boundary before enabling its deferred
 handle. Failure marks that handle unavailable, so Default can request one exact
 escalated host invocation and Auto denies Bash. Embedded Core sessions also
 fail closed: initialization failure installs an error-only handle instead of
-falling back to the local workspace runner.
+falling back to the local workspace runner, and default `bash` on a governed
+local run without a configured sandbox is refused.
 
 The adapter fails closed and never silently retries on the host. It denies
 network egress, local binding, and Unix sockets; limits writes to the workspace
-and a private scratch directory; protects `.git`, `.a3s`, `.agents`, `.codex`,
-`.claude`, `.vscode`, `.idea`, and control files; masks common credential
-stores; and scrubs ambient secrets. Delegated tasks, Skills, and workflow steps
-retain the same handle.
+and a private scratch directory; protects the top-level `.git`, `.a3s`,
+`.agents`, `.codex`, `.claude`, `.vscode`, and `.idea` directories and the
+`.gitmodules` and `.mcp.json` control files; masks common credential stores;
+and scrubs ambient secrets. Delegated tasks, Skills, and workflow steps retain
+the same handle.
+
+### Process-host opt-in
+
+Some deployments already run A3S Code inside an outer container or VM (for
+example Harbor or Terminal-Bench) where the native sandbox cannot initialize.
+Only there, a host may set `allow_process_host_sandbox` (Rust
+`SessionOptions::with_allow_process_host_sandbox(true)`, Node.js
+`allowProcessHostSandbox`, Python `allow_process_host_sandbox`, Go
+`AllowProcessHostSandbox`) or the environment variable
+`A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX` (`1`, `true`, `yes`, or `on`). When native
+initialization fails, the session then runs `bash -c` directly on the host with
+process-group cleanup and bounded output instead of installing the error-only
+handle. This removes the local boundary; the outer isolation becomes the only
+one. A host-supplied `sandbox_handle` always takes precedence, and non-local
+workspace backends keep their own command runner.
+
+### Network grants
+
+The baseline has no network. Code does not expose a broader network profile or
+a general mediated-HTTP option. The only way to reach the network from sandboxed
+`bash` is a per-call grant: the tool call sets
+`sandbox_permissions: "request_network_grant"` with
+`network_grant: { host, port }`. The host must be an exact name (no wildcards;
+`localhost` and `127.0.0.1` are different hosts) and the port is optional. The
+call requires confirmation. When approved, the sandbox enables mediated access
+for exactly that origin, pinned to the current policy digest; a stale digest is
+refused and the grant is recorded in the result metadata as `network_grant`
+with `host`, `port`, and `policy_digest`. A call with
+`sandbox_permissions: "require_escalated"` must include a `justification` and
+also requires confirmation before it runs outside the sandbox.
+
+### In-process file tools and credentials
 
 Because built-in file tools execute in-process, the TUI separately enables
 Core's local workspace credential policy. It covers direct and range reads,
@@ -91,9 +127,8 @@ descendants, create symlinks, inspect its environment, and attempt filesystem,
 socket, or network escapes.
 
 The trusted computing base is the running CLI/Core binary, the verified
-release support tree, the exact resolved Node executable, the selected sandbox
-provider and operating-system enforcement, and host code that invokes direct
-SDK helpers. A configured MCP server or native integration is a separately
+release support tree, the selected sandbox provider and operating-system
+enforcement, and host code that invokes direct SDK helpers. A configured MCP server or native integration is a separately
 trusted extension; missing or unsafe behavior annotations cause confirmation
 rather than granting read-only status.
 
@@ -104,7 +139,7 @@ The stderr pipe is drained independently so diagnostics cannot stall protocol
 traffic.
 
 This local boundary does not claim kernel-level protection against a compromised
-sandbox provider, Node runtime, CLI binary, or operating system. It also does
+sandbox provider, CLI binary, or operating system. It also does
 not turn the privileged host-direct SDK into end-user authorization. Use a
 stronger workload provider for hostile multi-tenant code, kernel attack
 resistance, or OCI-level isolation.
@@ -212,7 +247,25 @@ const session = agent.session('/repo', {
 });
 ```
 
+Rules use `Tool(pattern)` or a bare `Tool` name and match tool names
+case-insensitively; tool globs such as `mcp__github__*` are supported. Legacy
+`grep`, `glob`, and `bm25` rules are rewritten to the matching `search` mode.
+Evaluation order is **deny, then allow, then ask, then `defaultDecision`**
+(`core/src/permissions/policy.rs`). An `allow` match therefore wins over an
+`ask` match for the same call: keep an `ask` pattern out of any broader `allow`
+pattern you want it to guard. `defaultDecision` defaults to `ask`, and
+`enabled: false` allows everything.
+
 Avoid permissive defaults for release or production sessions. Make dangerous commands explicit and auditable.
+
+## Confirmation
+
+An `ask` decision, a tool that declares it needs confirmation (for example
+`bash` with `require_escalated` or `request_network_grant`), and annotated
+external side effects all become one pending confirmation for one exact
+invocation. If no confirmation provider is available, the call fails closed
+before a HITL request is emitted. Delegated children keep the parent's
+confirmation provider for a parent `Ask` and for tool-owned escalation.
 
 ## Hooks
 
@@ -234,6 +287,10 @@ session.unregisterHook('observe-secret-read');
 
 ## Verification
 
-Verification reports and summaries are available from the session and selected
-result fields. Release workflows should require tests, package checks, CI
-checks, and provider evidence.
+A turn that changed the workspace cannot complete on assistant text. The
+completion gate requires a Passed verification report bound to the turn's
+mutation effect digest, or a host waiver for that digest; see
+[Verification](/guide/verification#the-completion-gate). Verification reports
+and summaries are available from the session and selected result fields.
+Release workflows should require tests, package checks, CI checks, and provider
+evidence.

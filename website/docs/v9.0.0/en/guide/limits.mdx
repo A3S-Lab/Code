@@ -23,14 +23,32 @@ const session = agent.session('/repo', {
 });
 ```
 
-## Option Intent
+Python uses the same names in snake_case on `SessionOptions` (for example
+`opts.max_tool_rounds = 24`). Go uses pointer fields such as
+`MaxToolRounds: code.Ptr(uint(24))` and `ToolTimeoutMS: code.Ptr(uint64(120000))`.
 
-- `maxToolRounds` is the tool-iteration budget for a turn.
-- `maxParseRetries` is the malformed tool-call recovery budget.
-- `toolTimeoutMs` is the per-tool timeout in milliseconds.
-- `circuitBreakerThreshold` is the repeated provider failure threshold.
-- `autoCompact` and `autoCompactThreshold` enable context compaction behavior.
-- `continuationEnabled` and `maxContinuationTurns` control continuation injection.
+## Options and Defaults
+
+| Node.js option               | Default         | Intent                                                                                   |
+| ---------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| `maxToolRounds`              | `50`            | Tool-iteration budget for one turn.                                                      |
+| `maxParseRetries`            | `2`             | Malformed tool-call recovery budget.                                                     |
+| `toolTimeoutMs`              | none            | Per-tool timeout in milliseconds.                                                        |
+| `llmApiTimeoutMs`            | provider client | Per-model HTTP timeout in milliseconds.                                                  |
+| `circuitBreakerThreshold`    | `3`             | Consecutive provider failures before the turn aborts.                                    |
+| `duplicateToolCallThreshold` | `3`             | Consecutive identical tool signatures before the duplicate-call guard fails the turn.    |
+| `autoCompact`                | `false`         | Enables automatic context compaction.                                                    |
+| `autoCompactThreshold`       | `0.80`          | Fraction of the context window that triggers compaction (context window default 200000). |
+| `continuationEnabled`        | `true`          | Injects a continuation when the model stops early.                                       |
+| `maxContinuationTurns`       | `3`             | Maximum continuation injections per execution.                                           |
+| `maxExecutionTimeMs`         | none            | Aborts the execution loop after this duration.                                           |
+
+When a turn reaches `maxToolRounds`, the runtime does not inject a
+finalization message. It sends the next completion with an empty tool list so
+the model must answer in text; see the
+`fact_log_tool_round_cap_uses_an_empty_tool_list` test in
+`core/src/fact_control.rs`. A turn that changed the workspace still has to pass
+the [completion gate](/guide/verification#the-completion-gate).
 
 ## Practical Defaults
 
@@ -54,8 +72,9 @@ Five independent caps:
 | `max_trace_events`            | The oldest event in the trace sink is dropped on each new write past the cap.                                                                       |
 | `max_terminal_subagent_tasks` | The oldest **terminal** (completed / failed / cancelled) subagent task snapshot is dropped past the cap. **Running tasks are never dropped.**       |
 
-All caps are soft: enforcement drops the oldest entry on insert and never
-returns an error.
+The defaults are 64 runs, 2048 events per run, 8 MiB of event data per run,
+8192 trace events, and 512 terminal subagent tasks. All caps are soft:
+enforcement drops the oldest entry on insert and never returns an error.
 
 ```ts
 const session = agent.session('/repo', {
@@ -148,22 +167,22 @@ session.setBudgetGuard({
 });
 ```
 
-The Node bridge **fails closed**: a `check_*` callback that does not return
-within `timeoutMs`, or returns something unreadable, is treated as a **deny** —
-a budget control must never silently disable itself when the guard stalls
-(CHANGELOG [3.3.0] Fixed "Node BudgetGuard fail-open").
-
-The callback **MUST NOT throw.** Due to a napi-rs constraint a thrown exception
-aborts the host process at return-value conversion. Wrap your logic in
-try/catch and return a decision (e.g. a deny) instead of throwing. Hangs are
-handled safely by the fail-closed timeout (CHANGELOG [3.3.0] Known limitations).
+The Node bridge **fails closed**
+(`sdk/node/src/workflow_budget.rs`): a `check*` callback that throws, returns
+something unreadable (including a Promise), or does not return within
+`timeoutMs` is treated as a **deny**. A budget control never silently disables
+itself when the guard fails or stalls. Callbacks must be synchronous. A failure
+inside `recordAfterLlm` is ignored.
 
 ### Python — `budget_guard` session option
 
 Python supplies a `BudgetGuard`-shaped object on the `budget_guard`
-`SessionOptions` field. Methods that aren't defined behave as Allow / no-op.
-Python callbacks use **positional arguments** and the framework catches any
-exception they raise (a `check_*` that raises defaults to Allow):
+`SessionOptions` field, bounded by `budget_guard_timeout_ms` (default 5000,
+must be greater than zero). `session.set_budget_guard(guard, timeout_ms)`
+replaces it on a live session; pass `None` to clear it. Methods that aren't
+defined behave as Allow / no-op. Python callbacks use **positional arguments**.
+An exception, a malformed decision, or a timeout in a `check_*` method fails
+closed as a **deny** (`sdk/python/src/orchestration_bridge.rs`):
 
 ```python
 class MyBudgetGuard:
@@ -185,5 +204,32 @@ opts.budget_guard = MyBudgetGuard()
 session = agent.session('/repo', opts)
 ```
 
-The decision return dict `{"decision": "deny", "resource": ..., "reason": ...}`
-(and `"soft"` / `"allow"`) is the same shape on both SDKs.
+### Go — `session.SetBudgetGuard(ctx, handlers)`
+
+Go callbacks receive typed contexts and return a `*code.BudgetDecision`.
+`Timeout` defaults to 5 seconds. A nil handler allows; a returned error, a
+timeout, or an unreadable decision denies. Pass `nil` handlers to clear the
+guard.
+
+```go
+err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
+	CheckBeforeLLM: func(ctx context.Context, value code.BudgetLLMContext) (*code.BudgetDecision, error) {
+		if overMonthlyCap(value.SessionID) {
+			return &code.BudgetDecision{Decision: "deny", Resource: "llm_tokens", Reason: "monthly cap"}, nil
+		}
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+	RecordAfterLLM: func(ctx context.Context, value code.BudgetUsageContext) error {
+		addSpend(value.SessionID, value.Usage.TotalTokens)
+		return nil
+	},
+	CheckBeforeTool: func(ctx context.Context, value code.BudgetToolContext) (*code.BudgetDecision, error) {
+		return &code.BudgetDecision{Decision: "allow"}, nil
+	},
+	Timeout: 5 * time.Second,
+})
+```
+
+The decision shape `{"decision": "deny", "resource": ..., "reason": ...}`
+(and `"soft"` with `resource`, `consumed`, `limit`, `message`, or `"allow"`) is
+the same across the Node.js, Python, and Go SDKs.

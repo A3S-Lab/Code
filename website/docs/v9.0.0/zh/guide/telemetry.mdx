@@ -127,6 +127,29 @@ Go 方法需要跨越原生桥接边界，因此会返回 `error`；Rust、Node.
 的 `metadata` 是稳定且无损的字段；文本、工具名、工具输出、错误、令牌总数和
 验证摘要则是便捷投影。未来新增的未知 `type` 及其载荷仍会完整提供给宿主。
 
+## OpenTelemetry 导出
+
+Rust 宿主启用 `a3s-code-core` 的 `telemetry` Cargo 特性（已包含在 `server` 与
+`full` 组合中）后，可以通过 OTLP 导出 span。导出器位于
+`core/src/telemetry_otel.rs`：
+
+```rust
+use a3s_code_core::telemetry_otel::TelemetryConfig;
+
+let guard = TelemetryConfig::new("http://localhost:4317")
+    .with_service_name("my-agent")
+    .init()?;
+
+// ... run sessions ...
+
+guard.shutdown();
+```
+
+默认传输为 gRPC；`with_otlp_http()` 切换为 OTLP/HTTP。导出有时间上限，不可达的
+收集器不会拖住编码回合或进程退出。已发布的 Node.js、Python 与 Go 包未启用该特性。
+`sdkCapabilities()` 返回的 `opentelemetry` 条目是高级、由宿主持有的能力，并说明了
+这一 Core 特性要求。
+
 ## 日志
 
 产品遥测应优先使用结构化追踪事件和验证报告，不要解析控制台输出。

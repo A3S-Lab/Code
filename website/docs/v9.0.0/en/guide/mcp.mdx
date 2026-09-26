@@ -193,7 +193,7 @@ MCP capability discovery and live mutation have different owners:
 
 Session assembly reads tool definitions from inherited sources without merging
 session configuration back into those managers. A locally added server can
-shadow an inherited server with the same fully qualified tool names, but only
+override an inherited server with the same fully qualified tool names, but only
 inside that session. Removing the local server reveals the inherited tools
 again. It does not unregister, disconnect, or otherwise mutate the global or
 host-owned source, and sibling sessions remain unchanged.
@@ -218,8 +218,8 @@ let session = agent
 
 A connected stdio MCP server holds resources — file descriptors and a
 background worker — even while it sits idle. In a long-lived cluster session
-those quiet servers accumulate. `disconnectIdleMcp` (CHANGELOG [3.3.0] "MCP idle
-disconnect") reaps them on demand: it disconnects every global MCP server whose
+those quiet servers accumulate. `disconnectIdleMcp` reaps them on demand: it
+disconnects every global MCP server whose
 last activity is older than the threshold, releasing the FDs and workers, **while
 keeping each server's registered config** so a later tool call reconnects on
 demand.
@@ -240,9 +240,16 @@ dropped = agent.disconnect_idle_mcp(5 * 60 * 1000)
 print('disconnected:', dropped)
 ```
 
-The current Go bridge exposes session-local add, status, call, and remove plus
-agent-level `RefreshMCPTools`; it does not yet expose the global idle-disconnect
-sweeper.
+```go
+// Reap servers idle longer than 5 minutes. Returns disconnected names.
+dropped, err := agent.DisconnectIdleMCP(ctx, 5*60*1000)
+if err != nil {
+	return err
+}
+fmt.Println("disconnected:", dropped)
+```
+
+Rust hosts call `Agent::disconnect_idle_mcp(threshold_ms)` directly.
 
 Hosts running thousands of long-lived sessions should call this periodically
 from a sweeper (e.g. every 60s with a 5-min threshold). A subsequent tool call
@@ -252,7 +259,7 @@ on a disconnected server re-establishes the connection from its retained config
 Disconnect also purges orphan timestamps: a `touch()`-without-connect entry
 (recorded for a server that was never actually connected) is swept on each
 `disconnect_idle` call so the activity map cannot grow unbounded over a
-long-running manager's lifetime (CHANGELOG [3.3.0] Fixed "MCP timestamp leak").
+long-running manager's lifetime.
 
 ## Security
 

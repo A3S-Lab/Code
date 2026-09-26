@@ -8,9 +8,9 @@ description: '模型、服务提供商、队列、技能目录和工作智能体
 `agent.acl` 是模型、provider、队列、存储、Skill 目录和 worker 目录的版本化运行配置。
 
 SDK 宿主可以用 `Agent.create("agent.acl")` 显式传入任意 `.acl` 文件。
-`a3s code` TUI 会从 workspace 向上发现 `.a3s/config.acl`，然后读取
-`~/.a3s/config.acl`；它并不要求仓库根部存在 `agent.acl`。格式一致，发现方式和
-作用范围不同。
+`a3s code` TUI 并不要求仓库根部存在 `agent.acl`。它先读取 `~/.a3s/config.acl`，
+再读取从 workspace 向上找到的最近的 `.a3s/config.acl`，并把 workspace 层合并覆盖到
+用户层之上。`--config <path>` 会替换这两层。格式一致，发现方式和作用范围不同。
 
 ## 基础配置
 
@@ -48,14 +48,21 @@ project_doc_max_bytes = 32768
 project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
 
 auto_delegation {
-  enabled        = true
-  min_confidence = 0.72
-  max_tasks      = 4
-  auto_parallel  = false
+  enabled                 = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+  auto_parallel           = false
+  allow_manual_delegation = true
 }
 ```
 
-`skill_dirs` 指向可复用技能目录；`agent_dirs` 指向 worker/subagent 定义目录。`project_doc_max_bytes` 限制从仓库根到 workspace 的项目指令链总大小；后备文件名会在 `AGENTS.override.md` 和 `AGENTS.md` 之后查找。自动委派只决定是否让模型选择 worker，不会取消父 session 的权限策略、工具可见性或验证要求。
+`skill_dirs` 指向可复用技能目录，也是 ACL 配置加载技能文件的唯一方式。`agent_dirs`
+在自动扫描的 `.a3s/agents` 与 `.claude/agents` 目录之外追加 worker/subagent 目录。
+`project_doc_max_bytes` 限制个人文件加上从仓库根到 workspace 的指令链总大小；后备文件名
+会在 `AGENTS.override.md` 和 `AGENTS.md` 之后查找。自动委派决定运行时是否为匹配的
+worker 规划一次 `task` 调用；`allow_manual_delegation = false` 会完全移除 `task` 工具。
+两者都不会取消父 session 的权限策略、工具可见性或验证要求。评分规则见
+[任务](/guide/tasks)。
 
 ## 会话存储
 

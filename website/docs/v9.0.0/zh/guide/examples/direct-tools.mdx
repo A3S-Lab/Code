@@ -25,7 +25,7 @@ async fn main() -> a3s_code_core::Result<()> {
     let agent = Agent::new("agent.acl").await?;
     let session = agent.session_builder(".").build().await?;
 
-    let allowed = HashSet::from(["search", "read", "generate_object"]);
+    let allowed = HashSet::from(["glob", "grep", "read", "generate_object"]);
     let check = |name: &str| -> a3s_code_core::Result<()> {
         allowed
             .contains(name)
@@ -37,10 +37,11 @@ async fn main() -> a3s_code_core::Result<()> {
             })
     };
 
-    check("search")?;
+    check("glob")?;
     let files = session.glob("**/*.rs").await?;
     println!("glob 找到 {} 个 Rust 文件", files.len());
 
+    check("grep")?;
     let matches = session.grep("Agent::new").await?;
     println!("grep 找到 {} 行匹配", matches.lines().count());
 
@@ -290,6 +291,9 @@ func main() {
 </Tabs>
 
 直接工具在 session 工作区下执行，应视为宿主侧的特权操作。大多数调用（`read`、`glob`、`grep`）是纯确定性的；`generate_object` 是个例外——它仍会调用模型来填充经过 schema 校验的 JSON 对象，但由你显式驱动，而非通过自由形式的智能体回合。
+
+`readFile` / `read_file` / `ReadFile` 返回 `read` 工具的视图：每行都带有右对齐的行号和一个
+制表符前缀，长文件末尾还会附带续读提示。解析文件内容前请先去掉该前缀。
 
 可运行版本位于 `sdk/node/examples/basic/test_generate_object.ts`
 （Python：`sdk/python/examples/test_generate_object.py`）。Go 的直接

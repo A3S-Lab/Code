@@ -84,14 +84,14 @@ const agent = await Agent.create('agent.acl');
 // A fast model for high-volume, low-stakes work.
 const fast = agent.session('/repo', { model: 'provider/fast-model' });
 const draft = await fast.run('Draft a short README intro for this project.');
-console.log('draft:', draft);
-await fast.close();
+console.log('draft:', draft.text);
+fast.close();
 
 // A stronger model for review / higher-stakes reasoning.
 const review = agent.session('/repo', { model: 'provider/review-model' });
-const critique = await review.run(`Critique this README intro:\n${draft}`);
-console.log('critique:', critique);
-await review.close();
+const critique = await review.run(`Critique this README intro:\n${draft.text}`);
+console.log('critique:', critique.text);
+review.close();
 ```
 
 </Tab>
@@ -107,15 +107,15 @@ fast_opts = SessionOptions()
 fast_opts.model = 'provider/fast-model'
 fast = agent.session('/repo', fast_opts)
 draft = fast.run('Draft a short README intro for this project.')
-print('draft:', draft)
+print('draft:', draft.text)
 fast.close()
 
 # A stronger model for review / higher-stakes reasoning.
 review_opts = SessionOptions()
 review_opts.model = 'provider/review-model'
 review = agent.session('/repo', review_opts)
-critique = review.run(f'Critique this README intro:\n{draft}')
-print('critique:', critique)
+critique = review.run(f'Critique this README intro:\n{draft.text}')
+print('critique:', critique.text)
 review.close()
 ```
 
@@ -183,22 +183,18 @@ delegated work runs on the worker's model.
 <Tab label="Rust">
 
 ```rust
-use a3s_code_core::{
-    subagent::ModelConfig as WorkerModelConfig, Agent, SessionOptions, WorkerAgentSpec,
-};
+use a3s_code_core::{Agent, SessionOptions, WorkerAgentSpec};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> a3s_code_core::Result<()> {
     let agent = Agent::new("agent.acl").await?;
 
-    let mut scout = WorkerAgentSpec::read_only(
+    let scout = WorkerAgentSpec::read_only(
         "scout",
         "Reads files and reports findings.",
-    );
-    scout.model = Some(WorkerModelConfig::from_model_ref(
-        "provider/fast-model",
-    ));
+    )
+        .with_model_ref("provider/fast-model");
     let session = agent
         .session_builder("/repo")
         .options(
@@ -249,6 +245,7 @@ const session = agent.session('/repo', {
     {
       name: 'scout',
       description: 'Reads files and reports findings.',
+      kind: 'read_only',
       model: 'provider/fast-model',
     },
   ],
@@ -263,7 +260,7 @@ const findings = await session.task({
 const plan = await session.run(
   `Given these findings, propose a refactor:\n${findings.output}`,
 );
-console.log(plan);
+console.log(plan.text);
 
 session.close();
 ```
@@ -283,6 +280,7 @@ opts.model = 'provider/review-model'
 scout = WorkerAgentSpec(
     name='scout',
     description='Reads files and reports findings.',
+    kind='read_only',
 )
 scout.model = 'provider/fast-model'
 opts.worker_agents = [scout]
@@ -295,7 +293,7 @@ findings = session.task({
     "prompt": "List every public API in src/.",
 })
 plan = session.run(f'Given these findings, propose a refactor:\n{findings.output}')
-print(plan)
+print(plan.text)
 
 session.close()
 ```
@@ -323,7 +321,15 @@ func main() {
 	defer agent.Close(context.Background())
 
 	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		// Orchestrator stays on the stronger model.
 		Model: "provider/review-model",
+		// High-volume exploration runs on the cheaper model.
+		WorkerAgents: []code.WorkerAgentSpec{{
+			Name:        "scout",
+			Description: "Reads files and reports findings.",
+			Kind:        "read_only",
+			Model:       "provider/fast-model",
+		}},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -331,10 +337,9 @@ func main() {
 	defer session.Close(context.Background())
 
 	findings, err := session.Task(ctx, code.DelegateTaskOptions{
-		Agent:       "explore",
+		Agent:       "scout",
 		Description: "List public APIs",
 		Prompt:      "List every public API in src/.",
-		Model:       "provider/fast-model",
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -360,6 +365,9 @@ Notes:
   SDK.
 - A worker agent's `model` applies only to that agent's delegated work. The
   session's own `send`/`run`/`task` calls still use the session `model`.
+- Set the override on the worker spec. The `task` tool accepts only `agent`,
+  `description`, `prompt`, `background`, `max_steps`, and `output_schema`, and
+  rejects any other field, including `model`.
 - A worker without a `model` inherits the session `model`, so you only override
   the agents where a different model actually pays off.
 

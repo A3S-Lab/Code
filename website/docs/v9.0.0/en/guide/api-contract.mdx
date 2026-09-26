@@ -466,8 +466,10 @@ console.log(resumed.history());
 Core persistence commits the conversation and its artifacts, traces, run
 records, verification reports, and subagent task snapshots together as one
 versioned `SessionSnapshotV1`. File and memory stores publish that aggregate
-atomically. Legacy fragmented records remain loadable, while custom stores must
-implement aggregate save explicitly.
+atomically. Older fragmented records remain loadable, while custom stores must
+implement aggregate save explicitly. The fact log under `.a3s/effect-log/` in
+the workspace is the control source for coding turns and is not part of the
+snapshot.
 
 Use `session.close()` when a Node process should release session-scoped
 background resources promptly. `close()` is the full graceful-stop entry
@@ -691,9 +693,10 @@ on another node.
 ### Loop checkpoints + run resumption
 
 When a `SessionStore` is configured, the agent loop persists a
-`LoopCheckpoint` after each completed tool round, keyed by `run_id`.
-Any node holding the same store can rehydrate a run from its last
-boundary:
+`LoopCheckpoint` after each tool result that lands on the fact log, keyed
+by `run_id`. Any node holding the same store can recover the run: the
+checkpoint seeds a fresh fact-log thread, and folding that log chooses the
+next step. The checkpoint never chooses the next model call itself.
 
 ```ts
 // Node — host detected node A died mid-run; on node B:
@@ -725,20 +728,20 @@ if err != nil {
 result, err := session.ResumeRun(ctx, "run-id-from-node-a")
 ```
 
-A **new** run id is allocated for the resumed work — the framework
-does not pretend the old run continues. Two distinguishable error
-paths:
+The resumed work is recorded as a **new** run; the checkpoint's run
+is not modified. Without a checkpoint, `resumeRun` folds the session's
+existing fact log when it has facts (a quiescent log takes no step). The
+two errors below fire only when the log is also empty:
 
-- `"resume_run requires a session_store"` — host should fall back to
-  a fresh session.
-- `"no loop checkpoint found for run 'X'"` — host can retry later
-  (race against checkpoint write) or treat the run as lost.
+- `"resume_run requires a session_store on this session"`: host should
+  fall back to a fresh session.
+- `"no loop checkpoint found for run 'X'"`: the run never wrote a
+  checkpoint, or the checkpoint was deleted when the run ended.
 
-Boundary policy: checkpoints are taken **only between tool rounds**,
-never mid-tool. If a process dies mid-tool the work of that round is
-lost; the LLM re-deliberates from the previous boundary. This trades
-retry cost for correctness — re-executing a non-idempotent tool
-across the boundary is worse than re-asking the LLM.
+A tool call whose result is missing from the log runs once on resume, so
+hosts should keep non-idempotent tools behind confirmation or idempotency
+keys. For an exact, replay-safe recovery id use
+`spawnRecoveryWithRunId(checkpointRunId, runId)`.
 
 ### Retention caps for long-running sessions
 
@@ -810,8 +813,8 @@ All callback-capable SDKs accept the same decision shape:
 |                                                          | / reject with `"Budget exhausted..."` (Node)                         |
 
 Missing methods on the guard object are treated as a permissive default
-(Allow / no-op). Python callback errors fall back to Allow. Go callback errors,
-timeouts, and malformed decisions fail closed as Deny.
+(Allow / no-op). Python and Go callback errors, timeouts, and malformed
+decisions fail closed as Deny.
 
 ```python
 # Python — attach via SessionOptions before agent.session(...)
@@ -865,9 +868,9 @@ err := session.SetBudgetGuard(ctx, &code.BudgetGuardHandlers{
 Node callbacks receive a single `ctx` object and must not throw; wrap handler
 logic in `try/catch` and return an explicit decision. Hung or unreadable
 `check*` callbacks fail closed as `deny`. Python callbacks use positional
-arguments and catch exceptions as Allow. Go handlers receive typed contexts;
+arguments; exceptions fail closed. Go handlers receive typed contexts;
 callback errors and timeouts fail closed.
 
-Pass `null` to `setBudgetGuard` (Node) or set `opts.budget_guard =
-None` and re-create the session (Python) to clear. Call
-`session.SetBudgetGuard(ctx, nil)` in Go.
+To clear, pass `null` to `session.setBudgetGuard` (Node), call
+`session.set_budget_guard(None)` (Python), or call
+`session.SetBudgetGuard(ctx, nil)` (Go).

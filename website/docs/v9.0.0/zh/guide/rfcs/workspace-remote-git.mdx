@@ -5,12 +5,12 @@ description: '为非本地 workspace 后端提供 git 操作的 HTTP/JSON 协议
 
 # RFC：远端 Workspace Git 后端
 
-| 字段 | 取值                                                    |
-| ---- | ------------------------------------------------------- |
-| 状态 | **已实现** v2.6.x（`core/src/workspace/remote_git.rs`） |
-| 归属 | `crates/code` workspace 子系统                          |
-| 关联 | S3 / 非本地 workspace 加固 Phase 4.1                    |
-| 相关 | `S3WorkspaceBackend`、`WorkspaceGit*` trait 族          |
+| 字段 | 取值                                             |
+| ---- | ------------------------------------------------ |
+| 状态 | **已实现**（`core/src/workspace/remote_git.rs`） |
+| 归属 | A3S Code workspace 子系统                        |
+| 关联 | S3 / 非本地 workspace 加固 Phase 4.1             |
+| 相关 | `S3WorkspaceBackend`、`WorkspaceGit*` trait 族   |
 
 本文档作为协议规范保留——讲此协议的客户端与服务端应当严格匹配下方的
 线协议形态。后续修订应作为独立的 amendment 文档发布，而非原地修改这
@@ -243,10 +243,10 @@ HTTP 状态码是**传输信号**。错误**类别**在 JSON body 里：
 | 400     | `Err(anyhow!("bad request: {message}"))`    |
 | 401/403 | `Err(anyhow!("auth failed: {message}"))`    |
 | 404     | `Err(anyhow!("not found: {message}"))`      |
-| 409     | 类型化 conflict — 见下                      |
+| 409/422 | 类型化 conflict — 见下                      |
 | 5xx     | `Err(anyhow!("gitserver internal: {...}"))` |
 
-客户端为可恢复 conflict 引入一个类型化错误：
+409 与 422 响应都会映射为同一个可恢复 conflict 的类型化错误：
 
 ```rust
 #[derive(Debug, Clone, thiserror::Error)]
@@ -329,6 +329,7 @@ pub struct RemoteGitBackend {
     http:           reqwest::Client,
     base_url:       String,
     repo_id:        String,
+    bearer_token:   Option<String>,
     max_diff_bytes: u64,
     max_log_entries: usize,
 }
@@ -340,31 +341,24 @@ impl WorkspaceGit for RemoteGitBackend { /* 见 §5 */ }
 impl WorkspaceGitStashProvider for RemoteGitBackend { /* 见 §5 */ }
 ```
 
-组合工厂沿用 S3 的形式：
+`RemoteGitBackend::new(cfg)` 返回 `Result<Arc<RemoteGitBackend>>`；当 mTLS 只配置了
+一半，或 PEM 文件无法读取时会失败。`WorkspaceServices` 上的挂载点是：
 
 ```rust
 impl WorkspaceServices {
-    /// 在已有文件系统后端之上挂一个远端 git provider。
+    /// 在已有后端之上挂一个远端 git provider。
     pub fn with_remote_git(
         self: Arc<Self>,
         cfg: RemoteGitBackendConfig,
-    ) -> Arc<Self> { ... }
+    ) -> Result<Arc<Self>> { ... }
 }
 ```
 
-或者作为 S3 + 远端 git 工作区的顶层便利方法：
+它返回一个新的 `WorkspaceServices`：`git` 与 `git_stash` 接到远端后端，
+`git_worktree` 重置为 `None`，其他字段原样保留。手工组装服务的宿主也可以用 builder：
 
 ```rust
-pub fn s3_with_remote_git(
-    s3:  S3BackendConfig,
-    git: RemoteGitBackendConfig,
-) -> Arc<WorkspaceServices> { ... }
-```
-
-接线沿用现有的 builder 模式：
-
-```rust
-let backend = Arc::new(RemoteGitBackend::new(cfg));
+let backend = RemoteGitBackend::new(cfg)?;
 let git:   Arc<dyn WorkspaceGit>              = backend.clone();
 let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
 
@@ -401,18 +395,22 @@ WorkspaceServices::builder(workspace_ref, fs)
 
 ### S3 workspace + 远端 git
 
+需要 `a3s-code-core` 的 `s3` Cargo 特性。
+
 ```rust
-let ws = WorkspaceServices::s3_with_remote_git(
+let ws = WorkspaceServices::s3(
     S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
         .endpoint("https://s3.example.invalid")
         .force_path_style(true)
         .enable_search(true),
+)
+.with_remote_git(
     RemoteGitBackendConfig::new(
         "https://git.example.invalid",
         "sessions/example",
     )
     .bearer_token(token),
-);
+)?;
 
 let session = agent
     .session_builder("s3://workspace/sessions/example")
@@ -421,8 +419,8 @@ let session = agent
     .await?;
 ```
 
-该会话注册的工具：`read`、`write`、`edit`、`patch`、`ls`、`grep`、`glob`、
-`git`。（`bash` 仍然隐藏——对象存储跑不了 shell。）
+该会话注册 S3 后端支持的工作区工具（例如 `read`、`write`、`edit`、`patch`、`ls`
+和 `search`），外加 `git`。`bash` 仍然隐藏，因为对象存储跑不了 shell。
 
 ### 本地文件系统 + 远端 git（混合）
 
@@ -431,12 +429,12 @@ CI 跑在本地 checkout 上，但宿主想把 git 操作路由进沙箱化服�
 
 ```rust
 let local = WorkspaceServices::local("/workspaces/repo");
-let ws    = local.with_remote_git(remote_cfg);   // 覆盖本地的 git provider
+let ws    = local.with_remote_git(remote_cfg)?;  // 覆盖本地的 git provider
 ```
 
 ## 13. 未决问题
 
-这些应在 Phase 4.2（实现）开始前敲定。
+这些问题记录于实现之前。建议部分描述的是当前客户端的行为。
 
 1. **Diff 方言。** 本地后端返回原始 `git diff` 的 stdout。远端 API 是否
    应该强制具体 diff 方言（POSIX `diff -u`？libgit2 的变体？），还是
@@ -453,7 +451,7 @@ let ws    = local.with_remote_git(remote_cfg);   // 覆盖本地的 git provider
 4. **Hooks。** 服务端可能装了 pre-commit / pre-push hooks。响应里要
    不要给一个"hook 输出"通道？建议：当非空时把 hook 的 stderr 塞进
    `checkout` / `stash` 的响应；hook 失败映射到 HTTP 422 +
-   `HOOK_FAILED`。
+   `HOOK_FAILED`。客户端把 422 作为 `RemoteGitConflict` 暴露。
 
 5. **schema 版本化。** 第一版端点放 `/v1/`。什么时候升 `/v2/`？
    建议：只在请求/响应 shape 出现不兼容变更时；新增字段保留在
@@ -473,28 +471,23 @@ let ws    = local.with_remote_git(remote_cfg);   // 覆盖本地的 git provider
   会让 gRPC 的判断重新被讨论。
 - **Hooks 管理。** 通过客户端列举 / 配置服务端 hook。
 
-## 15. 实现笔记（v2.6.x 已发布）
+## 15. 实现笔记
 
-最初草案给的是 8 步实施提纲；实际发布出去的（Phase 4.2 + 后续 Phase 5.x）如下：
+实现与最初草案有以下不同：
 
 1. `RemoteGitBackend` / `RemoteGitBackendConfig` / `RemoteGitConflict` 位于
    `core/src/workspace/remote_git.rs`。最终没有加
    `remote-git` cargo feature——`reqwest` 已经在依赖里，模块无条件编译。
 2. `WorkspaceGit` 与 `WorkspaceGitStashProvider` 完整实现；
    `WorkspaceGitWorktreeProvider` 故意不实现（见 §8）。
-3. `WorkspaceServices::with_remote_git` 是公开挂载点。内部 helper
-   `with_git_provider`（v2.6.x 一个后续提交里加上）用 struct literal
-   显式拷贝字段——确保 `WorkspaceServices` 未来加字段时装饰器不会静默丢失。
-4. 除 bearer token 外支持 mTLS（`client_cert_pem` + `client_key_pem`），
-   在 Phase 5.2 一次后续提交里 ship；同一个提交把上方 §6 也更新到了
-   已实现状态。
-5. `diff` 客户端侧防 OOM：HTTP body 流式累积，硬上限
-   `max_diff_bytes * 4`（Phase 6.2）。soft `max_diff_bytes` 显示截断
-   在 JSON decode 之后照旧生效。
-6. 测试面：`remote_git.rs` 里 25+ 个 wiremock 单元测试 + 1 个端到端
-   驱动内置 `git` 工具的集成测试；workspace 通用 conformance suite
-   在 Phase 6.3 加入。
-7. README 与 CHANGELOG 已更新；TLS 后端选择与 AWS SDK 一致用
-   rustls-tls。
-8. SDK 暴露在 Phase 5.1 完成（Node + Python）——草案曾说"trait 稳定之
-   后再补"，结果是 Phase 4.2 完成两个提交后就上了。
+3. `WorkspaceServices::with_remote_git` 是公开挂载点，返回
+   `Result<Arc<WorkspaceServices>>`。内部 helper `with_git_provider` 拷贝其他
+   所有字段，确保 `WorkspaceServices` 新增字段时不会被静默丢失。
+4. 除 bearer token 外支持 mTLS（`client_cert_pem` 配合 `client_key_pem`；见 §6）。
+5. `diff` 客户端侧防无界响应：HTTP body 流式读取，硬上限为
+   `max_diff_bytes * 4`（下限 64 KiB）。soft `max_diff_bytes` 显示截断在
+   decode 之后照旧生效。
+6. 测试：`core/src/workspace/remote_git/tests.rs` 中基于 wiremock 的单元测试。
+7. `reqwest` 使用 `rustls-tls` 后端，与 AWS SDK 一致。
+8. SDK 暴露：Node.js `remoteGit`、Python `remote_git`（`RemoteGitBackendConfig`）
+   与 Go `SessionOptions.RemoteGit`。它们都挂在已配置的非本地工作区后端之上。

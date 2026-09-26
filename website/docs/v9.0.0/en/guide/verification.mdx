@@ -8,13 +8,11 @@ import { Tab, Tabs } from '@rspress/core/theme';
 # Verification
 
 The harness treats "done" as something that must be **proven**, not merely
-claimed. When the model says a task is complete, that assertion is worth nothing
-on its own. Since 8.5.6, a workspace mutation cannot complete the turn unless a
-Passed verification report is bound to that mutation digest, or a host waiver
-covers that digest. A host waiver is not model-grantable. Verification turns
-the claim into evidence: you declare commands that _must_ succeed, the runtime
-executes them, and the result carries a report you can inspect, gate on, or
-surface to a user.
+claimed. A turn that changed the workspace cannot complete on assistant text.
+It completes only when a Passed verification report is bound to the exact
+mutation effect digest of that turn, or when the host supplied a waiver for
+that digest. Neither the report binding nor the waiver can be produced by the
+model's prose.
 
 Verification is session-scoped. The Rust core runs each command, records its
 exit status and output, and rolls every report up into a single summary that
@@ -23,11 +21,238 @@ travels alongside the turn result.
 Product UIs can present a delivery summary first, followed by the command output
 and file-level changes used to support it.
 
+## The Completion Gate
+
+Every turn ends at the completion gate (`core/src/harness_loop.rs`). The gate
+inspects the turn's mutation ledger, the verification reports collected during
+the turn, host waivers, and any external observations bound to the session. It
+decides in this order:
+
+1. An external observation that still requires a workspace change keeps the
+   turn open. Only this case may spend the one continuation turn; otherwise the
+   turn is incomplete.
+2. A background workspace child task whose writes were not observed makes the
+   turn incomplete.
+3. Incomplete workspace observation makes the turn incomplete. A waiver or a
+   report over a partial path list cannot close it.
+4. An empty ledger (no workspace mutation) completes as `Narrative`.
+5. A host waiver whose `effect_digest` equals the ledger digest completes as
+   `Waived`.
+6. A report bound to the ledger digest with every required check Passed
+   completes as `Verified`.
+7. Anything else is incomplete.
+
+In the last case the turn fails with this message, which names the digest:
+
+```text
+completion gate: workspace mutation <digest> has no bound Passed verification
+and no host waiver. Assistant text does not count. ...
+```
+
+`send()` and `stream()` surface it as an error. The mutation-gate path does not
+spend a continuation turn: another model turn cannot close the gate without new
+tool evidence. A successful Rust `AgentResult` exposes the outcome in
+`completion`:
+
+| `CompletionTerminal`         | Meaning                                                              |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `Narrative`                  | No workspace mutation; a final answer is enough.                     |
+| `Verified { effect_digest }` | Required checks passed and were bound to the mutation digest.        |
+| `Waived { effect_digest }`   | A host waiver covered the mutation digest. This is not a pass.       |
+| `Distinct`                   | Plan steps closed different digests; no combined digest is produced. |
+
+### Mutation effect digest
+
+The ledger records, per turn:
+
+- successful `write`, `edit`, `patch`, and `download` calls, with a SHA-256
+  content digest of the written content;
+- `changed_paths` reported by tool metadata (for example from `bash`), even
+  when the command failed;
+- effects of nested tool calls;
+- workspace paths changed outside any recorded tool, found by comparing the
+  workspace before and after the turn (`.a3s` and `.git` are excluded).
+
+The effect digest is a SHA-256 over the recorded `tool|path|content_digest`
+lines. A later write to the same path changes the digest, so a report bound to
+an earlier state no longer matches.
+
+### What binds a Passed report
+
+A report satisfies the gate only when all of these hold:
+
+- `effect_digest` equals the current ledger digest;
+- it contains at least one required check, and every required check is
+  `passed`;
+- the report status is neither `failed` nor `needs_review`.
+
+Report authorship is checked before a report is collected. Tool metadata may
+carry `verification_report` plus `verification_author`; reports authored as
+`editor` are rejected, while host and verifier reports are accepted. Built-in
+`bash` produces evidence in two ways:
+
+- A command that covers a workspace preset command (see
+  [presets](#verification-presets)) or an active `/goal` acceptance criterion
+  from `.a3s/loops/*/ACCEPTANCE.md` yields a `shell:<id>` report for that
+  check. Such a report has no digest by itself.
+- When the same command also contains an existence check (`test -f`, `test -e`,
+  `[ -f ... ]`, `[ -e ... ]`, `[[ -f ... ]]`, or `[[ -e ... ]]`) that names a
+  mutated path whose current on-disk SHA-256 equals the digest recorded in the
+  ledger, the runtime binds unbound required-pass reports to the ledger digest.
+  If the command exited 0 and no report was bound, a host report
+  `shell:mutation_path_verify:<path>` is synthesized. An existence check
+  without recorded content can bind an existing Passed report but never
+  synthesizes one.
+
+Reports recorded on the session with `verifyCommands()` or
+`recordVerificationReports()` carry no effect digest, and they do not seed a
+later turn's gate. Use them for host-side release checks and summaries; use a
+[completion attestor](#completion-attestor) when host evidence must close a
+live turn.
+
+## Host Waivers
+
+`CompletionWaiverV1 { effect_digest, reason }` is a host- or user-confirmed
+exception for one exact digest. Both fields must be non-blank. The model cannot
+create one from prose, and `Waived` is reported separately from `Verified`.
+Waivers are fixed when the session is built, so they fit replay and resume
+flows in which the digest is already known.
+
+```rust
+use a3s_code_core::harness_loop::CompletionWaiverV1;
+use a3s_code_core::SessionOptions;
+
+let waiver = CompletionWaiverV1::new(digest, "Reviewed by the release owner")
+    .ok_or_else(|| a3s_code_core::CodeError::Config("waiver needs digest and reason".into()))?;
+let options = SessionOptions::new().with_completion_waivers(vec![waiver]);
+```
+
+```ts
+const session = agent.session('/repo', {
+  completionWaivers: [
+    { effect_digest: digest, reason: 'Reviewed by the release owner' },
+  ],
+});
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	CompletionWaivers: []code.CompletionWaiver{
+		{EffectDigest: digest, Reason: "Reviewed by the release owner"},
+	},
+})
+```
+
+The Python `SessionOptions` in 9.0.0 has no public setter for completion
+waivers.
+
+## Completion Attestor
+
+A host that runs third-party work cannot predict the digest when it builds the
+session. `CompletionAttestor` (`core/src/completion_attestor.rs`) closes that
+gap without adding a bypass:
+
+- It is called after the ledger digest exists and before the gate decides. It
+  is skipped when the ledger is empty.
+- It receives the digest and one `MutatedPathRecord { path, content_digest }`
+  per mutated path, so the host can re-read each file and compare it with the
+  recorded content.
+- It may return a `VerificationReport`. The report is accepted as a host report
+  and appended to the turn's reports. It must still bind: a wrong digest, a
+  missing required check, or a non-Passed required check leaves the turn
+  incomplete.
+- It is Rust-only (`SessionOptions::with_completion_attestor`), is not a tool,
+  cannot be granted to the model, and has no observe-only mode that lets an
+  unverified mutation complete.
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::verification::{VerificationCheck, VerificationReport, VerificationStatus};
+use a3s_code_core::{CompletionAttestor, MutatedPathRecord, SessionOptions};
+
+struct HostCiAttestor;
+
+impl CompletionAttestor for HostCiAttestor {
+    fn attest(
+        &self,
+        effect_digest: &str,
+        paths: &[MutatedPathRecord],
+    ) -> Option<VerificationReport> {
+        if !paths.iter().all(|record| host_ci_accepts(&record.path, &record.content_digest)) {
+            return None;
+        }
+        let check = VerificationCheck::required("host:ci", "test", "Host CI accepted the change")
+            .with_status(VerificationStatus::Passed);
+        Some(VerificationReport::new("host-ci", vec![check]).with_effect_digest(effect_digest))
+    }
+}
+
+fn host_ci_accepts(_path: &str, _content_digest: &str) -> bool {
+    // Host-specific: re-read the file, compare the digest, consult CI.
+    false
+}
+
+let options = SessionOptions::new().with_completion_attestor(Arc::new(HostCiAttestor));
+```
+
+## Read-only Verifier
+
+`verifier_enabled` is off by default. When it is on and a turn mutated the
+workspace, the runtime runs one extra verifier turn before the gate. That turn
+cannot present `write`, `edit`, `patch`, `download`, `Skill`, `task`, or
+`batch`. Bash commands containing `>`, `rm `, `mv `, or `tee `, and mutating
+`git` forms (`checkout`, creating a branch, `stash` with a message or untracked
+files, `worktree` create or remove), are refused. Its reports are accepted as
+verifier reports and still have to bind; a Failed or NeedsReview result stays a
+non-pass. The verifier runs at most once per turn.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::SessionOptions;
+
+let options = SessionOptions::new().with_verifier(true);
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+const session = agent.session('/repo', { verifierEnabled: true });
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import SessionOptions
+
+opts = SessionOptions()
+opts.verifier_enabled = True
+session = agent.session('/repo', opts)
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	VerifierEnabled: code.Ptr(true),
+})
+```
+
+</Tab>
+</Tabs>
+
 ## Running Verification Commands
 
 A verification command is a small, named check: an `id`, a `kind`, a
 human-readable `description`, and the `command` to run. Mark a check `required`
 when a failure should be treated as a hard failure rather than a warning.
+`verifyCommands()` runs each command through `bash` as a host-controlled,
+escalated call with the given timeout and records the report on the session.
 
 <Tabs>
 <Tab label="Rust">
@@ -137,7 +362,10 @@ fmt.Println(report)
 </Tabs>
 
 The `subject` (here `release-readiness`) labels the batch so multiple
-verification passes within one session stay distinct in the reports.
+verification passes within one session stay distinct in the reports. Reports
+use schema `a3s.verification_report.v1`; check statuses are `passed`, `failed`,
+`needs_review`, and `skipped`. Rust callers can also require a specific exit
+code with `VerificationCommand::with_expect_exit`.
 
 ## Reading The Post-Turn Summary
 
@@ -154,6 +382,7 @@ let result = session
     .await?;
 let summary = result.verification_summary();
 
+println!("{:?}", result.completion);
 println!("{:?}", summary.status);
 println!("{}", summary.pending_required_check_count);
 println!("{}", summary.failed_check_count);
@@ -223,6 +452,9 @@ if summary.FailedCheckCount > 0 {
 
 </Tab>
 </Tabs>
+
+A turn that the gate rejected does not reach these fields: the call returns the
+completion-gate error instead.
 
 ## Inspecting Reports And Summaries
 
@@ -303,10 +535,26 @@ fmt.Println(text)
 </Tab>
 </Tabs>
 
+The summary contains `status`, `report_count`, `required_check_count`,
+`pending_required_check_count`, `failed_check_count`, `residual_risk_count`,
+`pending_subjects`, and `failed_subjects`.
+
+### Verification presets
+
 `verificationPresets()` returns workspace-aware check templates inferred from
-files such as `Cargo.toml`, `package.json`, `pyproject.toml`, and `go.mod`.
-Treat them as starting points: review the commands, timeouts, and required
-flags for the project before gating releases or user-visible automation.
+project files:
+
+| Preset           | Detected from                                                   | Commands                                                                                                                            |
+| ---------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `rust-default`   | `Cargo.toml`                                                    | `cargo fmt -- --check`, `cargo check`, `cargo test` (required); `cargo clippy -- -D warnings` (optional)                            |
+| `node-default`   | `package.json` scripts `test`, `typecheck`, `lint`              | `test` required; `typecheck` and `lint` optional; run through the detected package manager (`packageManager`, lockfile, or npm)     |
+| `python-default` | `pyproject.toml`, `tests/`, `pytest.ini`, Ruff or mypy settings | `python -m pytest` (required when tests are configured); `python -m ruff check .` and `python -m mypy .` (optional when configured) |
+| `go-default`     | `go.mod`                                                        | `go test ./...` (required); `go vet ./...` (optional)                                                                               |
+
+A `bash` command that covers one of these commands produces a `shell:<id>`
+report, as described above. Treat presets as starting points: review the
+commands, timeouts, and required flags for the project before gating releases
+or user-visible automation.
 
 ## How A3S Code Itself Is Qualified
 

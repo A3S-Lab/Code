@@ -10,7 +10,8 @@ description: '生命周期拦截与策略回调'
 
 ## 事件
 
-Node.js 与 Python 的注册辅助方法接受这些稳定名称：
+Node.js 与 Python 的注册辅助方法接受以下 25 个名称
+（`sdk/node/src/hook_bridge.rs`），其他字符串会被拒绝：
 
 ```text
 pre_tool_use
@@ -24,6 +25,18 @@ skill_unload
 pre_prompt
 post_response
 on_error
+on_success
+pre_context_perception
+post_context_perception
+pre_memory_recall
+post_memory_recall
+pre_planning
+post_planning
+pre_reasoning
+post_reasoning
+on_rate_limit
+on_confirmation
+intent_detection
 pre_run_control
 post_run_control
 ```
@@ -33,8 +46,8 @@ Rust Core 还把 `permission_request`、`pre_compact` 和 `post_compact` 暴露�
 目前尚不接受这三个名称。因此，策略需要直接拦截权限请求或上下文压缩时，应使用 Rust
 或 Go 宿主。
 
-Core 还为专用 harness 定义了感知、memory、规划、推理、限流、确认、成功和意图事件。
-只有受保护的运行时路径确实消费某个事件的决策时，才能把它当作策略边界。
+感知、memory、规划、推理、限流、确认、成功和意图事件服务于专用 harness。任何宿主都
+可以注册它们，但只有发出该事件的运行时路径才会触发。只有受保护的运行时路径确实消费某个事件的决策时，才能把它当作策略边界。
 
 ## 注册示例
 

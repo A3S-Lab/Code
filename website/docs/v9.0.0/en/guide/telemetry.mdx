@@ -130,6 +130,30 @@ names, tool output, errors, token totals, and verification summaries are
 convenience projections. Unknown future `type` values and their payloads remain
 available to hosts.
 
+## OpenTelemetry export
+
+Rust hosts can export spans over OTLP by enabling the `telemetry` Cargo feature
+of `a3s-code-core` (included in the `server` and `full` profiles). The exporter
+lives in `core/src/telemetry_otel.rs`:
+
+```rust
+use a3s_code_core::telemetry_otel::TelemetryConfig;
+
+let guard = TelemetryConfig::new("http://localhost:4317")
+    .with_service_name("my-agent")
+    .init()?;
+
+// ... run sessions ...
+
+guard.shutdown();
+```
+
+The default transport is gRPC; `with_otlp_http()` switches to OTLP/HTTP.
+Exports are bounded so an unreachable collector does not hold a coding turn or
+process shutdown. The published Node.js, Python, and Go packages are not built
+with this feature. The `opentelemetry` entry returned by `sdkCapabilities()` is
+an advanced, host-owned capability that states this Core feature requirement.
+
 ## Logging
 
 For product telemetry, prefer structured trace events and verification reports

@@ -1,24 +1,35 @@
 ---
 title: 'Memory'
-description: 'Session memory stores and explicit recall'
+description: 'Session memory stores, LLM extraction, recall, and host-bound durable memory'
 ---
 
 # Memory
 
-Memory records reusable facts about previous work. It should help the harness recall patterns without flooding every prompt.
+Memory records reusable facts about previous work. It should help the harness
+recall patterns without flooding every prompt. A3S Code has two layers:
+
+- **Session memory** — a `MemoryStore` every session gets by default. The
+  runtime extracts memories from completed turns and recalls related items
+  before each turn.
+- **Durable memory** — an optional, host-bound A3S Memory repository
+  (`DurableMemorySession`). Recall admits only nodes the host explicitly
+  activated. This is a Rust-host integration surface.
 
 ## Default Store
 
-Every session gets a memory store by default. Plain SDK sessions use a
-file-backed store at `<workspace>/.a3s/memory` if you do not pass one. The
-`a3s code` TUI uses the same `memory_dir` setting that its `/memory` panel
-browses; by default that is `~/.a3s/memory`, so memories carry across projects
-unless you configure a project-local path. Set `memory_dir` in config or pass a
-typed store object to override the backend for one session. If the file store
+Every session gets a memory store. Unless you pass one, the session uses a
+file-backed store at `memory_dir` from the loaded config, or
+`<workspace>/.a3s/memory` when `memory_dir` is not set. If the file store
 cannot be created, the session falls back to an in-memory store and exposes an
 init warning.
 
+```acl
+memory_dir = "./.a3s/memory"
+```
+
 ## Override Stores
+
+Pass a typed store object to override the backend for one session:
 
 ```ts
 import { FileMemoryStore } from '@a3s-lab/code';
@@ -28,42 +39,63 @@ const session = agent.session('/repo', {
 });
 ```
 
+```python
+from a3s_code import FileMemoryStore, SessionOptions
+
+opts = SessionOptions()
+opts.memory_store = FileMemoryStore("./.a3s/memory")
+session = agent.session("/repo", opts)
+```
+
+## Automatic Recall
+
+Before each model call, Core recalls up to five session memories similar to
+the current prompt and adds them to the budgeted context assembly (see
+[Context](/guide/context)). When a durable-memory binding is present, its
+admitted Active nodes are added too; if both layers return the same normalized
+text, the durable item is used once.
+
 ## LLM Extraction
 
-LLM memory extraction is enabled by default when memory is available. The agent
-submits every completed non-empty session turn to the active model. The model,
-not a keyword list or tool-type heuristic, decides whether the turn contains
-anything that can change a future answer or action. It must return an empty
-`items` array when nothing qualifies. Tool calls and tool results are context
-for that judgment; they are never mechanically copied into long-term memory.
+LLM memory extraction is enabled by default when memory is available. Every
+completed turn with a non-empty prompt and response is submitted to the active
+model. The model, not a keyword list or tool-type heuristic, decides whether
+the turn contains anything that can change a future answer or action. It must
+return an empty `items` array when nothing qualifies. Tool calls and tool
+results are context for that judgment; they are never mechanically copied into
+long-term memory.
 
 Automatic output is deliberately narrow. The runtime accepts only `semantic`
 memories for durable facts, preferences, and decisions, or `procedural`
 memories for reusable workflows and failure lessons. Each item must include a
-validated `source`, `importance`, `confidence`, `scope`, and a non-empty
-future-value `reason`. Stored metadata also records the workspace, session ID,
-and `a3s.memory.durable.v1` schema. The runtime rejects malformed output and
-obvious API keys, tokens, password assignments, and private keys; these checks
-validate structure and safety rather than judging semantic value.
+validated `source`, `scope`, and non-empty future-value `reason`, with
+`importance` of at least 0.70 and `confidence` of at least 0.75. Stored
+metadata also records the workspace, session ID, and `a3s.memory.durable.v1`
+schema. The runtime rejects malformed output and obvious API keys, tokens,
+password assignments, and private keys; these checks validate structure and
+safety rather than judging semantic value.
 
-The extraction prompt includes a small set of related existing memories. The
-model can use `supersedes` for a directly replaced or consolidated memory and
+The extraction prompt includes up to five related existing memories. The model
+can use `supersedes` for a directly replaced or consolidated memory and
 `conflicts_with` for a contradiction that should remain visible. The runtime
 accepts only relation IDs it supplied to the model. It removes accepted
 superseded items, preserves conflicts, and includes relation annotations in
-future recall. The storage layer otherwise merges only normalized exact
-duplicates; it does not infer semantic equivalence from term overlap.
+future recall.
 
-The TUI registers extraction before publishing the final event, then processes
-completed turns in FIFO order in the
-background. A slow extraction does not delay the final response, and a later
-turn is queued rather than dropped. Graceful session close waits up to its
-bounded extraction deadline for work accepted before close, preventing an
-immediate UI shutdown from silently losing the completed turn.
+Extraction jobs are queued in FIFO order per session. Streaming runs extract in
+the background after the final event, so a slow extraction does not delay the
+response; non-streaming `send` runs extract before returning. Graceful session
+close waits up to five seconds for extraction accepted before close.
 
-`rememberSuccess` and `rememberFailure` remain explicit SDK operations for a
-host that intentionally wants to store those records. The normal agent runtime
-does not call them for each tool result.
+Tune extraction in the config file:
+
+```acl
+memory {
+  llm_extraction = true
+  llm_extraction_max_items = 5
+  llm_extraction_max_input_chars = 8000
+}
+```
 
 ## Store Hygiene
 
@@ -77,46 +109,145 @@ hard-protects curated memories: pinned/protected items, frequently recalled
 items, consolidated memories, and memories carrying `supersedes` or
 `conflicts_with` relation metadata.
 
-You can tune extraction limits in `config.acl`:
+## Write and Recall Explicitly
 
-```acl
-memory {
-  llmExtraction = true
-  llmExtractionMaxItems = 5
-  llmExtractionMaxInputChars = 8000
-}
-```
-
-## Write Memory
+`rememberSuccess` and `rememberFailure` are explicit SDK operations for a host
+that intentionally wants to store those records. The agent runtime does not
+call them for each tool result.
 
 ```ts
 await session.rememberSuccess(
   'release preflight',
-  ['bash', 'grep'],
+  ['bash', 'search'],
   'Release checks passed after provider verification',
 );
-
 await session.rememberFailure(
   'provider verification',
   'missing PROVIDER_BASE_URL',
   ['bash'],
 );
-```
 
-## Recall
-
-```ts
 const related = await session.recallSimilar('release provider verification', 5);
 const recent = await session.memoryRecent(10);
 const tagged = await session.recallByTags(['release'], 10);
 ```
 
-Use recalled memory as supporting context. Verification evidence still comes from current commands and traces.
+```python
+session.remember_success(
+    "release preflight",
+    ["bash", "search"],
+    "Release checks passed after provider verification",
+)
+related = session.recall_similar("release provider verification", 5)
+recent = session.memory_recent(10)
+tagged = session.recall_by_tags(["release"], 10)
+```
 
-## Durable memory modes
+```go
+err := session.RememberSuccess(ctx, "release preflight",
+	[]string{"bash", "search"}, "Release checks passed after provider verification")
+related, err := session.RecallSimilar(ctx, "release provider verification", 5)
+recent, err := session.MemoryRecent(ctx, 10)
+```
 
-Production durable-memory bindings must use **Active recall**
-(`DurableMemorySession::active_recall`). Candidate-only **shadow** mode
-(`ShadowCandidates` / `::shadow`) is **removed** (`HARNESS-CONV4` / `CAP-GA1`).
-Extraction may still write evidence-backed Candidate nodes; hosts activate them
-explicitly before recall can admit them.
+Use recalled memory as supporting context. Verification evidence still comes
+from current commands and traces.
+
+## Durable Memory (Rust Host)
+
+A Rust host can bind a session to one exact A3S Memory repository namespace
+with `SessionOptions::with_durable_memory`. Code owns extraction, activation
+gates, and context admission; the repository owns namespace isolation,
+revisions, and atomic change sets; the host owns repository, embedding
+provider, and vector-index construction plus tenant/principal/scope selection.
+
+### Active recall
+
+`DurableMemorySession::active_recall` is the only binding mode
+(`DurableMemoryMode::ActiveRecall`):
+
+1. Extraction writes evidence-backed **Candidate** nodes into the namespace.
+   Candidates are never queried for prompt context.
+2. The host activates one exact candidate revision with
+   `activate_candidate(DurableMemoryActivation)`. Activation requires new
+   Manual or Verification decision evidence; LLM confidence and importance
+   cannot authorize it.
+3. Recall runs a bounded, Active-only lexical query
+   (`a3s.memory.lexical.word-cjk-bigram.v1`), optionally followed by a bounded
+   number of one-hop `RelatedTo` reads. `DurableMemoryRecallPolicy::try_new`
+   takes the result bound and minimum lexical score;
+   `try_with_related_lookups` enables relation reads (default zero).
+4. After final context assembly Code records an admission for each selected
+   node revision. A stale or inactive admission is removed before the model
+   call. The host calls `record_use` only when a node was actually used.
+
+```rust
+use a3s_code_core::{DurableMemoryRecallPolicy, DurableMemorySession, SessionOptions};
+use a3s_memory::repository::{FileMemoryRepository, MemoryNamespace};
+use std::sync::Arc;
+
+let repository = Arc::new(FileMemoryRepository::open(".a3s/memory-v2").await?);
+let namespace = MemoryNamespace::try_new("tenant-acme", "principal-alice", "repo-a3s-code")?;
+let recall = DurableMemoryRecallPolicy::try_new(5, 0.40)?.try_with_related_lookups(8)?;
+
+let options = SessionOptions::new().with_durable_memory(DurableMemorySession::active_recall(
+    repository, namespace, recall,
+));
+```
+
+Code fills an omitted `tenant_id` and `principal` from the namespace; explicit
+values must match. The live repository is not serialized. The session snapshot
+stores the secret-free `DurableMemoryBindingV1`, and resume fails closed unless
+the host injects an equivalent binding again.
+
+### Semantic recall and refresh
+
+`DurableMemorySemanticRecall::new` pairs a host-supplied `EmbeddingProvider`
+with a caller-owned A3S Memory `VectorIndex`; attach it with
+`with_semantic_recall`. At query time Code embeds the query, searches only the
+partition derived from the namespace and serving generation, re-reads every
+candidate from the repository, and requires `Active` status plus the exact
+node revision and content digest. Verified lexical and semantic ranks are
+fused with reciprocal-rank fusion (`a3s.code.memory.hybrid.rrf-k60.v1`). Any
+embedding, vector, or verification failure drops the semantic branch and keeps
+the lexical result.
+
+Vectors are not updated implicitly. Refresh them from a complete Active-only
+repository snapshot either on demand:
+
+```rust
+use a3s_memory::vector::VectorMutationConsistency;
+use tokio_util::sync::CancellationToken;
+
+let receipt = durable_memory
+    .refresh_semantic_recall_requiring(
+        VectorMutationConsistency::IndexRevisionCas,
+        CancellationToken::new(),
+    )
+    .await?;
+```
+
+or on a session-owned schedule, which always requires index-revision CAS:
+
+```rust
+use a3s_code_core::memory::{MemoryMaintenanceOptions, ScheduledSemanticRefresh};
+use std::time::Duration;
+
+let maintenance = MemoryMaintenanceOptions::new()
+    .with_semantic_refresh(ScheduledSemanticRefresh::try_new(Duration::from_secs(300))?);
+let options = options.with_memory_maintenance(maintenance);
+```
+
+Hosts read maintenance health with `memoryMaintenanceHealth()` (Node),
+`memory_maintenance_health()` (Python), or `MemoryMaintenanceHealth` (Go).
+
+### Production qualification harness
+
+`core/examples/durable_memory_prod1_host` is a host qualification harness
+(`DM-PROD1`) that exercises a Redis `VectorIndex` with index-revision CAS,
+fenced leases, restart, failover, and drift against a real OpenAI-compatible
+embedding provider. It requires the `dm-prod1-host` feature and is not part of
+any release profile. See
+[DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](https://github.com/A3S-Lab/Code/blob/main/manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md)
+and the full integration manual
+[DURABLE_MEMORY.md](https://github.com/A3S-Lab/Code/blob/main/manual/DURABLE_MEMORY.md).

@@ -8,8 +8,8 @@ import { Tab, Tabs } from '@rspress/core/theme';
 # Skill Tool
 
 Skills surface to the model as two core tools: `search_skills` (find a skill by intent)
-and `Skill` (invoke a skill by name). A tool-kind skill runs its handler; an
-instruction-kind skill returns its body for the model to apply. You can let the model
+and `Skill` (invoke a skill by name). `Skill` runs a child agent loop that uses the
+skill's content as its role prompt and returns that run's final text. You can let the model
 call these tools during a run, or invoke a skill directly from the SDK with
 `session.tool('Skill', ...)`.
 
@@ -191,9 +191,10 @@ func main() {
 </Tab>
 </Tabs>
 
-A `SKILL.md` declares its `kind` in frontmatter (`tool`, `instruction`, or `agent`).
-For a tool-kind skill, the `Skill` tool runs the skill's handler and returns its output;
-for an instruction-kind skill, it returns the body for the model to apply. Skill
+A `SKILL.md` declares its `kind` in frontmatter (`instruction`, the default, `persona`,
+or `tool`). The `Skill` tool grants the skill's `allowed-tools` only for the child run,
+composed with the session's permission policy, and revokes them afterwards. A skill
+that disables model invocation cannot be run through `Skill`. Skill
 administration is handled by SDK registration, skill directories, or project files — not
 by a model-visible management tool.
 

@@ -1,11 +1,11 @@
 ---
-title: 'Ripgrep Context Builder'
+title: 'Search Context Builder'
 description: 'Use grep and glob to gather code context before asking the agent.'
 ---
 
 import { Tab, Tabs } from '@rspress/core/theme';
 
-# Ripgrep Context Builder
+# Search Context Builder
 
 Fast code search with `session.grep` and `session.glob` lets you gather the
 relevant files and matching lines, then feed them into a prompt — a lightweight
@@ -59,7 +59,7 @@ const session = agent.session('.');
 // 1. Find candidate files by glob pattern (returns a list of paths).
 const files = await session.glob('src/**/*.ts');
 
-// 2. Search the workspace for the symbol we care about (returns ripgrep text).
+// 2. Search the workspace for the symbol we care about (returns the grep tool's text).
 const hits = await session.grep('createSession');
 
 // 3. Build a context string and feed it into a focused prompt.
@@ -71,7 +71,7 @@ const context = [
 const answer = await session.run(
   `Using only this context, explain how createSession is wired up:\n\n${context}`,
 );
-console.log(answer);
+console.log(answer.text);
 ```
 
 </Tab>
@@ -86,7 +86,7 @@ session = agent.session('.')
 # 1. Find candidate files by glob pattern (returns a list of paths).
 files = session.glob('src/**/*.ts')
 
-# 2. Search the workspace for the symbol we care about (returns ripgrep text).
+# 2. Search the workspace for the symbol we care about (returns the grep tool's text).
 hits = session.grep('createSession')
 
 # 3. Build a context string and feed it into a focused prompt.
@@ -98,7 +98,7 @@ context = '\n\n'.join([
 answer = session.run(
     f'Using only this context, explain how createSession is wired up:\n\n{context}'
 )
-print(answer)
+print(answer.text)
 ```
 
 </Tab>
@@ -153,8 +153,8 @@ func main() {
 </Tab>
 </Tabs>
 
-`glob` returns a list of matching file paths, while `grep` returns the raw
-ripgrep output as a single string. Both run locally and return quickly, so you
+`glob` returns a list of matching file paths, while `grep` returns the
+`grep` tool's text output as a single string. Both run locally and return quickly, so you
 can chain several searches to assemble context cheaply before spending a model
 turn. Pair them with `session.readFile` when you need the full body of a file
-rather than just the matching lines.
+rather than just the matching lines; it returns the `read` tool's line-numbered view.

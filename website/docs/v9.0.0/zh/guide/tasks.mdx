@@ -9,9 +9,10 @@ description: '使用统一 task 工具与子智能体进行手动和自动委派
 聚焦子任务，也可提交多个相互独立的子任务并发扇出。子运行上下文相互隔离，只向父
 智能体返回紧凑结果，而不是完整对话记录。
 
-同一个委派核心也驱动自动子智能体委派。需要运行时主动为高置信工作启动专用
-子智能体时启用它；如果只想让自动委派串行执行，可以用
-`autoParallel: false` 关闭自动并行扇出。
+同一个 `task` 工具也承载自动子智能体委派：启用后，运行时会在模型做出第一次决策
+之前，为高置信的专用智能体匹配规划一次 `task` 调用。已经知道工作形态的宿主代码
+可以直接调用 `session.task(...)` / `session.tasks(...)`，或使用可编程的
+[编排](/guide/orchestration)组合器。
 
 Web 界面可以把这些状态分别展示为计划列表和子智能体运行列表，并用任务标识关联两者。
 
@@ -48,6 +49,30 @@ const task = await session.task({
 if (task.exitCode !== 0) throw new Error(task.output);
 console.log(task.output);
 ```
+
+```python
+task = session.task({
+    "agent": "explore",
+    "description": "Inspect auth module",
+    "prompt": "Return files inspected, findings, risks, and confidence.",
+})
+if task.exit_code != 0:
+    raise RuntimeError(task.output)
+```
+
+```go
+task, err := session.Task(ctx, code.DelegateTaskOptions{
+	Agent:       "explore",
+	Description: "Inspect auth module",
+	Prompt:      "Return files inspected, findings, risks, and confidence.",
+})
+if err == nil && task.ExitCode != 0 {
+	err = errors.New(task.Output)
+}
+```
+
+每个任务项接受 `agent`、`description` 和 `prompt`，以及可选的 `background` 与
+`maxSteps` / `max_steps`。
 
 子智能体应返回紧凑契约：
 
@@ -96,10 +121,8 @@ console.log(batch.output);
 
 `session.task(...)` 和 `session.tasks(...)` 都返回来自 `task` 工具的 `ToolResult`。
 读取 `output` 获取紧凑摘要，并在信任结果前检查 `exitCode`。会话选项中的
-`maxParallelTasks` 与 ACL 中的 `max_parallel_tasks` 会限制同级任务扇出。
-
-所有扇出都应使用 `task` / `session.tasks`。模型可见与 SDK 的 `parallel_task` /
-`parallelTask` 助手已**移除**（`HARNESS-CONV4`），请改用多条目 `task`。
+`maxParallelTasks` 与 ACL 中的 `max_parallel_tasks` 会限制同级任务扇出。多条目
+`task` 是唯一的扇出工具，没有单独的并行任务工具或 SDK 辅助方法。
 
 <span id="agent-wide-priority-scheduler"></span>
 
@@ -245,8 +268,17 @@ Go 使用导出的 struct 字段。这是诊断快照，不是容量预留，读
 
 ## 自动委派
 
-自动委派默认需要显式启用。运行时会把当前请求与内置或自定义智能体描述进行评分，
-并在置信度足够时启动最多 `maxTasks` 个子运行。
+自动委派默认需要显式启用。在一个轮次开始时，运行时会在本地把请求与每个可见智能体
+（内置、目录加载和 worker 智能体；`general` 只有被点名时才会选中）的名称和描述进行
+评分。这是确定性匹配，不是模型调用。请求点名某个智能体时，只规划该智能体；否则
+置信度达到 `minConfidence` 的智能体会成为一次 `task` 调用的任务项，并取代该轮次中
+模型的第一次决策。事实日志像记录和执行其他工具调用一样处理它，包括确认策略。子运行
+的紧凑结果作为工具结果返回给父模型，最终决策仍由父智能体做出。
+
+- 每个请求最多启动 `min(maxTasks, maxParallelTasks)` 个子运行。
+- `autoParallel: false` / `auto_parallel = false` 保留自动委派，但只运行最佳匹配的
+  一个子运行。
+- 默认值：禁用，`minConfidence` 0.72，`maxTasks` 4，`autoParallel` true。
 
 ```ts
 const session = agent.session('/repo', {
@@ -265,8 +297,14 @@ auto_delegation {
 }
 ```
 
-`autoParallel: false` / `auto_parallel = false` 是自动并行子智能体扇出的全局开关。
-手动 `task` 扇出和 `session.tasks(...)` 仍然可用。
+`autoParallel` 不会影响手动 `task` 扇出或 `session.tasks(...)`。
+
+禁用自动委派时，在请求中点名某个智能体（例如 `@review` 或 “use the verification
+subagent”）仍会委派给该智能体。要完全移除模型可见的 `task` 工具，可设置
+`manualDelegationEnabled: false`（Node）、`manual_delegation_enabled = False`
+（Python）、`ManualDelegationEnabled`（Go），或在 ACL `auto_delegation` 块中设置
+`allow_manual_delegation = false`。这也会关闭自动委派，因为两条路径都通过 `task`
+工具运行。
 
 ## 智能体目录
 
@@ -277,7 +315,11 @@ const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
 const loaded = session.registerAgentDir('./more-agents');
 ```
 
-A3S 会扫描配置的 `agent_dirs`、项目/用户 `.a3s/agents`，以及 Claude 兼容的 `.claude/agents` 迁移路径。新项目优先使用 `.a3s/agents`。
+定义按以下顺序注册，后注册的同名定义会替换先前的定义：ACL `agent_dirs`、
+`~/.claude/agents`、`~/.a3s/agents`、`<workspace>/.claude/agents`、
+`<workspace>/.a3s/agents`、会话 `agentDirs`，最后是 `workerAgents`。目录会被递归
+扫描 `.md`、`.yaml` 和 `.yml` 文件。新项目优先使用 `.a3s/agents`；读取
+`.claude/agents` 是为了兼容。
 
 Markdown agent 文件支持 frontmatter：
 
@@ -323,7 +365,8 @@ const session = agent.session('/repo', {
 - `'deny_on_ask'`：子运行遇到 Ask 时立即失败
 - `'inherit_parent'`：子运行继承父级的确认策略
 
-旧生命周期控制面 API 已移除；需要 UI 状态时，应用应消费 streaming events、run replay，以及 Node `cancelRun(runId)`。
+需要子运行 UI 状态的应用消费 streaming events 和 run replay，并通过 Node
+`cancelRun(runId)` 取消活动工作。
 
 ## 可编程编排
 

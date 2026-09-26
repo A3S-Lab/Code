@@ -63,13 +63,13 @@ async fn main() -> a3s_code_core::Result<()> {
 <Tab label="Node.js">
 
 ```ts
-import { Agent } from '@a3s-lab/code';
+import { Agent, type StepOutcomeObject } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.acl');
 const session = agent.session('.', {});
 
 // 各步骤互不依赖；结果按输入顺序返回，而不是按完成顺序返回。
-const outcomes = await session.parallel([
+const outcomes = (await session.parallel([
   {
     taskId: 'langs',
     agent: 'general',
@@ -84,7 +84,7 @@ const outcomes = await session.parallel([
     prompt: 'Is Rust memory-safe without a GC? yes/no.',
     maxSteps: 2,
   },
-]);
+])) as StepOutcomeObject[];
 
 for (const o of outcomes) {
   console.log(`[parallel] ${o.taskId}: success=${o.success}`);
@@ -214,7 +214,7 @@ spec 会排队，而返回的结果数组仍然完整且保持顺序。
 ```rust
 use std::sync::Arc;
 
-use a3s_code_core::{Agent, AgentStepSpec, PipelineStage};
+use a3s_code_core::{Agent, AgentStepSpec, PipelineStage, StepOutcome};
 
 #[tokio::main]
 async fn main() -> a3s_code_core::Result<()> {
@@ -223,7 +223,7 @@ async fn main() -> a3s_code_core::Result<()> {
     let workflow = session.workflow();
 
     let stages: Vec<PipelineStage<String>> = vec![
-        Arc::new(|_, item| {
+        Arc::new(|_: Option<&StepOutcome>, item: &String| {
             Some(
                 AgentStepSpec::new(
                     "summarize",
@@ -234,7 +234,7 @@ async fn main() -> a3s_code_core::Result<()> {
                 .with_max_steps(2),
             )
         }),
-        Arc::new(|previous, _| {
+        Arc::new(|previous: Option<&StepOutcome>, _: &String| {
             previous.map(|outcome| {
                 AgentStepSpec::new(
                     "classify",
@@ -284,13 +284,16 @@ const results = await session.pipeline(
       prompt: `In one sentence, what is ${ctx.item}?`,
       maxSteps: 2,
     }),
-    (ctx) => ({
-      taskId: 'cls',
-      agent: 'general',
-      description: 'classify',
-      prompt: `Reply YES or NO: does this describe a programming language?\n\n${ctx.previous.output}`,
-      maxSteps: 2,
-    }),
+    (ctx) =>
+      ctx.previous
+        ? {
+            taskId: 'cls',
+            agent: 'general',
+            description: 'classify',
+            prompt: `Reply YES or NO: does this describe a programming language?\n\n${ctx.previous.output}`,
+            maxSteps: 2,
+          }
+        : null,
   ],
 );
 
@@ -659,7 +662,7 @@ async fn main() -> a3s_code_core::Result<()> {
 <Tab label="Node.js">
 
 ```ts
-import { Agent } from '@a3s-lab/code';
+import { Agent, type WorkflowParallelResult } from '@a3s-lab/code';
 
 const agent = await Agent.create('agent.acl');
 const session = agent.session('.', {});
@@ -683,7 +686,10 @@ const specs = [
 
 // 传入预算时，parallel() 解析为 { outcomes, budget } —— 所有子代理共享一个账本。
 // （不传时，parallel(specs) 返回原来的数组。）
-const { outcomes, budget } = await session.parallel(specs, 50_000);
+const { outcomes, budget } = (await session.parallel(
+  specs,
+  50_000,
+)) as WorkflowParallelResult;
 for (const o of outcomes)
   console.log(`[budget] ${o.taskId}: success=${o.success}`);
 console.log(`spent ${budget.consumedTokens} / ${budget.limitTokens} tokens`);

@@ -8,9 +8,11 @@ description: 'File-based runtime config for models, providers, queues, skill dir
 `agent.acl` is the versioned runtime config for the model, provider, queue, storage, skill directories, and worker agent directories.
 
 An SDK host may pass any `.acl` file explicitly with `Agent.create("agent.acl")`.
-The `a3s code` TUI discovers `.a3s/config.acl` from the workspace and then
-`~/.a3s/config.acl`; it does not require a root `agent.acl`. The format is the
-same; discovery and scope differ.
+The `a3s code` TUI does not require a root `agent.acl`. It reads
+`~/.a3s/config.acl` first, then the nearest `.a3s/config.acl` found by walking
+up from the workspace, and merges the workspace layer over the user layer.
+`--config <path>` replaces both layers. The format is the same; discovery and
+scope differ.
 
 ## Basic Config
 
@@ -48,14 +50,24 @@ project_doc_max_bytes = 32768
 project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
 
 auto_delegation {
-  enabled        = true
-  min_confidence = 0.72
-  max_tasks      = 4
-  auto_parallel  = false
+  enabled                 = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+  auto_parallel           = false
+  allow_manual_delegation = true
 }
 ```
 
-`skill_dirs` points at reusable skills. `agent_dirs` points at worker/subagent definitions. `project_doc_max_bytes` bounds the combined root-to-workspace instruction chain; fallback filenames are checked after `AGENTS.override.md` and `AGENTS.md`. Automatic delegation decides whether the model may choose a worker; it does not remove parent-session permission policy, tool visibility, or verification requirements.
+`skill_dirs` points at reusable skills and is the only way ACL config loads
+skill files. `agent_dirs` adds worker/subagent directories on top of the
+automatically scanned `.a3s/agents` and `.claude/agents` directories.
+`project_doc_max_bytes` bounds the combined personal and root-to-workspace
+instruction chain; fallback filenames are checked after `AGENTS.override.md`
+and `AGENTS.md`. Automatic delegation decides whether the runtime plans a
+`task` call for a matching worker; `allow_manual_delegation = false` removes the
+`task` tool entirely. Neither removes parent-session permission policy, tool
+visibility, or verification requirements. See [Tasks](/guide/tasks) for the
+scoring rules.
 
 ## Session Storage
 

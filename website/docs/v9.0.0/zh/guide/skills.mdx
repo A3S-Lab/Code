@@ -5,30 +5,68 @@ description: '提示时技能、内联技能与技能工具'
 
 # 技能
 
-Skills 是可复用指令。文件型 skill 目录、inline skills、显式 registry 和
-`search_skills` 使用同一套 discovery 路径。A3S Code 不再内置默认 skills；
-SDK 仍接受 `builtinSkills: true`，但它只是兼容 no-op。
+Skills 是 harness 可以发现并排序的可复用指令。文件型 skill 目录、inline skills、
+显式 registry 和 `search_skills` 使用同一套 discovery 路径。A3S Code 不再内置默认
+skills；SDK 仍接受 `builtinSkills: true`，但它只是兼容 no-op。
+
+## 兼容标志
 
 ```ts
 const session = agent.session('/repo', {
   builtinSkills: true,
+});
+```
+
+该标志不会添加默认 skills。可复用行为应放进项目 skill 文件、inline skills 或
+agent 定义。
+
+## 技能文件
+
+把带 frontmatter 的 Markdown 文件放进 skill 目录：
+
+```md
+---
+name: release-review
+description: Review release blockers and verification evidence
+allowed-tools: 'read(*), search(*), bash(cargo test*)'
+---
+
+Check package metadata, changelog, release scripts, and CI status.
+Return blockers first.
+```
+
+```ts
+const session = agent.session('/repo', {
   skillDirs: ['/repo/.a3s/skills'],
+});
+```
+
+使用 `skillDirs` 加载技能文件，使用 `agentDirs` 加载 worker/subagent 定义。
+
+Skill 目录只有在配置后才会加载：通过 agent ACL 中的 `skill_dirs`（该 agent 的所有
+session 共享），或通过 session 的 `skillDirs` / `skill_dirs` / `SkillDirs`。不会隐式
+扫描 `.a3s/skills`。每个目录会按排序顺序递归遍历；skill 可以是 `*.md` 文件，也可以
+是子目录中的 `SKILL.md`。解析到目录之外的符号链接会被忽略，不存在的目录加载 0 个
+skill。两个文件声明相同 `name` 时，后加载的会替换先加载的，并记录 warning。
+
+## 内联技能
+
+```ts
+const session = agent.session('/repo', {
   inlineSkills: [
     {
       name: 'strict-release-review',
       kind: 'instruction',
-      content: '始终先列 blocker，再列可选改进。',
+      content: 'Always separate blockers from nice-to-have improvements.',
     },
   ],
 });
 ```
 
-`builtinSkills` 不会添加默认 skills。可复用行为应放进项目 skill 文件、
-inline skills 或 agent 定义。Skill 文件是带 frontmatter 的 Markdown。使用
-`skillDirs` 加载技能文件，使用 `agentDirs` 加载 worker/subagent 定义。可用
-`allowed-tools` 限定 Skill 调用期间的工具，例如 `read(*), search(*), bash(cargo test*)`。
+## 技能工具
 
-`search_skills` 用于查找相关 skill：
+`search_skills` 用于查找相关 skill（`limit` 为 1 到 20，默认 5），模型再通过
+`Skill` 工具（`skill_name`，可选 `prompt`）运行其中之一：
 
 ```ts
 await session.tool('search_skills', {
@@ -38,10 +76,9 @@ await session.tool('search_skills', {
 ```
 
 带 `allowed-tools` 前置元数据的 Markdown 技能文件和内联技能都能被发现。技能管理
-现在由 SDK 或文件系统完成，不再作为模型可见的管理工具暴露。
+由 SDK 或文件系统完成，而不是模型可见的管理工具。
 
 当 skill 通过 `Skill` 工具被调用时，`allowed-tools` 是 fail-secure 的：省略
-frontmatter 不会授予任何工具。请显式声明最小可用工具集。普通 session 的工具调用
-默认不会被 active skill 限制，除非显式打开
-`enforceActiveSkillToolRestrictions` / `enforce_active_skill_tool_restrictions`
-兼容旧行为。
+frontmatter 不会授予该次 skill 调用任何工具。请声明最小可用工具集。普通 session 的
+工具调用默认不会被 active skill 限制，除非显式启用
+`enforceActiveSkillToolRestrictions` / `enforce_active_skill_tool_restrictions`。

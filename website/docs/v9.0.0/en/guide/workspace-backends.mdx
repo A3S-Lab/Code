@@ -15,6 +15,21 @@ Node.js and Python use backend objects.
 
 Use this surface when the host owns workspace placement: local development,
 browser or container workspaces, object-storage workspaces, or managed sessions.
+Rust hosts can also supply their own backend by implementing the workspace
+traits; see [Host-provided Backend](#host-provided-backend).
+
+## Feature Flags
+
+The local backend and remote git are always compiled in. The S3 backend is
+behind the Cargo feature `s3`, which the `server` and `full` features include
+(`core/Cargo.toml`); the Core default feature set is `local-code` only.
+
+| Package                          | S3 in the published build                                                                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a3s-code-core` (Rust)           | Only when you enable `s3`, `server`, or `full`.                                                                                                                   |
+| `@a3s-lab/code` (Node.js)        | Yes; the published addon is built with `advanced-harness,server`.                                                                                                 |
+| `a3s-code` (Python)              | Yes; the published wheel is built with `server`. Without it, `S3WorkspaceBackend` is not exported.                                                                |
+| Go bridge (`a3s-code-go-bridge`) | No; the published bridge uses default features, so an S3 backend fails with `FEATURE_DISABLED`. Build the bridge with `--features s3` (or `server`) to enable it. |
 
 ## Capability Matrix
 
@@ -24,6 +39,11 @@ browser or container workspaces, object-storage workspaces, or managed sessions.
 | `LocalWorkspaceBackend`            | Same as default local workspace                    | Same as default local workspace               | Same as default local workspace     |
 | `S3WorkspaceBackend`               | `read`, `write`, `edit`, `patch`, `ls`             | Optional `search` when `searchEnabled` is set | Not registered                      |
 | `S3WorkspaceBackend` + `remoteGit` | S3 file tools                                      | Optional degraded S3 search                   | `git` through remote git, no `bash` |
+| Host-provided (Rust)               | `read`, `write`, `edit`, `patch`, `ls`             | `search` when the host attaches search        | Only what the host attaches         |
+
+`download` is registered only for a writable local root. `code_symbols`,
+`code_navigation`, and `code_diagnostics` are registered only when the backend
+carries a code-intelligence provider; the default local backend has none.
 
 Object storage cannot service local processes. Do not promise shell execution on
 an S3 workspace unless the host provides a separate sandbox through MCP or
@@ -530,6 +550,37 @@ from the host environment or secret manager.
 Go exposes the same fields on `RemoteGitBackendConfig`: `BaseURL`, `RepoID`,
 `BearerToken`, `ClientCertPEM`, `ClientKeyPEM`, `RequestTimeoutMS`,
 `MaxDiffBytes`, and `MaxLogEntries`.
+
+## Host-provided Backend
+
+A Rust host can back a session with its own storage by implementing
+`WorkspaceFileSystem` (`read_text`, `write_text`, `list_dir`) and, optionally,
+`WorkspaceCommandRunner`, `WorkspaceSearch`, and `WorkspaceGit`. The traits are
+`Send + Sync` and exported from the crate root. `WorkspaceServices::builder`
+starts with read and write capabilities; each attached service enables the
+matching capability and tools.
+
+```rust
+use std::sync::Arc;
+
+use a3s_code_core::{SessionOptions, WorkspaceFileSystem, WorkspaceRef, WorkspaceServices};
+
+fn host_backend(files: Arc<dyn WorkspaceFileSystem>) -> SessionOptions {
+    let services = WorkspaceServices::builder(
+        WorkspaceRef::new("tenant-42/workspace", "/workspace"),
+        files,
+    )
+    .build();
+    SessionOptions::new().with_workspace_backend(services)
+}
+```
+
+Attach `.command_runner(...)` for `bash`, `.search(...)` for `search`,
+`.git(...)` for `git`, and `.code_intelligence(...)` for the code-intelligence
+tools. A non-local backend keeps its own command runner: the native Bash
+sandbox applies only to local workspaces, so the host is responsible for
+confining commands it runs. Effect isolation never reuses a host-provided
+backend. The Node.js, Python, and Go SDKs do not expose custom backends.
 
 ## Choosing A Backend
 

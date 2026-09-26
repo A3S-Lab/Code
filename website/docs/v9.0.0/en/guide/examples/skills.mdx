@@ -70,7 +70,7 @@ session.registerAgentDir('./team/shared-agents');
 
 // Inspect what the session loaded.
 console.log('Tools:', session.toolNames());
-console.log('Commands:', session.listCommands());
+console.log('Skills:', session.skillNames());
 
 // The agent now has access to the project skills.
 const result = await session.run(
@@ -101,7 +101,7 @@ session.register_agent_dir('./team/shared-agents')
 
 # Inspect what the session loaded.
 print('Tools:', session.tool_names())
-print('Commands:', session.list_commands())
+print('Skills:', session.skill_names())
 
 # The agent now has access to the project skills.
 result = session.run(

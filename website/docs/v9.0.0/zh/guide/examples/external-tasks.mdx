@@ -243,5 +243,7 @@ func main() {
 - 当任务被找到并完成时，`completeExternalTask` / `complete_external_task` 返回 `true`，否则
   返回 `false`。在 Python 中这些队列方法是同步的；在 Node 中 `pendingExternalTasks` 和
   `completeExternalTask` 返回 promise。
+- 只有在某次运行正把工作路由到该 lane 时才会出现任务。请在 `send` 或 `stream` 执行期间由
+  worker 循环轮询队列；像本最小示例这样在 `setLaneHandler` 之后立即清空，得到的是空队列。
 - Go 使用 `PendingExternalTasks` 与 `CompleteExternalTask`，两者都接收调用方的
   `context.Context`。

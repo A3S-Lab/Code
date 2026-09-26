@@ -75,15 +75,16 @@ resumable combinator persists outcomes into checkpoints.
 
 The key casing differs by SDK:
 
-| Concept        | Node (camelCase)  | Python (snake_case) |
-| -------------- | ----------------- | ------------------- |
-| step id        | `taskId`          | `task_id`           |
-| tool-round cap | `maxSteps`        | `max_steps`         |
-| parent session | `parentSessionId` | `parent_session_id` |
-| forced schema  | `outputSchema`    | `output_schema`     |
+| Concept        | Node (camelCase)  | Python (snake_case) | Go (struct field) |
+| -------------- | ----------------- | ------------------- | ----------------- |
+| step id        | `taskId`          | `task_id`           | `TaskID`          |
+| tool-round cap | `maxSteps`        | `max_steps`         | `MaxSteps`        |
+| parent session | `parentSessionId` | `parent_session_id` | `ParentSessionID` |
+| forced schema  | `outputSchema`    | `output_schema`     | `OutputSchema`    |
 
 `agent`, `description`, `prompt`, `output`, `success`, and `structured` are
-spelled the same in both SDKs.
+spelled the same in Node and Python; Go uses the exported `Agent`,
+`Description`, `Prompt`, `Output`, `Success`, and `Structured` fields.
 
 ## parallel — barrier fan-out
 
@@ -144,6 +145,23 @@ for outcome in outcomes:
         print("failed:", outcome["task_id"], outcome["output"])
 ```
 
+```go
+result, err := session.Parallel(ctx, []code.AgentStepSpec{
+	{TaskID: "explore", Agent: "explore", Description: "Risky changes",
+		Prompt: "Find risky changed files in this diff."},
+	{TaskID: "verify", Agent: "verification", Description: "Test gaps",
+		Prompt: "Identify missing or weak verification."},
+	{TaskID: "review", Agent: "review", Description: "Correctness",
+		Prompt: "Review the diff for correctness risks."},
+}, nil)
+if err != nil {
+	return err
+}
+for _, outcome := range result.Outcomes {
+	fmt.Println(outcome.TaskID, outcome.Success, outcome.Output)
+}
+```
+
 ## pipeline — no barrier between stages
 
 `session.pipeline(items, stages)` flows each item through a chain of stages
@@ -158,6 +176,8 @@ only build on a failed result). The callback shapes:
 
 - Node: `(ctx) => spec | null` where `ctx = { previous: StepOutcome | null, item }`
 - Python: `stage(ctx) -> spec | None` where `ctx = {"previous": <dict|None>, "item": <item>}`
+- Go: `code.PipelineStage`, `func(ctx, code.PipelineContext) (*code.AgentStepSpec, error)`,
+  where `PipelineContext{Previous *StepOutcome, Item any}`; return `nil, nil` to stop
 
 A stage can branch on the prior outcome — e.g. "verify the finding the review
 stage produced".
@@ -173,6 +193,8 @@ Constraints (from the source):
   `30000`) fails closed — it is treated as `null`, stopping only that chain.
 - **Python:** a stage callable that raises is caught and treated as `None`
   (stops only that chain).
+- **Go:** a stage that returns an error stops that chain, and `Pipeline`
+  returns the error together with the outcomes collected so far.
 
 > A Node pipeline stage callback **must not throw.** In this napi version a JS
 > throw at return-conversion aborts the process (the same fail-closed constraint
@@ -234,10 +256,37 @@ outcomes = session.pipeline(
 )
 ```
 
+```go
+outcomes, err := session.Pipeline(ctx,
+	[]any{"src/auth.ts", "src/payments.ts"},
+	[]code.PipelineStage{
+		func(_ context.Context, c code.PipelineContext) (*code.AgentStepSpec, error) {
+			return &code.AgentStepSpec{
+				TaskID:      fmt.Sprintf("explore-%v", c.Item),
+				Agent:       "explore",
+				Description: "Inspect file",
+				Prompt:      fmt.Sprintf("Summarize the responsibilities and risks of %v.", c.Item),
+			}, nil
+		},
+		func(_ context.Context, c code.PipelineContext) (*code.AgentStepSpec, error) {
+			if c.Previous == nil {
+				return nil, nil
+			}
+			return &code.AgentStepSpec{
+				TaskID:      fmt.Sprintf("review-%v", c.Item),
+				Agent:       "review",
+				Description: "Review of prior finding",
+				Prompt:      "Review this summary for correctness risks:\n" + c.Previous.Output,
+			}, nil
+		},
+	})
+```
+
 ## Resumable / migratable workflows
 
 `session.parallelResumable(specs, workflowId)` (Node) /
-`session.parallel_resumable(specs, workflow_id)` (Python) is `parallel` plus a
+`session.parallel_resumable(specs, workflow_id)` (Python) /
+`session.ParallelResumable(ctx, specs, workflowID)` (Go) is `parallel` plus a
 journal. It maps to `execute_steps_parallel_resumable`.
 
 At each step boundary it writes a `WorkflowCheckpoint` to the session store. On
@@ -250,9 +299,9 @@ Because the checkpoint is serializable and the executor is a parameter, a host
 can resume an interrupted workflow on a **different node** (migration) by
 passing that node's executor.
 
-This combinator **requires a configured session store** — both SDK methods
-reject/raise without one (the Node error message is
-`parallelResumable requires a sessionStore`).
+This combinator **requires a configured session store** — the SDK methods
+reject or raise without one (the Node error message is
+`parallelResumable requires a sessionStore on the session`).
 
 The `WorkflowCheckpoint` schema is `schema_version` / `workflow_id` / `steps` /
 `checkpoint_ms`. A checkpoint written by a _future_, incompatible
@@ -293,6 +342,17 @@ outcomes = session.parallel_resumable(specs, "release-batch-42")
 outcomes = session.parallel_resumable(specs, "release-batch-42")
 ```
 
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	FileSessionStoreDir: "./.a3s/sessions",
+})
+if err != nil {
+	return err
+}
+// A rerun with the same workflow id skips completed steps.
+outcomes, err := session.ParallelResumable(ctx, specs, "release-batch-42")
+```
+
 ## Shared budget across a fan-out
 
 By default each child agent counts its own LLM cost. Pass a token budget to
@@ -331,6 +391,17 @@ outcomes = session.parallel(specs)
 # With a budget → {"outcomes": [...], "budget": {"consumed_tokens", "limit_tokens"}}.
 res = session.parallel(specs, budget_tokens=500_000)
 print(res["budget"]["consumed_tokens"], res["budget"]["limit_tokens"])
+```
+
+Go always returns a `*code.ParallelResult`; `Budget` is non-nil only when a
+limit was passed.
+
+```go
+limit := uint64(500_000)
+result, err := session.Parallel(ctx, specs, &limit)
+if err == nil && result.Budget != nil {
+	fmt.Println(result.Budget.ConsumedTokens, *result.Budget.LimitTokens)
+}
 ```
 
 ## Looping until done (`execute_loop`)
@@ -403,7 +474,8 @@ event subscription, the loop combinator — is a Rust/embedding API.
 
 ## Schema-forced step output
 
-A spec carrying `output_schema` (`outputSchema` in Node) forces the step to
+A spec carrying `output_schema` (`outputSchema` in Node, `OutputSchema` in Go)
+forces the step to
 return a value conforming to that JSON Schema; the validated object lands in
 `StepOutcome.structured`. This reuses the same structured-output coercion +
 repair machinery as the rest of A3S Code. A coercion failure **demotes the step
