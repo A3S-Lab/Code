@@ -91,7 +91,7 @@ export function RuntimeExecutionFlow({ labels }: { labels: HomeLabels }) {
   const slashMenuItems: Array<[string, string]> = [
     ['/effort', labels.tuiSlashEffort],
     ['/model', labels.tuiSlashModel],
-    ['/theme', labels.tuiSlashTheme],
+    ['/permissions', labels.tuiSlashPermissions],
   ];
   const fileMenuItems: Array<[string, string]> = [
     ['AGENTS.md', labels.tuiFileInstructions],
@@ -153,7 +153,7 @@ export function RuntimeExecutionFlow({ labels }: { labels: HomeLabels }) {
       tokens: '0.8k',
     },
     {
-      name: 'test',
+      name: 'verification',
       task: labels.tuiAgentTestTask,
       status: activeIndex >= tuiDemoIndex.artifact ? 'done' : 'active',
       tokens: '1.5k',

@@ -1,0 +1,34 @@
+name: undo-tip-short-draft-no-show
+description: >
+  No-show edge: wiping a SHORT draft (below the detector's FIRE_PEAK_LEN of 20
+  chars) must NOT show the undo tip — only substantial wipes are worth hinting.
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # 10 chars — below the 20-char peak threshold.
+  - action: type_text
+    text: "cccccccccc"
+  - action: wait
+    millis: 400
+  - action: assert_contains
+    text: "cccccccccc"
+  - action: keys
+    keys: "<C-u>"
+  - action: wait
+    millis: 700
+  - action: assert_not_contains
+    text: "to undo"
+  - action: screenshot
+    name: undo-tip-short-draft
+    note: No tip after wiping a short (<20 char) draft.

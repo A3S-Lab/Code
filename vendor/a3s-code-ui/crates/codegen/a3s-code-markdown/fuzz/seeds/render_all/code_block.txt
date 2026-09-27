@@ -1,0 +1,5 @@
+# Heading
+
+```rust
+fn main() {}
+```

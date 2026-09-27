@@ -1,0 +1,57 @@
+[
+  {
+    "category": "performance",
+    "description": "**Worktree creation** is faster by skipping stale reflog copies.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copying wrapped table cells** no longer inserts unwanted spaces at line breaks.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP server connections** that fail transiently now retry instead of staying unavailable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Waiting on subagents** after an interjection no longer blocks on unrelated background work.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt blocks** now show friendly hook descriptions instead of internal IDs.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Truncation error message** no longer suggests asking for a shorter answer.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Context estimates** for conversations with reasoning are now more accurate.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Token usage** after rewinding or switching modes now matches the actual server-reported count instead of overestimating.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Context bar** now updates immediately when auto-compaction begins instead of waiting until it finishes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**File system monitoring** for .NET projects no longer creates excessive watchers on Linux.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto recap** no longer appears while a background task or monitor wake turn is streaming.",
+    "breaking_change": false
+  }
+]

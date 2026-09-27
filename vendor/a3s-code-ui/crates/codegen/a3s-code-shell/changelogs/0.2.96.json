@@ -1,0 +1,167 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Vim `l` key** now opens the selected agent detail view in the dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**System notifications** now carry structured kind/title/body for better rendering.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**x.ai/pr/status** now reports whether an open PR is in the merge queue.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal commands** with no args now run through a shell, matching the CLI.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Compact mode** now activates automatically on very small terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Up arrow** on an empty prompt now browses prompt history; `/history` searches it.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Stop hook runs** now appear inline on the turn-completed line instead of a separate block.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Agent teardown** no longer crashes on slim Linux images that lack the ps command.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Esc** now dismisses an open /btw panel before backing out of a dashboard overlay.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagent rows** now fold into verb-group headers and the tasks pane shows live activity labels.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resumed a3s chats** now use the conversation's last model instead of the gateway default.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Dashboard shortcuts** now advertise ? instead of Ctrl+. on terminals that cannot deliver the latter.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**JetBrains terminals on Windows** now default to minimal mode to avoid raw mouse-report leaks in the prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Skill token highlights** now survive line wraps and the slash menu opens when typing / before existing text.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Double-clicking** scrollback while Text selection is fold/nav now shows a tip offering Ctrl+Y to enable Word select.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Truncated or tiny images** are now dropped before sending and previously poisoned sessions self-heal on restart.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session switch hints** after `/new` or fork now show the working command in minimal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok worktree ls`** now works as a short alias for `grok worktree list`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Progress bars** in Ghostty and WezTerm now stop correctly for parked task waits.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/effort`** now rejects levels the current model does not support instead of sending a bad value to the API.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/recap`** on a fresh session now says \"No messages yet\" instead of failing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Monitor and system messages** no longer appear as user prompts when resuming old sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/rewind`** completion now appears as a brief toast instead of a permanent transcript line.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto recaps** no longer appear under a newer user message when you start typing again.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP tool output truncation** can now be set per-repo in `.grok/config.toml`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Authentication retries** after token refresh no longer hang for minutes or days.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Auto-send of queued follow-ups** during task waits can now be enabled fleet-wide via remote settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Text selection tip** no longer appears on the first double-click or on non-assistant blocks.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Welcome screen** now offers one-click resume of a recent Claude Code session via ctrl+u.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Skill slash commands** queued while a turn runs can now be sent immediately with Enter or the interject chord.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Drag text selection** now works inside the dashboard dispatch input box.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Multi-line paste chips** in dashboard inputs now support preview and expand like the main prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Live previews** now always fetch the latest content without browser or CDN caching.",
+    "breaking_change": false
+  }
+]

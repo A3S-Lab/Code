@@ -1,0 +1,44 @@
+name: image-chip-kill-yank
+description: "Home, Ctrl+K, Ctrl+Y turns an image chip into plain [Image #1] text and back; the yanked chip re-attaches and the send still carries the image."
+terminal:
+  rows: 40
+  cols: 120
+mock:
+  response: "SCRIPTED_YANK_RESPONSE received the yanked image."
+  fixture_images:
+    - name: yanked_image
+      extension: png
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_image_paths
+    images: [yanked_image]
+  - action: assert_contains
+    text: "Image #1"
+  - action: keys
+    keys: "<Home><C-k><C-y>"
+  - action: assert_contains
+    text: "Image #1"
+  - action: screenshot
+    name: image-chip-kill-yank
+    note: Prompt after kill and yank; the image chip renders as a chip again.
+  - action: drop_text_prompt
+    text: " what is this"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: SCRIPTED_YANK_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: assert_request_image_count
+    min: 1
+  - action: assert_inline_images
+    min: 1
+    mime_type: image/png
+    width: { min: 8 }
+    height: { min: 8 }
+  - action: assert_not_contains
+    text: "not attached"
+  - action: assert_not_contains
+    text: panicked

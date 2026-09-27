@@ -1,0 +1,84 @@
+---
+title: 'agent.acl'
+description: '模型、服务提供商、队列、技能目录和工作智能体目录的文件化运行配置。'
+---
+
+# agent.acl
+
+`agent.acl` 是模型、provider、队列、存储、Skill 目录和 worker 目录的版本化运行配置。
+
+SDK 宿主可以用 `Agent.create("agent.acl")` 显式传入任意 `.acl` 文件。
+`a3s code` TUI 并不要求仓库根部存在 `agent.acl`。它先读取 `~/.a3s/config.acl`，
+再读取从 workspace 向上找到的最近的 `.a3s/config.acl`，并把 workspace 层合并覆盖到
+用户层之上。`--config <path>` 会替换这两层。格式一致，发现方式和作用范围不同。
+
+## 基础配置
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+```
+
+`apiKey` / `api_key` 和 `baseUrl` / `base_url` 都是可接受别名。运行时不硬编码
+模型名；`default_model` 和 session 级 `model` 覆盖必须匹配这里声明的
+`provider/model-id`。
+
+把 token 通过环境变量注入，不要写进 `agent.acl`。配置文件进入仓库后，它就是产品行为的一部分，应该像代码一样审查。
+
+## 目录发现
+
+```acl
+skill_dirs = ["./.a3s/skills"]
+agent_dirs = ["./.a3s/agents"]
+project_doc_max_bytes = 32768
+project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
+
+auto_delegation {
+  enabled                 = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+  auto_parallel           = false
+  allow_manual_delegation = true
+}
+```
+
+`skill_dirs` 指向可复用技能目录，也是 ACL 配置加载技能文件的唯一方式。`agent_dirs`
+在自动扫描的 `.a3s/agents` 与 `.claude/agents` 目录之外追加 worker/subagent 目录。
+它们最先加载，因此自动目录中的同名定义会替换它们。
+`project_doc_max_bytes` 限制个人文件加上从仓库根到 workspace 的指令链总大小；后备文件名
+会在 `AGENTS.override.md` 和 `AGENTS.md` 之后查找。自动委派决定运行时是否为匹配的
+worker 规划一次 `task` 调用；`allow_manual_delegation = false` 会完全移除 `task` 工具。
+两者都不会取消父 session 的权限策略、工具可见性或验证要求。评分规则见
+[任务](/guide/tasks)。
+
+## 会话存储
+
+```acl
+sessions_dir = ".a3s/sessions"
+```
+
+对于没有显式收到 SDK `sessionStore` 或文件型 session store 目录的 session，
+`sessions_dir` 会创建一个本地 `FileSessionStore`。没有 `sessions_dir` 也没有 SDK
+store 时，session 不会被持久化。目录无法打开时 session 初始化失败。`storage_backend`
+与 `storage_url` 会被解析，并在重写配置时保留，但它们不会选择或创建 session store。
+
+## 配置边界
+
+- 配置决定“可以连接什么”和“默认如何运行”，不决定“模型能越过权限门”。
+- 目录路径应相对 workspace，避免依赖个人机器绝对路径。
+- 自动委派需要和 `agents/` 的描述质量一起调优；低质量 description 会让运行时错误分派。
+- 高风险工具即使被目录发现，也应继续走 HITL 或 allow-list。

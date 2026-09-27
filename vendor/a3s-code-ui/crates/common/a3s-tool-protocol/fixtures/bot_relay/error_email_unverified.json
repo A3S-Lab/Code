@@ -1,0 +1,6 @@
+{
+  "code": "email_unverified",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_email_unverified"
+}

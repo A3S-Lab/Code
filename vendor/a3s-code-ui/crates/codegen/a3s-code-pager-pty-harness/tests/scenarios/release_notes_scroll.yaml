@@ -1,0 +1,52 @@
+name: release-notes-scroll
+description: >
+  Open /release-notes (DocViewer modal) and verify keyboard + mouse-wheel scrolling
+  moves the changelog body. Seeds CHANGELOG cache offline via setup is not available
+  in YAML, so this scenario relies on CDN/cache if present and still asserts the
+  modal chrome + scroll affordances. Prefer the pty_e2e Rust tests for deterministic
+  offline seeding; this YAML exercises the scripted ptyctl runner path.
+terminal:
+  rows: 40
+  cols: 110
+mock:
+  response: "SCRIPTED_RELEASE_NOTES_SCROLL unused for this scenario."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  # Promote welcome → session and open release notes (uses CDN or disk cache).
+  - action: type_text
+    text: "/release-notes"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: Release Notes
+    timeout_ms: 20000
+  - action: assert_contains
+    text: scroll
+  # Keyboard scroll through the modal body.
+  - action: keys
+    keys: "<Down><Down><Down><Down><Down><Down><Down><Down><Down><Down>"
+  - action: wait
+    millis: 200
+  - action: keys
+    keys: "jjjjjjjjjj"
+  - action: wait
+    millis: 200
+  # Mouse wheel at the center of the modal.
+  - action: scroll
+    row: 20
+    col: 55
+    direction: down
+    count: 15
+  - action: wait
+    millis: 250
+  - action: assert_contains
+    text: Release Notes
+  - action: assert_not_contains
+    text: panicked
+  - action: keys
+    keys: "<Esc>"
+  - action: screenshot
+    name: release-notes-after-scroll
+    note: Release notes modal after keyboard + wheel scroll.

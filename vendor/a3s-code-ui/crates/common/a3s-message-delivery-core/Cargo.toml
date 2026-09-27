@@ -1,0 +1,8 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-message-delivery-core"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed `grok agent stdio` hangs** on Windows when used with persistent clients such as VS Code.",
+    "breaking_change": false
+  }
+]

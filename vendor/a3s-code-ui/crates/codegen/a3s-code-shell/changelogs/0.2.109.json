@@ -1,0 +1,57 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Voice dictation** now explains when the microphone delivered only silence (macOS permission) versus no speech detected.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/usage** now shows token counts and cost for the current session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok doctor fix ssh-wrap** can set up `grok wrap ssh` automatically for Bash, zsh, and fish.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**[model_providers.<id>]** lets operators share gateway settings across custom models.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Duplicate 'Worked for' markers** no longer stack in the transcript when background tasks defer during a parked turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The idle status row now clearly says '1 subagent still running' instead of 'watching · 1 subagent' when background work remains.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background /loop** iterations no longer overlap when descendant subagents are still running.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Reasoning effort** now accepts `max` as its own tier (above `xhigh`) when the model advertises it.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Queued follow-ups** can now be batched into a single model turn with the new combine_queued_prompts setting.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/doctor** is now the main in-app command for checking terminal, tmux, clipboard, and keyboard setup.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**read_file** now returns full Markdown files inside skills/ directories without truncation.",
+    "breaking_change": false
+  }
+]

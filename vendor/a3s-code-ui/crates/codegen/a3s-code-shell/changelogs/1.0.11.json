@@ -1,0 +1,87 @@
+[
+  {
+    "category": "features",
+    "description": "**Headless sessions** are now browsable in the resume picker without mixing into default history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Permission prompts** for common command chains and subcommands are now more reliable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Blocked prompts** no longer appear in conversation history or scrollback after restart.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background monitors** no longer have a 10-hour default timeout.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mouse input** at the right margin no longer types characters into the prompt on certain terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Default permission mode** for new interactive sessions is now configurable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasting text ending in a newline** no longer accidentally submits the prompt on some terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto mode** now shows a permission card when the classifier blocks an action on interactive sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Image previews** no longer leave ghost artifacts when using the Kitty protocol on Warp.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Expanded Execute tool output** no longer snaps closed during live progress.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Turn duration** now appears in session history after resume.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Turn footers** (Worked for, cancelled, failed) now appear after /resume.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Background command waits** now finish as soon as the process exits.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/voice** now falls back to parec/arecord on older PipeWire installs.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**mkdir and touch** no longer prompt in auto mode or safe-command lists.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagent messages** are now allowed automatically in permission Auto mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Headless sessions** can now auto-allow permission prompts via a startup hint.",
+    "breaking_change": false
+  }
+]

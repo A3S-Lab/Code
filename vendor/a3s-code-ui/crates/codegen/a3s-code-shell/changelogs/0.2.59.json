@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Session recaps** no longer display doubled labels and manual recap now correctly suppresses the next automatic recap.",
+    "breaking_change": false
+  }
+]

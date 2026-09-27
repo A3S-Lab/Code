@@ -1,0 +1,47 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Tabs pasted into the prompt** now align correctly with proper cursor positioning.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasting images into dashboard peek replies** now works and survives turn cancellation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Links in /btw panels** are now clickable and highlight on hover.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt history is now saved** even on fast Ctrl+C quit.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Chat sessions show the a3s model catalog** in the picker.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Stuck scrollback text selection** can now be cleared with Esc or any non-drag input.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**LaTeX math now renders** inside markdown tables in the TUI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background shell commands** started by the agent are now cleaned up when the CLI exits.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**`grok update`** downloads have a longer timeout.",
+    "breaking_change": false
+  }
+]

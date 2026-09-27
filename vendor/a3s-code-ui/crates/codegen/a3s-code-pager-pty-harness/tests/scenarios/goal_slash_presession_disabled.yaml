@@ -1,0 +1,47 @@
+name: goal-slash-presession-disabled
+description: >
+  Counterpart to goal-slash-presession: with the goal feature flag explicitly
+  OFF (`GROK_GOAL=0` — goal mode now defaults on), `/goal` must NOT appear in
+  the pre-session slash menu — the gate stays fail-closed. The menu itself
+  still works pre-session: an always-on builtin like `/compact` shows up,
+  proving the absence of `/goal` is the gate and not a broken dropdown.
+terminal:
+  rows: 40
+  cols: 100
+environment:
+  env:
+    - key: GROK_GOAL
+      value: "0"
+mock:
+  response: "unused — this scenario never submits a prompt."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  - action: focus_prompt
+  - action: type_text
+    text: "/goal"
+  - action: wait
+    millis: 300
+  # Flag off ⇒ /goal is gated out, so its description never renders.
+  - action: assert_not_contains
+    text: autonomous goal
+  - action: screenshot
+    name: goal-absent-from-slash-menu-presession
+    note: "/goal NOT advertised pre-session when the flag is off (fail-closed)."
+  # Prove the pre-session menu is functional: an AlwaysOn builtin still shows.
+  # Clear the typed `/goal` (5 chars) with explicit backspaces, then type /compact.
+  - action: keys
+    keys: "<BS><BS><BS><BS><BS>"
+  - action: type_text
+    text: "/compact"
+  - action: wait
+    millis: 300
+  - action: assert_contains
+    text: Compact conversation history
+  - action: assert_running
+  - action: screenshot
+    name: always-on-builtin-in-slash-menu-presession
+    note: "AlwaysOn /compact still advertised pre-session — the menu works; only /goal is gated."

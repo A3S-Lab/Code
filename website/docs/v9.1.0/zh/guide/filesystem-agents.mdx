@@ -1,0 +1,90 @@
+---
+title: 'agents/ 角色目录'
+description: '用 .a3s/agents 定义可被 task 和自动委派调用的工作智能体。'
+---
+
+# agents/ 角色目录
+
+`agents/` 目录存放 worker/subagent 定义。A3S Code 会按顺序自动扫描
+`~/.claude/agents`、`~/.a3s/agents`、`<workspace>/.claude/agents` 和
+`<workspace>/.a3s/agents`。ACL `agent_dirs` 在这些目录之前加载，session
+`agentDirs` 与 `workerAgents` 在其之后加载；后加载的同名定义会替换先前的定义。新项目优先使用
+`.a3s/agents/`；读取 `.claude/agents/` 是为了兼容。目录会被递归扫描 `.md`、`.yaml` 和
+`.yml` 文件，解析到目录之外的符号链接会被跳过。
+
+```text
+repo/
+└── .a3s/
+    └── agents/
+        ├── explorer.md
+        ├── security-reviewer.md
+        └── verification-runner.md
+```
+
+这些文件是 worker 定义。模型可见的 `task` 工具、宿主侧
+`session.task(...)` 与 `session.tasks(...)`，以及 `autoDelegation` 都可以调用它们；
+父 session 仍负责最终汇总、验证和权限边界。
+
+## 智能体文件格式
+
+```md
+---
+name: security-reviewer
+description: Use for permission, secret, and external side-effect review
+tools: Read, Search, Bash(rg *)
+disallowedTools:
+  - Write
+  - Bash(git push *)
+---
+
+Review security risks first. Return blockers, evidence paths, and required verification.
+```
+
+`name` 是调用名，`description` 决定自动委派时是否匹配，正文是该 worker 的角色说明。工具字段收窄 worker 可见能力；不要依赖 worker 自己“承诺不做危险事”。
+
+- `tools`（也可写作 `allowedTools` 或 `allowed_tools`）会成为子运行的仅允许权限
+  策略。
+- `disallowedTools`（也可写作 `disallowed-tools` 或 `disallowed_tools`）追加 deny
+  规则，优先级高于 allowlist。
+- 两个字段都接受逗号分隔字符串或 YAML 列表。设置任一字段时，子运行的确认继承默认
+  为 `auto_approve`。
+- `kind` 字段（`read_only`、`planner`、`implementer`、`verifier`、`reviewer` 或
+  `custom`）会让文件按 worker agent spec 解析，与 `workerAgents` 接受的结构相同。
+
+## 手动委派
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  maxParallelTasks: 4,
+});
+
+await session.task({
+  agent: 'security-reviewer',
+  description: 'Review release side effects',
+  prompt: 'Check changed auth, permission, and external API paths.',
+});
+```
+
+固定流程更适合手动委派或可编程编排；自动委派适合“父 Agent 读到目标后自行选择专家”的场景。
+
+## 自动委派
+
+```ts
+const session = agent.session('/repo', {
+  agentDirs: ['./.a3s/agents'],
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+});
+```
+
+自动委派会在本地把请求与每个 agent 的名称和描述进行评分；路由步骤没有模型调用。写
+description 时要说清楚“何时使用”，而不是只写角色口号。评分与扇出上限见
+[任务](/guide/tasks)。
+
+## 最佳实践
+
+- 一个文件只做一个角色，避免“万能 reviewer”。
+- description 面向路由，正文面向执行。
+- worker 输出应包含证据、风险和建议下一步，方便父 session 汇总。
+- 高权限动作留给父 session 或显式工具，不要让子 Agent 默认获得发布、删除、推送权限。
+- 需要动态创建的一次性 worker，用 `workerAgents` 或 `registerWorkerAgent()`，不用落盘。

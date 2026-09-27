@@ -1,0 +1,45 @@
+name: minimal-transcript-hint
+description: >-
+  Minimal (scrollback-native) mode advertises the full-transcript shortcut in
+  the info row under the prompt ("ctrl+o transcript"), minimal's stand-in for
+  the shortcuts bar it never renders. Verifies the hint is present at idle and
+  survives a prompt/response round-trip.
+terminal:
+  rows: 30
+  cols: 100
+  # Minimal's inline-viewport startup probe needs cursor-position replies;
+  # without them --minimal silently downgrades to full-height inline.
+  respond_to_queries: true
+environment:
+  args: ["--minimal", "--no-leader"]
+mock:
+  response: "MINIMAL_SCENARIO_RESPONSE from the mock server."
+steps:
+  - action: wait_for_text
+    text: "minimal · /help"
+    timeout_ms: 20000
+  - action: assert_contains
+    text: "ctrl+o transcript"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: idle
+    note: Idle minimal mode; the info row under the prompt ends with the "ctrl+o transcript" hint.
+  - action: type_text
+    text: "hello minimal"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: MINIMAL_SCENARIO_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: wait_for_text
+    text: "minimal · /help"
+    timeout_ms: 20000
+  - action: assert_contains
+    text: "ctrl+o transcript"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: after-response
+    note: After a mocked response commits to scrollback the hint is still in the info row.

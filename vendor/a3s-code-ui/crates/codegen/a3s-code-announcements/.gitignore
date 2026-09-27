@@ -1,0 +1,3 @@
+# Stray ts-rs output from a bare `cargo test --features ts` (no TS_RS_EXPORT_DIR).
+# Committed bindings are written by generate.sh into the desktop consumer package.
+/bindings/

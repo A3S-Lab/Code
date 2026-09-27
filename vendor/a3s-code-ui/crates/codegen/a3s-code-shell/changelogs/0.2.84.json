@@ -1,0 +1,97 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Images** pasted or read from GIF, BMP or TIFF files are now automatically converted so they work with image generation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queue panel** now shows action buttons on hover and the status bar displays a compact done/total task count.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Hook matchers** now correctly see the real MCP tool name instead of the internal dispatcher name.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Grep** now stops early on broad searches, returning faster results with far less memory use.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copy** now succeeds when running inside containers even when the terminal brand cannot be detected.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Announcements** now update live during active sessions without restart or `/new`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hiding** an announcement no longer suppresses later criticals; new ones reappear automatically.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**run_terminal_cmd** now requires a one-sentence `description` rationale in every invocation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Tool result previews** no longer paint opaque panels in `grok --minimal`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**ask_user_question** timeout policy is now configurable in config.toml and `/settings`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok wrap** now correctly handles quoted strings and shell aliases.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Ask-Question timeout** can now be toggled from `/settings` (Agent & Approval).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Thinking/reasoning blocks** are now shown by default while the model is working.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Text selection** settings now correctly honor explicit keep_text_selection values even when legacy keys remain.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Idle CPU and memory** usage after long sessions or resume is now dramatically lower.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Critical announcements** now show a red title with a clickable [hide] button and aligned message.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a freeze** that could occur when editing and sending the last message in the queue.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Added remote_fetch option** under [features] in config.toml to disable all backend catalog and settings fetches for air-gapped environments.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a startup crash** on minimal Linux systems lacking system CA certificates.",
+    "breaking_change": false
+  }
+]

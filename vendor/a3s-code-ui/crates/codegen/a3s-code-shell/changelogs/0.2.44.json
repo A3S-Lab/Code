@@ -1,0 +1,37 @@
+[
+  {
+    "category": "performance",
+    "description": "**Inference requests** recover faster from silent engine stalls instead of waiting the full idle timeout.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Interjecting** while editing a queued prompt no longer strands the composer or blocks the queue.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**K/J** keys now snap the viewport to the top of previous or next assistant responses.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**J/K** (vim mode) now navigate between assistant responses in scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**sequenceDiagram** mermaid blocks now render as Unicode lifeline diagrams instead of source fallback.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mid-turn interjections** now appear as separate user messages instead of being appended to tool results.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Project MCP config** touches no longer trigger repeated reload storms.",
+    "breaking_change": false
+  }
+]

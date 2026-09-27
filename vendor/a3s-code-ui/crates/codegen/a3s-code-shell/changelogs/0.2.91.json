@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Voice dictation indicator** and stop button now remain visible and clickable during plan mode review.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**New Worktree dialog** now expands to show long names and scrolls with a leading … when the terminal is narrow.",
+    "breaking_change": false
+  }
+]

@@ -17,6 +17,12 @@ use tokio_util::sync::CancellationToken;
 /// Default max tokens for LLM responses
 pub(crate) const DEFAULT_MAX_TOKENS: usize = 8192;
 
+/// Anthropic rejects `budget_tokens` below this value.
+const MIN_THINKING_BUDGET: usize = 1024;
+
+/// Tokens kept for the visible answer when extended thinking is enabled.
+const THINKING_ANSWER_RESERVE: usize = 1024;
+
 /// Anthropic Claude client
 pub struct AnthropicClient {
     pub(crate) provider_name: String,
@@ -139,8 +145,18 @@ impl AnthropicClient {
             request["temperature"] = serde_json::json!(temp);
         }
 
-        // Extended thinking (Anthropic-specific)
-        if let Some(budget) = self.thinking_budget {
+        // GLM-5.2/5.3 always reason. Leaving the field off selects the server
+        // default `max`, and `thinking.type=disabled` is rejected. The latency
+        // knob is `reasoning_effort`, not a 16k token budget.
+        if glm_reasoning_model(&self.model) {
+            request["thinking"] = serde_json::json!({ "type": "enabled" });
+            request["reasoning_effort"] =
+                serde_json::json!(glm_reasoning_effort(self.thinking_budget));
+            request["temperature"] = serde_json::json!(1.0);
+        } else if let Some(budget) = fitted_thinking_budget(self.max_tokens, self.thinking_budget) {
+            // A budget that does not leave room for the answer is omitted.
+            // Raising max_tokens to fit it makes the model think for the whole
+            // effort budget before any visible text.
             request["thinking"] = serde_json::json!({
                 "type": "enabled",
                 "budget_tokens": budget
@@ -150,6 +166,38 @@ impl AnthropicClient {
         }
 
         request
+    }
+}
+
+/// Keep a thinking budget only when Anthropic can accept it and the output
+/// window still has room for the visible answer.
+pub(crate) fn fitted_thinking_budget(max_tokens: usize, budget: Option<usize>) -> Option<usize> {
+    let budget = budget.filter(|budget| *budget >= MIN_THINKING_BUDGET)?;
+    let answer_room = max_tokens.saturating_sub(THINKING_ANSWER_RESERVE);
+    if budget < answer_room && budget < max_tokens {
+        Some(budget)
+    } else {
+        None
+    }
+}
+
+fn glm_reasoning_model(model: &str) -> bool {
+    let id = model.rsplit(['/', ':']).next().unwrap_or(model);
+    let id = id.trim().to_ascii_lowercase();
+    id.starts_with("glm-5.2")
+        || id.starts_with("glm-5.3")
+        || id.starts_with("glm-5-2")
+        || id.starts_with("glm-5-3")
+}
+
+/// Map an a3s thinking budget onto GLM-5.2/5.3 `low` / `high` / `max`.
+///
+/// An unset budget becomes `low`. The server default is `max`.
+fn glm_reasoning_effort(budget: Option<usize>) -> &'static str {
+    match budget.unwrap_or(0) {
+        0..=2_048 => "low",
+        2_049..=16_384 => "high",
+        _ => "max",
     }
 }
 
@@ -234,11 +282,12 @@ impl AnthropicClient {
             let content: Vec<ContentBlock> = parsed
                 .content
                 .into_iter()
-                .map(|block| match block {
-                    AnthropicContentBlock::Text { text } => ContentBlock::Text { text },
+                .filter_map(|block| match block {
+                    AnthropicContentBlock::Text { text } => Some(ContentBlock::Text { text }),
                     AnthropicContentBlock::ToolUse { id, name, input } => {
-                        ContentBlock::ToolUse { id, name, input }
+                        Some(ContentBlock::ToolUse { id, name, input })
                     }
+                    AnthropicContentBlock::Thinking { .. } => None,
                 })
                 .collect();
 
@@ -497,7 +546,8 @@ impl AnthropicClient {
                                             index: _,
                                             content_block,
                                         } => match content_block {
-                                            AnthropicContentBlock::Text { .. } => {}
+                                            AnthropicContentBlock::Text { .. }
+                                            | AnthropicContentBlock::Thinking { .. } => {}
                                             AnthropicContentBlock::ToolUse { id, name, input } => {
                                                 if !text_content.is_empty() {
                                                     content_blocks.push(ContentBlock::Text {
@@ -542,6 +592,21 @@ impl AnthropicClient {
                                                 text_content.push_str(&text);
                                                 let _ = tx.send(StreamEvent::TextDelta(text)).await;
                                             }
+                                            AnthropicDelta::ThinkingDelta { thinking } => {
+                                                if thinking.is_empty() {
+                                                    continue;
+                                                }
+                                                if first_token_ms.is_none() {
+                                                    first_token_ms = Some(
+                                                        request_started_at.elapsed().as_millis()
+                                                            as u64,
+                                                    );
+                                                }
+                                                let _ = tx
+                                                    .send(StreamEvent::ReasoningDelta(thinking))
+                                                    .await;
+                                            }
+                                            AnthropicDelta::SignatureDelta { .. } => {}
                                             AnthropicDelta::InputJsonDelta { partial_json } => {
                                                 if first_token_ms.is_none() {
                                                     first_token_ms = Some(
@@ -687,6 +752,13 @@ pub(crate) enum AnthropicContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    #[serde(rename = "thinking")]
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -741,6 +813,10 @@ pub(crate) struct AnthropicMessageStart {
 pub(crate) enum AnthropicDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
 }
@@ -789,7 +865,9 @@ mod tests {
 
     #[test]
     fn test_build_request_with_thinking_budget() {
-        let client = make_client().with_thinking_budget(10_000);
+        let client = make_client()
+            .with_max_tokens(16_000)
+            .with_thinking_budget(10_000);
         let messages = vec![Message::user("Think carefully.")];
         let req = client.build_request(&messages, None, &[]);
 
@@ -798,6 +876,85 @@ mod tests {
         assert_eq!(req["thinking"]["budget_tokens"], 10_000);
         // temperature must be 1.0 when thinking is enabled
         assert_eq!(req["temperature"], 1.0_f64);
+    }
+
+    #[test]
+    fn oversized_thinking_budget_is_omitted_on_the_default_window() {
+        // Default high effort is 16384. The client window is 8192. Sending the
+        // budget would be an invalid Anthropic request and a long hidden think.
+        let client = make_client().with_thinking_budget(16_384);
+        let req = client.build_request(&[Message::user("fix the bug")], None, &[]);
+
+        assert_eq!(req["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert!(req["thinking"].is_null());
+    }
+
+    #[test]
+    fn glm_default_effort_uses_reasoning_effort_high_without_a_token_budget() {
+        let mut client = make_client().with_thinking_budget(16_384);
+        client.model = "glm-5.3-flash".to_string();
+        let req = client.build_request(&[Message::user("fix the bug")], None, &[]);
+
+        assert_eq!(req["thinking"]["type"], "enabled");
+        assert!(req["thinking"].get("budget_tokens").is_none());
+        assert_eq!(req["reasoning_effort"], "high");
+        assert_eq!(req["max_tokens"], DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn glm_effort_tracks_the_a3s_budget() {
+        let mut low = make_client().with_thinking_budget(2_048);
+        low.model = "glm-5.3".to_string();
+        let low_req = low.build_request(&[Message::user("hi")], None, &[]);
+        assert_eq!(low_req["reasoning_effort"], "low");
+
+        let mut deep = make_client().with_thinking_budget(65_536);
+        deep.model = "glm-5.2".to_string();
+        let deep_req = deep.build_request(&[Message::user("hi")], None, &[]);
+        assert_eq!(deep_req["reasoning_effort"], "max");
+
+        let mut unset = make_client();
+        unset.model = "glm-5.3-flashx".to_string();
+        let unset_req = unset.build_request(&[Message::user("hi")], None, &[]);
+        assert_eq!(unset_req["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn thinking_budget_that_fits_stays_under_the_answer_reserve() {
+        let client = make_client().with_thinking_budget(2_048);
+        let req = client.build_request(&[Message::user("fix the bug")], None, &[]);
+
+        assert_eq!(req["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert_eq!(req["thinking"]["budget_tokens"], 2_048);
+    }
+
+    #[test]
+    fn thinking_delta_deserializes_for_the_stream_parser() {
+        let event: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"look at the call site"}}"#,
+        )
+        .expect("thinking delta");
+        match event {
+            AnthropicStreamEvent::ContentBlockDelta { delta, .. } => match delta {
+                AnthropicDelta::ThinkingDelta { thinking } => {
+                    assert_eq!(thinking, "look at the call site");
+                }
+                other => panic!("unexpected delta: {other:?}"),
+            },
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let signature: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}}"#,
+        )
+        .expect("signature delta");
+        assert!(matches!(
+            signature,
+            AnthropicStreamEvent::ContentBlockDelta {
+                delta: AnthropicDelta::SignatureDelta { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

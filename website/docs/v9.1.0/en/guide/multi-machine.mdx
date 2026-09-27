@@ -1,0 +1,291 @@
+---
+title: 'Multi-Machine'
+description: 'Placing orchestration steps across machines via the AgentExecutor seam'
+---
+
+# Multi-Machine
+
+A3S Code runs multi-agent orchestration as a _grammar_ expressed in code, then
+places the resulting steps wherever you want them to run. The split is drawn
+along the **framework / host boundary**:
+
+- The **framework** owns the orchestration grammar and the serializable data
+  contracts. It never decides where a step runs.
+- The **host** owns placement, transport, and scheduling — which node executes
+  a step, how the spec gets there, and how concurrency maps to a cluster.
+
+The single point of contact between the two is one trait, `AgentExecutor`.
+
+## The framework / host boundary
+
+The framework's contract is two serializable types:
+
+- `AgentStepSpec` — _what_ to run, independent of _where_: `task_id`, `agent`,
+  `description`, `prompt`, and optional `max_steps`, `parent_session_id`,
+  `output_schema`.
+- `StepOutcome` — the result of running one spec: `task_id`, `session_id`,
+  `agent`, `output`, `success`, optional `structured`, and `source_anchors`
+  (source anchors observed by successful child tool calls).
+
+Both serialize cleanly, so a host may ship a spec to another node and persist an
+outcome in a checkpoint. The combinators that compose specs are written purely
+against the `AgentExecutor` trait and never observe where a step ran, so the
+same orchestration scales from one process to a cluster without changing.
+
+## The AgentExecutor seam
+
+`AgentExecutor` is the boundary between the grammar and the host:
+
+```text
+combinators (parallel / pipeline / resumable)
+  -> AgentExecutor::execute_step(spec, event_tx) -> StepOutcome
+       ├─ in-box TaskExecutor: runs the step as a local child agent
+       └─ host executor: places the step on a remote node
+```
+
+`execute_step` reports failures as `StepOutcome { success: false, .. }` rather
+than a hard error, so a fan-out continues when one branch fails; `event_tx`,
+when present, receives the step's lifecycle events.
+
+The in-box `TaskExecutor` runs each step as a child agent locally — in-process,
+on Tokio — inheriting the session's agent registry, LLM client, workspace, MCP
+tools, and subagent tracker. A host such as a cluster runtime substitutes its own executor
+to place steps across a cluster; the combinators are unaffected.
+
+`concurrency_hint()` is **advisory, not a hard local bound**. The local default
+returns the session's `max_parallel_tasks`; a scheduler-backed host may return
+its cluster-wide target. Because it is a hint rather than a ceiling,
+orchestration scales past a single process.
+
+A session exposes the in-box seam directly:
+
+- `AgentSession::agent_executor()` returns a session-backed `AgentExecutor`.
+- `AgentSession::session_store()` returns the session's store (when one is
+  configured), which the resumable combinator needs to journal progress.
+
+The SDK grammar below calls `agent_executor()` for you; you only reach for these
+when implementing or substituting a custom executor.
+
+## Parallel: barrier fan-out
+
+`execute_steps_parallel` fans `specs` out across the executor and awaits all of
+them (a barrier). Results preserve input order, a panicked branch becomes a
+failed `StepOutcome` instead of dropping the batch, and concurrency is bounded
+by the executor's concurrency hint.
+
+In Node.js, `session.parallel(specs)` resolves to the outcomes array. Passing
+the optional `budgetTokens` argument caps child LLM spend and changes the
+result to `{ outcomes, budget }`, so the declared return type is a union;
+narrow it before iterating. Go's `session.Parallel(ctx, specs, budgetTokens)`
+returns a `*ParallelResult` carrying `Outcomes` and an optional `Budget`.
+
+```ts
+import type { StepOutcomeObject } from '@a3s-lab/code';
+
+const outcomes = (await session.parallel([
+  {
+    taskId: 'a',
+    agent: 'explore',
+    description: 'survey',
+    prompt: 'Map the auth module',
+  },
+  {
+    taskId: 'b',
+    agent: 'review',
+    description: 'audit',
+    prompt: 'Review error handling',
+  },
+])) as StepOutcomeObject[];
+
+for (const o of outcomes) {
+  console.log(o.taskId, o.success, o.output);
+}
+```
+
+```python
+outcomes = session.parallel([
+    {"task_id": "a", "agent": "explore", "description": "survey", "prompt": "Map the auth module"},
+    {"task_id": "b", "agent": "review", "description": "audit", "prompt": "Review error handling"},
+])
+
+for o in outcomes:
+    print(o["task_id"], o["success"], o["output"])
+```
+
+## Pipeline: per-item chains, no inter-stage barrier
+
+`execute_pipeline` runs each item through a chain of `PipelineStage`s
+independently. There is **no barrier between stages** — item A can be in stage 3
+while item B is still in stage 1 — so wall-clock is the slowest single chain,
+not the sum of the slowest step per stage.
+
+A stage is a `(ctx) => spec | null` callback where `ctx` carries the previous
+outcome and the original item. Return a spec to run the next step, or `null` to
+stop that item's chain early; a chain also stops when a step fails (later stages
+would only build on a failed result). Each call returns one entry per item —
+the item's last outcome, or `null` when its first stage returned `null` — in
+input order.
+
+The Node and Python bridges **fail closed** per chain. In Node, a stage that
+throws, returns a Promise, returns a malformed spec, or exceeds `timeoutMs`
+(third argument, default 30 seconds) is treated as `null`. In Python, a stage
+that raises is treated as `None`. Stage callbacks must be synchronous. Go's
+`session.Pipeline(ctx, items, stages)` differs: a stage that returns an error
+makes the whole call return that error alongside the partial outcomes.
+
+```ts
+const outcomes = await session.pipeline(
+  ['src/auth', 'src/api'],
+  [
+    (ctx) => ({
+      taskId: 's1',
+      agent: 'explore',
+      description: 'survey',
+      prompt: `Survey ${ctx.item}`,
+    }),
+    (ctx) =>
+      ctx.previous?.success
+        ? {
+            taskId: 's2',
+            agent: 'review',
+            description: 'review',
+            prompt: `Review: ${ctx.previous.output}`,
+          }
+        : null,
+  ],
+);
+```
+
+```python
+def survey(ctx):
+    return {"task_id": "s1", "agent": "explore", "description": "survey",
+            "prompt": f"Survey {ctx['item']}"}
+
+def review(ctx):
+    prev = ctx["previous"]
+    if prev and prev["success"]:
+        return {"task_id": "s2", "agent": "review", "description": "review",
+                "prompt": f"Review: {prev['output']}"}
+    return None
+
+outcomes = session.pipeline(["src/auth", "src/api"], [survey, review])
+```
+
+## Resumable: cross-node resume
+
+`execute_steps_parallel_resumable` is `parallel` plus a journal. At each step
+boundary it writes a `WorkflowCheckpoint` to the `SessionStore` under a
+`workflowId`. On resume it skips already-completed steps and re-dispatches the
+rest. It records **only successful steps**, so a failed step retries on resume —
+its effect did not complete. When every step succeeds, the checkpoint is
+deleted.
+
+A `SessionStore` is required. Without one, Node rejects with
+`parallelResumable requires a sessionStore on the session` and Python raises
+`RuntimeError: parallel_resumable requires a session_store on the session`.
+
+```ts
+import { Agent, FileSessionStore } from '@a3s-lab/code';
+
+const session = agent.session('/repo', {
+  sessionStore: new FileSessionStore('./.a3s/sessions'),
+});
+
+const outcomes = await session.parallelResumable(
+  [
+    {
+      taskId: 'a',
+      agent: 'explore',
+      description: 'survey',
+      prompt: 'Map the auth module',
+    },
+    {
+      taskId: 'b',
+      agent: 'review',
+      description: 'audit',
+      prompt: 'Review error handling',
+    },
+  ],
+  'release-audit',
+);
+```
+
+```python
+from a3s_code import Agent, FileSessionStore, SessionOptions
+
+opts = SessionOptions()
+opts.session_store = FileSessionStore("./.a3s/sessions")
+session = agent.session("/repo", opts)
+
+outcomes = session.parallel_resumable([
+    {"task_id": "a", "agent": "explore", "description": "survey", "prompt": "Map the auth module"},
+    {"task_id": "b", "agent": "review", "description": "audit", "prompt": "Review error handling"},
+], "release-audit")
+```
+
+Go exposes the same grammar as `session.Parallel(ctx, specs, budgetTokens)`,
+`session.Pipeline(ctx, items, stages)`, and
+`session.ParallelResumable(ctx, specs, workflowID)`:
+
+```go
+outcomes, err := session.ParallelResumable(ctx, []code.AgentStepSpec{
+	{TaskID: "a", Agent: "explore", Description: "survey", Prompt: "Map the auth module"},
+	{TaskID: "b", Agent: "review", Description: "audit", Prompt: "Review error handling"},
+}, "release-audit")
+if err != nil {
+	return err
+}
+```
+
+Because the checkpoint is serializable and the executor is a parameter, a host
+can resume an interrupted workflow on a **different node** by passing that node's
+executor — the framework migrates the _what_, the host supplies the _where_.
+
+## Schema-forced step output
+
+A spec carrying an `output_schema` (`outputSchema` in Node) must return a value
+conforming to that JSON Schema; the validated object lands in
+`StepOutcome.structured`. The executor reuses the structured-output coercion and
+repair machinery. A coercion failure **demotes the step to unsuccessful** and
+appends `[structured output failed: ...]` to its output, so a caller never
+treats unvalidated text as the promised object. The Python `pipeline` does not
+accept a per-stage `output_schema`; use `parallel` for schema-validated steps.
+
+```ts
+import type { StepOutcomeObject } from '@a3s-lab/code';
+
+const [finding] = (await session.parallel([
+  {
+    taskId: 'classify',
+    agent: 'review',
+    description: 'classify',
+    prompt: 'Classify this defect',
+    outputSchema: {
+      type: 'object',
+      properties: { severity: { type: 'string' }, summary: { type: 'string' } },
+      required: ['severity', 'summary'],
+    },
+  },
+])) as StepOutcomeObject[];
+
+if (finding.success && finding.structured) {
+  console.log(finding.structured.severity);
+}
+```
+
+## Placing orchestration steps across machines
+
+Lane queues remain a valid transport — but they are now **one option behind the
+`AgentExecutor` seam, not the sole integration point**. To distribute work, a
+host implements `AgentExecutor::execute_step` over whatever transport fits its
+platform (HTTP, message queues, a job system, lane queues, internal RPC), wires
+`concurrency_hint()` to its cluster target, and hands that executor to the
+combinators. The grammar — parallel, pipeline, resumable — stays identical; only
+placement moves.
+
+The result: a coordinator session owns the conversation, final synthesis, and
+release decision, while its orchestration steps execute wherever the host places
+them, with cross-node resume carried by the serializable checkpoint.
+
+See [Orchestration](/guide/orchestration) for the combinator grammar in
+depth and [Persistence](/guide/persistence) for the checkpoint store.

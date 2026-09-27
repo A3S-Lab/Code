@@ -1,0 +1,28 @@
+[package]
+name = "a3s-code-acp"
+version = "9.1.0"
+edition = "2021"
+authors = ["A3S Lab Team"]
+license = "MIT"
+description = "ACP stdio agent bridging a3s-code-core 9.1.0 to the forked grok-build pager"
+
+[[bin]]
+name = "a3s-code-acp"
+path = "src/bin/a3s-code-acp.rs"
+
+[dependencies]
+a3s-code-core = { version = "9.1.0", path = "../core", default-features = true, features = ["headless-search"] }
+agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
+anyhow = "1"
+async-trait = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "process", "time"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

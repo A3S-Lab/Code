@@ -357,6 +357,18 @@ async fn read_model_response(
                             let _ = sender.send(event).await;
                         }
                     }
+                    crate::llm::StreamEvent::ReasoningDelta(text) => {
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let event = crate::agent::AgentEvent::ReasoningDelta { text };
+                        if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
+                            store.record_event(run_id, event.clone()).await;
+                        }
+                        if let Some(sender) = &surface.events {
+                            let _ = sender.send(event).await;
+                        }
+                    }
                     crate::llm::StreamEvent::Done(response) => done = Some(response),
                     _ => {}
                 }

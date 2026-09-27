@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Mermaid flowcharts** with complex labels or large sizes now render and open correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/context`** legend now shows accurate percentages that always add up to 100%.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pressing `y`** on a queue row now copies the prompt text to the clipboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/model`** effort picker now defaults to the model's recommended effort level.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Bash commands** using quoted filename variables now respect configured permission rules instead of always prompting.",
+    "breaking_change": false
+  }
+]

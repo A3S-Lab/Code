@@ -1,0 +1,44 @@
+name: image-normalize-corrupt-dropped
+description: >-
+  Fix 2 + Fix 5: a CRC-corrupt PNG is rejected by the integrity check
+  (no image bytes reach the model), and the user-turn system reminder
+  surfaces an <image_dropped_notice> tag describing the drop.
+terminal:
+  rows: 40
+  cols: 120
+mock:
+  response: "SCRIPTED_IMAGE_RESPONSE received image attachments."
+  fixture_images:
+    - name: corrupt_image
+      extension: png
+      kind: crc_corrupt_png
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_image_paths
+    images: [corrupt_image]
+  - action: assert_contains
+    text: "Image #1"
+  - action: drop_text_prompt
+    text: "Describe the image."
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: SCRIPTED_IMAGE_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  # Fix 2: integrity check failed → image dropped before send.
+  - action: assert_request_image_count
+    min: 0
+  - action: assert_inline_images
+    min: 0
+    mime_type: image/png
+  # Fix 5: <image_dropped_notice> system-reminder reaches the model.
+  - action: assert_request_contains
+    text: "<image_dropped_notice>"
+  - action: screenshot
+    name: corrupt-dropped
+    note: Corrupt PNG dropped before send; drop notice forwarded to model.
+  - action: assert_not_contains
+    text: panicked

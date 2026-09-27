@@ -1,0 +1,12 @@
+[package]
+name = "a3s-markdown-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Headless markdown analysis vendored from grok-build (a3s-code-markdown-core) for the A3S Code TUI"
+publish = false
+authors = ["A3S Lab"]
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+strum = { version = "0.27", features = ["derive"] }

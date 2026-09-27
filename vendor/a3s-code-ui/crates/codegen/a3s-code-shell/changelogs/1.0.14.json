@@ -1,0 +1,132 @@
+[
+  {
+    "category": "fixes",
+    "description": "**grok inspect** now correctly shows Claude bypass locks as advisory rather than enforced.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent sessions** no longer leak threads or file descriptors when the parent is busy.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Startup** now fetches remote settings only once per boot instead of potentially twice.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**OIDC token refresh** is now proactive by default for better reliability.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**PostToolUse hooks** can now provide feedback and context to the model after tool execution.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**SDK-registered PostToolUse hooks** now provide model-facing feedback.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cold startup** no longer performs duplicate remote settings fetches.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**First message** on large repositories no longer waits on repository status scan.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Compaction failures** due to context size now degrade input instead of retrying identically.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok usage <session-id>** now shows persisted per-turn token and cost data.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Retry status** in composer and title now shows a short reason for the retry.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**--sandbox strict** now restricts writes to ~/.grok/sessions only.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large session memory** no longer blocks the agent during turn completion or subagent spawning.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent spawning** now waits longer on a busy coordinator and shows clearer retry guidance instead of \"unreachable\".",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Failed task and todo tool calls** now appear in the transcript instead of disappearing without a trace.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Composer status row** no longer collapses or flashes when using double-Enter to send now.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session close** is no longer delayed by a single slow hook; each SessionEnd hook now has its own timeout.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Models can now declare** a different identifier for each reasoning-effort level instead of always sending the same id.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Hook removal** in the extensions modal no longer offers actions that the handler will refuse.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Interjections** during a turn are now delivered atomically or not at all.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent tasks** no longer get incorrectly cancelled when the parent session is waiting for completion.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Workflow detail view** now closes the overlay on X or outside click instead of returning to the run list.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resuming subagents** now succeeds for larger transcripts that still fit the model context with headroom.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Prompt suggestions** now respect remote configuration and default to the current session model.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Signed-in CLI starts** faster by serving remote settings from a local cache on warm boots.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Windows CLI downloads** are now ~70% smaller using the same compressed sidecars as macOS and Linux.",
+    "breaking_change": false
+  }
+]

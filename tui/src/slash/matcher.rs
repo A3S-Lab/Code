@@ -1,6 +1,6 @@
 //! Fuzzy matcher for slash suggestions.
 //!
-//! Vendored from the grok-build pager. Ranking stays on nucleo.
+//! Vendored from the a3s-build pager. Ranking stays on nucleo.
 
 //! Nucleo-based fuzzy matcher for slash command and argument suggestions.
 //!

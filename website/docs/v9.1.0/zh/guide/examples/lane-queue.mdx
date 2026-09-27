@@ -1,0 +1,194 @@
+---
+title: '执行通道队列'
+description: '在带有按 lane 并发上限的优先级 lane 上调度宿主直接发起的工具调用。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 执行通道队列
+
+会话默认没有队列，除非创建时传入 `queueConfig` / `queue_config` / `QueueConfig`。有了队列后，
+宿主直接发起的工具调用（`session.tool(...)` 以及 `bash`、`readFile`、`grep` 等类型化辅助方法）
+会被调度到各个 lane 上，每个 lane 有自己的并发上限。模型在 `send` 或 `stream` 回合内发起的
+工具调用会直接运行，不经过队列。
+
+四个 lane 分别是 `control`、`query`、`execute` 和 `generate`，默认并发上限依次为 2、4、2 和 1。
+工具按名称映射到 lane：`read`、`ls`、`search`（`grep` 和 `glob` 背后的工具）、`web_fetch`、
+`web_search` 以及代码智能工具使用 `query`；其他所有工具使用 `execute`。没有工具映射到
+`control` 或 `generate`。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{queue::SessionQueueConfig, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let queue = SessionQueueConfig {
+        execute_max_concurrency: 1,
+        ..SessionQueueConfig::default()
+    };
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_queue_config(queue))
+        .build()
+        .await?;
+    println!("队列已启用：{}", session.has_queue());
+
+    // 两个调用都使用 execute lane，它现在一次只运行一条命令。
+    let (first, second) = tokio::join!(session.bash("echo one"), session.bash("echo two"));
+    println!("{}{}", first?, second?);
+
+    let stats = session.queue_stats().await;
+    println!(
+        "pending={} active={} external={}",
+        stats.total_pending, stats.total_active, stats.external_pending
+    );
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', {
+  queueConfig: { executeConcurrency: 1 },
+});
+console.log('队列已启用：', session.hasQueue());
+
+// 两个调用都使用 execute lane，它现在一次只运行一条命令。
+const [first, second] = await Promise.all([
+  session.bash('echo one'),
+  session.bash('echo two'),
+]);
+console.log(first + second);
+
+const stats = await session.queueStats();
+console.log(
+  `pending=${stats.totalPending} active=${stats.totalActive} external=${stats.externalPending}`,
+);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+queue = SessionQueueConfig()
+queue.set_execute_concurrency(1)
+opts = SessionOptions()
+opts.queue_config = queue
+session = agent.session(".", opts)
+print("队列已启用：", session.has_queue())
+
+# 两个调用都使用 execute lane，它现在一次只运行一条命令。
+with ThreadPoolExecutor(max_workers=2) as pool:
+    first, second = pool.map(session.bash, ["echo one", "echo two"])
+print(first + second)
+
+stats = session.queue_stats()
+print(
+    f"pending={stats['total_pending']} active={stats['total_active']} "
+    f"external={stats['external_pending']}"
+)
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{ExecuteConcurrency: code.Ptr(uint(1))},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	active, err := session.HasQueue(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("队列已启用：", active)
+
+	// 两个调用都使用 execute lane，它现在一次只运行一条命令。
+	commands := []string{"echo one", "echo two"}
+	outputs := make([]string, len(commands))
+	var wg sync.WaitGroup
+	for i, command := range commands {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			output, err := session.Bash(ctx, command)
+			if err != nil {
+				log.Fatal(err)
+			}
+			outputs[i] = output
+		}()
+	}
+	wg.Wait()
+	fmt.Print(outputs[0] + outputs[1])
+
+	stats, err := session.QueueStats(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("pending=%d active=%d external=%d\n",
+		stats.TotalPending, stats.TotalActive, stats.ExternalPending)
+}
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- 只有在创建会话时传入了队列配置，`hasQueue()` / `has_queue()` / `HasQueue()` 才返回 `true`。
+  没有队列配置时，设置 lane 处理器不起作用，队列统计也始终为零。
+- 每个 lane 都有一个处理器 `mode`：`internal`（默认）在进程内运行工具；`external` 把调用作为
+  外部任务挂起，直到你的宿主完成它；`hybrid` 在进程内运行工具，只发出 pending 和 completed
+  通知。可以用 `setLaneHandler` / `set_lane_handler` / `SetLaneHandler` 设置，也可以预先写在
+  队列配置中。完整的取出并完成流程见 [外部任务](/guide/examples/external-tasks)。
+- 队列统计报告 `total_pending`、`total_active` 和 `external_pending`（Node 中为
+  `totalPending`、`totalActive` 和 `externalPending`）。Rust、Python 和 Go 还会在 `lanes`
+  下给出每个 lane 的状态。
+- 在 Node 中，`hasQueue` 是同步的，其他队列方法返回 promise。Python 的队列方法是同步的。Go 的
+  队列方法接收调用方的 `context.Context`。

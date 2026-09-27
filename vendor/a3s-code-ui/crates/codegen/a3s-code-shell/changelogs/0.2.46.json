@@ -1,0 +1,42 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed `grok --resume`** failing on empty image-only session folders left by cross-directory pastes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed pasted images** and relative paths using the wrong directory after cross-cwd resume.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Parallel tool calls** on the same path (multiple greps etc.) now execute concurrently.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Mermaid flowcharts** now render with fewer avoidable edge crossings.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed Mermaid flowcharts** that silently rendered wrong diagrams for & groups, circle/cross endings and self-loops.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed zsh tab-completion** for subcommands after the optional prompt argument was added.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed \"unknown session id\" errors** after the leader process crashed or was killed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed repeated auto-compaction attempts** when the session is credit-blocked or auth is non-refreshable.",
+    "breaking_change": false
+  }
+]

@@ -510,6 +510,9 @@ func (agent *Agent) CloseSession(ctx context.Context, sessionID string) (bool, e
 	return result.Closed, err
 }
 
+// DisconnectIdleMCP disconnects every global MCP server idle longer than
+// idleThresholdMS and returns their names. The registered config is kept;
+// reconnect with SyncGlobalMCPServers before the server is used again.
 func (agent *Agent) DisconnectIdleMCP(
 	ctx context.Context,
 	idleThresholdMS uint64,

@@ -1,4 +1,4 @@
-//! Slash invocation parser vendored from the grok-build pager.
+//! Slash invocation parser vendored from the a3s-build pager.
 
 /// Parsed slash command invocation.
 pub struct SlashInvocation<'a> {

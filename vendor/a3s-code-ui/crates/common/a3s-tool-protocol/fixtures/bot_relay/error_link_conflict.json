@@ -1,0 +1,6 @@
+{
+  "code": "link_conflict",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_link_declined"
+}

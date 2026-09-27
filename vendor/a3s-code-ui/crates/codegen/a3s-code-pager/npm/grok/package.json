@@ -1,0 +1,41 @@
+{
+    "name": "@a3s-official/grok",
+    "version": "0.1.220-alpha.4",
+    "description": "Bring A3S Code into your terminal",
+    "license": "Apache-2.0",
+    "bin": {
+        "grok": "bin/grok"
+    },
+    "files": [
+        "bin/"
+    ],
+    "os": [
+        "darwin",
+        "linux",
+        "win32"
+    ],
+    "cpu": [
+        "arm64",
+        "x64"
+    ],
+    "scripts": {
+        "postinstall": "node bin/postinstall.js"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "@iarna/toml": "^3.0.0"
+    },
+    "optionalDependencies": {
+        "@a3s-official/grok-darwin-arm64": "0.1.220-alpha.4",
+        "@a3s-official/grok-darwin-x64": "0.1.220-alpha.4",
+        "@a3s-official/grok-linux-arm64": "0.1.220-alpha.4",
+        "@a3s-official/grok-linux-x64": "0.1.220-alpha.4",
+        "@a3s-official/grok-win32-arm64": "0.1.220-alpha.4",
+        "@a3s-official/grok-win32-x64": "0.1.220-alpha.4"
+    }
+}

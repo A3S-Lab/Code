@@ -1,0 +1,320 @@
+---
+title: 'Auto Compact'
+description: 'Let the runtime keep long sessions inside the context budget automatically'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Auto Compact
+
+A long session grows its transcript every turn. Enable `autoCompact` and the
+runtime folds earlier context once the transcript approaches
+`autoCompactThreshold` of the model's context window, so you do not manage
+tokens by hand.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_auto_compact(true)
+        .with_auto_compact_threshold(0.75);
+    let session = agent
+        .session_builder("/repo")
+        .options(options)
+        .build()
+        .await?;
+
+    for step in 0..50 {
+        session
+            .send(
+                &format!("Step {step}: continue refactoring the parser"),
+                None,
+            )
+            .await?;
+    }
+
+    println!("history messages: {}", session.history().len());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = await agent.sessionAsync('/repo', {
+  // Fold earlier context once the transcript nears 75% of the window.
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+});
+
+// Run a long, multi-step task. The runtime folds earlier context as needed.
+for (let i = 0; i < 50; i++) {
+  await session.send(`Step ${i}: continue refactoring the parser`);
+}
+
+console.log('history messages:', session.history().length);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# Fold earlier context once the transcript nears 75% of the window.
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+session = agent.session("/repo", opts)
+
+# Run a long, multi-step task. The runtime folds earlier context as needed.
+for i in range(50):
+    session.send(f"Step {i}: continue refactoring the parser")
+
+print("history messages:", len(session.history()))
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	options := &code.SessionOptions{
+		AutoCompact:          code.Ptr(true),
+		AutoCompactThreshold: code.Ptr(float32(0.75)),
+	}
+	session, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	for step := 0; step < 50; step++ {
+		prompt := fmt.Sprintf("Step %d: continue refactoring the parser", step)
+		if _, err := session.Run(ctx, prompt); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	history, err := session.History(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("history messages:", len(history))
+}
+```
+
+</Tab>
+</Tabs>
+
+## How compaction works
+
+Three session options control it:
+
+- `autoCompact` / `auto_compact` — off by default.
+- `autoCompactThreshold` / `auto_compact_threshold` — a fraction of the context
+  window, clamped to 0.0–1.0, default 0.8. Lower it to compact earlier.
+- `maxContextTokens` / `max_context_tokens` — the context window used for the
+  calculation. It defaults to the configured model's declared context limit,
+  falling back to 200,000 tokens.
+
+Session turns run on the fact log. After each user message or tool result, the
+runtime measures the folded transcript. When it reaches about
+`maxContextTokens × autoCompactThreshold × 4` characters (roughly four
+characters per token) and the current turn has not compacted yet, the runtime
+records a `compaction.done` fact that folds the earlier transcript into a single
+leading context message, and the stream emits a `context_compacted` event. The
+fold keeps the earlier text as is; it does not ask the model to summarize it.
+Without `autoCompact`, the same fold happens only at a fixed
+1,000,000-character ceiling.
+
+The SDK history API (`history()` / `History`) returns the messages the session
+currently carries.
+
+## Compaction in a Meta Harness recipe
+
+If the session uses an explicit [Meta Harness](/guide/meta-harness) recipe,
+compaction is one of its stock parts. `compactAfterChars` / `compact_after_chars`
+sets that part's character threshold directly; when omitted, the threshold
+derived from `autoCompact` above applies. `toolBudget` / `tool_budget` belongs to
+the `budget` part: it is the number of successful tool calls allowed per user
+message, after which the next tool call is denied and the turn ends.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, HarnessComposeOptions, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let harness = HarnessComposeOptions {
+        tool_budget: Some(40),
+        compact_after_chars: Some(120_000),
+        components: ["system", "tools", "budget", "compact", "infer"]
+            .map(String::from)
+            .to_vec(),
+        ..Default::default()
+    };
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_harness(harness))
+        .build()
+        .await?;
+
+    let result = session.send("Continue refactoring the parser", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/repo', {
+  harness: Harness.compose({
+    toolBudget: 40,
+    compactAfterChars: 120_000,
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.budget(),
+      Harness.compact(),
+      Harness.infer(),
+    ],
+  }),
+});
+
+const result = await session.send('Continue refactoring the parser');
+console.log(result.text);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.budget(),
+        Harness.compact(),
+        Harness.infer(),
+    ],
+    tool_budget=40,
+    compact_after_chars=120_000,
+)
+session = agent.session("/repo", opts)
+
+result = session.send("Continue refactoring the parser")
+print(result.text)
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Harness: &code.HarnessOptions{
+			Components: []string{
+				code.HarnessSystem,
+				code.HarnessTools,
+				code.HarnessBudget,
+				code.HarnessCompact,
+				code.HarnessInfer,
+			},
+			ToolBudget:        code.Ptr(uint32(40)),
+			CompactAfterChars: code.Ptr(uint(120_000)),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Continue refactoring the parser")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
+</Tabs>

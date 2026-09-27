@@ -434,6 +434,38 @@ struct SearchStageContext<'a> {
     moli: Option<std::result::Result<PathBuf, String>>,
 }
 
+/// Work that may overlap earlier search tiers. Dropping it aborts the task
+/// instead of waiting, so a satisfied fast path never pays for the slow one.
+#[cfg(any(test, feature = "headless-search"))]
+struct DeferredPrep<T> {
+    task: Option<tokio::task::JoinHandle<T>>,
+}
+
+#[cfg(any(test, feature = "headless-search"))]
+impl<T: Send + 'static> DeferredPrep<T> {
+    fn spawn<F>(future: F) -> Self
+    where
+        F: std::future::Future<Output = T> + Send + 'static,
+    {
+        Self {
+            task: Some(tokio::spawn(future)),
+        }
+    }
+
+    async fn join(&mut self) -> Option<std::result::Result<T, tokio::task::JoinError>> {
+        Some(self.task.take()?.await)
+    }
+}
+
+#[cfg(any(test, feature = "headless-search"))]
+impl<T> Drop for DeferredPrep<T> {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 #[cfg(feature = "headless-search")]
 async fn prepare_moli(config: &HeadlessConfig) -> std::result::Result<PathBuf, String> {
     let timeout = Duration::from_secs(config.moli_download_timeout_secs.clamp(1, 600));
@@ -860,36 +892,34 @@ impl Tool for WebSearchTool {
                 })));
         }
 
+        // Moli provisioning has its own budget and overlaps the API/HTTP tiers.
+        // The fast path does not wait for it. The task is joined only if the
+        // cascade still needs the headless tier, and aborted when it does not.
         #[cfg(feature = "headless-search")]
-        let moli = if !tier_plan.headless.is_empty() {
+        let mut moli_provision = if !tier_plan.headless.is_empty() {
             effective_headless_config(
                 config.and_then(|config| config.headless.as_ref()),
                 proxy_url.as_deref(),
             )
             .filter(|headless| headless.backend.is_moli())
-            .map(|headless| async move { prepare_moli(&headless).await })
+            .map(|headless| DeferredPrep::spawn(async move { prepare_moli(&headless).await }))
+            .unwrap_or_else(|| DeferredPrep { task: None })
         } else {
-            None
+            DeferredPrep { task: None }
         };
-        #[cfg(feature = "headless-search")]
-        let moli = match moli {
-            Some(future) => Some(future.await),
-            None => None,
-        };
-        // The provisioning budget is intentionally separate from the search
-        // timeout, so a first-use download does not starve all retrieval tiers.
         let search_deadline = Instant::now() + total_timeout;
 
         let retrieval_requirements = RetrievalRequirements::for_limit(limit);
         let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), retrieval_requirements);
-        let stage_context = SearchStageContext {
+        #[cfg_attr(not(feature = "headless-search"), allow(unused_mut))]
+        let mut stage_context = SearchStageContext {
             tool_context: ctx,
             query: &query_str,
             proxy_url: proxy_url.as_deref(),
             metrics: &search_metrics,
             deadline: search_deadline,
             #[cfg(feature = "headless-search")]
-            moli,
+            moli: None,
         };
 
         let active_tiers = resolved_tier_order(config.map(Arc::as_ref))
@@ -907,6 +937,19 @@ impl Tool for WebSearchTool {
                 break;
             }
             let remaining_tiers = active_tiers.len().saturating_sub(index + 1);
+            #[cfg(feature = "headless-search")]
+            if tier == EngineTier::Headless {
+                stage_context.moli = match moli_provision.join().await {
+                    Some(Ok(result)) => Some(result),
+                    Some(Err(error)) => {
+                        Some(Err(format!("Moli provisioning task failed: {error}")))
+                    }
+                    None => None,
+                };
+                // Provisioning already ran on its own timer, overlapping the
+                // fast tiers. Give the browser tier a full retrieval budget.
+                stage_context.deadline = Instant::now() + total_timeout;
+            }
             let (name, results) = match tier {
                 #[cfg(feature = "headless-search")]
                 EngineTier::Headless => (

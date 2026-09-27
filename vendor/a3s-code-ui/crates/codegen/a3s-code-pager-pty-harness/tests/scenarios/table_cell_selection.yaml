@@ -1,0 +1,119 @@
+name: table-cell-selection
+description: Validate table-aware selection — a drag inside a rendered table selects by cell (within-cell text, cross-cell TSV) instead of sweeping whole lines across columns.
+terminal:
+  rows: 40
+  cols: 100
+environment:
+  env:
+    # Force the remote clipboard route so copies surface as OSC 52 (readback).
+    - key: SSH_CONNECTION
+      value: "scripted-test 1 127.0.0.1 2"
+  # word_select persists highlights (no 150ms flash race) and enables the
+  # multi-click ladder the whole-table triple-click rides on.
+  config_toml: |
+    [ui]
+    keep_text_selection = "word_select"
+mock:
+  response: |
+    Here is the roster:
+
+    | Animal | Sound |
+    | --- | --- |
+    | ZebraOne | `NeighNoise` |
+    | BravoCat | MeowNoise |
+    | Quick Fox | IgnoreMe |
+
+    Done.
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "show the roster table"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: BravoCat
+    timeout_ms: 30000
+  # Column drag: copies that column only — no other column, no │ glyphs.
+  - action: select_text_range
+    from_text: "ZebraOne"
+    to_text: "BravoCat"
+  - action: assert_osc52_contains
+    text: "ZebraOne\nBravoCat"
+  - action: assert_osc52_not_contains
+    text: "│"
+  - action: assert_osc52_not_contains
+    text: "NeighNoise"
+  # Highlight matches the copy: cell content only.
+  - action: assert_highlight_run
+    at_text: "ZebraOne"
+    equals: "ZebraOne"
+  - action: assert_highlight_run
+    at_text: "BravoCat"
+    equals: "BravoCat"
+  - action: assert_text_not_highlighted
+    text: "NeighNoise"
+  # Dead-zone: overshooting onto the border + neighbor padding must not
+  # escalate — copy and highlight stay the single cell.
+  - action: select_text_range
+    from_text: "ZebraOne"
+    to_text: "ZebraOne"
+    to_offset_cols: 3
+  - action: assert_highlight_run
+    at_text: "ZebraOne"
+    equals: "ZebraOne"
+  - action: assert_text_not_highlighted
+    text: "NeighNoise"
+  - action: assert_osc52_not_contains
+    text: "NeighNoise"
+  # Rectangle across both columns: TSV (tab-separated cells, newline rows).
+  # NeighNoise is an inline-code chip: it must join the uniform highlight
+  # band (assert_highlight_run checks background uniformity).
+  - action: select_text_range
+    from_text: "ZebraOne"
+    to_text: "MeowNoise"
+  - action: assert_osc52_contains
+    text: "ZebraOne\tNeighNoise\nBravoCat\tMeowNoise"
+  - action: assert_highlight_run
+    at_text: "NeighNoise"
+    equals: "NeighNoise"
+  # Within-cell drag stays clamped to the cell.
+  - action: select_text_range
+    from_text: "Quick"
+    to_text: "Fox"
+  - action: assert_osc52_contains
+    text: "Quick Fox"
+  - action: assert_osc52_not_contains
+    text: "IgnoreMe"
+  # Interior spaces stay highlighted, edge padding does not.
+  - action: assert_highlight_run
+    at_text: "Quick"
+    equals: "Quick Fox"
+  - action: assert_text_not_highlighted
+    text: "IgnoreMe"
+  # Grid-line-anchored drag stays linear: copy carries border glyphs
+  # (impossible for any TSV copy).
+  - action: select_text_range
+    from_text: "├"
+    to_text: "BravoCat"
+  - action: assert_osc52_contains
+    text: "┼"
+  - action: assert_osc52_contains
+    text: "│ ZebraOne"
+  # Triple-click on a grid line is the whole-table TSV shortcut.
+  - action: triple_click_text
+    text: "├"
+  - action: assert_osc52_contains
+    text: "Animal\tSound\nZebraOne\tNeighNoise\nBravoCat\tMeowNoise\nQuick Fox\tIgnoreMe"
+  - action: assert_highlight_run
+    at_text: "Animal"
+    equals: "Animal"
+  - action: assert_highlight_run
+    at_text: "IgnoreMe"
+    equals: "IgnoreMe"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: table-grid-selection
+    note: Cell-aware selection in a rendered markdown table.

@@ -1,0 +1,22 @@
+[
+  "index",
+  "quick-start",
+  "streaming",
+  "model-switching",
+  "direct-tools",
+  "structured-output",
+  "batch",
+  "security",
+  "hooks",
+  "ripgrep-context",
+  "prompt-slots",
+  "memory",
+  "auto-compact",
+  "planning",
+  "skills",
+  "skill-tool",
+  "orchestration",
+  "external-tasks",
+  "lane-queue",
+  "git-worktree"
+]

@@ -1,0 +1,42 @@
+name: undo-tip-short-terminal-no-show
+description: >
+  No-show edge: on a short terminal (<= SHORT_TERMINAL_ROWS rows) the
+  renderability gate refuses the banner, so even a substantial wipe shows no
+  undo tip — counts/TTL never burn on a row the user cannot see.
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Build a substantial draft in the agent view while the terminal is tall.
+  - action: type_text
+    text: "ddddddddddddddddddddddddd"
+  - action: wait
+    millis: 400
+  - action: assert_contains
+    text: "dddddddddd"
+  # Shrink to a short terminal: the banner row can no longer paint.
+  - action: resize
+    rows: 14
+    cols: 100
+  - action: wait
+    millis: 300
+  - action: keys
+    keys: "<C-u>"
+  - action: wait
+    millis: 700
+  - action: assert_not_contains
+    text: "to undo"
+  - action: assert_running
+  - action: screenshot
+    name: undo-tip-short-terminal
+    note: No tip on a short terminal even after a substantial wipe.

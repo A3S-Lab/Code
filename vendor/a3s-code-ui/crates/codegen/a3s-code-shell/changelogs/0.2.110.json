@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Session creation failures** (including disk full) now show an error message instead of hanging on \"Starting session…\".",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Removing MCP servers, plugins, or hook sources** in the Extensions modal now asks for confirmation (press y to proceed).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto-compact** that fails due to an expired token now lets you log in and automatically retry the compact + original prompt.",
+    "breaking_change": false
+  }
+]

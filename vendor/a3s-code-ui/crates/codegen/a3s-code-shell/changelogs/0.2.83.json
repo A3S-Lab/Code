@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Critical announcements** now appear in a top banner during active sessions with a hide command.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Pasting the same text again** next to a paste chip now expands the chip into editable text instead of duplicating it.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Paste preview** now shows a hint explaining how to expand the chip.",
+    "breaking_change": false
+  }
+]

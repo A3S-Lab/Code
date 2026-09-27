@@ -1,0 +1,7 @@
+[
+  {
+    "category": "features",
+    "description": "**Added --device-code** as alias for device authentication and improved headless auth error messages.",
+    "breaking_change": false
+  }
+]

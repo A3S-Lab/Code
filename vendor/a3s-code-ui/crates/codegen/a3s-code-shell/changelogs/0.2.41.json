@@ -1,0 +1,22 @@
+[
+  {
+    "category": "performance",
+    "description": "**Fixed memory context injection** on resume so the prompt prefix stays byte-stable and KV cache is preserved.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed token count after compaction** so the displayed number no longer jumps back up on the next model response.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed plugin skill loading** when a manifest lists skill directories directly instead of a parent skills/ folder.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Compaction completion message** now shows the before → after token reduction instead of only the final count.",
+    "breaking_change": false
+  }
+]

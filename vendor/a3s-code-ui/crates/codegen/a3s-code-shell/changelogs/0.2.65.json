@@ -1,0 +1,42 @@
+[
+  {
+    "category": "performance",
+    "description": "**Headless and stdio sessions** no longer start unnecessary filesystem watchers, saving CPU and IO.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Unidentified Windows consoles** are now treated as Windows Terminal for capability decisions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Esc** in the dashboard input now moves focus to the list without clearing your typed draft.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok -w --ref <branch>** now creates worktrees based on the specified ref instead of HEAD.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Scrolling** feels more responsive in VS Code, Cursor, and Windsurf integrated terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copying** a tool header now copies just the path or command, not the Read/Run label.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Execute activity** lines and headers no longer repeat a redundant cd into the session directory.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Inline video previews** now show an install hint instead of a spinner when ffmpeg is missing.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,47 @@
+[
+  {
+    "category": "features",
+    "description": "**Session picker** now discovers and resumes recent Claude Code, Codex, and Cursor sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Web fetch tool** preserves full truncated page content as readable artifacts instead of discarding it.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Welcome screen** now offers a one-click resume nudge for recent Claude, Codex, or Cursor sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Multiline mode** now correctly sends the top queued message on empty Enter when a turn is running.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued commands** no longer disappear or delay when pressing Enter twice quickly during a running turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Minimal mode** text is now readable on dark terminals with proper contrast and highlighted user prompts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**A3S Code no longer crashes** when printing resume hints after the terminal pane has closed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Long-running turns** with multiple waits now show updated status markers in the transcript instead of appearing stuck.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Claude and Cursor hooks** are now correctly disabled at session start when disabled in config.",
+    "breaking_change": false
+  }
+]

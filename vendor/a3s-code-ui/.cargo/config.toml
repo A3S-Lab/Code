@@ -1,0 +1,88 @@
+# link-arg
+# https://pyo3.rs/v0.17.1/building_and_distribution.html#macos
+
+# force-unwind-tables
+# https://github.com/rust-lang/backtrace-rs/issues/397
+
+# rustflags are not additive. we have differing flags per arch,
+# so we must repeat flags in each target section
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C",
+    "link-arg=-undefined",
+    "-C",
+    "link-arg=dynamic_lookup",
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "link-args=-ObjC",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C",
+    "link-arg=-undefined",
+    "-C",
+    "link-arg=dynamic_lookup",
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "link-args=-ObjC",
+]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "force-unwind-tables=yes"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=neoverse-v2", "-C", "force-unwind-tables=yes"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = [
+    "-C", "force-unwind-tables=yes",
+    # Binary hardening (SECURITY): Full RELRO + non-executable stack
+    # These flags prevent: GOT overwrite attacks, lazy binding exploits, stack shellcode
+    # IMPORTANT: If changing build system (e.g. from cargo to Bazel-only),
+    # ensure equivalent linker hardening is applied to production binaries.
+    "-C", "link-arg=-Wl,-z,relro,-z,now,-z,noexecstack",
+]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = [
+    "-C", "target-cpu=generic",
+    "-C", "force-unwind-tables=yes",
+    # Binary hardening (SECURITY): Full RELRO + non-executable stack
+    # These flags prevent: GOT overwrite attacks, lazy binding exploits, stack shellcode
+    # IMPORTANT: If changing build system (e.g. from cargo to Bazel-only),
+    # ensure equivalent linker hardening is applied to production binaries.
+    "-C", "link-arg=-Wl,-z,relro,-z,now,-z,noexecstack",
+]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+
+
+# jemalloc page size for Apple Silicon (macOS aarch64 uses 16KB pages = 2^14).
+# This target-prefixed env var is consumed by tikv-jemalloc-sys's build.rs
+# and only takes effect when TARGET=aarch64-apple-darwin. Other targets
+# (x86_64, linux) are unaffected — they check their own prefix first and
+# fall back to the default 4KB page size.
+# Some aarch64 Linux hosts use 64KB kernel pages = 2^16; set the matching
+# env vars below for those platforms.
+# See: https://github.com/tikv/jemallocator/issues/122
+[env]
+SYSTEM_DEPS_DAV1D_BUILD_INTERNAL = "auto"
+# rusty_ffmpeg (rsmpeg): link the hermetic static FFmpeg staged by
+# third_party/ffmpeg/fetch_local.py and use the pregenerated bindings
+# for that exact build, so cargo never runs pkg-config or bindgen. Bazel wires
+# the same two inputs through the rusty_ffmpeg annotation in MODULE.bazel.
+FFMPEG_BINDING_PATH = { value = "third_party/ffmpeg/binding.rs", relative = true }
+FFMPEG_LIBS_DIR = { value = "third_party/ffmpeg/local/lib", relative = true }
+FFMPEG_LINK_MODE = "static"
+AARCH64_APPLE_DARWIN_JEMALLOC_SYS_WITH_LG_PAGE = "14"
+AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "16"
+AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "16"
+AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_BACKGROUND_THREADS = "0"

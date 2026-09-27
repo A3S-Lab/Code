@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Stop command** now terminates all background subagents from prior turns.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**GROK_EXTRA_CA_BUNDLE** env var allows adding custom TLS root certificates.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**kill_task** tool now correctly reports when a task does not exist over ACP connections.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**get_task_output** no longer waits the full timeout for already-finished tasks over ACP.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Terminal resize** is much faster on long conversations in fullscreen mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/usage** command and billing UI are hidden for enterprise auth setups.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plan approval** no longer starts Build when pressing Enter without notes in revise mode.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,102 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Bash command output** shown in the pager is now the complete result instead of a truncated tail.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background task list** is now sent as a durable snapshot so clients can restore state after reconnect.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Embedded launches** no longer time out while scanning the skills directory on slow filesystems.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Voice dictation** now inserts text at the cursor instead of always appending to the end.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hook runs** that succeed are now silent; only blocking or failing hooks show status or a single line.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Headless prompts** now time out cleanly instead of hanging forever when the agent does not respond.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Vim-mode Shift+J/K** now jump to the next or previous turn at the top of the viewport, matching the timeline arrows.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Scheduled tasks** now guide the agent to check results and clean up or update recurring schedules.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Double-click** now selects a radio button in settings choosers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed duplicate user prompt rendering** in some ACP clients by making live echo opt-in.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed grok -c attaching the wrong empty session** after starting without --continue then resuming.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock and queue hover colors** now match the rest of the terminal instead of using the stronger dropdown highlight.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed image upload errors** when reading Adobe SVGs that contain a PNG thumbnail prefix.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Dashboard actions row** (+ New Agent, Open Previous, Worktree) can now be navigated with arrow keys and activated with Enter.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock subagent rows** now show the same [stop] label as other killable rows.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed startup settings and model catalog** being shared or clobbered across concurrent boots or multiple accounts on the same machine.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflow tool** now supports pause and stop sources so agents can control background runs they launched.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock Tasks panel** now shows the spinner aligned with the header instead of nested under a rule.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/feedback <text>** now sends immediately again instead of starting a model turn; failures save to Drafts with a notice.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/theme** picker now matches aliases such as transparent, dark, or system and still inserts the canonical name.",
+    "breaking_change": false
+  }
+]

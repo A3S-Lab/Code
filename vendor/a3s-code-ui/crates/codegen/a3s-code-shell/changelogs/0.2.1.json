@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Pasting or dropping images** now succeeds for truncated, CRC-corrupt, or tiny files instead of failing silently.",
+    "breaking_change": false
+  }
+]

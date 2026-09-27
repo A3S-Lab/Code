@@ -1,0 +1,77 @@
+[
+  {
+    "category": "features",
+    "description": "**/sessions** now opens the Agent Dashboard instead of a separate picker.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued bash commands** promoted at turn end now render their output instead of disappearing.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New /goal <objective>** slash command** is now available when the workspace supports it.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Xcode / Foundation ACP clients** can now drive grok agent stdio without silent parse drops on session/* calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**read_file** now returns full single-line content (minified JSON, large dumps) instead of silently clipping at 2000 characters.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task** command preambles with newlines now render on separate lines instead of collapsing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Text selections** now highlight uniformly even over inline code, links, and syntax-colored spans.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok --minimal** now supports native drag-select on classic Windows conhost terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok inspect** now lists skills from [skills].paths and correctly labels bundled vs user skills.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Skill tokens such as /pr-workflow are now highlighted teal when used mid-sentence.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Fixed a crash when a filtered list shrinks while the filter is active.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Scroll lines and scroll speed settings now support fine unit-step adjustments.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Project-specific Claude plugins are no longer visible outside their project directory.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**--minimal** and **--fullscreen** choices are now remembered for future plain grok launches.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "First prompt no longer stalls for many seconds on large repositories while the filesystem watcher starts.",
+    "breaking_change": false
+  }
+]

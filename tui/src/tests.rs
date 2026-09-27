@@ -223,3 +223,60 @@ fn tempfile_dir() -> std::path::PathBuf {
     std::fs::create_dir_all(&path).expect("workspace");
     path
 }
+
+#[test]
+fn scrollback_history_and_export() {
+    let dir = tempfile_dir();
+    let mut scrollback = crate::Scrollback::default();
+    scrollback.push_user("fix rust borrow");
+    scrollback.push_assistant("use references");
+    scrollback.push_user("ship the tui");
+    let hits = scrollback.history_matches("rust", 5);
+    assert_eq!(hits, vec!["fix rust borrow".to_string()]);
+    let path = dir.join("out.md");
+    scrollback.export_markdown(&path).expect("export");
+    let body = std::fs::read_to_string(&path).expect("read");
+    assert!(body.contains("## You"));
+    assert!(body.contains("fix rust borrow"));
+    assert!(body.contains("## A3S"));
+}
+
+#[test]
+fn slash_catalog_covers_a3s_core_commands() {
+    use crate::slash::{matching_commands, SLASH_BROWSE_HIDDEN, SLASH_COMMANDS};
+    assert!(SLASH_COMMANDS.len() >= 47);
+    for required in [
+        "status", "model", "permissions", "plan", "ask", "ctx", "use", "fork", "worktree",
+        "rewind", "clear", "exit", "help",
+    ] {
+        assert!(
+            SLASH_COMMANDS.iter().any(|c| c.name == required),
+            "missing /{required}"
+        );
+    }
+    let empty = matching_commands("/");
+    assert!(!empty.is_empty());
+    assert!(empty.iter().all(|c| !SLASH_BROWSE_HIDDEN.contains(&c.name)));
+    let help = matching_commands("/hel");
+    assert!(help.iter().any(|c| c.name == "help"));
+}
+
+#[tokio::test]
+async fn agent_adapter_prompt_uses_fact_log_session() {
+    let _lock = env_lock();
+    let workspace = tempfile_dir();
+    let (path, _) = fixture_acl();
+    let layers = LaunchLayers {
+        workspace,
+        explicit_config: Some(path),
+        home: None,
+    };
+    let mut agent = crate::CodeAgentAdapter::open(layers)
+        .await
+        .expect("open")
+        .with_llm_client(Arc::new(Scripted));
+    assert_eq!(agent.permission_mode(), crate::PermissionMode::Default);
+    assert_eq!(agent.cycle_permission_mode(), crate::PermissionMode::Plan);
+    let turn = agent.prompt("ping").await.expect("prompt");
+    assert_eq!(turn.text, "scripted-ok");
+}

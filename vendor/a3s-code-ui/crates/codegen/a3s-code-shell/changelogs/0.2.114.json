@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**A3S Code** no longer crashes on startup when the host machine has no free threads.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New `/delete` slash command** removes the current session's history after confirmation.",
+    "breaking_change": false
+  }
+]

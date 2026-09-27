@@ -1,0 +1,97 @@
+[
+  {
+    "category": "features",
+    "description": "**Headless JSON output** now includes token usage and cost per prompt and session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background tasks** started by the model in headless mode are now killed on exit instead of leaking.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**SDK turns** now expose detailed token usage and cost information via Turn.usage.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Double-click or Enter** on a previous user message now lets you edit and resubmit it directly from the transcript.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Text selection** in scrollback now works better when starting on chrome, gaps, or while scrolling.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Agent process leaks** on failed spawns and missing-stdio teardown are now prevented.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Parked turn markers** no longer appear after interjections and now count down as background tasks finish.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**The /context** tool definitions line no longer shows the cryptic disclaimer suffix.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal release** waits boundedly for the process to exit and repeated waits share the drain grace.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a crash** when the agent asked a question on narrow terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Shell commands using `rg`** (ripgrep) no longer require permission prompts by default.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed misleading keyboard hints** in the /mcps panel in minimal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Voice mode** is now available for API-key sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Clipboard copy** now reports success correctly when using iTerm2 over SSH.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed scroll/input conflicts** when plan approval appeared over an open edit block.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New environment variables** allow tuning scroll and draw cadence for high-refresh displays.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed frequent MCP and skills reloads** that could freeze sessions on devboxes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP servers using HTTP** (such as HTTP MCP servers for Slack) now automatically recover from disconnects.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Next reset time** in /usage now shows in your local timezone instead of Pacific Time.",
+    "breaking_change": false
+  }
+]

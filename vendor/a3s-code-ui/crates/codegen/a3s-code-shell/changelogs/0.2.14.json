@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "**Generated images and videos** can now be opened directly from the terminal UI via buttons or clicks.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background tasks panel** now groups items, supports collapsible sections, and has clearer styling for monitors and loops.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session titles** are now generated reliably using a fixed default model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**--permission-mode** now correctly overrides the permission_mode setting from config.toml when launching sessions.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,102 @@
+[
+  {
+    "category": "features",
+    "description": "**New terminal theme** option makes backgrounds transparent so the terminal's own colors show through.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP servers blocked by organization policy** now show clear messages and are refused before any config change.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed mid-turn UI freezes** when the terminal stops reading output.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**First prompt after login is faster** when MCP servers are configured; they connect in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session resume now tells the model** what loops, subagents, and workflows were still running.",
+    "breaking_change": false
+  },
+  {
+    "category": "breaking",
+    "description": "**Scheduled /loop tasks always run in the background**; they no longer inject turns into your conversation.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed crashes** that occurred when the terminal pane was closed while grok was exiting.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Dashboard** now shows newly dispatched sessions immediately instead of waiting for the store.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP server list** in minimal mode now correctly shows policy-blocked servers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "URLs that wrap across multiple lines inside quotes or lists are now fully clickable.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Headless sessions** (`grok -p`) now support the `--worktree` flag to run in a separate git worktree.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Dashboard** now says 'Open session' instead of 'Add session' for the session picker button.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**The welcome screen** composer now grows taller when you paste multi-line text.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Enterprise policy files** are no longer deleted on startup when your team login is stored at a custom `GROK_AUTH_PATH`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/feedback** now drops unsupported images with a notice (matching the modal) and never loses your report text on save errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Feedback drafts** keep their paragraph breaks when updated, and the modal no longer switches tabs unexpectedly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Turn summary lines** no longer lose their spacing after background tasks finish.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Thinking blocks** no longer stay expanded after switching between fullscreen and minimal modes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Multi-line bash commands** now render with proper wrapping and highlighting when opening the block viewer.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/usage** now works from the dashboard and shows account allowance when no session is active.",
+    "breaking_change": false
+  }
+]

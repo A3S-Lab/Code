@@ -1,0 +1,12 @@
+[
+  {
+    "category": "features",
+    "description": "**Monitors** now appear labeled in background-task reminders after compaction and can be terminated by name.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Reading images** with text-only models no longer triggers repeated 400 errors that brick the session.",
+    "breaking_change": false
+  }
+]

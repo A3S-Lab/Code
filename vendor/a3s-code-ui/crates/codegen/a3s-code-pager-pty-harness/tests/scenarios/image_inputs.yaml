@@ -1,0 +1,66 @@
+name: image-inputs
+description: "Validate all supported image input forms: path paste, file URL paste, escaped path paste, drag/drop path paste, and clipboard image paste."
+terminal:
+  rows: 40
+  cols: 120
+mock:
+  response: "SCRIPTED_IMAGE_RESPONSE received image attachments."
+  fixture_images:
+    - name: path_image
+      extension: png
+    - name: file_url_image
+      extension: png
+    - name: escaped path image
+      extension: png
+    - name: dropped_image
+      extension: png
+    - name: clipboard_image
+      extension: png
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_image_paths
+    images: [path_image]
+  - action: assert_contains
+    text: "Image #1"
+  - action: paste_image_file_urls
+    images: [file_url_image]
+  - action: assert_contains
+    text: "Image #2"
+  - action: paste_escaped_image_paths
+    images: ["escaped path image"]
+  - action: assert_contains
+    text: "Image #3"
+  - action: drop_images_prompt
+    images: [dropped_image]
+  - action: assert_contains
+    text: "Image #4"
+  - action: paste_clipboard_image
+    image: clipboard_image
+  - action: assert_contains
+    text: "Image #4"
+  - action: keys
+    keys: "<Right>"
+  - action: screenshot
+    name: image-inputs
+    note: Prompt with five image chips from all supported input forms.
+  - action: keys
+    keys: "<Esc>"
+  - action: drop_text_prompt
+    text: " describe these images"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: SCRIPTED_IMAGE_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: assert_request_image_count
+    min: 4
+  - action: assert_inline_images
+    min: 4
+    mime_type: image/png
+    width: { min: 8 }
+    height: { min: 8 }
+  - action: assert_not_contains
+    text: panicked

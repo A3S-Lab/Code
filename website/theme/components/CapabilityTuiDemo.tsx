@@ -66,10 +66,10 @@ function ApprovalPrompt({
   selected: number;
 }) {
   const options = [
-    ['↵', 'Allow once'],
-    ['◎', 'Allow exact capability for this session'],
-    ['⌘', 'Add exact capability rule to project'],
-    ['⊘', 'Deny and tell the agent why'],
+    ['', 'Allow (y)'],
+    ['', 'Allow session (s)'],
+    ['', 'Add project rule (p)'],
+    ['', 'Skip & tell (n or esc)'],
   ];
 
   return (
@@ -85,14 +85,14 @@ function ApprovalPrompt({
       <ol>
         {options.map(([glyph, option], index) => (
           <li className={index === selected ? 'is-selected' : ''} key={option}>
-            <span aria-hidden="true">{index === selected ? '❯' : ''}</span>
+            <span aria-hidden="true">{index === selected ? '->' : ''}</span>
             <b>{index + 1}</b>
             <i aria-hidden="true">{glyph}</i>
             <p>{option}</p>
           </li>
         ))}
       </ol>
-      <footer>Enter select · ↑↓ move · Esc deny</footer>
+      <footer>↑/↓ navigate · Enter select · Esc deny</footer>
     </section>
   );
 }
@@ -449,8 +449,7 @@ export function CapabilityTuiDemo({
       composerText={composerText(story, stage, locale)}
       contextLabel={labels.context}
       isPlaying={isPlaying && isVisible}
-      modeGlyph="⏵"
-      modeLabel="default mode"
+      modeLabel="agent"
       onPlayback={onPlayback}
       phase={`${story.key}-${stage + 1}`}
       playbackLabel={

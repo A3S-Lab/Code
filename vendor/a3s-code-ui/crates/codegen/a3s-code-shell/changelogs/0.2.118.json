@@ -1,0 +1,62 @@
+[
+  {
+    "category": "fixes",
+    "description": "**`/btw`** now retries on temporary model overload instead of failing immediately.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session sharing** is temporarily disabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`[stop]`** / Ctrl+C during `/compact` now cancels instead of no-opping.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sessions** can now be permanently deleted from the dashboard by pressing Ctrl+X twice on an idle row, or from the welcome list with d then y.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Automatic recaps** no longer appear twice after the same turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Keyboard shortcuts help** (Ctrl+.) now shows how to browse prompt history and search the conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task wait timeout** descriptions and limits now match the client's actual configured ceiling.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background tasks** no longer stay stuck as 'Running' in the tasks pane when they finish quickly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plan mode indicator** now disappears right after approving a plan instead of lingering.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok doctor** now warns when tmux is reducing colors and can fix the config.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dragging the scrollbar** in the plan preview now works as expected.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Compaction** now correctly handles certain context-length errors from the inference API.",
+    "breaking_change": false
+  }
+]

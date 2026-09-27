@@ -1,0 +1,67 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Permission prompts** now correctly wrap long bash commands while preserving structure and quotes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Pressing Enter** on an empty prompt now sends the top queued follow-up immediately while a turn is running.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tool call grouping** can now be enabled via config.toml or settings to collapse consecutive read/search/list calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Consecutive tool calls** of the same kind can now be folded into a single row when group_tool_verbs is enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Claude Code settings** with permissions.defaultMode are now correctly honored.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagent conversations** now receive the same type-specific instructions in gateway chat as in the CLI.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Scheduled automation tasks** now show their header panel correctly in gateway chat sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Project skills and commands** are now discovered even when their directories are gitignored.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Promotional announcements** now appear with clickable CTAs and can be non-dismissible.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Inline LaTeX math** with padding spaces now renders correctly instead of showing raw dollar signs.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagents** now run in the background by default unless explicitly set to false.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Manual /recap** now works on the same turn and long auto recaps are hidden from view while still saved.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Always allow** for common commands like ls and git status now remembers just the command instead of extra arguments.",
+    "breaking_change": false
+  }
+]

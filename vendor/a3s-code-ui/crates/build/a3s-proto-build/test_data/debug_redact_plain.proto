@@ -1,0 +1,9 @@
+// Fixture for the unhonored-debug_redact guard: mentions the option only in
+// comments — mark secrets with debug_redact = true — so nothing is marked.
+syntax = "proto3";
+
+package t;
+
+message P {
+  string s = 1;
+}

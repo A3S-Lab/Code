@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Plugin and skill listings** from x.ai/plugins/list and x.ai/skills/* now reflect the latest config.toml even before the first session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed crashes** on the first TLS handshake for Windows on ARM64 builds.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash commands** like `/feedback` typed during plan approval now execute correctly.",
+    "breaking_change": false
+  }
+]

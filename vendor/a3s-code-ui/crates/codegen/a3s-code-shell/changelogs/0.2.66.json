@@ -1,0 +1,87 @@
+[
+  {
+    "category": "features",
+    "description": "**Custom sandbox profiles** can now kernel-deny specific files and directories for reads/writes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Marketplace plugins** in subdirectories of a git repo can now be installed and loaded correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Folder trust prompt** now appears before starting a session when the feature is enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Preview panes** no longer hibernate while actively viewed.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Keyboard shortcuts help** now expands inline for individual entries instead of only sections.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Idle detection** can now ignore background tasks when the env flag is set (off by default).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sandbox deny lists** now accept glob patterns like **/*.pem** in addition to exact paths.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Local MCP servers** now auto-recover after disconnects or session expiry.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**OIDC sessions** with A3S_API_KEY present no longer lose refresh on idle.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Inline video previews** now show an install command only when the package manager is on PATH.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**list_dir** now reliably shows all immediate child directories even inside large monorepos.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Clicking a model** in the dashboard /model dropdown no longer opens the wrong session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Strikethrough** now only applies to ~~double tildes~~; single ~tildes~ render literally.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session cycling** with Ctrl+[ / ] now switches from the session you are currently viewing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt history** (Up / Ctrl+R) now shows the complete recent list instead of a scrambled partial one.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Authentication** now correctly prefers the session method when both API key and cached token are present.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**xychart-beta** diagrams with category labels now render correctly as images.",
+    "breaking_change": false
+  }
+]

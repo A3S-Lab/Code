@@ -1,0 +1,77 @@
+[
+  {
+    "category": "breaking",
+    "description": "**`grok mcp add`** now accepts positional arguments (e.g. `grok mcp add filesystem -- npx ...`), supports --scope project, and adds -e/-H flags for env/headers.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Plan mode exit reminders** no longer appear after the model has already started implementing the plan.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Expanded thinking blocks** in scrollback now remain expanded when the agent finishes them.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`grok update`** no longer downloads the same binary twice when multiple updaters or leader checks run concurrently.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task IDs** after /compact are now shown verbatim so the model can reference them correctly in later tool calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Typing /** while scrollback is focused now focuses the prompt and opens the slash-command dropdown.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard empty state** is now a single hint line; dispatch and peek placeholders appear only when unfocused.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Mermaid flowcharts** now render subgraph blocks as titled frames with correct internal and cross-boundary edges.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed memory leaks** that could cause the CLI to use tens of gigabytes during long sessions with many tool calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Login on SSH or headless machines** now tells you when the browser cannot be opened automatically and shows the URL to visit manually.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Class diagrams** in Mermaid now render as proper UML boxes with attributes, methods and inheritance arrows instead of raw source.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Permission prompts** now accept a double-click on an option to submit it, matching the existing Enter and number-key shortcuts.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large code blocks** inside lists no longer cause multi-second UI stalls while streaming responses.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed git clone failures** on Windows when the CLI tries to clone marketplace plugins into ~/.grok.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New /code-review slash command** now ships with the CLI and is always available.",
+    "breaking_change": false
+  }
+]

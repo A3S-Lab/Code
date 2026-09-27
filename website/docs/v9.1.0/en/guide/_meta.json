@@ -1,0 +1,76 @@
+[
+  "index",
+  "tui",
+  {
+    "type": "section-header",
+    "label": "The loop"
+  },
+  "architecture",
+  "meta-harness",
+  "sessions",
+  "providers",
+  "commands",
+  {
+    "type": "section-header",
+    "label": "Workspace"
+  },
+  "tools",
+  "workspace-backends",
+  {
+    "type": "section-header",
+    "label": "Governance"
+  },
+  "security",
+  "verification",
+  "hooks",
+  "isolation",
+  "limits",
+  {
+    "type": "section-header",
+    "label": "Context"
+  },
+  "context",
+  "memory",
+  {
+    "type": "section-header",
+    "label": "Delegation"
+  },
+  "tasks",
+  "teams",
+  "skills",
+  "orchestration",
+  {
+    "type": "section-header",
+    "label": "Project files"
+  },
+  "filesystem-first",
+  "agents-md",
+  "filesystem-config",
+  "filesystem-agents",
+  "filesystem-skills",
+  {
+    "type": "section-header",
+    "label": "Host"
+  },
+  "persistence",
+  "mcp",
+  "lane-queue",
+  "telemetry",
+  "multi-machine",
+  "cluster-extension-points",
+  "api-contract",
+  {
+    "type": "dir",
+    "name": "examples",
+    "label": "Examples",
+    "collapsible": true,
+    "collapsed": true
+  },
+  {
+    "type": "dir",
+    "name": "rfcs",
+    "label": "RFCs",
+    "collapsible": true,
+    "collapsed": true
+  }
+]

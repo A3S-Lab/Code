@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Table cell selection** inside /btw panels now correctly highlights cells and copies as TSV instead of drawing a linear rectangle.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP tools** now support the 2026-07-28 multi-round-trip elicitation flow where a tool call can return an input_required state that is resumed on retry.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Next-prompt ghost suggestions** now appear less often and are more accurate by preferring silence when the next line is not obvious.",
+    "breaking_change": false
+  }
+]

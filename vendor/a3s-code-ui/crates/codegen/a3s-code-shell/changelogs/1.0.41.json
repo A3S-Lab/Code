@@ -1,0 +1,72 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed** the subagent fullscreen view so it no longer shows a stray [Dashboard] button in the header.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** agent frontmatter `mcpServers` so that headers and URLs from the active agent's agent.md now correctly override config.toml and survive config reloads or agent switches.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+P** now opens the command palette immediately from the welcome screen.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagent model inheritance** setting added to /settings; persists in config.toml and respects managed/overlay layers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard** now focuses the \"+ New Agent\" row instead of leaving the previous session selected.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Sessions that were interrupted by a crash now show a clear marker instead of silently dropping the turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+Z** right after stashing a prompt now restores it.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Collapsed edit blocks** setting now correctly collapses edits even if `expanded_by_default` was pinned true.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Interjections now receive a visible reply before the agent resumes prior tasks.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Canceling a turn that blocked on spawn_subagent now tells the model the child moved to the background instead of claiming it was never executed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Saving a queued-prompt edit now returns focus to the composer so the next keys type the next message.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Subagent activation is now consistent between the TUI and `grok agent stdio`; tables that only set limits or models no longer disable subagents.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Per-model request size limits** can now be configured to match provider HTTP body caps and control inline image eviction.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Effort level selection** now accepts menu labels in addition to IDs.",
+    "breaking_change": false
+  }
+]

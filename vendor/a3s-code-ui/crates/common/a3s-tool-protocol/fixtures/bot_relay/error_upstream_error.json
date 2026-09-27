@@ -1,0 +1,7 @@
+{
+  "code": "upstream_error",
+  "retryable": false,
+  "detail": {
+    "upstream": "upstream rejected the request"
+  }
+}

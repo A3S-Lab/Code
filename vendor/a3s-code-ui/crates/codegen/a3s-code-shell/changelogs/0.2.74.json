@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Esc now cancels a running turn immediately**; double-Esc clears prompt or opens rewind when idle.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok wrap** now shows copy success over SSH and suggests native drag-select when paste fails.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Clipboard copy** now succeeds reliably on Wayland and KDE desktops instead of showing false positives.",
+    "breaking_change": false
+  }
+]

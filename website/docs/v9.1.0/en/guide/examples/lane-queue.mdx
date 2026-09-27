@@ -1,0 +1,198 @@
+---
+title: 'Lane Queue'
+description: 'Schedule host-direct tool calls on priority lanes with per-lane concurrency limits.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Lane Queue
+
+A session has no queue unless you create it with `queueConfig` / `queue_config` /
+`QueueConfig`. With a queue, host-direct tool calls (`session.tool(...)` and the typed
+helpers such as `bash`, `readFile`, and `grep`) are scheduled on lanes, each with its own
+concurrency limit. Tool calls the model makes inside a `send` or `stream` turn run
+directly and do not pass through the queue.
+
+The four lanes are `control`, `query`, `execute`, and `generate`, with default concurrency
+limits of 2, 4, 2, and 1. Tools map to lanes by name: `read`, `ls`, `search` (behind
+`grep` and `glob`), `web_fetch`, `web_search`, and the code-intelligence tools use
+`query`; every other tool uses `execute`. No tool maps to `control` or `generate`.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{queue::SessionQueueConfig, Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let queue = SessionQueueConfig {
+        execute_max_concurrency: 1,
+        ..SessionQueueConfig::default()
+    };
+    let session = agent
+        .session_builder(".")
+        .options(SessionOptions::new().with_queue_config(queue))
+        .build()
+        .await?;
+    println!("queue active: {}", session.has_queue());
+
+    // Both calls use the execute lane, which now runs one command at a time.
+    let (first, second) = tokio::join!(session.bash("echo one"), session.bash("echo two"));
+    println!("{}{}", first?, second?);
+
+    let stats = session.queue_stats().await;
+    println!(
+        "pending={} active={} external={}",
+        stats.total_pending, stats.total_active, stats.external_pending
+    );
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', {
+  queueConfig: { executeConcurrency: 1 },
+});
+console.log('queue active:', session.hasQueue());
+
+// Both calls use the execute lane, which now runs one command at a time.
+const [first, second] = await Promise.all([
+  session.bash('echo one'),
+  session.bash('echo two'),
+]);
+console.log(first + second);
+
+const stats = await session.queueStats();
+console.log(
+  `pending=${stats.totalPending} active=${stats.totalActive} external=${stats.externalPending}`,
+);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+queue = SessionQueueConfig()
+queue.set_execute_concurrency(1)
+opts = SessionOptions()
+opts.queue_config = queue
+session = agent.session(".", opts)
+print("queue active:", session.has_queue())
+
+# Both calls use the execute lane, which now runs one command at a time.
+with ThreadPoolExecutor(max_workers=2) as pool:
+    first, second = pool.map(session.bash, ["echo one", "echo two"])
+print(first + second)
+
+stats = session.queue_stats()
+print(
+    f"pending={stats['total_pending']} active={stats['total_active']} "
+    f"external={stats['external_pending']}"
+)
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{ExecuteConcurrency: code.Ptr(uint(1))},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	active, err := session.HasQueue(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("queue active:", active)
+
+	// Both calls use the execute lane, which now runs one command at a time.
+	commands := []string{"echo one", "echo two"}
+	outputs := make([]string, len(commands))
+	var wg sync.WaitGroup
+	for i, command := range commands {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			output, err := session.Bash(ctx, command)
+			if err != nil {
+				log.Fatal(err)
+			}
+			outputs[i] = output
+		}()
+	}
+	wg.Wait()
+	fmt.Print(outputs[0] + outputs[1])
+
+	stats, err := session.QueueStats(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("pending=%d active=%d external=%d\n",
+		stats.TotalPending, stats.TotalActive, stats.ExternalPending)
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- `hasQueue()` / `has_queue()` / `HasQueue()` returns `true` only when the session was
+  created with a queue config. Without one, setting a lane handler does nothing and the
+  queue stats stay at zero.
+- Each lane has a handler `mode`: `internal` (the default) runs the tool in process,
+  `external` parks the call as an external task until your host completes it, and
+  `hybrid` runs the tool in process and only emits pending and completed notifications.
+  Set it with `setLaneHandler` / `set_lane_handler` / `SetLaneHandler`, or up front in the
+  queue config. [External Tasks](/guide/examples/external-tasks) shows the full
+  drain-and-complete flow.
+- Queue stats report `total_pending`, `total_active`, and `external_pending`
+  (`totalPending`, `totalActive`, and `externalPending` in Node). Rust, Python, and Go
+  also include per-lane status under `lanes`.
+- In Node, `hasQueue` is synchronous and the other queue methods return promises. Python
+  queue methods are synchronous. Go queue methods take the caller's `context.Context`.

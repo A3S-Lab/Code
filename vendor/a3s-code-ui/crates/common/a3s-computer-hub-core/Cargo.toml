@@ -1,0 +1,25 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-computer-hub-core"
+version = "0.1.0"
+edition.workspace = true
+description = "Transport, ToolRegistry, and resolver abstractions for the A3S Computer Hub"
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+a3s-tool-protocol = { workspace = true }
+a3s-tool-runtime = { workspace = true }
+a3s-tool-types = { workspace = true }
+
+[dev-dependencies]
+dashmap = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

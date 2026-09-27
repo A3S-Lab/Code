@@ -1,0 +1,230 @@
+---
+title: '批处理'
+description: '通过组合 SDK 的确定性辅助方法来批量执行确定性操作'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 批处理
+
+SDK 中没有 `batch()` 辅助方法。在 agent 回合内，模型可以用内置的 `batch` 工具把工具调用
+分组执行（最多 32 个调用，按依赖步骤运行，并发数有上限）。当宿主工作流已经有一组清晰、
+相互独立、确定性的步骤时，你可以直接用会话提供的确定性辅助方法（`readFile`、`grep`、`glob`、`ls`、
+`git`）把它们组合起来，并自行汇总结果。这样"批处理"就完全在你的掌控之中：无需任何模型调用，
+执行顺序明确，且除非你主动调用，否则不会执行任何破坏性操作。
+
+下面的示例读取包元数据、changelog 和 release script，然后在不编辑任何文件的前提下报告版本不一致之处。`readFile` 返回 read 工具的输出，
+每行都以行号加一个制表符开头。读取失败（例如文件不存在）时返回的是工具的错误文本，
+而不是抛出错误，因此请校验你解析的内容。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::Value;
+
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+fn file_text(view: &str) -> String {
+    view.lines()
+        .filter_map(|line| line.split_once('\t').map(|(_, text)| text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/project")
+        .build()
+        .await?;
+
+    let (package, changelog, release_script) = tokio::try_join!(
+        session.read_file("package.json"),
+        session.read_file("CHANGELOG.md"),
+        session.read_file("scripts/release.sh"),
+    )?;
+
+    let package: Value = serde_json::from_str(&file_text(&package))?;
+    let version = package["version"].as_str().unwrap_or_default();
+    let mut mismatches = Vec::new();
+    if !changelog.contains(version) {
+        mismatches.push(format!("CHANGELOG.md 缺少版本 {version}"));
+    }
+    if !release_script.contains(version) {
+        mismatches.push(format!("release.sh 缺少版本 {version}"));
+    }
+
+    if mismatches.is_empty() {
+        println!("所有文件中的版本一致。");
+    } else {
+        println!("{}", mismatches.join("\n"));
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/path/to/project');
+
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+const fileText = (view: string) =>
+  view
+    .split('\n')
+    .flatMap((line) => {
+      const tab = line.indexOf('\t');
+      return tab === -1 ? [] : [line.slice(tab + 1)];
+    })
+    .join('\n');
+
+// Node.js 辅助方法是异步的，可用 Promise.all 组合互不依赖的读取。
+const [pkg, changelog, releaseScript] = await Promise.all([
+  session.readFile('package.json'),
+  session.readFile('CHANGELOG.md'),
+  session.readFile('scripts/release.sh'),
+]);
+
+const pkgVersion = JSON.parse(fileText(pkg)).version;
+const mismatches = [];
+if (!changelog.includes(pkgVersion))
+  mismatches.push(`CHANGELOG.md 缺少版本 ${pkgVersion}`);
+if (!releaseScript.includes(pkgVersion))
+  mismatches.push(`release.sh 缺少版本 ${pkgVersion}`);
+
+console.log(
+  mismatches.length ? mismatches.join('\n') : '所有文件中的版本一致。',
+);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import json
+from a3s_code import Agent, SessionOptions
+
+
+# readFile 返回带行号的行；保留每行行号制表符之后的文本。
+def file_text(view: str) -> str:
+    return "\n".join(line.split("\t", 1)[1] for line in view.splitlines() if "\t" in line)
+
+
+agent = Agent.create("agent.acl")
+session = agent.session("/path/to/project", SessionOptions())
+
+# Python 辅助方法是同步的，按顺序调用即可，无需 await。
+pkg = session.read_file("package.json")
+changelog = session.read_file("CHANGELOG.md")
+release_script = session.read_file("scripts/release.sh")
+
+pkg_version = json.loads(file_text(pkg))["version"]
+mismatches = []
+if pkg_version not in changelog:
+    mismatches.append(f"CHANGELOG.md 缺少版本 {pkg_version}")
+if pkg_version not in release_script:
+    mismatches.append(f"release.sh 缺少版本 {pkg_version}")
+
+print("\n".join(mismatches) if mismatches else "所有文件中的版本一致。")
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+// readFile 返回带行号的行；保留每行行号制表符之后的文本。
+func fileText(view string) string {
+	var lines []string
+	for _, line := range strings.Split(view, "\n") {
+		if _, text, ok := strings.Cut(line, "\t"); ok {
+			lines = append(lines, text)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/project", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	pkg, err := session.ReadFile(ctx, "package.json", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	changelog, err := session.ReadFile(ctx, "CHANGELOG.md", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	releaseScript, err := session.ReadFile(ctx, "scripts/release.sh", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var metadata struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(fileText(pkg)), &metadata); err != nil {
+		log.Fatal(err)
+	}
+	var mismatches []string
+	if !strings.Contains(changelog, metadata.Version) {
+		mismatches = append(mismatches, "CHANGELOG.md 缺少版本 "+metadata.Version)
+	}
+	if !strings.Contains(releaseScript, metadata.Version) {
+		mismatches = append(mismatches, "release.sh 缺少版本 "+metadata.Version)
+	}
+	if len(mismatches) == 0 {
+		fmt.Println("所有文件中的版本一致。")
+	} else {
+		fmt.Println(strings.Join(mismatches, "\n"))
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+不要把破坏性操作混入这些分组读取之中。直接辅助方法以宿主权限运行：它们会跳过会话的
+`permissionPolicy` / `permission_policy` 和确认提示。任何破坏性宿主步骤（写入、`git`
+提交、`bash`）都应放在你自己的应用确认之后，或者通过 `governedTool` / `governed_tool` /
+`GovernedTool` 执行——它无需模型即可执行工具，但仍会应用会话的权限与确认关卡。
+
+如果这些步骤并非相互独立——每一步都依赖上一步的结果，并且你希望由 agent 来驱动它们——
+请改用 [`session.pipeline(...)`](/guide/examples/orchestration)，它会分阶段运行任务，
+每个阶段都能接收到上一阶段的输出。

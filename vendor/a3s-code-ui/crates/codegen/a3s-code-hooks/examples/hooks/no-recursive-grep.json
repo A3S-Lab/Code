@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|bash|run_terminal_command|run_terminal_cmd|Shell)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bin/no-recursive-grep-guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

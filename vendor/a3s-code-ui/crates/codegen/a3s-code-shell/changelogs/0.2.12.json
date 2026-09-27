@@ -1,0 +1,42 @@
+[
+  {
+    "category": "features",
+    "description": "**Computer connection status** now shows a connecting pill during terminal session initialization.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**--max-turns** now correctly counts tool-use cycles instead of total messages.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**@-mention file search** now works again for local agent sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/check** and subagents now read and follow full AGENTS.md rules from the repo.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rendered images, files, and citations** now replay correctly in chunk-mode history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/context`** now displays the correct auto-compact threshold for the active model instead of always 85%.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Model responses** are no longer silently dropped when the gateway emits legacy channel values.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt responses** no longer resolve before the turn's final output chunks reach the client.",
+    "breaking_change": false
+  }
+]

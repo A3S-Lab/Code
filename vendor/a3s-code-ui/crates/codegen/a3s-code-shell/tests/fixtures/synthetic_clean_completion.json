@@ -1,0 +1,25 @@
+{
+  "name": "clean_completion",
+  "description": "Assistant ended its turn with no outstanding todos. The gate must NOT fire — this is the only true 'happy path' for end-of-turn.",
+  "turns": [
+    {
+      "turn_index": 0,
+      "kind": "user",
+      "content": "<synthetic user prompt — content scrubbed>"
+    },
+    {
+      "turn_index": 1,
+      "kind": "assistant",
+      "tool_calls_emitted": [],
+      "todo_state_after_turn": [
+        {
+          "id": "ship-it",
+          "status": "completed",
+          "content": "land the PR"
+        }
+      ],
+      "backing_task_count": 0,
+      "expected_gate_decision": "continue"
+    }
+  ]
+}

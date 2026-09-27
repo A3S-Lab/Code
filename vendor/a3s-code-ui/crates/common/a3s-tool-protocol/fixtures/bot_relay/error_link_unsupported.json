@@ -1,0 +1,6 @@
+{
+  "code": "link_unsupported",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_some_future_rule"
+}

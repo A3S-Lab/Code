@@ -1,0 +1,21 @@
+{
+  "must": "seq is not a dedupe key. Two frames with the same seq are two distinct events.",
+  "expectedResyncCount": 0,
+  "expectedDistinctEvents": 2,
+  "frames": [
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 3,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "first" }
+    },
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 3,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "second" }
+    }
+  ]
+}

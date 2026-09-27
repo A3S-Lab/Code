@@ -54,6 +54,14 @@ const groups: BuildingBlockGroup[] = [
         },
         path: '/guide/skills.html',
       },
+      {
+        name: 'Meta Harness',
+        description: {
+          zh: '用 stock 部件和宿主组件组合事实日志 Actor；不设置时使用 coding_actor。',
+          en: 'Compose the fact-log actor from stock parts and host components; coding_actor is the default.',
+        },
+        path: '/guide/meta-harness.html',
+      },
     ],
   },
   {
@@ -178,8 +186,8 @@ const groups: BuildingBlockGroup[] = [
     id: 'coordinate',
     label: { zh: '拆分任务', en: 'Coordinate work' },
     summary: {
-      zh: '把工作交给子 Agent，或用固定流程、队列和定时任务组织执行。',
-      en: 'Delegate to child agents or organize work with fixed workflows, queues, and schedules.',
+      zh: '把工作交给子 Agent、定义可复用角色，或用可恢复的固定流程组织执行。',
+      en: 'Delegate to child agents, define reusable roles, or organize work with resumable fixed workflows.',
     },
     blocks: [
       {
@@ -201,8 +209,8 @@ const groups: BuildingBlockGroup[] = [
       {
         name: 'Orchestration',
         description: {
-          zh: '用 Parallel、Pipeline 和 Checkpoint 编排固定流程。',
-          en: 'Build fixed flows with parallel, pipeline, and checkpoints.',
+          zh: '用 parallel、pipeline 和可恢复的 workflow 编排固定流程。',
+          en: 'Build fixed flows with parallel, pipeline, and resumable workflows.',
         },
         path: '/guide/orchestration.html',
       },
@@ -227,16 +235,24 @@ const groups: BuildingBlockGroup[] = [
       {
         name: 'Verification',
         description: {
-          zh: '保存验证命令、报告和结果。',
-          en: 'Save verification commands, reports, and results.',
+          zh: '绑定到修改 digest 的验证报告；修改了文件的回合要靠它通过完成门禁。',
+          en: 'Verification reports bound to a mutation digest; a turn that changed files needs one to pass the completion gate.',
         },
         path: '/guide/verification.html',
       },
       {
-        name: 'Snapshot & checkpoint',
+        name: 'Fact log',
         description: {
-          zh: '保存会话和执行进度，之后继续运行。',
-          en: 'Save session state and execution progress for later recovery.',
+          zh: '每一步都是一条事实；恢复时折叠日志继续，不重发已保存的模型回合。',
+          en: 'Every run step is a fact; resume folds the log instead of re-sending stored model turns.',
+        },
+        path: '/guide/architecture.html#fact-log-control',
+      },
+      {
+        name: 'SessionSnapshotV1',
+        description: {
+          zh: '把会话、Run 和记录按同一代原子提交。',
+          en: 'Commit the session, runs, and records as one atomic generation.',
         },
         path: '/guide/persistence.html',
       },

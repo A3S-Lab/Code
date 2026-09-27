@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**`grok --debug`** now produces per-session log files under ~/.grok/debug/ even with a leader process.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Doom-loop warnings** now correctly describe cycles and distinct edit failures instead of claiming identical arguments.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Model list changes** from config or cache now appear in already-connected TUI and IDE clients without restart.",
+    "breaking_change": false
+  }
+]

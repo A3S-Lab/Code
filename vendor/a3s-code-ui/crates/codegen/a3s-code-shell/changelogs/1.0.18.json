@@ -1,0 +1,132 @@
+[
+  {
+    "category": "performance",
+    "description": "**Startup** no longer hangs on slow networks while fetching remote settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Responses** now complete faster; uploads and session bookkeeping happen in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Managed policy** now blocks disallowed MCP servers and marketplace installs before any change is written.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Quoting** a previous message from the block viewer now works directly from the viewer.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Welcome screen** now stays until you actually send a prompt; a session is prepared in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Feedback** is now collected in a centered modal instead of a bottom card.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Startup** now makes fewer network requests by sharing settings fetches.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Feedback submissions** now include structured type, task, and failure information.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Feedback modal** now has a Drafts tab to manage and send saved drafts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Models** can now render interactive charts using Chart.js.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok inspect** and **grok mcp doctor** now show managed policy details.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Authentication recovery** during turns no longer fails immediately on transient errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image generation** now supports richer parameters via composer state.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**New sessions** start responding faster by running start hooks in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Retry behavior** for rate-limited requests is now configurable per model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The session dock now aligns consistently, shows more rows inline when expanded, and reveals stop controls on hover.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Models can now be configured with per-model mTLS client certificates for secure upstream connections.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pastes** from rich-text sources no longer stay inline or corrupt the composer when they contain special Unicode line separators.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mouse wheel** over a one-line prompt now scrolls the conversation history instead of being ignored.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash dropdowns** no longer truncate long command names when a short sibling is also visible.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent sessions** now respect the retry and rate-limit settings of their selected model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session picker** now opens with Ctrl+R everywhere; redo uses Ctrl+Shift+Z or Alt+Z.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent views** no longer duplicate the task prompt on first open after a live echo.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`/feedback <text>`** now saves a local draft before invoking the feedback skill.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Strikethrough text** now renders correctly inside markdown tables in the pager.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resume picker** now labels local sessions with a single disk walk instead of per-row lookups.",
+    "breaking_change": false
+  }
+]

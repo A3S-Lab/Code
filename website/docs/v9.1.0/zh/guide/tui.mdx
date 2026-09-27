@@ -1,0 +1,99 @@
+---
+title: 'A3S Code TUI'
+description: '混合全屏 TUI：grok-build UI 表面、A3S slash 目录、a3s-code-core 9.0.0 fact-log 回合'
+---
+
+# A3S Code TUI
+
+A3S Code 9.0.0 提供 `a3s-code-tui`：以
+[grok-build](https://github.com/xai-org/grok-build) 的 UI 积木为第一性原理基础、
+保留 **A3S 业务逻辑**、回合跑在 `a3s-code-core` 9.0.0 上的全屏终端界面。
+
+混合架构：
+
+- **UI：** 从 grok-build 引入的 prompt 编辑器与 inline 辅助（Apache-2.0，见
+  `tui/NOTICE`）。
+- **目录：** A3S slash 命令、权限模式、ACL 启动分层。
+- **Agent 缝：** 进程内 ACP 形态的 `CodeAgentAdapter` → fact-log `session.send`。
+
+嵌入其它宿主时请使用 A3S Code SDK。TUI 是同一 core 之上的终端客户端。
+
+## 两个终端面
+
+| 表面 | 如何落到 9.0.0 |
+| ---- | -------------- |
+| `a3s-code-tui` | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) 工作区成员；path 依赖 `a3s-code-core` 9.0.0。 |
+| `a3s code`（CLI） | 非 smoke 会话 **拉起** `a3s-code-tui`，编码回合走 9.0.0 fact-log。smoke 仍用更薄的进程内 UI。 |
+
+## 运行
+
+```bash
+cargo run -p a3s-code-tui -- --workspace . --home "$HOME"
+```
+
+| 参数 | 含义 |
+| ---- | ---- |
+| `--workspace <PATH>` | 会话工作区，默认 `.`。 |
+| `--explicit-config` / `--config` | 单层 ACL（跳过用户 + 工作区合并）。 |
+| `--home <PATH>` | 存放 `.a3s/config.acl` 的用户层目录。 |
+| `--model <ID>` | ACL 合并失败时页眉回退；回合始终用合并后的 `default_model`。 |
+
+stdout 不是终端时，打印产品名与模型后退出。
+
+## 配置
+
+配置为 A3S ACL。每回合前合并：
+
+1. 若设置了 `--explicit-config` 则只用该文件；否则
+2. `<home>/.a3s/config.acl`，再叠最近的工作区 `.a3s/config.acl`；
+3. 非空 `A3S_DEFAULT_MODEL` 覆盖 `default_model`。
+
+同名 provider 按层合并。TUI **不**用 `XAI_API_KEY` 选模型。见
+[Providers](/guide/providers)。
+
+## 按键与权限模式
+
+| 输入 | 动作 |
+| ---- | ---- |
+| Enter | 提交 prompt 或执行 slash。 |
+| `/` | 打开 A3S 目录的模糊菜单。 |
+| Up / Down / Tab | 浏览 / 补全菜单。 |
+| Shift+Tab (BackTab) | 循环权限：default → plan → auto → yolo。 |
+| Esc | 退出。 |
+
+页眉显示当前权限；`/plan`、`/ask`、`/auto`、`/yolo` 可直接设置。
+
+## Slash 命令
+
+菜单列出从 CLI TUI 迁入的 A3S 编码目录。当前已接线：
+
+| 命令 | 动作 |
+| ---- | ---- |
+| `/help` | 列出目录项。 |
+| `/status` | 工作区、模型、权限。 |
+| `/model` | 打印回合所用模型。 |
+| `/history [q]` | 在滚动区搜索既往 prompt。 |
+| `/export [path]` | 将转录写为 Markdown。 |
+| `/plan`、`/ask` | 权限设为 plan。 |
+| `/auto`、`/yolo` | 自主别名。 |
+| `/clear` | 清空滚动区（保留 fact-log）。 |
+| `/exit`、`/quit` | 退出。 |
+
+其余目录项转发给 core 会话的 slash 分发（与键入 `/compact …` 相同路径）。空 `/`
+浏览会隐藏高级别名（见源码 `SLASH_BROWSE_HIDDEN`）。
+
+## Prompt 如何跑
+
+1. `CodeAgentAdapter` 由合并后的 ACL 层打开。
+2. 惰性创建 `AgentSession`（`tui-session`），带上当前权限对应的规划 /
+   自动委派标志。
+3. `session.send(prompt, None)` 追加 fact-log `user.message` 并跑编码循环。
+4. 最终文本（或错误）写入滚动区。
+
+会话共享 `<workspace>/.a3s/effect-log/tui-session.jsonl`。`/clear` 只清 UI。
+
+## 相关
+
+- 箱内文档：`crates/code/tui/docs/ARCHITECTURE.md`
+- [Sessions](/guide/sessions) · [Commands](/guide/commands) ·
+  [Architecture](/guide/architecture)

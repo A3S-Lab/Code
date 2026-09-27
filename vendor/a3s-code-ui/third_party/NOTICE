@@ -1,0 +1,82 @@
+Third-party notices — vendored crates under third_party/
+========================================================
+
+This tree includes the following upstream projects, vendored in-source.
+Full license texts are next to each crate. Local modifications (if any) are
+documented in each crate's Cargo.toml header.
+
+--------------------------------------------------------------------------------
+mermaid-to-svg
+--------------------------------------------------------------------------------
+Path:       third_party/mermaid-to-svg/
+License:    MIT
+License file: third_party/mermaid-to-svg/LICENSE
+Upstream:   https://github.com/warpdotdev/mermaid-to-svg
+Copyright:  Copyright (c) 2025-2026 Denver Technologies, Inc. (see LICENSE)
+
+Further ancestry (mermaid.js, dagre.js, and related) is listed in:
+  third_party/mermaid-to-svg/THIRD_PARTY_NOTICES
+
+--------------------------------------------------------------------------------
+dagre_rust
+--------------------------------------------------------------------------------
+Path:       third_party/dagre_rust/
+License:    Apache License 2.0
+License file: third_party/dagre_rust/LICENCE
+Upstream:   https://github.com/r3alst/dagre-rust
+            (also re-published via warpdotdev/mermaid-to-svg crates/dagre_rust)
+Version:    0.0.5
+crates.io:  https://crates.io/crates/dagre_rust/0.0.5
+
+--------------------------------------------------------------------------------
+graphlib_rust
+--------------------------------------------------------------------------------
+Path:       third_party/graphlib_rust/
+License:    Apache License 2.0
+License file: third_party/graphlib_rust/LICENCE
+Upstream:   https://github.com/r3alst/graphlib-rust
+Version:    0.0.2
+crates.io:  https://crates.io/crates/graphlib_rust/0.0.2
+
+--------------------------------------------------------------------------------
+ordered_hashmap
+--------------------------------------------------------------------------------
+Path:       third_party/ordered_hashmap/
+License:    Apache License 2.0
+License file: third_party/ordered_hashmap/LICENCE
+Upstream:   https://github.com/r3alst/ordered-hashmap
+Version:    0.0.3
+crates.io:  https://crates.io/crates/ordered_hashmap/0.0.3
+
+--------------------------------------------------------------------------------
+nfsserve
+--------------------------------------------------------------------------------
+Path:       third_party/nfsserve/
+License:    BSD 3-Clause
+License file: third_party/nfsserve/LICENSE
+Upstream:   https://github.com/huggingface/nfsserve (v0.11.0)
+Copyright:  Copyright (c) 2023, XetData; Copyright (c) 2025, Hugging Face
+
+--------------------------------------------------------------------------------
+fuser
+--------------------------------------------------------------------------------
+Path:       third_party/fuser/
+License:    MIT
+License file: third_party/fuser/LICENSE.md
+Upstream:   https://github.com/cberner/fuser (v0.18.0 @ 9c957f74efe715112049298cdf1d601781829c8d)
+Copyright:  Copyright (c) 2020-present Christopher Berner;
+            Copyright 2013-2019 Andreas Neuhaus (see LICENSE.md)
+
+--------------------------------------------------------------------------------
+End of notices for vendored third_party/ crates.
+
+Full product notices (all crates.io / git dependencies shipped with the Grok
+CLI, including MPL packages, Apache NOTICE files, libgit2 COPYING, and
+dual-license elections) live in:
+
+  THIRD-PARTY-NOTICES
+
+Those entries cover the legal-requirements matrix (MIT, Apache-2.0, BSD-*,
+ISC, Zlib, Unicode-*, BSL-1.0, MPL-2.0, CDLA-Permissive-2.0, Unicode-DFS-2016,
+and the libgit2 GPL+linking-exception bundle). Dropped-from-release packages
+(CDDL inferno, EPL colored_json, WTFPL terminfo) are omitted there by design.

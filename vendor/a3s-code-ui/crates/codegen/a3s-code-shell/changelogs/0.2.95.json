@@ -1,0 +1,82 @@
+[
+  {
+    "category": "fixes",
+    "description": "**IME text input in Otty** no longer attaches unrelated clipboard images on every character.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rewind** now fully removes the selected turn from both scrollback and the model's conversation history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued prompts** now abort long blocking waits instead of waiting for the full timeout.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Teams** can now ship default allowed commands via managed_config.toml (user deny rules still win).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**File links and media** now work for worktree sessions under ~/.grok/worktrees/.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Collapsed Read/Edit tool rows** now show only the filename instead of long absolute paths.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Clipboard copies on Wayland** now succeed even when the terminal loses focus mid-copy.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**User messages queued** behind an auto-wake turn are no longer lost when the user presses Ctrl+C.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Mid-turn interjections** now appear as normal user prompts (❯) instead of a separate cyan block.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash completion** now shows sibling skills that share a frontmatter name and correctly sizes wrapped descriptions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Single tool calls** that belong to a verb group now collapse into an aggregated header row.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**File watching** on Linux now uses far fewer system resources for large projects with many dependencies.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed sessions** that became permanently stuck after tool-use history corruption.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/always-approve** and **/auto** now toggle their mode on and off when run repeatedly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal command cards** on a3s now correctly settle after foreground bash tasks.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copy failure** toast now recommends trying /minimal for native terminal rendering.",
+    "breaking_change": false
+  }
+]

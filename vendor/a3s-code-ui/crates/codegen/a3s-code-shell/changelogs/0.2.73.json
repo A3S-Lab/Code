@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Doubled lines** after tab switches or focus changes in tmux or editor terminals are now healed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Clipboard copy** now only shows success when the pasteboard actually received the text via a trusted path.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Keep text selection highlight** setting added so drag selections stay visible until dismissed.",
+    "breaking_change": false
+  }
+]

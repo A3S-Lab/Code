@@ -1,0 +1,94 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-code-login"
+version = "0.1.0"
+edition.workspace = true
+description = "Authentication subsystem for the grok shell crate family: login flows, token refresh, credential providers, and auth storage."
+
+[features]
+# Loom model-checking for src/manager/lock/flock_wait.rs; test-only
+# (compile_error!-guarded). Run in release (debug overflows loom's stacks):
+#   cargo test --release --features loom -p a3s-code-login --lib flock_wait::loom -- --test-threads=1
+loom = ["dep:loom"]
+# Exposes `#[cfg(test)]`-only helpers to downstream crates' test targets.
+test-support = []
+default-bazel = ["test-support"]
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+backon = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+obfstr = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+    "time",
+] }
+tokio-util = { workspace = true }
+toml = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v7"] }
+webbrowser = { workspace = true }
+a3s-file-utils = { path = "../a3s-file-utils" }
+a3s-code-auth = { workspace = true, features = ["middleware"] }
+a3s-code-config = { workspace = true }
+a3s-code-config-types = { workspace = true }
+a3s-code-env = { workspace = true }
+a3s-code-http = { workspace = true }
+a3s-code-memory = { workspace = true }
+a3s-code-sampler = { workspace = true }
+a3s-code-shell-base = { workspace = true }
+a3s-code-telemetry = { workspace = true }
+a3s-code-tools = { workspace = true }
+a3s-code-version = { workspace = true }
+a3s-system-power = { workspace = true }
+
+# gRPC stack for the gated login path; compiled out unless the feature is on.
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+# Loom model-checking harness; test-only, gated by the `loom` feature.
+loom = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+filetime = { workspace = true }
+rsa = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "time"] }
+tokio = { workspace = true, features = ["test-util"] }
+a3s-code-test-support = { workspace = true }
+a3s-code-extra-ca = { workspace = true }
+wiremock = { workspace = true }
+pretty_assertions = { workspace = true }
+indexmap = { workspace = true }
+# Test-only builds expose `env::EnvVarGuard` to this crate's test targets.
+a3s-code-shell-base = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,102 @@
+[
+  {
+    "category": "fixes",
+    "description": "**MCP server connections** no longer get torn down during rapid config reloads.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Stale leader processes** are now cleaned up when leader mode is disabled via config or remote settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sandbox profile** is now preserved when resuming sessions so commands continue to work as before.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**list_dir** now shows more relevant files when a large directory appears early in alphabetical order.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cancel button** in turn status always shows [stop]; queue pane highlight now follows theme changes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok quit** no longer hangs when background git or network tasks are slow.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The token count shown after auto-compaction now matches the context bar exactly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The git branch icon now renders correctly in iTerm2 without a Nerd Font.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Fast tools like grep now show as completed immediately even when other tools in the same round are still running.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**list_dir** now gives clearer guidance when a directory is too large, using the actual tool names available in your session.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Long sessions that display inline images no longer grow to multi-GB memory usage.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+Enter** now sends the prompt when the agent is idle (same behavior as Enter).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**resume_from** now correctly continues a sub-agent in the same working directory it was using before.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**resume_from** now continues a finished sub-agent in place instead of forking a new conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok sessions delete <id>** command now lets you permanently remove a session from the CLI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Files with non-ASCII names (e.g. Chinese) no longer crash the session when plan mode checks for markdown.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Session lists (welcome screen, /resume, grok sessions list) are now sorted by the same activity time shown in the UI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed bash tool failures** when models send numeric arguments such as timeout as JSON strings instead of numbers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prevented crashes** during bash command output streaming when building progress frames.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Disabled inline image rendering** on iTerm2 terminals where scrollback overlays cannot be supported.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,49 @@
+name: image-chip-preview-path-free
+description: >
+  Path-free image chips with post-paste preview (no-pixels terminal matrix cell).
+  PTY harness has no TERM_PROGRAM brand, so overlay is metadata + path.
+  Screenshots are retained for video stills.
+terminal:
+  rows: 40
+  cols: 120
+mock:
+  response: "SCRIPTED_IMAGE_PREVIEW ok"
+  fixture_images:
+    - name: path_preview
+      extension: png
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_image_paths
+    images: [path_preview]
+  - action: assert_contains
+    text: "Image #1"
+  - action: assert_not_contains
+    text: "Image #1:"
+  - action: assert_contains
+    text: "Format:"
+  - action: assert_contains
+    text: "path_preview.png"
+  - action: screenshot
+    name: image-chip-preview-after-paste
+    note: Path-free Image #1 chip with metadata/path preview (no graphics protocol).
+  - action: keys
+    keys: "PREVIEW_DISMISSED_64280529"
+  - action: assert_contains
+    text: "PREVIEW_DISMISSED_64280529"
+  - action: assert_not_contains
+    text: "Format:"
+  - action: assert_not_contains
+    text: "Path:"
+  - action: assert_not_contains
+    text: "path_preview.png"
+  - action: screenshot
+    name: image-chip-after-type
+    note: Typing after the chip dismisses the near-cursor preview.
+  - action: keys
+    keys: "<Esc>"
+  - action: keys
+    keys: "<Esc>"
+  - action: assert_not_contains
+    text: panicked

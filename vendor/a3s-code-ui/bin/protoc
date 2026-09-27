@@ -1,0 +1,46 @@
+#!/usr/bin/env dotslash
+
+{
+    "name": "protoc",
+    "platforms": {
+        "macos-aarch64": {
+            "arg0": "underlying-executable",
+            "size": 2290929,
+            "hash": "sha256",
+            "digest": "2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765",
+            "format": "zip",
+            "path": "bin/protoc",
+            "providers": [
+                {
+                    "url": "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-osx-aarch_64.zip"
+                }
+            ]
+        },
+        "linux-x86_64": {
+            "arg0": "underlying-executable",
+            "size": 3288836,
+            "hash": "sha256",
+            "digest": "3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a",
+            "format": "zip",
+            "path": "bin/protoc",
+            "providers": [
+                {
+                    "url": "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip"
+                }
+            ]
+        },
+        "linux-aarch64": {
+            "arg0": "underlying-executable",
+            "size": 3256816,
+            "hash": "sha256",
+            "digest": "6427349140e01f06e049e707a58709a4f221ae73ab9a0425bc4a00c8d0e1ab32",
+            "format": "zip",
+            "path": "bin/protoc",
+            "providers": [
+                {
+                    "url": "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-aarch_64.zip"
+                }
+            ]
+        }
+    }
+}

@@ -1,0 +1,19 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-code-env"
+version = "0.1.0"
+edition.workspace = true
+description = "Backend environment for the A3S Code CLI crate family: endpoint URL presets, shared GROK_*/A3S_* readers, the credentials-path resolver, and the first-party credential list."
+
+[features]
+# Exposes `EnvVarGuard` (and its process-wide env lock) to downstream
+# crates' test targets.
+test-support = []
+default-bazel = ["test-support"]
+
+[dependencies]
+tracing = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

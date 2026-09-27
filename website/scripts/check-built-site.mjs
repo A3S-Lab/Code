@@ -71,13 +71,15 @@ const realCapabilityTuiMarkers = [
   'a3s-real-user-message',
   'a3s-real-tool-line',
   '◇ high',
-  'default mode',
+  '⏵</i>agent',
 ];
 
 const obsoleteCapabilityUiMarkers = [
   'a3s-capability-player-intro',
   'a3s-capability-tui-plan',
   'HUMAN APPROVAL REQUIRED',
+  'default mode',
+  'sdk/go/v8',
 ];
 
 for (const homepage of ['index.html', 'en/index.html']) {

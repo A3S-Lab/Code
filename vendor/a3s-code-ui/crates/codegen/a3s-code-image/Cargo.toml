@@ -1,0 +1,17 @@
+[package]
+name = "a3s-code-image"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+description = "Image validation and transcoding shared by A3S Code tools and clients"
+
+[dependencies]
+crc32fast = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+a3s-test-utils = { workspace = true }
+
+[lints]
+workspace = true

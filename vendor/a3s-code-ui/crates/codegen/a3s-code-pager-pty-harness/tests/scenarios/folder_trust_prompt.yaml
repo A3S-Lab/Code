@@ -1,0 +1,61 @@
+name: folder-trust-prompt
+description: >
+  Full session e2e for the client-side folder-trust prompt. With the feature on
+  (`GROK_FOLDER_TRUST=1`) and the pager running in a git repo that ships a
+  repo-local `.mcp.json`, `decide` returns `Prompt` so the trust question renders
+  BEFORE any session starts. Accepting it (`y`) persists the grant, lets the
+  session proceed, and a submitted prompt streams the mock assistant response —
+  proving repo-local loading was gated until the user answered.
+terminal:
+  rows: 50
+  cols: 120
+environment:
+  env:
+    - key: GROK_FOLDER_TRUST
+      value: "1"
+    # A self-built (unstamped) a3s auto-trusts and never prompts; simulate a
+    # release build so the folder-trust prompt is actually evaluated.
+    - key: GROK_TEST_VERSION
+      value: "0.0.0-sim"
+workspace:
+  git_init: true
+  files:
+    ".mcp.json": "{\"mcpServers\": {}}"
+mock:
+  response: "FOLDER_TRUST_SESSION_OK assistant reply streamed after the folder was trusted."
+steps:
+  # 1. The trust question renders before any session exists.
+  - action: wait_for_text
+    text: "Do you trust the contents of this directory"
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  # The decline affordance is on screen (keyboard-driven y/N answer; n = quit).
+  - action: assert_contains
+    text: "No, quit"
+  # 2. Accept the folder.
+  - action: keys
+    keys: "y"
+  # 3. The question is gone and the normal welcome / prompt is ready.
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: "Do you trust the contents of this directory"
+  # 4. Submit a prompt — the session must now start (gate answered).
+  - action: type_text
+    text: "summarize the trusted repo"
+  - action: keys
+    keys: "<Enter>"
+  # 5. The mock assistant response renders ⇒ the session actually started and
+  #    repo-local loading proceeded ungated.
+  - action: wait_for_text
+    text: FOLDER_TRUST_SESSION_OK
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: assert_not_contains
+    text: panicked
+  - action: assert_running
+  - action: screenshot
+    name: folder-trust-session
+    note: "Trust prompt accepted; prompt submitted; mock assistant response rendered."

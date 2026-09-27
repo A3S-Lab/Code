@@ -1,0 +1,57 @@
+[
+  {
+    "category": "features",
+    "description": "**Voice dictation** now works on Linux (requires pipewire, pulseaudio-utils or alsa-utils).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Try Again** on the free-usage paywall now correctly resubmits after rate-limit retries.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Git operations** like rebase no longer cause long pauses from repeated full-repo scans.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cursor** now respects your terminal's default blink style instead of always blinking.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New /auto slash command** switches to classifier permission mode; the menu now shows only the other mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Skill commands** in scrollback now highlight only the command name, not the arguments.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plan files** now default to .grok/plan.md to match A3S Code conventions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**--effort** and **--reasoning-effort** are now interchangeable CLI flags for setting reasoning effort.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**LaTeX math** renders correctly for display equations and complex subscripts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image edits** now use the higher-quality Imagine model for better output.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queue hint** in the terminal no longer shows incorrect bold text on part of the message.",
+    "breaking_change": false
+  }
+]

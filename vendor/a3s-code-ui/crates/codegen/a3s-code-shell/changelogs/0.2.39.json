@@ -1,0 +1,37 @@
+[
+  {
+    "category": "features",
+    "description": "**run_terminal_cmd** can stream live stdout/stderr chunks when the workspace flag is enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/session-info** now displays the current turn index.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resumed subagents** no longer loop forever during auto-compaction on large context windows.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Server-synced and bundled skills are now discovered from launcher-injected directories.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task** descriptions and & rejection messages now correctly name the real parameters.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Doom-loop detection** no longer falsely triggers on distinct failing tool calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background `&` operator** is now allowed by default in terminal commands.",
+    "breaking_change": false
+  }
+]

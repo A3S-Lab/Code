@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Multiline input** now works on the agent dashboard the same way it does in regular sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**PageUp and PageDown** now scroll the conversation while the prompt is focused.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Keyboard Shortcuts** modal now follows Vim mode navigation keys when enabled.",
+    "breaking_change": false
+  }
+]

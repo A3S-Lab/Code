@@ -1,0 +1,29 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-chat-state"
+version = "0.1.0"
+edition.workspace = true
+description = "Actor-based chat state management for A3S agents"
+
+[features]
+default-bazel = []
+
+[dependencies]
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+# `CompactionDetail`, embedded in `CompactionMode::Segments`.
+a3s-compaction-transcript = { workspace = true }
+a3s-code-compaction = { path = "../../common/a3s-code-compaction" }
+a3s-code-sampling-types = { path = "../a3s-code-sampling-types" }
+a3s-token-estimation = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

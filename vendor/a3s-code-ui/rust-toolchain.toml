@@ -1,0 +1,18 @@
+[toolchain]
+# We use the latest stable, but bump it manually.
+# To avoid unnecessary churn and simplify regression detection
+# - bump one point version at a time
+# - wait at least a couple of weeks after the release before bumping
+# After bumping the version, run
+# ```
+# cargo check --all-targets --workspace
+# cargo clippy --all-targets --workspace
+# ```
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+profile = "default" # this will override global preferred profile if such is set
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+] # host target will be added automatically
+# force CI

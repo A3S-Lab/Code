@@ -1,0 +1,5 @@
+# Cursor plan files dropped at the crate root during local runs.
+# Keep this rooted so `src/**/plan/` modules stay trackable.
+/plan/
+# Core dumps (e.g. core.474331) -- never commit these.
+core.*

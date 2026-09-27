@@ -1,0 +1,27 @@
+[
+  {
+    "category": "features",
+    "description": "**MCP servers** from host integrations can now be added, replaced, or removed without restarting the session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Attached images** are now saved to real disk paths so the model can read them in any terminal.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/resume** now selects the correct model when a saved model name is ambiguous.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash and completion menus** no longer crash if the terminal is resized while open.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Agent-run terminal commands** now set `GROK_AGENT=1` so host tools can tell them apart from interactive shells.",
+    "breaking_change": false
+  }
+]

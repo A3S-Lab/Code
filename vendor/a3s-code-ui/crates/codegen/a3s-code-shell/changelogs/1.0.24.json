@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Esc** no longer cancels a running turn and instead reminds you to use Ctrl+C.",
+    "breaking_change": false
+  }
+]

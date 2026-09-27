@@ -1,0 +1,51 @@
+name: tool-header-path-selection
+description: >-
+  Drag-select on a tool command header copies only the meaningful operand
+  (command / path), not the label prefix. Uses a user `!` bash execute block
+  because the label style is `Run {cmd}` and the command is the selectable span
+  — same Selectable::Spans mechanism as Read {path}.
+terminal:
+  rows: 45
+  cols: 110
+environment:
+  env:
+    - key: SSH_CONNECTION
+      value: "scripted-test 1 127.0.0.1 2"
+mock:
+  response: "BASH_SESSION_READY"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 25000
+  - action: type_text
+    text: "go"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: BASH_SESSION_READY
+    timeout_ms: 45000
+  # Unique token so we can locate the command span unambiguously.
+  - action: paste_prompt
+    text: "! printf 'TOOL_HDR_SEL_TOKEN\\n'"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: "TOOL_HDR_SEL_TOKEN"
+    timeout_ms: 30000
+  - action: wait
+    millis: 400
+  # Select only the command operand (not the "Run " / "$ " label prefix).
+  - action: select_text_range
+    from_text: "printf"
+    to_text: "TOOL_HDR_SEL_TOKEN"
+  - action: assert_osc52_contains
+    text: "TOOL_HDR_SEL_TOKEN"
+  # Label prefix must not appear alone as the copied selection payload.
+  # (Full line copy would include "Run " or "$ " before the command.)
+  - action: assert_osc52_not_contains
+    text: "Run printf"
+  - action: assert_osc52_not_contains
+    text: "$ printf"
+  - action: screenshot
+    name: tool-header-operand-selected
+    note: Tool header selection copies the command operand, not the Run/$ label.

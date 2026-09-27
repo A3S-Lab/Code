@@ -1,6 +1,6 @@
 //! Scrollback column geometry.
 //!
-//! Vendored from the grok-build pager scrollback layout. Product marks stay A3S.
+//! Vendored from the a3s-build pager scrollback layout. Product marks stay A3S.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 

@@ -1,0 +1,27 @@
+[
+  {
+    "category": "features",
+    "description": "Memory system: /remember command, note modal with raw/enhanced preview, x.ai/memory/rewrite ACP extension, Ctrl+F fullscreen toggle for /memory modal.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Agent configuration: /config-agents modal with agents, personas, and defaults.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Goal classifier: end-to-end goal tracking with subagent-powered classification.",
+    "breaking_change": false
+  },
+  {
+    "category": "improvements",
+    "description": "Image handling: process-wide moka cache, hardened pipeline against truncated/CRC errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "bug_fixes",
+    "description": "Fixed cache regression from raw_output always being populated. Fixed channel switch so grok update --stable works correctly across version series.",
+    "breaking_change": false
+  }
+]

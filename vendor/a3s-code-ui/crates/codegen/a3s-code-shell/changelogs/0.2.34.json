@@ -1,0 +1,12 @@
+[
+  {
+    "category": "features",
+    "description": "**`grok login`** now defaults to device code flow, which works reliably in SSH, WSL, VPN, and browser-restricted environments.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a hang during auth refresh.**",
+    "breaking_change": false
+  }
+]

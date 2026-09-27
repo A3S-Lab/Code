@@ -209,7 +209,7 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
     let headers = config.resolved_headers();
 
     match config.provider.as_str() {
-        "anthropic" | "claude" => {
+        "anthropic" | "claude" | "cc-switch" => {
             let mut client = AnthropicClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry);
@@ -232,7 +232,8 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             Arc::new(client)
         }
-        "openai" | "gpt" => {
+        // OpenAI-compatible providers (deepseek, groq, together, ollama, grok, etc.)
+        "openai" | "gpt" | "grok" | "xai" => {
             let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
                 default_openai_native_structured_support(
                     &config.provider,

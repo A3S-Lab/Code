@@ -1,0 +1,307 @@
+---
+title: 'External Tasks'
+description: 'Fulfill queued tool calls from outside the agent process and report the result back'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# External Tasks
+
+Some work cannot run inside the agent process: it belongs to a separate worker, a CI
+runner, or a human in another system. When a lane is routed to an external handler, tool
+calls scheduled on that lane are **queued** as external tasks instead of executed. Your
+host code drains the pending queue, does the work however it likes, and reports the
+outcome back with `completeExternalTask`; the waiting tool call then returns that outcome.
+Reach for this only when an outside worker is genuinely part of your architecture.
+
+External tasks come from the [lane queue](/guide/examples/lane-queue). The session needs a
+queue config (`queueConfig` / `queue_config` / `QueueConfig`) and at least one lane set to
+`external` mode. `hybrid` lanes still execute in process and only emit notifications, so
+they produce nothing to drain.
+
+The lane queue schedules host-direct tool calls: `session.tool(...)` and the typed helpers
+such as `bash`, `readFile`, and `writeFile`. Tool calls the model makes inside a `send` or
+`stream` turn execute directly and never become external tasks.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+
+    // `bash` runs on the execute lane, so this call waits for the worker below.
+    let build = session.bash("npm run build");
+    let worker = async {
+        let task = loop {
+            if let Some(task) = session.pending_external_tasks().await.into_iter().next() {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        println!(
+            "pending: {} on {:?} ({})",
+            task.task_id, task.lane, task.command_type
+        );
+        // ...the host does the real work here (run CI, call a service, ask a human)...
+        let completed = session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({
+                        "output": "build succeeded on the CI runner",
+                        "exit_code": 0
+                    }),
+                    error: None,
+                },
+            )
+            .await;
+        println!("completed: {completed}");
+    };
+    let (output, ()) = tokio::join!(build, worker);
+    println!("bash returned: {}", output?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', { queueConfig: {} });
+
+// Route the execute lane to an external worker so its tools are queued, not executed.
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// `bash` runs on the execute lane, so this call waits for the worker below.
+const build = session.bash('npm run build');
+
+// Poll until the queued call shows up.
+let [task] = await session.pendingExternalTasks();
+while (!task) {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  [task] = await session.pendingExternalTasks();
+}
+console.log(`pending: ${task.task_id} on ${task.lane} (${task.command_type})`);
+
+try {
+  // ...the host does the real work here (run CI, call a service, ask a human)...
+  const ok = await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { output: 'build succeeded on the CI runner', exit_code: 0 },
+  });
+  console.log('completed:', ok);
+} catch (err) {
+  await session.completeExternalTask(task.task_id, {
+    success: false,
+    error: String(err),
+  });
+}
+
+console.log('bash returned:', await build);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(".", opts)
+
+# Route the execute lane to an external worker so its tools are queued, not executed.
+session.set_lane_handler("execute", "external", 300000)
+
+with ThreadPoolExecutor(max_workers=1) as pool:
+    # `bash` runs on the execute lane, so this call waits for the worker below.
+    build = pool.submit(session.bash, "npm run build")
+
+    # Poll until the queued call shows up.
+    pending = session.pending_external_tasks()
+    while not pending:
+        time.sleep(0.05)
+        pending = session.pending_external_tasks()
+    task = pending[0]
+    print(f"pending: {task['task_id']} on {task['lane']} ({task['command_type']})")
+
+    try:
+        # ...the host does the real work here (run CI, call a service, ask a human)...
+        ok = session.complete_external_task(
+            task["task_id"],
+            success=True,
+            result={"output": "build succeeded on the CI runner", "exit_code": 0},
+        )
+        print("completed:", ok)
+    except Exception as err:
+        session.complete_external_task(
+            task["task_id"],
+            success=False,
+            error=str(err),
+        )
+
+    print("bash returned:", build.result())
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+type bashResult struct {
+	output string
+	err    error
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Bash runs on the execute lane, so this call waits for the worker below.
+	build := make(chan bashResult, 1)
+	go func() {
+		output, err := session.Bash(ctx, "npm run build")
+		build <- bashResult{output, err}
+	}()
+
+	var task code.ExternalTask
+	for {
+		pending, err := session.PendingExternalTasks(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) > 0 {
+			task = pending[0]
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	fmt.Println("pending:", task.TaskID, task.Lane, task.CommandType)
+
+	// ...the host does the real work here (run CI, call a service, ask a human)...
+	completed, err := session.CompleteExternalTask(
+		ctx,
+		task.TaskID,
+		code.ExternalTaskResult{
+			Success: true,
+			Result: json.RawMessage(
+				`{"output":"build succeeded on the CI runner","exit_code":0}`,
+			),
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("completed:", completed)
+
+	result := <-build
+	if result.err != nil {
+		log.Fatal(result.err)
+	}
+	fmt.Println("bash returned:", result.output)
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- Tools map to lanes by name. `read`, `ls`, `search` (behind `grep` and `glob`),
+  `web_fetch`, `web_search`, and the code-intelligence tools use the `query` lane; every
+  other tool, including `bash`, `write`, and `edit`, uses `execute`.
+- Each pending task carries `task_id`, `session_id`, `lane` (the lane name as
+  `"Execute"`, `"Query"`, and so on), `command_type` (the tool name), `payload` (the tool
+  arguments), and `timeout_ms`. Pass the `task_id` back to `completeExternalTask` /
+  `complete_external_task` / `CompleteExternalTask`.
+- The completion shape is `{ success, result?, error? }`. On success, `result` becomes the
+  tool result: it must contain an `output` string and may add `exit_code` (default 0),
+  `metadata`, and `images` (`[{ data, media_type }]` with base64 `data`). A result without
+  `output` turns into a tool error. On failure, the tool call ends with a tool error that
+  includes `error` (default `External task failed`). Tool errors come back as the tool's
+  output (for `bash`, text starting with `Tool execution error:`), not as a thrown error.
+- If nothing completes the task within the lane's `timeoutMs` / `timeout_ms` (default
+  60000), the task is removed and the waiting call ends with a timeout tool error.
+- Completion returns `true` when the task was still pending and `false` otherwise, for
+  example after it timed out. Python queue methods are synchronous; in Node they return
+  promises; in Go they take the caller's `context.Context`.

@@ -1,0 +1,5 @@
+{
+  "agentId": "agt_1",
+  "name": "sendPrompt",
+  "args": { "prompt": "hello" }
+}

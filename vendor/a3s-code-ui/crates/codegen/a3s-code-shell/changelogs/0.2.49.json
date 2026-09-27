@@ -1,0 +1,52 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Skill reloads** no longer corrupt active tool calls or produce duplicate results in the conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok --resume** now correctly finds the real session instead of failing on empty image-only folders.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Pasted images and relative paths now use the correct directory when resuming a session created elsewhere.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Marketplace plugin listings now show skills, MCP servers, and commands when the catalog is published.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Mermaid flowcharts now render with fewer avoidable edge crossings.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid flowcharts** now correctly render node groups, arrow endings, self-loops and line styles.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**stateDiagram** mermaid blocks now render as Unicode diagrams instead of source fallback.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** \"unknown session id\" errors that occurred after the leader process crashed or was killed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasted images** now survive interjections and queue edits instead of being dropped.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Managed MCP connectors** (Slack, Linear, etc.) now appear correctly when using leader mode.",
+    "breaking_change": false
+  }
+]

@@ -1525,3 +1525,23 @@ async fn soak_web_search_loopback_fixture_stays_connection_and_byte_capped() {
         peak.load(Ordering::SeqCst)
     );
 }
+
+#[tokio::test]
+async fn deferred_prep_abort_does_not_wait_for_the_slow_task() {
+    let started = std::time::Instant::now();
+    let prep = DeferredPrep::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    drop(prep);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "an unused slow prep must be aborted instead of blocking the fast path"
+    );
+}
+
+#[tokio::test]
+async fn deferred_prep_join_returns_the_finished_value() {
+    let mut prep = DeferredPrep::spawn(async { 7_u8 });
+    let joined = prep.join().await.expect("prep task was spawned");
+    assert_eq!(joined.expect("prep task completed"), 7);
+}

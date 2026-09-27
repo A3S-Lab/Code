@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed chat history corruption** that could duplicate tool results or cause later 400 errors after repeated identical tool calls.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed infinite redirect loops** in embedded previews when the browser blocks the required cookie.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Improved the action-stationarity nudge message** to avoid incorrectly claiming tool results were identical.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed external auth provider commands** (`auth_provider_command`) not working on Windows.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed incorrect 'Turn cancelled by user' messages** shown on internal send-now wake turns.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed language server crashes** (e.g. Roslyn on every edit) and missing C# diagnostics; improved diagnostics reliability for other servers.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Improved prompt caching** for long conversations, reducing repeated billing on growing transcripts.",
+    "breaking_change": false
+  }
+]

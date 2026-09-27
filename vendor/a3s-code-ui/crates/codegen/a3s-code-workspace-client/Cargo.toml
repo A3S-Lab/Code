@@ -1,0 +1,29 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-code-workspace-client"
+version = "0.1.0"
+edition.workspace = true
+description = "Lightweight typed client for hub-proxied workspace.* RPCs (shared by a3s-code-shell proxy mode and other consumers)"
+
+[dependencies]
+semver = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+a3s-computer-hub-sdk = { workspace = true }
+a3s-code-workspace-types = { workspace = true }
+a3s-tool-protocol = { workspace = true }
+a3s-tool-runtime = { workspace = true }
+
+[features]
+default = []
+default-bazel = []
+[dev-dependencies]
+schemars = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+a3s-tool-types = { workspace = true }
+
+[lints]
+workspace = true

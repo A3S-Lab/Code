@@ -1,0 +1,92 @@
+[
+  {
+    "category": "fixes",
+    "description": "**`!cmd` commands** now allow up to one hour before timing out.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**npm package** now installs the native binary under `$GROK_HOME/bin` (honoring the same override as the Rust CLI).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Startup warnings** now point to `/doctor` for details and fixes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard hover and clicks** no longer miss the gaps between items in wide mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Shift/Alt+Enter** now inserts a newline while editing a queued prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued prompt edits** under combine mode no longer lose changes due to premature hold release.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Users can now disable image generation and video generation tools (and their slash commands) via config.toml or environment variables.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "`/session-info` now displays whether the session uses OAuth or an API key and where to manage the account.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Forking a session that used compaction no longer causes later rewinds to fail with missing checkpoint errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "You can now run `grok doctor fix` commands directly from inside the TUI instead of only from the CLI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "When a permission prompt appears while viewing scrollback, focus now correctly moves to the prompt so you can answer.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Voice dictation on macOS now uses less memory by running capture in a temporary helper process.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Pressing Esc once now cancels the current agent turn (except in fullscreen vim scrollback mode).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "A3S Code now automatically stops a turn that keeps repeating the exact same tool call many times in a row.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Configs using either spelling of the workspace teleport disable flag now load and save correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Background subagent completion messages no longer leak into unrelated sessions when multiple sessions are active.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "When the auto-permission classifier times out or fails, A3S Code now shows a normal permission prompt instead of silently denying.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Managed MCP tools** no longer time out prematurely on slow operations like Notion updates.",
+    "breaking_change": false
+  }
+]

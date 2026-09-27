@@ -1,0 +1,6 @@
+{
+  "code": "cursor_account_unavailable",
+  "retryable": false,
+  "detail": {},
+  "reason": "user_missing"
+}

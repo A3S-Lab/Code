@@ -1,0 +1,13 @@
+[package]
+edition.workspace = true
+license = "Apache-2.0"
+name = "a3s-prompt-queue"
+version = "0.1.0"
+description = "Shared prompt-queue wire types for a3s-code-shell and a3s-code-pager"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

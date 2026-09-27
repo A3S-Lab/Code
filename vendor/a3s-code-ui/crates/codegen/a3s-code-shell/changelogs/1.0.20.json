@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Scroll history** after sending a prompt no longer loses the reserved bottom padding or jumps the viewport unexpectedly.",
+    "breaking_change": false
+  }
+]

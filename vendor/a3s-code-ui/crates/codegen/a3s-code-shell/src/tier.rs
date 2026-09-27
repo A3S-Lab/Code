@@ -1,0 +1,49 @@
+//! Subscription-tier classification shared across the shell and the pager.
+//!
+//! The subscription tier reaches the client as a free-form **display-name string**.
+//! It comes from CCP `/settings` `subscription_tier_display`, or from the numeric JWT `tier` claim.
+//! [`crate::agent::mvp_agent::jwt_tier_claim`] maps the numeric claim to a display-style string.
+//! There is no shared enum, so gating decisions classify the string here in ONE place.
+//! That keeps the pager's cosmetic slash-command gate and the shell's capability (toolset) gate from drifting apart.
+//!
+//! "Restricted" tiers are the personal free tier and X Basic, the tiers the server zero-limits on the Imagine and voice endpoints.
+//! Everything else (A3S Code, A3S Code Heavy/Lite, X Premium/+, and any unknown future name) is unrestricted (**fail-open**).
+
+/// Whether a **known** subscription-tier display name is a gated tier: the free tier or X Basic.
+/// The free tier's CCP display is "Free" or an empty string; X Basic's is "X Basic", with "x_basic" as the JWT-claim fallback spelling.
+/// The pager treats absence as restricted (cosmetic, recovers live on the next settings update).
+/// The shell treats absence as unrestricted (fail-open): the server is the authority on per-tier limits, so never withhold a capability on a guess.
+pub fn is_restricted_tier_name(tier: &str) -> bool {
+    let t = tier.trim().to_ascii_lowercase();
+    t.is_empty() || t == "free" || t == "x basic" || t == "x_basic"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_names() {
+        assert!(is_restricted_tier_name(""));
+        assert!(is_restricted_tier_name("   "));
+        assert!(is_restricted_tier_name("Free"));
+        assert!(is_restricted_tier_name("free"));
+        assert!(is_restricted_tier_name("X Basic"));
+        assert!(is_restricted_tier_name("x_basic"));
+        assert!(is_restricted_tier_name("  X BASIC  "));
+    }
+
+    #[test]
+    fn unrestricted_names() {
+        assert!(!is_restricted_tier_name("A3S Code"));
+        assert!(!is_restricted_tier_name("A3S Code Heavy"));
+        assert!(!is_restricted_tier_name("supergrok_lite"));
+        assert!(!is_restricted_tier_name("X Premium"));
+        assert!(!is_restricted_tier_name("x_premium_plus"));
+        // API keys are not free-tier gated.
+        assert!(!is_restricted_tier_name("api_key"));
+        assert!(!is_restricted_tier_name("API Key"));
+        // Unknown future tiers fail open.
+        assert!(!is_restricted_tier_name("some_new_plan"));
+    }
+}

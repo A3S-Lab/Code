@@ -1,0 +1,291 @@
+use super::*;
+use crate::flags::ConfigSource;
+use std::collections::BTreeMap;
+use strum::IntoEnumIterator;
+
+#[test]
+fn every_feature_has_one_row_with_its_own_spellings() {
+    for feature in Feature::iter() {
+        assert_eq!(
+            FEATURES.iter().filter(|spec| spec.id == feature).count(),
+            1,
+            "{feature:?} needs exactly one row in FEATURES",
+        );
+    }
+    assert_eq!(
+        Feature::iter().count(),
+        FEATURES.len(),
+        "the enum and FEATURES disagree: a variant has no row, or a row has no variant",
+    );
+
+    for spec in FEATURES {
+        assert_eq!(spec.path, format!("features.{}", spec.key));
+        assert_eq!(
+            FEATURES.iter().filter(|s| s.key == spec.key).count(),
+            1,
+            "{} is on two rows",
+            spec.key,
+        );
+        assert_eq!(
+            FEATURES.iter().filter(|s| s.env == spec.env).count(),
+            1,
+            "{} is read by two features",
+            spec.env,
+        );
+    }
+}
+
+/// Product decisions, stated here rather than read back out of the table.
+#[test]
+fn registered_settings() {
+    let rows: BTreeMap<_, _> = FEATURES
+        .iter()
+        .map(|spec| (spec.key, (spec.env, spec.default_enabled)))
+        .collect();
+    assert_eq!(
+        rows,
+        BTreeMap::from([
+            ("session_search", ("GROK_SESSION_SEARCH", true)),
+            ("lsp_tools", ("GROK_LSP_TOOLS", false)),
+            ("web_fetch", ("GROK_WEB_FETCH", false)),
+            ("session_recap", ("GROK_SESSION_RECAP", true)),
+            ("ask_user_question", ("GROK_ASK_USER_QUESTION", true)),
+            ("voice_mode", ("GROK_VOICE_MODE", true)),
+            ("write_file", ("GROK_WRITE_FILE", true)),
+            ("feedback", ("GROK_FEEDBACK_ENABLED", true)),
+            ("feedback_trace_card", ("GROK_FEEDBACK_TRACE_CARD", false)),
+            ("turn_summary", ("GROK_TURN_SUMMARY", true)),
+            ("cancel_rewind", ("GROK_CANCEL_REWIND", true)),
+            (
+                "compaction_verbatim_input",
+                ("GROK_COMPACTION_VERBATIM_INPUT", true),
+            ),
+            ("two_pass_compaction", ("GROK_TWO_PASS_COMPACTION", true)),
+            ("backend_tools", ("GROK_BACKEND_SEARCH", true)),
+            ("auto_wake", ("GROK_AUTO_WAKE", true)),
+            (
+                "subagent_worktree_snapshot",
+                ("GROK_SUBAGENT_WORKTREE_SNAPSHOT", false),
+            ),
+            (
+                "subagent_model_inheritance",
+                ("GROK_SUBAGENT_MODEL_INHERITANCE", false),
+            ),
+            (
+                "active_agent_messages",
+                ("GROK_ACTIVE_AGENT_MESSAGES", false),
+            ),
+            ("dock", ("GROK_DOCK", false)),
+            ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+        ]),
+    );
+}
+
+/// A row wired to a neighbour's field type-checks, so each case sets one field and a wrong projection reads nothing.
+#[test]
+fn every_registered_feature_reads_its_own_remote_setting() {
+    for spec in FEATURES {
+        let value = !spec.default_enabled;
+        let mut settings = RemoteSettings::default();
+        match spec.id {
+            Feature::SessionSearch => settings.session_search = Some(value),
+            Feature::LspTools => settings.lsp_tools_enabled = Some(value),
+            Feature::WebFetch => settings.web_fetch_enabled = Some(value),
+            Feature::SessionRecap => settings.session_recap = Some(value),
+            Feature::AskUserQuestion => settings.ask_user_question_enabled = Some(value),
+            Feature::VoiceMode => settings.voice_mode_enabled = Some(value),
+            Feature::WriteFile => settings.write_file_enabled = Some(value),
+            Feature::Feedback => settings.feedback_enabled = Some(value),
+            Feature::FeedbackTraceCard => settings.feedback_trace_card_enabled = Some(value),
+            Feature::TurnSummary => settings.turn_summary = Some(value),
+            Feature::CancelRewind => settings.cancel_rewind_enabled = Some(value),
+            Feature::CompactionVerbatimInput => settings.compaction_verbatim_input = Some(value),
+            Feature::TwoPassCompaction => settings.two_pass_compaction_enabled = Some(value),
+            Feature::AutoWake => settings.auto_wake_enabled = Some(value),
+            Feature::SubagentWorktreeSnapshot => {
+                settings.subagent_worktree_snapshot_enabled = Some(value)
+            }
+            Feature::SubagentModelInheritance => {
+                settings.subagent_model_inheritance_enabled = Some(value)
+            }
+            Feature::ActiveAgentMessages => settings.active_agent_messages_enabled = Some(value),
+            Feature::Dock => settings.dock_enabled = Some(value),
+            Feature::TerminalTheme => settings.terminal_theme_enabled = Some(value),
+            // The one row with no remote tier, stated as such rather than as a projection that reads nothing
+            Feature::BackendTools => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
+        }
+
+        let resolved = spec.id.resolve(FeatureSources {
+            remote: spec.id.remote_value(Some(&settings)),
+            ..Default::default()
+        });
+        assert_eq!(
+            resolved.source,
+            ConfigSource::Remote,
+            "{} reads no remote",
+            spec.key
+        );
+        assert_eq!(
+            resolved.value, value,
+            "{} reads another feature's setting",
+            spec.key,
+        );
+    }
+}
+
+#[test]
+fn pin_outranks_env_outranks_config_outranks_remote_outranks_default() {
+    let pinned = Feature::SessionSearch.resolve(FeatureSources {
+        pin: Some(true),
+        env: Some(false),
+        config: Some(false),
+        remote: Some(false),
+    });
+    assert!(pinned.value);
+    assert_eq!(pinned.source, ConfigSource::Requirement);
+
+    let from_env = Feature::SessionSearch.resolve(FeatureSources {
+        env: Some(true),
+        config: Some(false),
+        remote: Some(false),
+        ..Default::default()
+    });
+    assert!(from_env.value);
+    assert_eq!(from_env.source, ConfigSource::Env);
+
+    let configured = Feature::SessionSearch.resolve(FeatureSources {
+        config: Some(true),
+        remote: Some(false),
+        ..Default::default()
+    });
+    assert!(configured.value);
+    assert_eq!(configured.source, ConfigSource::Config);
+
+    let remote = Feature::SessionSearch.resolve(FeatureSources {
+        remote: Some(false),
+        ..Default::default()
+    });
+    assert!(!remote.value);
+    assert_eq!(remote.source, ConfigSource::Remote);
+
+    let fallback = Feature::SessionSearch.resolve(FeatureSources::default());
+    assert!(fallback.value);
+    assert_eq!(fallback.source, ConfigSource::Default);
+}
+
+#[test]
+fn off_reason_names_the_setting_that_turned_it_off() {
+    let on = Feature::SessionSearch.off_reason(FeatureSources {
+        env: Some(true),
+        ..Default::default()
+    });
+    assert_eq!(on, None);
+
+    for (sources, reason) in [
+        (
+            FeatureSources {
+                pin: Some(false),
+                ..Default::default()
+            },
+            "a requirements.toml pin or an MDM policy",
+        ),
+        (
+            FeatureSources {
+                env: Some(false),
+                ..Default::default()
+            },
+            "the GROK_SESSION_SEARCH environment variable",
+        ),
+        (
+            FeatureSources {
+                config: Some(false),
+                ..Default::default()
+            },
+            "the session_search key in config.toml or managed_config.toml",
+        ),
+        (
+            FeatureSources {
+                remote: Some(false),
+                ..Default::default()
+            },
+            "a remote setting",
+        ),
+    ] {
+        assert_eq!(
+            Feature::SessionSearch.off_reason(sources).as_deref(),
+            Some(reason),
+        );
+    }
+
+    // `lsp_tools` is the default-off row, so nothing has to set it.
+    assert_eq!(
+        Feature::LspTools
+            .off_reason(FeatureSources::default())
+            .as_deref(),
+        Some("the default"),
+    );
+}
+
+/// The config tier splits around the user file: a managed layer applies only without a user key, the overlay and an
+/// active campaign beat one (even when the campaign repeats the user's value), and a requirements pin is the pin, not a layer.
+#[test]
+fn config_layers_split_the_config_tier_around_the_user_file() {
+    let doc = |value: bool| -> toml::Value {
+        toml::from_str(&format!("[features]\nsubagent_model_inheritance = {value}")).unwrap()
+    };
+    let feature = Feature::SubagentModelInheritance;
+    let mut layers = ConfigLayers {
+        system_managed: doc(true),
+        ..ConfigLayers::default()
+    };
+
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!(
+        (split.pin, split.user, split.above_user),
+        (None, None, None)
+    );
+    assert_eq!(
+        split.below_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::SystemManaged,
+            value: true,
+        })
+    );
+    assert_eq!(split.merged(), Some(true));
+
+    layers.user = doc(false);
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!((split.user, split.merged()), (Some(false), Some(false)));
+    assert_eq!(split.above_user, None);
+
+    let campaign = CampaignEntry {
+        id: "campaign".to_owned(),
+        patch: doc(false).as_table().cloned().unwrap(),
+    };
+    let split = feature.config_layers(&layers, std::slice::from_ref(&campaign));
+    assert_eq!(
+        split.above_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::Campaign,
+            value: false,
+        }),
+        "a campaign that repeats the user's value still decides the key"
+    );
+
+    layers.env_overlay = Some(doc(true));
+    let split = feature.config_layers(&layers, std::slice::from_ref(&campaign));
+    assert_eq!(
+        split.above_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::Overlay,
+            value: true,
+        })
+    );
+
+    layers.user_requirements = Some(doc(true));
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!(split.pin, Some(true));
+}

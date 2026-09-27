@@ -1,0 +1,39 @@
+name: goal-slash-presession
+description: >
+  Regression for the enterprise deploy report: with the goal
+  feature flag on (`GROK_GOAL=1`), `/goal` must appear in the slash-command menu
+  on the welcome screen *before* the first user turn creates a session. Pre-fix
+  the pre-session advertise paths fail-closed and only emit AlwaysOn commands,
+  so `/goal` showed up only after the first turn. Typing `/goal` on the welcome
+  screen must surface the command (and its description) in the dropdown.
+terminal:
+  rows: 40
+  cols: 100
+environment:
+  env:
+    - key: GROK_GOAL
+      value: "1"
+mock:
+  response: "unused — this scenario never submits a prompt."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  # Sanity: nothing has been submitted yet, so no session exists.
+  - action: assert_not_contains
+    text: autonomous goal
+  - action: focus_prompt
+  - action: type_text
+    text: "/goal"
+  - action: wait
+    millis: 300
+  # The dropdown row carries the builtin's description, which only renders when
+  # /goal is actually advertised pre-session.
+  - action: assert_contains
+    text: autonomous goal
+  - action: assert_running
+  - action: screenshot
+    name: goal-in-slash-menu-presession
+    note: "/goal advertised in the slash menu on the welcome screen (GROK_GOAL=1), before any prompt."

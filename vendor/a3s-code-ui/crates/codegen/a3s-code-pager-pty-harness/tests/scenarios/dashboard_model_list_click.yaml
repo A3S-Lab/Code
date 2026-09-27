@@ -1,0 +1,47 @@
+name: dashboard-model-list-click
+description: >
+  On the agent dashboard, open the /model completion list and mouse-click a
+  model row. The click must select the model into the dispatch prompt and must
+  NOT attach the underlying session row (click-through regression).
+terminal:
+  rows: 50
+  cols: 120
+environment:
+  args:
+    - dashboard
+  env:
+    - key: GROK_AGENT_DASHBOARD
+      value: "1"
+mock:
+  response: "UNUSED_DASHBOARD_MODEL_CLICK"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 30000
+  # Dashboard header / list chrome — tolerate either branding string.
+  - action: wait_for_text
+    text: Agent
+    timeout_ms: 20000
+  # Open the /model arg suggestion list on the dispatch prompt.
+  # Mock server exposes the default `test-model` catalog entry.
+  - action: type_text
+    text: "/model "
+  - action: wait_for_text
+    text: test-model
+    timeout_ms: 15000
+  # Click the model row in the dropdown (not the session list under it).
+  - action: click_text
+    text: test-model
+  - action: wait
+    millis: 400
+  # Completion accepted into the dispatch input (model id inserted as args).
+  - action: assert_contains
+    text: test-model
+  # Still on the dashboard — not inside a session overlay attach.
+  - action: assert_contains
+    text: Agent
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: dashboard-model-selected-no-attach
+    note: Model list mouse click selected test-model without attaching a session.

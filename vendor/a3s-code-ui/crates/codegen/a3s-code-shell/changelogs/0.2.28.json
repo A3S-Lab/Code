@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Images** read via read_file are now downscaled even when small in bytes but large in pixels.",
+    "breaking_change": false
+  }
+]

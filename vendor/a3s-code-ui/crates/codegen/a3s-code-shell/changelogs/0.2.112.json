@@ -1,0 +1,192 @@
+[
+  {
+    "category": "features",
+    "description": "**New /tutorial slash command** opens an opt-in nine-topic onboarding tour of A3S Code.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**File attachments** now appear correctly when resuming or replaying conversations.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New tool_overrides option** lets you set date cutoffs and domain allowlists for the agent's built-in search tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New toolOverrides option** lets you set date cutoffs and domain allowlists for the agent's built-in search tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal output** from remote clients is now recorded so read-file hints and monitors function correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New config options** let you add query parameters or environment-backed headers to custom model providers and control which variables reach shell tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "breaking",
+    "description": "**CLI version policy** now has separate soft update floors/ceilings and hard startup requirements.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Background shell commands** now correctly report their real exit codes instead of always showing -1.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Marketplace source refreshes** no longer hang the TUI or trap you in the extensions modal.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Terminal and environment fixes** are now consolidated under the `/doctor` command with clearer guidance.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task tray** now correctly clears killed tasks and keeps task descriptions after reconnect.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard overlay** now correctly returns after forking a dashboard-attached session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Marketplace add** now rejects non-git URLs at add time instead of failing later.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Slash commands** can now show optional bracket tags (e.g. [new]) via config or remote settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Queued prompts** now offer an [edit] mouse button alongside Send now and cancel.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Voice shortcut** toggle in settings can disable the Ctrl+Space/F8 keybind without disabling voice entirely.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Linux voice dictation** now works on PipeWire versions before 1.6.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fork** from a rewound session now copies the correct live-branch history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Account pane** now shows name and email even after the access token expires.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image edit** can now use a remotely configured model slug instead of the hardcoded default.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok doctor fix`** can now repair common tmux clipboard and passthrough problems.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Per-provider auth helpers** now work on Windows and can run from a configurable working directory.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/resume** now shows only native A3S Code sessions by default and shows a hint when external sessions are hidden.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok --resume`** can now resume a session by its title as well as by ID.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Voice mode** now lets you edit already-dictated text without closing the microphone.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflows overlay** now shows live per-agent progress and automatically follows the active phase.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflow runs** that failed can now be resumed; scratch file limits were also increased.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed startup hangs** on Linux after concurrent launches or rapid restarts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP tools** now appear without restart after enrolling or updating a managed service.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plugin subagents** now see the same MCP tools as the parent session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hooks** can now be defined in config.toml in addition to JSON files.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Clicking** the \"still running\" status now opens the tasks pane.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copy confirmations** now show shorter messages when the clipboard succeeds.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Repeated identical tool calls** now end the turn silently instead of showing a stop banner.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Web search** now defaults to grok-4.5.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Voice dictation** text is no longer dropped when pressing Enter to send.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Bash mode** (`!`) now shows yellow prefix and action label in minimal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Parked turns** no longer spam duplicate \"Worked for\" markers in the transcript.",
+    "breaking_change": false
+  }
+]

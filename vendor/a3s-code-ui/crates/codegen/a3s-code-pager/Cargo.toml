@@ -1,0 +1,263 @@
+[package]
+name = "a3s-code-pager"
+version = "9.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["A3S Lab"]
+
+[dependencies]
+# TTY safety — detach subprocesses from the controlling terminal
+dunce = { workspace = true }
+a3s-tty-utils = { workspace = true }
+a3s-code-version = { workspace = true }
+
+# Shared prompt-queue wire types
+a3s-prompt-queue = { workspace = true }
+
+# Presentation-primitives layer (extracted)
+a3s-code-pager-render = { path = "../a3s-code-pager-render" }
+
+# The /gboom easter-egg game (extracted)
+a3s-code-gboom = { path = "../a3s-code-gboom" }
+
+# Diff hunk construction (extracted)
+a3s-code-pager-diff = { path = "../a3s-code-pager-diff" }
+
+# Rendering
+ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
+a3s-code-announcements = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream", "bracketed-paste"] }
+textwrap = { workspace = true }
+regex = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+strip-ansi-escapes = { workspace = true }
+
+# Markdown / syntax highlighting
+a3s-code-markdown = { workspace = true }
+# Inline Mermaid rendering engine. Always compiled (no feature gate): the
+# dagre-based vendored engine renders detected ```mermaid fences out of process,
+# gated only at runtime by the `appearance.render_mermaid` setting.
+a3s-code-mermaid = { workspace = true }
+syntect = { workspace = true }
+
+# Data
+similar = { workspace = true }
+indexmap = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+a3s-acl = { path = "../../../../../../acl" }
+strum = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
+
+# ANSI parsing (tracing pane)
+ansi-to-tui = { workspace = true }
+
+# PTY for ssh wrapper, e2e tests, and benchmarking.
+portable-pty = "0.9"
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+shlex = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+clap_complete = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "io-util",
+    "io-std",
+    "process",
+] }
+tokio-stream = { workspace = true, optional = true }
+tokio-util = { workspace = true, features = ["compat"] }
+tempfile = { workspace = true, optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Binary hardening: compile-time string obfuscation.
+# (cryptify / rustls / semver / tikv-jemallocator moved to the composition-root
+# binary `a3s-code-pager-bin` with `main.rs`; this lib no longer references them.)
+obfstr = { workspace = true }
+
+# Fuzzy matching (history search daemon)
+nucleo = { workspace = true }
+
+# Prompt text input
+a3s-ratatui-textarea = { workspace = true }
+a3s-ratatui-inline = { workspace = true }
+
+# Update
+a3s-code-update = { path = "../a3s-code-update" }
+
+# ACP
+agent-client-protocol = { workspace = true }
+a3s-acp-lib = { workspace = true }
+a3s-chat-state = { path = "../a3s-chat-state", optional = true }
+a3s-file-utils = { path = "../a3s-file-utils" }
+# Crash-recovery registry of open TUI sessions.
+a3s-code-active-sessions = { workspace = true }
+a3s-code-config = { workspace = true }
+a3s-code-feedback = { workspace = true }
+a3s-code-sampling-types = { path = "../a3s-code-sampling-types", optional = true }
+a3s-tool-types = { workspace = true }
+a3s-dirs = { workspace = true }
+a3s-code-dashboard-store = { workspace = true }
+# Voice dictation. `audio` (mic capture) is enabled on every target. On
+# macOS/Windows it links cpal; on Linux it compiles a subprocess-recorder
+# backend instead, so cpal -> alsa-sys never reaches the static musl binary
+# (cpal is target-gated to non-Linux inside a3s-code-voice).
+a3s-code-voice = { path = "../a3s-code-voice", default-features = false, features = ["audio"] }
+a3s-code-login = { workspace = true }
+a3s-code-shell = { workspace = true }
+# The status-line contract: the config the user writes and the payload the
+# agent sends. A leaf crate rather than the agent's, so the client reads it
+# from upstream of the crate that fills it in.
+a3s-code-status-line = { workspace = true }
+a3s-code-workspace = { workspace = true }
+# Foreign coding-agent session discovery.
+a3s-code-foreign-sessions = { workspace = true }
+a3s-token-estimation = { workspace = true }
+a3s-code-telemetry = { workspace = true }
+a3s-code-otel = { workspace = true }
+a3s-fast-worktree = { path = "../a3s-fast-worktree", features = ["metadata"] }
+gethostname = { workspace = true, optional = true }
+backon = { workspace = true }
+chrono = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+a3s-code-tools = { workspace = true }
+a3s-code-agent = { workspace = true }
+a3s-code-plugin-marketplace = { path = "../a3s-code-plugin-marketplace" }
+# Blocked-card copy: `hook_display_name` lives next to the hook-name grammar.
+a3s-code-hooks = { path = "../a3s-code-hooks" }
+a3s-hooks-plugins-types = { path = "../a3s-hooks-plugins-types" }
+walkdir = { workspace = true }
+a3s-code-sandbox = { path = "../a3s-code-sandbox", default-features = false }
+
+# Base64 encoding for image data
+base64 = { workspace = true }
+
+# Image decoding/resizing for clipboard image validation before send
+image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
+
+# ID generation
+uuid = { workspace = true, features = ["v4", "v7"] }
+
+# Path computation (plan file, etc.)
+shellexpand = "3.1"
+
+# libgit2 for the startup git-info populator (no fork/exec, runs once on launch
+# in spawn_blocking; the render path never touches git directly).
+git2 = { version = "0.20", default-features = false, features = [
+    "vendored-libgit2",
+] }
+urlencoding = { workspace = true }
+
+# Parsing (web_search)
+url = { workspace = true }
+
+# Crash diagnostics
+a3s-crash-handler = { path = "../a3s-crash-handler" }
+
+# Non-poisoning mutex for signal handler (active-sessions crash recovery).
+parking_lot.workspace = true
+
+# nix: signal handling in notifications/.
+# signal-hook: SIGWINCH handler for the `a3s wrap` PTY wrapper (pty_wrap.rs).
+# libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal"] }
+signal-hook = { workspace = true }
+libc = { workspace = true }
+
+# core-foundation: IOKit power assertions for sleep prevention (SleepInhibitor).
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { workspace = true }
+
+# SetConsoleCtrlHandler for the exec-emulating screen-mode relaunch
+# (`/minimal` / `/fullscreen`): the waiting parent must ignore console Ctrl
+# events so only the relaunched child handles them. Version matches the other
+# in-repo consumers (a3s-crash-handler, a3s-system-power).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+a3s-interjection-core = { workspace = true }
+# The fixture that builds a `[ui.status_line]` section field by field.
+a3s-code-status-line = { workspace = true, features = ["test-support"] }
+a3s-code-pager-render = { path = "../a3s-code-pager-render", features = ["test-support"] }
+a3s-ratatui-inline = { workspace = true, features = ["test-support"] }
+a3s-code-gboom = { path = "../a3s-code-gboom", features = ["test-support"] }
+a3s-code-login = { workspace = true, features = ["test-support"] }
+a3s-code-shell = { workspace = true, features = ["test-support"] }
+pretty_assertions = { workspace = true }
+wiremock = { workspace = true }
+insta = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+serial_test = { workspace = true }
+a3s-code-agent = { workspace = true }
+# In-process leader-cluster harness (mock inference server; no cycle:
+# a3s-code-test-support depends on neither the pager nor the shell).
+a3s-code-test-support = { workspace = true, features = [] }
+# Provider install for the in-process leader-cluster tests.
+a3s-code-extra-ca = { workspace = true }
+
+[[bench]]
+name = "render"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "edit_highlight"
+harness = false
+
+[[bench]]
+name = "resize"
+harness = false
+
+# Settings modal regression tests — keyboard/mouse dispatch + registry
+# contracts. Not gated by `--ignored`; runs on every `cargo test`.
+# Spawn-only pager tests live in `a3s-code-pager-pty-harness`.
+[[test]]
+name = "settings_e2e"
+path = "tests/settings_e2e.rs"
+
+# Opt into [workspace.lints.clippy] (too_many_arguments etc.). Without this,
+# `cargo clippy --workspace -- -D warnings` on this package is stricter than
+# the workspace-default clippy allows used in CI.
+[lints]
+workspace = true
+
+[features]
+default = ["jemalloc", "sandbox-enforce"]
+default-bazel = [
+    "jemalloc",
+    "sandbox-enforce",
+    "test-support",
+    "local-workspace",
+    ]
+local-workspace = ["a3s-code-shell/local-workspace"]
+# No-op on this crate: the actual `#[global_allocator]` (and the
+# `tikv-jemallocator` dep) live on the composition-root binary
+# `a3s-code-pager-bin`, which owns `main.rs`. Kept as an empty feature so the
+# workspace-uniform `[jemalloc, sandbox-enforce]` default set resolves
+# here too and the generated `crate_features` stay valid.
+jemalloc = []
+sandbox-enforce = ["a3s-code-sandbox/enforce"]
+release-dist = []
+# Exposes test-only view-model constructors/setters (e.g. `test_agent_view`,
+# `AgentSession::set_yolo_mode_for_test`) to sibling crates' test builds — used
+# by `a3s-code-pager-minimal`'s unit tests. Never enabled in production builds.
+test-support = ["a3s-code-pager-render/test-support", "a3s-code-gboom/test-support"]

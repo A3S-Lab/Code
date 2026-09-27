@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed bare URLs and emails** inside table cells so every wrapped line remains a working hyperlink.",
+    "breaking_change": false
+  }
+]

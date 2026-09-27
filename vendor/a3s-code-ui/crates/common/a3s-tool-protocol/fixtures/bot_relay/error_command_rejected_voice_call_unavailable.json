@@ -1,0 +1,9 @@
+{
+  "code": "command_rejected",
+  "retryable": false,
+  "detail": {
+    "upstream": "status=400 connect=invalid_argument",
+    "upstreamMessage": "Voice call is not enabled for this account."
+  },
+  "reason": "voice_call_unavailable"
+}

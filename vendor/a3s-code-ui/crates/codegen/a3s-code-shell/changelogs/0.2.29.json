@@ -1,0 +1,12 @@
+[
+  {
+    "category": "performance",
+    "description": "**Resuming large sessions** is now substantially faster with no data loss.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/rewind`** before a compaction boundary no longer leaves later prompts in context.",
+    "breaking_change": false
+  }
+]

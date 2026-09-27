@@ -1,0 +1,72 @@
+[
+  {
+    "category": "fixes",
+    "description": "**MCP server connections** in non-interactive sessions no longer incorrectly require authentication for tokenless servers.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Users hitting startup timeouts can now raise the connect budget with the `GROK_CONNECT_UI_TIMEOUT_SECS` environment variable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Fixed startup timeouts caused by concurrent auth refreshes across multiple sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Permission prompts now show \"Always allow\" and \"Never allow\" options by default.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Users can now delete scheduled background loops directly from the tray.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Tool call loops** are interrupted earlier to avoid wasting time on repeated identical actions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Status line command** scripts can now run on a timer via refresh_interval in config.toml.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagents** no longer receive the ask-user-question tool.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Bare email addresses are now turned into clickable mailto links in the pager.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Permission prompts** now offer a 'Never allow' choice for MCP tools and web-fetch domains that persists per project.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflows tab** added to the extensions modal (Ctrl+L or /plugins) listing installed workflows with name, source, and description.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New /workflows** command opens the Workflows catalog tab; use **/workflow runs** to view live workflow runs.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Bare /workflow** (or /workflow runs) now lists active and recent workflow runs with status and progress instead of usage help.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflows** row added to the Ctrl+P command palette, opening the Workflows catalog tab.",
+    "breaking_change": false
+  }
+]

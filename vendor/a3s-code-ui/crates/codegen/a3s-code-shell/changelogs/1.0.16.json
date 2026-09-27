@@ -1,0 +1,42 @@
+[
+  {
+    "category": "breaking",
+    "description": "**Enterprise policies** can now restrict which models users may select via signed requirements.toml.",
+    "breaking_change": true
+  },
+  {
+    "category": "features",
+    "description": "**MCP servers** can now be supplied at session bind time for workspace integrations.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Long-running sessions** interrupted by expired tokens during network issues no longer lose work.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Long-running subagent and task output waits** now default to a one-hour ceiling instead of ten minutes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash command suggestions** with very long names no longer show blank labels in the dropdown.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sending a message immediately after spawning a subagent** no longer fails while the child is still starting.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Loading spinners** inside the extensions modal (/mcps and other tabs) now animate correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP server OAuth authentication** triggered from /mcps no longer deadlocks the session.",
+    "breaking_change": false
+  }
+]

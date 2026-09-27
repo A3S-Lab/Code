@@ -1,0 +1,59 @@
+name: small-screen-tip-band
+description: >
+  Small-screen tip happy path with the contextual-hints master pinned on: a 24
+  row terminal sits in the 21..=28 band (above the 20-row auto-compact
+  threshold), so the first stable agent-view draw shows the one-shot "Tight on
+  space? Try /compact-mode" banner. It expires on its ~3s TTL and — because the
+  trigger is a per-run one-shot — never re-shows, even after dipping into the
+  auto-compact zone and resizing back into the band.
+terminal:
+  rows: 24
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  # The prompt marker renders at every height; the first char promotes the
+  # welcome prompt to a real session (the agent view, where the tip fires).
+  - action: wait_for_text
+    text: "❯"
+    timeout_ms: 20000
+  - action: focus_prompt
+  - action: type_text
+    text: "hi"
+  - action: wait_for_text
+    text: "Tight on space? Try /compact-mode"
+    timeout_ms: 15000
+  - action: screenshot
+    name: small-screen-tip-shown
+    note: One-shot /compact-mode tip on a 24-row terminal.
+  # Past the ~3s TTL the banner clears on its own.
+  - action: wait
+    millis: 4500
+  - action: assert_not_contains
+    text: "Tight on space"
+  # Dip into the auto-compact zone (19 <= 20) and back into the band: the
+  # one-shot must not re-trigger.
+  - action: resize
+    rows: 19
+    cols: 100
+  - action: wait
+    millis: 400
+  - action: resize
+    rows: 24
+    cols: 100
+  - action: wait
+    millis: 400
+  - action: type_text
+    text: "x"
+  - action: wait
+    millis: 600
+  - action: assert_not_contains
+    text: "Tight on space"
+  - action: assert_running
+  - action: screenshot
+    name: small-screen-tip-no-reshow
+    note: No re-show after resizes — the trigger is one-shot per run.

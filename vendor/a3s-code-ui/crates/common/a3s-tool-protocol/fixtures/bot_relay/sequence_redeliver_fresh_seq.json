@@ -1,0 +1,21 @@
+{
+  "must": "seq is not a dedupe key. The same payload with a new seq is two distinct events.",
+  "expectedResyncCount": 0,
+  "expectedDistinctEvents": 2,
+  "frames": [
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 8,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "same" }
+    },
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 9,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "same" }
+    }
+  ]
+}

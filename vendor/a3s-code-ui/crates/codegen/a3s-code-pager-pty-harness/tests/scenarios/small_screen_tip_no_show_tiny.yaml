@@ -1,0 +1,36 @@
+name: small-screen-tip-no-show-tiny
+description: >
+  No-show edge below the band: at 14 rows auto-compact is active instead (and
+  the banner row cannot render at or below 16 rows), so the "Tight on space?
+  Try /compact-mode" tip never appears — even with the contextual-hints master
+  pinned on.
+terminal:
+  rows: 14
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  # The welcome menu may be trimmed at 14 rows; the prompt marker always paints.
+  - action: wait_for_text
+    text: "❯"
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Promote the welcome prompt to a real session; the status bar's model name
+  # proves the agent view has drawn (the trigger's evaluation point).
+  - action: type_text
+    text: "hi"
+  - action: wait_for_text
+    text: "test-model"
+    timeout_ms: 15000
+  - action: wait
+    millis: 1200
+  - action: assert_not_contains
+    text: "Tight on space"
+  - action: assert_running
+  - action: screenshot
+    name: small-screen-tip-absent-tiny
+    note: No /compact-mode tip at 14 rows (auto-compact active instead).

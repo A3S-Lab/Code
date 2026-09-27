@@ -54,6 +54,19 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   <a href="#documentation">Documentation</a>
 </p>
 
+## What's new in 9.1
+
+- **Directory projection (9.1.0).** A project directory maps onto the stock
+  Meta Harness: instructions into `system`, `skills/` into `skill_dirs`, MCP
+  and `program` scripts from `tools/`, and schedules the host sends with
+  `session.send`. No second runtime and no `AgentDir`.
+- **Pager `/config` (9.1.0).** Providers and models are edited in the ACL
+  config. The default is one `provider/model` pair. A blank model URL or key
+  inherits the provider.
+- **Search stays fast (9.1.0).** Automatic `web_search` is API, then HTTP,
+  then headless. Moli is taken from the binary already shipped beside `a3s`
+  before any download. Current package on npm, crates.io, and PyPI: **9.1.0**.
+
 ## What's new in 9.0
 
 - **Fact-log control (9.0.0).** Coding runs choose the next transition only by
@@ -73,7 +86,6 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   is out of scope since A3S Cloud was retired, which rules out the Enterprise
   GA claim. See
   [manual/V9_0_0_COMPLETION_ROADMAP.md](manual/V9_0_0_COMPLETION_ROADMAP.md).
-  Prefer **9.0.0** on npm/crates.io/PyPI.
 
 ## What's new in 8.7
 
@@ -148,8 +160,8 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   includes this fix; crates.io also published **8.5.10**, but that cut's
   Release workflow failed musl and did not complete the full Node matrix.
 
-Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.0` line;
-current package **9.0.0**).
+Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.1` line;
+current package **9.1.0**).
 
 ### Earlier lines
 

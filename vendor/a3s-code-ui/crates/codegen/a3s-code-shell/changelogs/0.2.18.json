@@ -1,0 +1,37 @@
+[
+  {
+    "category": "features",
+    "description": "**Official A3S plugin marketplace** now appears automatically in the Marketplace tab on first launch.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**image_edit** now correctly resolves pasted or attached images referenced as [Image #N].",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image and video generation** now use api.a3s directly for all users.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background subagent completions** are no longer reported twice when the agent is idle.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagents** now use the same model as the parent session by default.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New image-to-video and reference-to-video tools** are now available for generating videos from images.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New imagine skill** provides prompt-craft and workflow guidance for image generation and editing tools.",
+    "breaking_change": false
+  }
+]

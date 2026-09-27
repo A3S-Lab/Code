@@ -1,0 +1,5 @@
+[link](https://example.com) ![alt](img.png)
+
+***bold italic*** ~~strike~~
+
+`code` **`bold code`** *`italic code`*

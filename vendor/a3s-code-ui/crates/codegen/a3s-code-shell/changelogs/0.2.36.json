@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Large MCP tool results** are now saved with the correct extension and the model receives better hints for querying them.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed false-positive doom-loop terminations** when many parallel tool calls fail together in one batch.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a crash** that could occur during auto-compaction when resuming a session containing reasoning content.",
+    "breaking_change": false
+  }
+]

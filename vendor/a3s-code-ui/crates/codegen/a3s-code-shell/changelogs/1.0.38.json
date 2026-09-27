@@ -1,0 +1,32 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Subagent overlays** no longer stay stuck showing \"Cancelling\" after the child turn ends.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Long agent replies** in prompt-suggestion transcripts are no longer cut off mid-sentence.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**read_file** on skill and instruction files can now be configured per deployment.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Pasted images** survive yank/undo/history recall and the user is notified when any cannot be sent.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Long quoted arguments** in permission prompts now wrap instead of clipping.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed tool-calling errors** by sending inline-only use_tool schema.",
+    "breaking_change": false
+  }
+]

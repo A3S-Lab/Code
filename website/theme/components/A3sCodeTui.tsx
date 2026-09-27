@@ -51,7 +51,7 @@ export const A3sCodeTui = forwardRef<HTMLDivElement, A3sCodeTuiProps>(
       contextLabel,
       identity = 'a3s',
       isPlaying,
-      modeGlyph = '●',
+      modeGlyph = '⏵',
       modeLabel,
       model = 'gpt-5 (128k context)',
       onPlayback,

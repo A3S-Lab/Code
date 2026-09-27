@@ -66,3 +66,7 @@ zvec-runtime/
 # Local Node SDK test dumps
 sdk/node/output.txt
 sdk/node/ultracode_test.stdout
+
+# Forked pager build output
+vendor/a3s-code-ui/target/
+

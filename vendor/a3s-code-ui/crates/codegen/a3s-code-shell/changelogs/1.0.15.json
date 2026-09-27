@@ -1,0 +1,37 @@
+[
+  {
+    "category": "performance",
+    "description": "**First reply latency** is reduced by opening the model connection in the background when a session starts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session close** is now faster because memory consolidation runs at the next launch instead of blocking exit.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tip appears** after repeated scrollback drag-copies suggesting /copy and /export commands.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Signed-in startup** is faster because an expired token refresh now begins in the background at agent spawn.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Creating a new session** returns faster; MCP tools and other startup work happen in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Typed input including Enter** during pager startup is now preserved and correctly interpreted as submit or newline.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock panel** input and rollout now respect remote settings and correctly handle keyboard focus when hidden or empty.",
+    "breaking_change": false
+  }
+]

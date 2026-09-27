@@ -1,0 +1,364 @@
+---
+title: 'Model Switching'
+description: 'Choose the model per session, or open a worker session on its own model, to balance cost and capability.'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Model Switching
+
+A session runs against whatever model you pass in the `model` option. Declare
+the models your agent can reach once, then pick one per session — a fast model
+for high-volume, low-stakes work and a stronger model for review. Use this when
+you want to balance cost against capability without changing any of your prompts.
+
+## Declaring models
+
+Models are configured in your agent file. Each provider lists the models it
+exposes (`tool_call` defaults to `true`, so it is shown here only for clarity),
+and `default_model` is used when a session does not set `model`.
+
+```acl
+default_model = "provider/fast-model"
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "fast-model" { tool_call = true }
+  models "review-model" { tool_call = true }
+}
+```
+
+## Per-session model
+
+The `model` option is set when you open the session. Everything that session
+runs — `send`, `run`, `parallel`, `pipeline`, and delegated `task` children —
+uses that model. One agent configuration can drive different model choices for different sessions.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let fast = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/fast-model"))
+        .build()
+        .await?;
+    let draft = fast
+        .send("Draft a short README intro for this project.", None)
+        .await?
+        .text;
+    println!("draft: {draft}");
+    fast.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let critique = review
+        .send(&format!("Critique this README intro:\n{draft}"), None)
+        .await?;
+    println!("critique: {}", critique.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// A fast model for high-volume, low-stakes work.
+const fast = await agent.sessionAsync('/repo', { model: 'provider/fast-model' });
+const draft = await fast.run('Draft a short README intro for this project.');
+console.log('draft:', draft.text);
+await fast.closeAsync();
+
+// A stronger model for review / higher-stakes reasoning.
+const review = await agent.sessionAsync('/repo', {
+  model: 'provider/review-model',
+});
+const critique = await review.run(`Critique this README intro:\n${draft.text}`);
+console.log('critique:', critique.text);
+
+await review.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+# A fast model for high-volume, low-stakes work.
+fast_opts = SessionOptions()
+fast_opts.model = 'provider/fast-model'
+fast = agent.session('/repo', fast_opts)
+draft = fast.run('Draft a short README intro for this project.')
+print('draft:', draft.text)
+fast.close()
+
+# A stronger model for review / higher-stakes reasoning.
+review_opts = SessionOptions()
+review_opts.model = 'provider/review-model'
+review = agent.session('/repo', review_opts)
+critique = review.run(f'Critique this README intro:\n{draft.text}')
+print('critique:', critique.text)
+
+review.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	fast, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	draft, err := fast.Run(ctx, "Draft a short README intro for this project.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("draft:", draft.Text)
+	fast.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	critique, err := review.Run(ctx, "Critique this README intro:\n"+draft.Text)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("critique:", critique.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+## Per-worker model
+
+A worker spec can carry its own `model`. It takes effect when you open a session
+from that spec with `session_for_worker` (Node.js `sessionForWorkerAsync`, Go
+`SessionForWorker`): the worker's model, step budget, prompt, and permissions fill
+in whatever the session options leave unset. Options you pass explicitly win, so
+do not also set `model` in those options if you want the worker's model.
+
+Delegated `task` children do not switch models. They run on the delegating
+session's model, even when the worker registered in `worker_agents` has a
+`model`. To run exploration on a cheaper model, open a worker session for it and
+hand its result to a session on the stronger model:
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, WorkerAgentSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    // No `model` in the options, so the worker's model applies.
+    let scout_spec = WorkerAgentSpec::read_only("scout", "Reads files and reports findings.")
+        .with_model_ref("provider/fast-model");
+    let scout = agent
+        .session_for_worker_async("/repo", scout_spec, None)
+        .await?;
+    let findings = scout.send("List every public API in src/.", None).await?;
+    scout.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let plan = review
+        .send(
+            &format!("Given these findings, propose a refactor:\n{}", findings.text),
+            None,
+        )
+        .await?;
+    println!("{}", plan.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// No `model` in the options, so the worker's model applies.
+const scout = await agent.sessionForWorkerAsync('/repo', {
+  name: 'scout',
+  description: 'Reads files and reports findings.',
+  kind: 'read_only',
+  model: 'provider/fast-model',
+});
+const findings = await scout.send('List every public API in src/.');
+await scout.closeAsync();
+
+const review = await agent.sessionAsync('/repo', {
+  model: 'provider/review-model',
+});
+const plan = await review.send(
+  `Given these findings, propose a refactor:\n${findings.text}`,
+);
+console.log(plan.text);
+
+await review.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, WorkerAgentSpec
+
+agent = Agent.create("agent.acl")
+
+# No `model` in the options, so the worker's model applies.
+scout_spec = WorkerAgentSpec(
+    name='scout',
+    description='Reads files and reports findings.',
+    kind='read_only',
+)
+scout_spec.model = 'provider/fast-model'
+scout = agent.session_for_worker('/repo', scout_spec)
+findings = scout.send('List every public API in src/.')
+scout.close()
+
+review_opts = SessionOptions()
+review_opts.model = 'provider/review-model'
+review = agent.session('/repo', review_opts)
+plan = review.send(f'Given these findings, propose a refactor:\n{findings.text}')
+print(plan.text)
+
+review.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	// nil options, so the worker's model applies.
+	scout, err := agent.SessionForWorker(ctx, "/repo", code.WorkerAgentSpec{
+		Name:        "scout",
+		Description: "Reads files and reports findings.",
+		Kind:        "read_only",
+		Model:       "provider/fast-model",
+	}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	findings, err := scout.Run(ctx, "List every public API in src/.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scout.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	plan, err := review.Run(
+		ctx,
+		"Given these findings, propose a refactor:\n"+findings.Text,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(plan.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+Notes:
+
+- The `model` value is a `provider/model` reference that must match a provider
+  and model declared in your agent file (with an API key); otherwise session
+  creation fails with a `model` configuration error. The SDKs contain no
+  hard-coded model names.
+- `parallel` and `pipeline` step specs have no `model` field; every step runs on
+  the session's model.
+- The `task` tool has no `model` field. Each task item accepts only `agent`,
+  `description`, `prompt`, `background`, `max_steps`, and `output_schema`, and
+  rejects any other field.
+
+A runnable version showing the `model` option on a session ships at
+`sdk/node/examples/basic/test_api_alignment.ts`.

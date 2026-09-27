@@ -1,0 +1,106 @@
+---
+title: 'Lane Queue'
+description: 'Optional per-session queue for host tool calls with external and hybrid dispatch'
+---
+
+# Lane Queue
+
+A lane queue is an optional per-session queue backed by `a3s-lane`. Sessions
+have no queue unless you configure one. When configured, it schedules the tool
+calls your host makes through the session's direct tool API, and it can hand
+those calls to an external worker instead of running them locally.
+
+Do not confuse it with the always-on
+[Agent-wide task scheduler](/guide/tasks#agent-wide-priority-scheduler). The
+task scheduler shares local execution capacity across sessions; the lane queue
+is a per-session dispatch layer for host tool calls.
+
+## What Goes Through The Queue
+
+Only host-initiated tool calls enter the queue:
+
+- `session.tool(name, args)` and the direct helpers built on it (`readFile`,
+  `writeFile`, `ls`, `editFile`, `patchFile`, `bash`, `glob`, `grep`)
+- `session.verifyCommands(...)`, which runs each command as a `bash` call
+
+Model tool calls do not. A `send` or `stream` turn runs on the fact-log
+controller, which executes each model tool call directly on the session's tool
+executor. Child agents started by `task` and `skill` also run without the queue.
+A lane queue is therefore not a way to move model tool execution to remote
+workers.
+
+Each queued call is routed by tool name:
+
+| Lane      | Tools                                                                                                                  |
+| --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `query`   | `read`, `ls`, `list_files`, `search`, `web_fetch`, `web_search`, `code_symbols`, `code_navigation`, `code_diagnostics` |
+| `execute` | every other tool, including `bash`, `write`, `edit`, and `patch`                                                       |
+
+The `glob` and `grep` helpers call the `search` tool, so they use the `query`
+lane. The `control` and `generate` lanes exist and accept handler
+configuration, but no tool is routed to them.
+
+## Configure A Session
+
+Set `queueConfig` when creating the session. The queue is created with the
+session, or taken from a `queue` block in the agent config when the session
+options omit it.
+
+```ts
+const session = await agent.sessionAsync('/repo', {
+  queueConfig: {
+    executeConcurrency: 1,
+    enableDlq: true,
+    enableMetrics: true,
+  },
+});
+
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+```
+
+Default lane concurrency is 2 for `control`, 4 for `query`, 2 for `execute`,
+and 1 for `generate`. `enableAllFeatures` turns on the dead-letter queue (1000
+entries), metrics, alerts, and a 60 second default command timeout.
+
+Handler modes:
+
+- `internal` (default): the queue runs the tool locally.
+- `external`: the queue publishes the call as a pending external task and waits
+  for `completeExternalTask`. If no result arrives within `timeoutMs` (default
+  60000), the call fails with a timeout.
+- `hybrid`: the queue publishes the pending task for observation and still runs
+  the tool locally.
+
+In Rust, set `SessionOptions::with_queue_config` and build the session with
+`Agent::session_async` or `Agent::session_builder`. The synchronous
+`Agent::session` rejects a queue configuration.
+
+## External Completion
+
+A pending task carries `task_id`, `session_id`, `lane`, `command_type` (the tool
+name), `payload` (the tool arguments), and `timeout_ms`. The same data is
+emitted as an `external_task_pending` event. Complete it with a result shaped
+like a tool result: `output` is required, `exit_code` defaults to 0.
+
+```ts
+const pending = await session.pendingExternalTasks();
+
+for (const task of pending) {
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { output: `ran ${task.command_type} remotely`, exit_code: 0 },
+  });
+}
+```
+
+`success: false` with an `error` message fails the call. A successful result
+without a string `output` field also fails the call. `completeExternalTask`
+returns `false` when the task id is unknown or already settled.
+
+## Inspect The Queue
+
+`hasQueue()`, `queueStats()`, `deadLetters()`, and `queueMetrics()` report
+queue state. `queueMetrics()` returns `null` unless metrics are enabled.

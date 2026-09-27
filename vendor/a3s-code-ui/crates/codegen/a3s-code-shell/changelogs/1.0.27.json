@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Queued messages** no longer appear twice when sent immediately.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard spinners** no longer freeze when background tasks are running.",
+    "breaking_change": false
+  }
+]

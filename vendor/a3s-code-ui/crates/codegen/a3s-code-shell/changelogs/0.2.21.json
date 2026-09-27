@@ -1,0 +1,12 @@
+[
+  {
+    "category": "features",
+    "description": "**allowed_models** in config.toml now restricts which models appear in the picker and `/model` command.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Code navigation** now returns correct results for secondary project windows with different working directories.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,22 @@
+[package]
+name = "a3s-ratatui-inline"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Inline ANSI/line splitter vendored from grok-build (a3s-ratatui-inline) for the A3S Code TUI"
+publish = false
+authors = ["A3S Lab"]
+
+[features]
+default = []
+scrolling-regions = []
+
+[dependencies]
+anstyle-parse = "0.2"
+crossterm = { version = "0.28" }
+ratatui = { version = "0.29", features = ["crossterm"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+anyhow = "1"
+serde_json = "1"

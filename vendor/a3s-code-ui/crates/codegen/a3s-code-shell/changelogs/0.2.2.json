@@ -1,0 +1,7 @@
+[
+  {
+    "category": "bug_fixes",
+    "description": "**Emergency rollback release** — reverts to known-good 0.1.219 codebase.",
+    "breaking_change": false
+  }
+]

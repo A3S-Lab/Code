@@ -1,0 +1,31 @@
+{
+  "name": "stranded_narration",
+  "description": "Assistant ended its turn with a content-only message while a pending todo remains and no backing background task exists. Canonical PR1 §B 'stranded narration' failure shape: the gate must fire with the in-flight reason.",
+  "turns": [
+    {
+      "turn_index": 0,
+      "kind": "user",
+      "content": "<synthetic user prompt — content scrubbed>"
+    },
+    {
+      "turn_index": 1,
+      "kind": "assistant",
+      "tool_calls_emitted": [],
+      "todo_state_after_turn": [
+        {
+          "id": "fix-round-1",
+          "status": "pending",
+          "content": "fix open review issues"
+        }
+      ],
+      "backing_task_count": 0,
+      "expected_gate_decision": "nudge",
+      "expected_reason": "in_flight",
+      "expected_reminder_contains": [
+        "ended your turn",
+        "Pending:",
+        "fix open review issues"
+      ]
+    }
+  ]
+}

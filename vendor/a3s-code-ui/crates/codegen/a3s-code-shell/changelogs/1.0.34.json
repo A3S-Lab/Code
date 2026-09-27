@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Markdown headings** now receive theme colors correctly.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,57 @@
+name: slash-resize-storm
+description: >
+  Regression — resizing while the slash-command dropdown is open must not crash
+  the pager (ratatui "index outside of buffer" on item row paint).
+terminal:
+  rows: 40
+  cols: 100
+mock:
+  response: "SCRIPTED_SLASH_RESIZE_RESPONSE"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Open the slash command menu (full list of matches).
+  - action: type_text
+    text: "/"
+  - action: wait
+    millis: 200
+  - action: assert_running
+  - action: assert_not_contains
+    text: panicked
+  # Height shrink while dropdown is painted — the historical failure mode.
+  - action: resize
+    rows: 12
+    cols: 100
+  - action: wait
+    millis: 150
+  - action: assert_running
+  - action: resize
+    rows: 8
+    cols: 80
+  - action: wait
+    millis: 150
+  - action: assert_running
+  # Oscillate a few times like a dragged IDE panel.
+  - action: resize
+    rows: 28
+    cols: 120
+  - action: wait
+    millis: 80
+  - action: resize
+    rows: 10
+    cols: 60
+  - action: wait
+    millis: 80
+  - action: resize
+    rows: 6
+    cols: 40
+  - action: wait
+    millis: 150
+  - action: assert_running
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: slash-after-resize-storm
+    note: Pager still alive after slash dropdown + aggressive height shrinks.

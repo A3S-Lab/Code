@@ -1,0 +1,52 @@
+[
+  {
+    "category": "features",
+    "description": "**Tool-call argument streaming** now shows a distinct spinner label instead of a generic \"Waiting for response…\" message.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Harness** now includes UI-verification instructions and project/user rules higher in prefix.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Large sessions** with images no longer exceed limits during compaction",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed recovery** from server-rejected images so poisoned sessions no longer become permanently unusable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Improved startup timeout messages** to show which step took longest, elapsed times, and actionable advice instead of a generic error.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Worktree copies** of large repos no longer inherit dangerous fetch specs or stale shallow grafts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Privacy banner** can now be dismissed from Settings even when you are already opted out.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Status bar** now keeps showing your current model after a catalog refresh even if that model is no longer listed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Grouped tool calls** now stay grouped even when hooks attach metadata, and show hook results in the header.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cmd+click** on autolinks in Apple Terminal now opens the correct URL when multiple messages are visible.",
+    "breaking_change": false
+  }
+]

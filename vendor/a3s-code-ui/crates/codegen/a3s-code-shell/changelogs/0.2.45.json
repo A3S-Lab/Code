@@ -1,0 +1,37 @@
+[
+  {
+    "category": "features",
+    "description": "**Mermaid diagrams** now render to images when you click Open in a code block (on by default).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** rare conversation corruption when skills changed while a tool call was still running.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** `grok --resume` failing on empty image-only session folders left by cross-directory pastes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** pasted images and relative paths using the wrong directory after resuming a session from another folder.",
+    "breaking_change": false
+  },
+  {
+    "category": "internal",
+    "description": "**--debug and --debug-file** flags now show simpler, clearer descriptions in --help output.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Welcome screen logo** no longer renders as invalid characters on legacy Windows command prompts and PowerShell.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed** \"unknown session id\" errors that occurred after the leader process crashed or was killed.",
+    "breaking_change": false
+  }
+]

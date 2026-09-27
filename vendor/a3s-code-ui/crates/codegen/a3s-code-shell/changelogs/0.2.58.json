@@ -1,0 +1,22 @@
+[
+  {
+    "category": "fixes",
+    "description": "Terminal command output files are now capped at 5 GB during execution and truncated to 64 MB after the process exits.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Interjection messages now display the actual user text instead of a generic header.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The legacy `agent` command is now kept in sync with `grok` after running `grok update`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Headless (`grok -p`) runs now wait for background tasks and subagents to finish before exiting.",
+    "breaking_change": false
+  }
+]

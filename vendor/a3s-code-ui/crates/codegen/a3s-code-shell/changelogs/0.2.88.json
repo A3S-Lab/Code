@@ -1,0 +1,47 @@
+[
+  {
+    "category": "features",
+    "description": "**Scrolling** feels smoother with better trackpad and wheel handling plus configurable speed and mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session content search** now correctly indexes messages containing escape sequences like newlines and quotes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session search** now returns tighter multi-word results and handles filenames and plurals better.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session picker** now always searches conversation content for queries of two or more characters.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tool call grouping** is now enabled by default, folding consecutive reads and searches into single rows.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Plugins tab** now supports `u` to update the selected plugin and shows non-blocking success feedback.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Formatted links** now keep their link color when wrapped in bold, italic, or strikethrough.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Reasoning effort** used for a session is now recorded in summary.json and conversation history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resuming sessions** no longer fails permanently when history files contain corrupted lines from interrupted writes.",
+    "breaking_change": false
+  }
+]

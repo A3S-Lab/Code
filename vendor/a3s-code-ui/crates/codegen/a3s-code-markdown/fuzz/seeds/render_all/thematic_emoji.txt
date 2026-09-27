@@ -1,0 +1,5 @@
+---
+
+## 📐 Heading
+
+Text after thematic break with emoji.

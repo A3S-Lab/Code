@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**--restore-code** no longer detaches the source repository when resuming a forked-worktree session from a different directory.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image and video generation** tools now emit structured paths so the pager renders media without regex scraping.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Compaction summaries** now use a more detailed structure that improves recovery after context reset.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**image_gen** can now be enabled via the harness model using [features] in config.toml or the GROK_IMAGE_GEN_HARNESS env var.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Read tool** string coercion bug fixes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Improved config refresh** on new sessions from the shell.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**ICO images** pasted or read from disk are now automatically converted to PNG before being sent to the model.",
+    "breaking_change": false
+  }
+]

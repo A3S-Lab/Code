@@ -1,0 +1,438 @@
+---
+title: SDKs and APIs
+description: Install the A3S Code Rust, Node.js, Python, and Go SDKs and map the 9.0.0 public surface across them.
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# SDKs and APIs
+
+A3S Code provides Rust, Node.js, Python, and Go SDKs. Install the `a3s` CLI when
+you want the terminal application. Treat each registry and
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases) as the source of
+truth for package versions and release status.
+
+| Entry    | Package or command                  | Documentation                                      | Use it for                                         |
+| -------- | ----------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| Terminal | `a3s code`                          | [A3S CLI](https://github.com/A3S-Lab/a3s)          | Run a coding agent directly in your terminal       |
+| Rust     | `a3s-code-core`                     | [docs.rs](https://docs.rs/a3s-code-core)           | Use the complete runtime API or extension traits   |
+| Node.js  | `@a3s-lab/code`                     | [npm](https://www.npmjs.com/package/@a3s-lab/code) | Subscribe to async events in a Node.js application |
+| Python   | `a3s-code`                          | [PyPI](https://pypi.org/project/a3s-code/)         | Use synchronous or asynchronous Python APIs        |
+| Go       | `github.com/A3S-Lab/Code/sdk/go/v9` | [Setup below](#go-module-and-bridge)               | Use a pure-Go API backed by the native runtime     |
+
+## Install
+
+```bash
+# Rust
+cargo add a3s-code-core
+
+# Node.js
+npm install @a3s-lab/code
+
+# Python
+python -m pip install a3s-code
+
+# Go
+go get github.com/A3S-Lab/Code/sdk/go/v9
+```
+
+## Public surface map
+
+The four SDKs expose one Core surface. `scripts/sdk_api_alignment_check.mjs`
+enforces it: every public Core `Agent`, `AgentSession`, and `SessionOptions`
+member must appear in Node.js, Python, and Go, or be listed as an intentional
+omission. The check currently covers 16 Agent members, 116 Session members,
+62 SessionOptions fields, 52 event types, and 30 product capabilities.
+
+### Agent
+
+| Operation              | Rust                                  | Node.js                         | Python                          | Go                                |
+| ---------------------- | ------------------------------------- | ------------------------------- | ------------------------------- | --------------------------------- |
+| Create from ACL config | `Agent::new(path).await`              | `Agent.create(path)`            | `Agent.create(path)`            | `code.Create(ctx, path)`          |
+| Open a session         | `agent.session(workspace, options)`   | `agent.session(workspace, opt)` | `agent.session(workspace, opt)` | `agent.Session(ctx, ws, opt)`     |
+| Resume a snapshot      | `agent.resume_session_async(id, opt)` | `agent.resumeSession(id, opt)`  | `agent.resume_session(id, opt)` | `agent.ResumeSession(ctx, id, o)` |
+| List live sessions     | `agent.list_sessions().await`         | `agent.listSessions()`          | `agent.list_sessions()`         | `agent.ListSessions(ctx)`         |
+| Close everything       | `agent.close().await`                 | `agent.close()`                 | `agent.close()`                 | `agent.Close(ctx)`                |
+
+Rust also has `Agent::session_builder` for sessions that take host-owned
+trait objects (such as an MCP manager) and `Agent::from_config`; these are the
+Agent-level intentional omissions.
+
+### Session
+
+| Operation        | Rust                                 | Node.js                          | Python                               | Go                                    |
+| ---------------- | ------------------------------------ | -------------------------------- | ------------------------------------ | ------------------------------------- |
+| Run a turn       | `send(prompt, None).await`           | `send(prompt)`                   | `send(prompt)` / `send_async`        | `Run(ctx, prompt)` / `Send`           |
+| Stream a turn    | `stream(prompt, None).await`         | `stream(prompt)`                 | `stream(prompt)`                     | `Stream(ctx, ...)`                    |
+| Save a snapshot  | `save().await`                       | `save()`                         | `save()`                             | `Save(ctx)`                           |
+| Resume a run     | `resume_run(run_id).await`           | `resumeRun(runId)`               | `resume_run(run_id)`                 | `ResumeRun(ctx, runID)`               |
+| Exact recovery   | `spawn_recovery_with_run_id(cp, id)` | `spawnRecoveryWithRunId(cp, id)` | `spawn_recovery_with_run_id(cp, id)` | `SpawnRecoveryWithRunID(ctx, cp, id)` |
+| Run records      | `runs()` / `run_events(id)`          | `runs()` / `runEvents(id)`       | `runs()` / `run_events(id)`          | `Runs(ctx)` / `RunEvents(ctx, id)`    |
+| Direct tool call | `tool(name, args).await`             | `tool(name, args)`               | `tool(name, args)`                   | `Tool(ctx, name, args)`               |
+| Close            | `close().await`                      | `close()`                        | `close()`                            | `Close(ctx)`                          |
+
+Session-level intentional omissions are Rust accessors that return live
+internals or accept trait objects: for example `memory`, `session_store`,
+`agent_executor`, `command_registry`, `register_hook_handler`,
+`register_dynamic_tool`, `tool_with_events`, `workflow`, and the projected
+Flow/UI scopes. Node.js, Python, and Go reach the same behavior through value
+configuration, callbacks, direct tools, or MCP.
+
+### SessionOptions
+
+Most options are serializable values with the same meaning in every SDK. The
+fields below carry the 9.0 harness and prompt surface:
+
+| Option               | Rust                                       | Node.js                                                                                   | Python                                                                                           | Go                             |
+| -------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------ |
+| Meta Harness recipe  | `with_harness(HarnessComposeOptions)`      | `harness: Harness.compose({...})`                                                         | `harness = Harness.compose(...)`                                                                 | `Harness *HarnessOptions`      |
+| Completion attestor  | `with_completion_attestor(Arc<dyn ...>)`   | not exposed                                                                               | not exposed                                                                                      | not exposed                    |
+| Read-only verifier   | `with_verifier(bool)` (`verifier_enabled`) | `verifierEnabled`                                                                         | `verifier_enabled`                                                                               | `VerifierEnabled *bool`        |
+| Prompt slots         | `with_prompt_slots(SystemPromptSlots)`     | `role`, `guidelines`, `responseStyle`, `outputLanguage`, `extra`                          | `role`, `guidelines`, `response_style`, `output_language`, `extra`                               | `PromptSlots *PromptSlots`     |
+| Trajectory recording | `with_rl_trajectory(RlTrajectoryConfig)`   | `trajectoryPath`, `trajectoryMode`, `trajectoryMaxTextBytes`, `trajectoryIncludeMessages` | `trajectory_path`, `trajectory_mode`, `trajectory_max_text_bytes`, `trajectory_include_messages` | `Trajectory *TrajectoryConfig` |
+
+The verifier is off by default. The completion attestor is a Rust trait hook
+that can supply a Passed, digest-bound verification report; it cannot bypass
+the completion gate. The harness parts are `system`, `tools`, `budget`,
+`compact`, `infer`, and `host:<id>` mounts (`Harness.host(id)` in Node.js and
+Python, `HarnessHost(id)` in Go). SDK sessions that set `harness` resolve host
+mounts through `BuiltinHostHarnessRegistry`, which provides `intent_stamp`;
+other host components need a Rust embedder that supplies a
+`HostHarnessRegistry`. See [Meta Harness](/guide/meta-harness) for
+composition rules.
+
+The other SessionOptions omissions are Rust trait objects or live handles, such
+as `llm_client`, `context_providers`, `permission_checker`, `mcp_manager`,
+`hook_executor`, `budget_guard` (the other SDKs install budget callbacks
+instead), and the host harness registry and assembler. Go spells a
+few options as nested structs or directories: `FileSessionStoreDir`,
+`FileMemoryDir`, and `PlanningMode`.
+
+### Events
+
+Streams and run event logs carry versioned `EventEnvelopeV1` records:
+
+| SDK     | Envelope                                                     | Type catalog               |
+| ------- | ------------------------------------------------------------ | -------------------------- |
+| Rust    | `EventEnvelopeV1 { version, event_type, payload, metadata }` | `AGENT_EVENT_TYPES_V1`     |
+| Node.js | `EventEnvelopeV1` (`version`, `type`, `payload`, `metadata`) | `agentEventTypesV1()`      |
+| Python  | `AgentEvent` (`version`, `type`, `payload`, `metadata`)      | `AGENT_EVENT_TYPES_V1`     |
+| Go      | `code.Event{Version, Type, Payload, Metadata}`               | `code.AgentEventTypesV1()` |
+
+`version` is always `1` (`EVENT_ENVELOPE_V1_VERSION`,
+`code.EventEnvelopeV1Version`). Python also keeps the raw JSON in
+`payload_json` and `metadata_json`. The type field is an open string: hosts
+must keep unknown future types and their payloads rather than reject them.
+
+## Python wheel platforms
+
+`a3s-code` on PyPI is a small pure-Python bootstrap. On first import it
+downloads the native wheel matching its own version from GitHub Releases and
+checks its SHA-256 manifest. Native wheels use the CPython 3.10 stable ABI
+(`cp310-abi3`), so the same asset supports CPython 3.10 through 3.14:
+
+| Host                | Wheel platform tag       | Baseline    |
+| ------------------- | ------------------------ | ----------- |
+| Apple Silicon macOS | `macosx_11_0_arm64`      | macOS 11+   |
+| Intel macOS         | `macosx_12_0_x86_64`     | macOS 12+   |
+| Linux x86_64        | `manylinux_2_28_x86_64`  | glibc 2.28+ |
+| Linux arm64         | `manylinux_2_28_aarch64` | glibc 2.28+ |
+| Windows x86_64      | `win_amd64`              | Windows 10+ |
+| Windows arm64       | `win_arm64`              | Windows 10+ |
+
+No Linux musl wheel is published. The bootstrap extracts the native extension
+into a per-user, per-version cache (override with `A3S_CODE_CACHE_DIR`). A
+cross-process install lock and atomic replacement make first import safe when
+several applications start together.
+
+Published wheels are built with `advanced-harness` and `server` (S3) on top of
+the a3s-vec FTS default. They do not include `headless-search`: `web_search`
+uses HTTP/RSS and native API engines, and the Moli functions are not exported.
+Each wheel still carries a Moli executable under `a3s_code/moli/`, which the
+bootstrap exports as `A3S_CODE_MOLI_EXECUTABLE`; only a custom build with
+`headless-search` uses it.
+
+For an Intel Mac on macOS 12 or later, install with the interpreter that will
+run your application:
+
+```bash
+python3.14 -m ensurepip --upgrade  # only if this interpreter has no pip
+python3.14 -m pip install --upgrade pip
+python3.14 -m pip install a3s-code
+```
+
+If `python3.14 -m pip` reports `No module named pip`, the error is in the
+Python environment, before A3S Code is imported. Initialize or reinstall pip
+for that interpreter and retry.
+
+## Go module and bridge
+
+The Go 1.23+ API is pure Go and does not require CGO. One long-lived
+`a3s-code-go-bridge` process owns the native runtime and carries multiplexed
+requests and `EventEnvelopeV1` values over a versioned JSONL protocol.
+
+A Go-enabled repository release publishes a path-prefixed module tag
+`sdk/go/vX.Y.Z`, matching release `vX.Y.Z`, together with
+`a3s-code-go-bridge-SHA256SUMS`, a standalone bridge executable per target,
+and a `.tar.gz` bundle per target:
+
+| System  | Asset target                |
+| ------- | --------------------------- |
+| Linux   | `x86_64-unknown-linux-gnu`  |
+| Linux   | `aarch64-unknown-linux-gnu` |
+| macOS   | `x86_64-apple-darwin`       |
+| macOS   | `aarch64-apple-darwin`      |
+| Windows | `x86_64-pc-windows-msvc`    |
+| Windows | `aarch64-pc-windows-msvc`   |
+
+The published bridge is built with default features only (a3s-vec FTS). It
+does not include `advanced-harness`, `s3`, or `headless-search`: state-graph
+and dynamic-workflow operations return `UNSUPPORTED_OPERATION`, an S3 workspace
+returns `FEATURE_DISABLED`, and `code.MoliRuntimeInfo` / `code.EnsureMoli`
+return `FEATURE_REQUIRED`. The bundle also contains a Moli executable, which
+only a bridge built with `headless-search` uses.
+
+Download the bridge from
+[GitHub Releases](https://github.com/A3S-Lab/Code/releases), verify it against
+the published SHA-256 file, and keep its version equal to the Go module
+version. Put it on `PATH`, set `A3S_CODE_GO_BRIDGE`, or pass
+`code.WithBridgePath`:
+
+```bash
+export A3S_CODE_GO_BRIDGE=/opt/a3s/bin/a3s-code-go-bridge
+```
+
+```powershell
+$env:A3S_CODE_GO_BRIDGE = 'C:\a3s\a3s-code-go-bridge.exe'
+```
+
+For an architecture without a release asset, or to enable optional features,
+build it from a source checkout:
+
+```bash
+bash .github/setup-workspace.sh
+cargo build --release --package a3s-code-go-bridge --bin a3s-code-go-bridge \
+  --features advanced-harness,server,headless-search
+```
+
+Drop the `--features` flag to match the published bridge.
+
+`code.Create` performs a fail-closed handshake for the transport protocol,
+event protocol, and complete operation inventory. Go failures use stable
+`*code.Error` codes while context cancellation and deadlines remain available
+through `errors.Is`. The bridge covers the serializable Agent/Session surface
+compiled into it plus Go-backed hooks, budget guards, slash commands, and pipeline
+callbacks. Arbitrary Rust trait-object implementations remain a Rust-native
+extension mechanism; the other SDKs use their equivalent value configuration,
+callback, direct-tool, or MCP boundary.
+
+## What the SDKs share
+
+All four SDKs use the same session lifecycle, event format, and snapshots. A UI
+can subscribe to the same `AgentEvent` / `EventEnvelopeV1` stream and resume
+saved work by session ID.
+
+### Priority scheduler surface
+
+Every SDK exposes the same Agent-wide scheduler controls. Select a session's
+`urgent`, `interactive`, `foreground`, `background`, or `maintenance` priority
+at creation time, then read the shared occupancy snapshot from the Agent or any
+sibling session:
+
+| SDK     | Session option                                     | Agent / Session snapshot       |
+| ------- | -------------------------------------------------- | ------------------------------ |
+| Rust    | `SessionOptions::with_task_priority(TaskPriority)` | `task_scheduler_stats().await` |
+| Node.js | `taskPriority`                                     | `taskSchedulerStats()`         |
+| Python  | `SessionOptions.task_priority`                     | `task_scheduler_stats()`       |
+| Go      | `SessionOptions.TaskPriority`                      | `TaskSchedulerStats(ctx)`      |
+
+The snapshot includes global capacity, active and pending totals, per-priority
+counts, and shutdown state. See [Task scheduler](/guide/tasks#agent-wide-priority-scheduler) for
+ordering, aging, cancellation, configuration, and complete examples.
+
+### Safe-point run-control surface
+
+Every SDK can steer or interrupt the currently active Run without opening a
+second transcript operation:
+
+| SDK     | Steer                        | Interrupt                           | Snapshot                            |
+| ------- | ---------------------------- | ----------------------------------- | ----------------------------------- |
+| Rust    | `steer(SteerRequest).await`  | `interrupt(InterruptRequest).await` | `run_control_snapshot().await`      |
+| Node.js | `steer(input, options)`      | `interrupt(options)`                | `runControlSnapshot()`              |
+| Python  | `steer` / `steer_async`      | `interrupt` / `interrupt_async`     | sync / async `run_control_snapshot` |
+| Go      | `Steer(ctx, input, options)` | `Interrupt(ctx, options)`           | `RunControlSnapshot(ctx)`           |
+
+Requests use immutable Run IDs, optional optimistic turn guards, deadlines,
+and idempotency keys. Receipts distinguish `accepted`, `applied`, `settled`,
+and `rejected`; the shared `run_control_applied` event records safe-point
+application. See [Sessions](/guide/sessions#steer-and-interrupt-an-active-run) for complete
+examples and lifecycle semantics.
+
+### Tool-result projection surface
+
+All four SDKs pin the same versioned deterministic projection policy to a
+session:
+
+| SDK     | Session option or builder                                        |
+| ------- | ---------------------------------------------------------------- |
+| Rust    | `with_tool_result_transform_policy(ToolResultTransformPolicyV1)` |
+| Node.js | `toolResultTransformPolicy`                                      |
+| Python  | `SessionOptions.tool_result_transform_policy`                    |
+| Go      | `SessionOptions.ToolResultTransformPolicy`                       |
+
+Rust and Python expose a `context_efficient()` preset; Node.js and Go accept
+the same explicit fields. The policy persists in snapshots and every Tool
+result carries `a3s.code.tool-result-evidence.v1` metadata. See
+[Tools](/guide/tools#deterministic-tool-result-projection) for field values,
+ordering, bounds, loss modes, and SDK examples.
+
+The shared guides place Go beside Node.js and Python for the complete common
+SDK capability surface. Start with
+[quick start](/guide/examples/quick-start), then continue to
+[streaming](/guide/examples/streaming),
+[direct tools](/guide/examples/direct-tools), [sessions](/guide/sessions),
+[verification](/guide/verification), [MCP](/guide/mcp), and
+[persistence](/guide/persistence).
+
+All four SDKs can configure persistence, memory, local workspaces, S3
+workspaces (in builds with `s3`; not the published Go bridge), remote Git, permissions and confirmation, hooks, MCP, queues, deterministic replay,
+and orchestration. Rust additionally accepts arbitrary in-process trait
+implementations such as a custom `LlmClient` or `ContextProvider`; other
+languages integrate custom services through callbacks, direct tools, or MCP.
+For UI integration, start with
+[sessions and event streams](/guide/sessions).
+
+## Product capability discovery
+
+The release has one product-level capability contract. `sdkCapabilities()` (or
+its language equivalent) returns the same ordered inventory in every official
+SDK under schema `a3s-code/sdk-capabilities/v2`. Each record has a stable
+identifier, category, canonical operation names, a description, a `hostOwned`
+flag, and a `tier`. `hostOwned` identifies who supplies policy, credentials,
+or an external lifecycle; it does not remove the operation from an SDK. Use
+the inventory for feature negotiation instead of guessing from package files
+or versions.
+
+| Tier       | Capability ids                                                                                                                                                                                                                                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseline` | `agent_runtime`, `conversation`, `run_control`, `governed_tools`, `workspace_tools`, `workspace_retrieval`, `model_adapters`, `structured_output`, `mcp_and_skills`, `planning_delegation`, `priority_scheduling`, `persistence`, `governance`, `run_observability`, `context_memory`, `web_search`, `web_fetch`, `program` |
+| `advanced` | `code_intelligence`, `cognitive_packages`, `use_runtime_tasks`, `programmable_workflows`, `state_graph`, `agent_release_contract`, `agent_protocol`, `evaluation_substrate`, `typed_decisions`, `moli_runtime`, `s3_workspace`, `opentelemetry`                                                                             |
+
+The inventory is static: every build returns all 30 records, including
+advanced records whose surface needs a Cargo feature that build may lack (see
+[Feature flags](#feature-flags)). For example, `moli_runtime` needs
+`headless-search`, which no published SDK build includes, and
+`typed_decisions` needs the `apofasi` feature, which no release profile
+includes and which is not part of the 9.0.0 release.
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{sdk_capabilities, sdk_capabilities_schema};
+
+let capabilities = sdk_capabilities();
+assert_eq!(sdk_capabilities_schema(), "a3s-code/sdk-capabilities/v2");
+assert!(capabilities.iter().any(|item| item.id == "web_search"));
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { sdkCapabilities, sdkCapabilitiesSchema } from '@a3s-lab/code';
+
+const capabilities = sdkCapabilities();
+console.log(sdkCapabilitiesSchema(), capabilities.length);
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import sdk_capabilities, sdk_capabilities_schema
+
+capabilities = sdk_capabilities()
+assert sdk_capabilities_schema() == "a3s-code/sdk-capabilities/v2"
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+capabilities, err := code.SDKCapabilities(ctx)
+if err != nil {
+	return err
+}
+fmt.Println(code.SDKCapabilitiesSchema(), len(capabilities))
+```
+
+</Tab>
+</Tabs>
+
+## Feature flags
+
+`a3s-code-core` groups optional surfaces into Cargo release profiles. The
+default is `local-code`.
+
+| Feature                 | Adds                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `minimal`               | Governed agent loop, workspace tools, identity, and events only                                   |
+| `local-code` (default)  | `minimal` plus a3s-vec FTS lexical retrieval, trigram `grep` pruning, and PDF text in `web_fetch` |
+| `scientific`            | `local-code` plus `durable-memory-sqlite`, `headless-search`, and `advanced-harness`              |
+| `server`                | `local-code` plus `s3` and `telemetry`                                                            |
+| `full`                  | `scientific` plus `server`                                                                        |
+| `advanced-harness`      | Evaluation, research, state graphs, and dynamic workflows (Flow projection)                       |
+| `headless-search`       | Browser-backed web search and the Moli runtime APIs                                               |
+| `s3`                    | The S3-compatible workspace backend                                                               |
+| `telemetry`             | OpenTelemetry OTLP export (`telemetry_otel::TelemetryConfig`)                                     |
+| `durable-memory-sqlite` | Durable SQLite vector index for semantic memory                                                   |
+
+Without `headless-search`, `web_search` still uses HTTP/RSS and native API
+engines. The Node.js, Python, and Go bridge crates default to `a3s-vec-fts`
+and expose their own `advanced-harness`, `server` (S3 only, no telemetry), and
+`headless-search` features. The published packages enable:
+
+| Package                         | SDK crate features                          |
+| ------------------------------- | ------------------------------------------- |
+| `@a3s-lab/code` (npm)           | `a3s-vec-fts`, `advanced-harness`, `server` |
+| `a3s-code` (PyPI native wheels) | `a3s-vec-fts`, `advanced-harness`, `server` |
+| `a3s-code-go-bridge` (Releases) | `a3s-vec-fts` (default only)                |
+
+No published package includes `headless-search` or `telemetry`. OTLP export
+is available only to Rust embedders; see [Telemetry](/guide/telemetry).
+
+## Headless web search (Rust and custom builds)
+
+`headless-search` is a Cargo feature for Rust embedders and custom SDK builds.
+With it, `web_search` (backed by `a3s-search` 3.1.4) adds browser-rendered
+engines (Google, Baidu, Bing, and Brave) and uses Moli as the default browser;
+Chrome and Lightpanda stay selectable through `HeadlessConfig.backend`.
+
+`ensure_moli` resolves the executable in this order: `browser_path`, the
+`A3S_CODE_MOLI_EXECUTABLE` environment variable, a packaged sidecar
+(`A3S_CODE_MOLI_PATH` / `A3S_CODE_MOLI_DIR`), a verified copy in the per-user
+cache, a Moli found on the system, and finally an HTTPS download of the pinned
+release. The download checks the release SHA-256 and runs under an exclusive
+install lock, so concurrent processes install once. Set
+`auto_download_moli = false` to fail instead of downloading. The pinned Moli
+release has no Linux musl asset; provide an executable or select Chrome or
+Lightpanda there. `moli_runtime_info` reports the resolution path without
+downloading.
+
+```rust
+use a3s_code_core::{ensure_moli, moli_runtime_info, HeadlessConfig};
+use std::time::Duration;
+
+let config = HeadlessConfig::default();
+let status = moli_runtime_info(Some(&config));
+let executable = ensure_moli(&config, Duration::from_secs(120)).await?;
+println!("{} {:?} {}", status.version, status.executable, executable.display());
+```
+
+An SDK built from source with its `headless-search` feature projects the same
+calls: `moliRuntimeInfo` / `ensureMoli` in Node.js, `moli_runtime_info` /
+`ensure_moli` in Python, and a Go bridge that accepts `code.MoliRuntimeInfo` /
+`code.EnsureMoli`. The published packages omit them. Every SDK still accepts a
+`headless` block in its search configuration; without `headless-search` the
+browser settings have no effect.

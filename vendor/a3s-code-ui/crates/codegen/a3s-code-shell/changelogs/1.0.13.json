@@ -1,0 +1,102 @@
+[
+  {
+    "category": "features",
+    "description": "**Length-truncated responses** now continue automatically instead of failing the turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Transient inference failures** (stalls, drops, 5xx) now retry automatically instead of ending the turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Windows users** can now correctly open ~/.grok and worktree sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session data** is now more reliably saved after prompts and on power loss.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hooks** can now ask the user to confirm a tool call instead of always allowing or denying.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hooks** can now request deferral or add context shown to the model after a tool runs.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Subagent spawning** is faster when connections drop during bursts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Compaction failures** now show the actual error instead of a generic message.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Session startup** with MCP servers is now much faster when auth is already configured.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**MCP server startup** no longer stalls behind a fixed batch size.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Truncation error messages** now show the right guidance instead of suggesting an unhelpful retry.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Truncated tool calls** are now executed instead of failing the turn when arguments are complete.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Images larger than 2000px** no longer brick sessions on many-image requests.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Wrapped hyperlinks** in the pager now remain fully clickable on Windows Terminal instead of only the first line.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session close** now records detailed timing data for performance analysis.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Credit limit upsell** now offers a Try Again button to retry the last prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Recurring scheduled tasks** now include a reminder to stop the monitor when work finishes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Scheduled task IDs** are now full UUID strings, preventing collisions when tasks are created in the same millisecond.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**CLI downloads** are now compressed, making fresh installs and updates substantially faster.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Pasted images** now show a live pixel preview in the prompt box on iTerm2.",
+    "breaking_change": false
+  }
+]

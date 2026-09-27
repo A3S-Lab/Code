@@ -1,0 +1,97 @@
+name: shortcuts-help-detail
+description: >
+  End-to-end cheatsheet flow exercising the full shortcuts-help stack: open the
+  Keyboard Shortcuts modal from a live session, inline-expand a hint with the
+  right arrow and collapse it with the left arrow (directional collapse),
+  open the man-style detail screen with Enter (pattern B) showing the action's
+  long_help, return to the browse list with Esc (not close), then dismiss the
+  modal with the global Ctrl+X close chord.
+
+  Open/close uses Ctrl+X rather than Ctrl+. : both are bound to ShortcutsHelp
+  (When::AgentScreen) and both are the in-modal global-close chord, but Ctrl+X
+  has a legacy byte (0x18) the PTY reliably delivers whereas Ctrl+. has no
+  Xterm-encodable byte. The prompt ignores Ctrl+X, so it bubbles to the
+  AgentScreen binding.
+terminal:
+  rows: 40
+  cols: 110
+mock:
+  response: "MOCK_SHORTCUTS_E2E assistant reply for the cheatsheet scenario."
+steps:
+  # Reach a session so ShortcutsHelp (When::AgentScreen) is reachable.
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "hello cheatsheet"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: MOCK_SHORTCUTS_E2E
+    timeout_ms: 30000
+  # Open the cheatsheet via the reliably-encodable Ctrl+X (== Ctrl+. binding).
+  - action: keys
+    keys: "<C-x>"
+  - action: wait_for_text
+    text: Keyboard Shortcuts
+    timeout_ms: 15000
+  # Browse-mode chrome + shipped affordances (expand / collapse / detail hints).
+  - action: assert_contains
+    text: Essentials
+  - action: assert_contains
+    text: Enter details
+  - action: assert_contains
+    text: collapse
+  - action: assert_not_contains
+    text: panicked
+  # Move selection off the section header onto the CancelTurn hint
+  # (Essentials order: send, prompt, scrollback, cancel).
+  - action: keys
+    keys: "<Down><Down><Down>"
+  - action: wait
+    millis: 200
+  # Inline-expand (right arrow): the action's long_help renders under the row.
+  - action: keys
+    keys: "<Right>"
+  - action: wait_for_text
+    text: Interrupts the
+    timeout_ms: 15000
+  # Collapse the same row with the left arrow (directional left-collapse).
+  - action: keys
+    keys: "<Left>"
+  - action: wait
+    millis: 200
+  - action: assert_not_contains
+    text: Interrupts the
+  # Enter opens the in-modal man-style detail screen (pattern B).
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: Esc back
+    timeout_ms: 15000
+  - action: assert_contains
+    text: Interrupts the
+  - action: assert_not_contains
+    text: panicked
+  # Esc returns to the browse list (must NOT close the modal).
+  - action: keys
+    keys: "<Esc>"
+  - action: wait_for_text
+    text: Enter details
+    timeout_ms: 15000
+  - action: assert_contains
+    text: Keyboard Shortcuts
+  # Global close: Ctrl+X dismisses the modal and restores the session.
+  - action: keys
+    keys: "<C-x>"
+  - action: wait
+    millis: 300
+  - action: assert_not_contains
+    text: Keyboard Shortcuts
+  - action: assert_contains
+    text: MOCK_SHORTCUTS_E2E
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: shortcuts-help-detail-closed
+    note: Cheatsheet inline-expand / detail / collapse flow complete; modal dismissed via Ctrl+X.

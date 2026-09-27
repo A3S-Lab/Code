@@ -85,6 +85,97 @@ Unit, integration, and soak case oracles:
 | CI cost | local-code gate is mandatory; Advanced is not default |
 | Live budget | Ignored suites; run serially (`--test-threads=1`) |
 
+## v9.0.0 gap plan (no second matrix)
+
+This plan joins the holes in the 9.0.0 channel onto Layers A–D. It does not
+add a suite, a model pin, or an orchestration loop. A change is in scope only
+when it restores one existing fact-log path or removes a second control
+source. Optimize a measured distribution, not a single transcript.
+
+### Invariants the tests must keep
+
+1. One fact log decides the next transition.
+2. Permission projection and the completion gate stay Core-owned.
+3. Components have no timers. A schedule is a host `session.send`.
+4. A child agent returns evidence. The parent session decides.
+5. Live oracles are files, digests, tool names, and terminal states.
+
+### Tests to add on the existing layers
+
+| Hole | Layer | Oracle |
+| --- | --- | --- |
+| `a3s-code-acp` drops `AgentEvent::UserQuestion` (`agent.rs` catch-all) | A, beside F26 `ask_user` | A question event is delivered on the ACP session channel. A user answer appends `question.answered` for that id. Dropping the event is a failure. Do not assert the question sentence. |
+| `DirectoryProjection` is a library map, not a daemon | A, `directory_projection` unit tests already | Stock compose list stays `system/tools/budget/compact/infer`. A script path outside the directory fails. A cron that does not match `now` yields no prompt. |
+| Pager hides commands with no ACP backing | A, existing `A3S_CODE_EFFECTIVE_COMMANDS` visibility test | Every visible a3s command is on the effective list and has a backing effect. Do not re-show `/compact`, `/tasks`, `/memory`, `/hooks`, or `/rewind` until that effect exists. |
+| CLI crate pins `a3s-code-core` 8.7.0 while the TUI agent links workspace 9.0.0 | A8 / release pin | Record which binary serves `a3s code`. Do not add a shim that makes 9.0.0 imitate 8.7.0. |
+| `review` is a `task` child, `auto_delegation.enabled` defaults off | A, F19 | Explicit `@reviewer` resolves to builtin `review`. The parent prompt still owns the final decision. No test that a reviewer runs on every turn. |
+| `TB-QUAL1` waived; one diagnostic trial scored 0.0 | D1 | Full `terminal-bench@4.0.0` or keep the waiver. One task is not a pass. |
+| `CAR-*` | D3 | Stay out of scope while Cloud is retired. Do not fake a Cloud receipt. |
+| Apofasi | B, opt-in | Default gate unchanged. See `TYPED_DECISION_E2E_PLAN.md`. |
+
+Layer C stays on the bailian Flash pin and the file/digest/gate oracles
+already listed above. Do not add a live suite whose only assertion is
+assistant prose. `UserQuestion` is delivered by `a3s-code-acp` on
+`request_permission` (`RejectOnce` choices). Hermetic oracles:
+`question_options_are_not_permission_grants`,
+`selected_question_option_is_the_answer_text`,
+`a_question_id_is_prompted_once`, and
+`fact_log_question_stays_parked_until_the_answer_fact`.
+Live evidence (2026-09-27): `test_meta_harness_compose_live_e2e`
+`live_composed_harness_write_completes_when_host_attests` passed against
+`boyue/bailian/deepseek-v4.1-flash`. The oracle is the host write token in
+`compose_out.txt` and `CompletionTerminal::Verified`, not assistant text.
+
+### Optimizations that are allowed
+
+1. Deliver `UserQuestion` on the same ACP session channel that already
+   carries `ConfirmationRequired`, then settle with the existing
+   `answer` fact. That is a missing wire, not a new question runtime.
+2. Change a timeout or a cascade order only after a recorded latency
+   distribution (the retrieval `TURN_TIMEOUT` 240→420s note in the status
+   log is the pattern). Headless search stays off the fast path.
+3. Point the CLI in-process dependency at the same core the TUI agent
+   runs, when that move is the release cut. Until then, name the split.
+
+### Refused overfits
+
+- Asserting or tuning provider-specific assistant text, including a
+  Flash-only wording change to pass one Layer C suite.
+- Prompt or tool-budget edits aimed at `bun-sourcemap-leak` or any other
+  single Harbor task.
+- Lowering `GatePolicy`, adding a keyword classifier, or skipping a
+  generation so a typed-decision fixture goes green.
+- Restoring `serve`, `AgentDir`, or an in-component cron so a schedule
+  fires without a host.
+- A standing reviewer actor, or turning `auto_delegation` on by default
+  to raise a review score.
+- Re-registering `parallel_task` or a second message loop.
+- Putting headless browser startup back on the API/HTTP critical path.
+- Inventing an evidence store so `S-RX-01` can be marked run.
+- Raising coverage by testing generated prose or unreachable vendor UI.
+
+## Complex cases
+
+A complex case crosses at least three capability ids in one session. The
+model may phrase the reply however it wants. The checker is the test
+process: tool names, tool arguments, fact kinds, unchanged bytes, and an
+independent `node` run. Do not add a second matrix, a prose oracle, a
+lowered gate, or a prompt rewrite after a red run.
+
+| Id | Session | Capabilities | Oracle | Home |
+| --- | --- | --- | --- | --- |
+| CX-1 | Two host sends on `schedule:<name>` | directory projection, host schedule, `program`, workspace repair, permission deny, fact log | Stock compose list; the February 31 schedule is not due; `program` runs `tools/stamp.js` with `allowed_tools: ["read"]` and the script stamp is in the tool output; `node test.mjs` prints `COMPLEX_OK`; `secret/token.txt` is the only file that contains the secret | `test_complex_capability_live_e2e` |
+| CX-2 | One multi-step repair | planning, workspace tools, governance, completion gate | Failing then passing `bash`, independent `node`, spec and test bytes unchanged, run status is not narrative `Completed` | existing `test_long_horizon_real_llm` |
+| CX-3 | Parent plus builtin children | `planning_delegation` | Child `task` execution with the real provider; `auto_delegation.enabled` stays default off | existing `test_auto_delegation_real_parallel` |
+| CX-4 | Steer, interrupt, resume | `run_control`, `persistence`, `conversation` | Cancelled then a follow-up turn; checkpoint resume identity | existing `test_run_control_real_llm` and `test_real_llm_cluster_features` |
+| CX-5 | Typed decision then one generation | `typed_decisions` | Default `GatePolicy` unchanged; escalate still calls the pinned model; the label is not the oracle | existing `typed_decision_layer_c` |
+| CX-6 | Question parked | `conversation`, fact log | No `question.answered` fact until the host answers. Not a live prompt that begs the model to ask | existing hermetic `fact_log_question_stays_parked_until_the_answer_fact` |
+
+`priority_scheduling`, `code_intelligence`, `cognitive_packages`,
+`use_runtime_tasks`, `s3_workspace`, `opentelemetry`, and `moli_runtime`
+stay on the hermetic or host gate in `FULL_FEATURE_TEST_PLAN.md`. A model
+suite is not added for them.
+
 ## Status log
 
 Filled as this goal progresses; do not mark complete without requirement-level

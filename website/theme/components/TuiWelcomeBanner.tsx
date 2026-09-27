@@ -1,11 +1,11 @@
 const tuiMascot = [
-  '     .-^-.',
-  '    /_____\\',
-  '    ( o o )',
-  '  |  /|_|\\  _',
-  ' -+- |   | |#|',
-  '  |  |___| \\#/',
-  '     /   \\',
+  '    .------.',
+  "  .'        '.",
+  ' /    /\\    \\',
+  '|    /  \\',
+  ' \\~~~~/ ~~ \\~~~~',
+  "  '.        .'",
+  "    '------'",
 ].join('\n');
 
 const tuiWordmarkGlyphs = {
@@ -72,7 +72,7 @@ export function TuiWelcomeBanner({
         <TuiWordmark />
       </div>
       <p className="a3s-tui-meta">
-        <span>a3s-code v9.0.0</span>
+        <span>a3s-code v9.1.0</span>
         <i>·</i>
         <span>openai/gpt-5</span>
         <i>·</i>
@@ -81,8 +81,9 @@ export function TuiWelcomeBanner({
         <span>{workspace}</span>
       </p>
       <p className="a3s-tui-tip">
-        Type a message · / for commands · Shift+Tab cycles mode · Ctrl+C twice
-        to exit
+        Type a message · / for commands · Shift+Tab cycles
+        agent/plan/reviewer/auto/yolo · /ask = plan (read-only) · Ctrl+G reviews
+        diffs · Ctrl+C twice to exit
       </p>
     </>
   );

@@ -1,0 +1,41 @@
+name: undo-tip-clear-shows
+description: >
+  Undo tip end-to-end with the contextual-hints master pinned on
+  (`GROK_CONTEXTUAL_HINTS=1` for deterministic env control; the feature now ships
+  default-ON): wiping a substantial prompt draft with Ctrl+U shows the "… to
+  undo" banner. The seen cap is in-memory only, so a fresh run starts uncapped;
+  the banner clears on its own ~3s TTL (no early retire on undo).
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # The first printable char promotes the welcome prompt to a real session
+  # (the agent view, where the undo-tip routing lives); the rest accumulate
+  # into that draft. 25 chars clears the detector's FIRE_PEAK_LEN (20).
+  - action: type_text
+    text: "aaaaaaaaaaaaaaaaaaaaaaaaa"
+  - action: wait
+    millis: 400
+  - action: assert_contains
+    text: "aaaaaaaaaa"
+  # Ctrl+U kills the whole line: a substantial, recoverable wipe → tip shows.
+  - action: keys
+    keys: "<C-u>"
+  - action: wait_for_text
+    text: "to undo"
+    timeout_ms: 10000
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: undo-tip-shown
+    note: Undo tip banner after a Ctrl+U wipe of a substantial draft.

@@ -1,0 +1,92 @@
+name: dashboard-overlay-agents-esc
+description: >
+  GBT-6092: from the dashboard, Right-arrow peek/attach a conversation, open
+  `/agents`, then Esc. Esc must close the modal and stay in the conversation —
+  not pop back to the dashboard list (which left the modal mounted and looped
+  dashboard ↔ conversation). A follow-up Esc on the empty overlay prompt then
+  backs out to the dashboard, matching the normal overlay cascade.
+terminal:
+  rows: 50
+  cols: 120
+environment:
+  env:
+    - key: GROK_AGENT_DASHBOARD
+      value: "1"
+mock:
+  response: "GBT6092_OVERLAY_PEEK conversation body from the mock inference server."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 30000
+  - action: type_text
+    text: "go"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: GBT6092_OVERLAY_PEEK
+    timeout_ms: 30000
+  - action: type_text
+    text: "/dashboard"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: "+ New Agent"
+    timeout_ms: 20000
+  - action: screenshot
+    name: dashboard-list
+    note: Dashboard list after /dashboard, before Right-arrow attach.
+  # Down clamps at the last focusable. Three Downs land on the session row
+  # whether the cursor started on [+ New Agent] or on a previously selected row.
+  - action: keys
+    keys: "<Down><Down><Down>"
+  - action: wait
+    millis: 400
+  - action: keys
+    keys: "<Right>"
+  - action: wait_for_text
+    text: GBT6092_OVERLAY_PEEK
+    timeout_ms: 15000
+  - action: assert_not_contains
+    text: "+ New Agent"
+  - action: screenshot
+    name: overlay-attached
+    note: Session overlay after Right-arrow peek/attach from the dashboard.
+  - action: type_text
+    text: "/agents"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: Personas
+    timeout_ms: 15000
+  - action: assert_contains
+    text: Esc close
+  - action: screenshot
+    name: agents-modal-open
+    note: /agents modal open on top of the dashboard session overlay.
+  - action: keys
+    keys: "<Esc>"
+  - action: wait
+    millis: 400
+  # GBT-6092: Esc closed the modal; we are still in the conversation overlay.
+  - action: assert_not_contains
+    text: Personas
+  - action: assert_not_contains
+    text: Esc close
+  - action: assert_contains
+    text: GBT6092_OVERLAY_PEEK
+  - action: assert_not_contains
+    text: "+ New Agent"
+  - action: screenshot
+    name: agents-modal-closed-still-overlay
+    note: Esc closed /agents and stayed in the conversation (did not return to the dashboard).
+  # Empty-prompt overlay Esc then backs out — the cascade after the modal is gone.
+  - action: keys
+    keys: "<Esc>"
+  - action: wait_for_text
+    text: "+ New Agent"
+    timeout_ms: 10000
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: second-esc-backs-out
+    note: A second Esc on the empty overlay prompt returns to the dashboard list.

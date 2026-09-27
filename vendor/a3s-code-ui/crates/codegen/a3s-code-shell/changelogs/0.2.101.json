@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Parked subagent status** no longer duplicates or interleaves incorrectly in scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok inspect** now shows effective compatibility settings for Cursor, Claude, and Codex sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Status line** during waits now shows elapsed time before the queued-message hint.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued messages sent with Enter** now appear immediately instead of vanishing briefly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resume hint** after quitting minimal mode now prints the correct grok --minimal --resume command.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New setting** \"Match display refresh rate\" lets high-refresh displays run the TUI at native cadence.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rate-limit messages** now correctly direct API-key users to team plans instead of personal upgrades.",
+    "breaking_change": false
+  }
+]

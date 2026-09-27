@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "**`/btw` now works mid-message**: the rest of the line becomes the side question and does not appear in the main transcript.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto-update** no longer removes a grok binary that is still in use by another process.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Per-model `reasoning_summary`** setting is now available in config.toml for Responses API endpoints.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt editor** no longer gets the cursor stuck or skips a row when pressing Up/Down across soft-wrapped lines.",
+    "breaking_change": false
+  }
+]

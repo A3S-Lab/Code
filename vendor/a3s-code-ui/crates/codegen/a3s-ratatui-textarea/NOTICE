@@ -1,0 +1,8 @@
+a3s-ratatui-textarea is first-party code maintained by xAI for the Grok TUI.
+
+Copyright 2023-2026 xAI
+Licensed under the Apache License, Version 2.0 (see the repository root LICENSE).
+
+This crate is not a wholesale redistribution of third-party source. Dependencies
+such as ratatui are declared in Cargo.toml; their licenses appear in the
+repository root THIRD-PARTY-NOTICES file.

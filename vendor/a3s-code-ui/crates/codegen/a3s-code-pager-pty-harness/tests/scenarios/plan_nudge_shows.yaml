@@ -1,0 +1,44 @@
+name: plan-nudge-shows
+description: >
+  Plan-nudge end-to-end with the contextual-hints master pinned on
+  (`GROK_CONTEXTUAL_HINTS=1` for deterministic env control; the feature now ships
+  default-ON): typing a planning keyword into the prompt shows the "Planning?
+  Check out plan mode via shift+tab" banner. The seen cap is in-memory only, so a
+  fresh run starts uncapped; the banner clears on its own ~3s TTL.
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Promote the welcome prompt to a real session with a keyword-free prefix
+  # (the agent view is where the plan-nudge routing lives), and let the session
+  # settle to idle — the nudge is gated on `session.state.is_idle()`, so the
+  # keyword must cross in after the freshly-created session is ready.
+  - action: type_text
+    text: "lets "
+  - action: wait_for_text
+    text: "test-model"
+    timeout_ms: 10000
+  - action: wait
+    millis: 1500
+  # Cross into the "plan" keyword now that the session is idle → rising-edge
+  # nudge fires once.
+  - action: type_text
+    text: "plan the refactor"
+  - action: wait_for_text
+    text: "plan mode via"
+    timeout_ms: 10000
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: plan-nudge-shown
+    note: Plan-nudge banner after typing a planning keyword.

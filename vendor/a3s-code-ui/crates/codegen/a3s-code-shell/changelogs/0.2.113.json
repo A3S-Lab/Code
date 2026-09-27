@@ -1,0 +1,117 @@
+[
+  {
+    "category": "performance",
+    "description": "**Cold start** shows the UI instantly while models and settings load in the background.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal command output** is no longer lost or duplicated when the gateway is unreachable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Invalid MCP server entries** in config.toml no longer prevent A3S Code from starting; problems are shown in `grok inspect`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**SessionEnd hooks** now run on exit in non-leader TUI and headless sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Paste chips** now display with the correct background in inline prompts and question inputs.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasted content chips** now behave consistently when editing answers in the question view.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large session forks and resumes** now use far less memory and avoid spikes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task status** now shows only elapsed duration instead of absolute timestamps.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session lists** no longer drop real sessions when the remote registry reports an outdated turn count of zero.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP servers** can now be enabled or disabled directly from the CLI with `grok mcp enable <name>` and `grok mcp disable <name>`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Full plan markdown** can now be copied to the clipboard with `y` during plan approval or preview.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/loop** now stores prompts that include stop conditions so recurring tasks can terminate themselves when done.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Reduced spurious warning messages** for common auth and config scenarios.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed conda activation** (and other sourced scripts that read $@) when using persistent or login-capture shells.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed stuck background-task tray rows** after long foreground shell commands complete.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Prevented thread exhaustion** on high-core shared machines by limiting the workspace daemon's worker threads.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Agent subprocesses and idle inhibitors** are now cleaned up when the parent CLI process dies unexpectedly.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Added support for the new A3S Code Plus subscription tier** in authentication and feature gating.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed truncated plans** in minimal mode and improved visual separation between reasoning and output (including NO_COLOR).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed credential loss** across multiple grok processes sharing the same auth file.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed doubled Enter** and other keys on older Alacritty terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Enabled automatic recovery** from repetitive loops in model output by default.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed false paywall** messages for free-tier and unmatched users.",
+    "breaking_change": false
+  }
+]

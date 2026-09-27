@@ -1,0 +1,20 @@
+[package]
+license = "Apache-2.0"
+name = "prod-mc-cli-chat-proxy-types"
+version = "0.1.0"
+edition.workspace = true
+description = "Lightweight request/response types for cli-chat-proxy API"
+
+[features]
+default-bazel = []
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_json.workspace = true
+# The canonical requirements-TOML fail_closed parse, shared by the signer
+# (cli-chat-proxy) and the client (a3s-code-config) so they can't drift.
+toml.workspace = true
+
+[lints]
+workspace = true

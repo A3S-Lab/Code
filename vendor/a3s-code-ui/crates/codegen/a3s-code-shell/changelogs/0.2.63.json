@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed hook matchers** so pipe-list and alias patterns no longer silently over-match unrelated tool names.",
+    "breaking_change": false
+  }
+]

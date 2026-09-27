@@ -1,0 +1,62 @@
+[
+  {
+    "category": "features",
+    "description": "**Hosts can now register hooks** over the agent connection instead of only on-disk files.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Prompt and /usage warnings** now correctly reflect prepaid credits and auto top-up status.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Desktop clients can now detect** when a terminal is busy running a foreground process.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP server connections** no longer time out during slow cold starts of stdio servers that download dependencies.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**File paths containing spaces** (e.g. macOS app bundles) are now correctly turned into clickable hyperlinks in the terminal.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resume** now correctly picks the most recently active session instead of one that only had metadata updates.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**TODO list** remains visible to the model after compaction so it can continue working on pending items.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/goal** slash command now appears in the menu on the welcome screen before any prompt is sent when the feature is enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session picker** no longer shows a stale row highlight when keyboard focus moves to the search bar.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/recap** is now available by default — it generates a quick summary of your current session so you can catch up on what's happened so far.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Usage percentages** in /usage and warnings now match backend flooring and show pay-as-you-go limits when applicable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Team accounts** can now list sessions after re-login; previously returned 403 on conversations API.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "code": "command_rejected",
+  "retryable": false,
+  "detail": {},
+  "reason": "args_too_large"
+}

@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Drag-and-drop** and pasting images or files now works correctly on Windows.",
+    "breaking_change": false
+  }
+]

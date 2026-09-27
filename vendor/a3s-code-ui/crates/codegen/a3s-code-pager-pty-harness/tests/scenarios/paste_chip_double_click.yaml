@@ -1,0 +1,33 @@
+name: paste-chip-double-click
+description: >
+  Double-clicking a `[Pasted: N lines]` chip in the prompt expands it back
+  into plain editable text; a single click only places the cursor on it.
+terminal:
+  rows: 36
+  cols: 100
+mock:
+  response: "UNUSED_PASTE_CHIP_DOUBLE_CLICK"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  # A 4-line bracketed paste collapses into a chip.
+  - action: paste_prompt
+    text: "alpha\nbravo\ncharlie\ndelta"
+  - action: wait_for_text
+    text: "[Pasted: 4 lines]"
+    timeout_ms: 10000
+  - action: double_click_text
+    text: "Pasted:"
+  - action: wait
+    millis: 300
+  # Chip expanded: label gone, buffer text plain and editable.
+  - action: assert_not_contains
+    text: "Pasted:"
+  - action: assert_contains
+    text: "charlie"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: paste-chip-expanded
+    note: Paste chip expanded to plain text after double-click.

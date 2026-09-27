@@ -1,0 +1,7 @@
+[
+  {
+    "category": "performance",
+    "description": "**grok clone** now reuses matching local checkouts as linked worktrees for faster session creation.",
+    "breaking_change": false
+  }
+]

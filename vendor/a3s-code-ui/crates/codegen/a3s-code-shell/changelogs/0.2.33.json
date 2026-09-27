@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed duplicate turn output** when attaching a second client to an active leader session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Fixed **Send now** on queued prompts.",
+    "breaking_change": false
+  }
+]

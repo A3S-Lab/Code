@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Watching status line** now appears when background monitors, loops, or subagents can wake the agent.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Default model selection** now correctly chooses the intended entry when multiple models share a slug.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Minor bug fixes",
+    "breaking_change": false
+  }
+]

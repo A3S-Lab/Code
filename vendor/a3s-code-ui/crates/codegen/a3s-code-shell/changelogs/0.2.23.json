@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Leader sessions** can now be viewed and controlled from multiple clients with a live dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sessions** can now be deleted directly from the /resume history picker.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP plugin servers** with bundled OAuth client IDs now authenticate correctly.",
+    "breaking_change": false
+  }
+]

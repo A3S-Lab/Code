@@ -1,0 +1,6 @@
+{
+  "code": "legacy_pricing_unsupported",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_legacy_pricing"
+}

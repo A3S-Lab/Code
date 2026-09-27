@@ -1,0 +1,91 @@
+---
+title: 'agent.acl'
+description: 'File-based runtime config for models, providers, queues, skill dirs, and worker agent dirs'
+---
+
+# agent.acl
+
+`agent.acl` is the versioned runtime config for the model, provider, queue, storage, skill directories, and worker agent directories.
+
+An SDK host may pass any `.acl` file explicitly with `Agent.create("agent.acl")`.
+The `a3s code` TUI does not require a root `agent.acl`. It reads
+`~/.a3s/config.acl` first, then the nearest `.a3s/config.acl` found by walking
+up from the workspace, and merges the workspace layer over the user layer.
+`--config <path>` replaces both layers. The format is the same; discovery and
+scope differ.
+
+## Basic Config
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+```
+
+`apiKey` / `api_key` and `baseUrl` / `base_url` are accepted aliases. The
+runtime does not hard-code model names; `default_model` and session-level
+`model` overrides must match the `provider/model-id` values declared here.
+
+Inject tokens through environment variables. Do not commit credentials. Once `agent.acl` lives in the repo, it is product behavior and should be reviewed like code.
+
+## Directory Discovery
+
+```acl
+skill_dirs = ["./.a3s/skills"]
+agent_dirs = ["./.a3s/agents"]
+project_doc_max_bytes = 32768
+project_doc_fallback_filenames = ["TEAM_GUIDE.md"]
+
+auto_delegation {
+  enabled                 = true
+  min_confidence          = 0.72
+  max_tasks               = 4
+  auto_parallel           = false
+  allow_manual_delegation = true
+}
+```
+
+`skill_dirs` points at reusable skills and is the only way ACL config loads
+skill files. `agent_dirs` adds worker/subagent directories to the
+automatically scanned `.a3s/agents` and `.claude/agents` directories. They load
+first, so a same-name definition in an automatic directory replaces them.
+`project_doc_max_bytes` bounds the combined personal and root-to-workspace
+instruction chain; fallback filenames are checked after `AGENTS.override.md`
+and `AGENTS.md`. Automatic delegation decides whether the runtime plans a
+`task` call for a matching worker; `allow_manual_delegation = false` removes the
+`task` tool entirely. Neither removes parent-session permission policy, tool
+visibility, or verification requirements. See [Tasks](/guide/tasks) for the
+scoring rules.
+
+## Session Storage
+
+```acl
+sessions_dir = ".a3s/sessions"
+```
+
+`sessions_dir` creates a local `FileSessionStore` for every session that does
+not receive an explicit SDK `sessionStore` or file-session-store directory.
+Without `sessions_dir` or an SDK store, sessions are not persisted. A directory
+that cannot be opened fails session initialization. `storage_backend` and
+`storage_url` are parsed and preserved when the config is rewritten, but they do
+not select or create a session store.
+
+## Boundaries
+
+- Config decides what can be connected and how the runtime starts; it does not bypass permission gates.
+- Prefer workspace-relative paths.
+- Tune automatic delegation together with high-quality `agents/` descriptions.
+- High-risk tools should still go through HITL or allow-lists.

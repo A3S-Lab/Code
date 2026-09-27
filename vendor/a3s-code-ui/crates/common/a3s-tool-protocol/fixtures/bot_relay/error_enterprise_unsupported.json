@@ -1,0 +1,6 @@
+{
+  "code": "enterprise_unsupported",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_enterprise_member"
+}

@@ -1,0 +1,143 @@
+name: auto-compact-resize
+description: >
+  Auto-compact on small terminals: shrinking to 18 rows (above the 16-row
+  short-terminal trims, at or below the 20-row auto-compact threshold) renders
+  the UI as if compact mode were on — the sticky prev-question header
+  (compact-disabled chrome) disappears — without persisting anything; growing
+  back to 32 rows restores it. The user setting never changes across the run.
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    # Pin the contextual hints master OFF so no ephemeral tip can land in the
+    # banner row and confuse the text assertions.
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "0"
+mock:
+  # Blank-line-separated paragraphs render one row each (no soft-wrap merge),
+  # so the transcript is ~40 rows tall and the question scrolls off on every
+  # terminal size this scenario uses — the sticky header is the only place
+  # the prompt text can appear.
+  response: |
+    TOPLINE_AAA
+
+    filler line 01 keeps the transcript tall
+
+    filler line 02 keeps the transcript tall
+
+    filler line 03 keeps the transcript tall
+
+    filler line 04 keeps the transcript tall
+
+    filler line 05 keeps the transcript tall
+
+    filler line 06 keeps the transcript tall
+
+    filler line 07 keeps the transcript tall
+
+    filler line 08 keeps the transcript tall
+
+    filler line 09 keeps the transcript tall
+
+    filler line 10 keeps the transcript tall
+
+    filler line 11 keeps the transcript tall
+
+    filler line 12 keeps the transcript tall
+
+    filler line 13 keeps the transcript tall
+
+    filler line 14 keeps the transcript tall
+
+    filler line 15 keeps the transcript tall
+
+    filler line 16 keeps the transcript tall
+
+    filler line 17 keeps the transcript tall
+
+    filler line 18 keeps the transcript tall
+
+    filler line 19 keeps the transcript tall
+
+    filler line 20 keeps the transcript tall
+
+    filler line 21 keeps the transcript tall
+
+    filler line 22 keeps the transcript tall
+
+    filler line 23 keeps the transcript tall
+
+    filler line 24 keeps the transcript tall
+
+    filler line 25 keeps the transcript tall
+
+    filler line 26 keeps the transcript tall
+
+    filler line 27 keeps the transcript tall
+
+    filler line 28 keeps the transcript tall
+
+    filler line 29 keeps the transcript tall
+
+    filler line 30 keeps the transcript tall
+
+    filler line 31 keeps the transcript tall
+
+    filler line 32 keeps the transcript tall
+
+    filler line 33 keeps the transcript tall
+
+    filler line 34 keeps the transcript tall
+
+    filler line 35 keeps the transcript tall
+
+    filler line 36 keeps the transcript tall
+
+    BOTTOMLINE_QQQ
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # The first char promotes the welcome prompt to a real session; Enter submits.
+  - action: type_text
+    text: "stickyprobe"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: BOTTOMLINE_QQQ
+    timeout_ms: 30000
+  - action: wait
+    millis: 500
+  # Pinned to the bottom of a ~40-row response: the question is scrolled off,
+  # so "stickyprobe" on screen means the sticky prev-question header is up.
+  - action: assert_contains
+    text: "stickyprobe"
+  # Shrink to the 20-row auto-compact threshold zone: auto-compact engages
+  # and the sticky header (disabled in compact mode) vanishes.
+  - action: resize
+    rows: 18
+    cols: 100
+  - action: wait
+    millis: 700
+  - action: assert_running
+  - action: assert_not_contains
+    text: "stickyprobe"
+  - action: screenshot
+    name: auto-compact-engaged
+    note: 18 rows — sticky prev-question header suppressed by auto-compact.
+  # Grow back past the threshold: the derived value reverts to the user's
+  # (non-compact) setting and the sticky header returns.
+  - action: resize
+    rows: 32
+    cols: 100
+  - action: wait
+    millis: 700
+  - action: assert_contains
+    text: "stickyprobe"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: auto-compact-restored
+    note: Back at 32 rows — sticky prev-question header restored.

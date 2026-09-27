@@ -1,0 +1,60 @@
+name: minimal-flush-left
+description: >-
+  Minimal mode is flush-left: the welcome card paints edge-to-edge, and the
+  prompt, status row, committed user/agent blocks, and info bar share that left
+  edge (no block_pad / accent gutter inset). Screenshots capture idle and
+  post-response for before/after PR review.
+terminal:
+  rows: 30
+  cols: 100
+  # Minimal's inline-viewport startup probe needs cursor-position replies;
+  # without them --minimal silently downgrades to full-height inline.
+  respond_to_queries: true
+environment:
+  args: ["--minimal", "--no-leader"]
+mock:
+  response: "FLUSH_LEFT_RESPONSE — short answer aligned with the welcome card."
+steps:
+  - action: wait_for_text
+    text: "minimal · /help"
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: idle
+    note: >-
+      Idle minimal: welcome card at col 0; status "minimal · /help", prompt ❯,
+      and info bar should also start at column 0 (no 3-col left pad).
+  - action: type_text
+    text: "hello flush left"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: FLUSH_LEFT_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: wait_for_text
+    text: "minimal · /help"
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: after-response
+    note: >-
+      After commit: user prompt line, agent response, status, and input are all
+      flush-left with the welcome card's outer border.
+  - action: type_text
+    text: "/tra"
+  - action: wait_for_text
+    text: "View the conversation transcript"
+    timeout_ms: 10000
+  - action: screenshot
+    name: slash-menu
+    note: >-
+      Slash dropdown: the selected row (❯ /transcript …) and divider start at
+      column 0, flush with the prompt above; the dim nav footer sits at col 1
+      like the /resume and /mcps panels.
+  - action: keys
+    keys: "<Esc>"
+  - action: assert_not_contains
+    text: panicked

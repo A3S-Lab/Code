@@ -1,0 +1,152 @@
+[
+  {
+    "category": "features",
+    "description": "Dashboard rows show a short summary of what the agent did in the previous turn",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Extensions modal groups items alphabetically with collapsible Skills sections",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "A3S Code skips the project-directory prompt when launched from home or other non-project directories",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "`/feedback` opens a dedicated report box instead of prompt mode",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Auto theme detection works over SSH and inside tmux",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Markdown tables reflow inside cells on narrow panes instead of clipping",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Permission prompts show the complete script; long bash bodies expand with `Ctrl-F`",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "MCP tools that return images no longer drop or corrupt large screenshots",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Sandboxed A3S Code starts on large directories with many deny-glob matches",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Rapid send-now presses no longer lose earlier queued messages",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Esc and stop prevent background tasks from restarting the model after cancel",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Login no longer skips when an invalid API key is in the environment",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Model picker and command palette work while reviewing a plan",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Tab and Esc behave consistently on question, permission, and cancel-turn cards",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "`/new` from the dashboard returns to the dashboard from an empty prompt",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Codebase restore no longer hangs on large or shallow git repositories",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Remote resume restores conversation only unless `--restore-code` is passed",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Copying CJK text with the mouse includes every character at the selection edges",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "API errors appear as clean banners instead of raw JSON dumps",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Typing exit or quit in the dashboard exits the CLI",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Mode indicator (plan/agent/ask) stays in sync after resume and mode changes",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "`/delete` returns to the dashboard when you delete a session opened from it",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Enter in the slash command menu runs the highlighted command",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "A3S Code retries more server errors during outages",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Session-only slash commands show a message when used from the dashboard",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Queued prompts stay visible while waiting on subagents, and slash/image rows can be reordered",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Auto recaps no longer appear mid-turn or while busy",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "`/btw` error messages wrap fully",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Forking very large sessions no longer uses many times the session file size in memory",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Exiting an empty session is instant, even on slow networks",
+    "breaking_change": false
+  }
+]

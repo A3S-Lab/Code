@@ -1,0 +1,40 @@
+name: html-entities
+description: >
+  Regression: HTML character entities in assistant prose must
+  render decoded (`&lt;` -> `<`, `&gt;` -> `>`, `&amp;` -> `&`, `&mdash;` -> em
+  dash) rather than as literal `&lt;`/`&gt;` text in the real pager.
+terminal:
+  rows: 40
+  cols: 110
+mock:
+  response: "Result is vec&lt;T&gt; with a &amp; b and an &mdash; dash."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "show entities"
+  - action: keys
+    keys: "<Enter>"
+  # The decoded angle brackets only appear once the entity transform runs.
+  - action: wait_for_text
+    text: "vec<T>"
+    timeout_ms: 30000
+  - action: assert_contains
+    text: "a & b"
+  - action: assert_contains
+    text: "an — dash"
+  # The raw entity source must not survive to the screen.
+  - action: assert_not_contains
+    text: "&lt;"
+  - action: assert_not_contains
+    text: "&gt;"
+  - action: assert_not_contains
+    text: "&amp;"
+  - action: assert_not_contains
+    text: "&mdash;"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: html-entities
+    note: Assistant prose with decoded HTML entities.

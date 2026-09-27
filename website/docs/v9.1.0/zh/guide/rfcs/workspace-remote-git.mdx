@@ -1,0 +1,456 @@
+---
+title: 'RFC：远端 Workspace Git 后端'
+description: '为非本地 workspace 后端提供 git 操作的 HTTP/JSON 协议'
+---
+
+# RFC：远端 Workspace Git 后端
+
+| 字段 | 取值                                                              |
+| ---- | ----------------------------------------------------------------- |
+| 状态 | **已实现**                                                        |
+| 代码 | `core/src/workspace/remote_git.rs`                                |
+| 相关 | `S3WorkspaceBackend`、`WorkspaceGit`、`WorkspaceGitStashProvider` |
+
+本文规定 `RemoteGitBackend` 使用的 HTTP/JSON 协议，并说明客户端的实际行为。
+实现了下列端点的 gitserver，可以让内置 `git` 工具运行在无法承载 `.git` 目录的
+workspace 上，例如 S3 workspace。
+
+## 1. 动机
+
+内置工具通过 `WorkspaceServices` 访问 workspace，每个工具只有在 workspace 后端
+支持时才会注册。S3 workspace 具备读写能力，但没有 shell，也没有 git provider，
+因此 `bash` 和 `git` 永远不会为它注册。
+
+如果只在本地会话中提供 `git`，云端 workspace 就成了二等公民：很多编码工作流
+需要分支与提交状态、diff、创建分支和 stash。`RemoteGitBackend` 通过 HTTP 把 git
+操作委托给宿主运维的服务来填补这一缺口。该服务持有真实的工作区；客户端把它
+作为普通的 `WorkspaceGit` provider 提供给工具。
+
+```text
+                ┌──────────────────┐
+                │   a3s-code       │
+   模型         │                  │
+   ──────►      │  git 工具         │       HTTP/JSON
+                │      │           │   ┌────────────────┐
+                │      ▼           │   │                │
+                │  WorkspaceGit ───┼──►│  gitserver     │
+                │  (RemoteGit…)    │   │                │
+                │                  │   └────────────────┘
+                │  WorkspaceFs ────┼──►  S3 或其他文件后端
+                └──────────────────┘
+```
+
+## 2. 范围
+
+客户端与协议覆盖 `WorkspaceGit` 和 `WorkspaceGitStashProvider` trait 所暴露的
+能力。以下内容不在实现之内：
+
+- **gitserver。** a3s-code 只提供客户端。服务端实现（libgit2 封装、shell 外调、
+  托管 git 适配器）由运维方负责。
+- **push、pull 和 fetch。** `list_remotes` 只报告已配置的远程，没有任何与上游
+  通信的操作。
+- **Worktree。** 远端后端不实现 `WorkspaceGitWorktreeProvider`。见 §8。
+- **提交。** `WorkspaceGit` 没有提交操作，协议同样没有。
+
+除非宿主显式挂载远端 provider，本地 workspace 保留其本地 git provider。
+
+## 3. 协议选择 — HTTP/JSON
+
+本节记录已发布协议的设计理由。
+
+操作集很小（十个端点），每次调用都是请求/响应，数据形态扁平。HTTP/JSON 复用
+依赖树中已有的 `reqwest` 客户端，便于在测试中 mock，可以用 `curl` 调试，也让
+服务端可以只是 `git` 的一层薄封装。在这种规模下，gRPC 会引入 proto 工具链而
+收益很小；流式传输只对 `log` 和 `diff` 有帮助，而客户端已经对二者做了限制（§9）。
+
+每个操作都使用 `POST`。git 操作是命令式的，而不是资源 CRUD；JSON 请求体也让
+新增可选字段无需改动 URL。
+
+## 4. 仓库标识
+
+每个请求都发往：
+
+```
+POST {base_url}/v1/repos/{repo_id}/git/<operation>
+```
+
+`base_url` 末尾的 `/` 会被去掉。`repo_id` 是宿主与 gitserver 运维方约定的不透明
+字符串。客户端把它原样插入路径，不做百分号编码，因此 `users/u1/sessions/s1`
+这样的值会形成多个路径段。服务端负责把 `repo_id` 映射到工作区。
+
+## 5. 端点参考
+
+所有端点都是 `POST`，请求与响应体均为 `application/json`，字段使用 `snake_case`。
+无需输入的端点接收空 JSON 对象。任何 2xx 状态都视为成功。客户端忽略响应中的
+未知字段，因此服务端可以增加字段。
+
+内置 `git` 工具在每条命令之前都会调用 `exists`，然后：
+
+| `git` 工具命令                                       | 端点              |
+| ---------------------------------------------------- | ----------------- |
+| `status`                                             | `status`          |
+| `log`                                                | `log`             |
+| 不带 `name` 的 `branch`                              | `branches`        |
+| 带 `name` 的 `branch`（`base` 默认为 `HEAD`）        | `branches/create` |
+| `checkout`                                           | `checkout`        |
+| `diff`                                               | `diff`            |
+| `remote`                                             | `remotes`         |
+| 不带 `message` 与 `include_untracked` 的 `stash`     | `stashes`         |
+| 带 `message` 或 `include_untracked: true` 的 `stash` | `stashes/create`  |
+
+### 5.1 Status — `WorkspaceGit::status`
+
+```
+POST /v1/repos/{repo_id}/git/status
+→ 200 {
+    "branch":       "main",
+    "commit":       "abc123...",
+    "is_worktree":  false,
+    "is_dirty":     true,
+    "dirty_count":  3
+  }
+```
+
+`branch` 和 `commit` 必填。`is_worktree`、`is_dirty`、`dirty_count` 分别默认为
+`false`、`false` 和 `0`。
+
+### 5.2 Log — `WorkspaceGit::log`
+
+```
+POST /v1/repos/{repo_id}/git/log
+{"max_count": 10}
+→ 200 {
+    "commits": [
+      {"id":"abc...", "message":"feat: ...", "author":"Alice <a@b>", "date":"2026-05-19T..."}
+    ]
+  }
+```
+
+客户端发送的 `max_count` 已按 `max_log_entries` 封顶（§9）。四个提交字段都必填。
+
+### 5.3 List Branches — `WorkspaceGit::list_branches`
+
+```
+POST /v1/repos/{repo_id}/git/branches
+→ 200 {"branches":[{"name":"main", "is_current":true}, ...]}
+```
+
+`is_current` 默认为 `false`。
+
+### 5.4 Create Branch — `WorkspaceGit::create_branch`
+
+```
+POST /v1/repos/{repo_id}/git/branches/create
+{"name":"feat/x", "base":"main"}
+→ 201
+→ 409 {"error":{"code":"BRANCH_EXISTS", ...}}
+```
+
+成功调用的响应体会被忽略。
+
+### 5.5 Checkout — `WorkspaceGit::checkout`
+
+```
+POST /v1/repos/{repo_id}/git/checkout
+{"refspec":"feat/x", "force":false}
+→ 200 {"stdout":"Switched to branch 'feat/x'"}
+→ 409 {"error":{"code":"WORKING_TREE_DIRTY", ...}}
+```
+
+`stdout` 默认为空字符串。非空时，`git` 工具会把它附加到 checkout 结果后面。
+
+### 5.6 Diff — `WorkspaceGit::diff`
+
+```
+POST /v1/repos/{repo_id}/git/diff
+{"target": null}            // 工作区
+{"target": "main"}          // 与某个 ref 比较
+→ 200 {"diff":"<unified diff text>", "truncated": false}
+```
+
+客户端原样透传 `diff`，因此服务端应返回 unified diff 文本。`truncated` 默认为
+`false`；服务端置为 `true` 时，客户端会在 diff 末尾追加
+`... [truncated by gitserver]`。客户端侧上限见 §9。
+
+### 5.7 List Remotes — `WorkspaceGit::list_remotes`
+
+```
+POST /v1/repos/{repo_id}/git/remotes
+→ 200 {"remotes":[{"name":"origin", "url":"git@github.com:...", "direction":"fetch"}]}
+```
+
+`direction` 默认为 `"fetch"`。
+
+### 5.8 Is Repository — `WorkspaceGit::is_repository`
+
+```
+POST /v1/repos/{repo_id}/git/exists
+→ 200 {"is_repository": true}
+```
+
+`is_repository` 默认为 `false`。返回 `false` 时，`git` 工具返回
+`Not a git repository: ...`；返回错误响应时，它返回
+`Failed to inspect git repository: ...`。返回 `false` 让服务端可以服务一个存在但
+不是仓库的 `repo_id`，而不必借用 404 表达。
+
+### 5.9 List Stashes — `WorkspaceGitStashProvider::list_stashes`
+
+```
+POST /v1/repos/{repo_id}/git/stashes
+→ 200 {"stashes":[{"index":0, "message":"WIP on main: ..."}]}
+```
+
+`message` 默认为空字符串。
+
+### 5.10 Stash — `WorkspaceGitStashProvider::stash`
+
+```
+POST /v1/repos/{repo_id}/git/stashes/create
+{"message":"wip", "include_untracked":true}
+→ 201
+→ 409 {"error":{"code":"NOTHING_TO_STASH", ...}}
+```
+
+调用方未提供 `message` 时，请求中省略该字段。成功调用的响应体会被忽略。
+
+## 6. 认证
+
+- **Bearer token。** 设置了非空的 `bearer_token` 时，每个请求都携带
+  `Authorization: Bearer <token>`。token 的签发由宿主负责。
+- **mTLS。** 把 `client_cert_pem` 和 `client_key_pem` 同时设置为 PEM 文件路径。
+  客户端在构造后端时读取两个文件，拼接后交给 `reqwest::Identity::from_pem`。
+  TLS 栈是 `rustls`，要求私钥为 PKCS#8 PEM。只设置其中一个、文件不可读或 PEM
+  无效都会导致构造失败。
+
+两者可以同时使用。既没有 token 也没有客户端证书时，客户端仍可工作，并在构造时
+输出一条 `tracing::warn!`；仅应在可信的 localhost gitserver 上这样使用。
+
+HTTP 客户端在构建时禁用了代理，因此 `HTTP_PROXY`、`HTTPS_PROXY` 和系统代理设置
+都不作用于 gitserver 调用。
+
+## 7. 错误模型
+
+HTTP 状态码决定错误类别。服务端应在响应体中给出错误种类：
+
+```json
+{
+  "error": {
+    "code": "BRANCH_EXISTS",
+    "message": "branch 'feat/x' already exists"
+  }
+}
+```
+
+`message` 可选。响应体不符合此形态时，客户端以 `HTTP_<status>` 作为 code，以原始
+响应体作为 message。
+
+| HTTP     | 客户端错误                                                        |
+| -------- | ----------------------------------------------------------------- |
+| 2xx      | 成功                                                              |
+| 400      | `remote git '<op>' bad request: <code>: <message>`                |
+| 401、403 | `remote git '<op>' auth failed: <code>: <message>`                |
+| 404      | `remote git '<op>' not found: <code>: <message>`                  |
+| 409、422 | 类型化的 `RemoteGitConflict`                                      |
+| 5xx      | `remote git '<op>' server error (<status>): <code>: <message>`    |
+| 其他     | `remote git '<op>' unexpected status <status>: <code>: <message>` |
+
+传输失败产生 `remote git call '<op>' transport error: ...`。客户端不做重试。
+
+409 与 422 统一映射为一个类型化错误：
+
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("remote git conflict: {code}: {message}")]
+pub struct RemoteGitConflict {
+    pub code: String,
+    pub message: String,
+}
+```
+
+直接使用 `WorkspaceGit` provider 的 Rust 调用方可以通过
+`error.downcast_ref::<RemoteGitConflict>()` 恢复，`WorkspaceError::from_anyhow`
+会把它映射为 `WorkspaceError::RemoteGitConflict`。内置 `git` 工具以文本形式报告
+失败，例如 `Failed to create branch: remote git conflict: BRANCH_EXISTS: ...`。
+
+客户端只解释 HTTP 状态码，从不解释 code 字符串。以下是服务端的约定 code：
+
+| Code                 | 含义                                     |
+| -------------------- | ---------------------------------------- |
+| `REPO_NOT_FOUND`     | 未服务该 `repo_id`                       |
+| `NOT_A_REPOSITORY`   | 路径存在但不是 git 仓库                  |
+| `BRANCH_EXISTS`      | `create_branch` 使用了已存在的名称       |
+| `BRANCH_NOT_FOUND`   | checkout 或 diff 目标不存在              |
+| `BASE_NOT_FOUND`     | `create_branch` 的 base ref 不存在       |
+| `WORKING_TREE_DIRTY` | `checkout` 会丢失改动且 `force` 为 false |
+| `NOTHING_TO_STASH`   | 在干净的工作区上 stash                   |
+| `HOOK_FAILED`        | 服务端 hook 拒绝了操作（使用 422）       |
+| `RATE_LIMITED`       | 服务端定义的限流                         |
+
+## 8. 可选 Trait
+
+`RemoteGitBackend` 实现 `WorkspaceGit` 与 `WorkspaceGitStashProvider`。它不实现
+`WorkspaceGitWorktreeProvider`：worktree 是本地路径，而客户端看不到服务端的
+文件系统布局。在云端 workspace 上需要隔离的并行工作时，请使用不同 `repo_id` 的
+独立会话。
+
+`with_remote_git` 会把 `git_worktree` 重置为 `None`（在本地 workspace 上也是如此），
+避免 git 状态与 worktree 状态来自不同来源。此时 `git` 工具的 `worktree` 命令返回
+`Worktree operations are not supported by this workspace backend`。
+
+## 9. 大小、时间与成本上限
+
+客户端对每个响应都设了上限，防止行为异常的服务端耗尽内存或模型上下文：
+
+| 设置 / 限制       | 默认值                            | 作用范围                         |
+| ----------------- | --------------------------------- | -------------------------------- |
+| `request_timeout` | 30 秒                             | 每次 HTTP 调用                   |
+| `max_log_entries` | 200                               | 发送给 `log` 的 `max_count` 上限 |
+| `max_diff_bytes`  | 1 MiB                             | 返回给调用方的 diff 文本         |
+| diff 响应体硬上限 | `max_diff_bytes × 4`，至少 64 KiB | `diff` 的原始响应体              |
+| JSON 响应体上限   | 4 MiB                             | 其他所有响应体，包括错误响应     |
+
+对于 `diff`，`Content-Length` 超过硬上限时会在读取响应体之前拒绝；流式响应体一旦
+超过上限立即中止。解码后的 diff 若超过 `max_diff_bytes`，会在 UTF-8 边界处截断，
+并以 `... [truncated by client max_diff_bytes]` 结尾。
+
+由于 `log` 有上限，在远端后端上 `git` 工具无法翻页到 `max_log_entries` 条提交之后。
+
+`WorkspaceServices::operation_timeout` 不作用于 `git` 工具，因此 `request_timeout`
+是 gitserver 调用唯一的时间限制。`WorkspaceServices::s3` 设置的 60 秒操作超时只
+作用于文件与搜索操作。
+
+## 10. Rust 客户端 API
+
+```rust
+use a3s_code_core::{RemoteGitBackend, RemoteGitBackendConfig, WorkspaceServices};
+
+let config = RemoteGitBackendConfig::new("https://git.example.invalid", "sessions/example")
+    .bearer_token(token)
+    .client_cert_pem("/etc/a3s/client.crt")
+    .client_key_pem("/etc/a3s/client.key")
+    .request_timeout(std::time::Duration::from_secs(30))
+    .max_diff_bytes(1024 * 1024)
+    .max_log_entries(200);
+
+let backend = RemoteGitBackend::new(config)?; // Result<Arc<RemoteGitBackend>>
+```
+
+`RemoteGitBackendConfig` 的公开字段为 `base_url`、`repo_id`、`bearer_token`、
+`client_cert_pem`、`client_key_pem`、`request_timeout`、`max_diff_bytes` 和
+`max_log_entries`。该模块无需任何 Cargo feature 即可编译。
+
+把后端挂载到已有的 services 上：
+
+```rust
+impl WorkspaceServices {
+    pub fn with_remote_git(
+        self: Arc<Self>,
+        config: RemoteGitBackendConfig,
+    ) -> Result<Arc<Self>>;
+}
+```
+
+它返回新的 services：`git` 与 `git_stash` 指向远端后端，`git_worktree` 为 `None`。
+其余字段全部保留，包括本地根目录、命令执行器、搜索 provider、S3 compare-and-swap
+扩展和操作超时。原 services 不会被修改。
+
+手动组装 services 的宿主可以使用 builder：
+
+```rust
+let backend = RemoteGitBackend::new(config)?;
+let git: Arc<dyn WorkspaceGit> = backend.clone();
+let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
+
+let services = WorkspaceServices::builder(workspace_ref, fs)
+    .file_system_ext(fs_ext)
+    .git(git)
+    .git_stash(stash)
+    .operation_timeout(Duration::from_secs(60))
+    .build();
+```
+
+设置 git provider 会把 workspace 标记为支持 git，会话随之注册 `git` 工具。
+
+## 11. 单次调用可观测性
+
+每次 HTTP 调用都会发出一条 `tracing::debug!` 事件，形态与 S3 后端的单次调用事件
+一致（`core/src/workspace/s3.rs` 中的 `emit_s3_call_event`）：
+
+| 字段          | 取值                                                      |
+| ------------- | --------------------------------------------------------- |
+| `op`          | `git.` 加端点名，例如 `git.status`、`git.branches/create` |
+| `repo_id`     | 配置的 `repo_id`                                          |
+| `status`      | HTTP 状态码；请求未到达服务端时为 `0`                     |
+| `outcome`     | 2xx 为 `ok`，否则为 `error`                               |
+| `bytes`       | `diff` 的响应体大小；其他端点为 `0`                       |
+| `duration_ms` | 挂钟耗时                                                  |
+
+已经在计量 S3 调用的 subscriber 可以用同样方式计量 gitserver 调用。
+
+## 12. 组合示例
+
+### S3 workspace + 远端 git
+
+需要 `a3s-code-core` 的 `s3` Cargo feature。
+
+```rust
+let ws = WorkspaceServices::s3(
+    S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
+        .endpoint("https://s3.example.invalid")
+        .force_path_style(true)
+        .enable_search(true),
+)
+.with_remote_git(
+    RemoteGitBackendConfig::new(
+        "https://git.example.invalid",
+        "sessions/example",
+    )
+    .bearer_token(token),
+)?;
+
+let session = agent
+    .session_builder("s3://workspace/sessions/example")
+    .options(SessionOptions::new().with_workspace_backend(ws))
+    .build()
+    .await?;
+```
+
+会话会注册 `read`、`write`、`ls`、`edit`、`patch`、`search`（因为启用了搜索）以及
+`git`。`bash` 保持隐藏，因为对象存储无法运行 shell。
+
+### 本地文件系统 + 远端 git（混合）
+
+适用于文件在本地、但 git 操作必须经过某个服务的场景，例如出于审计或限流目的。
+
+```rust
+let local = WorkspaceServices::local("/workspaces/repo");
+let ws = local.with_remote_git(remote_cfg)?; // 替换本地 git provider
+```
+
+### SDK 选项
+
+各 SDK 都接受与 workspace 后端并列的远端 git 配置，并在该后端上调用
+`with_remote_git`。未设置 workspace 后端而设置远端 git 会报错。
+
+- Node.js：`SessionOptions.remoteGit`（`baseUrl`、`repoId`、`bearerToken`、
+  `clientCertPem`、`clientKeyPem`、`requestTimeoutMs`、`maxDiffBytes`、
+  `maxLogEntries`），配合 `workspaceBackend`。
+- Python：`SessionOptions.remote_git`（`RemoteGitBackendConfig`），配合
+  `workspace_backend`。
+- Go：`SessionOptions.RemoteGit`（`RemoteGitBackendConfig`），配合
+  `SessionOptions.WorkspaceBackend`。
+
+已发布的 npm 与 PyPI 包包含 S3 后端。已发布的 Go bridge 构建时未启用 `s3`
+feature，因此在 Go 中远端 git 只能挂载到本地 workspace 后端，除非自行以 `s3` 或
+`server` feature 构建 bridge。
+
+## 13. 服务端约定
+
+以下行为由服务端负责：
+
+- **并发。** 按 `repo_id` 串行化操作。客户端遇到冲突不会重试。
+- **Diff 格式。** 返回 unified diff 文本；客户端不做规范化。
+- **长耗时操作。** 在客户端的 `request_timeout` 内完成。协议没有轮询或异步任务模式。
+- **Hook。** 把 hook 拒绝报告为 422 加 `HOOK_FAILED`，使其表现为 `RemoteGitConflict`。
+- **版本。** 增量变更保留在 `/v1/` 下；客户端忽略未知字段。只有不兼容的请求或响应
+  变更才需要新的路径前缀。

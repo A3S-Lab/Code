@@ -1,0 +1,20 @@
+// Fixture for src/debug_redact.rs unit tests.
+syntax = "proto3";
+package t;
+
+message M {
+  string plain = 1;
+  string marked = 2 [debug_redact = true];
+  // proto3 optional = synthetic oneof: supported.
+  optional string opt_marked = 3 [debug_redact = true];
+  // real oneof member: redacted via veil's enum-variant syntax; only the
+  // marked variant is redacted.
+  oneof choice {
+    string oneof_marked = 4 [debug_redact = true];
+    string oneof_plain = 5;
+  }
+  // oneof without marked members: keeps plain Debug behavior.
+  oneof other {
+    string other_plain = 6;
+  }
+}

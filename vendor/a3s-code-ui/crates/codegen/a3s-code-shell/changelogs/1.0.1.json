@@ -1,0 +1,207 @@
+[
+  {
+    "category": "breaking",
+    "description": "/rewind now only truncates conversation history instead of files as well and asks for confirmation by default.",
+    "breaking_change": true
+  },
+  {
+    "category": "breaking",
+    "description": "**Managed MCP servers** are now only available through the gateway catalog.",
+    "breaking_change": true
+  },
+  {
+    "category": "features",
+    "description": "**Subagent spawning** is now bounded; wide fan-outs queue instead of exhausting file descriptors.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "New `grok du` command shows disk usage of ~/.grok including worktrees and sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tools** now report whether they only read data, enabling safer restricted agents and subagents.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sandbox workspace** sessions can now limit which bundled skills are advertised via caller config.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Renaming a session** from the dashboard now starts with the current title prefilled for easy editing.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/usage**, **/session-info**, and **/context** now open in a tabbed modal instead of adding text to the conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok trace** exports now bundle memory trace files for easier debugging.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Session rename now enforces a 100-character limit, ghost-prefills the current title, and preserves manual titles across machines.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "New `/rename --auto` command unpins a manual session title so automatic titling resumes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Video generation from references now supports preset voices, single-image input, 1–15 s durations, and 4:3 / 3:4 aspect ratios.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sandbox config** entries ending in /** now correctly grant the parent directory instead of creating a literal ** subdirectory.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Failed alpha/enterprise updates** now suggest the matching GROK_CHANNEL reinstall command.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**On Apple Silicon**, grok now installs the native arm64 build even from a Rosetta shell or x86_64 updater.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Skills** that share names with built-in commands now appear alongside them in the slash menu with qualified names.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Notebook** permission rules imported from Claude configs are now ignored with a warning instead of applying broadly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Goal evaluation** at round end no longer fails due to timeouts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Tool timeouts** no longer cause the agent to hang when child processes are stuck in D-state or hold pipes open.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Home** and **End** keys now move to the start or end of the current logical line even when the prompt is wrapped.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Worktree** sessions now correctly show their branch in the status bar.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Worktree** sessions now keep their status correctly when switching directories or resuming.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Worktree** status is no longer lost when opening the dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Recaps** are now written in the same language as your conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plugin suggestions** no longer flash incorrectly while typing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Send Now** now works during active goals without cancelling the goal.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Headless sessions** now correctly wait for MCP servers when using delivery tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Non-interactive sessions** (`grok -p`) no longer fail when the agent asks for user input or plan approval.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**read_file errors** for missing skills now suggest the correct registered path instead of a generic hint.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session load and creation** can no longer freeze forever when `.envrc` evaluation blocks.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Upgraded installs** no longer silently run outdated platform skill instructions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Deleting a session** now properly stops and waits for any running subagents before wiping history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Permission and plan-approval notification hooks** no longer fire on auto-allowed tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mid-turn steering** sent with double-Enter or Ctrl+Enter now correctly tells the model it arrived while work was in progress.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Scrollback drag selection** no longer gets stuck after the mouse button is released outside VS Code or Cursor terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Video generation tools** now show a clear error explaining ZDR storage requirements instead of silently disappearing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Esc on the cancel-turn panel** now closes the panel and keeps the current turn running as the shortcuts bar indicates.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Git status** and diff operations no longer cause high CPU or memory use on large repositories.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large git histories** no longer cause excessive memory use or unresponsiveness.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**History search** no longer leaks background threads in long sessions with many subagents.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Resuming large sessions** is now significantly faster and the UI no longer shows an incomplete transcript while replay is still applying.",
+    "breaking_change": false
+  }
+]

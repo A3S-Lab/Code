@@ -1,0 +1,97 @@
+{
+  "_note": "Synthetic enterprise managed-settings fixture mirroring a real GA deployment's SHAPE: 24 serverUrl entries (mixed schemes, ports, paths, trailing slashes) + 19 serverCommand argv entries (npx/uvx/absolute paths, multi-arg, unicode-truncated), managed-only lockdown, project-MCP off, strict + extra marketplaces. All identities are fictional.",
+  "companyAnnouncements": [
+    "Developers are accountable for ensuring all use of AI coding tools adheres to SDLC controls."
+  ],
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "Edit(~/.claude/settings.json)",
+      "Edit(.claude/settings.local.json)",
+      "Edit(.claude/settings.json)",
+      "Read(~/.claude/credentials.json)",
+      "Read(~/.ssh)",
+      "Read(/tmp/krb5*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable"
+  },
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [
+    { "serverUrl": "http://build-infra-qa.internal.example:8080/sse" },
+    { "serverUrl": "https://mcp.tracker.example/v1/sse" },
+    { "serverUrl": "https://mcp.tracker.example/v1/mcp" },
+    { "serverUrl": "https://knowledge-mcp.cloud.example" },
+    { "serverUrl": "https://data-catalog-mcp.dev.internal.example/mcp" },
+    { "serverUrl": "https://pov-a1b2c3.buildcache.example/mcp/" },
+    { "serverUrl": "https://buildcache.example/mcp" },
+    { "serverUrl": "https://artifacts.subsidiary.example/mcp" },
+    { "serverUrl": "https://mcp-gateway.mcp-gw.services.cluster0.internal.example/mcp" },
+    { "serverUrl": "https://mcp.design-tool.example/mcp" },
+    { "serverUrl": "http://gitops-operator-mcp.gitops.services.tenant8-dev.internal.example:9090/mcp" },
+    { "serverUrl": "https://api.code-assist.example/mcp" },
+    { "serverUrl": "https://developers.search.example/knowledge/mcp" },
+    { "serverUrl": "https://registry-mirror.example/mcp" },
+    { "serverUrl": "https://docs.framework.example/mcp" },
+    { "serverUrl": "https://learn.vendor.example/api/mcp" },
+    { "serverUrl": "http://devtools-mcp.internal.example:8080/mcp/mcp" },
+    { "serverUrl": "https://mcp.dataframe.example/mcp" },
+    { "serverUrl": "https://code-search.example/.api/mcp" },
+    { "serverUrl": "https://code-search.example/.api/mcp/deepsearch" },
+    { "serverUrl": "https://mcp.security-scanner.example" },
+    { "serverUrl": "https://mcp.feature-flags.example/mcp/fm" },
+    { "serverUrl": "https://buildcache.example/drv-mcp" },
+    { "serverUrl": "https://developers.llm-vendor.example/mcp" },
+    { "serverCommand": ["npx", "ag-mcp"] },
+    { "serverCommand": ["npx", "@vendor/platform-docs-mcp"] },
+    { "serverCommand": ["npx", "@example-corp/ui-kit-mcp", "enterprise-webc"] },
+    { "serverCommand": ["npx", "@example-corp/ui-kit-mcp", "client-react"] },
+    { "serverCommand": ["npx", "@example-corp/ui-kit-mcp", "enterprise-angular"] },
+    { "serverCommand": ["npx", "@example-corp/ui-kit-mcp", "enterprise-react"] },
+    { "serverCommand": ["npx", "@example-corp/ui-kit-mcp", "power-react"] },
+    { "serverCommand": ["/Users/Shared/Tools/homebrew-arm/bin/apple-docs-mcp", "serve"] },
+    { "serverCommand": ["npx", "-y", "design-tool-mcp", "--stdio"] },
+    { "serverCommand": ["uvx", "mcp-grafana"] },
+    { "serverCommand": ["dnx", "Packages.Mcp.Server", "--source", "https://api.packages.example/v3/index.json", "\u2026"] },
+    { "serverCommand": ["npx", "@vendor/mobile-mcp"] },
+    { "serverCommand": ["npx", "@vendor/integration-mcp-server", "start"] },
+    { "serverCommand": ["npx", "@browser-test/mcp"] },
+    { "serverCommand": ["npx", "browser-test", "run-test-mcp-server"] },
+    { "serverCommand": ["npx", "@crm-vendor/mcp"] },
+    { "serverCommand": ["\\\\corp\\dist\\java\\PROJ\\openjdk\\25.0.2\\.exec\\x86_64.nt.\u2026"] },
+    { "serverCommand": ["xcrun", "mcpbridge"] },
+    { "serverCommand": ["npx", "-y", "@framework/cli", "mcp"] }
+  ],
+  "enableAllProjectMcpServers": false,
+  "enabledPlugins": {
+    "helper@approved-plugins": true
+  },
+  "strictKnownMarketplaces": [
+    {
+      "source": "git",
+      "url": "https://github.com/example-corp/approved-plugins.git"
+    }
+  ],
+  "extraKnownMarketplaces": {
+    "approved-plugins": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/example-corp/approved-plugins.git"
+      },
+      "autoUpdate": false
+    }
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_CONNECT_TIMEOUT_MS": "300000",
+    "FORCE_AUTOUPDATE_PLUGINS": "1"
+  },
+  "disableWorkflows": true,
+  "forceLoginMethod": "claudeai",
+  "enforceAvailableModels": true,
+  "availableModels": ["haiku", "sonnet", "opus"]
+}

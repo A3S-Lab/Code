@@ -1,0 +1,96 @@
+---
+title: '执行通道队列'
+description: '面向宿主工具调用的可选会话级队列，支持外部与混合分发'
+---
+
+# 执行通道队列
+
+执行通道队列是基于 `a3s-lane` 的可选会话级队列。除非显式配置，会话不带队列。
+配置后，它负责调度宿主通过会话直接工具 API 发起的工具调用，并可以把这些调用
+交给外部 worker 执行，而不是在本地运行。
+
+不要把它与始终启用的
+[Agent 级任务调度器](/guide/tasks#agent-wide-priority-scheduler)混淆。任务调度器
+在不同会话之间共享本地执行容量；执行通道队列是面向宿主工具调用的会话级分发层。
+
+## 哪些调用会进入队列
+
+只有宿主发起的工具调用会进入队列：
+
+- `session.tool(name, args)` 以及基于它的直接辅助方法（`readFile`、
+  `writeFile`、`ls`、`editFile`、`patchFile`、`bash`、`glob`、`grep`）
+- `session.verifyCommands(...)`，它把每条命令作为一次 `bash` 调用执行
+
+模型发起的工具调用不会进入队列。`send` 或 `stream` 轮次运行在事实日志控制器上，
+它直接在会话的工具执行器上执行每个模型工具调用。由 `task` 和 `skill` 启动的子
+智能体同样不经过队列。因此，执行通道队列不能用来把模型工具执行转移到远程 worker。
+
+每个入队调用按工具名路由：
+
+| 通道      | 工具                                                                                                                   |
+| --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `query`   | `read`、`ls`、`list_files`、`search`、`web_fetch`、`web_search`、`code_symbols`、`code_navigation`、`code_diagnostics` |
+| `execute` | 其余所有工具，包括 `bash`、`write`、`edit` 和 `patch`                                                                  |
+
+`glob` 和 `grep` 辅助方法调用的是 `search` 工具，因此使用 `query` 通道。
+`control` 与 `generate` 通道存在并接受处理器配置，但没有任何工具会路由到它们。
+
+## 配置会话
+
+在创建会话时设置 `queueConfig`。队列随会话一起创建；如果会话选项未设置，则使用
+Agent 配置中的 `queue` 块。
+
+```ts
+const session = await agent.sessionAsync('/repo', {
+  queueConfig: {
+    executeConcurrency: 1,
+    enableDlq: true,
+    enableMetrics: true,
+  },
+});
+
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+```
+
+默认通道并发：`control` 为 2，`query` 为 4，`execute` 为 2，`generate` 为 1。
+`enableAllFeatures` 会开启死信队列（1000 条）、指标、告警以及 60 秒的默认命令超时。
+
+处理器模式：
+
+- `internal`（默认）：队列在本地运行工具。
+- `external`：队列把调用发布为待处理的外部任务，并等待 `completeExternalTask`。
+  若在 `timeoutMs`（默认 60000）内没有结果，调用以超时失败。
+- `hybrid`：队列发布待处理任务供观察，同时仍在本地运行工具。
+
+在 Rust 中，设置 `SessionOptions::with_queue_config`，并通过
+`Agent::session_async` 或 `Agent::session_builder` 构建会话。同步的
+`Agent::session` 会拒绝队列配置。
+
+## 外部完成
+
+待处理任务包含 `task_id`、`session_id`、`lane`、`command_type`（工具名）、
+`payload`（工具参数）和 `timeout_ms`，同样的数据也会作为 `external_task_pending`
+事件发出。完成时需要返回与工具结果同形的结果：`output` 必填，`exit_code` 默认为 0。
+
+```ts
+const pending = await session.pendingExternalTasks();
+
+for (const task of pending) {
+  await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { output: `ran ${task.command_type} remotely`, exit_code: 0 },
+  });
+}
+```
+
+`success: false` 加上 `error` 信息会使调用失败。成功结果中若没有字符串类型的
+`output` 字段，调用同样失败。任务 id 未知或已结算时，`completeExternalTask`
+返回 `false`。
+
+## 查看队列
+
+`hasQueue()`、`queueStats()`、`deadLetters()` 和 `queueMetrics()` 报告队列状态。
+未开启指标时，`queueMetrics()` 返回 `null`。

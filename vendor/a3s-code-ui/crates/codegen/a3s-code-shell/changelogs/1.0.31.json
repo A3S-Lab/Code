@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Folded subagent groups** in scrollback now correctly label how many are still running versus completed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard search** and the resume picker now clearly indicate the active text field and restore list selection after search.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock sections** no longer keep a selection highlight after you collapse them with a click.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Worktree paths** no longer show an extra suffix in the header or dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP tools** with long server prefixes are now kept instead of being silently dropped.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Turn cancelled** banners now correctly name the cause instead of always saying \"by user\".",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Long paths** in headers are now always shortened to the last two components.",
+    "breaking_change": false
+  }
+]

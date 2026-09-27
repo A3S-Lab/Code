@@ -1,0 +1,47 @@
+name: input-modalities
+description: Validate scripted clipboard paste, mouse click, double/triple click, scroll, mouse selection, and drop-style input events.
+terminal:
+  rows: 36
+  cols: 100
+mock:
+  response: "SCRIPTED_INPUT_RESPONSE from pasted and dropped content."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_prompt
+    text: "clipboard paste text"
+  - action: assert_contains
+    text: "clipboard paste text"
+  - action: double_click_text
+    text: "paste"
+  - action: triple_click_text
+    text: "paste"
+  - action: select_text_range
+    from_text: "clipboard"
+    to_text: "text"
+  - action: scroll_at
+    target:
+      kind: prompt
+    direction: down
+    count: 3
+  - action: scroll_at
+    target:
+      kind: prompt
+    direction: up
+    count: 2
+  - action: drop_text_prompt
+    text: " dropped text"
+  - action: assert_contains
+    text: "dropped text"
+  - action: screenshot
+    name: input-modalities
+    note: Prompt after click, bracketed paste, double/triple click, scroll, selection drag, and drop text.
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: SCRIPTED_INPUT_RESPONSE
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  - action: assert_not_contains
+    text: panicked

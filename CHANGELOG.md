@@ -7,31 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-09-27
+
 ### Added
 
-- Optional typed System-1 decisions via A3S Apofasi: Cargo features `apofasi`
-  (lexical + script router), `apofasi-infer` (Candle checkpoints), and
-  `apofasi-metal` (Apple Silicon Metal). Host API:
-  `TypedDecisionEngine` / `TypedDecisionService` / `decide_and_gate` /
-  `TypedDecisionReceiptV1` / `GatePolicy`, plus Advanced inventory id
-  `typed_decisions` and `CodeError::TypedDecision`. Empty requests fail closed.
-  Not enabled by `local-code`, `scientific`, or `full` — hosts must opt in.
-  Does not add a Use-projected capability kind. When `apofasi` is enabled,
-  Code refuses to replace planning pre-analysis, because that generation also
-  returns intent, a goal, a plan, and optimized input. Goal achievement
-  returns `achieved`, `progress`, and `remaining_criteria`. Both call sites
-  refuse to skip the generation. Code does not add a keyword classifier and
-  does not lower `GatePolicy`. At the default gate, Auto makes zero
-  generations and Escalate makes one; the escalate prompt includes the task
-  state. Model text stays evidence. The system prompt is unchanged. Other
-  call sites stay host-owned.
-- Typed-decision end-to-end coverage: hermetic host composition
-  (`compose_host_decision`) proves default-gate Auto with an engine above
-  `0.7` makes zero generations, and the lexical refund request at that same
-  gate makes one. Model text stays evidence and the escalate prompt includes
-  the task state. Ignored Layer C tests pin
-  `boyue/bailian/deepseek-v4-flash` to declared
-  `boyue/bailian/deepseek-v4.1-flash` and reject the `bailina` typo.
+- Directory projection onto the stock Meta Harness. `DirectoryProjection` maps
+  `instructions.md`, `agent.acl`, `skills/`, `tools/`, and `schedules/` onto
+  the existing `system` / `skill_dirs` / MCP / `program` / `session.send`
+  path. It does not restore the `serve` daemon or an `AgentDir` runtime.
+- `a3s-code-acp`, the stdio agent that drives `a3s-code-core` for the pager.
+  `UserQuestion` is delivered on the existing `request_permission` channel.
+  Choices are `RejectOnce`, so a YOLO `AllowOnce` drain cannot answer. The
+  selected option is stored with `ask_user::answer`; the fact log appends
+  `question.answered`. A repeated question id is not asked again. Free text
+  with no options stays parked. Shell tool output streams as ACP
+  `output_delta`.
+- `/config` in the pager edits providers and models in the ACL config. The
+  Default section sets `default_model` as `provider/model`. A model's own
+  `baseUrl` or `apiKey` overrides the provider; a blank field inherits it.
+- Moli lookup prefers `A3S_CODE_MOLI_EXECUTABLE`, then the `moli` binary
+  packaged beside the `a3s` CLI (including a Homebrew Cellar path reached
+  through the `a3s` symlink), and only then a cached or downloaded build.
+
+### Changed
+
+- Automatic `web_search` order is API, then HTTP, then headless. The headless
+  tier does not start a browser before the faster tiers return.
+- Anthropic-compatible thinking budgets are fitted inside the existing
+  `max_tokens` reserve. `cc-switch` uses the Anthropic client. `grok` and
+  `xai` use the OpenAI-compatible client.
+- Fact-log streaming records `ReasoningDelta`. An explicit `@reviewer` mention
+  resolves to the builtin `review` child. Automatic review delegation stays
+  off.
+- The forked pager's internal crate directories and package names use the
+  `a3s-` prefix.
+
+### Notes
+
+- Channel release on the 9.1 line. Apofasi typed decisions stay the 9.0.0
+  surface; this cut does not lower `GatePolicy` and does not retarget the CLI
+  pin of published core 8.7.0.
+- Docs selector default is `v9.1.0`. `v9.0.0` is archived from tag `v9.0.0`.
 
 ## [9.0.0] - 2026-09-26
 

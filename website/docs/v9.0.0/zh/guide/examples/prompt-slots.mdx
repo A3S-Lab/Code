@@ -222,68 +222,53 @@ async fn main() -> a3s_code_core::Result<()> {
 <Tab label="Node.js">
 
 ```ts
-import { Agent } from '@a3s-lab/code';
-
-const agent = await Agent.create('agent.acl');
-const workspace = '/repo';
-
 // 1. Custom role only.
-const roleOnly = agent.session(workspace, {
+let session = agent.session(workspace, {
   role: 'You are a senior Rust developer who specializes in async programming.',
 });
-roleOnly.close();
 
 // 2. Role + guidelines + response style.
-const reviewer = agent.session(workspace, {
+session = agent.session(workspace, {
   role: 'You are a Python code reviewer.',
   guidelines: 'Always check for type hints. Flag any use of `eval()`.',
   responseStyle: 'Reply in bullet points. Be concise.',
 });
-reviewer.close();
 
 // 3. Extra freeform instructions only.
-const extraOnly = agent.session(workspace, {
+session = agent.session(workspace, {
   extra: "Always end your response with '-- A3S'",
 });
-extraOnly.close();
 
 // 无论如何配置插槽，核心工具行为都保持不变。
-const fileManager = agent.session(workspace, {
+session = agent.session(workspace, {
   role: 'You are a minimalist file manager.',
   guidelines: 'Only create files when explicitly asked.',
 });
-const result = await fileManager.send(
+const result = await session.send(
   "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 );
-console.log(result.text);
-fileManager.close();
 ```
 
 </Tab>
 <Tab label="Python">
 
 ```python
-from a3s_code import Agent, SessionOptions
-
-agent = Agent.create('agent.acl')
-workspace = '/repo'
-
 # 1. Custom role only.
 opts = SessionOptions()
 opts.role = 'You are a senior Rust developer who specializes in async programming.'
-agent.session(workspace, opts).close()
+session = agent.session(workspace, opts)
 
 # 2. Role + guidelines + response style.
 opts = SessionOptions()
 opts.role = 'You are a Python code reviewer.'
 opts.guidelines = 'Always check for type hints. Flag any use of `eval()`.'
 opts.response_style = 'Reply in bullet points. Be concise.'
-agent.session(workspace, opts).close()
+session = agent.session(workspace, opts)
 
 # 3. Extra freeform instructions only.
 opts = SessionOptions()
 opts.extra = "Always end your response with '-- A3S'"
-agent.session(workspace, opts).close()
+session = agent.session(workspace, opts)
 
 # 无论如何配置插槽，核心工具行为都保持不变。
 opts = SessionOptions()
@@ -293,8 +278,6 @@ session = agent.session(workspace, opts)
 result = session.send(
     "Create a file called test.txt with the content 'prompt slots work'. Then read it back.",
 )
-print(result.text)
-session.close()
 ```
 
 </Tab>

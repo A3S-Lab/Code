@@ -1,0 +1,395 @@
+---
+title: '任务'
+description: '使用统一 task 工具与子智能体进行手动和自动委派'
+---
+
+# 任务
+
+常规多智能体路径只有一个模型可见的 `task` 工具。它的 `tasks` 数组既可提交一个
+聚焦子任务，也可提交多个相互独立的子任务并发扇出。子运行上下文相互隔离，只向父
+智能体返回紧凑结果，而不是完整对话记录。
+
+同一个 `task` 工具也承载自动子智能体委派：启用后，运行时会在模型做出第一次决策
+之前，为高置信的专用智能体匹配规划一次 `task` 调用。已经知道工作形态的宿主代码
+可以直接调用 `session.task(...)` / `session.tasks(...)`，或使用可编程的
+[编排](/guide/orchestration)组合器。
+
+Web 界面可以把这些状态分别展示为计划列表和子智能体运行列表，并用任务标识关联两者。
+
+## 内置子智能体
+
+| 智能体                        | 适用场景                                                 |
+| ----------------------------- | -------------------------------------------------------- |
+| `explore`                     | 只读代码搜索、文件检查和结构发现。                       |
+| `plan`                        | 只读实现计划和架构分析。                                 |
+| `general` / `general-purpose` | 多步骤实现工作，可读写并执行命令。                       |
+| `verification`                | 聚焦检查、复现、回归验证和对抗测试。                     |
+| `review`                      | 以发现为先的代码审查，关注正确性、回归、安全与可维护性。 |
+
+可以显式提及它们，例如 `@review`、`@agent-plan`、`使用 verification 子智能体`
+或 `委派给 general-purpose`。
+
+## 手动委派
+
+让父智能体委派一个有边界的子任务：
+
+```text
+Use task to ask an explore agent to inspect the auth module.
+Return files inspected, findings, risks, and confidence.
+```
+
+宿主已经知道任务边界时，可以直接调用 SDK 辅助方法：
+
+```ts
+const task = await session.task({
+  agent: 'explore',
+  description: 'Inspect auth module',
+  prompt: 'Return files inspected, findings, risks, and confidence.',
+});
+if (task.exitCode !== 0) throw new Error(task.output);
+console.log(task.output);
+```
+
+```python
+task = session.task({
+    "agent": "explore",
+    "description": "Inspect auth module",
+    "prompt": "Return files inspected, findings, risks, and confidence.",
+})
+if task.exit_code != 0:
+    raise RuntimeError(task.output)
+```
+
+```go
+task, err := session.Task(ctx, code.DelegateTaskOptions{
+	Agent:       "explore",
+	Description: "Inspect auth module",
+	Prompt:      "Return files inspected, findings, risks, and confidence.",
+})
+if err == nil && task.ExitCode != 0 {
+	err = errors.New(task.Output)
+}
+```
+
+每个任务项接受 `agent`、`description` 和 `prompt`，以及可选的 `background` 与
+`maxSteps` / `max_steps`。Go 的 `DelegateTaskOptions` 没有 `Background` 字段。模型
+可见的 `task` schema 还接受 `output_schema`：子运行结果会被转换成符合该 JSON Schema
+的对象并完成校验，校验后的对象放在工具 metadata 中返回。
+
+子智能体应返回紧凑契约：
+
+- 摘要
+- 已检查或修改的文件
+- 证据引用
+- 风险和未知项
+- 置信度
+
+父智能体不应吞入完整的子对话记录。
+
+## 并行委派
+
+当工作彼此独立时，在一次 `task` 调用中提交多个 `tasks` 项，或使用
+`session.tasks(...)` 并发执行：
+
+```text
+Run one task call with three independent tasks:
+1. inspect provider config parsing
+2. inspect Node SDK declarations
+3. inspect release scripts
+
+Merge the results into one release-readiness report.
+```
+
+```ts
+const batch = await session.tasks([
+  {
+    agent: 'explore',
+    description: 'Inspect config',
+    prompt: 'Check provider parsing.',
+  },
+  {
+    agent: 'verification',
+    description: 'Verify SDK',
+    prompt: 'Check SDK declarations.',
+  },
+]);
+if (batch.exitCode !== 0) throw new Error(batch.output);
+console.log(batch.output);
+```
+
+统一 `task` 调用接受 1–32 个任务。只有单任务调用可以设置 `background`；多任务调用
+或设置了扇出选项的调用会收集所有分支，因此拒绝 `background: true`。默认要求所有分支
+成功；仅在允许不完整证据的场景使用 `allow_partial_failure`，此时至少一个子运行成功
+即视为成功，失败的子结果仍保留在输出中。`min_success_count` 需要同时设置
+`allow_partial_failure`，取值必须在 1 到任务数之间；成功数达到该值时提前返回，未完成
+的子运行被标记为失败。SDK 的 `tasks(...)` 辅助方法只发送任务列表；要设置这些选项，
+请直接调用工具，例如 `session.tool('task', { tasks, allow_partial_failure: true })`。
+
+`session.task(...)` 和 `session.tasks(...)` 都返回来自 `task` 工具的 `ToolResult`。
+读取 `output` 获取紧凑摘要，并在信任结果前检查 `exitCode`。会话选项中的
+`maxParallelTasks` 与 ACL 中的 `max_parallel_tasks` 会限制同级任务扇出。多条目
+`task` 是唯一的扇出工具，没有单独的并行任务工具或 SDK 辅助方法。
+
+<span id="agent-wide-priority-scheduler"></span>
+
+## Agent 级优先级调度器
+
+每个 `Agent` 都拥有一个由其所有 Session 共享的调度器。它限制可同时执行的独立操作
+数量，并在有槽位释放时决定哪个等待操作先进入。调度器基于 `a3s-lane` 优先级队列，
+无需额外启用。
+
+这是准入边界，不是抢占式执行器：已经持有槽位的工作会运行到完成或取消；优先级只
+决定槽位空闲后哪个等待项先启动。
+
+### 哪些操作共享边界
+
+同一个 `max_active` 容量覆盖：
+
+- 通过 send、run 或 stream 启动的对话运行
+- 宿主发起的可信或受治理直接工具调用
+- detached 后台子任务
+- 宿主启动的工作流
+
+这样多个 Session 不会各自获得一份互不相关的并发预算；繁忙的后台 Session 也不能
+通过另一套执行 API 绕过交互任务。
+
+三个相邻控制项解决不同问题：
+
+| 控制项                         | 作用域                               |
+| ------------------------------ | ------------------------------------ |
+| `task_scheduler.max_active`    | 一个 `Agent` 所有 Session 的全局准入 |
+| `max_parallel_tasks`           | 一次委派任务或工作流内的同级扇出     |
+| [Lane 队列](/guide/lane-queue) | 可选的外部或混合 worker 分发         |
+
+Session 的单任务规则也相互独立：同一 Session 中两个会改变 transcript 的调用会立即
+失败，不会进入这个调度器等待。
+
+### 配置容量与老化
+
+```acl
+task_scheduler {
+  max_active = 4
+  aging_interval_ms = 30000
+}
+```
+
+两个值都必须大于零。默认允许 4 个活动操作，老化间隔为 30 秒。
+
+### 选择优先级
+
+| 优先级        | 适用场景                         | 老化规则             |
+| ------------- | -------------------------------- | -------------------- |
+| `urgent`      | 必须下一个运行的显式宿主控制工作 | 永不老化             |
+| `interactive` | 面向用户的交互轮次               | 默认值，也是老化上限 |
+| `foreground`  | 可见但不直接阻塞交互的工作       | 向 interactive 提升  |
+| `background`  | detached 或异步工作              | 向 interactive 提升  |
+| `maintenance` | 最低优先级的维护工作             | 向 interactive 提升  |
+
+低等级在高等级之后运行；相同有效优先级保持 FIFO。非 urgent 工作每等待满一个
+`aging_interval_ms` 就提升一级，最高到 `interactive`，因此持续的交互流量不会永久
+饿死 background 或 maintenance 工作。`urgent` 始终保留在老化任务之上。
+
+在创建 Session 时指定优先级：
+
+```rust
+use a3s_code_core::{SessionOptions, TaskPriority};
+
+let options = SessionOptions::new()
+    .with_task_priority(TaskPriority::Background);
+let session = agent
+    .session_builder("/repo")
+    .options(options)
+    .build()
+    .await?;
+```
+
+```ts
+const session = await agent.sessionAsync('/repo', {
+  taskPriority: 'background',
+});
+```
+
+```python
+from a3s_code import SessionOptions
+
+options = SessionOptions()
+options.task_priority = "background"
+session = agent.session("/repo", options)
+```
+
+```go
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	TaskPriority: code.TaskPriorityBackground,
+})
+```
+
+有效名称为 `urgent`、`interactive`（别名 `user`）、`foreground`、`background` 和
+`maintenance`；非法名称会在 Session 选项校验阶段失败。Session 默认使用
+`interactive`。
+
+### 观察占用情况
+
+宿主可以从 `Agent` 或它的任意 Session 读取同一份即时快照：
+
+```rust
+let stats = agent.task_scheduler_stats().await?;
+let same_scheduler = session.task_scheduler_stats().await?;
+println!("active={} pending={}", stats.active, stats.pending);
+```
+
+```ts
+const stats = await agent.taskSchedulerStats();
+const sameScheduler = await session.taskSchedulerStats();
+console.log(stats.active, stats.pendingByPriority.background);
+```
+
+```python
+stats = agent.task_scheduler_stats()
+same_scheduler = session.task_scheduler_stats()
+print(stats["active"], stats["pendingByPriority"]["background"])
+```
+
+```go
+stats, err := agent.TaskSchedulerStats(ctx)
+sameScheduler, err := session.TaskSchedulerStats(ctx)
+fmt.Println(stats.Active, stats.PendingByPriority.Background)
+```
+
+| 字段                | 含义                       |
+| ------------------- | -------------------------- |
+| `maxActive`         | 配置的全局容量             |
+| `active`            | 正在持有槽位的操作数       |
+| `pending`           | 等待准入的操作数           |
+| `activeByPriority`  | 按请求优先级分组的活动操作 |
+| `pendingByPriority` | 按请求优先级分组的等待操作 |
+| `closed`            | 调度器是否正在关闭         |
+
+Rust 使用 snake_case struct 字段；Node.js 和 Python dict 使用 camelCase wire 名称；
+Go 使用导出的 struct 字段。这是诊断快照，不是容量预留，读取后数值可能立即变化。
+
+需要累计诊断时，可在 `Agent` 或 Session 上调用 `taskSchedulerHealth()` /
+`task_scheduler_health()` / `TaskSchedulerHealth`，它额外提供 admitted、released、
+cancelled、rejected 计数、aging 提升次数、峰值活动数，以及总等待、平均等待和最长等待
+时间。
+
+### 取消与关闭
+
+取消会在等待工作获得槽位前把它移除。取消活动工作时，它会在结算后释放槽位。关闭
+`Agent` 会拒绝等待中和新提交的准入请求，再等待已经获得准入的工作完成，最后结束
+调度器。
+
+## 自动委派
+
+自动委派默认需要显式启用。在一个轮次开始时，运行时会在本地把请求与每个可见智能体
+（内置、目录加载和 worker 智能体；`general` 只有被点名时才会选中）的名称和描述进行
+评分。这是确定性匹配，不是模型调用。请求点名某个智能体时，只规划该智能体；否则
+置信度达到 `minConfidence` 的智能体会成为一次 `task` 调用的任务项，并取代该轮次中
+模型的第一次决策。事实日志像记录和执行其他工具调用一样处理它，包括确认策略。子运行
+的紧凑结果作为工具结果返回给父模型，最终决策仍由父智能体做出。
+
+- 每个请求最多启动 `min(maxTasks, maxParallelTasks)` 个子运行。
+- `autoParallel: false` / `auto_parallel = false` 保留自动委派，但只运行最佳匹配的
+  一个子运行。
+- 默认值：禁用，`minConfidence` 0.72，`maxTasks` 4，`autoParallel` true。
+
+```ts
+const session = agent.session('/repo', {
+  autoDelegation: { enabled: true, minConfidence: 0.72, maxTasks: 4 },
+  maxParallelTasks: 8,
+  autoParallel: false,
+});
+```
+
+```acl
+auto_delegation {
+  enabled        = true
+  auto_parallel  = false
+  min_confidence = 0.72
+  max_tasks      = 4
+}
+```
+
+`autoParallel` 不会影响手动 `task` 扇出或 `session.tasks(...)`。
+
+禁用自动委派时，在请求中点名某个智能体（例如 `@review` 或 “use the verification
+subagent”）仍会委派给该智能体。要完全移除模型可见的 `task` 工具，可设置
+`manualDelegationEnabled: false`（Node）、`manual_delegation_enabled = False`
+（Python）、`ManualDelegationEnabled`（Go），或在 ACL `auto_delegation` 块中设置
+`allow_manual_delegation = false`。这也会关闭自动委派，因为两条路径都通过 `task`
+工具运行。
+
+## 智能体目录
+
+通过 `agentDirs`、`agent_dirs` 或 A3S 内置目录加载自定义智能体定义：
+
+```ts
+const session = agent.session('/repo', { agentDirs: ['./.a3s/agents'] });
+const loaded = session.registerAgentDir('./more-agents');
+```
+
+定义按以下顺序注册，后注册的同名定义会替换先前的定义：ACL `agent_dirs`、
+`~/.claude/agents`、`~/.a3s/agents`、`<workspace>/.claude/agents`、
+`<workspace>/.a3s/agents`、会话 `agentDirs`，最后是 `workerAgents`。目录会被递归
+扫描 `.md`、`.yaml` 和 `.yml` 文件。新项目优先使用 `.a3s/agents`；读取
+`.claude/agents` 是为了兼容。
+
+Markdown agent 文件支持 frontmatter：
+
+```markdown
+---
+name: docs-auditor
+description: Use proactively after documentation changes
+tools: Read, Grep, Glob
+disallowedTools:
+  - Write
+  - Bash(rm:*)
+---
+
+Audit docs for drift, broken examples, and unclear migration notes.
+```
+
+`tools` 字段是 allowlist。`disallowedTools` 是 denylist，且优先级高于 allowlist。frontmatter 还可以设置 `hidden`、`prompt`（未设置时使用正文）、`max_steps` 和 `confirmation_inheritance`。加上 `kind` 字段后，文件会按 worker spec 解析，并使用该角色的默认权限（见工作智能体）。解析到扫描目录之外的符号链接会被跳过，解析失败的文件会记录日志后跳过。
+
+## 工作智能体
+
+通过 `workerAgents` 或 `registerWorkerAgent()` 注册一次性 worker agents：
+
+```ts
+const session = agent.session('/repo', {
+  workerAgents: [
+    {
+      name: 'frontend-worker',
+      description: 'Small verified frontend fixes',
+      kind: 'implementer',
+      model: 'provider/model-id',
+      maxSteps: 24,
+      confirmationInheritance: 'auto_approve',
+    },
+  ],
+});
+```
+
+### 确认继承
+
+通过 `confirmationInheritance` 控制子运行如何处理 Ask 决策：
+
+- `'auto_approve'`：子运行自身的 Ask 决策自动批准。定义了权限规则的智能体默认使用
+  此项，包括 worker agents 以及设置了 `tools` 或 `disallowedTools` 的智能体文件。
+- `'deny_on_ask'`：子运行自身的 Ask 决策被拒绝，只有显式允许的工具会运行。没有
+  权限规则的智能体默认使用此项。
+- `'inherit_parent'`：子运行的 Ask 决策交给父会话的确认提供方。
+
+父会话的权限边界仍会组合进每个子运行。
+
+要跟踪子运行，可读取 `subagentTasks()` / `pendingSubagentTasks()`（Python 为
+`subagent_tasks()` / `pending_subagent_tasks()`，Go 为 `SubagentTasks` /
+`PendingSubagentTasks`），并用 `cancelSubagentTask(taskId)` /
+`cancel_subagent_task(task_id)` / `CancelSubagentTask` 取消某个子运行。
+
+## 可编程编排
+
+本页的所有内容都是模型驱动的：`task`、`session.task(...)` /
+`session.tasks(...)` 以及自动委派让 LLM 决定何时以及如何扇出。当宿主已经知道工作的
+形态并希望它确定可复现时，改用 `session.parallel(...)`、`session.pipeline(...)` 和
+`session.parallelResumable(...)` 以编程方式表达。开发者定义的扇出、无屏障流水线以及
+可恢复或可迁移工作流见[编排](/guide/orchestration)。

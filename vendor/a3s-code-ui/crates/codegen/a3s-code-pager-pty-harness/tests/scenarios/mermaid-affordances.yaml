@@ -1,0 +1,62 @@
+name: mermaid-affordances
+description: >
+  A ```mermaid fence renders inline as Unicode box-drawing art (drawn by the
+  markdown renderer), with a clickable affordance row beneath it led by a dim
+  "◇ mermaid" label ([Open Image] [Copy Image Path] [Copy Source]). Rendering of
+  the full-fidelity PNG is lazy (on click), so no diagram PNG is produced just by
+  detection. The PNG is NEVER transmitted as an inline image, so the treatment is
+  identical in every terminal and no Kitty graphics escape is emitted — asserted
+  against the raw PTY output.
+terminal:
+  rows: 40
+  cols: 100
+mock:
+  response: |
+    Here is a flow:
+
+    ```mermaid
+    flowchart TD
+      A --> B
+      B --> C
+    ```
+
+    Done rendering the flow.
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "draw me a diagram"
+  - action: keys
+    keys: "<Enter>"
+  # Mermaid detection runs when the turn finishes, so the affordance row appears
+  # only after the response is complete. Poll for one of its buttons rather than
+  # asserting mid-stream.
+  - action: wait_for_text
+    text: "[Copy Source]"
+    timeout_ms: 30000
+  - action: assert_chat_completion
+  # The fence is rendered inline as Unicode art by the markdown renderer: a TD
+  # flowchart routes forward edges through "▼" arrowheads. Asserting the art (not
+  # the source keyword) confirms the inline diagram replaced the raw source.
+  - action: assert_contains
+    text: "▼"
+  # The full affordance row is plain text: [Open Image] [Copy Image Path] [Copy Source].
+  - action: assert_contains
+    text: "[Open Image]"
+  # The affordance row is led by the dim "◇ mermaid" label.
+  - action: assert_contains
+    text: "◇ mermaid"
+  # Rendering is LAZY: detection alone never dispatches a PNG render, so the row's
+  # transient "rendering diagram…" hint is absent until an [Open Image]/[Copy
+  # Image Path] click. This distinguishes lazy from eager without depending on the
+  # OS clipboard/viewer.
+  - action: assert_not_contains
+    text: "rendering diagram"
+  # The full-fidelity PNG is text + mouse hit-rects only, never an inline image.
+  - action: assert_no_kitty_graphics
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: mermaid-affordances
+    note: Mermaid fence rendered inline as Unicode art with a clickable affordance row.

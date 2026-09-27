@@ -1,0 +1,42 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Git branch icons** now render correctly on Windows without Nerd Fonts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid diagrams** now render inline without the model suggesting external viewers.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Rewind** now works end-to-end across conversation and file state with proper CAS handling.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "MCP connection errors now show the actual failure reason to the model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "MCP servers with noisy stdout no longer disconnect unexpectedly.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Fixed pager freezes** and 100% CPU usage when rendering very long agent reasoning outputs with thousands of styled spans.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Usage warnings** now always display \"Usage left: N%\" instead of varying between \"Free credits left\" and \"Credits left\".",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Window title** no longer flashes or oscillates during permission prompts while the terminal window is focused.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,52 @@
+[
+  {
+    "category": "features",
+    "description": "MCP servers can now ask for form input or URL consent through the same popup used for questions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Downloading a folder that contains only one file now produces a zip that still extracts as a folder.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "Opening many subagents at once no longer freezes the interface while loading their history.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Failed tool calls for tools the model invented now clearly state the tool does not exist.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Ctrl+S now stashes the current prompt draft so you can send something else and restore it later.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Concurrent subagents** now start much faster and no longer freeze the parent session.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Status line** refresh timer now uses consistent naming and no longer shows errors on deliberately hidden rows.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "** /workflow** now autocompletes saved workflow names and shows only valid runs for pause/resume/stop/save.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Workflow agent rows** now display current context usage instead of cumulative token counts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Follow-up messages** now send immediately while waiting on a subagent or task, including after using /btw.",
+    "breaking_change": false
+  }
+]

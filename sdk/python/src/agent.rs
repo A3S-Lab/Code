@@ -539,8 +539,8 @@ impl PyAgent {
 
     /// Disconnect every global MCP server idle longer than
     /// ``idle_threshold_ms``, returning the names disconnected. The
-    /// server's registered config is kept — a later tool call reconnects
-    /// on demand. Call periodically (e.g. every 60s with a 5-min
+    /// server's registered config is kept; reconnect with
+    /// ``sync_global_mcp_servers`` before the server is used again. Call periodically (e.g. every 60s with a 5-min
     /// threshold) from a host-side sweeper to release file descriptors
     /// and background workers from quiet MCP servers in long-running
     /// deployments.

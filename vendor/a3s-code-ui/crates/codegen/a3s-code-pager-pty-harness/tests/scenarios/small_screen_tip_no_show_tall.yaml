@@ -1,0 +1,35 @@
+name: small-screen-tip-no-show-tall
+description: >
+  No-show edge above the band: a 40-row terminal is roomy, so the first stable
+  agent-view draw consumes the one-shot evaluation without showing the
+  "Tight on space? Try /compact-mode" banner — even with the contextual-hints
+  master pinned on.
+terminal:
+  rows: 40
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Promote the welcome prompt to a real session; the status bar's model name
+  # proves the agent view has drawn (the trigger's evaluation point).
+  - action: type_text
+    text: "hi"
+  - action: wait_for_text
+    text: "test-model"
+    timeout_ms: 15000
+  - action: wait
+    millis: 1200
+  - action: assert_not_contains
+    text: "Tight on space"
+  - action: assert_running
+  - action: screenshot
+    name: small-screen-tip-absent-tall
+    note: No /compact-mode tip on a 40-row terminal.

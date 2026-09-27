@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Session titles** now generate reliably even for very long initial messages.",
+    "breaking_change": false
+  }
+]

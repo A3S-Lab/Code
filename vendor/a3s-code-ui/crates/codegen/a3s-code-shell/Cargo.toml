@@ -1,0 +1,355 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-code-shell"
+version = "1.0.41"
+edition.workspace = true
+
+[features]
+default = []
+dhat-heap = ["dep:dhat"]
+# Session synthesis + in-process e2e harness (`session::testkit`) for soak,
+# load, and bench tests. Off by default; the tests/benches that use it declare
+# it via `required-features`. Forwards login, sampler, and workspace
+# `test-support` so downstream test builds see those crates' test seams
+# (`isolated_spawn_e2e` uses `WorkspaceOps::for_test`).
+test-support = [
+    "a3s-code-login/test-support",
+    "a3s-code-sampler/test-support",
+    "a3s-code-workspace/test-support",
+]
+test-util = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+local-workspace = []
+# CI default set (preferred over cargo `default` for hermetic CI builds):
+# `config-docs` is on this set (not cargo `default`) so hermetic lib tests
+# parse the committed config-reference page.
+config-docs = []
+default-bazel = [
+    "local-workspace",
+    "test-support",
+    "config-docs",
+]
+
+[dependencies]
+dunce = { workspace = true }
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+a3s-code-announcements = { workspace = true }
+a3s-prompt-queue = { workspace = true }
+a3s-code-version = { workspace = true }
+
+async-openai = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bm25 = "2.3"
+bytes = { workspace = true }
+chrono = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+ignore = { workspace = true }
+jsonschema = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+globset = { workspace = true }
+kanal = "0.1"
+regex = { workspace = true }
+# rmcp 2.1 + reqwest 0.13 are quarantined inside `a3s-code-mcp`. The remaining
+# MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
+# types via `a3s_code_mcp::rmcp::model::*`. reqwest 0.13 is a private impl
+# detail of a3s-code-mcp::servers; shell never sees it. Every HTTP call site
+# in this crate uses workspace reqwest 0.12.
+a3s-code-mcp = { workspace = true }
+reqwest = { workspace = true, features = ["stream", "blocking"] }
+reqwest-middleware = { workspace = true }
+serde = { workspace = true }
+serde_ignored = "0.1"
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true, features = ["preserve_order"] }
+toml_edit = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-std",
+    "process",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "env-filter",
+    "fmt",
+    "json",
+    "time",
+] }
+obfstr = { workspace = true }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
+tokio-retry = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5", "v7"] }
+a3s-acp-lib = { workspace = true }
+axum = { workspace = true, features = ["ws", "multipart"] }
+backon = { workspace = true }
+webbrowser = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "logging",
+    "tls12",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+futures-util = { workspace = true }
+urlencoding = { workspace = true }
+gethostname = { workspace = true }
+gcloud-storage = { workspace = true }
+git2 = { version = "0.20", default-features = false, features = [
+    "vendored-libgit2",
+] }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+nucleo = { workspace = true }
+arc-swap = { workspace = true }
+infer = "0.15"
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+moka = { workspace = true, features = ["future"] }
+dhat = { workspace = true, optional = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true }
+a3s-fast-worktree = { path = "../a3s-fast-worktree", features = ["metadata"] }
+
+a3s-code-paths = { path = "../a3s-code-paths" }
+a3s-code-shell-base = { workspace = true }
+a3s-code-shell-session-support = { workspace = true }
+a3s-code-shell-terminal = { workspace = true }
+a3s-code-shared = { workspace = true }
+a3s-code-status-line = { workspace = true }
+a3s-tracing-macros = { path = "../a3s-tracing-macros" }
+a3s-fsnotify = { path = "../a3s-fsnotify" }
+a3s-codebase-graph = { path = "../a3s-codebase-graph" }
+a3s-hunk-tracker = { path = "../a3s-hunk-tracker" }
+a3s-agent-lifecycle = { workspace = true }
+a3s-interjection-core = { workspace = true }
+a3s-message-delivery-core = { workspace = true }
+a3s-code-sandbox = { path = "../a3s-code-sandbox", default-features = false }
+a3s-chat-state = { path = "../a3s-chat-state" }
+# Segment markdown rendering + the `compaction/` store path convention.
+a3s-compaction-transcript = { workspace = true }
+a3s-code-compaction = { path = "../../common/a3s-code-compaction" }
+a3s-code-extra-ca = { workspace = true }
+# Leader lock: bounded flock polling behind the machine-local acquire slot.
+a3s-code-file-lock = { workspace = true }
+a3s-code-sampler = { path = "../a3s-code-sampler" }
+# Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
+a3s-code-session-search = { workspace = true }
+a3s-token-estimation = { workspace = true }
+a3s-code-sampling-types = { path = "../a3s-code-sampling-types" }
+a3s-code-tools = { path = "../a3s-code-tools" }
+a3s-tty-utils = { workspace = true }
+a3s-workflow = { path = "../a3s-workflow" }
+a3s-code-workspace = { workspace = true }
+# Backs the compatibility-only `a3s_code_shell::foreign_sessions` re-export.
+a3s-code-foreign-sessions = { workspace = true }
+a3s-code-subagent-resolution = { path = "../a3s-code-subagent-resolution" }
+a3s-code-agent = { path = "../a3s-code-agent" }
+a3s-code-bundle = { workspace = true }
+a3s-code-config = { workspace = true }
+a3s-code-feedback = { workspace = true }
+a3s-code-config-types = { workspace = true }
+a3s-code-env = { workspace = true }
+a3s-dirs = { workspace = true }
+a3s-code-memory = { workspace = true }
+a3s-code-hooks = { path = "../a3s-code-hooks" }
+a3s-hooks-plugins-types = { path = "../a3s-hooks-plugins-types" }
+a3s-code-plugin-marketplace = { path = "../a3s-code-plugin-marketplace" }
+a3s-file-utils = { path = "../a3s-file-utils" }
+a3s-code-otel = { workspace = true }
+a3s-code-session-events = { workspace = true }
+a3s-code-auth = { workspace = true, features = ["middleware"] }
+a3s-code-telemetry = { workspace = true }
+a3s-code-http = { workspace = true }
+a3s-code-login = { workspace = true }
+a3s-code-models = { workspace = true }
+prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+url = { workspace = true }
+walkdir = { workspace = true }
+tdigests = "1.0"
+semver = { workspace = true }
+parking_lot.workspace = true
+dashmap.workspace = true
+
+# Used by acp_session.rs and mcp_servers.rs for the unified
+# a3s_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
+a3s-computer-hub-sdk = { workspace = true }
+a3s-tool-runtime = { workspace = true }
+a3s-tool-protocol = { workspace = true }
+a3s-tool-types = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+siphasher = { workspace = true }
+windows = { workspace = true }
+
+[dev-dependencies]
+a3s-dirs = { workspace = true }
+a3s-code-status-line = { workspace = true, features = ["test-support"] }
+criterion = { workspace = true }
+# Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
+ctor = { workspace = true }
+filetime = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+# `extensions::bundle` tests build archives with `bundle::test_helpers`, which
+# is `#[cfg(test)]`-only inside a3s-code-bundle without this feature.
+a3s-code-bundle = { workspace = true, features = ["test-support"] }
+a3s-code-memory = { workspace = true, features = ["test-support"] }
+# sandbox-enforce: keep tests running against the enforcing sandbox build.
+a3s-code-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
+a3s-code-config = { workspace = true, features = [] }
+tar = { workspace = true }
+flate2 = { workspace = true }
+semver = { workspace = true }
+serial_test = { workspace = true }
+# Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
+# this crate's test targets.
+a3s-code-shell-base = { workspace = true, features = ["test-support"] }
+# Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
+# (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
+a3s-code-login = { workspace = true, features = ["test-support"] }
+# Exposes sampler's `notify_on_submit` mock to lib tests via feature unification.
+a3s-code-sampler = { path = "../a3s-code-sampler", features = ["test-support"] }
+a3s-code-test-support = { workspace = true, features = [] }
+a3s-test-utils = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
+# clock with auto-advance) so interval-driven loop tests in `auth::refresh`
+# can assert exact tick counts deterministically without real-time sleep.
+tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies.tempfile]
+workspace = true
+
+[[bench]]
+name = "session_list"
+harness = false
+
+[[bench]]
+name = "fork_copy"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[bench]]
+name = "child_replay_lookup"
+harness = false
+
+# Ordinary integration tests live in `tests/all.rs` (`mod suite`) so cargo
+# links one binary. The test name is `a3s-code-shell-all` (Bazel `//pkg:all`
+# is the package wildcard). Process-isolated suites stay as implicit
+# `tests/*.rs` binaries.
+[[test]]
+name = "test_startup_prefetch_fallback"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_overlap"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_policy"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_repair_overlap"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_repair_skip"
+required-features = ["test-support"]
+
+[[test]]
+name = "mcp_toggle_gateway_persist"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_policy_gate"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_hook_deferral"
+required-features = ["test-support"]
+
+[[test]]
+name = "e2e_grove_worktree"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_uninstall_data"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_subphase_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "sessions_active_gauge"
+required-features = ["test-support"]
+[[test]]
+name = "spawn_actor_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "subagent_bootstrap_regression"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_image_strip_recovery"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_boot_current_thread"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_settings_unpersisted_session"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_shared"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace_off"
+required-features = ["test-support"]
+
+[lints]
+workspace = true
+[build-dependencies]
+# build.rs only downloads ripgrep — no rmcp involvement. Workspace reqwest
+# (0.12) is plenty.
+reqwest = { workspace = true, features = ["blocking"] }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[[bin]]
+name = "chat-history-downgrade"
+path = "src/bin/chat-history-downgrade.rs"

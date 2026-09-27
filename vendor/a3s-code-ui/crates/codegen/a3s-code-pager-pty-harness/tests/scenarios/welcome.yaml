@@ -1,0 +1,27 @@
+name: welcome-screen
+description: Validate that the real pager boots to the welcome screen and produces visual artifacts.
+terminal:
+  rows: 32
+  cols: 100
+mock:
+  response: "SCRIPTED_WELCOME_RESPONSE from the mock server."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: assert_contains
+    text: Quit
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: welcome
+    note: Welcome screen after startup.
+  - action: resize
+    rows: 28
+    cols: 90
+  - action: wait
+    millis: 250
+  - action: assert_running
+  - action: screenshot
+    name: resized-welcome
+    note: Welcome screen after resize.

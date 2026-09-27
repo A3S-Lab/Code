@@ -161,6 +161,24 @@ A3S_F_TABLE_MIN_LINE_PCT=95 scripts/f_table_coverage.sh` →
 fail-closed unknown mounts, default/parts/components resolve paths, and mixed
 trees including `compact` — not golden assistant prose.
 
+## Directory projection
+
+A directory can describe an agent without a second runtime. [`DirectoryProjection`](../core/src/directory_projection.rs)
+reads the files and fills the stock compose list:
+
+| Path | Existing slot |
+| --- | --- |
+| `instructions.md` | `system` prompt on `HarnessComposeOptions` |
+| `agent.acl` `model` / `tool_budget` | `SessionOptions` and the `budget` part |
+| `skills/` | `skill_dirs` |
+| `tools/*.md` `kind: mcp` | `McpServerConfig` for `add_mcp_server` |
+| `tools/*.md` `kind: script` | arguments for the existing `program` tool |
+| `schedules/*.md` | prompts whose cron matches; the host calls `session.send` on `schedule:<name>` |
+
+The projection does not start a daemon, install a timer inside a component, or
+register a tool runtime beside `program`. A schedule that is not due produces
+no fact.
+
 ## Non-goals
 
 - Porting Effect TS into Code.

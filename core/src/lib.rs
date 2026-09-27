@@ -94,6 +94,7 @@ pub mod content_digest;
 pub mod context;
 pub mod core_event_log;
 pub mod core_identity;
+pub mod directory_projection;
 pub mod durable_memory;
 #[cfg(feature = "dynamic-workflow")]
 pub mod dynamic_workflow;

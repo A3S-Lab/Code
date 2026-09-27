@@ -1,0 +1,302 @@
+---
+title: '外部任务'
+description: '在智能体进程之外完成排队的工具调用，并把结果报告回去'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 外部任务
+
+有些工作无法在 agent 进程内运行：它属于独立的 worker、CI runner，或位于另一个系统中的
+人工处理者。当某个 lane 被路由到外部处理器时，调度到该 lane 上的工具调用会作为外部任务
+**排队**，而不是被执行。你的宿主代码取出待处理队列、以任意方式完成工作，并通过
+`completeExternalTask` 把结果报告回去；等待中的工具调用随后返回该结果。仅当外部 worker
+确实是你架构的一部分时，才使用此模式。
+
+外部任务来自 [lane 队列](/guide/examples/lane-queue)。会话需要队列配置（`queueConfig` /
+`queue_config` / `QueueConfig`），并且至少有一个 lane 设为 `external` 模式。`hybrid` lane
+仍在进程内执行，只发出通知，因此不会产生可取出的任务。
+
+lane 队列调度的是宿主直接发起的工具调用：`session.tool(...)` 以及 `bash`、`readFile`、
+`writeFile` 等类型化辅助方法。模型在 `send` 或 `stream` 回合内发起的工具调用会直接执行，
+永远不会成为外部任务。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{
+    queue::{
+        ExternalTaskResult, LaneHandlerConfig, SessionLane, SessionQueueConfig,
+        TaskHandlerMode,
+    },
+    Agent, SessionOptions,
+};
+use serde_json::json;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder(".")
+        .options(
+            SessionOptions::new()
+                .with_queue_config(SessionQueueConfig::default()),
+        )
+        .build()
+        .await?;
+    session
+        .set_lane_handler(
+            SessionLane::Execute,
+            LaneHandlerConfig {
+                mode: TaskHandlerMode::External,
+                timeout_ms: 300_000,
+            },
+        )
+        .await?;
+
+    // `bash` 运行在 execute lane 上，因此该调用会等待下面的 worker。
+    let build = session.bash("npm run build");
+    let worker = async {
+        let task = loop {
+            if let Some(task) = session.pending_external_tasks().await.into_iter().next() {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        println!(
+            "待处理：{}，lane {:?}（{}）",
+            task.task_id, task.lane, task.command_type
+        );
+        // ……宿主在这里完成实际工作（运行 CI、调用服务、询问人工）……
+        let completed = session
+            .complete_external_task(
+                &task.task_id,
+                ExternalTaskResult {
+                    success: true,
+                    result: json!({
+                        "output": "CI runner 上构建成功",
+                        "exit_code": 0
+                    }),
+                    error: None,
+                },
+            )
+            .await;
+        println!("已完成：{completed}");
+    };
+    let (output, ()) = tokio::join!(build, worker);
+    println!("bash 返回：{}", output?);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('.', { queueConfig: {} });
+
+// 把 execute lane 路由到外部 worker，使其工具被排队而不是被执行。
+await session.setLaneHandler('execute', {
+  mode: 'external',
+  timeoutMs: 300000,
+});
+
+// `bash` 运行在 execute lane 上，因此该调用会等待下面的 worker。
+const build = session.bash('npm run build');
+
+// 轮询，直到排队的调用出现。
+let [task] = await session.pendingExternalTasks();
+while (!task) {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  [task] = await session.pendingExternalTasks();
+}
+console.log(`待处理：${task.task_id}，lane ${task.lane}（${task.command_type}）`);
+
+try {
+  // ……宿主在这里完成实际工作（运行 CI、调用服务、询问人工）……
+  const ok = await session.completeExternalTask(task.task_id, {
+    success: true,
+    result: { output: 'CI runner 上构建成功', exit_code: 0 },
+  });
+  console.log('已完成：', ok);
+} catch (err) {
+  await session.completeExternalTask(task.task_id, {
+    success: false,
+    error: String(err),
+  });
+}
+
+console.log('bash 返回：', await build);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+from a3s_code import Agent, SessionOptions, SessionQueueConfig
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.queue_config = SessionQueueConfig()
+session = agent.session(".", opts)
+
+# 把 execute lane 路由到外部 worker，使其工具被排队而不是被执行。
+session.set_lane_handler("execute", "external", 300000)
+
+with ThreadPoolExecutor(max_workers=1) as pool:
+    # `bash` 运行在 execute lane 上，因此该调用会等待下面的 worker。
+    build = pool.submit(session.bash, "npm run build")
+
+    # 轮询，直到排队的调用出现。
+    pending = session.pending_external_tasks()
+    while not pending:
+        time.sleep(0.05)
+        pending = session.pending_external_tasks()
+    task = pending[0]
+    print(f"待处理：{task['task_id']}，lane {task['lane']}（{task['command_type']}）")
+
+    try:
+        # ……宿主在这里完成实际工作（运行 CI、调用服务、询问人工）……
+        ok = session.complete_external_task(
+            task["task_id"],
+            success=True,
+            result={"output": "CI runner 上构建成功", "exit_code": 0},
+        )
+        print("已完成：", ok)
+    except Exception as err:
+        session.complete_external_task(
+            task["task_id"],
+            success=False,
+            error=str(err),
+        )
+
+    print("bash 返回：", build.result())
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+type bashResult struct {
+	output string
+	err    error
+}
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, ".", &code.SessionOptions{
+		QueueConfig: &code.SessionQueueConfig{},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	err = session.SetLaneHandler(ctx, code.LaneExecute, code.LaneHandlerConfig{
+		Mode:      "external",
+		TimeoutMS: 300_000,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Bash 运行在 execute lane 上，因此该调用会等待下面的 worker。
+	build := make(chan bashResult, 1)
+	go func() {
+		output, err := session.Bash(ctx, "npm run build")
+		build <- bashResult{output, err}
+	}()
+
+	var task code.ExternalTask
+	for {
+		pending, err := session.PendingExternalTasks(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(pending) > 0 {
+			task = pending[0]
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	fmt.Println("待处理：", task.TaskID, task.Lane, task.CommandType)
+
+	// ……宿主在这里完成实际工作（运行 CI、调用服务、询问人工）……
+	completed, err := session.CompleteExternalTask(
+		ctx,
+		task.TaskID,
+		code.ExternalTaskResult{
+			Success: true,
+			Result: json.RawMessage(
+				`{"output":"CI runner 上构建成功","exit_code":0}`,
+			),
+		},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("已完成：", completed)
+
+	result := <-build
+	if result.err != nil {
+		log.Fatal(result.err)
+	}
+	fmt.Println("bash 返回：", result.output)
+}
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- 工具按名称映射到 lane。`read`、`ls`、`search`（`grep` 和 `glob` 背后的工具）、
+  `web_fetch`、`web_search` 以及代码智能工具使用 `query` lane；其他所有工具，包括 `bash`、
+  `write` 和 `edit`，都使用 `execute`。
+- 每个待处理任务都带有 `task_id`、`session_id`、`lane`（lane 名称，如 `"Execute"`、
+  `"Query"` 等）、`command_type`（工具名）、`payload`（工具参数）和 `timeout_ms`。把
+  `task_id` 传回 `completeExternalTask` / `complete_external_task` / `CompleteExternalTask`。
+- 完成结果的结构是 `{ success, result?, error? }`。成功时，`result` 会成为工具结果：它必须
+  包含 `output` 字符串，还可以附加 `exit_code`（默认 0）、`metadata` 和 `images`
+  （`[{ data, media_type }]`，其中 `data` 为 base64）。缺少 `output` 的结果会变成工具错误。
+  失败时，工具调用以包含 `error` 的工具错误结束（默认 `External task failed`）。工具错误会作为
+  工具输出返回（对 `bash` 而言，是以 `Tool execution error:` 开头的文本），而不是抛出错误。
+- 如果在 lane 的 `timeoutMs` / `timeout_ms`（默认 60000）内没有完成该任务，任务会被移除，
+  等待中的调用以超时工具错误结束。
+- 当任务仍处于待处理状态时，完成调用返回 `true`，否则返回 `false`（例如任务已超时）。Python
+  的队列方法是同步的；Node 中它们返回 promise；Go 中它们接收调用方的 `context.Context`。

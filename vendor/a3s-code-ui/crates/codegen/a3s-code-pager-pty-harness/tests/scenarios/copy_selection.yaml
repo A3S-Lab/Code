@@ -1,0 +1,27 @@
+name: copy-selection
+description: Validate mouse text selection copies through the real TUI clipboard path with OSC 52 readback.
+terminal:
+  rows: 34
+  cols: 100
+environment:
+  env:
+    - key: SSH_CONNECTION
+      value: "scripted-test 1 127.0.0.1 2"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_prompt
+    text: "copy source text"
+  - action: assert_contains
+    text: "copy source text"
+  - action: select_text_range
+    from_text: "copy"
+    to_text: "text"
+  - action: assert_osc52_contains
+    text: "source text"
+  - action: screenshot
+    name: copied-selection
+    note: Prompt text selected by mouse drag and copied via OSC 52.

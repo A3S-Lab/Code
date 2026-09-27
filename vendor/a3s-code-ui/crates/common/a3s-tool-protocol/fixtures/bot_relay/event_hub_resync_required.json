@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "agentId": "agt_1",
+  "seq": 3,
+  "channel": "hub:resync_required",
+  "event": {
+    "agentId": "agt_1"
+  }
+}

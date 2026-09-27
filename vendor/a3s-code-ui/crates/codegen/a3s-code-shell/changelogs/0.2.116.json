@@ -1,0 +1,37 @@
+[
+  {
+    "category": "features",
+    "description": "**Headless streaming output** now includes tool calls, results, and usage when using `--output-format streaming-json`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed repeated forced re-logins** after laptop sleep or network hiccups during token refresh.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Suppressed spurious history load warnings** on draft conversations that have no server history yet.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New `/undo` slash command** restores files and chat to an earlier turn, same as `/rewind`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Slash commands** are now correctly hidden or refused in minimal or fullscreen mode based on their declared support.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Settings enum pickers** now keep the selected radio button on the current value until you press Enter.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Deep-linked settings** such as `/privacy` now close the settings modal on Esc or Enter instead of returning to the list.",
+    "breaking_change": false
+  }
+]

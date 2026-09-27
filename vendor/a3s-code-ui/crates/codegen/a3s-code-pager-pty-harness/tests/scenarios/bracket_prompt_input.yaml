@@ -1,0 +1,27 @@
+name: bracket-prompt-input
+description: >
+  Regression — typing a lone `[` in the prompt must render immediately
+  (CsiFragmentFilter must not hold it until the next keystroke).
+terminal:
+  rows: 32
+  cols: 100
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  - action: type_text
+    text: "["
+  - action: wait
+    millis: 100
+  - action: assert_contains
+    text: "["
+  - action: type_text
+    text: "link]"
+  - action: assert_contains
+    text: "[link]"
+  - action: screenshot
+    name: bracket-prompt
+    note: Prompt shows typed brackets without waiting for a follow-up key.

@@ -1,0 +1,62 @@
+[
+  {
+    "category": "performance",
+    "description": "**/btw** side questions now reuse the parent session\u2019s cached prefix for faster responses.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Gateway connections** now detect and recover from dead sockets more reliably.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Always allow** for bash commands now lets you edit a free-form glob pattern instead of only word-prefix scopes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Question cards** now let you Tab through answers instead of losing focus to the scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Long responses** now show a clickable arrow that jumps back to the start of the answer.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Auto mode** now auto-approves more common read-only git commands and harmless file appends.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resume picker** no longer tries to load a session from pasted garbage when you press Enter.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task** completion messages no longer grow unbounded when the task produced a huge log.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Doctor** and tmux-backed startup are now faster when no live tmux processes remain.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Plan previews** now show Mermaid diagram buttons (Open Image, Copy Image Path, Copy Source).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Plan viewer scrollbar** now responds to clicks on the border column and renders without dark stripes in Terminal.app.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Expired external auth provider** credentials now correctly trigger the interactive sign-in flow instead of a silent 401 loop.",
+    "breaking_change": false
+  }
+]

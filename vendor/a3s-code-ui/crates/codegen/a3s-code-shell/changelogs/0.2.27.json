@@ -1,0 +1,22 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Monitor output** no longer appears as raw XML in the conversation view during leader sessions.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Windows commands** containing `&` are no longer incorrectly rejected by `run_terminal_cmd`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Image and video generation** tools now include the saved filename and session folder in their output.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Python -c** save-to-file reminder now suggests correct commands on Windows.",
+    "breaking_change": false
+  }
+]

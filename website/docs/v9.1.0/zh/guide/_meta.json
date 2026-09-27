@@ -1,0 +1,76 @@
+[
+  "index",
+  "tui",
+  {
+    "type": "section-header",
+    "label": "循环"
+  },
+  "architecture",
+  "meta-harness",
+  "sessions",
+  "providers",
+  "commands",
+  {
+    "type": "section-header",
+    "label": "工作区"
+  },
+  "tools",
+  "workspace-backends",
+  {
+    "type": "section-header",
+    "label": "治理"
+  },
+  "security",
+  "verification",
+  "hooks",
+  "isolation",
+  "limits",
+  {
+    "type": "section-header",
+    "label": "上下文"
+  },
+  "context",
+  "memory",
+  {
+    "type": "section-header",
+    "label": "委派"
+  },
+  "tasks",
+  "teams",
+  "skills",
+  "orchestration",
+  {
+    "type": "section-header",
+    "label": "项目文件"
+  },
+  "filesystem-first",
+  "agents-md",
+  "filesystem-config",
+  "filesystem-agents",
+  "filesystem-skills",
+  {
+    "type": "section-header",
+    "label": "宿主"
+  },
+  "persistence",
+  "mcp",
+  "lane-queue",
+  "telemetry",
+  "multi-machine",
+  "cluster-extension-points",
+  "api-contract",
+  {
+    "type": "dir",
+    "name": "examples",
+    "label": "示例",
+    "collapsible": true,
+    "collapsed": true
+  },
+  {
+    "type": "dir",
+    "name": "rfcs",
+    "label": "RFC",
+    "collapsible": true,
+    "collapsed": true
+  }
+]

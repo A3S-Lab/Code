@@ -1,0 +1,137 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Queued messages** no longer auto-submit while you are still editing them in the composer.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New StopCancelled hook event** now reports when a turn ends without completing (interrupt, permission reject, max turns, etc.).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Recurring /loop tasks** now show a one-line expiry notice in the transcript when they auto-expire after 7 days.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sessions poisoned by rejected images** are now healed permanently so future turns succeed without retrying the bad image.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Finished subagent transcripts** are now evicted from memory to reduce RAM usage and rebuilt from disk when reopened.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Auto permission mode** now correctly honors your explicit \"always allow\" grants and narrow allow rules from settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Web search** can now be restricted to allowed or excluded domains via [toolset.web_search] in config.toml.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent lifecycle events** are now preserved even when delivered out of order, ensuring all subagents appear correctly in the UI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Keystrokes typed while A3S Code is starting** are now preserved in the composer instead of being lost.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session search index** can now be disabled via GROK_SESSION_SEARCH or [features] session_search for hosts sharing $GROK_HOME.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background tasks killed from the UI** now correctly wake the model when needed instead of staying parked after a single-task stop.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**[stop]** / Ctrl+C inside a fullscreen subagent overlay now cancels the visible child session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Hook failures** now show the first line of stderr output instead of only the exit code.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasting text or dragging images** while the scrollback pane is focused now focuses the composer and pastes there.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**[stop]** / Ctrl+C inside a subagent drill-in view now stops the focused subagent instead of the root session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Drag to select and copy** values on the /session-info tab; c and y shortcuts also work.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Double-click now selects a word** by default and triple-click selects the whole paragraph.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New follow-up behavior setting** lets queued messages send immediately as interjections instead of waiting for the turn to finish.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The dashboard shortcut now works with Ctrl+4 in terminals that do not support the Kitty keyboard protocol.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Pasting image-only screenshots from tools like Flameshot now works on Linux without a clipboard error.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Tool commands and MCP servers now receive a GROK_SESSION_ID environment variable matching the current session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Relative markdown links can now open existing files in your current working directory when no matching generated media is found.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "PreToolUse hooks can now rewrite a tool's input before it runs instead of only allowing or denying the call.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Editing a queued prompt to a slash command like /btw now runs the command instead of sending the text to the model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Text typed while a plan is being generated is now preserved when the approval screen appears.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`grok du`** and worktree commands now work on Windows when only USERPROFILE is set.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Permission-mode changes made on the welcome screen now correctly apply to the newly created session.",
+    "breaking_change": false
+  }
+]

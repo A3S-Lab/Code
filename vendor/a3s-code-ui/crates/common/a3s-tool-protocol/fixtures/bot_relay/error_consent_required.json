@@ -1,0 +1,6 @@
+{
+  "code": "consent_required",
+  "retryable": false,
+  "detail": {},
+  "reason": "jit_consent_required"
+}

@@ -1,0 +1,498 @@
+---
+title: 'RFC: Remote Workspace Git Backend'
+description: 'HTTP/JSON protocol for serving git operations to non-local workspace backends'
+---
+
+# RFC: Remote Workspace Git Backend
+
+| Field   | Value                                                             |
+| ------- | ----------------------------------------------------------------- |
+| Status  | **Implemented**                                                   |
+| Code    | `core/src/workspace/remote_git.rs`                                |
+| Related | `S3WorkspaceBackend`, `WorkspaceGit`, `WorkspaceGitStashProvider` |
+
+This page specifies the HTTP/JSON protocol that `RemoteGitBackend` speaks and
+describes how the client behaves. A gitserver that implements the endpoints
+below lets the built-in `git` tool run on workspaces that cannot hold a `.git`
+directory, such as S3 workspaces.
+
+## 1. Motivation
+
+Built-in tools reach the workspace through `WorkspaceServices`, and each tool
+is registered only when the workspace backend supports it. An S3 workspace
+has read and write capability but no shell and no git provider, so `bash` and
+`git` are never registered for it.
+
+Hiding `git` everywhere except local sessions would make cloud workspaces
+second-class: many coding workflows need branch and commit state, diffs,
+branch creation, and stashes. `RemoteGitBackend` fills that gap by delegating
+git operations over HTTP to a service the host operates. That service owns a
+real working tree; the client presents it to tools as an ordinary
+`WorkspaceGit` provider.
+
+```text
+                ┌──────────────────┐
+                │   a3s-code       │
+   model        │                  │
+   ──────►      │  git tool        │       HTTP/JSON
+                │      │           │   ┌────────────────┐
+                │      ▼           │   │                │
+                │  WorkspaceGit ───┼──►│  gitserver     │
+                │  (RemoteGit…)    │   │                │
+                │                  │   └────────────────┘
+                │  WorkspaceFs ────┼──►  S3 or other file backend
+                └──────────────────┘
+```
+
+## 2. Scope
+
+The client and protocol cover what the `WorkspaceGit` and
+`WorkspaceGitStashProvider` traits expose. The following are not part of the
+implementation:
+
+- **A gitserver.** a3s-code ships only the client. Server implementations
+  (libgit2 wrapper, shell-out, hosted-git adapter) belong to the operator.
+- **Push, pull, and fetch.** `list_remotes` reports configured remotes; there
+  is no operation that talks to an upstream.
+- **Worktrees.** The remote backend does not implement
+  `WorkspaceGitWorktreeProvider`. See §8.
+- **Commits.** `WorkspaceGit` has no commit operation, so neither does the
+  protocol.
+
+A local workspace keeps its local git provider unless the host explicitly
+attaches a remote one.
+
+## 3. Protocol Choice — HTTP/JSON
+
+This section records the design rationale for the shipped protocol.
+
+The operation set is small (ten endpoints), every call is request/response,
+and the shapes are flat. HTTP/JSON reuses the `reqwest` client already in the
+dependency tree, is easy to mock in tests, can be debugged with `curl`, and
+lets a server be a thin wrapper around `git`. gRPC would add a proto toolchain
+for little benefit at this size; streaming would only help `log` and `diff`,
+which the client already bounds (§9).
+
+Every operation uses `POST`. Git operations are imperative rather than
+resource CRUD, and a JSON request body lets new optional fields be added
+without changing URLs.
+
+## 4. Repository Identity
+
+Every request goes to:
+
+```
+POST {base_url}/v1/repos/{repo_id}/git/<operation>
+```
+
+`base_url` has any trailing `/` removed. `repo_id` is an opaque string agreed
+between the host and the gitserver operator. The client inserts it into the
+path verbatim, without percent-encoding, so a value such as
+`users/u1/sessions/s1` produces several path segments. The server maps
+`repo_id` to a working tree.
+
+## 5. Endpoint Reference
+
+All endpoints are `POST`, and request and response bodies are
+`application/json` with `snake_case` fields. Endpoints that take no input
+receive an empty JSON body. Any 2xx status is success. The client ignores
+unknown response fields, so servers may add fields.
+
+The built-in `git` tool calls `exists` before every command, then:
+
+| `git` tool command                                  | Endpoint          |
+| --------------------------------------------------- | ----------------- |
+| `status`                                            | `status`          |
+| `log`                                               | `log`             |
+| `branch` without `name`                             | `branches`        |
+| `branch` with `name` (`base` defaults to `HEAD`)    | `branches/create` |
+| `checkout`                                          | `checkout`        |
+| `diff`                                              | `diff`            |
+| `remote`                                            | `remotes`         |
+| `stash` without `message` or `include_untracked`    | `stashes`         |
+| `stash` with `message` or `include_untracked: true` | `stashes/create`  |
+
+### 5.1 Status — `WorkspaceGit::status`
+
+```
+POST /v1/repos/{repo_id}/git/status
+→ 200 {
+    "branch":       "main",
+    "commit":       "abc123...",
+    "is_worktree":  false,
+    "is_dirty":     true,
+    "dirty_count":  3
+  }
+```
+
+`branch` and `commit` are required. `is_worktree`, `is_dirty`, and
+`dirty_count` default to `false`, `false`, and `0`.
+
+### 5.2 Log — `WorkspaceGit::log`
+
+```
+POST /v1/repos/{repo_id}/git/log
+{"max_count": 10}
+→ 200 {
+    "commits": [
+      {"id":"abc...", "message":"feat: ...", "author":"Alice <a@b>", "date":"2026-05-19T..."}
+    ]
+  }
+```
+
+The client sends `max_count` already capped at `max_log_entries` (§9). All
+four commit fields are required.
+
+### 5.3 List Branches — `WorkspaceGit::list_branches`
+
+```
+POST /v1/repos/{repo_id}/git/branches
+→ 200 {"branches":[{"name":"main", "is_current":true}, ...]}
+```
+
+`is_current` defaults to `false`.
+
+### 5.4 Create Branch — `WorkspaceGit::create_branch`
+
+```
+POST /v1/repos/{repo_id}/git/branches/create
+{"name":"feat/x", "base":"main"}
+→ 201
+→ 409 {"error":{"code":"BRANCH_EXISTS", ...}}
+```
+
+The response body of a successful call is ignored.
+
+### 5.5 Checkout — `WorkspaceGit::checkout`
+
+```
+POST /v1/repos/{repo_id}/git/checkout
+{"refspec":"feat/x", "force":false}
+→ 200 {"stdout":"Switched to branch 'feat/x'"}
+→ 409 {"error":{"code":"WORKING_TREE_DIRTY", ...}}
+```
+
+`stdout` defaults to an empty string. The `git` tool appends it to the
+checkout result when it is not blank.
+
+### 5.6 Diff — `WorkspaceGit::diff`
+
+```
+POST /v1/repos/{repo_id}/git/diff
+{"target": null}            // working tree
+{"target": "main"}          // against a ref
+→ 200 {"diff":"<unified diff text>", "truncated": false}
+```
+
+The client passes `diff` through unchanged, so the server should return
+unified diff text. `truncated` defaults to `false`; when the server sets it,
+the client appends `... [truncated by gitserver]` to the diff. See §9 for the
+client-side caps.
+
+### 5.7 List Remotes — `WorkspaceGit::list_remotes`
+
+```
+POST /v1/repos/{repo_id}/git/remotes
+→ 200 {"remotes":[{"name":"origin", "url":"git@github.com:...", "direction":"fetch"}]}
+```
+
+`direction` defaults to `"fetch"`.
+
+### 5.8 Is Repository — `WorkspaceGit::is_repository`
+
+```
+POST /v1/repos/{repo_id}/git/exists
+→ 200 {"is_repository": true}
+```
+
+`is_repository` defaults to `false`. A `false` result makes the `git` tool
+return `Not a git repository: ...`; an error response makes it return
+`Failed to inspect git repository: ...`. Returning `false` lets a server serve
+a `repo_id` that exists but is not a repository without overloading 404.
+
+### 5.9 List Stashes — `WorkspaceGitStashProvider::list_stashes`
+
+```
+POST /v1/repos/{repo_id}/git/stashes
+→ 200 {"stashes":[{"index":0, "message":"WIP on main: ..."}]}
+```
+
+`message` defaults to an empty string.
+
+### 5.10 Stash — `WorkspaceGitStashProvider::stash`
+
+```
+POST /v1/repos/{repo_id}/git/stashes/create
+{"message":"wip", "include_untracked":true}
+→ 201
+→ 409 {"error":{"code":"NOTHING_TO_STASH", ...}}
+```
+
+`message` is omitted from the request when the caller did not supply one. The
+response body of a successful call is ignored.
+
+## 6. Authentication
+
+- **Bearer token.** When `bearer_token` is set and non-empty, every request
+  carries `Authorization: Bearer <token>`. Provisioning the token is the
+  host's job.
+- **mTLS.** Set both `client_cert_pem` and `client_key_pem` to PEM file paths.
+  The client reads both files when the backend is constructed, concatenates
+  them, and passes the result to `reqwest::Identity::from_pem`. The TLS stack
+  is `rustls`, which expects the key in PKCS#8 PEM. Setting only one of the
+  pair, an unreadable file, or invalid PEM fails construction.
+
+Both can be used together. With no token and no client certificate, the
+client still works and logs a `tracing::warn!` at construction; use that only
+against a trusted localhost gitserver.
+
+The HTTP client is built with proxies disabled, so `HTTP_PROXY`,
+`HTTPS_PROXY`, and system proxy settings do not apply to gitserver calls.
+
+## 7. Error Model
+
+The HTTP status decides the error category. The server should put the error
+kind in the body:
+
+```json
+{
+  "error": {
+    "code": "BRANCH_EXISTS",
+    "message": "branch 'feat/x' already exists"
+  }
+}
+```
+
+`message` is optional. If the body is not in this shape, the client uses
+`HTTP_<status>` as the code and the raw body as the message.
+
+| HTTP      | Client error                                                      |
+| --------- | ----------------------------------------------------------------- |
+| 2xx       | success                                                           |
+| 400       | `remote git '<op>' bad request: <code>: <message>`                |
+| 401, 403  | `remote git '<op>' auth failed: <code>: <message>`                |
+| 404       | `remote git '<op>' not found: <code>: <message>`                  |
+| 409, 422  | typed `RemoteGitConflict`                                         |
+| 5xx       | `remote git '<op>' server error (<status>): <code>: <message>`    |
+| any other | `remote git '<op>' unexpected status <status>: <code>: <message>` |
+
+Transport failures produce `remote git call '<op>' transport error: ...`. The
+client does not retry.
+
+409 and 422 become one typed error:
+
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("remote git conflict: {code}: {message}")]
+pub struct RemoteGitConflict {
+    pub code: String,
+    pub message: String,
+}
+```
+
+Rust callers that use the `WorkspaceGit` provider directly can recover with
+`error.downcast_ref::<RemoteGitConflict>()`, and `WorkspaceError::from_anyhow`
+maps it to `WorkspaceError::RemoteGitConflict`. The built-in `git` tool reports
+failures as text, for example
+`Failed to create branch: remote git conflict: BRANCH_EXISTS: ...`.
+
+The client interprets only the HTTP status, never the code string. These codes
+are the conventional set for servers:
+
+| Code                 | Meaning                                             |
+| -------------------- | --------------------------------------------------- |
+| `REPO_NOT_FOUND`     | `repo_id` is not served                             |
+| `NOT_A_REPOSITORY`   | path exists but is not a git repository             |
+| `BRANCH_EXISTS`      | `create_branch` with an existing name               |
+| `BRANCH_NOT_FOUND`   | checkout or diff target missing                     |
+| `BASE_NOT_FOUND`     | `create_branch` base ref missing                    |
+| `WORKING_TREE_DIRTY` | `checkout` would lose changes and `force` is false  |
+| `NOTHING_TO_STASH`   | stash on a clean tree                               |
+| `HOOK_FAILED`        | a server-side hook rejected the operation (use 422) |
+| `RATE_LIMITED`       | server-defined throttle                             |
+
+## 8. Optional Traits
+
+`RemoteGitBackend` implements `WorkspaceGit` and `WorkspaceGitStashProvider`.
+It does not implement `WorkspaceGitWorktreeProvider`: a worktree is a local
+path, and the client has no view of the server's filesystem layout. For
+isolated parallel work on cloud workspaces, use separate sessions with
+separate `repo_id`s.
+
+`with_remote_git` resets `git_worktree` to `None`, including on a local
+workspace, so git status and worktree state cannot come from different
+sources. The `git` tool's `worktree` command then returns
+`Worktree operations are not supported by this workspace backend`.
+
+## 9. Size, Time, and Cost Bounds
+
+The client bounds every response so a misbehaving server cannot exhaust
+memory or model context:
+
+| Setting / limit    | Default                               | Applies to                                  |
+| ------------------ | ------------------------------------- | ------------------------------------------- |
+| `request_timeout`  | 30 s                                  | every HTTP call                             |
+| `max_log_entries`  | 200                                   | cap on the `max_count` sent to `log`        |
+| `max_diff_bytes`   | 1 MiB                                 | diff text returned to the caller            |
+| diff body hard cap | `max_diff_bytes × 4`, at least 64 KiB | raw `diff` response body                    |
+| JSON body cap      | 4 MiB                                 | every other response body, including errors |
+
+For `diff`, a `Content-Length` above the hard cap is rejected before the body
+is read, and a streamed body is aborted as soon as it passes the cap. A decoded
+diff longer than `max_diff_bytes` is cut at a UTF-8 boundary and ends with
+`... [truncated by client max_diff_bytes]`.
+
+Because `log` is capped, the `git` tool cannot page past `max_log_entries`
+commits on a remote backend.
+
+`WorkspaceServices::operation_timeout` does not apply to the `git` tool, so
+`request_timeout` is the only time limit on a gitserver call.
+`WorkspaceServices::s3` sets a 60 second operation timeout for file and search
+operations only.
+
+## 10. Rust Client API
+
+```rust
+use a3s_code_core::{RemoteGitBackend, RemoteGitBackendConfig, WorkspaceServices};
+
+let config = RemoteGitBackendConfig::new("https://git.example.invalid", "sessions/example")
+    .bearer_token(token)
+    .client_cert_pem("/etc/a3s/client.crt")
+    .client_key_pem("/etc/a3s/client.key")
+    .request_timeout(std::time::Duration::from_secs(30))
+    .max_diff_bytes(1024 * 1024)
+    .max_log_entries(200);
+
+let backend = RemoteGitBackend::new(config)?; // Result<Arc<RemoteGitBackend>>
+```
+
+`RemoteGitBackendConfig` has public fields `base_url`, `repo_id`,
+`bearer_token`, `client_cert_pem`, `client_key_pem`, `request_timeout`,
+`max_diff_bytes`, and `max_log_entries`. The module compiles without any Cargo
+feature.
+
+Attach the backend to existing services:
+
+```rust
+impl WorkspaceServices {
+    pub fn with_remote_git(
+        self: Arc<Self>,
+        config: RemoteGitBackendConfig,
+    ) -> Result<Arc<Self>>;
+}
+```
+
+It returns new services with `git` and `git_stash` set to the remote backend
+and `git_worktree` set to `None`. Every other field is preserved, including
+the local root, command runner, search provider, S3 compare-and-swap
+extension, and operation timeout. The original services are not changed.
+
+Hosts that assemble services by hand can use the builder:
+
+```rust
+let backend = RemoteGitBackend::new(config)?;
+let git: Arc<dyn WorkspaceGit> = backend.clone();
+let stash: Arc<dyn WorkspaceGitStashProvider> = backend;
+
+let services = WorkspaceServices::builder(workspace_ref, fs)
+    .file_system_ext(fs_ext)
+    .git(git)
+    .git_stash(stash)
+    .operation_timeout(Duration::from_secs(60))
+    .build();
+```
+
+Setting a git provider marks the workspace git-capable, so the session
+registers the `git` tool.
+
+## 11. Per-Call Observability
+
+Every HTTP call emits one `tracing::debug!` event, shaped like the S3
+backend's per-call event (`emit_s3_call_event` in `core/src/workspace/s3.rs`):
+
+| Field         | Value                                                              |
+| ------------- | ------------------------------------------------------------------ |
+| `op`          | `git.` plus the endpoint, e.g. `git.status`, `git.branches/create` |
+| `repo_id`     | the configured `repo_id`                                           |
+| `status`      | HTTP status, or `0` when the request never reached the server      |
+| `outcome`     | `ok` for 2xx, otherwise `error`                                    |
+| `bytes`       | response body size for `diff`; `0` for other endpoints             |
+| `duration_ms` | wall-clock time                                                    |
+
+A subscriber that already meters S3 calls can meter gitserver calls the same
+way.
+
+## 12. Composition Examples
+
+### S3 workspace + remote git
+
+Requires the `s3` Cargo feature of `a3s-code-core`.
+
+```rust
+let ws = WorkspaceServices::s3(
+    S3BackendConfig::new("workspace", "sessions/example", access_key, secret_key)
+        .endpoint("https://s3.example.invalid")
+        .force_path_style(true)
+        .enable_search(true),
+)
+.with_remote_git(
+    RemoteGitBackendConfig::new(
+        "https://git.example.invalid",
+        "sessions/example",
+    )
+    .bearer_token(token),
+)?;
+
+let session = agent
+    .session_builder("s3://workspace/sessions/example")
+    .options(SessionOptions::new().with_workspace_backend(ws))
+    .build()
+    .await?;
+```
+
+The session registers `read`, `write`, `ls`, `edit`, `patch`, `search`
+(because search is enabled), and `git`. `bash` stays hidden because object
+storage cannot run a shell.
+
+### Local filesystem + remote git (mixed)
+
+Useful when the files are local but git operations must go through a service,
+for example for audit or rate limiting.
+
+```rust
+let local = WorkspaceServices::local("/workspaces/repo");
+let ws = local.with_remote_git(remote_cfg)?; // replaces the local git provider
+```
+
+### SDK options
+
+Each SDK accepts a remote git config next to a workspace backend and calls
+`with_remote_git` on it. Setting remote git without a workspace backend is an
+error.
+
+- Node.js: `SessionOptions.remoteGit` (`baseUrl`, `repoId`, `bearerToken`,
+  `clientCertPem`, `clientKeyPem`, `requestTimeoutMs`, `maxDiffBytes`,
+  `maxLogEntries`) with `workspaceBackend`.
+- Python: `SessionOptions.remote_git` (`RemoteGitBackendConfig`) with
+  `workspace_backend`.
+- Go: `SessionOptions.RemoteGit` (`RemoteGitBackendConfig`) with
+  `SessionOptions.WorkspaceBackend`.
+
+The published npm and PyPI packages include the S3 backend. The published Go
+bridge is built without the `s3` feature, so in Go remote git attaches only to
+a local workspace backend unless you build the bridge with `s3` or `server`.
+
+## 13. Server Expectations
+
+The client leaves these behaviors to the server:
+
+- **Concurrency.** Serialize operations per `repo_id`. The client does not
+  retry on conflict.
+- **Diff format.** Return unified diff text; the client does not normalize it.
+- **Long operations.** Finish within the client's `request_timeout`. The
+  protocol has no polling or async-job mode.
+- **Hooks.** Report a hook rejection as 422 with `HOOK_FAILED`, so it surfaces
+  as `RemoteGitConflict`.
+- **Versioning.** Keep additive changes under `/v1/`; the client ignores
+  unknown fields. Only an incompatible request or response change needs a new
+  path prefix.

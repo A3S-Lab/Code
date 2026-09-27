@@ -1,0 +1,62 @@
+[
+  {
+    "category": "breaking",
+    "description": "**Added `grok wrap`** to run any command with local clipboard support.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Session recaps** (/recap and return-from-away) now show the full summary instead of being cut off mid-sentence.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Vim mode** now focuses the prompt when you press / on a brand-new empty session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed `grok agent stdio` startup hangs** on Windows when used with persistent clients such as VS Code or grok-desktop.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/mcps` list** no longer shows stale disabled entries when managed gateway tools are enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid diagrams opened via [Open Image]** now render at higher resolution instead of terminal size.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pressing `r` in scrollback** no longer accidentally rewinds the session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Shortcuts cheatsheet** now shows Ctrl+X on terminals that cannot deliver Ctrl+.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Ctrl+4** now toggles the prompt queue on local macOS VS Code terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Folder trust prompts** no longer re-appear for every standalone worktree clone.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Reasoning effort** no longer silently resets from a user-chosen value after catalog refreshes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed clipboard copy** inside editor terminals nested in tmux by emitting plain OSC 52.",
+    "breaking_change": false
+  }
+]

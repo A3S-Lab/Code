@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "**Pasting images** from the local clipboard now works when running commands through `grok wrap`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Credit limit errors** now show clearer upgrade or buy-credits messaging based on billing type.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Turn status spinner** now shows what the agent is waiting on (response, subagent, task output, etc.).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Double-click word selection** is now a discoverable option in the Text selection setting and stays in sync with highlight behavior.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,30 @@
+name: plan-nudge-opt-out-no-show
+description: >
+  Explicit opt-out: contextual hints now ship default-ON, so this scenario pins
+  the master env `GROK_CONTEXTUAL_HINTS=0` (global kill switch) before typing a
+  planning keyword — the "Planning? Check out plan mode via shift+tab" banner
+  must NOT appear. Mirrors plan_nudge_shows (which pins `=1`), exercising the
+  disabled path explicitly.
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "0"
+mock:
+  response: "unused"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  - action: type_text
+    text: "lets plan the refactor"
+  - action: wait
+    millis: 700
+  - action: assert_not_contains
+    text: "plan mode via"
+  - action: screenshot
+    name: plan-nudge-opt-out
+    note: No plan-nudge banner when the contextual-hints flag is explicitly disabled.

@@ -1,0 +1,57 @@
+[
+  {
+    "category": "fixes",
+    "description": "**`grok --sandbox`** no longer exits when accepting folder trust.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pinned agents** in the dashboard no longer jump when their activity changes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Swift code** with triple-quoted strings now highlights correctly in the pager.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mixed-case reasoning_effort** values (e.g. \"xHigh\") are now accepted in config.toml.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed accidental empty agent sessions** when pressing Enter right after sending from the dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed default TUI sessions** so an [agent] set in config.toml is respected instead of always using a builtin plan.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New Dashboard preview setting** lets you hide the selected-session preview panel on the dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New policy setting** allows organizations to disable hooks that are not from managed policy.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background shell commands** now appear as live task rows with streaming output.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP plugin authentication** now succeeds for servers that declare a client ID in their manifest.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Shell command approvals** from background subagents are now shown instead of being silently rejected.",
+    "breaking_change": false
+  }
+]

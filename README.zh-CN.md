@@ -44,6 +44,17 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   <a href="#文档">文档</a>
 </p>
 
+## 9.1 有什么新内容
+
+- **目录投影（9.1.0）。** 项目目录映射到现有 Meta Harness：说明进 `system`，
+  `skills/` 进 `skill_dirs`，`tools/` 变成 MCP 或 `program` 脚本，日程由宿主用
+  `session.send` 提交。没有第二套运行时，也没有 `AgentDir`。
+- **Pager `/config`（9.1.0）。** 在 ACL 配置里编辑 provider 和 model。默认值是
+  一对 `provider/model`。模型的 URL 或 key 留空时继承 provider。
+- **搜索保持快路径（9.1.0）。** 自动 `web_search` 依次是 API、HTTP、headless。
+  Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。npm、crates.io、
+  PyPI 当前包版本是 **9.1.0**。
+
 ## 9.0 有什么新内容
 
 - **事实日志控制（9.0.0）。** 编码运行只通过折叠事实日志选择下一步转移。确认和
@@ -116,8 +127,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   `*-unknown-linux-musl` Node SDK 构建通过。当前 npm 版本已包含该修复；
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
-文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.0` 文档线；
-当前包版本 **9.0.0**）。
+文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.1` 文档线；
+当前包版本 **9.1.0**）。
 
 ### 更早的版本线
 

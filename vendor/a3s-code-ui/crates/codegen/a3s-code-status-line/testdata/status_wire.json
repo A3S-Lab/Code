@@ -1,0 +1,58 @@
+{
+  "_comment": "Every field the payload can carry. This crate's round-trip test rebuilds it from the type, and the pager's guide test holds the user guide to it, so a renamed field fails here first. session_name is filled by the client overlay for a command row, so the agent's own notification leaves it null. transcript_path is a placeholder and must not look like a real session path.",
+  "schema_version": 1,
+  "cwd": "/home/user/project",
+  "session_id": "019fa651-6d59-7c83-a4f3-5a391e6901a1",
+  "session_name": "add status line",
+  "prompt_id": "97135ed2-71a5-4581-b959-3341bbd03e5f",
+  "transcript_path": "/home/user/sessions/019fa651/updates.jsonl",
+  "model": {
+    "id": "grok-4.5",
+    "display_name": "A3S Code 4.5"
+  },
+  "workspace": {
+    "current_dir": "/home/user/project",
+    "repo_root": "/home/user/project",
+    "branch": "main",
+    "git_worktree": "feature-x",
+    "repo": {
+      "host": "github.com",
+      "owner": "owner",
+      "name": "repo"
+    }
+  },
+  "version": "0.2.112",
+  "cost": {
+    "total_cost_usd": 0.0123,
+    "total_duration_ms": 45000,
+    "total_api_duration_ms": 2300
+  },
+  "context_window": {
+    "context_window_size": 500000,
+    "context_tokens": 40000,
+    "session_input_tokens": 52000,
+    "session_output_tokens": 9500,
+    "session_usage": {
+      "input_tokens": 10000,
+      "output_tokens": 9500,
+      "cache_creation_input_tokens": 2000,
+      "cache_read_input_tokens": 40000
+    },
+    "used_percentage": 8,
+    "remaining_percentage": 92,
+    "auto_compact_threshold_percent": 80
+  },
+  "effort": {
+    "level": "high"
+  },
+  "turn": {
+    "started_at_ms": 1730000000000
+  },
+  "worktree": {
+    "name": "feature-x",
+    "path": "/home/user/wt/feature-x",
+    "branch": "feature-x",
+    "main_worktree_root": "/home/user/project"
+  },
+  "trigger": "refresh_interval"
+}

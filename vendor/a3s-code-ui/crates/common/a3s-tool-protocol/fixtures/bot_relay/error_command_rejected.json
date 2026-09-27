@@ -1,0 +1,6 @@
+{
+  "code": "command_rejected",
+  "retryable": false,
+  "detail": {},
+  "reason": "not_yet_enabled"
+}

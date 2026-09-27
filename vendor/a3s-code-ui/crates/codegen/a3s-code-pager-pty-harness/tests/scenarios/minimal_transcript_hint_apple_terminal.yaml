@@ -1,0 +1,40 @@
+name: minimal-transcript-hint-apple-terminal
+description: >-
+  On Apple Terminal Ctrl+O doubles as the (only working) interject chord. At
+  idle / with an empty composer an interject is a silent no-op, so minimal's
+  transcript remap keeps the key — the "Ctrl+O appears dead on Mac" fix. The
+  info row advertises "ctrl+o transcript" at idle, and pressing Ctrl+O acts on
+  the transcript (empty conversation → the "nothing to show" system block).
+terminal:
+  rows: 30
+  cols: 100
+  # Minimal's inline-viewport startup probe needs cursor-position replies;
+  # without them --minimal silently downgrades to full-height inline.
+  respond_to_queries: true
+environment:
+  args: ["--minimal", "--no-leader"]
+  env:
+    # Detected as TerminalName::AppleTerminal → InterjectPrompt binds Ctrl+O.
+    - { key: TERM_PROGRAM, value: Apple_Terminal }
+steps:
+  - action: wait_for_text
+    text: "minimal · /help"
+    timeout_ms: 20000
+  - action: assert_contains
+    text: "ctrl+o transcript"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: apple-idle
+    note: Apple Terminal detection, idle — the info row still advertises ctrl+o transcript.
+  - action: keys
+    keys: "<C-o>"
+  - action: wait_for_text
+    text: "No conversation transcript to view yet"
+    timeout_ms: 20000
+  - action: assert_running
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: apple-after-ctrl-o
+    note: Ctrl+O at idle acts on the transcript instead of silently no-op'ing into interject.

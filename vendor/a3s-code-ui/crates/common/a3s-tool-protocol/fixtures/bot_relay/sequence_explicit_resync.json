@@ -1,0 +1,21 @@
+{
+  "must": "An explicit hub:resync_required is a resync. Count it. Deliver every frame, including the resync frame, as a distinct event.",
+  "expectedResyncCount": 1,
+  "expectedDistinctEvents": 2,
+  "frames": [
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 10,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "e10" }
+    },
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 11,
+      "channel": "hub:resync_required",
+      "event": { "agentId": "agt_1" }
+    }
+  ]
+}

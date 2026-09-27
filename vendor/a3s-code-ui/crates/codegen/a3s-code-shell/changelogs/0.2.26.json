@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Large pasted content** no longer triggers context-window errors or breaks compaction and memory flush.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**API-key users** can now run `grok agent --leader` without forced interactive login or timeouts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Compaction** no longer retries endlessly on credit, size, or auth failures; shows a clear message instead.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Windows PowerShell and cmd.exe** no longer falsely reject commands containing `&`.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**web_fetch** no longer crashes the CLI on pages whose root element matches a cleaning selector.",
+    "breaking_change": false
+  }
+]

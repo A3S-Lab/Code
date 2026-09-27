@@ -1,0 +1,107 @@
+---
+title: 'A3S Code TUI'
+description: 'Hybrid full-screen TUI: grok-build UI surfaces, A3S slash catalog, a3s-code-core 9.0.0 fact-log turns'
+---
+
+# A3S Code TUI
+
+A3S Code 9.0.0 ships `a3s-code-tui`: a full-screen terminal UI rebuilt from
+first principles on [grok-build](https://github.com/xai-org/grok-build) UI
+building blocks, with **A3S business logic** and turns on `a3s-code-core`
+9.0.0.
+
+Architecture (Hybrid):
+
+- **UI:** vendored prompt editor and inline helpers from grok-build
+  (Apache-2.0; see `tui/NOTICE`).
+- **Catalog:** A3S slash commands, permission modes, ACL launch layers.
+- **Agent seam:** in-process ACP-shaped `CodeAgentAdapter` → fact-log
+  `session.send`.
+
+Use an A3S Code SDK when you embed the runtime elsewhere. The TUI is a
+terminal client over the same core.
+
+## Two terminal surfaces
+
+| Surface | How it reaches 9.0.0 |
+| ------- | -------------------- |
+| `a3s-code-tui` | Workspace member of [A3S-Lab/Code](https://github.com/A3S-Lab/Code); path-depends on `a3s-code-core` 9.0.0. |
+| `a3s code` (CLI) | Non-smoke sessions **spawn** `a3s-code-tui` so coding turns use the 9.0.0 fact log. Smoke mode keeps a thinner in-process UI. |
+
+## Run
+
+```bash
+cargo run -p a3s-code-tui -- --workspace . --home "$HOME"
+```
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--workspace <PATH>` | Workspace for the session. Defaults to `.`. |
+| `--explicit-config` / `--config` | Single ACL layer (skips user + workspace merge). |
+| `--home <PATH>` | Directory that holds `.a3s/config.acl` for the user layer. |
+| `--model <ID>` | Header fallback when ACL merge fails. Turns always use merged `default_model`. |
+
+When stdout is not a terminal, the binary prints the product name and model,
+then exits.
+
+## Configuration
+
+Configuration is A3S ACL. Before every turn the TUI merges:
+
+1. `--explicit-config` alone when set; otherwise
+2. `<home>/.a3s/config.acl`, then nearest workspace `.a3s/config.acl`;
+3. Non-empty `A3S_DEFAULT_MODEL` replaces `default_model`.
+
+Providers merge by name. The TUI does **not** read `XAI_API_KEY` for model
+selection. See [Providers](/guide/providers).
+
+## Keys and permission mode
+
+| Input | Action |
+| ----- | ------ |
+| Enter | Submit the prompt or run the slash command. |
+| `/` | Open the fuzzy command menu (A3S catalog). |
+| Up / Down / Tab | Navigate / complete the menu. |
+| Shift+Tab (BackTab) | Cycle permission: default → plan → auto → yolo. |
+| Esc | Quit. |
+
+Permission mode is shown in the header and applied on the next session
+rebuild (`/plan`, `/ask`, `/auto`, `/yolo` set it directly).
+
+## Slash commands
+
+The menu lists the A3S coding catalog (ported from the CLI TUI). Wired today:
+
+| Command | Action |
+| ------- | ------ |
+| `/help` | List catalog entries. |
+| `/status` | Workspace, model, permission. |
+| `/model` | Print the model used for turns. |
+| `/history [q]` | Search prior prompts in the scrollback. |
+| `/export [path]` | Write the transcript as Markdown. |
+| `/plan`, `/ask` | Set permission to plan. |
+| `/auto`, `/yolo` | Set autonomy aliases. |
+| `/clear` | Clear the scrollback (fact log kept). |
+| `/exit`, `/quit` | Quit. |
+
+Other catalog entries are forwarded to the core session slash dispatcher
+(same path as a typed `/compact …` prompt). Empty `/` browse hides advanced
+aliases (see `SLASH_BROWSE_HIDDEN` in source).
+
+## How a prompt runs
+
+1. `CodeAgentAdapter` opens from merged ACL layers.
+2. Lazy `AgentSession` (`tui-session`) with the current permission → planning /
+   auto-delegation flags.
+3. `session.send(prompt, None)` appends a fact-log `user.message` and runs the
+   coding loop.
+4. Final text (or error) is appended to scrollback.
+
+Sessions share `<workspace>/.a3s/effect-log/tui-session.jsonl`. `/clear` only
+clears the UI scrollback.
+
+## Related
+
+- Crate docs: `crates/code/tui/docs/ARCHITECTURE.md`
+- [Sessions](/guide/sessions) · [Commands](/guide/commands) ·
+  [Architecture](/guide/architecture)

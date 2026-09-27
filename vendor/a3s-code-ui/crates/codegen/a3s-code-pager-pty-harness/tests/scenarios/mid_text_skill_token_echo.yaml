@@ -1,0 +1,52 @@
+name: mid-text-skill-token-echo
+description: >
+  A plain prompt referencing a skill mid-message
+  ("great /test-skill do it") keeps the composer's teal token highlight in the
+  scrollback echo after submit. The workspace seeds a repo-local
+  .grok/skills/test-skill/SKILL.md so the real shell advertises the skill; the
+  screenshots capture the styled composer (pre-submit) and the styled echo
+  (post-submit) — the styled JSON artifacts carry the per-run fg colors for
+  visual verification and demo material.
+terminal:
+  rows: 40
+  cols: 100
+environment:
+  args: ["--trust"]
+workspace:
+  git_init: true
+  files:
+    ".grok/skills/test-skill/SKILL.md": "---\nname: test-skill\ndescription: Test skill for echo styling.\n---\n\nDo the thing.\n"
+mock:
+  response: "MIDTEXT_SKILL_ECHO_DONE assistant reply after the mid-text skill prompt."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: assert_not_contains
+    text: panicked
+  - action: focus_prompt
+  - action: type_text
+    text: "great /test-skill do it"
+  - action: wait_for_text
+    text: "great /test-skill do it"
+    timeout_ms: 10000
+  # Give the shell time to advertise the skill so the composer highlight (and
+  # the submit-time range capture) is in effect before Enter.
+  - action: wait
+    millis: 2000
+  - action: screenshot
+    name: composer-token-highlighted
+    note: "Composer with the mid-text /test-skill token teal while typing."
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: MIDTEXT_SKILL_ECHO_DONE
+    timeout_ms: 30000
+  - action: assert_contains
+    text: "great /test-skill do it"
+  - action: assert_not_contains
+    text: panicked
+  - action: assert_running
+  - action: screenshot
+    name: echo-token-highlighted
+    note: "Scrollback echo keeps the /test-skill token teal after submit (compare styled JSON with the composer capture)."

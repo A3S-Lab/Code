@@ -1,0 +1,32 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Windows install scripts** now download and run cleanly via irm | iex without spurious BOM errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Tables and wide content** no longer leave stray characters next to timestamps in the scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Added option** to fully disable the hunk tracker via --hunk-tracker-mode, GROK_HUNK_TRACKER, or config.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid diagrams** now render node labels cleanly without HTML tags or raw markdown syntax.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP servers using HTTP** now recover automatically after temporary connection drops instead of becoming permanently unavailable.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Very long sessions** can now scroll all the way to the bottom of the conversation history.",
+    "breaking_change": false
+  }
+]

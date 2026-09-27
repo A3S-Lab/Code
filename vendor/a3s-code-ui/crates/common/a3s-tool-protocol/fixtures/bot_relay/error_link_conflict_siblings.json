@@ -1,0 +1,25 @@
+{
+  "code": "link_conflict",
+  "retryable": false,
+  "detail": {
+    "siblingAccounts": [
+      {
+        "signIn": "x",
+        "handle": "grokfan",
+        "createdAtMs": 1699920000000,
+        "linked": true
+      },
+      {
+        "signIn": "apple",
+        "createdAtMs": 1717200000000,
+        "linked": false
+      },
+      {
+        "signIn": "some_future_provider",
+        "createdAtMs": 0,
+        "linked": false
+      }
+    ]
+  },
+  "reason": "jit_link_declined"
+}

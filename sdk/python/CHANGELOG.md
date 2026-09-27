@@ -4,6 +4,16 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [9.1.0] - 2026-09-27
+
+- Bundled Core 9.1.0: directory projection onto the stock Meta Harness,
+  fact-log `ReasoningDelta`, API-then-HTTP-then-headless `web_search`, Moli
+  sidecar lookup before download, and Anthropic thinking budgets fitted
+  inside `max_tokens`. `cc-switch` uses the Anthropic client. `grok` and
+  `xai` use the OpenAI-compatible client.
+- Idle MCP disconnect still keeps the registered config. Reconnect with
+  ``sync_global_mcp_servers`` before the server is used again.
+
 ## [9.0.0] - 2026-09-26
 
 - Bundled Core 9.0.0: the fact log is the only coding control source

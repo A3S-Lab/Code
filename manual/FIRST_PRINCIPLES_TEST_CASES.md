@@ -92,6 +92,11 @@ Case-level unit, integration, and soak oracles (not a second capability list):
 3. **Fail-closed defaults** — sandbox, mutation gate, Active-only memory, and
    process-host opt-in must have negative tests.
 4. **No overfit** — do not assert provider-specific prose; pin model id only.
+   Complex cases cross several capabilities in one session and still use
+   tool, file, and terminal oracles. The v9.0.0 gap plan and Complex cases
+   in [FIRST_PRINCIPLES_E2E.md](FIRST_PRINCIPLES_E2E.md) list the refused
+   fits (single Harbor task, GatePolicy, serve/cron, standing reviewer,
+   headless on the fast path).
 5. **Evidence dirs** — live runs write `/tmp/a3s-layer-c-*` with `FINAL.txt`.
 
 ---

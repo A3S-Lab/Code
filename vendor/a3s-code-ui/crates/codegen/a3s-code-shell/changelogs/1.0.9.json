@@ -1,0 +1,182 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Subagent tasks** are more resilient to temporary rate limits and will retry instead of failing immediately.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Narrow allow rules for Bash commands** now correctly permit file writes without extra prompts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New sessions in the interactive TUI** now start in auto mode by default for fewer approval prompts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/feedback now supports attaching images** (screenshots etc.).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**The / slash menu** is now ordered by recency and groups skills below commands for easier navigation.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Concurrent subagents** no longer trigger rate-limit errors during bursts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/workflow** now accepts --agent-budget N or an agent_budget JSON field to set child-agent limits.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/workflow** now accepts --effort LEVEL or an effort JSON field to set child reasoning effort.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**MCP server connections** no longer delay session startup when many servers are configured.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP servers** now receive a grok-cli User-Agent header so providers can attribute traffic.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Dashboard** now lets you start new agents in Auto mode via Shift+Tab.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rules** containing markdown headings now render correctly in the prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Workflows** now appear alongside skills in the model prompt so the agent can launch them by name.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/new** and **/clear** now preserve the last-chosen reasoning effort instead of resetting to the model default.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompt dropdowns** (slash, history, file search) now have consistent left alignment with the composer.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**History** now shows every command, slash command, and memory note in the order you typed them.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Collapsed tool-call rows** no longer show a vertical accent line beside the status diamond.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Hint text** above the prompt now lines up with the text you type.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pressing Esc** while peeking at a conversation from the dashboard now closes open modals instead of leaving the view.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`/edit-prompt`** now opens an external editor from the full TUI, not only minimal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/copy`** now preserves markdown formatting such as headings and code fences.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sending a new message** while a shell command is running now moves the command to the background instead of cancelling it.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Up arrow** on an empty prompt now selects queued follow-ups first instead of opening history.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/plugin** now works as an alias for **/plugins** in the TUI.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Plugin-provided agents** now appear in the **/agents** modal and can be toggled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok mcp add** now correctly treats bare http(s):// URLs as HTTP servers instead of stdio commands.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/minimal** and **/fullscreen** now switch instantly inside the running session without restarting or losing the current turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Plan mode no longer incorrectly blocks subagent spawns as file edits outside plan.md.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "MCP servers that share a URL but have different names are now kept as separate entries instead of being collapsed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Subagents and workflow-spawned agents no longer receive the workflow tool that only top-level sessions can use.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "The configurable status line row now appears at the bottom of minimal mode as well as fullscreen.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Memory results are now presented as historical context that should be verified against live sources before use.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok clone** now fetches only the selected branch tip by default, with --full-history for legacy full clones.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok clone** can now reuse a matching local checkout as a linked worktree instead of always fetching from the network.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Interactive grok sessions** now start in ask mode by default again instead of auto.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Minimal mode** no longer truncates subagent wake-turn replies after the first token.",
+    "breaking_change": false
+  }
+]

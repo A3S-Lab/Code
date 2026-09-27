@@ -1,0 +1,87 @@
+[
+  {
+    "category": "features",
+    "description": "**Closing a terminal tab** with a running process now shows a confirmation dialog instead of killing it immediately.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/usage** now shows prepaid credits balance and auto top-up status.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Focus reports** no longer leak as literal text when split across reads over SSH.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**--disable-web-search** now honored in grok -p and grok agent; auxiliary model routing respects catalog overrides.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Focus events** now fire correctly for SSH-split focus reports.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Boolean tool flags** now accept \"true\"/\"false\"/\"yes\"/\"no\"/1/0 strings and numbers in addition to native booleans.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session last-active timestamps** and message counts no longer regress under concurrent writers.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Clipboard copy** on Wayland now also tries wl-copy; per-leg outcomes are now logged for diagnostics.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**iTerm2** now always uses text/metadata image fallback instead of broken OSC 1337 overlays.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Model switches** no longer leave the prompt queue stuck after a reconnect.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Goal mode toggles and limits** can now be set in config.toml under the [features] table.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Closing a terminal tab** with a running process no longer shows a confirmation dialog.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Custom agent profiles** now correctly use the harness required by their pinned model.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**All /goal options** (toggles, limits, role models) are now configurable together in a [goal] table.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Clipboard copies** from VS Code over SSH now warn when non-ASCII text may be garbled.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagents** under custom profiles now adopt the correct harness from the parent's model.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Changelog and release-notes** modals now scroll with the mouse wheel and arrow keys.",
+    "breaking_change": false
+  }
+]

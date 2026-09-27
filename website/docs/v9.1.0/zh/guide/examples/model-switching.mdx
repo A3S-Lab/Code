@@ -1,0 +1,355 @@
+---
+title: '模型切换'
+description: '为每个会话选择模型，或用 worker 自己的模型打开 worker 会话，以平衡成本与能力。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 模型切换
+
+会话会使用你在 `model` 选项中传入的模型运行。先声明一次智能体可以访问的所有模型，
+然后为每个会话选择其一——用快速模型处理高频、低风险的工作，用能力更强的模型进行
+评审。当你希望在不改动任何提示词的前提下，于成本与能力之间取得平衡时，可以使用这
+种方式。
+
+## 声明模型
+
+模型在智能体文件中配置。每个 provider 列出它对外暴露的模型（`tool_call` 默认为 `true`，
+这里写出只是为了清晰），当会话未设置 `model` 时则使用 `default_model`。
+
+```acl
+default_model = "provider/fast-model"
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "fast-model" { tool_call = true }
+  models "review-model" { tool_call = true }
+}
+```
+
+## 按会话设置模型
+
+`model` 选项在打开会话时设置。该会话运行的一切——`send`、`run`、`parallel`、
+`pipeline` 以及被委派的 `task` 子运行——都会使用该模型。同一个智能体配置可以为不同会话驱动不同的
+模型选择。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    let fast = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/fast-model"))
+        .build()
+        .await?;
+    let draft = fast
+        .send("为这个项目起草一段简短的 README 介绍。", None)
+        .await?
+        .text;
+    println!("草稿：{draft}");
+    fast.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let critique = review
+        .send(&format!("审查这段 README 介绍：\n{draft}"), None)
+        .await?;
+    println!("审查意见：{}", critique.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// 快速模型用于高频、低风险工作。
+const fast = await agent.sessionAsync('/repo', { model: 'provider/fast-model' });
+const draft = await fast.run('为这个项目起草一段简短的 README 介绍。');
+console.log('草稿：', draft.text);
+await fast.closeAsync();
+
+// 更强的模型用于审查或风险更高的推理。
+const review = await agent.sessionAsync('/repo', {
+  model: 'provider/review-model',
+});
+const critique = await review.run(`审查这段 README 介绍：\n${draft.text}`);
+console.log('审查意见：', critique.text);
+
+await review.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+# 快速模型用于高频、低风险工作。
+fast_opts = SessionOptions()
+fast_opts.model = 'provider/fast-model'
+fast = agent.session('/repo', fast_opts)
+draft = fast.run('为这个项目起草一段简短的 README 介绍。')
+print('草稿：', draft.text)
+fast.close()
+
+# 更强的模型用于审查或风险更高的推理。
+review_opts = SessionOptions()
+review_opts.model = 'provider/review-model'
+review = agent.session('/repo', review_opts)
+critique = review.run(f'审查这段 README 介绍：\n{draft.text}')
+print('审查意见：', critique.text)
+
+review.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	fast, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/fast-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	draft, err := fast.Run(ctx, "为这个项目起草一段简短的 README 介绍。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("草稿：", draft.Text)
+	fast.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	critique, err := review.Run(ctx, "审查这段 README 介绍：\n"+draft.Text)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("审查意见：", critique.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+## 按工作智能体设置模型
+
+worker 规格可以携带自己的 `model`。当你用 `session_for_worker`（Node.js 为
+`sessionForWorkerAsync`，Go 为 `SessionForWorker`）从该规格打开会话时，它才会生效：
+会话选项中未设置的项，会由 worker 的模型、步数上限、提示词和权限补上。显式传入的选项
+优先，因此如果希望使用 worker 的模型，就不要在这些选项里再设置 `model`。
+
+被委派的 `task` 子运行不会切换模型。即使 `worker_agents` 中注册的 worker 设置了
+`model`，子运行仍使用委派它的会话的模型。若想让探索工作跑在更廉价的模型上，可以为它
+单独打开一个 worker 会话，再把结果交给使用更强模型的会话：
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions, WorkerAgentSpec};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+
+    // 选项中没有 `model`，因此使用 worker 的模型。
+    let scout_spec = WorkerAgentSpec::read_only("scout", "读取文件并汇报发现。")
+        .with_model_ref("provider/fast-model");
+    let scout = agent
+        .session_for_worker_async("/repo", scout_spec, None)
+        .await?;
+    let findings = scout.send("列出 src/ 中的所有公共 API。", None).await?;
+    scout.close().await;
+
+    let review = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_model("provider/review-model"))
+        .build()
+        .await?;
+    let plan = review
+        .send(
+            &format!("根据这些发现，提出重构方案：\n{}", findings.text),
+            None,
+        )
+        .await?;
+    println!("{}", plan.text);
+
+    review.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+// 选项中没有 `model`，因此使用 worker 的模型。
+const scout = await agent.sessionForWorkerAsync('/repo', {
+  name: 'scout',
+  description: '读取文件并汇报发现。',
+  kind: 'read_only',
+  model: 'provider/fast-model',
+});
+const findings = await scout.send('列出 src/ 中的所有公共 API。');
+await scout.closeAsync();
+
+const review = await agent.sessionAsync('/repo', {
+  model: 'provider/review-model',
+});
+const plan = await review.send(`根据这些发现，提出重构方案：\n${findings.text}`);
+console.log(plan.text);
+
+await review.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, WorkerAgentSpec
+
+agent = Agent.create("agent.acl")
+
+# 选项中没有 `model`，因此使用 worker 的模型。
+scout_spec = WorkerAgentSpec(
+    name='scout',
+    description='读取文件并汇报发现。',
+    kind='read_only',
+)
+scout_spec.model = 'provider/fast-model'
+scout = agent.session_for_worker('/repo', scout_spec)
+findings = scout.send('列出 src/ 中的所有公共 API。')
+scout.close()
+
+review_opts = SessionOptions()
+review_opts.model = 'provider/review-model'
+review = agent.session('/repo', review_opts)
+plan = review.send(f'根据这些发现，提出重构方案：\n{findings.text}')
+print(plan.text)
+
+review.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	// 选项为 nil，因此使用 worker 的模型。
+	scout, err := agent.SessionForWorker(ctx, "/repo", code.WorkerAgentSpec{
+		Name:        "scout",
+		Description: "读取文件并汇报发现。",
+		Kind:        "read_only",
+		Model:       "provider/fast-model",
+	}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	findings, err := scout.Run(ctx, "列出 src/ 中的所有公共 API。")
+	if err != nil {
+		log.Fatal(err)
+	}
+	scout.Close(ctx)
+
+	review, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Model: "provider/review-model",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer review.Close(context.Background())
+	plan, err := review.Run(
+		ctx,
+		"根据这些发现，提出重构方案：\n"+findings.Text,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(plan.Text)
+}
+```
+
+</Tab>
+</Tabs>
+
+说明：
+
+- `model` 的值是 `provider/model` 形式的引用，必须对应智能体文件中声明的 provider 与模型
+  （且配置了 API Key），否则创建会话会以 `model` 配置错误失败。SDK 中没有硬编码的模型名。
+- `parallel` 与 `pipeline` 的步骤规格没有 `model` 字段，所有步骤都使用会话的模型。
+- `task` 工具没有 `model` 字段。每个任务项只接受 `agent`、`description`、`prompt`、
+  `background`、`max_steps` 和 `output_schema`，其他字段都会被拒绝。
+
+在会话上使用 `model` 选项的可运行示例位于
+`sdk/node/examples/basic/test_api_alignment.ts`。

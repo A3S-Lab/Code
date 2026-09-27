@@ -1,0 +1,7 @@
+{
+  "code": "some_future_code",
+  "retryable": true,
+  "detail": {
+    "upstream": "preserve me"
+  }
+}

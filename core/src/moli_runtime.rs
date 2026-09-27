@@ -2,10 +2,12 @@
 //!
 //! `a3s-search` owns the renderer adapter but intentionally leaves executable
 //! provisioning to its host.  This module is that host boundary for A3S Code:
-//! it prefers an explicitly configured or packaged sidecar, validates a
-//! versioned cache, and only then downloads a pinned release asset with a
-//! SHA-256 check.  Installation is atomic and protected by a cross-process
-//! lock so concurrent SDK/CLI calls cannot publish a partial executable.
+//! it prefers an explicitly configured path, then a sidecar packaged next to
+//! the current executable or the `a3s` CLI on `PATH` (`bin/moli/moli` after
+//! resolving symlinks such as Homebrew), then a versioned cache, and only
+//! then a pinned release download with a SHA-256 check.  Installation is
+//! atomic and protected by a cross-process lock so concurrent SDK/CLI calls
+//! cannot publish a partial executable.
 
 mod manifest;
 
@@ -359,23 +361,15 @@ fn packaged_candidates() -> Vec<PathBuf> {
         candidates.push(directory.join(manifest::executable_name()));
     }
     if let Ok(executable) = std::env::current_exe() {
-        let mut roots = Vec::new();
-        if let Some(parent) = executable.parent() {
-            roots.push(parent.to_path_buf());
-            if let Some(grandparent) = parent.parent() {
-                roots.push(grandparent.to_path_buf());
-                roots.push(grandparent.join("Resources"));
-            }
-        }
-        for root in roots {
-            candidates.extend([
-                root.join(manifest::executable_name()),
-                root.join("moli").join(manifest::executable_name()),
-                root.join("resources").join(manifest::executable_name()),
-                root.join("resources")
-                    .join("moli")
-                    .join(manifest::executable_name()),
-            ]);
+        candidates.extend(executable_layout_candidates(&executable));
+    }
+    // The Code agent is a separate process from the umbrella CLI. Release and
+    // Homebrew installs place Moli beside `a3s`, not beside `a3s-code-acp`.
+    // Unit tests skip this lookup so a developer machine that already has the
+    // CLI sidecar cannot satisfy a hermetic download fixture.
+    if !cfg!(test) {
+        if let Some(cli) = resolve_named_path(std::ffi::OsStr::new(cli_binary_name())) {
+            candidates.extend(executable_layout_candidates(&cli));
         }
     }
     if let Ok(directory) = std::env::current_dir() {
@@ -391,6 +385,55 @@ fn packaged_candidates() -> Vec<PathBuf> {
         }
     }
     unique
+}
+
+fn cli_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "a3s.exe"
+    } else {
+        "a3s"
+    }
+}
+
+/// Sidecar locations for one executable, including its canonical path.
+///
+/// `PATH` entries such as `/opt/homebrew/bin/a3s` are symlinks into the
+/// Cellar. The Moli directory is installed next to the real binary.
+fn executable_layout_candidates(executable: &Path) -> Vec<PathBuf> {
+    let mut executables = vec![executable.to_path_buf()];
+    if let Ok(canonical) = std::fs::canonicalize(executable) {
+        if canonical != executable {
+            executables.push(canonical);
+        }
+    }
+    let mut candidates = Vec::new();
+    for executable in executables {
+        candidates.extend(sidecar_candidates(&executable));
+    }
+    candidates
+}
+
+fn sidecar_candidates(executable: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(parent) = executable.parent() {
+        roots.push(parent.to_path_buf());
+        if let Some(grandparent) = parent.parent() {
+            roots.push(grandparent.to_path_buf());
+            roots.push(grandparent.join("Resources"));
+        }
+    }
+    let mut candidates = Vec::new();
+    for root in roots {
+        candidates.extend([
+            root.join(manifest::executable_name()),
+            root.join("moli").join(manifest::executable_name()),
+            root.join("resources").join(manifest::executable_name()),
+            root.join("resources")
+                .join("moli")
+                .join(manifest::executable_name()),
+        ]);
+    }
+    candidates
 }
 
 fn resolve_named_path(value: &std::ffi::OsStr) -> Option<PathBuf> {
@@ -968,6 +1011,37 @@ mod tests {
 
     fn fixture_digest(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_symlink_resolves_to_the_cellar_moli_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let cellar_bin = root.path().join("Cellar/a3s/0.16.0/bin");
+        let moli_dir = cellar_bin.join("moli");
+        std::fs::create_dir_all(&moli_dir).unwrap();
+        let a3s = cellar_bin.join("a3s");
+        let moli = moli_dir.join("moli");
+        std::fs::write(&a3s, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&moli, b"#!/bin/sh\n").unwrap();
+        set_executable(&a3s).unwrap();
+        set_executable(&moli).unwrap();
+        let opt_bin = root.path().join("opt/bin");
+        std::fs::create_dir_all(&opt_bin).unwrap();
+        let link = opt_bin.join("a3s");
+        std::os::unix::fs::symlink(&a3s, &link).unwrap();
+
+        let candidates = executable_layout_candidates(&link);
+        let expected = std::fs::canonicalize(&moli).unwrap();
+        assert!(
+            candidates.iter().any(|path| {
+                std::fs::canonicalize(path)
+                    .ok()
+                    .is_some_and(|canonical| canonical == expected)
+            }),
+            "canonical CLI layout must include the Cellar sidecar"
+        );
+        assert!(candidates.iter().any(|path| is_executable(path)));
     }
 
     #[test]

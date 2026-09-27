@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Elapsed-time display** now rolls over into hours (for example `3h14m`) instead of stopping at 60 minutes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session header** redesigned as a single row that carries the overlay context and a Dashboard button.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock Watchers and Loops rows** now show when the next run is due.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Fixed lag in tmux** panes by omitting per-frame synchronized-update wrappers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Workflow status** now shows a clickable row in the dock.",
+    "breaking_change": false
+  }
+]

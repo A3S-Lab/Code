@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "**Sessions** can now be resumed after moving the working directory or switching machines.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Ctrl+G** in minimal mode opens the current prompt draft in an external editor without sending it; fullscreen keeps the tasks pane.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok doctor** checks terminal, tmux, clipboard, and keyboard setup without opening the TUI.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Image paste** over grok wrap now works on headless remotes.",
+    "breaking_change": false
+  }
+]

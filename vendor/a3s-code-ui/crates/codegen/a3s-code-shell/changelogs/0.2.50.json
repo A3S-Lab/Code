@@ -1,0 +1,27 @@
+[
+  {
+    "category": "features",
+    "description": "**Mermaid flowcharts** now render edge crossings clearly instead of fusing unrelated connections.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Sequence diagrams** with activate, autonumber, par, and more now render instead of showing parse errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP servers menu** and slash commands now work when starting grok outside a project directory.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+W** in the prompt now deletes whole words like bash instead of stopping at punctuation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Login** no longer quits when an authentication code contains the letter q.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "agentId": "agt_1",
+  "seq": 4,
+  "channel": "transcript",
+  "event": {
+    "kind": "entry",
+    "id": "e1"
+  }
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "category": "features",
+    "description": "**Voice language** setting now lets you pick speech-to-text language (including System) in the Editor settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**--minimal** flag now shows in `grok --help`.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tab autocomplete** now suggests your next prompt as ghost text after each turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/usage** (and /cost) is now hidden for free and X Basic personal accounts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Session resume notifications** no longer appear when a workspace boots for the first time.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Media generation** no longer hits per-session file limits; image and video byte budgets increased.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Claude-style Bash(cmd:*)** permission rules are now correctly translated to prefix matches.",
+    "breaking_change": false
+  }
+]

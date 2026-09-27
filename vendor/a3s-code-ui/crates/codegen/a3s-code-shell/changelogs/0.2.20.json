@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**MCP servers** declared in both a plugin's .mcp.json and plugin.json are now registered instead of dropped.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Git operations** now correctly target the repository for each session's working directory.",
+    "breaking_change": false
+  }
+]

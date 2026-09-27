@@ -1,0 +1,62 @@
+[
+  {
+    "category": "features",
+    "description": "**Shift+arrow keys** now extend text selections in the prompt like a standard text field.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Optional status line** can now display live session info or script output at the bottom of the pager.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed session startup hangs** on large or unhealthy git repositories.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued messages** during goals no longer starve, and editing queued prompts works reliably.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok clone** can now fetch a repo into a content store and mount a projected working tree.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Consent notice** on first launch now shows clickable links and handles keyboard/mouse correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+C then edit** a prompt now correctly removes the original text from the conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Double-clicking** a terminal command result now shows the complete output instead of a preview.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Consent notice links** are now stricter and more reliable on all terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Video generation** now surfaces a clear ZDR error instead of raw API responses when output storage is required.",
+    "breaking_change": false
+  },
+  {
+    "category": "breaking",
+    "description": "**Subagent spawning** no longer accepts capability_mode; tool access is now controlled only by agent type.",
+    "breaking_change": true
+  },
+  {
+    "category": "fixes",
+    "description": "**Project hooks** on Windows now correctly expand $CLAUDE_PROJECT_DIR when invoking PowerShell scripts.",
+    "breaking_change": false
+  }
+]

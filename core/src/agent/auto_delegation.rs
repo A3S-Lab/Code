@@ -617,6 +617,14 @@ mod tests {
     }
 
     #[test]
+    fn explicit_reviewer_alias_resolves_to_builtin_review() {
+        let registry = AgentRegistry::new();
+        let target = explicit_agent_target("Ask @reviewer to check the diff", &registry);
+        assert_eq!(target.as_deref(), Some("review"));
+        assert!(!crate::config::AutoDelegationConfig::default().enabled);
+    }
+
+    #[test]
     fn explicit_target_matches_with_agent_review() {
         let registry = AgentRegistry::new();
         let target = explicit_agent_target(

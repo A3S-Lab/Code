@@ -1,4 +1,4 @@
-//! Scrollback pane geometry vendored from the grok-build pager.
+//! Scrollback pane geometry vendored from the a3s-build pager.
 
 mod layout;
 

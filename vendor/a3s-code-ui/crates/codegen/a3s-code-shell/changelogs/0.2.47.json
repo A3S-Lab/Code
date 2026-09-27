@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**stateDiagram** Mermaid blocks now render as diagrams instead of source fallback.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Pasted images** now survive interjections and queue edits instead of being dropped.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Managed MCP connectors** (Slack, Linear, etc.) now appear correctly when using leader mode.",
+    "breaking_change": false
+  }
+]

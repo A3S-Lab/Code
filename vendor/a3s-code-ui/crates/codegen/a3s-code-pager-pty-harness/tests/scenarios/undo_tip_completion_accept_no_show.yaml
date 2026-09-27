@@ -1,0 +1,42 @@
+name: undo-tip-completion-accept-no-show
+description: >
+  No-show edge: accepting an @-file completion is not a wipe and must never
+  show the undo tip, even though the accept replaces the typed @query with a
+  file ref. (The precise residue-band regression — a long query collapsing to
+  a tiny chip — is unit-tested in prompt_widget via FileSearchState test state;
+  the real fuzzy matcher cannot match a >=20-char query to a tiny filename, so
+  this scenario covers the end-to-end "accept never hints" behavior.)
+terminal:
+  rows: 32
+  cols: 100
+environment:
+  env:
+    - key: GROK_CONTEXTUAL_HINTS
+      value: "1"
+mock:
+  response: "unused"
+workspace:
+  files:
+    "undo_tip_completion_target.md": "fixture file for @-completion accept"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: focus_prompt
+  # Type an @-query that matches the seeded file; wait for the dropdown.
+  - action: type_text
+    text: "@undo_tip_completion_targ"
+  - action: wait_for_text
+    text: "undo_tip_completion_target.md"
+    timeout_ms: 10000
+  # Accept with Tab — a completion, not a wipe.
+  - action: keys
+    keys: "<Tab>"
+  - action: wait
+    millis: 600
+  - action: assert_not_contains
+    text: "to undo"
+  - action: assert_running
+  - action: screenshot
+    name: undo-tip-completion-accept
+    note: Accepting an @-file completion shows no undo tip.

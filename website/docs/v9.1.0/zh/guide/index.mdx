@@ -1,0 +1,293 @@
+---
+title: '概览'
+description: 'A3S Code 的安装方式、主要能力和 SDK 入口'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# A3S Code
+
+A3S Code 是一个 Rust 编码 Agent Runtime（`a3s-code-core`）。需要一套带工具、权限、
+子任务、工作区搜索以及会话保存和恢复的 Agent 循环时，可以把它嵌进 IDE、Runner、
+服务端或桌面应用。
+
+默认 profile 是 `local-code`：Agent 循环、工作区工具、策略、事件，以及纯 Rust
+的 a3s-vec 词法检索。`read` 对 JPEG/PNG/GIF/WebP 返回图片附件；OpenAI 兼容路径
+在工具结果里保留 `image_url`。项目规则写在 `AGENTS.md`，Worker 放在
+`.a3s/agents/`。
+
+## 设计规则
+
+| 规则             | 含义                                                                       |
+| ---------------- | -------------------------------------------------------------------------- |
+| 唯一控制来源     | 事实日志决定每一次编码转移。检查点和计时器不决定。                         |
+| 默认变薄         | Core `default` = `local-code`。Advanced 评估、server、无头搜索需显式开启。 |
+| Grep ≠ a3s-vec   | 精确 `grep` 负责匹配；trigram 只缩小候选，失败就回退。排序检索用 `bm25`。  |
+| 单一委派路径     | 多条目扇出使用 `task` 工具或 `session.tasks`。                             |
+| 内核掌控治理     | 权限投影和完成门禁包裹每次运行；Meta Harness 配方无法去掉它们。            |
+| Gate 先要证据    | 证据不完整或存在 retention 缺口时，Gate 不可宣称已完成评估。               |
+| 宿主拥有产品策略 | 评审 rubric、审计与 UI 确认留在 Core 之外。                                |
+
+想构建自己的产品，使用 Rust crate、Node.js 包、Python 包，或配合原生桥接程序
+使用 Go module。它们输出同一套事件，因此不同界面不需要各写一套 Agent Loop。
+
+## 先选使用方式
+
+| 入口                             | 什么时候用                                                                                        | 仓库                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Rust / Node.js / Python / Go SDK | 把编码 Agent 接入 IDE、Runner、服务端或自己的 UI                                                  | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) |
+| `a3s-code-tui`                   | 在极简全屏终端界面中基于 9.0.0 Core 运行提示（从源码构建）                                        | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) |
+| `a3s code`                       | 使用 `a3s` CLI 的终端编码应用；已发布的 CLI 固定 9.0 之前的 Core（见 [A3S Code TUI](/guide/tui)） | [A3S-Lab/a3s](https://github.com/A3S-Lab/a3s)   |
+| A3S Flow                         | 为 `DynamicWorkflowRuntime` 保存和恢复流程（`dynamic-workflow` feature）                          | [A3S-Lab/Flow](https://github.com/A3S-Lab/Flow) |
+
+## 主要能力
+
+| 领域          | 可以做什么                                                                                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent 会话    | 通过异步 `SessionBuilder` 创建绑定到 Workspace 的 `AgentSession`；支持 `send`、`run`、`stream`、steer、interrupt、取消、保存、恢复和清理。同一会话发生并发冲突时会立即报错。                  |
+| 控制循环      | [事实日志控制](/guide/architecture#fact-log-control)为每个会话折叠一份只追加日志来选择下一步。[Meta Harness](/guide/meta-harness) 让宿主组合执行折叠的 Actor。                                |
+| 终端界面      | 应用在自己的界面中渲染 `AgentEvent` 事件流。[`a3s-code-tui`](/guide/tui) 是一个极简终端客户端，每个提示运行一次 `send`。                                                                      |
+| 项目约定      | [文件系统约定](/guide/filesystem-first) 介绍 `AGENTS.md`、ACL 配置、`.a3s/agents/` 和 `skills/`。                                                                                             |
+| 工具          | 内置文件、二进制安全的本地下载、搜索、Shell、Git、网页、Batch、结构化输出、QuickJS、Skills、MCP 和子任务工具。模型调用统一经过参数、权限、确认、取消、确定性结果投影与证据记录。              |
+| 命令          | [命令](/guide/commands) 说明会话内置的斜杠命令，以及应用注册的自定义 `/command`。                                                                                                             |
+| 子任务        | 通过模型可见的 `task`，或宿主侧 `session.task(...)` 与 `session.tasks(...)` 使用内置或自定义 Agent；单项聚焦执行，多项独立任务并发扇出。                                                      |
+| 任务调度      | 一个 [Agent 级优先级调度器](/guide/tasks#agent-wide-priority-scheduler)在 Session、直接工具、detached 子任务和宿主工作流之间共享本地执行容量，并提供 FIFO、老化、取消和占用快照。             |
+| 流程编排      | [`session.parallel`](/guide/orchestration)、`session.pipeline`、阶段、Checkpoint、循环上限和预算记录，可用于编写固定且可恢复的工作流。                                                        |
+| Worker agents | 通过 `.a3s/agents/` 加载定义，供 `task` / 自动委派使用。                                                                                                                                      |
+| 安全          | 权限策略、用户确认、预算、Workspace 路径检查、工具超时、生命周期 Hook 和输出清理都会在执行过程中生效。                                                                                        |
+| Workspace     | [Workspace 后端](/guide/workspace-backends) 支持本地文件、应用提供的 Workspace、可选的 S3 兼容存储和 remote-git 服务；原生 Harness 可用 detached Git worktree 隔离会话。                      |
+| 工作区检索    | [工作区检索](/guide/context#workspace-retrieval)提供异步 Session 文本目录、纯 Rust a3s-vec FTS/BM25、可选宿主 Embedding、精确内存向量、Hybrid RRF 与可选确定性 CPU Rerank，不依赖向量数据库。 |
+| 事件          | `EventEnvelopeV1` 是 Rust、Node.js、Python、Go 共用的事件格式；未知事件的 Payload 和 Metadata 也会保留。                                                                                      |
+| 保存与恢复    | Session 快照、事实日志、Run Event、Trace、Artifact、Loop / Workflow Checkpoint 和 Memory Store 用来恢复会话和回放运行过程。                                                                   |
+| 验证          | [验证](/guide/verification) 支持验证命令、预设、结构化报告、摘要、Artifact、Trace Event 和 Run Replay。修改过工作区的运行需要绑定 digest 的证据才能完成。                                     |
+
+## v9.0.0 新增内容
+
+v9.0.0 同时包含以 v8.7.0 打 tag 的改动。那个 tag 从未发布，所以这些改动首次在
+这里发布。
+
+### 变更
+
+- **事实日志控制。** 事实日志是唯一的编码控制来源。`send`、`stream`、附件回合、
+  `resume_run` 与精确恢复都通过折叠它选择下一步转移。已保存的模型回合不会再次
+  发送给模型，循环检查点也不决定下一次模型调用。确认和提问停靠到回答事实出现。
+  缺失的工具结果在恢复时执行一次。steer 是另一条 `user.message` 事实。工具轮次
+  上限会在下一次补全中发送空工具列表，而不是插入合成的用户消息。参见
+  [架构](/guide/architecture#fact-log-control)。
+- **Go 模块主版本升到 v9。** 请导入 `github.com/A3S-Lab/Code/sdk/go/v9`。
+- **a3s-vec 词法 FTS。** 工作区 FTS 通过 `a3s-vec-fts` feature 使用纯 Rust
+  `a3s-vec` 0.1.8（`a3s_vec_fts_v1`）。发布包不再附带原生 FTS sidecar。较早的磁盘
+  FTS generation 不兼容，会重建。
+- **沙箱。** Core 需要 `a3s-sandbox` 0.2.1。
+- **更薄的构建。** 精简编码构建不再链接 `a3s-flow`；具名 Flow 能力投影需要
+  `dynamic-workflow` feature（包含在 `advanced-harness` 中）。`web_fetch` 的 PDF
+  文本提取放在 `web-fetch-pdf` 之后（包含在 `local-code` 中）。`server` profile 为
+  `local-code` + `s3` + `telemetry`。
+- **`web_search` 成功契约。** 级联依次尝试 API、HTTP/RSS、headless（headless 只在
+  启用 `headless-search` feature 的构建中可用，已发布的 SDK 包都不启用它）。非空可用行
+  以 `complete` 或 `partial` 成功；结构门槛只决定是否继续级联。JSON 输出保持结果
+  数组。空结果、未知引擎和无效参数仍然是错误（#161）。
+
+### 新增
+
+- **Meta Harness。** 宿主在同一份事实日志上组合有序的 `components`：内置
+  `system`、`tools`、`budget`、`compact`、`infer`，以及来自 `HostHarnessRegistry`
+  的 `host:<id>` 挂载。Node.js 与 Python 暴露 `Harness`；Go 暴露
+  `SessionOptions.Harness`。不传 `harness` 时保持默认树。参见
+  [Meta Harness](/guide/meta-harness)。
+- **仅限宿主的 `CompletionAttestor`（#160）。** Rust 宿主可以安装
+  `SessionOptions::with_completion_attestor`。它接收变更 digest，以及每个被修改路径
+  及其内容 digest（`MutatedPathRecord`），并可以在完成门禁判定前返回验证报告。
+  门禁仍然要求一份 Passed 且绑定 digest 的报告。
+- **Go 规划覆盖。** Go `Session` 暴露 `SetPlanningMode` 与
+  `ClearPlanningModeOverride`，与 Node.js、Python 一致。
+
+### 移除
+
+- 文件系统优先的 Agent 模式：`serve` feature、`AgentDir` 主 Agent 约定
+  （`instructions.md`、`schedules/`、`tools/`）、cron 守护进程以及
+  `AgentDirScriptTool`。Worker 与子 Agent 的 `agent_dirs` 扫描仍然保留。
+
+### 修复
+
+- 设置了显式 `HTTP(S)_PROXY` 时，MCP HTTP 传输、OAuth 与模型 HTTP 客户端会遵守
+  `NO_PROXY` / `no_proxy`（#171）。参见[服务提供商](/guide/providers#proxies)。
+- Python `SessionOptions.verifier_enabled` 提供 getter 和 setter（#163）。
+- 滚动上下文压缩在摘要遗漏原始 `## Goal` 时会重新固定它（#174）。
+
+更早的版本记录在
+[CHANGELOG](https://github.com/A3S-Lab/Code/blob/main/CHANGELOG.md) 中。
+
+## 安装
+
+当你要把 A3S Code 嵌入自己的产品时，安装 SDK 包：
+
+```bash
+npm install @a3s-lab/code
+pip install a3s-code
+cargo add a3s-code-core
+go get github.com/A3S-Lab/Code/sdk/go/v9
+```
+
+Python 包需要 CPython 3.10 或更新版本，每个平台提供一个 `abi3` Wheel。Wheel 平台、
+Go 桥接程序和 Bootstrap 流程见 [SDK 与 API](/api/)。
+
+要安装 `a3s` CLI（它以独立版本线发布 `a3s code` 终端应用），运行对应平台的安装脚本：
+
+<Tabs>
+<Tab label="macOS / Linux">
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.sh | sh
+```
+
+</Tab>
+<Tab label="Windows">
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://raw.githubusercontent.com/A3S-Lab/a3s/main/install.ps1 | iex
+```
+
+</Tab>
+</Tabs>
+
+脚本会选择当前系统与架构对应的发布包并校验 SHA-256。也可以使用
+`brew install a3s-lab/tap/a3s` 或 `cargo install a3s`。已发布的 CLI（0.17.1）
+固定 `a3s-code-core` `=8.7.0` 的 9.0 之前提交；其含义见 [A3S Code TUI](/guide/tui)。
+
+## 配置
+
+A3S Code 使用 ACL。不要把真实 API Key、私有模型端点、本地配置路径或
+tenant/user 标识提交到仓库；提交只通过环境变量解析凭据的模板。
+
+```acl
+default_model = "provider/model-id"
+max_parallel_tasks = 4
+auto_parallel = false
+
+providers "provider" {
+  apiKey = env("PROVIDER_API_KEY")
+  baseUrl = env("PROVIDER_BASE_URL")
+
+  models "model-id" {
+    tool_call = true
+    limit = {
+      context = 128000
+      output = 4096
+    }
+  }
+}
+
+agent_dirs = ["./.a3s/agents"]
+skill_dirs = ["./skills"]
+storage_backend = "file"
+sessions_dir = ".a3s/sessions"
+```
+
+`auto_parallel = false` 只关闭自动并行子智能体扇出。手动 `task` 调用和 SDK
+`session.tasks(...)` 扇出仍然可用，除非你单独关闭手动委派。
+
+本地 session 持久化需要把 `storage_backend = "file"` 和 `sessions_dir` 配对；
+SDK 嵌入场景也可以直接传 typed `FileSessionStore`。
+
+## 使用 TUI
+
+9.0.0 的终端客户端是 `a3s-code-tui` crate。在 Code 仓库中构建并运行：
+
+```bash
+cargo run -p a3s-code-tui -- --workspace /path/to/workspace --home "$HOME"
+```
+
+没有 `--config` 时，它会合并 `<home>/.a3s/config.acl` 与从 Workspace 向上找到的最近
+一个 `.a3s/config.acl`，再应用 `A3S_DEFAULT_MODEL`。它提供 `/help`、`/model`、
+`/clear` 和 `/exit`，每个提示在一个新会话中运行一次事实日志 `send`，该会话复用
+工作区的 `tui-turn` 事实日志。参见
+[A3S Code TUI](/guide/tui#configuration)。
+
+## Rust Runtime 快速开始
+
+```rust
+use a3s_code_core::{Agent, AgentEvent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/path/to/workspace")
+        .options(
+            SessionOptions::new()
+                .with_planning(true)
+                .with_max_parallel_tasks(4)
+                .with_tool_timeout(120_000),
+        )
+        .build()
+        .await?;
+
+    let result = session
+        .send("Find the authentication entry points.", None)
+        .await?;
+    println!("{}", result.text);
+
+    let (mut rx, _handle) = session
+        .stream("Summarize the test strategy.", None)
+        .await?;
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::TextDelta { text } => print!("{text}"),
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+```
+
+Rust 构建以异步为先。同步 `Agent::session` 只在记忆和其他必需资源已经初始化时
+可用；需要异步初始化的选项会返回 `CodeError::AsyncSessionBuildRequired`。会话选项中的
+MCP 管理器在发现工具时始终走异步路径。
+
+`session.tool(...)` 这类调用来自你的应用，而不是模型。把它们开放给用户之前，应在
+应用中完成访问控制。
+
+## 使用 SDK
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = agent.session('/path/to/workspace', {
+  planningMode: 'auto',
+  permissionPolicy: {
+    allow: ['read(*)', 'search(*)'],
+    ask: ['bash(*)', 'write(*)'],
+    deny: ['write(**/.env*)', 'bash(rm -rf*)'],
+    defaultDecision: 'ask',
+    enabled: true,
+  },
+});
+
+const result = await session.send('Find the authentication entry points.');
+console.log(result.text);
+console.log(result.verificationSummaryText);
+
+session.close();
+await agent.close();
+```
+
+## 接着看
+
+- [架构](/guide/architecture) 说明事实日志控制、内核包装和调用边界。
+- [Meta Harness](/guide/meta-harness) 说明宿主如何组合编码 Actor。
+- [A3S Code TUI](/guide/tui) 说明 9.0.0 终端客户端、配置层，以及它与 `a3s` CLI 的关系。
+- [SDK 与 API](/api/) 说明 Go 模块和桥接程序的安装方式；后续 Go 示例会与 Node.js、Python 一起出现在各通用章节中。
+- [会话](/guide/sessions) 介绍创建、流式输出、运行状态、保存、恢复和取消。
+- [工具](/guide/tools) 介绍直接调用、错误类型、结构化输出和 QuickJS Program。
+- [安全](/guide/security)、[Hook](/guide/hooks) 与 [验证](/guide/verification) 介绍执行前、执行中和执行后的检查。
+- [工作区检索](/guide/context#workspace-retrieval)介绍显式语义开关、切块、生命周期、质量指标和 CPU-only 安全默认值。
+- [任务](/guide/tasks) 与 [编排](/guide/orchestration) 介绍子 Agent 和固定工作流。
+- [Memory](/guide/memory) 与 [持久化](/guide/persistence) 介绍跨会话信息和任务恢复。
+- [文件系统约定](/guide/filesystem-first) 覆盖 `AGENTS.md`、ACL、Skill 与 `.a3s/agents/` worker。
+- [API 契约](/guide/api-contract) 列出经过集成测试的 Node.js API。

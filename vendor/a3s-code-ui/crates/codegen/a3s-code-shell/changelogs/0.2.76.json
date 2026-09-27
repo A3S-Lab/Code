@@ -1,0 +1,17 @@
+[
+  {
+    "category": "features",
+    "description": "**Auto permission mode** is now added to the top of Shift+Tab cycles and enabled by default in settings.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Idle sessions** no longer send repeated empty frames to the terminal, reducing CPU usage in the terminal emulator.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok agent stdio** now checks for updates in the background like other modes.",
+    "breaking_change": false
+  }
+]

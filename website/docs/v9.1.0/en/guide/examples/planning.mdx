@@ -1,0 +1,148 @@
+---
+title: 'Planning'
+description: 'Make the agent plan before it acts with planningMode'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Planning
+
+Planning mode controls what the session does before each `send` or `stream`
+turn. With planning enabled, the model first writes a structured plan for the
+request, and the session publishes it as events. Use it for multi-step work
+(refactors, release reviews, audits) where a host UI should show the task list
+before the agent starts editing.
+
+Set it through the session planning option: `PlanningMode` in Rust and Go,
+`planningMode` in Node.js, and `planning_mode` in Python. The accepted values
+are:
+
+| Value        | Behavior before each turn                                  |
+| ------------ | ---------------------------------------------------------- |
+| `"auto"`     | Default. Runs one pre-analysis model call; publishes no plan. |
+| `"enabled"`  | Runs pre-analysis, then asks the model for a plan and publishes it. |
+| `"disabled"` | Runs no pre-analysis and no planning.                      |
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, PlanningMode, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_planning_mode(PlanningMode::Enabled))
+        .build()
+        .await?;
+
+    let result = session
+        .send("Plan and complete the release-readiness review.", None)
+        .await?;
+    println!("{}", result.text);
+    println!("{} tool calls executed", result.tool_calls_count);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/repo', {
+  planningMode: 'enabled',
+});
+
+const result = await session.send(
+  'Plan and complete the release-readiness review.',
+);
+console.log(result.text);
+console.log(`${result.toolCallsCount} tool calls executed`);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.planning_mode = "enabled"
+session = agent.session("/repo", opts)
+
+result = session.send("Plan and complete the release-readiness review.")
+print(result.text)
+print(f"{result.tool_calls_count} tool calls executed")
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		PlanningMode: code.PlanningEnabled,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "Plan and complete the release-readiness review.")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+	fmt.Printf("%d tool calls executed\n", result.ToolCallsCount)
+}
+```
+
+</Tab>
+</Tabs>
+
+With `"enabled"`, the session emits `planning_start`, then `planning_end`
+carrying the plan, then `task_updated` with the plan's steps, then one
+`step_end` per step with status `pending`. When goal tracking is on
+(`with_goal_tracking` in Rust, `goalTracking` in Node.js, `goal_tracking` in
+Python, `GoalTracking` in Go), a `goal_extracted` event with the goal comes
+before `planning_end`. The events are also recorded on the run, so a host UI
+can render the task list from `stream` events or from the run's event history.
+If the planning call hits a transient model error, the session publishes a
+fallback plan instead; cancellation, a non-retryable provider error, or an
+exhausted budget fails the turn.
+
+The plan is guidance for the host, not a separate execution loop: the turn still
+chooses its own model and tool calls. Verification commands still provide the
+completion evidence.

@@ -1,0 +1,43 @@
+name: ansi-execute-output
+description: >-
+  A user `!` bash command whose stdout contains ANSI SGR renders styled plain
+  text in the execute scrollback. The filenames appear cleanly in the stdout
+  body (gutter-prefixed) rather than as literal escape sequences.
+terminal:
+  rows: 45
+  cols: 110
+mock:
+  response: "BASH_SESSION_READY"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 25000
+  - action: type_text
+    text: "go"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: BASH_SESSION_READY
+    timeout_ms: 45000
+  - action: paste_prompt
+    text: "! printf '\\033[1m\\033[36mbazel\\033[39;49m\\033[0m\\nAGENTS.md\\n'"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: "Run (user)"
+    timeout_ms: 30000
+  - action: wait_for_text
+    text: bazel
+    timeout_ms: 20000
+  - action: wait
+    millis: 500
+  # Stdout body shows clean filenames, proving SGR was rendered natively rather than
+  # printed as literal `[1m[36m...` escape codes. The needle carries no gutter glyph:
+  # a finished command is collapsed, and collapsed rows have no accent rail.
+  - action: assert_contains
+    text: bazel
+  - action: assert_not_contains
+    text: "[1m"
+  - action: screenshot
+    name: ansi-execute-native-render
+    note: Bash stdout shows styled bazel/AGENTS.md (SGR rendered, no literal escapes).

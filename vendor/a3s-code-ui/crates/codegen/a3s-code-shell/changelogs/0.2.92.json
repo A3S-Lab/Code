@@ -1,0 +1,47 @@
+[
+  {
+    "category": "fixes",
+    "description": "**User-run shell commands** now display their complete output after finishing instead of silently dropping middle lines.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Edit tool output** now correctly highlights multi-line strings and scopes that previously spilled across hunks.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Always allow** grants for MCP, web_fetch and bash now take effect immediately in auto mode without re-prompting.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cmd/Ctrl+click** on bare http(s) links now opens only once on Warp terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cmd/Ctrl+click** now works on imagine media paths and URLs that wrap across multiple terminal rows.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**grok update** on Windows no longer fails when a previous .old executable is still running.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Pasting images** on macOS is now ~65× faster by reading the pasteboard directly instead of via osascript.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/minimal** and **/fullscreen** commands let you switch the current session between minimal and fullscreen modes.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**ask_user_question tool** can now be enabled or disabled via config.toml, environment variables, or remote flags while defaulting to on.",
+    "breaking_change": false
+  }
+]

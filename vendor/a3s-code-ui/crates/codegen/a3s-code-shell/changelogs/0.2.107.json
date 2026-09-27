@@ -1,0 +1,72 @@
+[
+  {
+    "category": "features",
+    "description": "**Stop hooks** can now keep the agent running by feeding feedback back to the model instead of ending the turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Custom models** can now authenticate using rotating tokens fetched from a command, similar to credential helpers.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Feedback** now includes author details when provided, helping with follow-up.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+B** now backgrounds running commands; **Ctrl+G** toggles the tasks pane.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sessions** can now resume across hosts by mirroring transcripts to external storage like S3.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**OAuth popups** in live preview now redirect correctly after login.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sessions** can now be imported and resumed from mirrored state across hosts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Auto mode** now continues after classifier blocks by telling the agent the reason, escalating only after repeated denials.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Git status** shown to the model at startup now includes unstaged and untracked files.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Tool descriptions** now stay correct when parameter names are randomized.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Minimal mode** now shows full reasoning in scrollback and collapses successful lookup results to one-line headers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Empty commands** like `true` or bare `echo` now remind the model to stop and wait for background work instead of spinning.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Recap summaries** after idle now load much faster by reusing the previous turn's cached context.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Session storage** can now flush after every frame (eager mode) instead of only at turn end.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,29 @@
+A3S Code TUI
+Copyright 2026 A3S Lab
+
+This product includes software derived from the Apache-2.0 grok-build project
+(https://github.com/xai-org/grok-build). Upstream copyright notices in
+`LICENSE` files are preserved as required by the Apache License, Version 2.0.
+
+The interactive product UI lives under `crates/code/vendor/a3s-code-ui/` and is
+branded as A3S Code. Agent turns run through `a3s-code-acp` + `a3s-code-core`
+9.0.0 when `A3S_ACP_AGENT_BIN` is set.
+
+Upstream snapshot
+-----------------
+Repository: https://github.com/xai-org/grok-build
+Commit:     f0e3be1100ef5252488e3be8bb0e91cf68d8c305
+Date:       2026-09-23
+
+Vendored UI helpers (Apache-2.0)
+-------------------------------
+Small building blocks under `tui/vendor/` remain available for the thin
+scaffold and tests:
+
+| Local path                     | Upstream crate          | Role                                      |
+| ------------------------------ | ----------------------- | ----------------------------------------- |
+| vendor/prompt-textarea         | xai-ratatui-textarea    | Prompt editor / keybindings               |
+| vendor/ratatui-inline          | xai-ratatui-inline      | ANSI line split / inline scrollback helpers |
+| vendor/markdown-core           | a3s-code-markdown-core  | Headless markdown parse options           |
+
+License text for each vendored crate is in that crate's `LICENSE` file.

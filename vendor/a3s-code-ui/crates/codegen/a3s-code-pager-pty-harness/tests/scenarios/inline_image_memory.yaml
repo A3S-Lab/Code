@@ -1,0 +1,41 @@
+name: inline-image-memory
+description: "Paste one PNG, hammer redraws, verify Kitty graphics use transmit-once + place (not a=T every frame)."
+terminal:
+  rows: 40
+  cols: 120
+mock:
+  response: "unused — scenario does not submit"
+  fixture_images:
+    - name: memory_test_image
+      extension: png
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_clipboard_image
+    image: memory_test_image
+  - action: assert_contains
+    text: "Image #1"
+  # Move cursor to image chip to trigger overlay preview graphics.
+  - action: keys
+    keys: "<Left><Left><Left>"
+  - action: wait_for_kitty_graphics
+    min: 1
+    timeout_ms: 10000
+  # Hammer redraws — each should NOT re-upload the full image.
+  - action: keys
+    keys: "<Right><Left><Right><Left><Right><Left><Right><Left>"
+  - action: keys
+    keys: "hello world this is noise to force redraws"
+  - action: keys
+    keys: "<Backspace><Backspace><Backspace><Backspace><Backspace>"
+  - action: keys
+    keys: "<Right><Right><Right><Right>"
+  - action: wait_for_kitty_graphics
+    min: 1
+    timeout_ms: 5000
+  - action: assert_kitty_graphics
+    min: 1
+  - action: screenshot
+    name: inline-image-memory
+    note: Single pasted PNG after redraw hammering.

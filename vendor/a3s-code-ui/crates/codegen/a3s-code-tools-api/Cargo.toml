@@ -1,0 +1,25 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-code-tools-api"
+version = "0.1.220-alpha.4"
+edition.workspace = true
+description = "Protobuf API definitions for A3S Code tools"
+
+[dependencies]
+tonic-prost = { workspace = true }
+# Protobuf runtime
+prost = { workspace = true }
+tonic = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+a3s-tool-protocol = { workspace = true }
+
+[build-dependencies]
+a3s-proto-build = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["serde", "tonic"]
+
+[lints]
+workspace = true

@@ -61,8 +61,8 @@ const governanceFeatures: Feature[] = [
       en: 'Check files, shell, Git, and external requests',
     },
     body: {
-      zh: '模型或前置钩子提交工具参数后，Runtime 会再次校验 Schema，再检查 Workspace 能力和权限规则。需要用户确认的调用会先暂停。',
-      en: 'After the model or a pre-hook supplies tool arguments, the runtime validates the schema again, then checks workspace capability and permission policy. Calls that need approval pause.',
+      zh: '模型或前置钩子提交工具参数后，Runtime 会再次校验 Schema，再检查 Workspace 能力和权限规则。需要用户确认的调用会停在事实日志里，直到宿主给出答复。',
+      en: 'After the model or a pre-hook supplies tool arguments, the runtime validates the schema again, then checks workspace capability and permission policy. Calls that need approval park in the fact log until the host answers.',
     },
     tags: ['hooks', 'policy', 'HITL', 'sandbox'],
   },
@@ -93,14 +93,14 @@ const governanceFeatures: Feature[] = [
   {
     index: '04',
     title: {
-      zh: 'SessionSnapshotV1 保存恢复数据',
-      en: 'Resume from SessionSnapshotV1',
+      zh: '改过文件，要有验证才算完成',
+      en: 'Changed files need verification to complete',
     },
     body: {
-      zh: '会话、Run、Artifact、Trace、验证结果和子任务记录按同一代快照提交。恢复时直接读取已保存状态。',
-      en: 'Sessions, runs, artifacts, traces, verification results, and child-task records are committed as one snapshot generation and loaded directly on resume.',
+      zh: '修改了 Workspace 的回合，只有在存在绑定到该修改 effect digest 的 Passed 验证报告，或宿主豁免覆盖该 digest 时才算完成。助手文本不算证据。',
+      en: 'A turn that mutated the workspace completes only when a Passed verification report is bound to that mutation’s effect digest, or a host waiver covers it. Assistant text never counts as evidence.',
     },
-    tags: ['snapshot', 'replay', 'verification'],
+    tags: ['completion gate', 'verification', 'digest'],
   },
 ];
 
@@ -139,10 +139,10 @@ const capabilityCards = [
       en: 'Runs, events, and snapshots use stable formats',
     },
     body: {
-      zh: '一次任务可以保存 Snapshot、事件、Trace、Artifact、验证结果和 Checkpoint；应用可以据此查询、审计或恢复。',
-      en: 'A task can save snapshots, events, traces, artifacts, verification results, and checkpoints for queries, audit, or recovery.',
+      zh: '每次 Run 都追加到 .a3s/effect-log 下的事实日志，恢复时折叠日志决定下一步，已保存的模型回合不会重发。SessionSnapshotV1 把会话、Run、Trace、Artifact 和验证结果按同一代提交。',
+      en: 'Each run appends to a fact log under .a3s/effect-log; resume folds that log to pick the next step and never re-sends stored model turns. SessionSnapshotV1 commits sessions, runs, traces, artifacts, and verification results as one generation.',
     },
-    tags: ['atomic', 'replayable', 'auditable'],
+    tags: ['fact log', 'SessionSnapshotV1', 'auditable'],
   },
   {
     className: 'a3s-bento-card--extend',
@@ -220,7 +220,7 @@ const surfaces = [
   {
     key: 'go',
     name: 'Go',
-    packageName: 'sdk/go/v8',
+    packageName: 'sdk/go/v9',
     href: 'https://pkg.go.dev/github.com/A3S-Lab/Code/sdk/go/v9',
     description: {
       zh: '纯 Go API 通过长驻桥接进程提供会话、事件流、工具、验证和 MCP，无需 CGO。',
@@ -246,10 +246,10 @@ const runtimeLayers = [
     code: 'L02 / AGENT API',
     title: { zh: 'Agent 与 Session', en: 'Agent and session' },
     body: {
-      zh: 'Agent 读取配置并准备共享能力与优先级调度器；AgentSession 把它们连接到一个项目目录和一段对话。',
-      en: 'Agent loads configuration, shared capabilities, and the priority scheduler. AgentSession connects them to one project workspace and one conversation.',
+      zh: 'Agent 读取配置并准备共享能力与优先级调度器；AgentSession 把它们连接到一个项目目录和一段对话。SessionOptions.harness 可以用 Meta Harness 重新组合事实日志 Actor，不设置时使用默认 coding_actor。',
+      en: 'Agent loads configuration, shared capabilities, and the priority scheduler. AgentSession connects them to one project workspace and one conversation. SessionOptions.harness can recompose the fact-log actor with Meta Harness; without it the default coding_actor runs.',
     },
-    tags: ['Agent', 'AgentSession', 'priority'],
+    tags: ['Agent', 'AgentSession', 'Meta Harness'],
   },
   {
     id: 'context',
@@ -266,10 +266,10 @@ const runtimeLayers = [
     code: 'L04 / GOVERNANCE',
     title: { zh: '权限与执行检查', en: 'Permission and execution checks' },
     body: {
-      zh: '工具真正执行前，Runtime 会运行门控钩子、重新校验改写参数，并检查能力和权限；再按配置进行用户确认、预算、沙箱或取消。',
-      en: 'Before a tool runs, the runtime executes gating hooks, revalidates rewritten arguments, and checks capabilities and permissions before approval, budget, sandbox, or cancellation.',
+      zh: '工具真正执行前，Runtime 会运行门控钩子、重新校验改写参数，并检查能力和权限；再按配置进行用户确认、预算、沙箱或取消。修改了文件的回合要通过完成门禁才算完成。',
+      en: 'Before a tool runs, the runtime executes gating hooks, revalidates rewritten arguments, and checks capabilities and permissions before approval, budget, sandbox, or cancellation. A turn that changed files must pass the completion gate.',
     },
-    tags: ['validate', 'permission', 'confirm', 'budget'],
+    tags: ['validate', 'permission', 'confirm', 'completion gate'],
   },
   {
     id: 'tools',
@@ -286,10 +286,10 @@ const runtimeLayers = [
     code: 'L06 / DURABILITY',
     title: { zh: '事件、记录与恢复', en: 'Events, records, and recovery' },
     body: {
-      zh: 'AgentEvent 把执行过程交给界面；Run、Trace、Artifact、不可变 Git 补丁和 SessionSnapshotV1 用来排查、审计、合并与恢复。',
-      en: 'AgentEvent feeds the execution stream to your UI. Runs, traces, artifacts, immutable Git patches, and SessionSnapshotV1 support debugging, audit, merge, and recovery.',
+      zh: 'AgentEvent 把执行过程交给界面；事实日志决定下一步并让 Run 可以恢复；Run、Trace、Artifact、不可变 Git 补丁和 SessionSnapshotV1 用来排查、审计、合并与恢复。',
+      en: 'AgentEvent feeds the execution stream to your UI. The fact log decides the next step and makes runs resumable; runs, traces, artifacts, immutable Git patches, and SessionSnapshotV1 support debugging, audit, merge, and recovery.',
     },
-    tags: ['EventEnvelopeV1', 'Run', 'Artifact', 'Snapshot'],
+    tags: ['fact log', 'EventEnvelopeV1', 'Run', 'Snapshot'],
   },
 ] satisfies Array<{
   id: string;
@@ -693,8 +693,13 @@ export function HomeLayout() {
           </div>
           <div>
             <p>{labels.architectureBody}</p>
-            <a href={route('/guide/architecture.html')}>
-              {labels.boundaryLink}
+            {/* Archived revisions share this layout but have no Meta Harness page. */}
+            <a
+              href={withBase(
+                `/${locale !== site.lang ? `${locale}/` : ''}guide/meta-harness.html`,
+              )}
+            >
+              {labels.harnessLink}
               <ArrowIcon />
             </a>
           </div>

@@ -1,0 +1,17 @@
+[
+  {
+    "category": "performance",
+    "description": "**Subagent spawning** is dramatically faster when you have many sessions in ~/.grok.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/session-info** now lets you click any row to copy its value, with hover highlights and a copy-all shortcut.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**TUI rendering** now automatically matches high-refresh displays (120 Hz+) for smoother scrolling and painting.",
+    "breaking_change": false
+  }
+]

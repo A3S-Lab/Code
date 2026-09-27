@@ -1165,11 +1165,9 @@ async fn prepare_pre_analysis(parts: &FactSession, prompt: &str) -> anyhow::Resu
     let Some(surface) = &parts.surface else {
         return Ok(());
     };
-    surface
-        .agent
-        .fact_pre_analysis(prompt, &surface.session_id, &surface.cancel)
-        .await
-        .map_err(pre_analysis_error)?;
+    // Pre-analysis is a structured model call. The fact loop discards its
+    // result, so running it holds every prompt until that call (and its
+    // repair attempts) finish. Explicit planning still publishes below.
     surface
         .agent
         .fact_publish_plan(

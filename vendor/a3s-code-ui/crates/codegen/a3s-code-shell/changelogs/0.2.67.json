@@ -1,0 +1,27 @@
+[
+  {
+    "category": "features",
+    "description": "**Added --json-schema** flag for headless mode to constrain model output to a supplied JSON Schema.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Find and grep** now transparently use faster bfs and ugrep binaries when present in the harness.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Preview panes** no longer hibernate while actively viewed or polled.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Idle detection** can now ignore background tasks when the env flag is set (off by default).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Manual /rename** now persists correctly and appears in /session-info even after auto title generation or resume.",
+    "breaking_change": false
+  }
+]

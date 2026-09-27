@@ -1,0 +1,11 @@
+[package]
+license = "Apache-2.0"
+name = "a3s-token-estimation"
+version = "0.1.0"
+edition.workspace = true
+description = "Pure shared token-estimation primitives."
+
+[dependencies]
+
+[lints]
+workspace = true

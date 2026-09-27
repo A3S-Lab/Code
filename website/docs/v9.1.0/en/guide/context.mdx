@@ -1,0 +1,373 @@
+---
+title: 'Context'
+description: 'Budgeted context assembly for reliable coding agents'
+---
+
+# Context
+
+A3S Code treats context as a budgeted resource. The model should see the smallest useful context for the current decision, not every available file, skill, memory, and tool log.
+
+## Sources
+
+Context can come from:
+
+- user prompt and conversation history
+- AGENTS.md project instructions
+- skills and agent definitions
+- memory stores
+- file search and direct tool results
+- MCP tools and context providers
+- delegated task summaries
+- trace events
+
+AGENTS.md injection, skills discovery, memory APIs, direct tool results,
+delegated task helpers, and `traceEvents()` are available from every SDK.
+Custom context providers are a Rust-host extension point (see below).
+
+## Assembly
+
+```text
+sources -> ContextItem -> rank -> dedupe -> budget -> render
+```
+
+Context is resolved once at the start of each turn. `ContextAssembler`
+deduplicates items, always keeps required items such as AGENTS.md, then ranks
+the rest by score and relevance. The default balanced policy selects at most 12
+items and 4,000 estimated tokens, with at most 6 items and 2,500 tokens from any
+one source, so a single provider cannot crowd out the others. The selected
+items are rendered into the system prompt.
+
+Long grep output, logs, and child transcripts should be preserved outside the prompt and summarized into prompt-safe evidence. Use `session.traceEvents()` for compact runtime evidence.
+
+## Context providers (Rust Host)
+
+A context provider implements the `ContextProvider` trait from
+`a3s_code_core::context`. All providers registered on a session are queried
+concurrently with the turn's prompt; empty results are dropped. A provider that
+fails is skipped with a warning unless its `failure_mode()` returns
+`ContextProviderFailureMode::FailClosed`, in which case the turn fails.
+`on_turn_complete` is an optional hook called after each turn.
+
+```rust
+use a3s_code_core::context::{
+    ContextItem, ContextProvider, ContextQuery, ContextResult, ContextType,
+};
+use a3s_code_core::SessionOptions;
+use std::sync::Arc;
+
+struct ReleaseNotes;
+
+#[async_trait::async_trait]
+impl ContextProvider for ReleaseNotes {
+    fn name(&self) -> &str {
+        "release-notes"
+    }
+
+    async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
+        let mut result = ContextResult::new(self.name());
+        if query.query.contains("release") {
+            result.add_item(
+                ContextItem::new("freeze", ContextType::Resource, "Release freeze starts Friday.")
+                    .with_relevance(0.9),
+            );
+        }
+        Ok(result)
+    }
+}
+
+let options = SessionOptions::new()
+    .with_context_provider(Arc::new(ReleaseNotes))
+    .with_fs_context("/repo/docs");
+```
+
+`with_fs_context(root)` registers the built-in `FileSystemContextProvider`.
+The module also ships ripgrep, static, skill-catalog, and recent-workspace-file
+providers. Node.js, Python, and Go do not expose custom context providers; use
+AGENTS.md, skills, memory, or workspace retrieval from those SDKs.
+
+## Exact Cognitive Packages (Rust Host)
+
+An embedding Rust host can bind a session to one exact A3S Use
+cognitive-package generation. A3S Code does not install packages, resolve a
+Registry entry, or select `latest`; the host injects both an immutable
+`CognitivePackageBindingV1` and a provider holding the matching Knowledge
+lease.
+
+```rust
+use a3s_code_core::{CognitiveContextSession, SessionOptions};
+
+let cognitive_context = CognitiveContextSession::new(binding, provider)?;
+let options = SessionOptions::new().with_cognitive_context(cognitive_context);
+```
+
+The durable `a3s.code.cognitive-package-session-binding.v1` identity includes
+the package id/version, lifecycle generation, generation digest, capability
+snapshot digest, exact Knowledge surface, and prompt-injection limits. Each
+typed request and cited Markdown response repeats that binding and is validated
+before content enters model context.
+
+The hard limits are four documents, 6 KiB per document, and 6 KiB total. The
+host may choose smaller limits in the binding. Provider failure, malformed
+citations, request mismatch, or generation drift fails closed instead of
+falling back to unrelated retrieval.
+
+Use `with_cognitive_context`; adding a cognitive provider through the generic
+context-provider list is rejected because its binding could not be persisted
+correctly. An exact cognitive package cannot be combined with any other
+context provider (`with_context_provider` or `with_fs_context`), and both
+session and durable memory recall are suppressed. Code-owned workspace instructions and skills remain
+available.
+
+The binding is stored in the session snapshot and emitted as
+`cognitive_context_bound`. On resume, the host must re-inject a provider with
+the same binding; a missing or different generation is rejected. This typed
+boundary is currently a Rust-host integration surface rather than a Node.js,
+Python, or Go session option.
+
+<a id="workspace-retrieval"></a>
+
+## Session-owned workspace retrieval
+
+A3S Code can build a bounded retrieval index for one workspace and one
+session. Construction runs asynchronously, results are verified against the
+current source, and every vector is released when the session closes. The
+runtime does not install or require a vector database.
+
+Workspace Retrieval is a host capability, not a switch the model can turn on.
+Omit the typed option to keep it disabled. A disabled session constructs no
+additional catalog, invokes no embedding provider, and exposes no semantic or
+hybrid search mode to the model.
+
+Enabled sessions do not register a separate `vector_db` tool. Instead, the
+single model-facing `search` schema adds `mode: "semantic"` and
+`mode: "hybrid"`. Both modes query the session-owned projection through the
+same governed tool path as grep, glob, and BM25; disabled sessions omit them
+from the schema rather than advertising calls that cannot run.
+
+### Choose the smallest useful retrieval surface
+
+| Requirement                                 | Use                         | Embedding model                                                        |
+| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
+| Known identifier or exact text              | Exact, glob, or grep search | Not required                                                           |
+| Natural-language query over project text    | Incremental BM25            | Not required                                                           |
+| Definitions, references, or diagnostics     | Code Intelligence           | Not required                                                           |
+| Vocabulary mismatch or multilingual meaning | Semantic retrieval          | Host-supplied callback required                                        |
+| Mixed identifiers and natural language      | Hybrid RRF                  | Optional; lexical and symbol channels remain available without vectors |
+| Reduce near-duplicate evidence              | Deterministic reranker      | Not required; local CPU algorithm                                      |
+
+Dense semantic search necessarily needs a text-to-vector function, but that
+function can be an in-process CPU callback. A3S Code does not require a remote
+API, GPU, bundled model, or runtime model download. Model revision, license,
+artifact verification, caching, and credentials remain the host's
+responsibility.
+
+### Asynchronous vector projection lifecycle
+
+The semantic serving projection is a session-owned, exact A3S Memory vector
+index, not a durable or shared vector database. Product builds use a separate
+session-local a3s-vec FTS collection for lexical ranking; its collection handles
+are short-lived and bounded. Session construction returns before corpus
+embedding finishes. The background indexer reads admitted text, publishes
+immutable per-file partitions atomically, and reconciles later source revisions
+without re-embedding unchanged files. Reopening a session builds new
+projections; closing it cancels outstanding provider work and releases all
+semantic and lexical state.
+
+```text
+session construction -> return immediately
+                     `-> build text catalog and vector partitions in the background
+
+query -> fuse independent ranks -> verify current source -> render evidence
+
+session close -> cancel provider -> join indexer -> release all vectors
+```
+
+A session without Workspace Retrieval reports `disabled`. An enabled session
+moves through `building`, `ready`, `degraded`, and `closed`. Queries can
+use published coverage while construction continues. Hosts that need a
+stronger first-query boundary can wait for readiness for up to 30 seconds;
+timeout preserves the partial fallback, while cancellation or session close
+interrupts the wait.
+
+| State      | Vector projection                                       | Query behavior                                                    |
+| ---------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `building` | Valid file partitions publish atomically as they finish | Exact/BM25 stay available; semantic coverage may be partial       |
+| `ready`    | The observed source generation has full coverage        | Semantic and hybrid queries use the complete published generation |
+| `degraded` | Valid partitions remain; bounded failures are reported  | Lexical paths continue and semantic results expose partial status |
+| `closed`   | Indexing is cancelled and vectors are released          | Recreate a session before using semantic retrieval again          |
+
+### Backend and ranking boundary
+
+a3s-vec owns lexical FTS/BM25 postings in product builds (engine id
+`a3s_vec_fts_v1`, enabled by the default `local-code` feature through
+`a3s-vec-fts`); a minimal build can
+explicitly use the portable BM25 implementation. A lexical initialization or
+query failure is reported as bounded lexical degradation and cannot change the
+A3S Memory semantic authority. The SDKs expose typed lexical options and no
+primitive backend-name selector. Temporary lexical collections are deleted on
+normal close; process-crash residue remains subject to the host operating
+system's temporary-directory policy.
+
+### Ranking
+
+One immutable chunk catalog backs incremental BM25, Memory-authoritative exact
+vectors, stable source anchors, and exact-literal or Code Intelligence
+candidates. Hybrid mode combines independent one-based ranks with
+reciprocal-rank fusion (`k = 60`) instead of mixing incomparable raw scores.
+RRF-only is the default. The optional deterministic reranker is bounded,
+model-free CPU code that reduces duplicate evidence while protecting exact
+identifiers.
+
+### Text admission and chunking
+
+Only manifest-admitted UTF-8 text and source files enter the catalog.
+Generated files, oversized files, credentials, key material, `.a3s` control
+paths, and non-text assets are excluded before chunking and embedding. PDF,
+Office, image, audio, OCR, and other knowledge compilation belongs to a
+separate knowledge compiler; Workspace Retrieval does not guess how to parse
+those formats.
+
+Built-in typed strategies cover line/byte chunks, fixed UTF-8 windows, and
+recursive separators. Trusted Rust hosts can supply a custom splitter whose
+ranges preserve UTF-8 boundaries, cover admitted bytes, and always make
+forward progress. Node.js, Python, and Go accept typed built-in strategy
+objects; primitive strategy names are rejected.
+
+### SDK control surface
+
+| Host    | Enable                                            | Keep disabled                   | Query and status                                                                   |
+| ------- | ------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------- |
+| Rust    | `SessionOptions::with_workspace_retrieval(...)`   | `without_workspace_retrieval()` | `workspace_retrieval_status`, `semantic_search`, `hybrid_search`                   |
+| Node.js | Set typed `workspaceRetrieval` in session options | Omit it                         | `workspaceRetrievalStatus()`, `semanticSearch()`, `hybridSearch()`                 |
+| Python  | Set `SessionOptions.workspace_retrieval`          | Assign `None`                   | `workspace_retrieval_status()`, `semantic_search_async()`, `hybrid_search_async()` |
+| Go      | Set `SessionOptions.WorkspaceRetrieval`           | Use `nil`                       | `WorkspaceRetrievalStatus`, `SemanticSearch`, `HybridSearch`                       |
+
+### CLI activation
+
+The `a3s` CLI keeps semantic retrieval disabled unless a trusted user ACL or a
+file selected explicitly with `--config` enables it. An automatically
+discovered workspace `.a3s/config.acl` may only disable an inherited retrieval
+route; it cannot authorize source egress or choose an embedding backend.
+
+Remote embedding needs a separate provider route and an explicit source-egress
+grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  allow_source_egress = true
+  model = "openai/text-embedding-3-small"
+  dimension = 1536
+  normalization = "none"
+}
+```
+
+Local CPU embedding is mutually exclusive with the remote fields and does not
+need a source-egress grant:
+
+```acl
+workspace_retrieval {
+  enabled = true
+  semantic_readiness_timeout_ms = 30000
+
+  local_cpu {
+    artifact_manifest = "models/multilingual-mini/model.acl"
+    intra_threads = 2
+  }
+}
+```
+
+An explicit `artifact_manifest` is revision- and SHA-256-bound, and the CLI
+loads it without downloading anything. When `artifact_manifest` is omitted, the
+CLI uses the A3S Power-managed `Xenova/all-MiniLM-L6-v2` bundle (384
+dimensions, pinned revision and SHA-256 digests), installed on first use under
+the A3S data root; offline mode or `A3S_NO_AUTO_INSTALL` disables that install
+and requires the bundle to be present already. Run `a3s config validate` and inspect the redacted
+`workspaceRetrieval` section from `a3s config show` before creating a session.
+The embedding route is independent from `default_model`, so selecting DeepSeek
+for chat and tool calls does not implicitly turn that chat endpoint into an
+embedding service.
+
+The CLI's `local_cpu` adapter is shipped for Linux x64/ARM64, Windows x64, and
+Apple Silicon. Intel macOS 12 (`x86_64`) builds intentionally omit the optional
+ONNX adapter. On Intel, leave retrieval model-free or use a separately
+authorized remote embedding route.
+
+Provider descriptors lock identity, model, dimension, and normalization.
+Runtime validation rejects partial, duplicate, unknown, dimension-mismatched,
+non-finite, non-normalized, or descriptor-drifted responses. Diagnostics do
+not copy input text, vectors, remote response bodies, credentials, or endpoint
+values.
+
+### Quality and safety evidence
+
+Status snapshots report coverage, queue depth, failures, vector memory,
+batching, request amplification, non-text provider inputs, and post-close
+release. The cross-SDK real-model fixtures report task accuracy, Precision@5,
+Recall@5, MRR, nDCG@5, document request amplification, construction, readiness,
+turn and close latency, non-text provider inputs, and the post-close release
+rate. They are a portability gate, not a claim that one model or reranker is
+best for every repository.
+
+Before rendering a result, A3S Code rereads the authoritative file and verifies
+the full-file digest and exact chunk byte range. Deleted, stale, unreadable, or
+superseded candidates are not exposed. See the
+[operations runbook](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)
+and [qualification record](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_QA.md)
+for production thresholds, rollback rules, and reproducible evaluation.
+
+## Compaction
+
+Automatic compaction is off by default. Enable it for long sessions:
+
+```ts
+const session = agent.session('/repo', {
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+  maxContextTokens: 128_000,
+});
+```
+
+```python
+opts = SessionOptions()
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+opts.max_context_tokens = 128_000
+session = agent.session("/repo", opts)
+```
+
+```go
+enabled := true
+threshold := float32(0.75)
+maxTokens := uint(128_000)
+session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+	AutoCompact:          &enabled,
+	AutoCompactThreshold: &threshold,
+	MaxContextTokens:     &maxTokens,
+})
+```
+
+The default threshold is 0.80. When `maxContextTokens` is omitted, Core uses
+the selected model's declared context window when available. Before each model
+request, Core accounts for the system prompt, conversation, tool calls and
+results, and exposed tool schemas. At the threshold it:
+
+1. Prunes or truncates oversized older tool output, leaving a marker that tells
+   the model to re-read the file or re-run the command.
+2. Summarizes the older prefix with the model, treating every transcript entry
+   as untrusted data. The summary is capped at 8,000 tokens.
+3. Keeps up to the 20 most recent messages intact (half of a shorter history)
+   and aims to land at 60% of the trigger watermark.
+
+Compaction never loses the task goal. Before summarizing, Core pins the goal
+outside the model: the most recent `## Goal` section in a user message (for
+example, from an earlier summary), otherwise the first user turn. If the new
+summary omits or rewrites that section, Core puts the pinned `## Goal` back.
+Rolling compactions therefore keep the original paths and constraints even
+when a later summary forgets them.
+
+The summary participates in later compactions, so long sessions can roll
+forward through repeated compression; this does not enlarge the model's
+physical single-request context window. A successful `context_compacted` event
+includes the cumulative summary so hosts that supply external history can
+persist the same compact generation across turns.

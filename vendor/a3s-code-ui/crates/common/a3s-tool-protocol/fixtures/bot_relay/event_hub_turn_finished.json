@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "agentId": "agt_1",
+  "seq": 2,
+  "channel": "hub:turn_finished",
+  "event": {
+    "agentId": "agt_1",
+    "conversationIds": ["conv_1"],
+    "preview": "done",
+    "turnId": "turn_7"
+  }
+}

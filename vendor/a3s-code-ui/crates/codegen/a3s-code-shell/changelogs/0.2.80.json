@@ -1,0 +1,42 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Subagent dialogs** now reliably show full transcripts on open and reopen.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Command timeouts** can now be configured per-session with a foreground-only ceiling.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Network connections** are now more resilient to proxy/LB drops.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background tasks and TODO lists** now survive compaction and remain visible to the model.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Voice dictation** STT feature: uses Ctrl+Space or F8, with optional hold-to-talk on supported terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Contextual hints** can now be toggled individually for undo, plan mode, and image input.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Recap blocks** now copy only the summary body, not the header label.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Vim navigation keys** now type into dashboard prompts; modals properly handle Esc/Left.",
+    "breaking_change": false
+  }
+]

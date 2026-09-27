@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "A new plugin install suggestion appears above the prompt when you type a known marketplace plugin name or domain.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Trace uploads** and remote session restores now succeed with a deployment key and no browser login.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Resumed sessions** no longer pad the sticky prompt with empty rows; cancelling a turn now keeps the rest of the prompt queue intact.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Cancelling a running prompt no longer leaves the interface stuck on the cancelling spinner.",
+    "breaking_change": false
+  }
+]

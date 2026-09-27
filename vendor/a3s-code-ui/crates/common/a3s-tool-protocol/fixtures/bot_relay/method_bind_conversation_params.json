@@ -1,0 +1,5 @@
+{
+  "conversationId": "conv_1",
+  "agentIds": ["agt_a"],
+  "primary": "agt_a"
+}

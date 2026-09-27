@@ -1,0 +1,32 @@
+[
+  {
+    "category": "features",
+    "description": "**Contextual hints** now show shortcuts like plan mode or clipboard paste when relevant.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Compaction** can now run part of its work in the background before it blocks the session.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Graceful shutdowns** now allow interrupted turns to resume with a configurable pause budget.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**A3S chat sessions** now integrate fully with the gateway bridge for model catalog and resume.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Question prompts** now time out after 6 minutes instead of blocking forever.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed a crash** that could occur during conversation integrity repairs while a turn was active.",
+    "breaking_change": false
+  }
+]

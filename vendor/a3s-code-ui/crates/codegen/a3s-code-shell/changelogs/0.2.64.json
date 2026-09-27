@@ -1,0 +1,27 @@
+[
+  {
+    "category": "features",
+    "description": "**Dashboard** now displays the current directory and branch; click or press Ctrl+L to change location, or Ctrl+W to dispatch new agents into fresh git worktrees.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard** arrow keys open agent details and exit overlays; closing an agent now selects the neighboring row.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/recap** now appears as a collapsible tool-style block with a loading spinner while generating.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**/usage** command and credit warnings are now hidden for API-key authentication.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP servers** from your user config no longer appear labeled as project-scoped when running from your home directory.",
+    "breaking_change": false
+  }
+]

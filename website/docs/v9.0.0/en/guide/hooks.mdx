@@ -10,8 +10,7 @@ is `registerHook()`, `hookCount()`, and `unregisterHook()`.
 
 ## Events
 
-The Node.js and Python registration helpers accept these 25 names
-(`sdk/node/src/hook_bridge.rs`); any other string is rejected:
+The Node.js and Python registration helpers accept these stable names:
 
 ```text
 pre_tool_use
@@ -25,18 +24,6 @@ skill_unload
 pre_prompt
 post_response
 on_error
-on_success
-pre_context_perception
-post_context_perception
-pre_memory_recall
-post_memory_recall
-pre_planning
-post_planning
-pre_reasoning
-post_reasoning
-on_rate_limit
-on_confirmation
-intent_detection
 pre_run_control
 post_run_control
 ```
@@ -47,9 +34,8 @@ enum names. Those three names are not yet accepted by the Node.js or Python
 string parsers, so use a Rust or Go host when policy must intercept permission
 or compaction directly.
 
-The perception, memory, planning, reasoning, rate-limit, confirmation, success,
-and intent events serve specialized harnesses. Registering one is accepted
-everywhere, but it fires only on runtime paths that emit it. Treat an
+Core also defines perception, memory, planning, reasoning, rate-limit,
+confirmation, success, and intent events for specialized harnesses. Treat an
 event as a policy boundary only when the protected runtime path consumes its
 decision.
 

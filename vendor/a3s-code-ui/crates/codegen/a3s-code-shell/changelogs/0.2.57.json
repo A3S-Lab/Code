@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "Fixed cases where long-running conversation compaction could hang indefinitely.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Notification hooks now fire only for real user-attention events and no longer trigger constantly during tool use.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Fixed literal display of HTML entities such as &lt; and &gt; in responses and tool output.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Improved resilience to network blips during long responses by resuming instead of failing the turn.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Typing `[`** in the pager prompt no longer appears delayed.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok plugin install <name>`** now resolves plugins from registered marketplaces instead of only local paths.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copy** now tries all available Linux clipboard tools so paste works reliably in more terminals.",
+    "breaking_change": false
+  }
+]

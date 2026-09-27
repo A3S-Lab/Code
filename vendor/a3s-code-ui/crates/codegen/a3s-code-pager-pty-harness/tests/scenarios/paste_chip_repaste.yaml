@@ -1,0 +1,35 @@
+name: paste-chip-repaste-expands
+description: >
+  Pasting the same multiline content twice expands the `[Pasted: N lines]`
+  chip back into plain text instead of inserting a duplicate chip.
+terminal:
+  rows: 36
+  cols: 100
+mock:
+  response: "UNUSED_PASTE_CHIP_REPASTE"
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: paste_prompt
+    text: "alpha\nbravo\ncharlie\ndelta"
+  - action: wait_for_text
+    text: "[Pasted: 4 lines]"
+    timeout_ms: 10000
+  - action: paste_prompt
+    text: "alpha\nbravo\ncharlie\ndelta"
+  - action: wait
+    millis: 300
+  # Chip expanded, not duplicated: label gone, plain text present once.
+  - action: assert_not_contains
+    text: "Pasted:"
+  - action: assert_contains
+    text: "charlie"
+  # A duplicate insert would abut the copies as "deltaalpha".
+  - action: assert_not_contains
+    text: "deltaalpha"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: paste-chip-repaste-expanded
+    note: Second identical paste expanded the chip instead of adding another.

@@ -1,0 +1,72 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Compaction** no longer hangs indefinitely when the summarizer stream stalls after the server has finished.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**/resume** now shows sessions from your current working directory's repo at the top of the list.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Slash command completion** now shows consistent suggestions and remembers recently used commands.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Queued prompts** now reappear reliably after deleting the last item and re-queuing.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Headless sessions** no longer produce authentication error noise from unauthenticated MCP servers.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large MCP tool results** are now truncated inline and saved to disk to avoid unnecessary context compaction.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid flowchart labels** with long identifiers are now kept whole instead of being cut mid-word.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Too-wide Mermaid diagrams** now show a hint below the fallback box pointing to the Open Image button.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Cmd+Backspace** now deletes only from the cursor to the start of the line instead of clearing the whole prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Inline Mermaid previews** now break long identifiers at word boundaries instead of mid-segment.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Signed git commits** no longer corrupt the TUI by letting pinentry draw over the screen.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Arrow keys** now move the prompt cursor or open history while a /btw answer panel is visible.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Cancel behavior for running subagents** can now be set to always stop or always continue in config.toml.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Long option descriptions** in question prompts now expand fully when the row is focused.",
+    "breaking_change": false
+  }
+]

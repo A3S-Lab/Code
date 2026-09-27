@@ -1,0 +1,187 @@
+[
+  {
+    "category": "breaking",
+    "description": "**--minimal** and **--fullscreen** flags now apply only to the current session.",
+    "breaking_change": true
+  },
+  {
+    "category": "features",
+    "description": "**New /jump slash command** lets you quickly jump to any previous turn in the conversation.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New /timeline sidebar** shows a clickable tick rail for fast navigation between conversation turns.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok login** now requests A3S Code Projects scopes so workspace listing works after consent.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Permission mode** can now be set fleet-wide via remote config when no local setting exists.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Edit tool output** has a setting to show a compact one-line summary instead of always-expanded diffs.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Tab completion** in !bash mode now works like a normal terminal (prefix fill, dropdown, directory drill-down).",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Enterprise deployments** can now disable voice dictation via `requirements.toml` so `/voice` and Ctrl+Space are hidden for everyone.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**User prompts** now appear bold only in `--minimal` mode; fullscreen keeps normal weight.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok plugin install`** now accepts a marketplace's registered name as a qualifier.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Consecutive edits to the same file now collapse into a single scrollback row when collapsed edit blocks are enabled.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Local sessions now inherit your shell environment variables and keep the current directory across commands.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Login and re-login** no longer stack multiple device-code polls or leave stale flows running.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Background task tools** now render with correct icons and titles instead of the generic MCP wrench.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Task tool** now correctly validates and displays allowed model slugs for subagents.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rewind** now correctly handles bash transcripts, permission follow-ups, and sessions that mix old and new prompt markers.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Re-login** during a session now immediately uses the new token instead of requiring a new session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Terminal commands** using globs now behave the same on zsh as on bash and no longer fail with shell errors.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Installer** no longer replaces stowed shell configuration symlinks with plain files on upgrade.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Voice transcription** now works with enterprise API bases and API-key authentication.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed crashes** on some network-mounted home directories by using a safer SQLite journal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Home and End keys** now move to the ends of the current wrapped line in the prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Arrow keys and Esc** now work correctly inside viewers opened from the dashboard.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Warns at startup** when user and project sandbox profiles define the same name differently.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Billing upgrade links** now show the full URL in the transcript (and copy it) when a browser cannot be opened.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed Ctrl+Y yank** no longer working after sending a prompt.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**No longer shows permission prompts** seconds after a turn was cancelled with Esc or Ctrl+C.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Page Up and Page Down** now move the highlighted entry to the top or bottom of the visible scrollback area.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Conflicting project and user sandbox profiles now show a clear warning on the welcome screen.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**OAuth login URLs** no longer contain duplicate referrer parameters.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**File links** in official VS Code Remote-SSH terminals now use VS Code's native path handling.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Minimal mode** now shows the folder-trust prompt after sign-in when required.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Skills** whose names collide with built-in slash commands are now reachable via qualified names.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed background task tracking** when using grok -p --no-wait-for-background so tasks are properly reaped on exit.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rate limit errors (429)** now show specific server messages (capacity, team limits, free-usage) instead of generic upgrade prompts, with correct copy based on auth type.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/copy` slash command** is now available in minimal mode.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Improved recap and compaction** behavior.",
+    "breaking_change": false
+  }
+]

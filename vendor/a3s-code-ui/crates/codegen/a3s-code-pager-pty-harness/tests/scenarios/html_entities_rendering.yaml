@@ -1,0 +1,38 @@
+name: html-entities-rendering
+description: >
+  Capture the real pager's rendering of HTML character entities in BOTH a
+  prose paragraph and a markdown table cell. Used for a before/after
+  comparison against the pre-fix binary (origin/main) and the with-fix
+  binary; no `assert_not_contains` so the same scenario runs against both.
+terminal:
+  rows: 40
+  cols: 110
+mock:
+  response: |
+    Prose: vec&lt;T&gt; and a &amp; b and an &mdash; dash.
+
+    | Kind | Sample |
+    |------|--------|
+    | code | vec&lt;T&gt; |
+    | pair | a &amp; b |
+    | dash | an &mdash; dash |
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "show entities"
+  - action: keys
+    keys: "<Enter>"
+  # Wait for the table to be fully rendered — the "dash" row is the last
+  # one, and its content reaches the screen once streaming completes.
+  - action: wait_for_text
+    text: "dash"
+    timeout_ms: 30000
+  - action: wait
+    millis: 500
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: rendering
+    note: Prose paragraph + markdown table with HTML entities.

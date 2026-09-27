@@ -1,0 +1,67 @@
+[
+  {
+    "category": "features",
+    "description": "**Subagents** can always use the parent model, with that choice locked in when the session starts.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Local worktree capture no longer refuses repositories that contain uninitialized submodules.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Memory captures** no longer include opaque model reasoning blobs.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Idle timeouts now show a clear message instead of raw internal text.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Images attached to the last user prompt now survive compaction.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Earlier image attachments now survive multiple compactions via a persisted path list.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Subagent spawning** no longer requires choosing a type; omitted calls default to general-purpose.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Custom agent profiles** now persist correctly across session resume and reload.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent labels** now appear as \"Subagent\" instead of \"General\" in transcripts and the tasks pane.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "The agent now keeps helper scripts, logs, and PR drafts in the system temp directory instead of the repository.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "read_file descriptions now tell the model when offset/limit are ignored for SKILL.md and instruction files.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Effort levels for models now come from the API instead of hard-coded lists, and config aliases inherit the menu.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "MCP tools that receive the wrong JSON shape are now automatically fixed when the mismatch is unambiguous.",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Fixed authentication recovery** for idle sessions after token timeouts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Background work counts** now appear in a persistent status line instead of repeated transcript messages.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Retry failed** messages no longer contain raw HTML error pages.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Rate limit messages** now show the server detail without the wire prefix.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**In-place prompt editing** is temporarily disabled due to scroll behavior issues.",
+    "breaking_change": false
+  }
+]

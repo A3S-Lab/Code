@@ -1,0 +1,67 @@
+Your task is to create a detailed summary of the tool-call history above, paying close attention to preserving all information the assistant needs to continue its current task without losing context.
+This summary should be thorough in capturing technical details, code patterns, data points, and intermediate results that would be essential for continuing the current work.
+
+CRITICAL: If the tool-call history contains a previous compaction summary (marked with "ConversationCompaction" or similar markers), you MUST incorporate ALL information from that previous summary into your new summary. Previous summaries contain essential context from earlier steps that would otherwise be lost.
+
+Use your internal thinking channel to chronologically review each tool call and its result before producing the final summary, and ensure you've covered all necessary points.
+During that analysis, thoroughly identify:
+- What was searched, read, or executed and why
+- Key findings, data points, and outcomes
+- Specific details like:
+  - file paths, URLs, IDs, error messages
+  - full code snippets (especially recent ones)
+  - function signatures and configuration details
+  - tool call parameters and results
+- Errors encountered and how they were resolved
+- Double-check for completeness — every piece of data the assistant gathered must be preserved.
+
+Your final summary must contain the following sections, in order:
+
+1. Task and Intent: What the assistant is trying to accomplish for the user, including the current sub-goal.
+
+2. Key Findings: Facts, data points (numbers, dates, IDs, URLs), schema details, and any other information gathered from tool calls. Preserve specific data verbatim.
+
+3. Files and Code: Enumerate specific file paths examined, modified, or created. Include key code snippets, function signatures, and configuration details verbatim, plus a summary of why each file is important.
+
+4. Errors and Fixes: All errors encountered, how each was resolved, including specific error messages verbatim.
+
+5. Actions Taken: Successful modifications, commands run, and their outcomes.
+
+6. Current Progress: What has been completed and what remains to be done.
+
+Here's an example of how your output should be structured:
+
+<example>
+1. Task and Intent:
+   [Detailed description of what the assistant is working on]
+
+2. Key Findings:
+   - [Finding 1 with specific data verbatim]
+   - [Finding 2]
+   - [...]
+
+3. Files and Code:
+   - [file path 1]
+     - [Summary of importance]
+     - [Key code snippet or changes]
+   - [file path 2]
+     - [...]
+
+4. Errors and Fixes:
+   - [Error message verbatim]: [How fixed]
+
+5. Actions Taken:
+   - [Action 1]: [Outcome]
+   - [...]
+
+6. Current Progress:
+   [What is done, what remains]
+</example>
+
+Output the summary directly using the section headings above. Do not wrap the output in any XML tags or other markup — emit the six sections as plain text.
+
+IMPORTANT:
+- Do NOT call any tools. Output the summary text only.
+- Preserve specific data verbatim — URLs, file paths, code snippets, error messages, ID strings.
+- Write in the same language as the conversation. If the conversation is primarily in Chinese, write the summary in Chinese (keep technical terms, file paths, and code in English).
+- Do not invent information that is not in the tool-call history.

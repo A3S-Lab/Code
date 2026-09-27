@@ -1,0 +1,243 @@
+---
+title: 'Git 工作树'
+description: '通过会话的 Git 工具操作仓库与工作树'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# Git 工作树
+
+session 的 `git` 工具以宿主侧特权操作的方式运行 git。它接收一个结构化的命令对象
+（`command`，worktree 操作还可带 `subcommand`/`name`/`path`），并返回包含
+`output` 与退出码的工具结果。`worktree` 配合 `subcommand: 'create'` 会在 `path` 处
+新建一个 worktree，并创建名为 `name` 的新分支。本示例先检查仓库，然后直接通过工具表面创建、
+列出并移除一个 worktree。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::Agent;
+use serde_json::json;
+use std::path::Path;
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent.session_builder("/path/to/repo").build().await?;
+
+    let status = session.tool("git", json!({ "command": "status" })).await?;
+    println!("{}", status.output);
+
+    let worktree = Path::new("/path/to/repo").join("wt-feature-auth");
+    let created = session
+        .tool(
+            "git",
+            json!({
+                "command": "worktree",
+                "subcommand": "create",
+                "name": "feature-auth",
+                "path": worktree
+            }),
+        )
+        .await?;
+    if created.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "git".into(),
+            message: format!("创建失败：{}", created.output),
+        });
+    }
+
+    let list = session
+        .tool(
+            "git",
+            json!({ "command": "worktree", "subcommand": "list" }),
+        )
+        .await?;
+    println!("{}", list.output);
+
+    let removed = session
+        .tool(
+            "git",
+            json!({
+                "command": "worktree",
+                "subcommand": "remove",
+                "path": worktree
+            }),
+        )
+        .await?;
+    if removed.exit_code != 0 {
+        return Err(a3s_code_core::CodeError::Tool {
+            tool: "git".into(),
+            message: format!("删除失败：{}", removed.output),
+        });
+    }
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+import * as path from 'path';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/path/to/repo');
+
+// 检查仓库
+const status = await session.git({ command: 'status' });
+console.log(status.output);
+
+// 在新分支上创建工作树
+const wtPath = path.join('/path/to/repo', 'wt-feature-auth');
+const created = await session.git({
+  command: 'worktree',
+  subcommand: 'create',
+  name: 'feature-auth',
+  path: wtPath,
+});
+if (created.exitCode !== 0) throw new Error(`create failed: ${created.output}`);
+
+// 列出工作树
+const list = await session.git({ command: 'worktree', subcommand: 'list' });
+console.log(list.output);
+
+// 完成后删除工作树
+const removed = await session.git({
+  command: 'worktree',
+  subcommand: 'remove',
+  path: wtPath,
+});
+if (removed.exitCode !== 0) throw new Error(`remove failed: ${removed.output}`);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+import os
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+session = agent.session("/path/to/repo", SessionOptions())
+
+# 检查仓库
+status = session.git({"command": "status"})
+print(status.output)
+
+# 在新分支上创建工作树
+wt_path = os.path.join("/path/to/repo", "wt-feature-auth")
+created = session.git({
+    "command": "worktree",
+    "subcommand": "create",
+    "name": "feature-auth",
+    "path": wt_path,
+})
+if created.exit_code != 0:
+    raise RuntimeError(f"create failed: {created.output}")
+
+# 列出工作树
+listing = session.git({"command": "worktree", "subcommand": "list"})
+print(listing.output)
+
+# 完成后删除工作树
+removed = session.git({
+    "command": "worktree",
+    "subcommand": "remove",
+    "path": wt_path,
+})
+if removed.exit_code != 0:
+    raise RuntimeError(f"remove failed: {removed.output}")
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"path/filepath"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	session, err := agent.Session(ctx, "/path/to/repo", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	status, err := session.Git(ctx, code.GitOptions{Command: "status"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(status.Output)
+
+	worktree := filepath.Join("/path/to/repo", "wt-feature-auth")
+	created, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "create",
+		Name: "feature-auth", Path: worktree,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if created.ExitCode != 0 {
+		log.Fatalf("创建失败：%s", created.Output)
+	}
+	list, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "list",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(list.Output)
+
+	removed, err := session.Git(ctx, code.GitOptions{
+		Command: "worktree", Subcommand: "remove", Path: worktree,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if removed.ExitCode != 0 {
+		log.Fatalf("删除失败：%s", removed.Output)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+请传入命令对象，而不是位置参数：`{ command: 'status' }`、`{ command: 'diff' }`
+或 `{ command: 'worktree', subcommand: 'list' }`。`command` 的取值为 `status`、`log`、
+`branch`、`checkout`、`diff`、`stash`、`remote` 和 `worktree`；该工具没有 commit 或 push
+命令。每次调用都会返回一个工具结果，
+因此在使用 output 之前，应先检查 `exit_code`（Rust/Python）、`exitCode`
+（Node.js）或 `ExitCode`（Go）。
+
+直接 git 调用是宿主侧特权操作：它们会跳过会话的权限策略和确认提示。请在你的应用中为分支
+切换和 worktree 移除设置关卡，或使用 `governedTool('git', ...)` / `governed_tool` /
+`GovernedTool` 保留会话的关卡。
+
+可运行版本位于 `sdk/node/examples/git/test_worktree_git.ts`。

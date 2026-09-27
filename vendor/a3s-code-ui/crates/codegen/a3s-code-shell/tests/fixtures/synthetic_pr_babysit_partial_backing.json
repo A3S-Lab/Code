@@ -1,0 +1,41 @@
+{
+  "name": "pr_babysit_partial_backing",
+  "description": "Three /pr-babysit todos are in_progress but only one polling subagent is alive — the gate's tightened heuristic (PR2 partition) must classify the two unbacked items and fire with the in-flight reason. Backed items are intentionally NOT listed in the reminder body (the gate already decided not to nudge on them); negative coverage lives in the inline turn_end_guard_tests in acp_session.rs.",
+  "turns": [
+    {
+      "turn_index": 0,
+      "kind": "user",
+      "content": "<synthetic user prompt — content scrubbed>"
+    },
+    {
+      "turn_index": 1,
+      "kind": "assistant",
+      "tool_calls_emitted": [],
+      "todo_state_after_turn": [
+        {
+          "id": "pr-1",
+          "status": "in_progress",
+          "content": "pr-1:ci-green"
+        },
+        {
+          "id": "pr-2",
+          "status": "in_progress",
+          "content": "pr-2:ci-green"
+        },
+        {
+          "id": "pr-3",
+          "status": "in_progress",
+          "content": "pr-3:ci-green"
+        }
+      ],
+      "backing_task_count": 1,
+      "expected_gate_decision": "nudge",
+      "expected_reason": "in_flight",
+      "expected_reminder_contains": [
+        "In-progress (no backing background task)",
+        "pr-2:ci-green",
+        "pr-3:ci-green"
+      ]
+    }
+  ]
+}

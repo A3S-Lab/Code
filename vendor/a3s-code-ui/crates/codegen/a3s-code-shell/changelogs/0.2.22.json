@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Authentication errors** with static API keys now surface a clear error instead of hanging the turn.",
+    "breaking_change": false
+  }
+]

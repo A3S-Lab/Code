@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Headless MCP status reporting** and connecting reminders now match actual server handshake state.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP tool searches and calls** now render with query, results, arguments and output on the daemon path.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Swift string interpolation** with nested parentheses now highlights correctly in the TUI.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Syntax highlighting** now uses far less memory and runs faster on large TypeScript and other files.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Copy-paste in --minimal mode** no longer inserts extra blank lines or breaks long paths at wrap points.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/memory` modal** now shows copy confirmations, searches note contents, and works on narrow terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Memory delete** is now much faster and toggling memory on/off from a config-disabled session now correctly wires the agent.",
+    "breaking_change": false
+  }
+]

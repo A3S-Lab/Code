@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**ask_user_question** tool can now be enabled in allowlists without requiring plan-mode tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Shift+Tab** mode cycling (Normal → Plan → Auto-Approve) works again in the agent view.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Ctrl+C** now cancels a blocking `grok update` cleanly instead of leaving an orphaned download repainting the terminal.",
+    "breaking_change": false
+  }
+]

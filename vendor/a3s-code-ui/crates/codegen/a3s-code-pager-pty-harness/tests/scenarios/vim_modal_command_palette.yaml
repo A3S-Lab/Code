@@ -1,0 +1,92 @@
+name: vim-modal-command-palette
+description: >
+  Type-to-find pickers default to INPUT on open while staying vim-toggleable.
+  With vim-mode ON, the command palette opens in INPUT mode: a letter filters the
+  list immediately (no-match query shows "No matches"). Esc clears the query
+  (command palette's modal chrome clears search text first); a second Esc drops to
+  NAV mode where letters no longer filter; `i` re-enters INPUT (a letter filters
+  again). The footer surfaces an `i search` hint in NAV mode (discoverability) and
+  hides it in INPUT mode. Drives the real pager via the scripted ptyctl runner.
+terminal:
+  rows: 40
+  cols: 110
+mock:
+  response: "SCRIPTED_VIM_MODAL acknowledged."
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  # Promote welcome → session so we are unambiguously on the agent screen.
+  - action: type_text
+    text: "hello"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: SCRIPTED_VIM_MODAL
+    timeout_ms: 30000
+  # Turn vim-mode ON (the setting that gates vim_normal_first at the call sites).
+  - action: type_text
+    text: "/vim-mode"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: "Vim mode: on"
+    timeout_ms: 10000
+  # Open the command palette (Ctrl+P) — opens in INPUT mode (type-to-find).
+  - action: keys
+    keys: "<C-p>"
+  - action: wait_for_text
+    text: Commands
+    timeout_ms: 10000
+  - action: assert_contains
+    text: New Session
+  # INPUT mode on open: the footer does NOT advertise the `i` search hint.
+  - action: assert_not_contains
+    text: i search
+  # INPUT mode on open: a letter filters immediately. "xyz" matches nothing → "No matches".
+  - action: type_text
+    text: "xyz"
+  - action: wait
+    millis: 200
+  - action: assert_contains
+    text: No matches
+  # Esc clears the query (command palette chrome) → list restored, still input.
+  - action: keys
+    keys: "<Esc>"
+  - action: wait
+    millis: 200
+  - action: assert_not_contains
+    text: No matches
+  - action: assert_contains
+    text: New Session
+  # Second Esc (empty query) drops to NAV mode via the picker's vim Esc.
+  - action: keys
+    keys: "<Esc>"
+  - action: wait
+    millis: 200
+  # NAV mode: the footer now advertises `i search` so users discover how to type.
+  - action: assert_contains
+    text: i search
+  # NAV mode: typing a letter must NOT filter (list stays intact, no "No matches").
+  - action: type_text
+    text: "xyz"
+  - action: wait
+    millis: 200
+  - action: assert_not_contains
+    text: No matches
+  - action: assert_contains
+    text: New Session
+  # `i` re-enters INPUT mode; typing now filters again → "No matches".
+  - action: keys
+    keys: "i"
+  - action: type_text
+    text: "xyz"
+  - action: wait
+    millis: 200
+  - action: assert_contains
+    text: No matches
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: vim-modal-command-palette
+    note: Command palette input-default, Esc clears query, Esc→nav (no filter), i→input.

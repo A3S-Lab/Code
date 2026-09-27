@@ -1,0 +1,308 @@
+---
+title: '自动压缩'
+description: '让运行时自动将长会话保持在上下文预算内'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 自动压缩
+
+长会话的对话记录每一轮都会增长。启用 `autoCompact` 后，当对话记录接近模型上下文窗口的
+`autoCompactThreshold` 比例时，runtime 会折叠较早的上下文，你无需手动管理 token。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let options = SessionOptions::new()
+        .with_auto_compact(true)
+        .with_auto_compact_threshold(0.75);
+    let session = agent
+        .session_builder("/repo")
+        .options(options)
+        .build()
+        .await?;
+
+    for step in 0..50 {
+        session
+            .send(&format!("第 {step} 步：继续重构解析器"), None)
+            .await?;
+    }
+
+    println!("历史消息数：{}", session.history().len());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+
+const session = await agent.sessionAsync('/repo', {
+  // 对话记录接近窗口的 75% 时折叠较早的上下文。
+  autoCompact: true,
+  autoCompactThreshold: 0.75,
+});
+
+// 运行一个长的多步骤任务，runtime 会按需折叠较早的上下文。
+for (let i = 0; i < 50; i++) {
+  await session.send(`第 ${i} 步：继续重构解析器`);
+}
+
+console.log('历史消息数：', session.history().length);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+# 对话记录接近窗口的 75% 时折叠较早的上下文。
+opts.auto_compact = True
+opts.auto_compact_threshold = 0.75
+session = agent.session("/repo", opts)
+
+# 运行一个长的多步骤任务，runtime 会按需折叠较早的上下文。
+for i in range(50):
+    session.send(f"第 {i} 步：继续重构解析器")
+
+print("历史消息数：", len(session.history()))
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	options := &code.SessionOptions{
+		AutoCompact:          code.Ptr(true),
+		AutoCompactThreshold: code.Ptr(float32(0.75)),
+	}
+	session, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	for step := 0; step < 50; step++ {
+		prompt := fmt.Sprintf("第 %d 步：继续重构解析器", step)
+		if _, err := session.Run(ctx, prompt); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	history, err := session.History(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("历史消息数：", len(history))
+}
+```
+
+</Tab>
+</Tabs>
+
+## 压缩如何工作
+
+由三个会话选项控制：
+
+- `autoCompact` / `auto_compact` —— 默认关闭。
+- `autoCompactThreshold` / `auto_compact_threshold` —— 上下文窗口的占比，限制在
+  0.0–1.0 之间，默认 0.8。调低它可以更早触发压缩。
+- `maxContextTokens` / `max_context_tokens` —— 计算所用的上下文窗口。默认取所配置模型
+  声明的上下文上限，未声明时回退为 200,000 token。
+
+会话的每一轮都运行在事实日志（fact log）上。每收到一条用户消息或工具结果后，runtime
+都会测量折叠后的对话记录。当它达到约 `maxContextTokens × autoCompactThreshold × 4`
+个字符（大致每 token 四个字符），且本轮尚未压缩过时，runtime 会记录一条
+`compaction.done` 事实，把较早的对话记录折叠成一条位于开头的上下文消息，同时流中会发出
+`context_compacted` 事件。折叠会原样保留较早的文本，不会让模型去总结它。未启用
+`autoCompact` 时，只有在固定的 1,000,000 字符上限处才会进行同样的折叠。
+
+SDK 的 history API（`history()` / `History`）返回会话当前持有的消息。
+
+## Meta Harness 配方中的压缩
+
+如果会话使用显式的 [Meta Harness](/guide/meta-harness) 配方，压缩是其中的一个
+内置部件。`compactAfterChars` / `compact_after_chars` 直接设置该部件的字符阈值；省略时
+使用上文由 `autoCompact` 推导出的阈值。`toolBudget` / `tool_budget` 属于 `budget` 部件：
+它是每条用户消息允许的成功工具调用次数，达到后下一次工具调用会被拒绝，本轮随之结束。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, HarnessComposeOptions, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let harness = HarnessComposeOptions {
+        tool_budget: Some(40),
+        compact_after_chars: Some(120_000),
+        components: ["system", "tools", "budget", "compact", "infer"]
+            .map(String::from)
+            .to_vec(),
+        ..Default::default()
+    };
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_harness(harness))
+        .build()
+        .await?;
+
+    let result = session.send("继续重构解析器", None).await?;
+    println!("{}", result.text);
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, Harness } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/repo', {
+  harness: Harness.compose({
+    toolBudget: 40,
+    compactAfterChars: 120_000,
+    components: [
+      Harness.system(),
+      Harness.tools(),
+      Harness.budget(),
+      Harness.compact(),
+      Harness.infer(),
+    ],
+  }),
+});
+
+const result = await session.send('继续重构解析器');
+console.log(result.text);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, Harness, SessionOptions
+
+agent = Agent.create("agent.acl")
+
+opts = SessionOptions()
+opts.harness = Harness.compose(
+    components=[
+        Harness.system(),
+        Harness.tools(),
+        Harness.budget(),
+        Harness.compact(),
+        Harness.infer(),
+    ],
+    tool_budget=40,
+    compact_after_chars=120_000,
+)
+session = agent.session("/repo", opts)
+
+result = session.send("继续重构解析器")
+print(result.text)
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+
+	session, err := agent.Session(ctx, "/repo", &code.SessionOptions{
+		Harness: &code.HarnessOptions{
+			Components: []string{
+				code.HarnessSystem,
+				code.HarnessTools,
+				code.HarnessBudget,
+				code.HarnessCompact,
+				code.HarnessInfer,
+			},
+			ToolBudget:        code.Ptr(uint32(40)),
+			CompactAfterChars: code.Ptr(uint(120_000)),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer session.Close(context.Background())
+
+	result, err := session.Run(ctx, "继续重构解析器")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+</Tab>
+</Tabs>

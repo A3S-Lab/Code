@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**ask_user_question** tool can now be enabled in allowlists without requiring plan-mode tools.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP servers** provided at session start now persist across config hot-reloads.",
+    "breaking_change": false
+  }
+]

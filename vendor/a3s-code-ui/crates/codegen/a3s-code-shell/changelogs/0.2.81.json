@@ -1,0 +1,57 @@
+[
+  {
+    "category": "features",
+    "description": "**Chat sessions** no longer send workspace binding hints that belong to the backend.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed sessions** that remained stuck on the thinking indicator after the model finished responding.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New stream transforms** let hosts hide, unwrap, or rewrite tool calls for display without affecting agent transcripts.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**cancel()** now accepts a timeout so a stuck turn cannot hang the session forever.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Run tool blocks** now show the model's description as the main title when provided.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Hex color codes** in prose now render as colored dots on truecolor terminals.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New setting** \"Show thinking blocks\" controls whether agent reasoning is visible in the scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Spinners** now show the description or short command of the task being waited on when available.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Grep searches** now time out after 20 seconds by default (60s on WSL) instead of always waiting 60s.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Mermaid diagrams** now correctly display angle brackets and symbols instead of literal HTML entities in labels.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Recap requests** no longer trigger context-length 400 errors on long conversations.",
+    "breaking_change": false
+  }
+]

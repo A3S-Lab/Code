@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Permission mode** (auto / always-approve) now stays visible when the agent enters plan mode and is restored on exit.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Typing, pasting, or pressing Shift+Tab on the welcome screen now immediately opens the session instead of creating a duplicate one.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Dock sections, queue body, and reveal rows now stay within their documented height rules even on crowded terminals.",
+    "breaking_change": false
+  }
+]

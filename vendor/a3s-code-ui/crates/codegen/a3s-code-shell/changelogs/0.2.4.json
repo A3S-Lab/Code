@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**read_file** now correctly passes embedded base64 images to the model as vision tokens instead of truncated fragments.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**image_gen** now uses the higher-quality grok-imagine-image-quality model.",
+    "breaking_change": false
+  }
+]

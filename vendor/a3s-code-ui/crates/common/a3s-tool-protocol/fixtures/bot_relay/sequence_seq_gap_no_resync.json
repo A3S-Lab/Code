@@ -1,0 +1,21 @@
+{
+  "must": "A seq gap without hub:resync_required is not a resync. Deliver both frames in order. Do not synthesize a resync.",
+  "expectedResyncCount": 0,
+  "expectedDistinctEvents": 2,
+  "frames": [
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 1,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "e1" }
+    },
+    {
+      "v": 1,
+      "agentId": "agt_1",
+      "seq": 4,
+      "channel": "transcript",
+      "event": { "kind": "entry", "id": "e4" }
+    }
+  ]
+}

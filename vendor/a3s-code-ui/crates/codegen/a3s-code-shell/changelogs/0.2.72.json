@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**No longer triggers browser login** at startup when an API key is already configured for inference.",
+    "breaking_change": false
+  }
+]

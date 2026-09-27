@@ -1,0 +1,45 @@
+name: path-space-hyperlink
+description: >
+  Tutor report (bottlerocket): plain-text file paths with spaces only partially
+  linkify — OSC 8 / click / underline stopped at the first space in
+  `Demo App.app`. Stream the repro path through the mock agent and
+  capture the rendered UI so CI / local PTY runs prove the full path stays one
+  clickable region.
+terminal:
+  rows: 40
+  cols: 160
+# Native OSC 8 brand so the pager actually emits hyperlink sequences in the
+# PTY stream (default harness brand is Unknown and skips OSC 8).
+environment:
+  env:
+    - key: TERM_PROGRAM
+      value: WezTerm
+mock:
+  response: |
+    PATHSPACE_SENTINEL open "/Users/alice/src/app/release/mac-arm64/Demo App.app"
+    (or release/mac/ on Intel).
+steps:
+  - action: wait_for_text
+    text: Quit
+    timeout_ms: 20000
+  - action: type_text
+    text: "show path"
+  - action: keys
+    keys: "<Enter>"
+  - action: wait_for_text
+    text: PATHSPACE_SENTINEL
+    timeout_ms: 30000
+  - action: wait_for_text
+    text: "App.app"
+    timeout_ms: 10000
+  - action: wait
+    millis: 400
+  - action: assert_contains
+    text: "Demo App.app"
+  - action: assert_not_contains
+    text: panicked
+  - action: screenshot
+    name: spaced-path
+    note: >
+      Full macOS app-bundle path with a space must render as one link region
+      (not truncated at Demo).

@@ -1,0 +1,17 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Marketplace skills** without proper descriptions are now hidden from listings instead of flooding the model with tables.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Grep searches** on large repositories are now substantially faster and no longer hit the 60-second timeout.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Prompts submitted rapidly** now stay in correct submission order in the queue.",
+    "breaking_change": false
+  }
+]

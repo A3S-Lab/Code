@@ -1,0 +1,200 @@
+---
+title: '记忆'
+description: '记录任务结果，之后按相似度、标签或时间召回。'
+---
+
+import { Tab, Tabs } from '@rspress/core/theme';
+
+# 记忆
+
+持久化记忆让会话能够记录哪些做法成功（以及哪些失败），并在之后取回这些事实。
+每个 SDK 会话都有一个文件存储，默认位于 `<workspace>/.a3s/memory`；若设置了 ACL
+`memory_dir`，则使用该路径。只有当你想换用其他路径或后端时，才需要传入
+`memoryStore` / `memory_store`（Rust 中为 `with_file_memory`，Go 中为
+`FileMemoryDir`）；相对路径以进程当前工作目录为基准解析。用 `rememberSuccess` /
+`rememberFailure` 显式写入结果，再用 `recallSimilar`、`recallByTags` 或
+`memoryRecent` 取回它们。
+
+LLM 抽取也默认开启（ACL `memory` 块中的 `llm_extraction`）。每个提示和回复都
+非空的 turn 完成后，会话会请模型提炼可长期保留的记忆：每个 turn 最多 5 条，输入
+最多 8,000 个字符。关闭会话时会等待（有超时上限）正在进行的抽取完成。默认 store
+会把完全重复的记忆（忽略大小写和空白后内容相同，且至少 24 个字符）合并到已有条目；
+其他记忆都单独存储。
+
+<Tabs>
+<Tab label="Rust">
+
+```rust
+use a3s_code_core::{Agent, SessionOptions};
+
+#[tokio::main]
+async fn main() -> a3s_code_core::Result<()> {
+    let agent = Agent::new("agent.acl").await?;
+    let session = agent
+        .session_builder("/repo")
+        .options(SessionOptions::new().with_file_memory("./.a3s/memory"))
+        .build()
+        .await?;
+    let memory = session.memory().expect("已配置记忆");
+
+    memory
+        .remember_success(
+            "重构认证模块",
+            &["read".into(), "edit".into(), "bash".into()],
+            "提取 AuthService 后所有测试均通过",
+        )
+        .await?;
+    memory
+        .remember_failure(
+            "迁移尝试",
+            "5432 端口上的 psql 连接被拒绝",
+            &["bash".into()],
+        )
+        .await?;
+
+    let recent = memory.get_recent(10).await?;
+    let by_tags = memory
+        .recall_by_tags(&["read".into(), "edit".into()], 5)
+        .await?;
+    let similar = memory.recall_similar("认证模块", 5).await?;
+    println!("{} {} {}", recent.len(), by_tags.len(), similar.len());
+
+    session.close().await;
+    agent.close().await;
+    Ok(())
+}
+```
+
+</Tab>
+<Tab label="Node.js">
+
+```ts
+import { Agent, FileMemoryStore } from '@a3s-lab/code';
+
+const agent = await Agent.create('agent.acl');
+const session = await agent.sessionAsync('/repo', {
+  memoryStore: new FileMemoryStore('./.a3s/memory'),
+});
+
+// 随着智能体执行，记录工作结果。
+await session.rememberSuccess(
+  '重构认证模块',
+  ['read', 'edit', 'bash'],
+  '提取 AuthService 后所有测试均通过',
+);
+await session.rememberFailure(
+  '迁移尝试',
+  '5432 端口上的 psql 连接被拒绝',
+  ['bash'],
+);
+
+// 稍后按时间、工具标签或文本相似度召回。
+const recent = await session.memoryRecent(10);
+const byTags = await session.recallByTags(['read', 'edit'], 5);
+const similar = await session.recallSimilar('认证模块', 5);
+
+console.log(recent.length, byTags.length, similar.length);
+
+await session.closeAsync();
+await agent.close();
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from a3s_code import Agent, SessionOptions, FileMemoryStore
+
+agent = Agent.create("agent.acl")
+opts = SessionOptions()
+opts.memory_store = FileMemoryStore("./.a3s/memory")
+session = agent.session("/repo", opts)
+
+# 随着智能体执行记录工作结果。Python 辅助方法为同步接口，无需 await。
+session.remember_success(
+    "重构认证模块",
+    ["read", "edit", "bash"],
+    "提取 AuthService 后所有测试均通过",
+)
+session.remember_failure(
+    "迁移尝试",
+    "5432 端口上的 psql 连接被拒绝",
+    ["bash"],
+)
+
+# 稍后按时间、工具标签或文本相似度召回。
+recent = session.memory_recent(10)
+by_tags = session.recall_by_tags(["read", "edit"], 5)
+similar = session.recall_similar("认证模块", 5)
+
+print(len(recent), len(by_tags), len(similar))
+
+session.close()
+agent.close()
+```
+
+</Tab>
+<Tab label="Go">
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	code "github.com/A3S-Lab/Code/sdk/go/v9"
+)
+
+func main() {
+	ctx := context.Background()
+	agent, err := code.Create(ctx, "agent.acl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Close(context.Background())
+	options := &code.SessionOptions{FileMemoryDir: "./.a3s/memory"}
+
+	first, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := first.RememberSuccess(
+		ctx,
+		"认证验证规则",
+		[]string{"cargo", "test"},
+		"认证改动必须通过 cargo test。",
+	); err != nil {
+		log.Fatal(err)
+	}
+	if err := first.Close(ctx); err != nil {
+		log.Fatal(err)
+	}
+
+	second, err := agent.Session(ctx, "/repo", options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer second.Close(context.Background())
+	items, err := second.RecallSimilar(ctx, "认证改动 验证", 5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, item := range items {
+		fmt.Println(item.Content)
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+四种 SDK 都暴露显式的记忆写入与查询辅助方法。Go 对应
+`RememberSuccess`、`RememberFailure`、`RecallSimilar`、`RecallByTags`、
+`MemoryRecent` 以及 working/short-term memory 方法。`rememberSuccess` 接收简短
+任务描述、涉及的工具列表（同时作为可搜索标签）以及结果文本；`rememberFailure`
+依次接收任务、错误文本和工具列表。`recallByTags` 返回带有任一给定标签的条目。默认
+store 为 `recallSimilar` 排序时，会用查询中的词匹配每个条目的内容和标签，并按重要性
+和时间新近度加权。若记忆 store 无法创建，会话创建会失败，并返回一个包含 store 路径
+的会话初始化错误。

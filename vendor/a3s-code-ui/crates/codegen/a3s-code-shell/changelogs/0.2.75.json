@@ -1,0 +1,7 @@
+[
+  {
+    "category": "features",
+    "description": "**Prompt history** (Up arrow / Ctrl+R) now shows only the current session's prompts, with the newest selected at the bottom.",
+    "breaking_change": false
+  }
+]

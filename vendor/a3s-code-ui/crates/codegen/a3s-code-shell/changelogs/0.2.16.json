@@ -1,0 +1,72 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Streaming tool output** (bash/write_file) now renders completely in the pager instead of only the latest chunk.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Streaming bash tool output** now appears correctly in the pager scrollback.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New segments compaction mode** writes per-segment markdown files that the model can read to recover pre-compaction detail.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Claude and Cursor compatibility scanning** (skills, rules, AGENTS.md) can now be toggled individually via env vars or config.toml.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Large pasted images** no longer bust the prompt cache or exceed the 50 MiB request limit.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Routing a native tool** (e.g. scheduler_create) through use_tool now gives a clear corrective error instead of an unrecoverable loop.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**\"Starting session...\"** spinner no longer gets stuck when zero MCP servers are configured.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**grok inspect** now shows the resolved on/off state and source for every Claude/Cursor compatibility toggle.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Cursor MCP servers and hooks** are now discovered and can be disabled independently via GROK_CURSOR_MCPS_ENABLED / GROK_CURSOR_HOOKS_ENABLED.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagents** now use the correct harness after switching models mid-session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed long startup delays** when an external auth provider binary hangs or fails.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Subagent conversations** no longer receive unrelated monitor events or background task completions from the parent.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**The /loop command** now accepts natural-language intervals instead of always defaulting to 10 minutes.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed blank output** on completed bash or code-execution cards after shell restart or reconnect.",
+    "breaking_change": false
+  }
+]

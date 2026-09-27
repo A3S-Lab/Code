@@ -1,0 +1,7 @@
+[
+  {
+    "category": "features",
+    "description": "**Permission prompts** now remember your last choice across tools and let you configure the first-prompt default in config.toml.",
+    "breaking_change": false
+  }
+]

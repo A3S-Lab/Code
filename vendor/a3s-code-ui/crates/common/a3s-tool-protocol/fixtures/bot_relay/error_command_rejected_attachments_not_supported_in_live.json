@@ -1,0 +1,6 @@
+{
+  "code": "command_rejected",
+  "retryable": false,
+  "detail": {},
+  "reason": "attachments_not_supported_in_live"
+}
