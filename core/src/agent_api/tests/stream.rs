@@ -320,11 +320,14 @@ async fn test_non_retryable_stream_error_skips_fallback_and_circuit_retries() {
 async fn test_non_retryable_pre_analysis_stops_before_main_turn() {
     let client = Arc::new(NonRetryableStreamingClient::default());
     let agent = Agent::from_config(test_config()).await.unwrap();
+    // Auto planning no longer calls the model before the fact loop.
+    // Only explicit planning publishes a plan, and a non-retryable provider
+    // error on that call must stop before the main turn.
     let session = agent
         .build_session(
             "/tmp/test-non-retryable-pre-analysis".into(),
             client.clone(),
-            &SessionOptions::new().with_planning_mode(PlanningMode::Auto),
+            &SessionOptions::new().with_planning_mode(PlanningMode::Enabled),
         )
         .unwrap();
 
