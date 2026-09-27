@@ -27,8 +27,8 @@ use crate::agent::CodeAgentAdapter;
 use crate::model::LaunchLayers;
 use crate::scrollback::{HorizontalLayout, LayoutConfig};
 use crate::slash::{
-    find_command, matching_commands, parse_invocation, parse_slash, SlashCommand, SLASH_COMMANDS,
-    MAX_VISIBLE_SUGGESTIONS,
+    find_command, matching_commands, parse_invocation, parse_slash, SlashCommand,
+    MAX_VISIBLE_SUGGESTIONS, SLASH_COMMANDS,
 };
 use crate::transcript::Scrollback;
 use crate::{merge_launch_layers, PRODUCT_NAME};
@@ -170,8 +170,9 @@ pub async fn run_fullscreen(
                             layers.workspace.join(arg)
                         };
                         match scrollback.export_markdown(&path) {
-                            Ok(()) => scrollback
-                                .push_assistant(&format!("exported {}", path.display())),
+                            Ok(()) => {
+                                scrollback.push_assistant(&format!("exported {}", path.display()))
+                            }
                             Err(error) => scrollback.push_assistant(&error.to_string()),
                         }
                     }
@@ -353,15 +354,7 @@ async fn run_agent_turn(
             line,
             scrollback,
             |sb| {
-                let _ = draw(
-                    terminal,
-                    &model_for_draw,
-                    &permission,
-                    sb,
-                    prompt,
-                    &[],
-                    0,
-                );
+                let _ = draw(terminal, &model_for_draw, &permission, sb, prompt, &[], 0);
             },
             |_| read_yes_no(),
         )

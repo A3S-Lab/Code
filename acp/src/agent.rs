@@ -674,13 +674,8 @@ impl A3sCodeAgent {
                 status,
                 ..
             } => {
-                self.emit_subagent_progress(
-                    session_id,
-                    &task_id,
-                    &child_session_id,
-                    &status,
-                )
-                .await;
+                self.emit_subagent_progress(session_id, &task_id, &child_session_id, &status)
+                    .await;
             }
             AgentEvent::SubagentEnd {
                 task_id,
@@ -1698,8 +1693,19 @@ mod tests {
     #[test]
     fn tui_mappings_cover_cards_catalog_and_questions() {
         for name in [
-            "shell", "execute", "git", "write", "patch", "glob", "search", "semantic", "hybrid",
-            "bm25", "code_symbols", "download", "other",
+            "shell",
+            "execute",
+            "git",
+            "write",
+            "patch",
+            "glob",
+            "search",
+            "semantic",
+            "hybrid",
+            "bm25",
+            "code_symbols",
+            "download",
+            "other",
         ] {
             let _ = tool_kind_for(name);
         }
@@ -1726,7 +1732,11 @@ mod tests {
         let long = "x".repeat(4_001);
         assert_eq!(tool_call_content("read", None, &long).len(), 1);
         assert!(edit_diff("read", Some(&edit)).is_none());
-        assert!(edit_diff("write", Some(&serde_json::json!({"path": "a", "content": "z"}))).is_some());
+        assert!(edit_diff(
+            "write",
+            Some(&serde_json::json!({"path": "a", "content": "z"}))
+        )
+        .is_some());
         assert!(tool_raw_output("read", None, "out", 0).is_none());
         assert!(tool_raw_output("shell", None, "out", 1).is_some());
 
@@ -1736,7 +1746,16 @@ mod tests {
         assert!(effort_guideline("max").is_some());
         assert!(effort_limits("ultracode").is_some());
         assert!(effort_guideline("medium").is_none());
-        for token in ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultracode"] {
+        for token in [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode",
+        ] {
             let _ = effort_limits(token);
         }
         let ultra = effort_limits("ultracode").expect("ultracode");
@@ -1746,9 +1765,8 @@ mod tests {
         let _ = A3sCodeAgent::core_session_options("sid", "model", None);
         assert!(effort_limits_from_meta(None).is_none());
 
-        let text = A3sCodeAgent::prompt_text(&[acp::ContentBlock::Text(acp::TextContent::new(
-            " hello ",
-        ))]);
+        let text =
+            A3sCodeAgent::prompt_text(&[acp::ContentBlock::Text(acp::TextContent::new(" hello "))]);
         assert_eq!(text, " hello ");
 
         let session_id = acp::SessionId::new("s");
@@ -1849,8 +1867,11 @@ mod tests {
         acp::Agent::authenticate(&agent, acp::AuthenticateRequest::new("none"))
             .await
             .expect("authenticate");
-        let _ = acp::Agent::new_session(&agent, acp::NewSessionRequest::new(std::path::PathBuf::new()))
-            .await;
+        let _ = acp::Agent::new_session(
+            &agent,
+            acp::NewSessionRequest::new(std::path::PathBuf::new()),
+        )
+        .await;
 
         let empty = acp::Agent::prompt(
             &agent,
@@ -1871,12 +1892,18 @@ mod tests {
         )
         .await;
         assert!(unknown.is_err());
-        acp::Agent::cancel(&agent, acp::CancelNotification::new(created.session_id.clone()))
-            .await
-            .expect("cancel");
-        acp::Agent::cancel(&agent, acp::CancelNotification::new(acp::SessionId::new("missing")))
-            .await
-            .expect("cancel missing");
+        acp::Agent::cancel(
+            &agent,
+            acp::CancelNotification::new(created.session_id.clone()),
+        )
+        .await
+        .expect("cancel");
+        acp::Agent::cancel(
+            &agent,
+            acp::CancelNotification::new(acp::SessionId::new("missing")),
+        )
+        .await
+        .expect("cancel missing");
 
         let session = agent
             .sessions
@@ -1900,7 +1927,9 @@ mod tests {
                 verification_summary: Box::new(VerificationSummary::from_reports(&[])),
                 meta: None,
             },
-            AgentEvent::TextDelta { text: String::new() },
+            AgentEvent::TextDelta {
+                text: String::new(),
+            },
             AgentEvent::TextDelta { text: "hi".into() },
             AgentEvent::End {
                 text: "restated".into(),
@@ -1908,8 +1937,12 @@ mod tests {
                 verification_summary: Box::new(VerificationSummary::from_reports(&[])),
                 meta: None,
             },
-            AgentEvent::ReasoningDelta { text: String::new() },
-            AgentEvent::ReasoningDelta { text: "think".into() },
+            AgentEvent::ReasoningDelta {
+                text: String::new(),
+            },
+            AgentEvent::ReasoningDelta {
+                text: "think".into(),
+            },
             AgentEvent::ToolStart {
                 id: "t1".into(),
                 name: "bash".into(),
@@ -1941,7 +1974,9 @@ mod tests {
             AgentEvent::ToolEnd {
                 id: "t2".into(),
                 name: "edit".into(),
-                args: Some(serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"})),
+                args: Some(
+                    serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+                ),
                 output: String::new(),
                 exit_code: 0,
                 metadata: None,
@@ -2043,9 +2078,7 @@ mod tests {
             AgentEvent::Start { prompt: "x".into() },
         ];
         for event in events {
-            agent
-                .handle_event(&sid, &session, &mut state, event)
-                .await;
+            agent.handle_event(&sid, &session, &mut state, event).await;
         }
         assert_eq!(
             state.turn_failure.as_deref(),
@@ -2089,10 +2122,7 @@ mod tests {
             "tool-card:web-fetch",
             tool_kind_for("web_fetch") == acp::ToolKind::Fetch,
         );
-        record(
-            "plan-title",
-            tool_title("update_plan") == "Updating plan",
-        );
+        record("plan-title", tool_title("update_plan") == "Updating plan");
         let edit = serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"});
         record("edit-diff", edit_diff("edit", Some(&edit)).is_some());
         record(
@@ -2171,7 +2201,10 @@ mod tests {
             "effort-high-budget",
             effort_limits("high").is_some_and(|limits| limits.thinking_budget == Some(16384)),
         );
-        record("effort-medium-no-guideline", effort_guideline("medium").is_none());
+        record(
+            "effort-medium-no-guideline",
+            effort_guideline("medium").is_none(),
+        );
 
         let total = covered.len() + missing.len();
         let percent = covered.len() * 100 / total.max(1);

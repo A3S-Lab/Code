@@ -389,7 +389,7 @@ fn yaml_string_list(value: &serde_yaml::Value, key: &str) -> Option<Vec<String>>
     let item = value.get(key).or_else(|| {
         key.split('_')
             .next()
-            .and_then(|_| value.get(&key.replace('_', "-")))
+            .and_then(|_| value.get(key.replace('_', "-")))
     })?;
     match item {
         serde_yaml::Value::String(text) => Some(
@@ -495,10 +495,8 @@ impl CronField {
         if field.contains(7) {
             field.matches[0] = true;
         }
-        if field.contains(0) {
-            if field.matches.len() > 7 {
-                field.matches[7] = true;
-            }
+        if field.contains(0) && field.matches.len() > 7 {
+            field.matches[7] = true;
         }
         Ok(field)
     }

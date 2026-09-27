@@ -53,9 +53,7 @@ impl Scrollback {
             .iter()
             .rev()
             .filter_map(|line| line.strip_prefix("you  "))
-            .filter(|text| {
-                needle.is_empty() || text.to_ascii_lowercase().contains(&needle)
-            })
+            .filter(|text| needle.is_empty() || text.to_ascii_lowercase().contains(&needle))
             .take(limit)
             .map(|text| text.to_string())
             .collect()

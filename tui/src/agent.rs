@@ -196,16 +196,12 @@ impl CodeAgentAdapter {
                     on_delta(scrollback);
                 }
                 AgentEvent::ConfirmationRequired {
-                    tool_id,
-                    tool_name,
-                    ..
+                    tool_id, tool_name, ..
                 } => {
                     let approved = if auto_approve {
                         true
                     } else {
-                        scrollback.push_assistant(&format!(
-                            "allow tool `{tool_name}`? [y/N]"
-                        ));
+                        scrollback.push_assistant(&format!("allow tool `{tool_name}`? [y/N]"));
                         on_delta(scrollback);
                         tokio::task::block_in_place(|| ask_confirm(&tool_name))
                     };
@@ -214,10 +210,7 @@ impl CodeAgentAdapter {
                     } else {
                         Some("denied by user".to_string())
                     };
-                    if let Err(error) = session
-                        .confirm_tool_use(&tool_id, approved, reason)
-                        .await
-                    {
+                    if let Err(error) = session.confirm_tool_use(&tool_id, approved, reason).await {
                         scrollback.push_assistant(&format!("confirm {tool_name}: {error}"));
                         on_delta(scrollback);
                     } else if !approved {
@@ -226,9 +219,7 @@ impl CodeAgentAdapter {
                     }
                 }
                 AgentEvent::UserQuestion {
-                    question,
-                    options,
-                    ..
+                    question, options, ..
                 } => {
                     scrollback.push_assistant(&format!(
                         "question: {question} · options: {}",

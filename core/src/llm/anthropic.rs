@@ -582,7 +582,7 @@ impl AnthropicClient {
                                             index: _,
                                             delta,
                                         } => match delta {
-                                            AnthropicDelta::TextDelta { text } => {
+                                            AnthropicDelta::Text { text } => {
                                                 if first_token_ms.is_none() {
                                                     first_token_ms = Some(
                                                         request_started_at.elapsed().as_millis()
@@ -592,7 +592,7 @@ impl AnthropicClient {
                                                 text_content.push_str(&text);
                                                 let _ = tx.send(StreamEvent::TextDelta(text)).await;
                                             }
-                                            AnthropicDelta::ThinkingDelta { thinking } => {
+                                            AnthropicDelta::Thinking { thinking } => {
                                                 if thinking.is_empty() {
                                                     continue;
                                                 }
@@ -606,8 +606,8 @@ impl AnthropicClient {
                                                     .send(StreamEvent::ReasoningDelta(thinking))
                                                     .await;
                                             }
-                                            AnthropicDelta::SignatureDelta { .. } => {}
-                                            AnthropicDelta::InputJsonDelta { partial_json } => {
+                                            AnthropicDelta::Signature { .. } => {}
+                                            AnthropicDelta::InputJson { partial_json } => {
                                                 if first_token_ms.is_none() {
                                                     first_token_ms = Some(
                                                         request_started_at.elapsed().as_millis()
@@ -754,10 +754,10 @@ pub(crate) enum AnthropicContentBlock {
     },
     #[serde(rename = "thinking")]
     Thinking {
-        #[serde(default)]
-        thinking: String,
-        #[serde(default)]
-        signature: String,
+        #[serde(default, rename = "thinking")]
+        _thinking: String,
+        #[serde(default, rename = "signature")]
+        _signature: String,
     },
 }
 
@@ -812,13 +812,16 @@ pub(crate) struct AnthropicMessageStart {
 #[serde(tag = "type")]
 pub(crate) enum AnthropicDelta {
     #[serde(rename = "text_delta")]
-    TextDelta { text: String },
+    Text { text: String },
     #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
+    Thinking { thinking: String },
     #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
+    Signature {
+        #[serde(rename = "signature")]
+        _signature: String,
+    },
     #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
+    InputJson { partial_json: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -936,7 +939,7 @@ mod tests {
         .expect("thinking delta");
         match event {
             AnthropicStreamEvent::ContentBlockDelta { delta, .. } => match delta {
-                AnthropicDelta::ThinkingDelta { thinking } => {
+                AnthropicDelta::Thinking { thinking } => {
                     assert_eq!(thinking, "look at the call site");
                 }
                 other => panic!("unexpected delta: {other:?}"),
@@ -951,7 +954,7 @@ mod tests {
         assert!(matches!(
             signature,
             AnthropicStreamEvent::ContentBlockDelta {
-                delta: AnthropicDelta::SignatureDelta { .. },
+                delta: AnthropicDelta::Signature { .. },
                 ..
             }
         ));

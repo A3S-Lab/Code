@@ -16,7 +16,9 @@ pub fn markdown_to_plain(input: &str) -> String {
                 }
                 out.push_str("---\n");
             }
-            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock) => {
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock,
+            ) => {
                 if !out.ends_with('\n') {
                     out.push('\n');
                 }

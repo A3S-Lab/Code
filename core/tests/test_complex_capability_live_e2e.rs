@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use a3s_code_core::directory_projection::DirectoryProjection;
 use a3s_code_core::fact_control::read_workspace_facts;
 use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
-use a3s_code_core::directory_projection::DirectoryProjection;
 use a3s_code_core::{Agent, AgentEvent};
 
 mod support;
@@ -59,11 +59,7 @@ fn seed(dir: &Path, schedule_prompt: &str) {
         "instructions.md",
         "You keep the repository building. The host sends schedules. Denied paths stay untouched.\n",
     );
-    write(
-        dir,
-        "agent.acl",
-        "agent {\n  tool_budget = 16\n}\n",
-    );
+    write(dir, "agent.acl", "agent {\n  tool_budget = 16\n}\n");
     write(
         dir,
         "skills/review/SKILL.md",
@@ -72,9 +68,7 @@ fn seed(dir: &Path, schedule_prompt: &str) {
     write(
         dir,
         "tools/stamp.js",
-        &format!(
-            "async function run(ctx, inputs) {{ return {{ stamp: \"{STAMP}\" }}; }}\n"
-        ),
+        &format!("async function run(ctx, inputs) {{ return {{ stamp: \"{STAMP}\" }}; }}\n"),
     );
     write(
         dir,
@@ -91,7 +85,11 @@ fn seed(dir: &Path, schedule_prompt: &str) {
         "schedules/never.md",
         "---\ncron: \"0 0 31 2 *\"\n---\nThis prompt must not be sent.\n",
     );
-    write(dir, "SPEC.md", "normalize, dedupe, sort, and count labels.\n");
+    write(
+        dir,
+        "SPEC.md",
+        "normalize, dedupe, sort, and count labels.\n",
+    );
     write(dir, "test.mjs", TEST_SOURCE);
     write(dir, "src/normalize.mjs", NORMALIZE_BUG);
     write(dir, "src/stats.mjs", STATS_BUG);
@@ -147,10 +145,7 @@ fn files_containing(dir: &Path, needle: &str, found: &mut Vec<PathBuf>) {
 #[ignore = "requires the DeepSeek Flash model configured in .a3s/config.acl"]
 async fn live_schedule_program_repair_keeps_the_secret() {
     let config = load_pinned_layer_c_config();
-    let model = config
-        .default_model
-        .clone()
-        .expect("pinned model");
+    let model = config.default_model.clone().expect("pinned model");
     let workspace = tempfile::tempdir().expect("workspace");
     let root = workspace.path();
 
@@ -264,10 +259,7 @@ async fn live_schedule_program_repair_keeps_the_secret() {
             }
         }
     }
-    assert!(
-        saw_program,
-        "program tool must return the script stamp"
-    );
+    assert!(saw_program, "program tool must return the script stamp");
 
     assert_eq!(
         std::fs::read_to_string(root.join("test.mjs")).unwrap(),

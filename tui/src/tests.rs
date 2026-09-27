@@ -246,8 +246,19 @@ fn slash_catalog_covers_a3s_core_commands() {
     use crate::slash::{matching_commands, SLASH_BROWSE_HIDDEN, SLASH_COMMANDS};
     assert!(SLASH_COMMANDS.len() >= 47);
     for required in [
-        "status", "model", "permissions", "plan", "ask", "ctx", "use", "fork", "worktree",
-        "rewind", "clear", "exit", "help",
+        "status",
+        "model",
+        "permissions",
+        "plan",
+        "ask",
+        "ctx",
+        "use",
+        "fork",
+        "worktree",
+        "rewind",
+        "clear",
+        "exit",
+        "help",
     ] {
         assert!(
             SLASH_COMMANDS.iter().any(|c| c.name == required),

@@ -624,73 +624,59 @@ mod tests {
     #[test]
     fn unterminated_fenced_block_flags_issue() {
         let analysis = analyze("```\ncode\n");
-        assert!(
-            analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn closed_fenced_block_has_no_unterminated_issue() {
         let analysis = analyze("```\ncode\n```\n");
-        assert!(
-            !analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(!analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn closed_fenced_block_with_lang_has_no_unterminated_issue() {
         let analysis = analyze("```rust\nx\n```\n");
-        assert!(
-            !analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(!analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn tilde_fenced_block_closed_has_no_unterminated_issue() {
         let analysis = analyze("~~~\nx\n~~~\n");
-        assert!(
-            !analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(!analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn blockquoted_closed_fence_has_no_unterminated_issue() {
         // The block range keeps the `>` prefixes; a closed fence inside a blockquote must not flag
         let analysis = analyze("> ```\n> code\n> ```\n");
-        assert!(
-            !analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(!analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn blockquoted_unterminated_fence_flags_issue() {
         let analysis = analyze("> ```\n> code\n");
-        assert!(
-            analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     #[test]
     fn longer_opener_not_closed_by_shorter_fence() {
         // A 5-backtick opener is not closed by a 3-backtick line; the close must be at least as long as the opener
         let analysis = analyze("`````\ncode\n```\n");
-        assert!(
-            analysis
-                .issues
-                .contains(&StructuralIssue::UnterminatedCodeBlock)
-        );
+        assert!(analysis
+            .issues
+            .contains(&StructuralIssue::UnterminatedCodeBlock));
     }
 
     // (name, doc, parsed_tables) corpus of tables the model intended but that did not parse

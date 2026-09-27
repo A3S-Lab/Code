@@ -15,9 +15,9 @@ mod session;
 mod slash;
 mod transcript;
 
-pub use agent::{AgentTurn, CodeAgentAdapter, PermissionMode};
 pub use a3s_markdown_core as markdown;
 pub use a3s_ratatui_inline as inline;
+pub use agent::{AgentTurn, CodeAgentAdapter, PermissionMode};
 pub use markdown_plain::markdown_to_plain;
 pub use model::{
     merge_launch_layers, resolve_acl_file, resolve_acl_model, LaunchLayers, MergedLaunch,
