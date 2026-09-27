@@ -3,10 +3,6 @@
 //! Reads OIDC credentials from `~/.a3s/auth.json`, connects to a
 //! server, exposes workspace tools, and refreshes tokens automatically.
 #![deny(clippy::indexing_slicing)]
-use clap::Parser;
-use std::path::PathBuf;
-use std::time::Duration;
-use url::Url;
 use a3s_code_diag_server::{self as diag_server, DiagHandle, ErrorClass};
 use a3s_code_workspace::WorkspaceHostKind;
 use a3s_code_workspace::config::{
@@ -17,6 +13,10 @@ use a3s_code_workspace_daemon::daemonize;
 use a3s_code_workspace_daemon::preview_supervisor::{
     self, PreviewActivitySink, PreviewArgs, PreviewVisibility,
 };
+use clap::Parser;
+use std::path::PathBuf;
+use std::time::Duration;
+use url::Url;
 /// OTLP `service.name` for this binary's exported traces/logs/metrics and direct-OTLP fastrace export.
 /// Single source so the call sites can't drift.
 const SERVICE_NAME: &str = "prod_grok_workspace";

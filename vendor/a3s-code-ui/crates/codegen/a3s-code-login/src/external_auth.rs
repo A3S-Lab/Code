@@ -1,12 +1,12 @@
 use crate::AuthMode;
 use crate::GrokAuth;
 use crate::token_output::parse_token_output;
-use std::time::Duration;
 use a3s_code_shell_base::util::subprocess::CommandLog;
 use a3s_code_shell_base::util::subprocess::RunError;
 use a3s_code_shell_base::util::subprocess::RunOptions;
 use a3s_code_shell_base::util::subprocess::run_detached_with_timeout;
 use a3s_code_shell_base::util::subprocess::shell_c;
+use std::time::Duration;
 
 /// Parse stdout into a session-credential `GrokAuth`.
 pub fn parse_output(output: &std::process::Output) -> anyhow::Result<GrokAuth> {

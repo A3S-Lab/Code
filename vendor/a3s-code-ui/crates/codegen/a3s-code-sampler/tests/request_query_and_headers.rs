@@ -4,11 +4,11 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
+use a3s_code_sampler::SamplingClient;
 use axum::Router;
 use axum::http::{HeaderMap, Uri};
 use axum::routing::post;
 use tokio::net::TcpListener;
-use a3s_code_sampler::SamplingClient;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_carries_query_params_and_env_http_headers() {

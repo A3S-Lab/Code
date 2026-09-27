@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use dashmap::DashMap;
-use a3s_file_utils::queue::UploadQueueStats;
 use a3s_code_session_events::{Event, EventWriter, ToolCompletedSource, ToolOutcome};
+use a3s_file_utils::queue::UploadQueueStats;
 use a3s_tool_protocol::{IdleWithholdReason, ToolServerLifecycleStatus, ToolServerStatusPayload};
+use dashmap::DashMap;
 
 const LIFECYCLE_NONE: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;

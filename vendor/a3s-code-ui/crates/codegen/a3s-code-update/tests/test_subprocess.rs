@@ -12,11 +12,11 @@ mod common;
 
 use serial_test::serial;
 
-use common::FakeBinGuard;
 use a3s_code_update::auto_update::install_npm_for_test;
 use a3s_code_update::version::{
     fetch_gh_release_version, fetch_npm_tag_for_test, fetch_npm_version_for_test,
 };
+use common::FakeBinGuard;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fetch_npm_tag — reads a single dist-tag from `npm view`.

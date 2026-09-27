@@ -5,10 +5,6 @@ use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMod
 use crate::error::AgentBuildError;
 use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tracing::Instrument;
 use a3s_code_tools::bridge::ToolBridge;
 use a3s_code_tools::computer::types::{AsyncFileSystem, TerminalBackend};
 use a3s_code_tools::implementations::grok_build::task::model_policy::{
@@ -17,6 +13,10 @@ use a3s_code_tools::implementations::grok_build::task::model_policy::{
 use a3s_code_tools::notification::ToolNotificationHandle;
 use a3s_code_tools::registry::types::SessionContext;
 use a3s_code_tools::types::tool::ToolKind;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tracing::Instrument;
 /// The A3S Code [`ToolKind`] a vendor-compat `tools:` allowlist entry resolves to, so a plugin's upstream allowlist still binds.
 /// Backed by the shared vendor-to-A3S Code tool registry in `a3s-code-tools` (also used by the hook matcher).
 fn claude_tool_kind(name: &str) -> Option<ToolKind> {

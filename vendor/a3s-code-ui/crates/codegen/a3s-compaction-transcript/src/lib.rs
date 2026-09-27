@@ -10,8 +10,8 @@
 
 use std::sync::OnceLock;
 
-use regex::Regex;
 use a3s_code_sampling_types::ConversationItem;
+use regex::Regex;
 
 /// Layout of the per-session segment store — single source of the path
 /// convention (writer, index parser, and transcript-hint builder all use these).

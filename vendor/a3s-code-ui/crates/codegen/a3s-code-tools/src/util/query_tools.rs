@@ -26,8 +26,8 @@ pub(crate) struct QueryTools {
 impl QueryTools {
     /// Probe `$PATH` for the tools the steer may suggest; resolved once.
     pub(crate) fn detect() -> Self {
-        use std::sync::OnceLock;
         use a3s_code_config::shell::is_command_available;
+        use std::sync::OnceLock;
         static DETECTED: OnceLock<QueryTools> = OnceLock::new();
         *DETECTED.get_or_init(|| {
             let present = |name: &'static str| is_command_available(name).then_some(name);

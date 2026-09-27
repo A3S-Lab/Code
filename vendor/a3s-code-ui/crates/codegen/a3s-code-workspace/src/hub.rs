@@ -23,23 +23,23 @@
 //!   They are dropped in subagent sessions with restricted capability modes.
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::handle::WorkspaceHandle;
-use async_trait::async_trait;
-use serde_json::Value;
-use std::sync::Arc;
-use tokio::task::JoinHandle;
-use url::Url;
+use a3s_code_diag_server::DiagHandle;
+use a3s_code_tools::registry::types::ToolConfig;
 use a3s_computer_hub_sdk::{
     AuthProvider, CLOSE_CODE_SANDBOX_TERMINATED, ClientError, HubConnectionPool,
     InitialConnectPolicy, RefusalCode, ToolServer, ToolServerBuilder, ToolServerHandler,
 };
-use a3s_code_diag_server::DiagHandle;
-use a3s_code_tools::registry::types::ToolConfig;
 use a3s_tool_protocol::ToolId;
 use a3s_tool_runtime::{
     ToolCallContext, ToolError, ToolErrorKind, ToolStream, ToolStreamItem, TypedToolOutput,
     terminal_only,
 };
 use a3s_tool_types::ToolDescription;
+use async_trait::async_trait;
+use serde_json::Value;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+use url::Url;
 /// Configuration for connecting to a server instance, via [`WorkspaceConfig::hub_config`](crate::config::WorkspaceConfig::hub_config).
 /// When `Some`, connect after construction via [`WorkspaceHandle::connect_hub`](crate::handle::WorkspaceHandle::connect_hub).
 #[derive(Clone)]
@@ -683,8 +683,8 @@ mod tests {
         };
         assert_eq!(first.id, "hub:tool_a");
     }
-    use futures::StreamExt;
     use a3s_tool_runtime::{SessionContext, ToolCallId};
+    use futures::StreamExt;
     fn make_handler(workspace: &WorkspaceHandle, tool_name: &str) -> SessionRoutedToolHandler {
         SessionRoutedToolHandler::new(
             tool_name.to_owned(),
@@ -1000,9 +1000,9 @@ mod tests {
     }
     use crate::capability::CapabilityMode;
     use crate::session::tool_config::test_support::tc;
-    use std::time::Duration;
     use a3s_code_tools::notification::types::{ToolNotification, ToolNotificationHandle};
     use a3s_code_tools::registry::types::ToolServerConfig;
+    use std::time::Duration;
     fn bg_config() -> ToolServerConfig {
         ToolServerConfig {
             tools: vec![

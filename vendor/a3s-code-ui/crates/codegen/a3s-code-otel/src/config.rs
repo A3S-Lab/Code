@@ -1,6 +1,6 @@
+use a3s_code_auth::AuthCredentialProvider;
 use std::sync::Arc;
 use std::time::Duration;
-use a3s_code_auth::AuthCredentialProvider;
 pub(crate) const MAX_EXPORT_BATCH_SIZE: usize = 64;
 pub(crate) const MAX_QUEUE_SIZE: usize = 8192;
 pub(crate) const DEFAULT_EXPORT_TIMEOUT: Duration = Duration::from_secs(10);

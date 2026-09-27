@@ -8,11 +8,11 @@ use std::io;
 #[cfg(unix)]
 use std::path::Path;
 
+#[cfg(any(unix, test))]
+use a3s_code_test_support::TestSandbox;
 #[cfg(unix)]
 use anyhow::{Context, Result};
 use portable_pty::CommandBuilder;
-#[cfg(any(unix, test))]
-use a3s_code_test_support::TestSandbox;
 
 use crate::pty::EnvOp;
 

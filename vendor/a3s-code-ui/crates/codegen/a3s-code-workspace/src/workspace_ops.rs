@@ -17,15 +17,6 @@ use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::file_system::ContentSearchRequest;
 use crate::handle::WorkspaceHandle;
 use crate::worktree::{ApplyWorktreeRequest, CreateWorktreeRequest, RemoveWorktreeRequest};
-use async_trait::async_trait;
-use base64::Engine;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::io::Write;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use a3s_computer_hub_sdk::ToolHarness;
 use a3s_code_tools::types::output::ToolRunResult;
 use a3s_code_tools::types::resources::SessionFolder;
 use a3s_code_workspace_client::{WorkspaceClient, is_transport_fatal};
@@ -75,6 +66,15 @@ pub use a3s_code_workspace_types::rpc::worktree::{
     WorktreeGcReq, WorktreeListReq, WorktreeSalvageReq, WorktreeShowReq,
 };
 pub use a3s_code_workspace_types::rpc::{RpcActivityClass, WorkspaceRpc};
+use a3s_computer_hub_sdk::ToolHarness;
+use async_trait::async_trait;
+use base64::Engine;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 /// Implements [`WorkspaceRpc`] for request types whose responses reference crate-internal types and so cannot live in the types crate.
 /// The activity class is a required argument for the same reason the trait const has no default: every method's author must decide.
 macro_rules! workspace_rpc {
@@ -2237,9 +2237,9 @@ mod tests {
     /// A `SessionSummary` (with a turn carrying a hunk) mirrors identically.
     #[test]
     fn session_summary_to_wire_serializes_identically() {
-        use std::sync::Arc;
         use a3s_hunk_tracker::SessionSummary;
         use a3s_hunk_tracker::types::{Hunk, HunkSource, TurnSummary};
+        use std::sync::Arc;
         let hunk = Hunk::file_created(
             std::path::PathBuf::from("/repo/a.rs"),
             "x\n".to_string(),

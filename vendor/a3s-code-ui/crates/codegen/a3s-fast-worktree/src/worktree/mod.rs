@@ -187,8 +187,8 @@ mod tests {
         assert!(!is_grove_strategy(STRATEGY_COPY));
         assert!(!is_grove_strategy("linked"));
     }
-    use tempfile::TempDir;
     use a3s_test_utils::git::{git_commit_all, init_git_repo};
+    use tempfile::TempDir;
     #[test]
     fn test_create_worktree_simple() {
         a3s_test_utils::require_git!();

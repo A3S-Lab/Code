@@ -369,8 +369,8 @@ fn has_memory_section(prompt: &str) -> bool {
 #[cfg(test)]
 mod reconcile_resumed_memory_section_tests {
     use super::reconcile_resumed_memory_section;
-    use a3s_code_sampling_types::conversation::ConversationItem;
     use a3s_chat_state::MEMORY_CONTEXT_OPEN_TAG;
+    use a3s_code_sampling_types::conversation::ConversationItem;
     const WITH_MEMORY: &str = "rules\n\n<memory>\nuse memory\n</memory>\n\nmore";
     const WITHOUT_MEMORY: &str = "rules\n\nmore";
     fn head(conv: &[ConversationItem]) -> &str {

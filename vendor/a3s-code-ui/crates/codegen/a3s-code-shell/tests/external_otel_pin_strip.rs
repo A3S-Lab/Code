@@ -1,8 +1,8 @@
 //! Dedicated binary: production `remove_var` must not race the lib test suite.
 
 use a3s_code_shell::agent::external_otel_pin;
-use std::process::Stdio;
 use a3s_tty_utils::{detach_std_command, pager_env};
+use std::process::Stdio;
 
 const DECOY: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const DECOY_VALUE: &str = "http://127.0.0.1:9";

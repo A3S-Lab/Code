@@ -6,23 +6,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use futures::stream::{FuturesUnordered, StreamExt};
-use serde_json::Value;
-use a3s_computer_hub_mcp_adapter::{
-    McpBridge, McpBridgeConfig, McpBridgeHandle, McpCallResult, McpContent, McpServerInfo,
-    McpToolDefinition, McpTransport,
-};
-use a3s_computer_hub_sdk::ToolServerHandler;
 use a3s_code_mcp::rmcp;
 use a3s_code_mcp::servers::{
     InitClaimGuard, LivenessCheck, MCP_TOOL_NAME_DELIMITER, McpClient, McpClientTimeoutOverrides,
     McpSpawnCtx, OauthInteractivity, SharedMcpState, parse_mcp_qualified_name,
 };
 use a3s_code_tools::util::mcp_structured_content::render_structured_content;
+use a3s_computer_hub_mcp_adapter::{
+    McpBridge, McpBridgeConfig, McpBridgeHandle, McpCallResult, McpContent, McpServerInfo,
+    McpToolDefinition, McpTransport,
+};
+use a3s_computer_hub_sdk::ToolServerHandler;
 use a3s_tool_protocol::{SessionId, ToolId};
 use a3s_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput};
 use a3s_tool_types::ToolDescription;
+use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
+use serde_json::Value;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::mcp_claim::{ClaimOffer, McpServerTier, plan_claims};

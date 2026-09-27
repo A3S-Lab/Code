@@ -7,8 +7,8 @@
 
 use std::io;
 
-use tokio::sync::{mpsc, oneshot};
 use a3s_code_sampling_types::ConversationItem;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{StrictAppendAck, StrictAppendError};
 

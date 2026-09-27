@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use serial_test::serial;
 
-use common::{reset_home, test_home};
 use a3s_code_update::write_version_cache;
+use common::{reset_home, test_home};
 
 fn version_cache_path() -> PathBuf {
     test_home().join("version.json")

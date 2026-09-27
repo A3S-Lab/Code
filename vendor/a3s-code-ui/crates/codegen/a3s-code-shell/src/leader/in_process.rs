@@ -3,16 +3,16 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use a3s_acp_lib::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 use agent_client_protocol as acp;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, simplex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
-use a3s_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 
 use crate::agent::config::Config as AgentConfig;
 use crate::agent::mvp_agent::MvpAgent;

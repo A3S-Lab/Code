@@ -53,6 +53,7 @@ use crate::session::user_message::construct_user_message_minimal;
 use crate::session::user_message::extract_user_query;
 use crate::terminal::TerminalRunRequest;
 use crate::tools::ToolContext;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_agent::AgentDefinition;
 use a3s_code_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
 use a3s_code_agent::prompt::skills::SkillsConfig;
@@ -82,7 +83,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 const SESSION_LOG: &str = "a3s_session";
 #[path = "compaction.rs"]
 mod compaction;

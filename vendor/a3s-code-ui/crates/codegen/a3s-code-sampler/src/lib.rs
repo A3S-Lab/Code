@@ -32,6 +32,7 @@ mod stream_classify;
 pub mod types;
 
 // Public re-exports: the API consumers see
+pub use a3s_code_sampling_types::ConversationGroupId;
 pub use actor::SamplerActor;
 pub use actor::request_task::CompletionResult;
 pub use attribution::{
@@ -57,4 +58,3 @@ pub use retry::{
 pub use sampling_log::AuthInfo;
 pub use stream::{collect_response, stream_chat_completions, stream_messages, stream_responses};
 pub use types::RequestId;
-pub use a3s_code_sampling_types::ConversationGroupId;

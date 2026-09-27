@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use http::{HeaderMap, HeaderName, HeaderValue};
 // PEM inspection helpers are single-homed in the foundation crate.
+use a3s_code_otel::otlp::{pem_contains_certificate, pem_contains_private_key};
 use opentelemetry_otlp::{
     Protocol, WithExportConfig, WithHttpConfig, WithTonicConfig,
     tonic_types::metadata::MetadataMap,
@@ -26,7 +27,6 @@ use opentelemetry_sdk::metrics::{
     MeterProviderBuilder, PeriodicReader as ThreadPeriodicReader, SdkMeterProvider, Temporality,
     periodic_reader_with_async_runtime::PeriodicReader as RuntimePeriodicReader,
 };
-use a3s_code_otel::otlp::{pem_contains_certificate, pem_contains_private_key};
 type BuildResult<T> = Result<T, opentelemetry_otlp::ExporterBuildError>;
 
 type RuntimeCommand = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;

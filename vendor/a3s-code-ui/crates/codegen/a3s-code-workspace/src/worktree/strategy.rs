@@ -4,9 +4,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use a3s_fast_worktree::{
-    ArmSkip, GroveHardFail, GroveSkip, NfsWorktreeClient, NfsWorktreeOpts, WorktreeReport,
-};
 use a3s_code_telemetry::events::{
     CloneCancellationDisposition, CloneDaemonCapabilityClass, CloneFallbackReason, CloneOutcome,
     CloneStrategy, CloneTransport, RedirectEvent, WorktreeEnded, WorktreeLifecycle,
@@ -14,6 +11,9 @@ use a3s_code_telemetry::events::{
 use a3s_code_telemetry::session_ctx::log_event;
 use a3s_code_workspace_types::rpc::worktree::{
     StrategyReport, WorktreeType, is_grove_resolved, transport_for_resolved,
+};
+use a3s_fast_worktree::{
+    ArmSkip, GroveHardFail, GroveSkip, NfsWorktreeClient, NfsWorktreeOpts, WorktreeReport,
 };
 
 /// Budget for one whole drain. The fetch gets all of it and the ack gets what
@@ -399,8 +399,8 @@ pub(super) fn creating_progress(grove_enabled: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use a3s_fast_worktree::{CopyReport, WorktreeArm};
+    use std::path::PathBuf;
 
     fn report(
         resolved: &'static str,

@@ -17,13 +17,13 @@
 
 use std::path::Path;
 
+use a3s_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
-use a3s_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 
 use crate::app::actions::PermissionLabel;
 use crate::clipboard::{SystemClipboard, system_clipboard_get};

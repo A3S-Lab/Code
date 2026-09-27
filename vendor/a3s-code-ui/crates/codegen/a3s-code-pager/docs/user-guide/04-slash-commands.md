@@ -116,6 +116,27 @@ Set reasoning effort on the **current** model without reselecting it. Levels are
 /effort high
 ```
 
+### `/compact [focus]`
+
+Summarize the current session now. The summary replaces the older transcript on the next turn. An optional focus tells the summary what to emphasize. If there is nothing to summarize, the command reports that and leaves the transcript unchanged.
+
+```
+/compact
+/compact focus on the auth middleware
+```
+
+### `/goal <objective>`
+
+Set one durable goal for this session. Core planning stays enabled until you pause or clear it. `/goal` and `/goal status` show the current goal. `/goal pause` stops planning on later turns. `/goal resume` continues the same objective. `/goal clear` drops it.
+
+```
+/goal Ship the fix
+/goal status
+/goal pause
+/goal resume
+/goal clear
+```
+
 ### `/always-approve` and `/auto`
 
 Both are real toggles for the permission mode: they stay in the menu, and running the mode you're already in turns it back off.

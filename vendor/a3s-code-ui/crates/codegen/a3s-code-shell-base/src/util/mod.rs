@@ -383,9 +383,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_is_cli_chat_proxy_url_accepts_proxy_subpath() {
-        assert!(is_cli_chat_proxy_url(
-            "https://api.a3s/v1/chat/completions"
-        ));
+        assert!(is_cli_chat_proxy_url("https://api.a3s/v1/chat/completions"));
     }
     #[test]
     fn test_is_cli_chat_proxy_url_rejects_public_api() {
@@ -393,9 +391,7 @@ mod tests {
     }
     #[test]
     fn test_is_cli_chat_proxy_url_rejects_spoofed_hostname() {
-        assert!(!is_cli_chat_proxy_url(
-            "https://api.a3s.evil.example/v1"
-        ));
+        assert!(!is_cli_chat_proxy_url("https://api.a3s.evil.example/v1"));
     }
     #[test]
     fn test_is_cli_chat_proxy_url_rejects_v11_prefix_confusion() {
@@ -408,9 +404,7 @@ mod tests {
         assert!(is_a3s_api_url("https://api.a3s/v1"));
         assert!(is_a3s_api_url("https://api.a3s/v1/chat/completions"));
         assert!(is_a3s_api_url("https://github.com/A3S-Lab/a3s"));
-        assert!(is_a3s_api_url(
-            "https://api.a3s/v1/chat/completions"
-        ));
+        assert!(is_a3s_api_url("https://api.a3s/v1/chat/completions"));
         assert!(!is_a3s_api_url("https://api.openai.com/v1"));
         assert!(!is_a3s_api_url("https://api.anthropic.com/v1"));
         assert!(!is_a3s_api_url("https://generativelanguage.googleapis.com"));

@@ -677,9 +677,9 @@ mod tests {
     use super::*;
     use crate::db::WorktreeRecord;
     use crate::test_support::deletable_linked_worktree;
+    use a3s_test_utils::git::{init_git_repo, run_git};
     use std::path::Path;
     use std::sync::{Mutex, MutexGuard};
-    use a3s_test_utils::git::{init_git_repo, run_git};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 

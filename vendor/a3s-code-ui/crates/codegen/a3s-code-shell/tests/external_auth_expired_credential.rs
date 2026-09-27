@@ -15,6 +15,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use a3s_acp_lib::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 use a3s_code_shell::agent::config::Config as AgentConfig;
 use a3s_code_shell::agent::mvp_agent::MvpAgent;
 use a3s_code_test_support::{MockInferenceServer, MockModelEntry};
@@ -22,10 +26,6 @@ use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use a3s_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 
 const DUPLEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);

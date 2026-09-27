@@ -14,6 +14,7 @@ use super::ShellCompletionData;
 use crate::agent::mvp_agent::{LocalRef, MvpAgent};
 use crate::extensions::notification::{SessionNotification, SessionUpdate};
 use crate::session::SessionCommand;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_telemetry::region::Region;
 use a3s_code_tools::implementations::grok_build::task::coordinator::{self, ChildCompletion};
 use a3s_code_tools::implementations::grok_build::task::types::{
@@ -21,7 +22,6 @@ use a3s_code_tools::implementations::grok_build::task::types::{
 };
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 /// Floor keeps the pool responsive when `available_parallelism` is tiny.
 const MIN_WORKER_THREADS: usize = 2;
 /// Four suffice for 32 children (each runs on its own OS thread); `GROK_SUBAGENT_WORKER_THREADS` overrides.

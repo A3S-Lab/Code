@@ -798,7 +798,7 @@ mod tests {
     }
 
     fn test_auth_manager() -> Arc<AuthManager> {
-        use a3s_code_login::{AuthMode, GrokAuth, GrokComConfig, A3S_OAUTH2_ISSUER};
+        use a3s_code_login::{A3S_OAUTH2_ISSUER, AuthMode, GrokAuth, GrokComConfig};
         let dir = tempfile::tempdir().unwrap();
         let mgr = AuthManager::new(dir.path(), GrokComConfig::default());
         mgr.hot_swap(GrokAuth {

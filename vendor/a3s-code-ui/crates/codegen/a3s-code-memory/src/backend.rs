@@ -584,8 +584,8 @@ mod factory_tests {
     }
     use crate::index::{MemoryIndex, init_sqlite_vec};
     use crate::storage::MemoryStorage;
-    use tempfile::TempDir;
     use a3s_code_config_types::{MemoryEmbeddingConfig, MemorySearchConfig};
+    use tempfile::TempDir;
 
     fn make_storage(tmp: &TempDir) -> MemoryStorage {
         let global = tmp.path().join("memory");
@@ -1102,8 +1102,8 @@ mod factory_tests {
     /// This prevents memory_search 401s on rotated tokens.
     #[tokio::test]
     async fn make_embedding_provider_uses_async_api_key_resolution() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use a3s_code_tools::types::ApiKeyProvider;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         struct AsyncProbe {
             sync_calls: Arc<AtomicU32>,
@@ -1177,8 +1177,8 @@ mod factory_tests {
 mod tests {
     use super::*;
     use crate::index::{MemoryIndex, init_sqlite_vec};
-    use tempfile::TempDir;
     use a3s_code_config_types::MemoryIndexConfig;
+    use tempfile::TempDir;
 
     /// An api-key provider that fails the test if its key is ever resolved, proving a scoped-away credential is never consulted.
     struct PanicKey;

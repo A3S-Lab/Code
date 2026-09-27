@@ -25,11 +25,6 @@ mod jemalloc_malloc_conf {
     #[unsafe(export_name = "_rjem_malloc_conf")]
     static MALLOC_CONF: MallocConfPtr = MallocConfPtr(CONF.as_ptr());
 }
-use anyhow::Result;
-use std::io::Write;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use tokio_util::sync::CancellationToken;
 use a3s_code_pager::agent_runtime::AgentRuntime;
 use a3s_code_pager::app::{
     AgentCmd, Command, EARLY_PREFETCH_WAIT, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand,
@@ -49,6 +44,11 @@ use a3s_code_shell::leader::{
 use a3s_code_telemetry::process_info::{
     Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
 };
+use anyhow::Result;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::num::NonZeroUsize;
+use tokio_util::sync::CancellationToken;
 mod agent_command;
 fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
     use a3s_code_telemetry::process_info::LeaderMode::Standalone;
@@ -120,8 +120,8 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         ) => false,
     }
 }
-use std::env;
 use a3s_code_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
+use std::env;
 #[cfg(all(feature = "test-seams", debug_assertions))]
 mod test_seam {
     const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "GROK_TEST_TRUSTED_PUBKEY_FILE";
@@ -216,8 +216,8 @@ fn print_serve_startup_info(bind_addr: SocketAddr, secret: &str) {
 const HEADLESS_ENTRYPOINT: &str = "headless";
 /// Initialize simple tracing for non-TUI agent modes.
 fn init_tracing_simple(app_entrypoint: &'static str) {
-    use tracing_subscriber::{EnvFilter, Layer as _, fmt, layer::SubscriberExt as _};
     use a3s_code_telemetry::debug_log::RMCP_SSE_NOISE_TARGET;
+    use tracing_subscriber::{EnvFilter, Layer as _, fmt, layer::SubscriberExt as _};
     let default_filter = if app_entrypoint == HEADLESS_ENTRYPOINT {
         "off"
     } else {
@@ -1414,12 +1414,12 @@ async fn run_agent_command(
         if !agent_args.plugin_dirs.is_empty() {
             eprintln!("{PLUGIN_DIR_LEADER_WARNING}");
         }
-        use std::sync::Arc;
-        use tokio::io::AsyncWriteExt;
-        use tokio::sync::Mutex as TokioMutex;
         use a3s_code_shell::leader::{
             ClientCapabilities, ClientMode, LeaderReconnector, ReconnectPolicy, connect_or_spawn,
         };
+        use std::sync::Arc;
+        use tokio::io::AsyncWriteExt;
+        use tokio::sync::Mutex as TokioMutex;
         let mode = match &agent_args.mode {
             Some(AgentCmd::Stdio) => ClientMode::Stdio,
             Some(AgentCmd::Headless(_)) | None => ClientMode::Headless,

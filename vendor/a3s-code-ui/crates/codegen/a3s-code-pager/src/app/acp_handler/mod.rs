@@ -16,6 +16,7 @@ use crate::views::permission_view::{
     McpScope, McpScopeState, PermissionFocus, PermissionViewState, SubagentInfo,
 };
 use crate::views::plan_approval_view::PlanReviewSource;
+use a3s_acp_lib::AcpClientMessage;
 use a3s_code_shell::extensions::notification::{
     SessionNotification, SessionUpdate as A3sSessionUpdate, is_reauthable_failure,
 };
@@ -26,7 +27,6 @@ use agent_client_protocol as acp;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
-use a3s_acp_lib::AcpClientMessage;
 mod background;
 mod follow_ups;
 mod interactions;

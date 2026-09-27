@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use a3s_message_delivery_core::{AgentId, AttemptId};
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use a3s_message_delivery_core::{AgentId, AttemptId};
 
 use super::*;
 use crate::implementations::grok_build::task::coordinator::active_message::tests::{

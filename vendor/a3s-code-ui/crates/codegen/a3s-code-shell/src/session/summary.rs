@@ -8,9 +8,9 @@ use crate::sampling::Client as OaiCompatClient;
 use crate::session::helpers::session_summary::generate_session_summary;
 use crate::session::info::Info;
 use crate::session::persistence::PersistenceMsg;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 enum State {
     /// No summary generated yet. The next [`SummaryGenerator::update`] call will attempt one.

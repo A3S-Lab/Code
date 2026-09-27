@@ -1,8 +1,8 @@
 //! Defines the `MarkdownStyle` used by agent message and thinking blocks.
 //! Colors come from the `md_*` fields on the current [`Theme`], which are already quantized to the terminal's color capability level.
 
-use anstyle::{Ansi256Color, AnsiColor, Color, Style};
 use a3s_code_markdown::MarkdownStyle;
+use anstyle::{Ansi256Color, AnsiColor, Color, Style};
 
 /// Bridge after [`Theme::current()`] quantization. `None` for `Reset`: anstyle has no terminal-default, and unset renders as that default.
 fn to_anstyle(c: ratatui::style::Color) -> Option<Color> {

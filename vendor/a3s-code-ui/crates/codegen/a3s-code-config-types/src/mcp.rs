@@ -1,11 +1,11 @@
 //! MCP server configuration value types, extracted from a3s-code-shell so crates the shell depends on can use them.
 
+use a3s_code_mcp::oauth_config::McpOAuthConfig;
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use a3s_code_mcp::oauth_config::McpOAuthConfig;
 
 /// serde default helper.
 fn default_true() -> bool {

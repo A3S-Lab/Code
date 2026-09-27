@@ -2,8 +2,8 @@ mod otlp_collector;
 
 use std::time::Duration;
 
-use otlp_collector as col;
 use a3s_code_test_support::{OtelRecorder, OtelSignal};
+use otlp_collector as col;
 
 fn write_temp(contents: &str) -> (tempfile::NamedTempFile, String) {
     let file = tempfile::NamedTempFile::new().expect("temp file");

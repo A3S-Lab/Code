@@ -5,8 +5,8 @@ mod otlp_collector;
 
 use std::time::Duration;
 
-use otlp_collector as col;
 use a3s_code_test_support::{OtelMetricData, OtelRecorder, OtelSignal, OtelTemporality};
+use otlp_collector as col;
 
 const CANARY_MODEL: &str = "sk-CANARYgrpcabcdefghij1234567890";
 const CANARY_PROMPT: &str = "CANARY_GRPC_PROMPT_TEXT do not export";

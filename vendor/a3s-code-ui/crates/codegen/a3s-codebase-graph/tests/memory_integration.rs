@@ -3,12 +3,12 @@
 //! These tests create real file trees and exercise IndexManager / IndexBuilder
 //! contracts that are awkward to cover with tiny unit fixtures.
 
-use std::fs;
-use std::path::Path;
-use tempfile::tempdir;
 use a3s_codebase_graph::{
     FileEvent, IndexBuilder, IndexManager, IndexManagerConfig, load_index, save_index,
 };
+use std::fs;
+use std::path::Path;
+use tempfile::tempdir;
 
 /// Create N Rust source files in `dir`, each with `defs_per_file` function defs.
 fn create_rust_files(dir: &Path, count: usize, defs_per_file: usize) {

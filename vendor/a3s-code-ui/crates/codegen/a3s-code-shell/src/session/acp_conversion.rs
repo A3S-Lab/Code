@@ -15,8 +15,8 @@ use a3s_code_tools::types::output::{
     ApplyPatchOutput, CodexGrepFilesOutput, ListDirOutput, MCPOutputDetails, ReadFileOutput,
     SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceOutput, ToolOutput,
 };
-use agent_client_protocol as acp;
 use a3s_tool_types::{KillTaskOutput, TaskOutputOutput};
+use agent_client_protocol as acp;
 
 /// Rewrites real worktree paths to display paths in serialized output.
 /// In forked sessions, tools produce output containing the worktree directory.

@@ -6,9 +6,9 @@ mod support;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use support::{send_one, test_config};
 use a3s_code_sampler::SamplingClient;
 use a3s_code_test_support::spawn_counting_server;
+use support::{send_one, test_config};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kill_switch_builds_fresh_client_per_sampling_client() {

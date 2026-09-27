@@ -10,9 +10,9 @@ use tokio::process::Command;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
 
+use a3s_acp_lib::{AcpGatewayReceiver, AcpGatewaySender, LineBufferedRead, acp_channels};
 use a3s_code_shell::util::grok_home::grok_home;
 use agent_client_protocol as acp;
-use a3s_acp_lib::{AcpGatewayReceiver, AcpGatewaySender, LineBufferedRead, acp_channels};
 
 use super::spawn::{SpawnedAgent, boot_auth_manager};
 use a3s_code_shell::agent::config::Config as AgentConfig;

@@ -40,6 +40,11 @@ impl ZhipuClient {
         self
     }
 
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.0 = self.0.with_reasoning_effort(effort);
+        self
+    }
+
     pub fn with_logprobs(mut self, enabled: bool) -> Self {
         self.0 = self.0.with_logprobs(enabled);
         self

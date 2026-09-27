@@ -37,6 +37,7 @@
 //! Each frame is wrapped in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` so the terminal presents the cell diff, images, and cursor moves atomically.
 //! The wrapper is omitted when tmux is the immediate terminal (see [`crate::terminal::should_emit_synchronized_output`]): tmux repaints the whole pane when a block closes and already synchronizes its own output toward the outer terminal.
 use crate::terminal::{TerminalContext, should_emit_synchronized_output};
+use a3s_ratatui_inline::LinkSpan;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crossterm::{QueueableCommand, cursor};
 use ratatui::Frame;
@@ -47,7 +48,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
-use a3s_ratatui_inline::LinkSpan;
 /// Defined here (beside [`TermWriter`]) so the `render` module does not depend on `app`.
 /// Re-exported from `app` as `crate::app::PagerTerminal` for existing call sites.
 pub type PagerTerminal = a3s_ratatui_inline::Terminal<CrosstermBackend<TermWriter>>;

@@ -29,6 +29,8 @@ pub struct A3sCodeAgent {
     model_id: Mutex<String>,
     /// Last `/effort` selection. Applied on every core session open.
     effort: Mutex<Option<EffortLimits>>,
+    /// Durable `/goal` objectives keyed by ACP session id.
+    goals: Mutex<HashMap<String, crate::goal::DurableGoal>>,
 }
 
 impl A3sCodeAgent {
@@ -42,6 +44,7 @@ impl A3sCodeAgent {
             model_id: Mutex::new(model_id),
             // a3s-code TUI default is BudgetProfile index 2 (`high`).
             effort: Mutex::new(effort_limits("high")),
+            goals: Mutex::new(HashMap::new()),
         }
     }
 
@@ -69,17 +72,17 @@ impl A3sCodeAgent {
                 "grok" => Some("Logged-in Grok account".to_string()),
                 _ => Some(format!("From A3S ACL provider {}", provider.name)),
             };
-            let mut info = acp::ModelInfo::new(acp::ModelId::new(id), name);
+            let mut info = acp::ModelInfo::new(acp::ModelId::new(id.clone()), name);
             if let Some(description) = description {
                 info = info.description(description);
             }
-            info = info.meta(Some(reasoning_effort_catalog_meta()));
+            info = info.meta(Some(reasoning_effort_catalog_meta(&id)));
             infos.push(info);
         }
         if infos.is_empty() {
             let id = self.launch.model_id.clone();
-            let info = acp::ModelInfo::new(acp::ModelId::new(id.clone()), id)
-                .meta(Some(reasoning_effort_catalog_meta()));
+            let info = acp::ModelInfo::new(acp::ModelId::new(id.clone()), id.clone())
+                .meta(Some(reasoning_effort_catalog_meta(&id)));
             infos.push(info);
         }
         infos
@@ -146,12 +149,12 @@ impl A3sCodeAgent {
     ) -> SessionOptions {
         let mut options = SessionOptions::new()
             .with_session_id(session_id.to_string())
-            .with_model(model_id.to_string());
+            .with_model(model_id.to_string())
+            .with_auto_compact(true)
+            .with_auto_compact_threshold(a3s_code_core::store::DEFAULT_AUTO_COMPACT_THRESHOLD);
         if let Some(limits) = effort {
-            if let Some(budget) = limits.thinking_budget {
-                options = options.with_thinking_budget(budget);
-            }
             options = options
+                .with_reasoning_effort(limits.token)
                 .with_max_tool_rounds(limits.max_tool_rounds)
                 .with_max_parallel_tasks(limits.max_parallel_tasks)
                 .with_max_continuation_turns(limits.max_continuation_turns);
@@ -162,10 +165,12 @@ impl A3sCodeAgent {
                     .with_auto_parallel_delegation(true)
                     .with_manual_delegation_enabled(true);
             }
-            if let Some(guideline) = effort_guideline(limits.token) {
-                options = options.with_prompt_slots(
-                    a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
-                );
+            if !a3s_code_core::llm::model_sends_native_effort(model_id) {
+                if let Some(guideline) = effort_guideline(limits.token) {
+                    options = options.with_prompt_slots(
+                        a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
+                    );
+                }
             }
         }
         options
@@ -448,7 +453,13 @@ impl A3sCodeAgent {
         task_id: &str,
         child_session_id: &str,
         status: &str,
+        window_tokens: u64,
+        metadata: &serde_json::Value,
+        started_ms: u64,
+        progress: &ChildProgress,
     ) {
+        let tokens_used = progress_tokens_used(metadata);
+        let (context_window_tokens, context_usage_pct) = context_usage(window_tokens, tokens_used);
         self.emit_xai_session_update(
             session_id,
             serde_json::json!({
@@ -456,14 +467,14 @@ impl A3sCodeAgent {
                 "subagent_id": task_id,
                 "parent_session_id": session_id.0.as_ref(),
                 "child_session_id": child_session_id,
-                "duration_ms": 0_u64,
-                "turn_count": 0_u32,
-                "tool_call_count": 0_u32,
-                "tokens_used": 0_u64,
-                "context_window_tokens": 0_u64,
-                "context_usage_pct": 0_u8,
-                "tools_used": Vec::<String>::new(),
-                "error_count": 0_u32,
+                "duration_ms": progress_duration_ms(started_ms, unix_now_ms()),
+                "turn_count": progress.turn_count,
+                "tool_call_count": progress.tool_call_count,
+                "tokens_used": tokens_used,
+                "context_window_tokens": context_window_tokens,
+                "context_usage_pct": context_usage_pct,
+                "tools_used": progress.tools_used,
+                "error_count": progress.error_count,
             }),
         )
         .await;
@@ -484,33 +495,17 @@ impl A3sCodeAgent {
         output: &str,
         started_ms: u64,
         finished_ms: u64,
+        progress: &ChildProgress,
     ) {
         let duration_ms = finished_ms.saturating_sub(started_ms);
-        let status = if success { "completed" } else { "failed" };
-        let error = if success {
-            None
-        } else if output.trim().is_empty() {
-            Some("subagent failed".to_string())
-        } else {
-            Some(output.chars().take(2_000).collect::<String>())
-        };
-        let mut update = serde_json::json!({
-            "sessionUpdate": "subagent_finished",
-            "subagent_id": task_id,
-            "child_session_id": child_session_id,
-            "status": status,
-            "tool_calls": 0_u32,
-            "turns": 0_u32,
-            "duration_ms": duration_ms,
-            "tokens_used": 0_u64,
-            "will_wake": false,
-        });
-        if let Some(error) = error {
-            update["error"] = serde_json::Value::String(error);
-        }
-        if !output.is_empty() {
-            update["output"] = serde_json::Value::String(output.chars().take(4_000).collect());
-        }
+        let update = subagent_finished_update(
+            task_id,
+            child_session_id,
+            success,
+            output,
+            duration_ms,
+            progress,
+        );
         self.emit_xai_session_update(session_id, update).await;
     }
 
@@ -672,10 +667,26 @@ impl A3sCodeAgent {
                 task_id,
                 session_id: child_session_id,
                 status,
-                ..
+                metadata,
             } => {
-                self.emit_subagent_progress(session_id, &task_id, &child_session_id, &status)
-                    .await;
+                let started_ms = state
+                    .subagent_started_ms
+                    .get(&task_id)
+                    .copied()
+                    .unwrap_or(0);
+                let progress = state.child_progress.entry(task_id.clone()).or_default();
+                note_child_progress(progress, &status, &metadata);
+                self.emit_subagent_progress(
+                    session_id,
+                    &task_id,
+                    &child_session_id,
+                    &status,
+                    session.context_window_tokens() as u64,
+                    &metadata,
+                    started_ms,
+                    progress,
+                )
+                .await;
             }
             AgentEvent::SubagentEnd {
                 task_id,
@@ -689,6 +700,7 @@ impl A3sCodeAgent {
                     .subagent_started_ms
                     .remove(&task_id)
                     .unwrap_or(finished_ms);
+                let progress = state.child_progress.remove(&task_id).unwrap_or_default();
                 self.emit_subagent_end(
                     session_id,
                     &task_id,
@@ -697,6 +709,7 @@ impl A3sCodeAgent {
                     &output,
                     started_ms,
                     finished_ms,
+                    &progress,
                 )
                 .await;
             }
@@ -707,6 +720,41 @@ impl A3sCodeAgent {
             }
             AgentEvent::Error { message } => {
                 state.turn_failure = Some(message);
+            }
+            AgentEvent::ModelUsageBound { snapshot } => {
+                let used = snapshot.reported_prompt_tokens as u64;
+                let size = session.context_window_tokens() as u64;
+                if used > 0 && size > 0 {
+                    self.emit(acp::SessionNotification::new(
+                        session_id.clone(),
+                        acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(used, size)),
+                    ))
+                    .await;
+                }
+            }
+            AgentEvent::AutoCompact {
+                phase,
+                tokens_used,
+                context_window,
+                tokens_after,
+            } => {
+                let (_, percentage) = context_usage(context_window, tokens_used);
+                let update = if phase == "started" {
+                    serde_json::json!({
+                        "sessionUpdate": "auto_compact_started",
+                        "tokens_used": tokens_used,
+                        "context_window": context_window,
+                        "percentage": percentage,
+                        "reason": "threshold",
+                    })
+                } else {
+                    serde_json::json!({
+                        "sessionUpdate": "auto_compact_completed",
+                        "tokens_before": tokens_used,
+                        "tokens_after": tokens_after,
+                    })
+                };
+                self.emit_xai_session_update(session_id, update).await;
             }
             AgentEvent::PermissionDenied {
                 tool_id,
@@ -758,13 +806,177 @@ impl A3sCodeAgent {
             _ => {}
         }
     }
+
+    /// Restore planning after a session rebuild while a goal is still active.
+    async fn reapply_active_goal(&self, session_key: &str) {
+        let active = self
+            .goals
+            .lock()
+            .await
+            .get(session_key)
+            .is_some_and(|goal| !goal.paused);
+        if !active {
+            return;
+        }
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .get(session_key)
+            .map(|live| Arc::clone(&live.session));
+        if let Some(session) = session {
+            let _ = session.set_planning_mode(a3s_code_core::PlanningMode::Enabled);
+        }
+    }
+
+    async fn handle_goal(
+        &self,
+        session_id: &acp::SessionId,
+        session: &AgentSession,
+        op: crate::goal::GoalOp,
+    ) -> acp::Result<acp::PromptResponse> {
+        let key = session_id.0.to_string();
+        let current = self.goals.lock().await.get(&key).cloned();
+        let applied = crate::goal::apply_goal(current, op);
+        if let Some(mode) = applied.plan.mode() {
+            session
+                .set_planning_mode(mode)
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        } else if applied.plan.clears_override() {
+            session
+                .clear_planning_mode_override()
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+        let stored = applied.next.clone();
+        {
+            let mut goals = self.goals.lock().await;
+            if let Some(goal) = applied.next {
+                goals.insert(key.clone(), goal);
+            } else {
+                goals.remove(&key);
+            }
+        }
+        if let Some(workspace) = self
+            .sessions
+            .lock()
+            .await
+            .get(&key)
+            .map(|live| live.workspace.clone())
+        {
+            if applied.plan.clears_override() {
+                let _ = crate::goal::clear_stored_goal(&workspace);
+            } else if let Some(goal) = stored {
+                let _ = crate::goal::store_goal(&workspace, &goal);
+            }
+        }
+        if let Some(reply) = applied.reply {
+            self.emit_text(session_id, &reply).await;
+        }
+        if let Some(model_prompt) = applied.model_prompt {
+            return self.stream_turn(session_id, session, &model_prompt).await;
+        }
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
+    async fn stream_turn(
+        &self,
+        session_id: &acp::SessionId,
+        session: &AgentSession,
+        prompt: &str,
+    ) -> acp::Result<acp::PromptResponse> {
+        let (mut rx, join) = session
+            .stream(prompt, None)
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+
+        let mut state = TurnState {
+            turn_failure: None,
+            saw_text: false,
+            subagent_started_ms: HashMap::new(),
+            child_progress: HashMap::new(),
+            prompted_questions: std::collections::HashSet::new(),
+        };
+        while let Some(event) = rx.recv().await {
+            self.handle_event(session_id, session, &mut state, event)
+                .await;
+        }
+        let _ = join.await;
+        if let Some(message) = state.turn_failure {
+            return Err(agent_failure_error(&message));
+        }
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
+    async fn handle_compact_extension(
+        &self,
+        args: &acp::ExtRequest,
+    ) -> acp::Result<acp::ExtResponse> {
+        let request: serde_json::Value =
+            serde_json::from_str(args.params.get()).map_err(|error| {
+                acp::Error::invalid_params().data(format!("compact request: {error}"))
+            })?;
+        let session_id = request
+            .get("sessionId")
+            .or_else(|| request.get("session_id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| acp::Error::invalid_params().data("compact request: sessionId"))?;
+        let user_context = request
+            .get("userContext")
+            .or_else(|| request.get("user_context"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let session = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .map(|live| Arc::clone(&live.session))
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?
+        };
+        session
+            .compact_conversation(user_context.as_deref())
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let body = serde_json::value::to_raw_value(&serde_json::json!({}))
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(body.into()))
+    }
+
+    async fn handle_interject(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        let request = parse_interject_params(args.params.get())
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        let session = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(&request.session_id)
+                .map(|live| Arc::clone(&live.session))
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?
+        };
+        session
+            .steer(a3s_code_core::SteerRequest::new(request.text))
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let body = serde_json::value::to_raw_value(&serde_json::json!({ "ok": true }))
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(body.into()))
+    }
 }
 
 struct TurnState {
     turn_failure: Option<String>,
     saw_text: bool,
     subagent_started_ms: HashMap<String, u64>,
+    child_progress: HashMap<String, ChildProgress>,
     prompted_questions: std::collections::HashSet<String>,
+}
+
+#[derive(Default)]
+struct ChildProgress {
+    turn_count: u32,
+    tool_call_count: u32,
+    tools_used: Vec<String>,
+    error_count: u32,
+    tokens_used: u64,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -821,11 +1033,15 @@ impl acp::Agent for A3sCodeAgent {
         let model_id = self.model_id.lock().await.clone();
         let effort = self.effort.lock().await.clone();
         let live = self
-            .open_core_session(&session_id, workspace, &model_id, effort)
+            .open_core_session(&session_id, workspace.clone(), &model_id, effort)
             .await?;
         let effort_token = self.effort.lock().await.map(|limits| limits.token);
         let models = self.model_state_with(&live.model_id, effort_token);
         self.sessions.lock().await.insert(session_id.clone(), live);
+        if let Some(goal) = crate::goal::load_goal(&workspace) {
+            self.goals.lock().await.insert(session_id.clone(), goal);
+        }
+        self.reapply_active_goal(&session_id).await;
 
         Ok(acp::NewSessionResponse::new(acp::SessionId::new(session_id)).models(models))
     }
@@ -866,7 +1082,8 @@ impl acp::Agent for A3sCodeAgent {
             )
             .await?
         };
-        self.sessions.lock().await.insert(session_key, live);
+        self.sessions.lock().await.insert(session_key.clone(), live);
+        self.reapply_active_goal(&session_key).await;
         *self.model_id.lock().await = model_id;
         *self.effort.lock().await = effort;
 
@@ -887,27 +1104,28 @@ impl acp::Agent for A3sCodeAgent {
         if prompt.trim().is_empty() {
             return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
         }
-
-        let (mut rx, join) = session
-            .stream(&prompt, None)
-            .await
-            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
-
-        let mut state = TurnState {
-            turn_failure: None,
-            saw_text: false,
-            subagent_started_ms: HashMap::new(),
-            prompted_questions: std::collections::HashSet::new(),
-        };
-        while let Some(event) = rx.recv().await {
-            self.handle_event(&args.session_id, &session, &mut state, event)
-                .await;
+        if let Some(op) = crate::goal::parse_goal_command(&prompt) {
+            return self.handle_goal(&args.session_id, &session, op).await;
         }
-        let _ = join.await;
-        if let Some(message) = state.turn_failure {
-            return Err(agent_failure_error(&message));
+        let goal = self.goals.lock().await.get(&session_key).cloned();
+        let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
+        self.stream_turn(&args.session_id, &session, &prompt).await
+    }
+
+    async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        if args
+            .method
+            .as_ref()
+            .starts_with("x.ai/compact_conversation")
+        {
+            return self.handle_compact_extension(&args).await;
         }
-        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+        if args.method.as_ref().starts_with("x.ai/interject") {
+            return self.handle_interject(&args).await;
+        }
+        Ok(acp::ExtResponse::new(
+            serde_json::value::RawValue::NULL.to_owned().into(),
+        ))
     }
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
@@ -956,38 +1174,177 @@ fn task_to_plan_entry(task: &a3s_code_core::planning::Task) -> acp::PlanEntry {
     entry
 }
 
-/// Limits copied from a3s `BudgetProfile` (`crates/cli/src/budget.rs`).
+/// Effort selection for one session.
+///
+/// `token` is passed to the provider as its own effort parameter. Tool rounds
+/// stay on one safety ceiling for every level so a lower effort cannot end
+/// the task early.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EffortLimits {
     token: &'static str,
-    thinking_budget: Option<usize>,
     max_tool_rounds: usize,
     max_parallel_tasks: usize,
     max_continuation_turns: u32,
 }
 
-/// Advertise the a3s-code effort menu on every model.
+/// Advertise only the effort values this model accepts.
 ///
 /// Each entry includes `value` so the pager's `ReasoningEffortOption` parser
-/// accepts it. `low`…`max` match `BudgetProfile`; `ultracode` is not a
-/// `ReasoningEffort` variant, so it stays off the menu.
-fn reasoning_effort_catalog_meta() -> serde_json::Map<String, serde_json::Value> {
+/// accepts it. `ultracode` is not a `ReasoningEffort` variant, so it stays off
+/// the menu. Models without a native parameter get an empty list.
+fn reasoning_effort_catalog_meta(model_id: &str) -> serde_json::Map<String, serde_json::Value> {
+    let levels = a3s_code_core::llm::native_effort_menu(model_id);
     let mut meta = serde_json::Map::new();
     meta.insert(
         "supportsReasoningEffort".into(),
-        serde_json::Value::Bool(true),
+        serde_json::Value::Bool(!levels.is_empty()),
     );
-    meta.insert(
-        "reasoningEfforts".into(),
-        serde_json::json!([
-            {"value": "low", "id": "low", "label": "low", "description": "Faster, lighter reasoning"},
-            {"value": "medium", "id": "medium", "label": "medium", "description": "Balanced reasoning"},
-            {"value": "high", "id": "high", "label": "high", "description": "Heavy reasoning", "default": true},
-            {"value": "xhigh", "id": "xhigh", "label": "xhigh", "description": "Extended reasoning"},
-            {"value": "max", "id": "max", "label": "max", "description": "Maximum reasoning"},
-        ]),
-    );
+    let efforts = levels
+        .iter()
+        .map(|level| {
+            let mut entry = serde_json::json!({
+                "value": level,
+                "id": level,
+                "label": level,
+                "description": effort_level_description(level),
+            });
+            if *level == "high" {
+                entry["default"] = serde_json::Value::Bool(true);
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    meta.insert("reasoningEfforts".into(), serde_json::Value::Array(efforts));
     meta
+}
+
+fn effort_level_description(level: &str) -> &'static str {
+    match level {
+        "low" => "Faster, lighter reasoning",
+        "medium" => "Balanced reasoning",
+        "high" => "Heavy reasoning",
+        "xhigh" => "Extended reasoning",
+        "max" => "Maximum reasoning",
+        _ => "Reasoning effort",
+    }
+}
+
+fn note_child_progress(progress: &mut ChildProgress, status: &str, metadata: &serde_json::Value) {
+    let tokens = progress_tokens_used(metadata);
+    if tokens > progress.tokens_used {
+        progress.tokens_used = tokens;
+    }
+    if status == "tool_completed" {
+        progress.tool_call_count = progress.tool_call_count.saturating_add(1);
+        if let Some(name) = metadata.get("tool").and_then(|value| value.as_str()) {
+            if !progress.tools_used.iter().any(|existing| existing == name) {
+                progress.tools_used.push(name.to_string());
+            }
+        }
+        let exit_code = metadata
+            .get("exit_code")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        if exit_code != 0 || metadata.get("error_kind").is_some() {
+            progress.error_count = progress.error_count.saturating_add(1);
+        }
+    } else if status == "turn_completed" {
+        if let Some(turn) = metadata.get("turn").and_then(|value| value.as_u64()) {
+            progress.turn_count = progress.turn_count.max(turn as u32);
+        }
+    }
+}
+
+fn subagent_finished_update(
+    task_id: &str,
+    child_session_id: &str,
+    success: bool,
+    output: &str,
+    duration_ms: u64,
+    progress: &ChildProgress,
+) -> serde_json::Value {
+    let status = if success { "completed" } else { "failed" };
+    let error = if success {
+        None
+    } else if output.trim().is_empty() {
+        Some("subagent failed".to_string())
+    } else {
+        Some(output.chars().take(2_000).collect::<String>())
+    };
+    let mut update = serde_json::json!({
+        "sessionUpdate": "subagent_finished",
+        "subagent_id": task_id,
+        "child_session_id": child_session_id,
+        "status": status,
+        "tool_calls": progress.tool_call_count,
+        "turns": progress.turn_count,
+        "duration_ms": duration_ms,
+        "tokens_used": progress.tokens_used,
+        "will_wake": false,
+    });
+    if let Some(error) = error {
+        update["error"] = serde_json::Value::String(error);
+    }
+    if !output.is_empty() {
+        update["output"] = serde_json::Value::String(output.chars().take(4_000).collect());
+    }
+    update
+}
+
+struct InterjectParams {
+    session_id: String,
+    text: String,
+}
+
+fn parse_interject_params(raw: &str) -> Result<InterjectParams, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| format!("interject request: {error}"))?;
+    let session_id = value
+        .get("sessionId")
+        .or_else(|| value.get("session_id"))
+        .and_then(|item| item.as_str())
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| "interject request: sessionId".to_string())?;
+    let text = value
+        .get("text")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| "interject request: text".to_string())?;
+    Ok(InterjectParams {
+        session_id: session_id.to_string(),
+        text: text.to_string(),
+    })
+}
+
+fn progress_duration_ms(started_ms: u64, now_ms: u64) -> u64 {
+    if started_ms == 0 {
+        return 0;
+    }
+    now_ms.saturating_sub(started_ms)
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn progress_tokens_used(metadata: &serde_json::Value) -> u64 {
+    metadata
+        .get("prompt_tokens")
+        .or_else(|| metadata.get("total_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+fn context_usage(window_tokens: u64, tokens_used: u64) -> (u64, u8) {
+    if window_tokens == 0 {
+        return (0, 0);
+    }
+    let pct = tokens_used.saturating_mul(100) / window_tokens;
+    (window_tokens, pct.min(100) as u8)
 }
 
 /// Depth steer from a3s `BudgetProfile.guideline`. Medium has none.
@@ -1030,66 +1387,27 @@ fan-out. When a task genuinely needs a dynamic workflow, call the \
     }
 }
 
+const HOST_PARALLEL_TASKS: usize = 8;
+const HOST_CONTINUATION_TURNS: u32 = 8;
+
 fn effort_limits(token: &str) -> Option<EffortLimits> {
-    match token.to_ascii_lowercase().as_str() {
-        "none" => Some(EffortLimits {
-            token: "none",
-            thinking_budget: None,
-            max_tool_rounds: 240,
-            max_parallel_tasks: 4,
-            max_continuation_turns: 4,
-        }),
-        "minimal" => Some(EffortLimits {
-            token: "minimal",
-            thinking_budget: Some(1_024),
-            max_tool_rounds: 240,
-            max_parallel_tasks: 4,
-            max_continuation_turns: 4,
-        }),
-        "low" => Some(EffortLimits {
-            token: "low",
-            thinking_budget: Some(2_048),
-            max_tool_rounds: 240,
-            max_parallel_tasks: 4,
-            max_continuation_turns: 4,
-        }),
-        "medium" => Some(EffortLimits {
-            token: "medium",
-            thinking_budget: Some(8_192),
-            max_tool_rounds: 800,
-            max_parallel_tasks: 8,
-            max_continuation_turns: 8,
-        }),
-        "high" => Some(EffortLimits {
-            token: "high",
-            thinking_budget: Some(16_384),
-            max_tool_rounds: 1_200,
-            max_parallel_tasks: 8,
-            max_continuation_turns: 12,
-        }),
-        "xhigh" => Some(EffortLimits {
-            token: "xhigh",
-            thinking_budget: Some(32_768),
-            max_tool_rounds: 1_800,
-            max_parallel_tasks: 8,
-            max_continuation_turns: 16,
-        }),
-        "max" => Some(EffortLimits {
-            token: "max",
-            thinking_budget: Some(65_536),
-            max_tool_rounds: 2_400,
-            max_parallel_tasks: 8,
-            max_continuation_turns: 24,
-        }),
-        "ultracode" => Some(EffortLimits {
-            token: "ultracode",
-            thinking_budget: Some(65_536),
-            max_tool_rounds: 3_200,
-            max_parallel_tasks: 8,
-            max_continuation_turns: 32,
-        }),
-        _ => None,
-    }
+    let token = match token.to_ascii_lowercase().as_str() {
+        "none" => "none",
+        "minimal" => "minimal",
+        "low" => "low",
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        "max" => "max",
+        "ultracode" => "ultracode",
+        _ => return None,
+    };
+    Some(EffortLimits {
+        token,
+        max_tool_rounds: a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING,
+        max_parallel_tasks: HOST_PARALLEL_TASKS,
+        max_continuation_turns: HOST_CONTINUATION_TURNS,
+    })
 }
 
 fn effort_limits_from_meta(meta: Option<&acp::Meta>) -> Option<EffortLimits> {
@@ -1101,9 +1419,9 @@ fn effort_limits_from_meta(meta: Option<&acp::Meta>) -> Option<EffortLimits> {
     effort_limits(effort)
 }
 
-/// Map pager `/effort` `_meta.reasoningEffort` onto a3s-code thinking tokens.
-fn reasoning_effort_to_thinking_budget(meta: Option<&acp::Meta>) -> Option<usize> {
-    effort_limits_from_meta(meta).and_then(|limits| limits.thinking_budget)
+/// Map pager `/effort` `_meta.reasoningEffort` onto the provider effort token.
+fn reasoning_effort_token(meta: Option<&acp::Meta>) -> Option<&'static str> {
+    effort_limits_from_meta(meta).map(|limits| limits.token)
 }
 
 /// ACP `ToolKind` the pager uses to pick Execute / Read / Edit / Search / Fetch cards.
@@ -1394,7 +1712,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effort_tokens_map_to_thinking_budgets() {
+    fn effort_tokens_keep_one_tool_ceiling() {
         let meta = |effort: &str| {
             let mut m = acp::Meta::new();
             m.insert(
@@ -1403,27 +1721,50 @@ mod tests {
             );
             m
         };
+        assert_eq!(reasoning_effort_token(Some(&meta("none"))), Some("none"));
         assert_eq!(
-            reasoning_effort_to_thinking_budget(Some(&meta("none"))),
-            None
+            reasoning_effort_token(Some(&meta("medium"))),
+            Some("medium")
         );
+        let low = effort_limits("low").expect("low");
+        let high = effort_limits("high").expect("high");
+        let max = effort_limits("max").expect("max");
+        assert_eq!(low.max_tool_rounds, high.max_tool_rounds);
+        assert_eq!(high.max_tool_rounds, max.max_tool_rounds);
         assert_eq!(
-            reasoning_effort_to_thinking_budget(Some(&meta("medium"))),
-            Some(8_192)
+            high.max_tool_rounds,
+            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
         );
+
+        let claude =
+            A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(high));
+        assert_eq!(claude.reasoning_effort.as_deref(), Some("high"));
+        assert!(claude.thinking_budget.is_none());
         assert_eq!(
-            reasoning_effort_to_thinking_budget(Some(&meta("xhigh"))),
-            Some(32_768)
+            claude.max_tool_rounds,
+            Some(a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING)
         );
+        assert!(claude.prompt_slots.is_none());
+        assert!(claude.auto_compact);
         assert_eq!(
-            reasoning_effort_to_thinking_budget(Some(&meta("max"))),
-            Some(65_536)
+            claude.auto_compact_threshold,
+            Some(a3s_code_core::store::DEFAULT_AUTO_COMPACT_THRESHOLD)
+        );
+        assert!(claude.max_context_tokens.is_none());
+
+        let local = A3sCodeAgent::core_session_options("sid", "ollama/llama3", Some(high));
+        assert_eq!(
+            local
+                .prompt_slots
+                .as_ref()
+                .and_then(|slots| slots.guidelines.as_deref()),
+            effort_guideline("high")
         );
     }
 
     #[test]
     fn reasoning_meta_offers_parseable_budget_levels() {
-        let meta = reasoning_effort_catalog_meta();
+        let meta = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
         assert_eq!(
             meta.get("supportsReasoningEffort"),
             Some(&serde_json::Value::Bool(true))
@@ -1448,16 +1789,121 @@ mod tests {
     }
 
     #[test]
-    fn effort_limits_match_budget_profile() {
+    fn effort_limits_share_the_tool_ceiling() {
         let medium = effort_limits("medium").expect("medium");
-        assert_eq!(medium.thinking_budget, Some(8_192));
-        assert_eq!(medium.max_tool_rounds, 800);
-        assert_eq!(medium.max_parallel_tasks, 8);
-        assert_eq!(medium.max_continuation_turns, 8);
+        assert_eq!(
+            medium.max_tool_rounds,
+            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
+        );
+        assert_eq!(medium.max_parallel_tasks, HOST_PARALLEL_TASKS);
+        assert_eq!(medium.max_continuation_turns, HOST_CONTINUATION_TURNS);
 
+        let low = effort_limits("low").expect("low");
         let max = effort_limits("max").expect("max");
-        assert_eq!(max.max_tool_rounds, 2_400);
+        let ultra = effort_limits("ultracode").expect("ultracode");
+        assert_eq!(low.max_parallel_tasks, max.max_parallel_tasks);
+        assert_eq!(low.max_continuation_turns, max.max_continuation_turns);
+        assert_eq!(ultra.max_parallel_tasks, max.max_parallel_tasks);
+        assert_eq!(ultra.max_continuation_turns, max.max_continuation_turns);
+        assert_eq!(max.max_tool_rounds, medium.max_tool_rounds);
+        let ultra_options =
+            A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(ultra));
+        assert_eq!(
+            ultra_options.planning_mode,
+            a3s_code_core::PlanningMode::Auto
+        );
         assert!(effort_limits("not-a-level").is_none());
+    }
+
+    fn effort_values(meta: &serde_json::Map<String, serde_json::Value>) -> Vec<&str> {
+        meta.get("reasoningEfforts")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("value").and_then(|value| value.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn reasoning_menu_follows_the_model() {
+        let claude = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
+        assert_eq!(
+            claude.get("supportsReasoningEffort"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(effort_values(&claude).contains(&"xhigh"));
+
+        let glm = reasoning_effort_catalog_meta("zhipu/glm-5");
+        let glm_values = effort_values(&glm);
+        assert!(!glm_values.contains(&"medium"));
+        assert!(!glm_values.contains(&"xhigh"));
+        assert_eq!(glm_values, vec!["low", "high", "max"]);
+
+        let local = reasoning_effort_catalog_meta("ollama/llama3");
+        assert_eq!(
+            local.get("supportsReasoningEffort"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        assert!(effort_values(&local).is_empty());
+    }
+
+    #[test]
+    fn subagent_progress_reports_the_resolved_window() {
+        let (window, early) = context_usage(128_000, 64_000);
+        let (_, later) = context_usage(128_000, 96_000);
+        assert_eq!(window, 128_000);
+        assert_eq!(early, 50);
+        assert!(later > early);
+        let idle = serde_json::json!({});
+        assert_eq!(progress_tokens_used(&idle), 0);
+        let growing = serde_json::json!({"prompt_tokens": 96_000});
+        let (reported, pct) = context_usage(128_000, progress_tokens_used(&growing));
+        assert_eq!(reported, 128_000);
+        assert_eq!(pct, later);
+
+        let mut progress = ChildProgress::default();
+        note_child_progress(
+            &mut progress,
+            "tool_completed",
+            &serde_json::json!({"tool": "read", "exit_code": 0}),
+        );
+        note_child_progress(
+            &mut progress,
+            "tool_completed",
+            &serde_json::json!({"tool": "bash", "exit_code": 1}),
+        );
+        note_child_progress(
+            &mut progress,
+            "turn_completed",
+            &serde_json::json!({"turn": 2}),
+        );
+        assert_eq!(progress.tool_call_count, 2);
+        assert_eq!(
+            progress.tools_used,
+            vec!["read".to_string(), "bash".to_string()]
+        );
+        assert_eq!(progress.error_count, 1);
+        assert_eq!(progress.turn_count, 2);
+        note_child_progress(
+            &mut progress,
+            "tool_completed",
+            &serde_json::json!({"tool": "read", "exit_code": 0, "prompt_tokens": 4_000}),
+        );
+        assert_eq!(progress.tokens_used, 4_000);
+        let finished = subagent_finished_update("task-1", "child-1", true, "ok", 500, &progress);
+        assert_eq!(finished["tool_calls"], 3);
+        assert_eq!(finished["turns"], 2);
+        assert_eq!(finished["tokens_used"], 4_000);
+        assert_eq!(finished["status"], "completed");
+        let parsed = parse_interject_params(
+            r#"{"sessionId":"s1","text":" look here ","interjectionId":"i1"}"#,
+        )
+        .expect("interject");
+        assert_eq!(parsed.session_id, "s1");
+        assert_eq!(parsed.text, "look here");
+        assert!(parse_interject_params(r#"{"sessionId":"s1"}"#).is_err());
+        assert_eq!(progress_duration_ms(1_000, 1_500), 500);
+        assert_eq!(progress_duration_ms(0, 1_500), 0);
     }
 
     #[test]
@@ -1917,6 +2363,7 @@ mod tests {
             turn_failure: None,
             saw_text: false,
             subagent_started_ms: HashMap::new(),
+            child_progress: HashMap::new(),
             prompted_questions: std::collections::HashSet::new(),
         };
         let sid = created.session_id.clone();
@@ -2184,7 +2631,7 @@ mod tests {
             .and_then(|value| value.as_str())
             .unwrap_or("");
         record("turn-failed", detail.contains("completion gate:"));
-        let menu = reasoning_effort_catalog_meta();
+        let menu = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
         let values = menu
             .get("reasoningEfforts")
             .and_then(|value| value.as_array())
@@ -2199,7 +2646,10 @@ mod tests {
         );
         record(
             "effort-high-budget",
-            effort_limits("high").is_some_and(|limits| limits.thinking_budget == Some(16384)),
+            effort_limits("high").is_some_and(|limits| {
+                limits.token == "high"
+                    && limits.max_tool_rounds == a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
+            }),
         );
         record(
             "effort-medium-no-guideline",

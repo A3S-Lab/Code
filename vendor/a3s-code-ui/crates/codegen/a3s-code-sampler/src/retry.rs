@@ -346,8 +346,8 @@ pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::StatusCode;
     use a3s_code_sampling_types::ApiErrorCode;
+    use reqwest::StatusCode;
 
     fn api_err(status: StatusCode, message: &str) -> SamplingError {
         SamplingError::Api {

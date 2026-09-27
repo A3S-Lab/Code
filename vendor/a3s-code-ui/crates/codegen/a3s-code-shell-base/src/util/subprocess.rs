@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
 
+use a3s_tty_utils::ProcessGroup;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
@@ -13,7 +14,6 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::debug;
 use tracing::warn;
-use a3s_tty_utils::ProcessGroup;
 
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 

@@ -463,15 +463,8 @@ mod tests {
 
     #[test]
     fn ensure_query_param_keeps_other_query_pairs() {
-        let out = ensure_query_param(
-            "https://a3s/supergrok?heavy=1",
-            "referrer",
-            "grok-build",
-        );
-        assert_eq!(
-            out,
-            "https://a3s/supergrok?heavy=1&referrer=grok-build"
-        );
+        let out = ensure_query_param("https://a3s/supergrok?heavy=1", "referrer", "grok-build");
+        assert_eq!(out, "https://a3s/supergrok?heavy=1&referrer=grok-build");
     }
 
     #[test]

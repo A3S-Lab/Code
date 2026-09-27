@@ -9,13 +9,13 @@
 use crate::capability::{CapabilityMode, kind_allowed};
 use crate::config::SessionContextFactory;
 use crate::error::{WorkspaceError, WorkspaceResult};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 use a3s_code_tools::registry::types::{
     FinalizedToolset, ToolConfig, ToolRegistryBuilder, ToolServerConfig,
 };
 use a3s_code_tools::types::tool::ToolKind;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 /// Test helper: same as [`resolve_session_toolset_for_host`] with a default truncation config.
 /// Production binds go through `resolve_session_toolset_for_host` so a sandbox host can cap polls.
 #[cfg(test)]
@@ -572,16 +572,16 @@ fn default_web_search_model() -> String {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use crate::config::SessionContextFactory;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use tempfile::TempDir;
     use a3s_code_tools::computer::local::{LocalFs, LocalTerminalBackend};
     use a3s_code_tools::notification::ToolNotificationHandle;
     use a3s_code_tools::registry::types::{
         SessionContext, ToolConfig, ToolRegistryBuilder, ToolServerConfig,
     };
     use a3s_code_tools::types::tool::ToolKind;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
     /// Test factory: builds a `SessionContext` rooted at a per-test temp dir.
     pub struct TestSessionContextFactory {
         pub temp: TempDir,
@@ -685,10 +685,10 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::config::SessionContextFactory;
+    use a3s_code_tools::types::tool::ToolKind;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use a3s_code_tools::types::tool::ToolKind;
     fn factory_for_test() -> Arc<dyn SessionContextFactory> {
         Arc::new(test_support::TestSessionContextFactory::new())
     }

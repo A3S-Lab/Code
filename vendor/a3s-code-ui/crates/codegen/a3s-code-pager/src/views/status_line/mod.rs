@@ -5,13 +5,13 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use a3s_ratatui_inline::LinkSpan;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-use a3s_ratatui_inline::LinkSpan;
 
 use crate::theme::Theme;
 

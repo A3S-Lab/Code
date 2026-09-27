@@ -3,10 +3,10 @@
 //! and its absence (frames from older peers) must fall back to the historic
 //! constant.
 
-use serde_json::json;
 use a3s_computer_hub_core::{error_from_envelope, tool_error_from_wire};
 use a3s_tool_protocol::{JsonRpcError, RequestId, ToolErrorWire};
 use a3s_tool_runtime::ToolErrorKind;
+use serde_json::json;
 
 #[test]
 fn internal_with_detail_reconstructs_the_wire_detail() {

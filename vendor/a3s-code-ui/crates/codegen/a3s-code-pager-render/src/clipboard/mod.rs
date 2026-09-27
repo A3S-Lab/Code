@@ -4,11 +4,11 @@
 
 mod trust;
 
+pub use a3s_ratatui_textarea::{ClipboardProvider, InternalClipboard};
 pub use trust::{
     ClipboardDelivery, ClipboardEnvironment, NativeClipboardPreflight, Osc52Capability,
     expected_delivery, native_clipboard_preflight,
 };
-pub use a3s_ratatui_textarea::{ClipboardProvider, InternalClipboard};
 
 use std::sync::OnceLock;
 
@@ -1371,8 +1371,8 @@ mod tests {
     mod guarded_read {
         use super::super::{ProbeDrop, guarded_pasteboard_read};
         use crate::clipboard::ImageData;
-        use std::cell::Cell;
         use a3s_code_telemetry::events::ClipboardProbeDropReason as Reason;
+        use std::cell::Cell;
 
         type Read = Result<(Option<ImageData>, Option<String>), Reason>;
         type Outcome = Result<(Option<ImageData>, Option<String>), ProbeDrop>;

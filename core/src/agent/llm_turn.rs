@@ -630,6 +630,7 @@ impl AgentLoop {
                     &compaction_input,
                     &compaction_client,
                     compaction_budget,
+                    None,
                 ),
             ) => {
                 match result {

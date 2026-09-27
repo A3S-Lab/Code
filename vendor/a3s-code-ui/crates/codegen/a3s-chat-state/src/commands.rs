@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use tokio::sync::oneshot;
 use a3s_code_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
     ToolSpec, TraceContext,
 };
+use tokio::sync::oneshot;
 
 use crate::types::{
     AutoCompactTrigger, ChatStateSnapshot, ConversationCounts, Credentials, NotificationMeta,

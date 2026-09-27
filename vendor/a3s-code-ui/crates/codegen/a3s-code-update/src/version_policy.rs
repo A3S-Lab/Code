@@ -2,9 +2,9 @@
 //! Every knob fails open.
 
 use crate::version::get_installed_grok_version;
+use a3s_code_shell::util::config::VersionPolicy;
 use semver::Version;
 use tracing::warn;
-use a3s_code_shell::util::config::VersionPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RequiredRangeDecision {

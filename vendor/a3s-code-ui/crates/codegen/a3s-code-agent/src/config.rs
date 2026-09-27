@@ -2,11 +2,6 @@
 use crate::error::AgentBuildError;
 use crate::prompt::context::TemplateOverride;
 use crate::prompt::user_message::UserMessageTemplate;
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 use a3s_code_tools::implementations::codex;
 use a3s_code_tools::implementations::grok_build;
 use a3s_code_tools::implementations::grok_build_concise;
@@ -15,6 +10,11 @@ use a3s_code_tools::implementations::opencode;
 use a3s_code_tools::implementations::search_tool;
 use a3s_code_tools::implementations::use_tool;
 use a3s_code_tools::registry::types::{ToolConfig, ToolServerConfig};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 /// Process-global registry of externally-provided toolset presets.
 /// Public presets are enumerated; internal presets resolve only via [`toolset_for_preset`] and never appear in the manifest.
 /// Register before the first preset resolution — earlier-resolved configs will not see later registrations.

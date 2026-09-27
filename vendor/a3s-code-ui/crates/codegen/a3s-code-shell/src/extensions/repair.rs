@@ -8,10 +8,10 @@
 //! Resident sessions go through `SessionCommand::RepairHistory` (serialized with session activity, rejected mid-turn).
 //! Non-resident sessions are repaired on disk via the atomic `replace_chat_history`.
 
+use a3s_chat_state::compaction_utils::HistoryRepairReport;
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use a3s_chat_state::compaction_utils::HistoryRepairReport;
 
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;

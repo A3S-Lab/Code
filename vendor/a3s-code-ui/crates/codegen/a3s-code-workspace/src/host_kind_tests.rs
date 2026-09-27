@@ -6,18 +6,18 @@ use crate::handle::tests::{bind_resolver_fixture, handler_names};
 use crate::handle::{LocalWorkspaceConnectOptions, WorkspaceHandle, build_local_workspace};
 use crate::hub_ids::WORKSPACE_RPC_TOOL_ID;
 use crate::session::tool_config::resolve_session_toolset;
-use serde_json::json;
-use std::collections::HashMap;
-use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use a3s_computer_hub_sdk::{AuthCredential, SharedAuthProvider};
 use a3s_code_tools::implementations::grok_build::image_gen::ImageGenClient;
 use a3s_code_tools::implementations::grok_build::video_gen::VideoGenClient;
 use a3s_code_tools::implementations::web_search::WebSearchConfig;
 use a3s_code_tools::implementations::web_search::client::WebSearchClient;
 use a3s_code_tools::registry::types::{FinalizedToolset, ToolServerConfig};
+use a3s_computer_hub_sdk::{AuthCredential, SharedAuthProvider};
 use a3s_tool_protocol::SessionId;
+use serde_json::json;
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 /// The tools a hub-only host must not offer: each one calls the API with the server's own credential.
 const API_BACKED_TOOLS: &[&str] = &[
     "web_search",

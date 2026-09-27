@@ -4,6 +4,7 @@ use crate::sampling::{ContentPart, ConversationItem};
 use crate::session::info::Info;
 use crate::session::persistence::{CHAT_FORMAT_VERSION, Summary};
 use crate::tools::todo::TodoState;
+use a3s_chat_state::StrictAppendAck;
 use a3s_code_workspace::session::file_state::RewindPoint;
 use agent_client_protocol as acp;
 use async_trait::async_trait;
@@ -11,7 +12,6 @@ use fs2::FileExt;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use a3s_chat_state::StrictAppendAck;
 mod copy;
 #[derive(Clone)]
 enum SessionDirMode {
@@ -1943,11 +1943,11 @@ impl StorageAdapter for JsonlStorageAdapter {
         info: &Info,
         segment: &crate::extensions::notification::CompactionSegmentFile,
     ) -> io::Result<()> {
-        use tokio::io::AsyncWriteExt;
         use a3s_compaction_transcript::{
             COMPACTION_DIR, INDEX_FILE, INDEX_HEADER, extract_keywords, render_index_row,
             render_segment_md, segment_filename,
         };
+        use tokio::io::AsyncWriteExt;
         let base = self.session_dir(info).join(COMPACTION_DIR);
         tokio::fs::create_dir_all(&base).await?;
         let index = next_compaction_segment_index(&base).await;

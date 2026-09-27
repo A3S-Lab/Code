@@ -10,8 +10,8 @@ use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 use a3s_sqlite_journal::JournalMode;
+use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 
 use crate::storage::MemoryStorage;
 use crate::v2::{

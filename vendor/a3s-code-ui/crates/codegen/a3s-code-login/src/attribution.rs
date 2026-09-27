@@ -44,9 +44,9 @@
 
 use std::sync::Arc;
 
-use serde_json::Value as JsonValue;
 use a3s_code_sampler::{Auth401AttributionCallback, SamplingConsumer};
 use a3s_code_tools::{Auth401AttributionCallback as ToolAuth401AttributionCallback, ToolConsumer};
+use serde_json::Value as JsonValue;
 
 use crate::{AuthManager, TOKEN_TTL};
 use a3s_code_auth::bearer_suffix;

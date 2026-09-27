@@ -20,10 +20,10 @@ use a3s_code_login::AuthManager;
 use a3s_code_login::credential_provider::{
     ShellAuthCredentialProvider, StorageClientAttributionBridge,
 };
-use std::sync::Arc;
 use a3s_file_utils::gcs::StorageConfig;
 use a3s_file_utils::storage_client::Auth401AttributionCallback;
 use a3s_file_utils::{TraceExportConfig, UploadMethod};
+use std::sync::Arc;
 /// See the module docs for why this exists.
 /// `auth_manager == None` is supported (for tests, direct-mode upload, and a few sites without an `AuthManager` in scope).
 /// It degrades to the pre-existing snapshot-based behavior.

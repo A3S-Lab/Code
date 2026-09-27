@@ -18,8 +18,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
 use a3s_code_pager_pty_harness::{ContentController, PtyExitPoll, PtyHarness, keys, pager_binary};
+use anyhow::{Context, Result, bail};
 
 const ROWS: u16 = 50;
 const COLS: u16 = 120;

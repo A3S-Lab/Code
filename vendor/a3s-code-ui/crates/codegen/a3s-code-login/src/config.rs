@@ -1,6 +1,6 @@
 use super::model::TEAM_PRINCIPAL_TYPE;
-use serde::{Deserialize, Serialize};
 use a3s_code_shell_base::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
+use serde::{Deserialize, Serialize};
 fn default_oidc_scopes() -> Vec<String> {
     vec![
         "openid".into(),

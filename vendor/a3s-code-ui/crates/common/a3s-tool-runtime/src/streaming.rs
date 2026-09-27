@@ -6,8 +6,8 @@
 //! layers dispatch on the envelope's `subkind` rather than on the tool's
 //! identity.
 
-use serde::{Deserialize, Serialize};
 use a3s_tool_protocol::StreamingSpec;
+use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolProgress;
 

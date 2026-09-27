@@ -3,12 +3,12 @@ use crate::capability::CapabilityMode;
 use crate::handle::tests::{
     background_capable_cfg, make_confining_handle, make_handle, start_background_sleep,
 };
-use std::sync::Arc;
 use a3s_code_tools::implementations::grok_build::scheduler::types::{
     ScheduledTask, SchedulerState,
 };
 use a3s_code_tools::types::resources::State;
 use a3s_tool_protocol::turn_hook;
+use std::sync::Arc;
 async fn next_item(
     stream: &mut ToolStream<TypedToolOutput>,
 ) -> Option<a3s_tool_runtime::ToolStreamItem<TypedToolOutput>> {
@@ -1561,8 +1561,8 @@ fn directory_entries(path: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 #[tokio::test]
 async fn dispatch_store_session_image_preserves_binary_in_bound_folder() {
-    use base64::Engine;
     use a3s_code_workspace_types::rpc::fs::{StoreSessionImageReq, StoreSessionImageRes};
+    use base64::Engine;
     let (handler, folder) = session_image_handler().await;
     let root = handler.workspace.root_cwd().unwrap();
     std::fs::write(root.join("keep.txt"), b"untouched").unwrap();
@@ -1672,10 +1672,10 @@ async fn dispatch_store_session_image_rejects_invalid_input_without_writing() {
 }
 #[tokio::test]
 async fn dispatch_store_session_image_enforces_size_limit_without_writing() {
-    use base64::Engine;
     use a3s_code_workspace_types::rpc::fs::{
         MAX_SESSION_IMAGE_BASE64_BYTES, MAX_SESSION_IMAGE_BYTES,
     };
+    use base64::Engine;
     let (handler, folder) = session_image_handler().await;
     let root = handler.workspace.root_cwd().unwrap();
     let before = directory_entries(&root);
@@ -1701,8 +1701,8 @@ async fn dispatch_store_session_image_enforces_size_limit_without_writing() {
 }
 #[tokio::test]
 async fn dispatch_store_session_image_accepts_exact_size_limit() {
-    use base64::Engine;
     use a3s_code_workspace_types::rpc::fs::{MAX_SESSION_IMAGE_BYTES, StoreSessionImageRes};
+    use base64::Engine;
     let (handler, folder) = session_image_handler().await;
     let bytes = vec![0xff; MAX_SESSION_IMAGE_BYTES];
     let value = handler
@@ -1766,8 +1766,8 @@ async fn dispatch_store_session_image_reports_write_failure() {
 /// Sync `block_on` under the env lock: the dispatch reads `WORKSPACE_CLIENT_FS_QUERIES`, which `write_file_behind_client_fs_gate` sets.
 #[test]
 fn dispatch_client_fs_write_file_round_trips_through_envelope() {
-    use base64::Engine;
     use a3s_code_workspace_types::rpc::fs::{ClientFsWriteFileReq, ClientFsWriteFileRes};
+    use base64::Engine;
     let _env = crate::LockedTestEnv::lock();
     let _unset = crate::TestEnvGuard::unset("WORKSPACE_CLIENT_FS_QUERIES");
     let rt = tokio::runtime::Runtime::new().unwrap();

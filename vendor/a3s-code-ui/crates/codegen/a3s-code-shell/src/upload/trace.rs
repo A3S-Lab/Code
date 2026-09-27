@@ -3,12 +3,12 @@ use super::turn::{PromptTraceContext, UploadWait};
 use crate::sampling::types::ToolDefinition;
 use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
 use a3s_code_workspace::permission::PermissionEvent;
+use a3s_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
 use base64::Engine as _;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use url::Url;
-use a3s_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
 /// Upload the canonical tool definitions trace and wait for completion.
 /// `ToolDefinition` serializes in Chat Completions format: `{ "type": "function", "function": { ... } }`.
 /// That is the shape downstream ingest/enrichment expects to read from `tool_definitions.json`.

@@ -8,13 +8,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_workspace::file_system::{CodebaseIndexManager, FileIndex, WalkOptions};
+use a3s_fsnotify::{FsEvent, FsEventKind};
+use a3s_hunk_tracker::HunkTrackerHandle;
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
 use tokio::time::sleep_until;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use a3s_fsnotify::{FsEvent, FsEventKind};
-use a3s_hunk_tracker::HunkTrackerHandle;
 
 use crate::session::acp_session::SessionActor;
 use crate::session::persistence::PersistenceMsg;

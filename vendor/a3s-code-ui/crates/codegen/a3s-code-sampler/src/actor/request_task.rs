@@ -1002,9 +1002,9 @@ fn send_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use a3s_code_sampling_types::ApiErrorCode;
     use futures_util::stream;
     use reqwest::StatusCode;
-    use a3s_code_sampling_types::ApiErrorCode;
 
     #[test]
     fn strip_reason_invalid_image_is_server_rejected_on_api_and_stream() {

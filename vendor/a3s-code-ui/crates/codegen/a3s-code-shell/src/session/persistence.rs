@@ -34,9 +34,9 @@ use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
 use crate::session::visibility::ClassifiedSessionKind;
 use crate::tools::todo::TodoState;
 use crate::util::grok_home::grok_home;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_sampling_types::ReasoningEffort;
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::extensions::notification::{
     DISK_FULL_ERROR_TYPE, DISK_FULL_USER_MESSAGE, RetryState,

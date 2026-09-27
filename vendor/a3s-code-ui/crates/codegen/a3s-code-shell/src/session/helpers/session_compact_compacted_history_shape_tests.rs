@@ -9,10 +9,10 @@ use crate::session::helpers::compaction_context::{
     BackgroundTaskSummary, CompactionInputs, CompactionStateContext, RunningSubagentSummary,
     SubagentToolNames, to_system_reminder_sync,
 };
-use std::collections::BTreeSet;
 use a3s_chat_state::compaction_utils::{
     CompactedHistoryInput, build_compacted_history as build_compacted_history_shared,
 };
+use std::collections::BTreeSet;
 /// Thin wrapper around the shared `build_compacted_history` from `a3s-chat-state`.
 /// Renders the system-reminder synchronously (no memory backend) to match the old test-local helper signature.
 fn build_compacted_history(

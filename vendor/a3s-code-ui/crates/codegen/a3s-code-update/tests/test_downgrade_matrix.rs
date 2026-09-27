@@ -17,12 +17,12 @@ use serial_test::serial;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use common::{FakeBinGuard, reset_home, set_test_version, test_home};
 use a3s_code_update::UpdateConfig;
 use a3s_code_update::auto_update::{
     auto_update_target, check_update_status, ensure_latest_on_disk, install_internal_from_base,
 };
 use a3s_code_update::version::installed_on_disk_version;
+use common::{FakeBinGuard, reset_home, set_test_version, test_home};
 
 fn host_platform() -> String {
     let os = if cfg!(target_os = "macos") {

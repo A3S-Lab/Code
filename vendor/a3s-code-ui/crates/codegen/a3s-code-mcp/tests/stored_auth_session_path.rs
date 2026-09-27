@@ -1,15 +1,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use a3s_code_mcp::credentials::McpCredentialStore;
+use a3s_code_mcp::rmcp;
+use a3s_code_mcp::servers::{McpOauthDiscovery, McpSpawnCtx, OauthInteractivity, start_mcp_server};
 use agent_client_protocol as acp;
 use axum::body::Body;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde_json::{Value, json};
 use serial_test::serial;
-use a3s_code_mcp::credentials::McpCredentialStore;
-use a3s_code_mcp::rmcp;
-use a3s_code_mcp::servers::{McpOauthDiscovery, McpSpawnCtx, OauthInteractivity, start_mcp_server};
 
 const TOKEN: &str = "at-123";
 

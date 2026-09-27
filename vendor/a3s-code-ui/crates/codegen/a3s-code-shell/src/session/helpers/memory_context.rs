@@ -4,9 +4,9 @@
 //! - Session start: inject relevant past context on the first turn
 //! - Post-compaction: recover relevant memory after context is lost
 
+use a3s_chat_state::{MEMORY_CONTEXT_CLOSE_TAG, MEMORY_CONTEXT_OPEN_TAG};
 use a3s_code_sampling_types::ConversationItem;
 use a3s_code_tools::types::memory_backend::{MemorySearchResult, format_staleness_note};
-use a3s_chat_state::{MEMORY_CONTEXT_CLOSE_TAG, MEMORY_CONTEXT_OPEN_TAG};
 
 const SNIPPET_MAX_CHARS: usize = 500;
 

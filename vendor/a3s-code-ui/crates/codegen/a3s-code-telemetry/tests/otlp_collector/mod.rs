@@ -10,6 +10,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Once;
 
+use a3s_code_test_support::{MockOtelServer, OtelRecorder, OtelSignal};
 use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsService;
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse,
@@ -19,7 +20,6 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
 use prost::Message as _;
-use a3s_code_test_support::{MockOtelServer, OtelRecorder, OtelSignal};
 
 /// Install a process-wide test tracing subscriber.
 /// Construction and export failures then show up under `--test_output=errors` without production `eprintln!` side effects.

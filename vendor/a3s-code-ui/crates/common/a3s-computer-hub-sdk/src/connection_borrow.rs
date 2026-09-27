@@ -6,9 +6,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use a3s_tool_protocol::ConnectionKind;
 use tokio_util::sync::CancellationToken;
 use url::Url;
-use a3s_tool_protocol::ConnectionKind;
 
 use crate::auth::AuthProvider;
 use crate::connection::{

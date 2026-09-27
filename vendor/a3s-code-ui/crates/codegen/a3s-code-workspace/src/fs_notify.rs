@@ -7,11 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
-use tokio_util::task::AbortOnDropHandle;
+use a3s_code_workspace_types::WorkspaceEvent;
 use a3s_codebase_graph::{FileEvent, FileEventKind, IndexManagerHandle};
 use a3s_fsnotify::{FsConfig, FsEvent, FsEventKind};
-use a3s_code_workspace_types::WorkspaceEvent;
+use tokio::sync::broadcast;
+use tokio_util::task::AbortOnDropHandle;
 
 #[cfg(test)]
 #[path = "fs_notify_tests.rs"]

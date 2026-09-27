@@ -17,13 +17,13 @@ use crate::render::draw::CursorState;
 use crate::scrollback::render::ScratchBuffer;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::welcome::WelcomePromptFocus;
+use a3s_acp_lib::AcpAgentTx;
 use agent_client_protocol as acp;
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use a3s_acp_lib::AcpAgentTx;
 /// State for the "New Worktree" popup dialog on the welcome screen.
 #[derive(Debug, Default)]
 pub struct NewWorktreeDialogState {
@@ -557,8 +557,6 @@ pub(crate) const A3S_CODE_UNAVAILABLE_COMMANDS: &[&str] = &[
     "import-claude",
     "remember",
     "tasks",
-    // Compaction today queues a literal prompt, not core compaction
-    "compact",
     // Media / voice / announcements (also fail-closed; keep explicit under a3s)
     "imagine",
     "imagine-video",
@@ -582,6 +580,8 @@ pub(crate) const A3S_CODE_EFFECTIVE_COMMANDS: &[&str] = &[
     "config",
     "new",
     "effort",
+    "goal",
+    "compact",
     "model",
     "context",
     "jump",

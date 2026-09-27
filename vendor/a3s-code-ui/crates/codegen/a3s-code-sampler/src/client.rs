@@ -2249,12 +2249,12 @@ mod tests {
         };
         x
     }
+    use a3s_code_sampling_types::ApiErrorCode;
+    use a3s_code_sampling_types::types::ChatRequestMessage;
     use axum::{Router, body::Bytes, routing::post};
     use indexmap::IndexMap;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
-    use a3s_code_sampling_types::ApiErrorCode;
-    use a3s_code_sampling_types::types::ChatRequestMessage;
 
     #[test]
     fn splice_extra_tool_entries_extends_existing_tools_array() {

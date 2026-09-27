@@ -17,6 +17,17 @@
 //! `run` and unregisters everything; [`Drop`] is a best-effort
 //! fallback that schedules the same cleanup on a background task.
 
+use a3s_tool_protocol::{
+    ConnectionKind, HookEvent, HookFrame, HookReplyFrame, JsonRpcError, JsonRpcId,
+    JsonRpcNotification, JsonRpcResponse, JsonRpcVersion, Method, ResponseOutcome, SessionId,
+    ToolCallId, ToolCallParams, ToolCallProgressFrame, ToolCallResult, ToolErrorWire, ToolId,
+    ToolOutputWire, ToolServerEvictParams, error_codes,
+};
+use a3s_tool_runtime::{
+    BehaviorVersion, Cancellation, Cwd, ToolCallContext, ToolError, ToolProgress, ToolStream,
+    ToolStreamItem, TraceContext, TypedToolOutput,
+};
+use a3s_tool_types::ToolDescription;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -29,17 +40,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use url::Url;
-use a3s_tool_protocol::{
-    ConnectionKind, HookEvent, HookFrame, HookReplyFrame, JsonRpcError, JsonRpcId,
-    JsonRpcNotification, JsonRpcResponse, JsonRpcVersion, Method, ResponseOutcome, SessionId,
-    ToolCallId, ToolCallParams, ToolCallProgressFrame, ToolCallResult, ToolErrorWire, ToolId,
-    ToolOutputWire, ToolServerEvictParams, error_codes,
-};
-use a3s_tool_runtime::{
-    BehaviorVersion, Cancellation, Cwd, ToolCallContext, ToolError, ToolProgress, ToolStream,
-    ToolStreamItem, TraceContext, TypedToolOutput,
-};
-use a3s_tool_types::ToolDescription;
 
 use crate::auth::{AuthCredential, AuthProvider};
 use crate::cancel::CancelRegistry;

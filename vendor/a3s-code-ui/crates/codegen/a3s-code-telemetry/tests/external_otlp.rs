@@ -3,11 +3,11 @@
 
 use std::time::Duration;
 
-use serde_json::Value;
 use a3s_code_telemetry::external::IdentityAttrs;
 use a3s_code_test_support::{
     MockOtelServer, OtelMetricData, OtelNumber, OtelSignal, OtelTemporality,
 };
+use serde_json::Value;
 
 const CANARY_MODEL: &str = "sk-CANARYabcdefghij1234567890";
 const CANARY_PROMPT: &str = "CANARY_PROMPT_TEXT do not export";

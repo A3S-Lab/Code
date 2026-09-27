@@ -1,5 +1,6 @@
-//! `/compact` takes an optional context argument.
-//! `run` returns `CommandResult::QueueCommand` so the dispatch layer enqueues it as `QueueEntryKind::Command`.
+//! `/compact` takes an optional focus argument.
+//! `run` returns `CommandResult::QueueCommand`. Dispatch drains that as
+//! `Effect::Compact`, which calls `x.ai/compact_conversation` on the ACP agent.
 
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 

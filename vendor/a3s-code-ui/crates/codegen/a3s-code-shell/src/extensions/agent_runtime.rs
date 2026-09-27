@@ -6,9 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_login::AuthManager;
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::agent::session_registry_client::SessionRegistryClient;
 use crate::extensions::code_nav::CodeNavEligibility;

@@ -1597,6 +1597,10 @@ fn child_context_with_budget(
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: Some(budget_guard),
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     }
 }
 
@@ -2694,6 +2698,10 @@ fn redacting_parent_context() -> crate::child_run::ChildRunContext {
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     }
 }
 
@@ -3391,6 +3399,10 @@ async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     };
     let executor = Arc::new(
         TaskExecutor::new(
@@ -3770,6 +3782,10 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
         })),
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     };
 
     let executor = TaskExecutor::new(
@@ -3890,6 +3906,10 @@ async fn delegated_child_retains_large_tool_original_through_parent_content_adap
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     };
     let executor = TaskExecutor::new(
         Arc::new(AgentRegistry::new()),
@@ -5663,6 +5683,10 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     };
     let executor = TaskExecutor::new(
         test_registry_with_writer(),

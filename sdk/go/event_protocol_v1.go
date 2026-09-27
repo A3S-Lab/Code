@@ -34,6 +34,7 @@ const (
 	EventModelPresentationBound = "model_presentation_bound"
 	EventModelInputBound        = "model_input_bound"
 	EventModelUsageBound        = "model_usage_bound"
+	EventAutoCompact            = "auto_compact"
 	EventCognitiveContextBound  = "cognitive_context_bound"
 	EventCommandDeadLettered    = "command_dead_lettered"
 	EventCommandRetry           = "command_retry"
@@ -89,6 +90,7 @@ var agentEventTypesV1 = [...]string{
 	EventModelPresentationBound,
 	EventModelInputBound,
 	EventModelUsageBound,
+	EventAutoCompact,
 	EventCognitiveContextBound,
 	EventCommandDeadLettered,
 	EventCommandRetry,

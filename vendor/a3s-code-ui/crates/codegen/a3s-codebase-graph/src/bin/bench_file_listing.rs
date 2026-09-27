@@ -8,8 +8,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use git2::{Repository, StatusOptions};
 use a3s_codebase_graph::LanguageRegistry;
+use git2::{Repository, StatusOptions};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

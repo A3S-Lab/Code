@@ -1,10 +1,10 @@
 #![allow(dead_code)] // Phase 1 internal helpers
 
 use crate::permission::types::EditPolicy;
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use a3s_code_paths::AbsPathBuf;
 use a3s_code_tools::util::grok_home::grok_home;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 const VALIDATED_MCP_SERVER_GRANTS_VERSION: i64 = 1;
 

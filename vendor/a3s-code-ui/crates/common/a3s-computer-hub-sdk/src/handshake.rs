@@ -5,9 +5,9 @@
 //! machine readable: send the frame, parse the ack, surface a typed
 //! [`crate::ClientError`].
 
+use a3s_tool_protocol::{ConnectionKind, HelloAckMsg, HelloMsg};
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
-use a3s_tool_protocol::{ConnectionKind, HelloAckMsg, HelloMsg};
 
 use crate::error::ClientError;
 

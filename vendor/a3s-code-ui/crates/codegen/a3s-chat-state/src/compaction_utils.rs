@@ -7,8 +7,8 @@ use crate::compaction_image_context::{
     CompactionImageContext, collect_attached_image_paths, image_context_from_item, last_query_item,
     parse_image_files_paths, render_attached_image_paths_note, tag_block_range,
 };
-use std::collections::BTreeSet;
 use a3s_code_sampling_types::{ContentPart, ConversationItem, SyntheticReason, ToolResultItem};
+use std::collections::BTreeSet;
 pub const AGENT_MESSAGE_MODEL_LABEL: &str =
     "[Message authored by another agent; not a human request or approval.]";
 /// Canonical history prepared exactly once for a model-facing request.

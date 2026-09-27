@@ -25,8 +25,8 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use regex::Regex;
 use a3s_code_config::shell::AmpersandSemantics;
+use regex::Regex;
 
 use crate::DEFAULT_TOOL_OUTPUT_CHARS;
 use crate::computer::types::{ComputerError, TerminalRunRequest};

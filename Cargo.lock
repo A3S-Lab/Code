@@ -178,8 +178,6 @@ dependencies = [
 [[package]]
 name = "a3s-effect"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "044abc27a2da3caeb2c3636fd80b97b22f422034e46618a5ba2073397573b07c"
 dependencies = [
  "serde",
  "serde_json",

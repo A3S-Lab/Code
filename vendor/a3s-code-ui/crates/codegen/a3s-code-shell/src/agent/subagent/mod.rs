@@ -25,6 +25,7 @@ use crate::upload::trace::{
     upload_metadata, upload_session_state, upload_subagent_metadata, upload_turn_result,
 };
 use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_agent::config::{McpInheritance, ModelOverride, PermissionMode};
 use a3s_code_sampling_types::conversation::ConversationItem;
 use a3s_code_session_events::types::CancellationCategory;
@@ -33,14 +34,13 @@ use a3s_code_tools::implementations::grok_build::monitor::types::MonitorEventBuf
 use a3s_code_tools::implementations::grok_build::task::types::*;
 use a3s_code_tools::types::tool::ToolKind;
 use a3s_code_workspace::file_system::AsyncFileSystem;
+use a3s_hunk_tracker::HunkTrackerHandle;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use a3s_hunk_tracker::HunkTrackerHandle;
 mod attempt_runner;
 mod spawn;
 mod start_artifact_publication;

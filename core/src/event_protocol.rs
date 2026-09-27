@@ -75,6 +75,7 @@ define_agent_event_types_v1! {
     ModelPresentationBound => MODEL_PRESENTATION_BOUND = "model_presentation_bound",
     ModelInputBound => MODEL_INPUT_BOUND = "model_input_bound",
     ModelUsageBound => MODEL_USAGE_BOUND = "model_usage_bound",
+    AutoCompact => AUTO_COMPACT = "auto_compact",
     CognitiveContextBound => COGNITIVE_CONTEXT_BOUND = "cognitive_context_bound",
     CommandDeadLettered => COMMAND_DEAD_LETTERED = "command_dead_lettered",
     CommandRetry => COMMAND_RETRY = "command_retry",

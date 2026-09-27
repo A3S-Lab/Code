@@ -6,9 +6,9 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use a3s_code_test_support::{TestProcessTree, TestSandbox, process_has_exited_without_reap};
 use anyhow::{Context, Result};
 use portable_pty::{ExitStatus, PtySize, native_pty_system};
-use a3s_code_test_support::{TestProcessTree, TestSandbox, process_has_exited_without_reap};
 
 const PTY_DROP_REAP_TIMEOUT: Duration = Duration::from_millis(250);
 /// Grace after group SIGTERM before SIGKILL so a responsive child can run TERM cleanup. Wedged children fall through to SIGKILL.

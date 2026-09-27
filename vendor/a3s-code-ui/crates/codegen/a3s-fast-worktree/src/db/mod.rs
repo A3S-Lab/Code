@@ -8,10 +8,10 @@ mod schema;
 
 use std::path::{Path, PathBuf};
 
+use a3s_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use a3s_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 
 #[derive(
     Clone,

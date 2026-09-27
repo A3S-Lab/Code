@@ -172,6 +172,7 @@ fn build_resolved_capabilities(
         SessionCapabilityInput {
             code_config: &agent.code_config,
             base_config: &agent.config,
+            limits: &resolved.limits,
             workspace: canonical,
             llm_client: Arc::clone(&resolved.llm_client),
             opts,

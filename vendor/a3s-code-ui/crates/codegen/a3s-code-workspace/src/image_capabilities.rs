@@ -182,9 +182,9 @@ fn is_rejection_noteworthy(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use a3s_tool_protocol::MAX_IMAGE_CAPABILITY_LEN;
     use std::fs;
     use std::path::Path;
-    use a3s_tool_protocol::MAX_IMAGE_CAPABILITY_LEN;
 
     fn touch(dir: &Path, name: &str) {
         fs::write(dir.join(name), b"").unwrap();

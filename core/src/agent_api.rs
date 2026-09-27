@@ -68,6 +68,7 @@ mod session_builder;
 mod session_clock;
 mod session_close;
 mod session_commands;
+mod session_compact;
 mod session_config;
 mod session_extensions;
 mod session_facade;
@@ -439,8 +440,12 @@ pub struct SessionOptions {
     pub mcp_manager: Option<Arc<crate::mcp::manager::McpManager>>,
     /// Sampling temperature (0.0–1.0). Overrides the provider default.
     pub temperature: Option<f32>,
-    /// Extended thinking budget in tokens (Anthropic only).
+    /// Extended thinking budget in tokens (Anthropic legacy `budget_tokens`).
     pub thinking_budget: Option<usize>,
+    /// Provider effort token. Clients map it onto `effort` or `reasoning_effort`.
+    ///
+    /// This does not change the tool-round ceiling.
+    pub reasoning_effort: Option<String>,
     /// Per-session tool round limit override.
     ///
     /// When set, overrides the agent-level `max_tool_rounds` for this session only.

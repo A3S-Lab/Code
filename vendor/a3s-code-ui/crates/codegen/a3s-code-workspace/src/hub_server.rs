@@ -5,11 +5,6 @@ use crate::handle::WorkspaceHandle;
 use crate::hub_ids::WORKSPACE_RPC_TOOL_ID;
 use crate::rpc_envelope::{RpcEnvelope, envelope_err};
 use crate::workspace_ops::{RpcActivityClass, WorkspaceOp, WorkspaceRpc};
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use prometheus::{HistogramVec, IntCounterVec, register_histogram_vec, register_int_counter_vec};
-use serde_json::Value;
-use a3s_computer_hub_sdk::ToolServerHandler;
 use a3s_code_tools::computer::types::KillOutcome;
 use a3s_code_tools::computer::types::TaskKind;
 use a3s_code_tools::implementations::grok_build::scheduler::interval::interval_to_human;
@@ -21,11 +16,16 @@ use a3s_code_tools::types::resources::Terminal;
 use a3s_code_workspace_types::rpc::workspace::{
     BackgroundTaskSnapshotWire, KillTaskOutcome, ScheduledTaskSnapshotWire, TasksSnapshotResponse,
 };
+use a3s_computer_hub_sdk::ToolServerHandler;
 use a3s_tool_protocol::{HookEvent, HookFrame, SessionId, ToolId, ToolServerEvictParams};
 use a3s_tool_runtime::{
     ToolCallContext, ToolError, ToolErrorKind, ToolStream, TypedToolOutput, terminal_only,
 };
 use a3s_tool_types::ToolDescription;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use prometheus::{HistogramVec, IntCounterVec, register_histogram_vec, register_int_counter_vec};
+use serde_json::Value;
 /// Deprecation monitor for self-attested `caller_session_id`. `param_mismatch` trusted the envelope; `envelope_absent` used the param as fallback.
 /// Envelope-only identity waits for this to be flat zero.
 static WORKSPACE_RPC_CALLER_MISMATCH_TOTAL: std::sync::LazyLock<IntCounterVec> =

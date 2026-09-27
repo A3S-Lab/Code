@@ -1390,8 +1390,8 @@ fn resolve_credentials_multi_env_key_uses_lc_alias() {
 #[test]
 #[serial]
 fn resolve_credentials_empty_env_key_falls_through_to_session() {
-    use a3s_code_test_support::EnvGuard;
     use a3s_chat_state::AuthType;
+    use a3s_code_test_support::EnvGuard;
     let primary = "GROK_TEST_EMPTY_ENV_PRIMARY";
     let alias = "GROK_TEST_EMPTY_ENV_LC_ALIAS";
     let _primary = EnvGuard::set(primary, "");
@@ -1406,9 +1406,9 @@ fn resolve_credentials_empty_env_key_falls_through_to_session() {
 #[test]
 #[serial]
 fn resolve_credentials_empty_env_key_falls_through_to_global_key() {
-    use crate::agent::auth_method::{LEGACY_A3S_API_KEY_ENV_VAR, A3S_API_KEY_ENV_VAR};
-    use a3s_code_test_support::EnvGuard;
+    use crate::agent::auth_method::{A3S_API_KEY_ENV_VAR, LEGACY_A3S_API_KEY_ENV_VAR};
     use a3s_chat_state::AuthType;
+    use a3s_code_test_support::EnvGuard;
     let sentinel = "a3s-global-sentinel-key";
     let primary = "GROK_TEST_EMPTY_ENV_GLOBAL_PRIMARY";
     let alias = "GROK_TEST_EMPTY_ENV_GLOBAL_ALIAS";

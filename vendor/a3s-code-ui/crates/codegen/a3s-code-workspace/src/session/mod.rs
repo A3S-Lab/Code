@@ -11,18 +11,18 @@ use crate::config::{MemoryConfig, SessionContextFactory};
 use crate::file_system::{AsyncFsWrapper, LocalFs};
 use crate::hub::{HubConfig, HubHandle};
 use crate::session::file_state::FileStateTracker;
-use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use a3s_computer_hub_mcp_adapter::McpBridgeHandle;
 use a3s_code_mcp::servers::McpState;
 use a3s_code_tools::notification::AcknowledgedToolNotification;
 use a3s_code_tools::notification::types::ToolNotificationHandle;
 use a3s_code_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
+use a3s_computer_hub_mcp_adapter::McpBridgeHandle;
 use a3s_hunk_tracker::HunkTrackerHandle;
 use a3s_tool_protocol::ToolId;
 use a3s_tool_runtime::WorkspaceViewerContext;
+use parking_lot::RwLock;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 /// Minimal result types for git error reporting (duplicated from shell session/result).
 pub mod result {
     use serde::Serialize;
@@ -1020,8 +1020,8 @@ pub(crate) fn get_or_open_session_writer(
 #[cfg(test)]
 mod tests {
     use super::get_or_open_session_writer;
-    use dashmap::DashMap;
     use a3s_code_session_events::{Event, EventWriter};
+    use dashmap::DashMap;
     fn count_lines(path: &std::path::Path) -> usize {
         std::fs::read_to_string(path)
             .unwrap()

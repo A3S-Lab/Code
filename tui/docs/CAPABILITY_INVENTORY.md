@@ -75,7 +75,7 @@ Browse-hidden (typed only): see `SLASH_BROWSE_HIDDEN` in chrome.rs.
 | Markdown flatten for scrollback | ✅ `markdown_to_plain` |
 | Session resume | fact-log shared id `tui-session` ✅ |
 | Permission prompts | ✅ y/n confirm; auto/yolo auto-approve |
-| Core slash (`/compact`, …) | ✅ forwarded via `session.stream` |
+| `/compact` | ✅ `x.ai/compact_conversation` writes `compaction.done` |
 | Interactive question options | **port** (displayed; answer path TBD) |
 | Full `/ctx` `/use` panel UIs | **port** (CLI panels; forward string for now) |
 
@@ -95,7 +95,11 @@ unsupported builtins (`/usage`, `/view-plan`, `/plan`, `/auto`, `/tutorial`,
 not tier-upsold. Voice and `coding_data_sharing` settings rows follow
 `apply_voice_mode_enabled(false)` / `A3S_CODE_ACTIVE`. Visible autonomy is
 `/always-approve` (YOLO), which auto-selects AllowOnce on
-`request_permission`. `/effort` maps to cli `BudgetProfile` budgets; tool
+`request_permission`. `/effort` maps to cli `BudgetProfile` budgets. `/goal`
+sets one durable objective and calls Core `set_planning_mode`; status, pause,
+and clear do not start a model turn. `/compact` asks the session model for a
+summary and appends `compaction.done` so the next turn keeps that summary
+instead of the older transcript. Tool
 starts/ends emit ACP `ToolCall` updates; HITL uses
 `ConfirmationRequired` → `session/request_permission`.
 `A3S_CODE_EFFECTIVE_COMMANDS` is the allowlist of remaining surfaces that must

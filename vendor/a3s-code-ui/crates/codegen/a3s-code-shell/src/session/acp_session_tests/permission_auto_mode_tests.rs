@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use a3s_acp_lib::AcpAgentGatewaySender;
 use a3s_code_paths::AbsPathBuf;
 use a3s_code_workspace::permission::{
     AccessKind, ClientType, PermissionRequest, spawn_permission_manager,
 };
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpAgentGatewaySender;
 
 use super::support::create_test_actor;
 use super::{PersistenceMsg, SessionActor};

@@ -78,7 +78,7 @@ tokio = { version = "1.35", features = [
     "rt-multi-thread", "sync", "time", "io-util",
     "process", "fs", "macros"
 ] }
-tokio-stream = { version = "0.1", features = ["net"] }
+tokio-stream = { version = "0.1", features = ["net", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
 # Serialization

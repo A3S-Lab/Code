@@ -101,6 +101,7 @@ pub(crate) async fn compact_messages(
     messages: &[Message],
     llm_client: &Arc<dyn LlmClient>,
     budget: CompactionBudget,
+    focus: Option<&str>,
 ) -> Result<Option<CompactedMessages>> {
     if messages.len() < MIN_MESSAGES_FOR_COMPACTION {
         tracing::debug!(
@@ -161,13 +162,19 @@ pub(crate) async fn compact_messages(
     // drop paths/constraints when a later summary forgets the ## Goal section.
     let pinned_goal = extract_pinned_goal(messages);
     let goal_for_prompt = pinned_goal.as_deref().unwrap_or("");
-    let summarization_prompt = crate::prompts::render(
+    let mut summarization_prompt = crate::prompts::render(
         crate::prompts::CONTEXT_COMPACT,
         &[
             ("goal", goal_for_prompt),
             ("conversation", &conversation_text),
         ],
     );
+    if let Some(focus) = focus.map(str::trim).filter(|focus| !focus.is_empty()) {
+        summarization_prompt.push_str(
+            "\n\nHost focus for this compaction (not transcript data; emphasize these points in Current State):\n",
+        );
+        summarization_prompt.push_str(focus);
+    }
 
     // Call LLM to generate summary
     let summary_message = Message::user(&summarization_prompt);
@@ -698,6 +705,71 @@ fn truncate_tool_result(content: &ToolResultContentField, max_bytes: usize) -> S
     )
 }
 
+/// Summarize an already-split fact-log prefix.
+///
+/// The caller keeps the recent tail. This path prunes older tool output, asks
+/// the model for a handoff, and caps that handoff. It does not keep a second
+/// recent slice inside the prefix.
+pub(crate) async fn summarize_folded_prefix(
+    client: &dyn LlmClient,
+    lines: &[String],
+    window_tokens: usize,
+) -> Result<String> {
+    let protect = TOOL_OUTPUT_PROTECT_TOKENS.min(window_tokens / 4);
+    let pruned = prune_folded_tool_outputs(lines, protect);
+    let conversation = pruned.join("\n");
+    let pinned_goal = folded_goal_section(&conversation);
+    let prompt = crate::prompts::render(
+        crate::prompts::CONTEXT_COMPACT,
+        &[
+            ("goal", pinned_goal.as_deref().unwrap_or("")),
+            ("conversation", &conversation),
+        ],
+    );
+    let response = client
+        .complete(
+            &[Message::user(&prompt)],
+            Some(COMPACTION_SYSTEM_PROMPT),
+            &[],
+        )
+        .await
+        .context("Failed to generate conversation summary")?;
+    let summary_text = response.text();
+    if summary_text.trim().is_empty() {
+        anyhow::bail!("Compaction model returned an empty summary");
+    }
+    let summary_text =
+        truncate_summary_to_token_limit(summary_text.trim(), MAX_COMPACT_SUMMARY_TOKENS);
+    Ok(ensure_goal_section(&summary_text, pinned_goal.as_deref()))
+}
+
+/// Replace older folded tool results once the protected recent budget is spent.
+pub(crate) fn prune_folded_tool_outputs(lines: &[String], protect_tokens: usize) -> Vec<String> {
+    let mut remaining = protect_tokens;
+    let mut pruned = lines.to_vec();
+    for line in pruned.iter_mut().rev() {
+        let body = line
+            .strip_prefix("tool-error\n")
+            .or_else(|| line.strip_prefix("tool\n"));
+        let Some(body) = body else {
+            continue;
+        };
+        let prefix_len = line.len() - body.len();
+        let tokens = body.len().div_ceil(4).max(1);
+        if tokens <= remaining {
+            remaining = remaining.saturating_sub(tokens);
+            continue;
+        }
+        let prefix = line[..prefix_len].to_string();
+        *line = format!("{prefix}{PRUNED_MARKER}");
+    }
+    pruned
+}
+
+fn folded_goal_section(text: &str) -> Option<String> {
+    goal_section_body(text)
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -751,6 +823,30 @@ mod tests {
         ) -> Result<mpsc::Receiver<StreamEvent>> {
             anyhow::bail!("streaming is not used by compaction")
         }
+    }
+
+    #[tokio::test]
+    async fn folded_prefix_summary_is_model_text_and_prunes_old_tool_output() {
+        let client = Arc::new(RecordingSummaryClient {
+            prompts: Mutex::new(Vec::new()),
+            systems: Mutex::new(Vec::new()),
+        });
+        let huge = "x".repeat(80_000);
+        let lines = vec![
+            "user\n## Goal\nship the parser".to_string(),
+            format!("tool\n{huge}"),
+            "tool\nrecent-output".to_string(),
+        ];
+        let summary = summarize_folded_prefix(client.as_ref(), &lines, 8_000)
+            .await
+            .expect("summary");
+        assert!(summary.contains("durable compact summary"));
+        assert!(summary.contains("ship the parser"));
+        assert!(!summary.contains("[earlier transcript compacted]"));
+        let prompt = client.prompts.lock().unwrap()[0].clone();
+        assert!(prompt.contains("[output pruned"));
+        assert!(prompt.contains("recent-output"));
+        assert!(!prompt.contains(&huge));
     }
 
     // -- should_auto_compact tests --
@@ -1047,6 +1143,7 @@ mod tests {
             &messages,
             &llm_client,
             CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+            None,
         )
         .await
         .unwrap()
@@ -1136,6 +1233,7 @@ mod tests {
             &messages,
             &llm_client,
             CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+            None,
         )
         .await
         .unwrap()
@@ -1213,7 +1311,7 @@ mod tests {
         let llm_client: Arc<dyn LlmClient> = client;
         let budget = CompactionBudget::for_auto_compaction(100_000, 0.85, 5_000);
 
-        let compacted = compact_messages("bounded", &messages, &llm_client, budget)
+        let compacted = compact_messages("bounded", &messages, &llm_client, budget, None)
             .await
             .unwrap()
             .expect("history should compact");
@@ -1253,7 +1351,7 @@ mod tests {
         let llm_client: Arc<dyn LlmClient> = client;
         let budget = CompactionBudget::for_auto_compaction(20_000, 0.85, 4_000);
 
-        let compacted = compact_messages("pending-tool", &messages, &llm_client, budget)
+        let compacted = compact_messages("pending-tool", &messages, &llm_client, budget, None)
             .await
             .unwrap()
             .expect("history should compact");

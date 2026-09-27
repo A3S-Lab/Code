@@ -25,6 +25,7 @@ pub struct OpenAiClient {
     pub(crate) headers: HashMap<String, String>,
     pub(crate) temperature: Option<f32>,
     pub(crate) max_tokens: Option<usize>,
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) logprobs: bool,
     pub(crate) top_logprobs: Option<usize>,
     pub(crate) http: Arc<dyn HttpClient>,
@@ -95,6 +96,7 @@ impl OpenAiClient {
             headers: HashMap::new(),
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
             logprobs: false,
             top_logprobs: None,
             http: default_http_client(),
@@ -135,6 +137,12 @@ impl OpenAiClient {
 
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        let effort = effort.into();
+        self.reasoning_effort = (!effort.trim().is_empty()).then_some(effort);
         self
     }
 
@@ -361,6 +369,17 @@ impl OpenAiClient {
         }
     }
 
+    fn request_reasoning_effort(&self) -> Option<&'static str> {
+        let token = self.reasoning_effort.as_deref()?;
+        if self.provider_name == "zhipu" || super::effort::is_glm_model(&self.model) {
+            return super::effort::glm_reasoning_effort(token);
+        }
+        if super::effort::is_openai_reasoning_model(&self.model) {
+            return super::effort::openai_reasoning_effort(token);
+        }
+        None
+    }
+
     /// Build a chat-completions request body, optionally applying a directive.
     fn build_chat_request(
         &self,
@@ -388,7 +407,19 @@ impl OpenAiClient {
         if let Some(temp) = self.temperature {
             request["temperature"] = serde_json::json!(temp);
         }
-        if let Some(max) = self.max_tokens {
+        if let Some(level) = self.request_reasoning_effort() {
+            request["reasoning_effort"] = serde_json::json!(level);
+            let floor = super::effort::output_token_floor(level);
+            match self.max_tokens {
+                Some(max) => {
+                    request["max_tokens"] = serde_json::json!(max.max(floor));
+                }
+                None if floor > 0 => {
+                    request["max_tokens"] = serde_json::json!(floor);
+                }
+                None => {}
+            }
+        } else if let Some(max) = self.max_tokens {
             request["max_tokens"] = serde_json::json!(max);
         }
         if self.logprobs {
@@ -438,7 +469,9 @@ impl OpenAiClient {
                                 AttemptOutcome::Retryable {
                                     status,
                                     body: resp.body,
-                                    retry_after: None,
+                                    retry_after: RetryConfig::parse_retry_after(
+                                        resp.retry_after.as_deref(),
+                                    ),
                                 }
                             } else {
                                 AttemptOutcome::Fatal(anyhow::Error::new(

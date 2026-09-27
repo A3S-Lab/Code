@@ -67,8 +67,8 @@ pub(crate) fn collect_unignored_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use a3s_test_utils::git::{git_commit_all, init_git_repo};
+    use tempfile::TempDir;
 
     #[test]
     fn collect_unignored_includes_tracked_file_matching_git_exclude() {

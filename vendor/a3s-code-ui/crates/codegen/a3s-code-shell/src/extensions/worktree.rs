@@ -1,7 +1,7 @@
 //! Handler for x.ai/git/worktree/* extension methods.
 
-use agent_client_protocol as acp;
 use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_client_protocol as acp;
 
 use crate::extensions::agent_runtime::AgentRuntime;
 use crate::extensions::worktree_seed;

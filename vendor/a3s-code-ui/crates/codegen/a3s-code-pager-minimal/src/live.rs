@@ -5,11 +5,6 @@
 //! The tail shows the bottom of the uncommitted run (streaming message / running tool) so output is visible as it generates.
 //! Finished blocks scroll up into native scrollback via [`super::commit`].
 //! When idle the tail is empty and only the status row, the prompt, and any optional panels show.
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Widget};
 use a3s_code_pager::app::PagerTerminal;
 use a3s_code_pager::app::app_view::{ActiveView, AppView};
 use a3s_code_pager::minimal_api;
@@ -20,6 +15,11 @@ use a3s_code_pager::terminal::TerminalContext;
 use a3s_code_pager::theme::Theme;
 use a3s_code_pager::views::prompt_widget::{PromptBg, PromptStyle};
 use a3s_code_pager::views::turn_status;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Widget};
 /// Left inset (columns) for every auxiliary live-region row and the prompt's `chrome_pad_left`. Minimal is
 /// flush-left. Content glyphs (`◆` / `$` / message text) thus start at column 0, matching the welcome card's outer
 /// edge.
@@ -793,10 +793,10 @@ mod tests {
     }
     #[test]
     fn config_status_line_paints_and_records_the_script_size() {
-        use std::sync::Arc;
         use a3s_code_pager::views::status_line::{
             RowSize, SanitizedText, StatusLineDisplay, StatusLineFrame,
         };
+        use std::sync::Arc;
         let theme = Theme::current();
         let area = Rect::new(0, 0, 40, 1);
         let row_text = |buf: &Buffer| -> String {
@@ -1133,10 +1133,10 @@ mod tests {
     }
     #[test]
     fn pending_hint_formats_press_again() {
-        use crossterm::event::{KeyCode, KeyModifiers};
         use a3s_code_pager::app::actions::Action;
         use a3s_code_pager::app::app_view::PendingAction;
         use a3s_code_pager::input::key::KeyShortcut;
+        use crossterm::event::{KeyCode, KeyModifiers};
         assert!(minimal_pending_hint(&None).is_none());
         let shortcut = KeyShortcut::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
         let pending = Some(PendingAction::new(Action::Quit, shortcut, "quit"));

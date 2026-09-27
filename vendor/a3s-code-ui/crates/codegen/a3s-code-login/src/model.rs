@@ -1,7 +1,7 @@
+use a3s_code_auth::bearer_suffix;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use a3s_code_auth::bearer_suffix;
 
 use super::is_a3s_oauth2_issuer;
 

@@ -1,7 +1,7 @@
 //! Tracing-based observer for the storage circuit breaker.
 
-use std::sync::Arc;
 use a3s_circuit_breaker::{BreakerState, Observer, Outcome};
+use std::sync::Arc;
 
 /// `Observer` that emits `tracing` events matching the legacy breaker so existing analytics keep firing.
 /// Route on the **new** state only — `(old, new)` tuples mis-label `Open -> HalfOpen`.

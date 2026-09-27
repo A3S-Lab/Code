@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use a3s_acp_lib::AcpAgentGatewaySender;
 use a3s_code_tools::registry::types::ToolConfig;
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpAgentGatewaySender;
 
 use super::support::*;
 use super::*;

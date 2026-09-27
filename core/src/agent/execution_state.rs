@@ -232,7 +232,7 @@ impl ExecutionLoopState {
             duplicate_count,
             format!(
                 "Tool '{}' has been called {} times with identical arguments. \
-                 Aborting to prevent infinite loop. Consider modifying your approach.",
+                 Change your approach instead of repeating this call.",
                 tool_name, duplicate_count
             ),
         ))

@@ -1,6 +1,7 @@
 //! The stage is a data-carrying enum: [`ElicitationStage::Form`] and [`ElicitationStage::UrlConsent`] own the pending ACP responder.
 //! [`ElicitationStage::UrlWaiting`] exists only after the response was sent, so the stage itself encodes whether the card still owes a response.
 
+use a3s_acp_lib::AcpResult;
 use a3s_code_tools::mcp_elicitation::{
     ElicitFieldKind, ElicitFieldSpec, ElicitFieldValue, MAX_ELICIT_DESC_CHARS,
     MAX_ELICIT_DRAFT_CHARS, MAX_ELICIT_ENUM_VALUE_CHARS, MAX_ELICIT_MESSAGE_CHARS,
@@ -8,7 +9,6 @@ use a3s_code_tools::mcp_elicitation::{
     McpElicitModeFields, parse_form_schema, take_chars, validate_form,
 };
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpResult;
 
 use crate::views::prompt_widget::StashedPrompt;
 

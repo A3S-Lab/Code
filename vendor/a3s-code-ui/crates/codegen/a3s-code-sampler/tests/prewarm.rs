@@ -3,10 +3,10 @@ mod support;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use support::{pin_env, send_one, settle_pool, test_config};
 use a3s_code_sampler::{PrewarmOutcome, SamplingClient, prewarm_transport};
 use a3s_code_test_support::counting_server::spawn_http_server;
 use a3s_code_test_support::spawn_counting_server;
+use support::{pin_env, send_one, settle_pool, test_config};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prewarm_wire_lifecycle() {

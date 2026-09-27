@@ -231,7 +231,11 @@ mod links {
     #[test]
     fn emits_osc8_around_linked_cells() {
         let mut t = term(20, 3);
-        let out = frame(&mut t, "AB", &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)]);
+        let out = frame(
+            &mut t,
+            "AB",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)],
+        );
         assert!(
             out.contains("\x1b]8;id=1;https://github.com/A3S-Lab/a3s\x07"),
             "missing open: {out:?}"
@@ -666,7 +670,11 @@ mod links {
     #[test]
     fn link_removed_next_frame_rewrites_cells_without_osc8() {
         let mut t = term(20, 3);
-        let _ = frame(&mut t, "AB", &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)]);
+        let _ = frame(
+            &mut t,
+            "AB",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)],
+        );
         // Same glyphs, but the link is gone: the cells must be rewritten (so the
         // terminal's hyperlink clears) and carry no OSC 8. This is the `/new`
         // regression — clearing is driven purely by the diff.
@@ -678,9 +686,17 @@ mod links {
     #[test]
     fn unchanged_link_and_content_emits_nothing() {
         let mut t = term(20, 3);
-        let _ = frame(&mut t, "AB", &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)]);
+        let _ = frame(
+            &mut t,
+            "AB",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)],
+        );
         // Identical glyphs AND identical link → empty diff → no output at all.
-        let out = frame(&mut t, "AB", &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)]);
+        let out = frame(
+            &mut t,
+            "AB",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)],
+        );
         assert!(out.is_empty(), "expected empty diff, got: {out:?}");
     }
 
@@ -698,7 +714,11 @@ mod links {
     #[test]
     fn emit_id_param_included() {
         let mut t = term(20, 3);
-        let out = frame(&mut t, "AB", &[span(0, 2, "https://github.com/A3S-Lab/a3s", Some(7))]);
+        let out = frame(
+            &mut t,
+            "AB",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", Some(7))],
+        );
         assert!(
             out.contains("\x1b]8;id=1;https://github.com/A3S-Lab/a3s\x07"),
             "id param missing: {out:?}"
@@ -852,7 +872,11 @@ mod links {
         let mut t = term(20, 3);
         // A width-2 char occupies two cells; only the lead cell is drawn, and
         // the OSC 8 wraps it.
-        let out = frame(&mut t, "世", &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)]);
+        let out = frame(
+            &mut t,
+            "世",
+            &[span(0, 2, "https://github.com/A3S-Lab/a3s", None)],
+        );
         assert!(
             out.contains("\x1b]8;id=1;https://github.com/A3S-Lab/a3s\x07世\x1b]8;;\x07"),
             "wide-char run: {out:?}"

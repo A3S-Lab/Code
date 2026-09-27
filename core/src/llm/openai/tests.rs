@@ -6,6 +6,34 @@ fn make_client() -> OpenAiClient {
     OpenAiClient::new("test-key".to_string(), "gpt-test".to_string())
 }
 
+#[test]
+fn reasoning_model_sends_reasoning_effort_and_keeps_output_room() {
+    let client =
+        OpenAiClient::new("k".to_string(), "gpt-5.4".to_string()).with_reasoning_effort("max");
+    let req = client.build_chat_request(&[Message::user("fix it")], None, &[], None);
+    assert_eq!(req["reasoning_effort"], "xhigh");
+    assert!(req["max_tokens"].as_u64().unwrap() >= 65_536);
+}
+
+#[test]
+fn plain_chat_model_omits_reasoning_effort() {
+    let client =
+        OpenAiClient::new("k".to_string(), "gpt-4o".to_string()).with_reasoning_effort("high");
+    let req = client.build_chat_request(&[Message::user("hi")], None, &[], None);
+    assert!(req.get("reasoning_effort").is_none());
+    assert!(req.get("max_tokens").is_none());
+}
+
+#[test]
+fn zhipu_client_sends_glm_reasoning_effort() {
+    let client = OpenAiClient::new("k".to_string(), "glm-5.3".to_string())
+        .with_provider_name("zhipu")
+        .with_reasoning_effort("low");
+    let req = client.build_chat_request(&[Message::user("hi")], None, &[], None);
+    assert_eq!(req["reasoning_effort"], "low");
+    assert!(req["max_tokens"].as_u64().unwrap() >= 65_536);
+}
+
 // --- streaming reasoning-channel regression -----------------------------
 // Reasoning models (glm5.1/zhipu) stream chain-of-thought under `reasoning`.
 // It must land in reasoning_content, NEVER in the text content — otherwise
@@ -42,6 +70,7 @@ impl crate::llm::http::HttpClient for StatusHttp {
         Ok(crate::llm::http::HttpResponse {
             status: self.status,
             body: "provider error".to_string(),
+            retry_after: None,
         })
     }
 
@@ -1010,6 +1039,117 @@ fn test_native_structured_support_is_json_schema() {
         make_client().native_structured_support(),
         structured::NativeStructuredSupport::JsonSchema
     );
+}
+
+struct CountingHttp {
+    hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    status: u16,
+    retry_after: Option<String>,
+    body: String,
+    fail: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::http::HttpClient for CountingHttp {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(message) = &self.fail {
+            return Err(anyhow::Error::new(
+                crate::llm::http::HttpClientError::transport("HTTP request", message.clone()),
+            ));
+        }
+        Ok(crate::llm::http::HttpResponse {
+            status: self.status,
+            body: self.body.clone(),
+            retry_after: self.retry_after.clone(),
+        })
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+        Ok(crate::llm::http::StreamingHttpResponse {
+            status: 500,
+            retry_after: None,
+            byte_stream: Box::pin(futures::stream::empty()),
+            error_body: "unused".into(),
+        })
+    }
+}
+
+fn retry_client(http: std::sync::Arc<CountingHttp>, max_retries: u32) -> OpenAiClient {
+    OpenAiClient::new("test-key".into(), "gpt-test".into())
+        .with_http_client(http)
+        .with_retry_config(crate::retry::RetryConfig {
+            max_retries,
+            base_delay_ms: 1,
+            max_delay_ms: 5,
+            ..crate::retry::RetryConfig::default()
+        })
+}
+
+#[tokio::test]
+async fn nonstreaming_retry_waits_for_retry_after_and_skips_terminal_failures() {
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let http = std::sync::Arc::new(CountingHttp {
+        hits: std::sync::Arc::clone(&hits),
+        status: 429,
+        retry_after: Some("0.05".into()),
+        body: "slow".into(),
+        fail: None,
+    });
+    // The first response is always 429, so a second attempt still fails.
+    // The wait is what this case locks: Retry-After, not the 1ms backoff.
+    let started = tokio::time::Instant::now();
+    let error = retry_client(http, 1)
+        .complete(&[Message::user("hi")], None, &[])
+        .await
+        .expect_err("still limited");
+    assert!(error.to_string().contains("429") || error.to_string().contains("slow"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let http = std::sync::Arc::new(CountingHttp {
+        hits: std::sync::Arc::clone(&hits),
+        status: 400,
+        retry_after: Some("30".into()),
+        body: "bad request".into(),
+        fail: None,
+    });
+    let started = tokio::time::Instant::now();
+    let error = retry_client(http, 3)
+        .complete(&[Message::user("hi")], None, &[])
+        .await
+        .expect_err("terminal");
+    assert!(error.to_string().contains("400"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(started.elapsed() < std::time::Duration::from_millis(100));
+
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let http = std::sync::Arc::new(CountingHttp {
+        hits: std::sync::Arc::clone(&hits),
+        status: 200,
+        retry_after: None,
+        body: String::new(),
+        fail: Some("connection refused".into()),
+    });
+    let error = retry_client(http, 3)
+        .complete(&[Message::user("hi")], None, &[])
+        .await
+        .expect_err("connect");
+    assert!(error.to_string().contains("connection refused"));
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]

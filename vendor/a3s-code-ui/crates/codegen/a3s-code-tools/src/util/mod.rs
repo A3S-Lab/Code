@@ -25,6 +25,7 @@ pub mod unicode_confusables;
 pub(crate) mod vendor;
 
 pub use crate::implementations::grok_build::grep::ripgrep::rg_path;
+pub use a3s_tty_utils::detach_std_command;
 pub use command_display::strip_redundant_session_cd;
 #[cfg(unix)]
 pub use env::detach_from_tty;
@@ -47,4 +48,3 @@ pub use truncate::{
     format_bytes, soft_wrap_line, soft_wrap_lines, truncate_line, truncate_str,
     truncate_str_with_marker,
 };
-pub use a3s_tty_utils::detach_std_command;

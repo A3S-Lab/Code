@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
-use serde::{Deserialize, Serialize};
 use a3s_code_sampling_types::{ConversationItem, SamplingConfig};
+use serde::{Deserialize, Serialize};
 
 /// Canonical marker for an injected memory-context block. Shared by emitter and upsert/detection.
 /// A drift would silently break dedup and let blocks accumulate in the prompt prefix.

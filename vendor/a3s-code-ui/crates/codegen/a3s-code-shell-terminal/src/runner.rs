@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent_client_protocol as acp;
 use a3s_code_paths::AbsPathBuf;
+use agent_client_protocol as acp;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TerminalError {

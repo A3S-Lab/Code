@@ -1,6 +1,6 @@
 use super::*;
-use a3s_code_sampling_types::ContentPart;
 use a3s_chat_state::image_budget::IMAGE_COMPACT_TRIGGER_BYTES;
+use a3s_code_sampling_types::ContentPart;
 
 fn data_image(bytes: usize) -> ContentPart {
     let prefix = "data:image/png;base64,";

@@ -324,11 +324,11 @@ mod tests {
         };
         x
     }
-    use std::pin::pin;
     use a3s_code_sampling_types::{
         ChatChunkChoice, ChatChunkDelta, FinishReason, Role, ToolCallDelta as ChunkToolCallDelta,
         ToolCallFunctionDelta, Usage, rs,
     };
+    use std::pin::pin;
 
     fn rid() -> RequestId {
         RequestId::from("test-req")

@@ -537,13 +537,13 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::{GetAllFileContentsResponse, GetHunksResponse, compute_file_summaries};
+    use a3s_hunk_tracker::{
+        FileContentStatus, FileContentView, Hunk, HunkId, HunkLineInfo, HunkSource,
+    };
     use chrono::Utc;
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use a3s_hunk_tracker::{
-        FileContentStatus, FileContentView, Hunk, HunkId, HunkLineInfo, HunkSource,
-    };
 
     fn make_hunk(
         id: &str,

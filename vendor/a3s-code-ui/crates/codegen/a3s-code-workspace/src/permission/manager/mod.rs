@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_client_protocol as acp;
 use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::permission::auto_mode::{
     BashSecurityAssessment, ClassifierSecurityFinding, ClassifierVerdict,

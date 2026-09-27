@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use a3s_code_shell::session::persistence::list_recent_summaries;
-use chrono::{DateTime, Utc};
 use a3s_file_utils::workspace_classifier::is_project_dir;
+use chrono::{DateTime, Utc};
 
 pub async fn collect_recent_dirs(limit: usize) -> Vec<(PathBuf, DateTime<Utc>)> {
     let summaries = match list_recent_summaries(500).await {

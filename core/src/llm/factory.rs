@@ -30,8 +30,13 @@ pub struct LlmConfig {
     pub temperature: Option<f32>,
     /// Maximum tokens to generate. None uses the client default.
     pub max_tokens: Option<usize>,
-    /// Extended thinking budget in tokens (Anthropic only).
+    /// Extended thinking budget in tokens (Anthropic legacy `budget_tokens`).
     pub thinking_budget: Option<usize>,
+    /// Provider effort token (`low`, `medium`, `high`, `xhigh`, `max`).
+    ///
+    /// Clients translate this into the provider's own parameter. It does not
+    /// change the session tool-round ceiling.
+    pub reasoning_effort: Option<String>,
     /// Request token-level log probabilities from OpenAI-compatible providers.
     pub logprobs: Option<bool>,
     /// Number of alternative logprobs per token when logprobs are requested.
@@ -61,6 +66,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("thinking_budget", &self.thinking_budget)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("logprobs", &self.logprobs)
             .field("top_logprobs", &self.top_logprobs)
             .field("disable_temperature", &self.disable_temperature)
@@ -88,6 +94,7 @@ impl LlmConfig {
             temperature: None,
             max_tokens: None,
             thinking_budget: None,
+            reasoning_effort: None,
             logprobs: None,
             top_logprobs: None,
             disable_temperature: false,
@@ -137,6 +144,16 @@ impl LlmConfig {
 
     pub fn with_thinking_budget(mut self, budget: usize) -> Self {
         self.thinking_budget = Some(budget);
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        let effort = effort.into();
+        if effort.trim().is_empty() {
+            self.reasoning_effort = None;
+        } else {
+            self.reasoning_effort = Some(effort);
+        }
         self
     }
 
@@ -230,6 +247,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(budget) = config.thinking_budget {
                 client = client.with_thinking_budget(budget);
             }
+            if let Some(effort) = config.reasoning_effort.clone() {
+                client = client.with_reasoning_effort(effort);
+            }
             Arc::new(client)
         }
         // OpenAI-compatible providers (deepseek, groq, together, ollama, grok, etc.)
@@ -261,6 +281,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
             }
+            if let Some(effort) = config.reasoning_effort.clone() {
+                client = client.with_reasoning_effort(effort);
+            }
             if let Some(enabled) = config.logprobs {
                 client = client.with_logprobs(enabled);
             }
@@ -284,6 +307,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
+            }
+            if let Some(effort) = config.reasoning_effort.clone() {
+                client = client.with_reasoning_effort(effort);
             }
             if let Some(enabled) = config.logprobs {
                 client = client.with_logprobs(enabled);
@@ -325,6 +351,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             if let Some(max) = config.max_tokens {
                 client = client.with_max_tokens(max);
+            }
+            if let Some(effort) = config.reasoning_effort.clone() {
+                client = client.with_reasoning_effort(effort);
             }
             if let Some(enabled) = config.logprobs {
                 client = client.with_logprobs(enabled);

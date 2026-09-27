@@ -1,10 +1,10 @@
 use crate::agent::subagent::SubagentSpawnContext;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 pub(crate) type GatewayOut = <acp::AgentSide as a3s_acp_lib::AcpSide>::OutMessage;
 pub(crate) fn test_gateway() -> GatewaySender {
     let (tx, _rx) = mpsc::unbounded_channel();

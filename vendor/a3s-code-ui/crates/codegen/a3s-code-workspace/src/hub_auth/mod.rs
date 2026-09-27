@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use url::Url;
 use a3s_computer_hub_sdk::{
     AuthCredential, AuthIdentity, AuthProvider, OidcAuthProviderBuilder, OnRefreshCallback,
     RefreshEvent,
 };
+use url::Url;
 
 use crate::status_config::ProactiveRefreshConfig;
 

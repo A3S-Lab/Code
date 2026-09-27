@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
+use a3s_code_test_support::EnvGuard;
+use a3s_code_tools::implementations::grok_build::image_gen::{ImageGenClient, ImageGenConfig};
+use a3s_code_tools::implementations::grok_build::media_bearer::SIDE_CALL_BEARER_ERROR_CODE;
+use a3s_code_tools::types::api_key_provider::SideCallBearerError;
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use pretty_assertions::assert_eq;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use a3s_code_test_support::EnvGuard;
-use a3s_code_tools::implementations::grok_build::image_gen::{ImageGenClient, ImageGenConfig};
-use a3s_code_tools::implementations::grok_build::media_bearer::SIDE_CALL_BEARER_ERROR_CODE;
-use a3s_code_tools::types::api_key_provider::SideCallBearerError;
 
 use super::{SharedAuthKeyProvider, is_a3s_side_call_principal};
-use crate::config::{GrokComConfig, A3S_OAUTH2_ISSUER};
+use crate::config::{A3S_OAUTH2_ISSUER, GrokComConfig};
 use crate::{AuthManager, AuthMode, GrokAuth};
 
 const FOREIGN_ISSUER: &str = "https://cursor.com";

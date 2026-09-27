@@ -1,8 +1,8 @@
 //! Data APIs for `a3s models`. Rendering is the client's job.
 use crate::agent::config::Config as AgentConfig;
+use a3s_acp_lib::{AcpAgentTx, acp_send};
 use agent_client_protocol as acp;
 use anyhow::Result;
-use a3s_acp_lib::{AcpAgentTx, acp_send};
 /// Status for the `a3s models` banner (the display order is not the sampling priority; see [`AuthStatus::resolve`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthStatus {
@@ -95,7 +95,7 @@ fn parse_models_list_response(raw: &str) -> Result<acp::SessionModelState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::auth_method::{LEGACY_A3S_API_KEY_ENV_VAR, A3S_API_KEY_ENV_VAR};
+    use crate::agent::auth_method::{A3S_API_KEY_ENV_VAR, LEGACY_A3S_API_KEY_ENV_VAR};
     use crate::agent::config::Config;
     use a3s_code_login::{AuthMode, GrokAuth};
     use a3s_code_test_support::EnvGuard;

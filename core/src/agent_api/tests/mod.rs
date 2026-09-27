@@ -23,6 +23,7 @@ mod attachment_cap;
 mod checkpoint_capability_recovery;
 mod close;
 mod cognitive;
+mod compact;
 mod conversation_busy;
 mod dynamic_workflow;
 mod history_concurrency;

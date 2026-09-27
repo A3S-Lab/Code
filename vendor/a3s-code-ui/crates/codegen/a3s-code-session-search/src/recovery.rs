@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::ErrorCode;
 use a3s_sqlite_journal::JournalMode;
+use rusqlite::ErrorCode;
 
 static HEAL_LOCK: Mutex<()> = Mutex::new(());
 

@@ -20,6 +20,7 @@ pub(crate) fn is_session_update_ext_method(method: &str) -> bool {
     matches!(method, "x.ai/session_notification" | "x.ai/session/update")
 }
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+use a3s_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
 use a3s_code_shell::agent::auth_method::AuthMethodKind;
 use a3s_code_shell::agent::config::Config as AgentConfig;
 use a3s_code_shell::sampling::types::ReasoningEffort;
@@ -35,7 +36,6 @@ use anyhow::Result;
 pub use model_state::ModelState;
 use std::io::Write;
 use tokio_util::sync::CancellationToken;
-use a3s_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
 /// Construct a `METHOD_NOT_FOUND` error for `WaitForTerminalExit`.
 /// Both the interactive pager and headless mode reject this ACP method (the adapter falls back to polling).
 /// Centralised here so the error code and message format stay in sync.
@@ -977,7 +977,7 @@ mod tests {
     /// on a meaningful new code path.
     #[test]
     fn startup_auth_a3s_api_key_not_first_still_requires_login() {
-        use a3s_code_shell::agent::auth_method::{GROK_COM_METHOD_ID, A3S_API_KEY_METHOD_ID};
+        use a3s_code_shell::agent::auth_method::{A3S_API_KEY_METHOD_ID, GROK_COM_METHOD_ID};
         let methods = vec![
             make_auth_method(GROK_COM_METHOD_ID, "A3S Code", None),
             make_auth_method(A3S_API_KEY_METHOD_ID, "a3s.api_key", None),

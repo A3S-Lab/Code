@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use a3s_code_hooks::event::{HookEventEnvelope, HookEventName};
 use a3s_code_hooks::matcher::HookMatcher;
+use a3s_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
 use agent_client_protocol as acp;
 use serde::Deserialize;
-use a3s_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
 
 use crate::agent::MvpAgent;
 

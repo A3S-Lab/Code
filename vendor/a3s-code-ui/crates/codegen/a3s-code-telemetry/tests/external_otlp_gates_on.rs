@@ -13,9 +13,9 @@
 
 use std::time::Duration;
 
-use serde_json::Value;
 use a3s_code_telemetry::external::{self, ExternalOtelRemotePolicy, IdentityAttrs};
 use a3s_code_test_support::{MockOtelServer, OtelMetricData, OtelSignal, OtelTemporality};
+use serde_json::Value;
 
 const SECRET_KEY: &str = "sk-LEAKaaaaaaaaaaaaaaaa1234567890";
 const SECRET_MODEL: &str = "grok-4-sk-LEAKmodel1234567890abcd";

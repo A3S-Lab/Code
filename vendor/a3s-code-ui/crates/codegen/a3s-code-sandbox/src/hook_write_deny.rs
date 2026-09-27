@@ -129,8 +129,8 @@ pub fn revalidate_path_identity(id: &PathIdentity) -> Result<(), HookWriteDenyEr
 
 #[cfg(unix)]
 fn reject_hardlinked_files(sources: &[GlobalHookSource]) -> Result<(), HookWriteDenyError> {
-    use std::os::unix::fs::MetadataExt;
     use a3s_code_config::GlobalHookSourceKind;
+    use std::os::unix::fs::MetadataExt;
     for s in sources {
         let is_file_slot = matches!(
             s.kind,

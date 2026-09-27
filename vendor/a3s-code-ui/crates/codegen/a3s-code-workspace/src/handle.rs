@@ -1,4 +1,7 @@
 //! [`WorkspaceHandle`] -- public handle to a workspace instance.
+use a3s_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
+use a3s_tool_protocol::turn_hook::TurnHookOutcome;
+use a3s_tool_protocol::{SessionId, ToolId, ToolServerStatusPayload};
 use fastrace::future::FutureExt as _;
 use fastrace::local::LocalSpan;
 use prometheus::{
@@ -8,9 +11,6 @@ use prometheus::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use a3s_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
-use a3s_tool_protocol::turn_hook::TurnHookOutcome;
-use a3s_tool_protocol::{SessionId, ToolId, ToolServerStatusPayload};
 /// Default SIGTERM drain budget (ms); override via `GROK_WORKSPACE_TERMINATION_GRACE_MS`.
 /// 45s fits under the K8s grace period.
 const DEFAULT_TERMINATION_GRACE_MS: u64 = 45_000;
@@ -194,10 +194,10 @@ use crate::telemetry::dc_log;
 use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
 };
-use a3s_file_utils::queue::EnqueueOutcome;
 use a3s_code_diag_server::DiagHandle;
 use a3s_code_session_events::types::CancellationCategory;
 use a3s_code_session_events::{Event, SessionRelationship, TurnOutcomeLabel};
+use a3s_file_utils::queue::EnqueueOutcome;
 use a3s_tool_protocol::turn_hook::{AfterTurnAckPayload, AfterTurnAckStatus};
 /// Per-domain checkpoint captures, by domain and turn outcome.
 pub(crate) static REWIND_CHECKPOINT_CAPTURE_TOTAL: std::sync::LazyLock<IntCounterVec> =

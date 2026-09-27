@@ -302,7 +302,10 @@ mod tests {
         .unwrap();
         let cta = full.cta.as_ref().expect("cta present");
         assert_eq!(cta.label.as_deref(), Some("Get A3S Code"));
-        assert_eq!(cta.url.as_deref(), Some("https://github.com/A3S-Lab/a3s/grok"));
+        assert_eq!(
+            cta.url.as_deref(),
+            Some("https://github.com/A3S-Lab/a3s/grok")
+        );
         assert_eq!(cta.caption.as_deref(), Some("or use Ctrl+O"));
 
         let partial: RemoteAnnouncement =

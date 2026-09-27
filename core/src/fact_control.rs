@@ -5,7 +5,7 @@
 //! table. Steer is another `user.message` fact.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use a3s_effect::{
@@ -65,6 +65,7 @@ pub struct FactRunHostMounts<'a> {
     pub compose: Option<&'a crate::meta_harness::HarnessComposeOptions>,
     pub registry: Option<&'a dyn crate::meta_harness::HostHarnessRegistry>,
     pub assembler: Option<&'a dyn crate::meta_harness::HostHarnessAssembler>,
+    pub compactor: Option<Arc<dyn Compactor>>,
 }
 
 struct CappedCompletion {
@@ -90,6 +91,10 @@ impl Completion for CappedCompletion {
             }
             Ok(decision)
         })
+    }
+
+    fn reported_prompt_tokens(&self) -> Option<u64> {
+        self.inner.reported_prompt_tokens()
     }
 }
 
@@ -137,6 +142,7 @@ pub struct LiveCompletion {
     context_ready: Arc<AtomicBool>,
     cached_system: Arc<Mutex<Option<String>>>,
     cached_prompt: Arc<Mutex<Option<String>>>,
+    prompt_tokens: Arc<AtomicU64>,
 }
 
 impl LiveCompletion {
@@ -156,6 +162,7 @@ impl LiveCompletion {
                 context_ready: Arc::new(AtomicBool::new(false)),
                 cached_system: Arc::new(Mutex::new(None)),
                 cached_prompt: Arc::new(Mutex::new(None)),
+                prompt_tokens: Arc::new(AtomicU64::new(0)),
             },
             calls,
         )
@@ -585,6 +592,8 @@ fn verified_turn_text(surface: &SessionSurface, messages: &[String]) -> Option<S
 fn split_folded_message(text: &str) -> (&str, String) {
     if let Some(body) = text.strip_prefix("user\n") {
         ("user", body.to_string())
+    } else if let Some(body) = text.strip_prefix("tool-error\n") {
+        ("tool-error", body.to_string())
     } else if let Some(body) = text.strip_prefix("tool\n") {
         ("tool", body.to_string())
     } else {
@@ -712,37 +721,45 @@ async fn decision_from_response(
     } else {
         structured
     };
-    if let Some((id, name, args)) = calls.iter().find(|call| call.1 == "ask_user") {
-        return question_from_call(&crate::llm::ToolCall {
-            id: id.clone(),
-            name: name.clone(),
-            args: args.clone(),
+    if calls.iter().all(|call| call.1 == "ask_user") {
+        if let Some((id, name, args)) = calls.first() {
+            return question_from_call(&crate::llm::ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                args: args.clone(),
+            });
+        }
+    }
+    let text = crate::llm::strip_leaked_tool_protocol(&response.text());
+    let text = if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    };
+    let reasoning = response
+        .message
+        .reasoning_content
+        .as_ref()
+        .map(|text| crate::llm::strip_leaked_tool_protocol(text))
+        .filter(|text| !text.trim().is_empty());
+    let mut tools = Vec::new();
+    for (id, name, args) in calls {
+        if name == "ask_user" {
+            continue;
+        }
+        let needs_confirmation = confirmation_parked(policy, surface, &name, &args).await;
+        tools.push(ToolCall {
+            id: if id.is_empty() { "tool".into() } else { id },
+            needs_confirmation,
+            name,
+            args,
+            text: text.clone(),
+            reasoning: reasoning.clone(),
         });
     }
-    if let Some((id, name, args)) = calls.into_iter().next() {
-        let needs_confirmation = confirmation_parked(policy, surface, &name, &args).await;
-        let text = crate::llm::strip_leaked_tool_protocol(&response.text());
-        let text = if text.trim().is_empty() {
-            None
-        } else {
-            Some(text)
-        };
-        let reasoning = response
-            .message
-            .reasoning_content
-            .as_ref()
-            .map(|text| crate::llm::strip_leaked_tool_protocol(text))
-            .filter(|text| !text.trim().is_empty());
-        return ModelDecision::Tool {
-            call: ToolCall {
-                id: if id.is_empty() { "tool".into() } else { id },
-                needs_confirmation,
-                name,
-                args,
-                text,
-                reasoning,
-            },
-        };
+    if let Some(call) = tools.first().cloned() {
+        let also = tools.into_iter().skip(1).collect();
+        return ModelDecision::Tool { call, also };
     }
     ModelDecision::Text {
         text: response.text(),
@@ -762,7 +779,9 @@ impl Completion for LiveCompletion {
         let ready_flag = Arc::clone(&self.context_ready);
         let system_slot = Arc::clone(&self.cached_system);
         let prompt_slot = Arc::clone(&self.cached_prompt);
+        let prompt_tokens = Arc::clone(&self.prompt_tokens);
         Box::pin(async move {
+            prompt_tokens.store(0, Ordering::SeqCst);
             if request.messages.len() == 1 {
                 if let Some(surface) = &surface {
                     if let Some(args) = surface
@@ -780,6 +799,7 @@ impl Completion for LiveCompletion {
                                 text: None,
                                 reasoning: None,
                             },
+                            also: Vec::new(),
                         });
                     }
                 }
@@ -876,7 +896,7 @@ impl Completion for LiveCompletion {
                     } else {
                         body
                     };
-                    if role == "tool" {
+                    if role == "tool" || role == "tool-error" {
                         let call = recorded_calls.next().unwrap_or_else(|| RecordedCall {
                             id: format!("fact-tool-{index}"),
                             name: "tool".into(),
@@ -887,7 +907,7 @@ impl Completion for LiveCompletion {
                         let id = call.id.clone();
                         vec![
                             assistant_tool_call(&call),
-                            Message::tool_result(&id, &body, false),
+                            Message::tool_result(&id, &body, role == "tool-error"),
                         ]
                     } else {
                         vec![Message::user(&body)]
@@ -954,8 +974,14 @@ impl Completion for LiveCompletion {
                         .await;
                 }
             }
+            prompt_tokens.store(response.usage.prompt_tokens as u64, Ordering::SeqCst);
             Ok(decision_from_response(&response, &policy, surface.as_ref()).await)
         })
+    }
+
+    fn reported_prompt_tokens(&self) -> Option<u64> {
+        let tokens = self.prompt_tokens.load(Ordering::SeqCst);
+        (tokens > 0).then_some(tokens)
     }
 }
 
@@ -1296,6 +1322,43 @@ impl ToolRunner for ExecutorTools {
             Ok(serde_json::Value::String(output))
         })
     }
+
+    fn can_parallelize(&self, calls: &[ToolCall]) -> bool {
+        batch_can_run_in_parallel(calls)
+    }
+}
+
+fn batch_can_run_in_parallel(calls: &[ToolCall]) -> bool {
+    if calls.len() <= 1 {
+        return false;
+    }
+    if calls.iter().all(|call| is_parallel_safe_read(&call.name)) {
+        return true;
+    }
+    if !calls.iter().all(|call| is_parallel_safe_write(&call.name)) {
+        return false;
+    }
+    let mut paths = std::collections::HashSet::new();
+    calls.iter().all(|call| {
+        call.args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| paths.insert(path.to_string()))
+    })
+}
+
+fn is_parallel_safe_read(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file" | "grep" | "glob" | "list_dir" | "search" | "web_search" | "web_fetch"
+    )
+}
+
+fn is_parallel_safe_write(name: &str) -> bool {
+    matches!(
+        name,
+        "write_file" | "edit_file" | "create_file" | "append_to_file" | "replace_in_file"
+    )
 }
 
 struct NoopCompact;
@@ -1305,9 +1368,125 @@ impl Compactor for NoopCompact {
         &self,
         messages: &[String],
     ) -> a3s_effect::coding::BoxFuture<Result<String, ActorError>> {
-        let summary = messages.join(" ");
+        let summary = bounded_summary(messages);
         Box::pin(async move { Ok(summary) })
     }
+}
+
+struct UsageStamp {
+    inner: Arc<dyn Completion>,
+    prompt_tokens: Arc<AtomicU64>,
+}
+
+impl Completion for UsageStamp {
+    fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
+        let inner = Arc::clone(&self.inner);
+        let prompt_tokens = Arc::clone(&self.prompt_tokens);
+        Box::pin(async move {
+            let decision = inner.complete(request).await?;
+            let reported = inner.reported_prompt_tokens().unwrap_or(0);
+            prompt_tokens.store(reported, Ordering::SeqCst);
+            Ok(decision)
+        })
+    }
+
+    fn reported_prompt_tokens(&self) -> Option<u64> {
+        self.inner.reported_prompt_tokens()
+    }
+}
+
+struct SessionCompact {
+    client: Arc<dyn LlmClient>,
+    events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    window_tokens: u64,
+    prompt_tokens: Arc<AtomicU64>,
+}
+
+impl Compactor for SessionCompact {
+    fn compact(
+        &self,
+        messages: &[String],
+    ) -> a3s_effect::coding::BoxFuture<Result<String, ActorError>> {
+        let client = Arc::clone(&self.client);
+        let events = self.events.clone();
+        let window = self.window_tokens;
+        let used = self.prompt_tokens.load(Ordering::SeqCst);
+        let messages = messages.to_vec();
+        Box::pin(async move {
+            if let Some(events) = &events {
+                let _ = events
+                    .send(crate::agent::AgentEvent::AutoCompact {
+                        phase: "started".into(),
+                        tokens_used: used,
+                        context_window: window,
+                        tokens_after: 0,
+                    })
+                    .await;
+            }
+            let summary = compact_handoff(client.as_ref(), &messages, window).await;
+            let tokens_after = (summary.len() as u64).div_ceil(4).max(1);
+            if let Some(events) = &events {
+                let _ = events
+                    .send(crate::agent::AgentEvent::AutoCompact {
+                        phase: "completed".into(),
+                        tokens_used: used,
+                        context_window: window,
+                        tokens_after,
+                    })
+                    .await;
+            }
+            Ok(summary)
+        })
+    }
+}
+
+/// Model handoff for a prefix the fold already split. A failed model call
+/// still shrinks the next prompt.
+async fn compact_handoff(
+    client: &dyn LlmClient,
+    messages: &[String],
+    window_tokens: u64,
+) -> String {
+    match crate::compaction::summarize_folded_prefix(client, messages, window_tokens as usize).await
+    {
+        Ok(summary) => summary,
+        Err(_) => bounded_summary(messages),
+    }
+}
+
+/// Keep a short handoff when the prefix is long. A joined transcript would
+/// put the same tokens back into the next prompt.
+fn bounded_summary(messages: &[String]) -> String {
+    const MAX_CHARS: usize = 32_000;
+    let joined = messages.join("\n");
+    if joined.len() <= MAX_CHARS {
+        return joined;
+    }
+    let head_end = char_boundary_at(&joined, 8_000);
+    let tail_start = char_boundary_before(&joined, joined.len().saturating_sub(8_000));
+    format!(
+        "{}\n\n[earlier transcript compacted]\n\n{}",
+        &joined[..head_end],
+        &joined[tail_start..]
+    )
+}
+
+fn char_boundary_at(text: &str, index: usize) -> usize {
+    let index = index.min(text.len());
+    (index..=text.len())
+        .find(|cursor| text.is_char_boundary(*cursor))
+        .unwrap_or(text.len())
+}
+
+fn char_boundary_before(text: &str, index: usize) -> usize {
+    let index = index.min(text.len());
+    (0..=index)
+        .rev()
+        .find(|cursor| text.is_char_boundary(*cursor))
+        .unwrap_or(0)
 }
 
 struct RecordedCall {
@@ -1373,49 +1552,59 @@ fn recorded_tool_calls(workspace: &Path, thread: &str) -> Vec<RecordedCall> {
         .rposition(|fact| fact.kind == "compaction.done")
         .map(|index| index + 1)
         .unwrap_or(0);
-    let mut pending = None;
+    let mut pending = std::collections::VecDeque::new();
     let mut calls = Vec::new();
     for fact in facts.into_iter().skip(start) {
         if fact.kind == "model.turn"
             && fact.payload.get("kind").and_then(|kind| kind.as_str()) == Some("tool")
         {
-            let call = fact.payload.get("call");
-            let id = call
-                .and_then(|value| value.get("id"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("tool");
-            let name = call
-                .and_then(|value| value.get("name"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("tool");
-            let args = call
-                .and_then(|value| value.get("args"))
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let text = call
-                .and_then(|value| value.get("text"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            let reasoning = call
-                .and_then(|value| value.get("reasoning"))
-                .and_then(|value| value.as_str())
-                .filter(|text| !text.is_empty())
-                .map(str::to_string);
-            pending = Some(RecordedCall {
-                id: id.to_string(),
-                name: name.to_string(),
-                args,
-                text,
-                reasoning,
-            });
+            if let Some(call) = fact.payload.get("call") {
+                pending.push_back(recorded_call_from(call));
+            }
+            if let Some(also) = fact.payload.get("also").and_then(|value| value.as_array()) {
+                for call in also {
+                    pending.push_back(recorded_call_from(call));
+                }
+            }
         } else if fact.kind == "tool.result" {
-            if let Some(call) = pending.take() {
+            if let Some(call) = pending.pop_front() {
                 calls.push(call);
             }
         }
     }
     calls
+}
+
+fn recorded_call_from(call: &serde_json::Value) -> RecordedCall {
+    let id = call
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("tool");
+    let name = call
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("tool");
+    let args = call
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let text = call
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let reasoning = call
+        .get("reasoning")
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    RecordedCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        args,
+        text,
+        reasoning,
+    }
 }
 
 fn workspace_boundary_error(message: &str) -> bool {
@@ -1449,6 +1638,33 @@ async fn emit_tool_request_bound(tools: &ExecutorTools, call: &a3s_effect::ToolC
 
 fn log_dir(workspace: &Path) -> PathBuf {
     workspace.join(".a3s").join("effect-log")
+}
+
+/// Tool budget for one fact-log turn.
+///
+/// `/effort` sets `max_tool_rounds`. That number is both the deny budget and
+/// the point where the next completion is asked to finish without tools. A
+/// fixed budget of 8 ended the turn while tools were still offered. The step
+/// limit covers an infer and a tool result for every round, plus the prompt,
+/// compaction, and a closing answer.
+fn session_harness_config(
+    max_tool_rounds: usize,
+    compact_after_chars: usize,
+    specs: Vec<ToolSpec>,
+) -> Result<HarnessConfig> {
+    let rounds = u32::try_from(max_tool_rounds).unwrap_or(u32::MAX).max(1);
+    let step_limit = rounds.saturating_mul(4).max(32);
+    Ok(HarnessConfig::new(
+        rounds,
+        compact_after_chars,
+        step_limit,
+        2,
+        Vec::new(),
+        specs,
+    )
+    .map_err(|error| anyhow::anyhow!(error))?
+    .with_tool_round_cap(rounds)
+    .with_model_retry_delay(crate::retry::RetryConfig::default().delay_for_attempt(0)))
 }
 
 /// Drop a previous process's fact log so a fixed test workspace starts idle.
@@ -1487,6 +1703,7 @@ impl FactRun {
                 compose,
                 registry: None,
                 assembler: None,
+                compactor: None,
             },
         )
     }
@@ -1513,7 +1730,8 @@ impl FactRun {
             )?;
             graph
         };
-        Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph)
+        let compactor = hosts.compactor.clone();
+        Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph, compactor)
     }
 
     /// Admit an explicit Meta Harness graph. Kernel policy (permissions +
@@ -1525,6 +1743,7 @@ impl FactRun {
         step_limit: u32,
         run_id: impl Into<String>,
         graph: HarnessGraph,
+        compactor: Option<Arc<dyn Compactor>>,
     ) -> Result<Self> {
         let _kernel = crate::meta_harness::KernelPolicy::default().admit();
         let dir = dir.into();
@@ -1532,10 +1751,11 @@ impl FactRun {
             inner: completion,
             run_id: run_id.into(),
         });
+        let compactor = compactor.unwrap_or_else(|| Arc::new(NoopCompact) as Arc<dyn Compactor>);
         let services = Arc::new(CodingServices {
             completion: capped,
             tools,
-            compactor: Arc::new(NoopCompact),
+            compactor,
         });
         Ok(Self {
             dir,
@@ -1565,10 +1785,7 @@ impl FactRun {
             .collect();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
         let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
-        let cap = u32::try_from(max_tool_rounds).unwrap_or(u32::MAX);
-        let config = HarnessConfig::new(8, 1_000_000, 32, 2, Vec::new(), specs)
-            .map_err(|error| anyhow::anyhow!(error))?
-            .with_tool_round_cap(cap);
+        let config = session_harness_config(max_tool_rounds, 1_000_000, specs)?;
         let context = executor.registry().context();
         let mut run = Self::open(
             log_dir(workspace),
@@ -1614,7 +1831,7 @@ impl FactRun {
             })
             .collect();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
-        let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
+        let (completion, _) = LiveCompletion::new(Arc::clone(&client), permission.clone(), catalog);
         let events = surface.events.clone();
         let run_store = surface.run_store.clone();
         let run_id = surface.run_id.clone();
@@ -1627,17 +1844,23 @@ impl FactRun {
             .tool_context_handle()
             .with_cancellation(surface.cancel.clone());
         let completion = completion.with_surface(surface.clone());
-        let cap = u32::try_from(max_tool_rounds).unwrap_or(u32::MAX);
-        let config = HarnessConfig::new(
-            8,
-            agent.fact_compact_after_chars(),
-            32,
-            2,
-            Vec::new(),
-            specs,
-        )
-        .map_err(|error| anyhow::anyhow!(error))?
-        .with_tool_round_cap(cap);
+        let mut config =
+            session_harness_config(max_tool_rounds, agent.fact_compact_after_chars(), specs)?;
+        if let Some(after_tokens) = agent.fact_compact_after_tokens() {
+            config = config.with_token_compact(after_tokens, agent.fact_compact_keep_tokens());
+        }
+        config = config.with_duplicate_threshold(agent.duplicate_tool_threshold());
+        let prompt_tokens = Arc::new(AtomicU64::new(0));
+        let completion = Arc::new(UsageStamp {
+            inner: Arc::new(completion),
+            prompt_tokens: Arc::clone(&prompt_tokens),
+        });
+        let compactor = Arc::new(SessionCompact {
+            client: Arc::clone(&client),
+            events: surface.events.clone(),
+            window_tokens: agent.context_window_tokens() as u64,
+            prompt_tokens,
+        });
         let harness = surface.harness.clone();
         let host_registry = surface.host_harness_registry.clone();
         let host_assembler = surface.host_harness_assembler.clone();
@@ -1650,7 +1873,7 @@ impl FactRun {
         });
         let mut run = Self::open_composed_with_hosts(
             log_dir(workspace),
-            Arc::new(completion),
+            completion,
             Arc::new(ExecutorTools {
                 executor,
                 calls: Arc::new(AtomicUsize::new(0)),
@@ -1671,6 +1894,7 @@ impl FactRun {
                 compose: harness.as_ref(),
                 registry: host_registry.as_deref(),
                 assembler: host_assembler.as_deref(),
+                compactor: Some(compactor),
             },
         )?;
         run.thread = thread_for_session(session_id);
@@ -1864,6 +2088,100 @@ pub fn read_workspace_facts(workspace: &Path, thread: &str) -> Result<Vec<a3s_ef
     log.read(thread).map_err(|error| anyhow::anyhow!(error))
 }
 
+/// Messages the next model call can still see, plus assistant text that the
+/// live fold does not replay. A prior `compaction.done` summary is the prefix.
+pub(crate) fn compaction_transcript(workspace: &Path, session_id: &str) -> Result<Vec<Message>> {
+    let facts = read_workspace_facts(workspace, &thread_for_session(session_id))?;
+    let start = facts
+        .iter()
+        .rposition(|fact| fact.kind == "compaction.done")
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let mut messages = Vec::new();
+    if start > 0 {
+        let done = &facts[start - 1];
+        if let Some(summary) = done
+            .payload
+            .get("summary")
+            .and_then(|value| value.as_str())
+            .filter(|summary| !summary.is_empty())
+        {
+            messages.push(Message::user(&format!(
+                "{}{summary}",
+                crate::prompts::CONTEXT_SUMMARY_PREFIX
+            )));
+        }
+        if let Some(kept) = done.payload.get("kept").and_then(|value| value.as_array()) {
+            messages.extend(kept.iter().filter_map(message_from_kept_line));
+        }
+    }
+    for fact in facts.iter().skip(start) {
+        if let Some(message) = message_from_fact(fact) {
+            messages.push(message);
+        }
+    }
+    Ok(messages)
+}
+
+/// Record a host summary without resuming the actor.
+///
+/// The next `user.message` folds this fact first, so the model sees the
+/// summary instead of the older transcript. Leaving the log idle here does
+/// not start an inference.
+pub(crate) fn append_compaction_done(
+    workspace: &Path,
+    session_id: &str,
+    summary: &str,
+) -> Result<()> {
+    let thread = thread_for_session(session_id);
+    let log = FileLog::open(log_dir(workspace)).map_err(|error| anyhow::anyhow!(error))?;
+    let existing = log.read(&thread).map_err(|error| anyhow::anyhow!(error))?;
+    let fact = NewFact {
+        kind: "compaction.done".into(),
+        key: format!("compaction:{}", existing.len()),
+        payload: serde_json::json!({ "summary": summary }),
+    };
+    log.append(&thread, &[fact], None)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(())
+}
+
+fn message_from_kept_line(line: &serde_json::Value) -> Option<Message> {
+    let line = line.as_str()?;
+    if let Some(output) = line.strip_prefix("tool-error\n") {
+        return Some(Message::user(&format!("Tool error: {output}")));
+    }
+    if let Some(output) = line.strip_prefix("tool\n") {
+        return Some(Message::user(&format!("Tool result: {output}")));
+    }
+    line.strip_prefix("assistant\n").map(Message::assistant)
+}
+
+fn message_from_fact(fact: &a3s_effect::Fact) -> Option<Message> {
+    match fact.kind.as_str() {
+        "user.message" | "question.answered" => {
+            let text = fact.payload.get("text")?.as_str()?;
+            Some(Message::user(text))
+        }
+        "model.turn" => {
+            let decided = serde_json::from_value::<ModelDecision>(fact.payload.clone()).ok()?;
+            match decided {
+                ModelDecision::Text { text } => Some(Message::assistant(&text)),
+                ModelDecision::Tool { call, .. } => Some(Message::assistant(&format!(
+                    "Tool call {} ({}): {}",
+                    call.name, call.id, call.args
+                ))),
+                ModelDecision::Question { question, .. } => Some(Message::assistant(&question)),
+            }
+        }
+        "tool.result" => {
+            let output = fact.payload.get("output")?.as_str()?;
+            Some(Message::user(&format!("Tool result: {output}")))
+        }
+        _ => None,
+    }
+}
+
 fn exit_to_error(error: Exit<ActorError>) -> anyhow::Error {
     let message = match error {
         Exit::Die(message) => message,
@@ -1926,9 +2244,43 @@ mod tests {
         }
     }
 
+    struct ReportingModel {
+        inner: ScriptModel,
+        reports: Mutex<Vec<Option<u64>>>,
+        last: AtomicU64,
+    }
+
+    impl Completion for ReportingModel {
+        fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
+            let reported = self.reports.lock().unwrap().pop().flatten().unwrap_or(0);
+            self.last.store(reported, Ordering::SeqCst);
+            self.inner.complete(request)
+        }
+
+        fn reported_prompt_tokens(&self) -> Option<u64> {
+            let tokens = self.last.load(Ordering::SeqCst);
+            (tokens > 0).then_some(tokens)
+        }
+    }
+
     struct ScriptTools {
         calls: Arc<AtomicUsize>,
         fail_first: AtomicUsize,
+    }
+
+    struct IdTools;
+
+    impl ToolRunner for IdTools {
+        fn run(
+            &self,
+            call: ToolCall,
+        ) -> a3s_effect::coding::BoxFuture<Result<serde_json::Value, ActorError>> {
+            let id = call.id;
+            Box::pin(async move { Ok(serde_json::json!(format!("output-{id}"))) })
+        }
     }
 
     impl ToolRunner for ScriptTools {
@@ -2053,6 +2405,8 @@ mod tests {
                     text: None,
                     reasoning: None,
                 },
+
+                also: Vec::new(),
             })],
             None,
             4,
@@ -2159,6 +2513,8 @@ mod tests {
                     text: None,
                     reasoning: None,
                 },
+
+                also: Vec::new(),
             })],
             None,
             4,
@@ -2203,6 +2559,8 @@ mod tests {
                         text: None,
                         reasoning: None,
                     },
+
+                    also: Vec::new(),
                 }),
                 Ok(ModelDecision::Tool {
                     call: ToolCall {
@@ -2213,6 +2571,8 @@ mod tests {
                         text: None,
                         reasoning: None,
                     },
+
+                    also: Vec::new(),
                 }),
             ],
             None,
@@ -2222,6 +2582,606 @@ mod tests {
         let settled = fact.user_text("two tools").await.unwrap();
         assert_eq!(tools.load(Ordering::SeqCst), 1);
         assert!(settled.log.iter().any(|fact| fact.kind == "budget.denied"));
+    }
+
+    #[test]
+    fn effort_tool_rounds_are_the_fact_budget() {
+        let config = session_harness_config(1_200, 1_000_000, Vec::new()).expect("config");
+        assert_eq!(config.budget(), 1_200);
+        assert_eq!(config.tool_round_cap(), Some(1_200));
+        assert!(config.step_limit() >= 4_800);
+    }
+
+    #[tokio::test]
+    async fn effort_tool_budget_runs_every_round_before_deny() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let model = Arc::new(ScriptModel {
+            decisions: Mutex::new(
+                (1..=4)
+                    .rev()
+                    .map(|index| {
+                        Ok(ModelDecision::Tool {
+                            call: ToolCall {
+                                id: format!("t{index}"),
+                                name: "read".into(),
+                                args: serde_json::json!({}),
+                                needs_confirmation: false,
+                                text: None,
+                                reasoning: None,
+                            },
+
+                            also: Vec::new(),
+                        })
+                    })
+                    .collect(),
+            ),
+            calls: Arc::new(AtomicUsize::new(0)),
+            tool_counts: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let config = session_harness_config(
+            3,
+            1_000_000,
+            vec![ToolSpec {
+                name: "read".into(),
+                description: "Read".into(),
+            }],
+        )
+        .unwrap();
+        let fact = FactRun::open(
+            dir.path(),
+            model,
+            Arc::new(ScriptTools {
+                calls: Arc::clone(&tool_calls),
+                fail_first: AtomicUsize::new(0),
+            }),
+            config,
+            "effort-budget",
+        )
+        .unwrap();
+        let settled = fact.user_text("four tools").await.unwrap();
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 3);
+        assert!(settled.log.iter().any(|fact| fact.kind == "budget.denied"));
+    }
+
+    #[tokio::test]
+    async fn effort_ceiling_asks_for_a_final_answer_before_denying() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let model = Arc::new(ScriptModel {
+            decisions: Mutex::new(vec![
+                Ok(ModelDecision::Text {
+                    text: "done".into(),
+                }),
+                Ok(ModelDecision::Tool {
+                    call: ToolCall {
+                        id: "t2".into(),
+                        name: "read".into(),
+                        args: serde_json::json!({}),
+                        needs_confirmation: false,
+                        text: None,
+                        reasoning: None,
+                    },
+
+                    also: Vec::new(),
+                }),
+                Ok(ModelDecision::Tool {
+                    call: ToolCall {
+                        id: "t1".into(),
+                        name: "read".into(),
+                        args: serde_json::json!({}),
+                        needs_confirmation: false,
+                        text: None,
+                        reasoning: None,
+                    },
+
+                    also: Vec::new(),
+                }),
+            ]),
+            calls: Arc::new(AtomicUsize::new(0)),
+            tool_counts: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let config = session_harness_config(
+            2,
+            1_000_000,
+            vec![ToolSpec {
+                name: "read".into(),
+                description: "Read".into(),
+            }],
+        )
+        .unwrap();
+        let fact = FactRun::open(
+            dir.path(),
+            model.clone(),
+            Arc::new(ScriptTools {
+                calls: Arc::clone(&tool_calls),
+                fail_first: AtomicUsize::new(0),
+            }),
+            config,
+            "effort-wrap-up",
+        )
+        .unwrap();
+        let settled = fact.user_text("finish").await.unwrap();
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
+        assert!(settled.log.iter().all(|fact| fact.kind != "budget.denied"));
+        assert_eq!(model.tool_counts.lock().unwrap().last().copied(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn auto_compact_keeps_the_latest_tool_pair_and_continues() {
+        let user = "user\nhi";
+        let call = format!("assistant\ntool read\n{}", serde_json::json!({}));
+        let first = "tool\noutput-t1";
+        let after_first = user.len() + call.len() + first.len();
+        let dir = tempfile::tempdir().unwrap();
+        let model = Arc::new(ScriptModel {
+            decisions: Mutex::new(
+                vec![
+                    Ok(ModelDecision::Tool {
+                        call: ToolCall {
+                            id: "t1".into(),
+                            name: "read".into(),
+                            args: serde_json::json!({}),
+                            needs_confirmation: false,
+                            text: None,
+                            reasoning: None,
+                        },
+
+                        also: Vec::new(),
+                    }),
+                    Ok(ModelDecision::Tool {
+                        call: ToolCall {
+                            id: "t2".into(),
+                            name: "read".into(),
+                            args: serde_json::json!({}),
+                            needs_confirmation: false,
+                            text: None,
+                            reasoning: None,
+                        },
+
+                        also: Vec::new(),
+                    }),
+                    Ok(ModelDecision::Text {
+                        text: "done".into(),
+                    }),
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
+            ),
+            calls: Arc::new(AtomicUsize::new(0)),
+            tool_counts: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let config = session_harness_config(
+            8,
+            after_first + 1,
+            vec![ToolSpec {
+                name: "read".into(),
+                description: "Read".into(),
+            }],
+        )
+        .unwrap();
+        let fact = FactRun::open(
+            dir.path(),
+            model.clone(),
+            Arc::new(IdTools),
+            config,
+            "auto-compact",
+        )
+        .unwrap();
+        let settled = fact.user_text("hi").await.unwrap();
+        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
+        assert!(settled.view.phase != CodingPhase::Compact);
+        let summary = settled
+            .log
+            .iter()
+            .rev()
+            .find(|fact| fact.kind == "compaction.done")
+            .and_then(|fact| fact.payload.get("summary"))
+            .and_then(|value| value.as_str())
+            .expect("summary");
+        assert!(summary.contains("output-t1"));
+        assert!(!summary.contains("output-t2"));
+        let last = model
+            .messages
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("final infer");
+        assert!(last.iter().any(|line| line.contains("output-t2")));
+        assert!(last.iter().all(|line| !line.contains("output-t1")));
+        assert!(last.iter().any(|line| line.starts_with("assistant\ntool ")));
+    }
+
+    #[tokio::test]
+    async fn auto_compact_triggers_on_provider_tokens_and_keeps_a_recent_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = Arc::new(ReportingModel {
+            inner: ScriptModel {
+                decisions: Mutex::new(
+                    vec![
+                        Ok(ModelDecision::Tool {
+                            call: ToolCall {
+                                id: "t1".into(),
+                                name: "read".into(),
+                                args: serde_json::json!({}),
+                                needs_confirmation: false,
+                                text: None,
+                                reasoning: None,
+                            },
+
+                            also: Vec::new(),
+                        }),
+                        Ok(ModelDecision::Tool {
+                            call: ToolCall {
+                                id: "t2".into(),
+                                name: "read".into(),
+                                args: serde_json::json!({ "n": 2 }),
+                                needs_confirmation: false,
+                                text: None,
+                                reasoning: None,
+                            },
+
+                            also: Vec::new(),
+                        }),
+                        Ok(ModelDecision::Tool {
+                            call: ToolCall {
+                                id: "t3".into(),
+                                name: "read".into(),
+                                args: serde_json::json!({ "n": 3 }),
+                                needs_confirmation: false,
+                                text: None,
+                                reasoning: None,
+                            },
+
+                            also: Vec::new(),
+                        }),
+                        Ok(ModelDecision::Text {
+                            text: "done".into(),
+                        }),
+                    ]
+                    .into_iter()
+                    .rev()
+                    .collect(),
+                ),
+                calls: Arc::new(AtomicUsize::new(0)),
+                tool_counts: Mutex::new(Vec::new()),
+                messages: Mutex::new(Vec::new()),
+            },
+            reports: Mutex::new(
+                vec![Some(10), Some(10), Some(100), Some(100)]
+                    .into_iter()
+                    .rev()
+                    .collect(),
+            ),
+            last: AtomicU64::new(0),
+        });
+        let call = format!("assistant\ntool read\n{}", serde_json::json!({"n": 2}));
+        let second = "tool\noutput-t2";
+        let third_call = format!("assistant\ntool read\n{}", serde_json::json!({"n": 3}));
+        let third = "tool\noutput-t3";
+        let keep = call.len().div_ceil(4)
+            + second.len().div_ceil(4)
+            + third_call.len().div_ceil(4)
+            + third.len().div_ceil(4)
+            + 8;
+        let config = session_harness_config(
+            8,
+            1_000_000,
+            vec![ToolSpec {
+                name: "read".into(),
+                description: "Read".into(),
+            }],
+        )
+        .unwrap()
+        .with_token_compact(100, keep);
+        let fact = FactRun::open(
+            dir.path(),
+            model.clone(),
+            Arc::new(IdTools),
+            config,
+            "token-compact",
+        )
+        .unwrap();
+        let settled = fact.user_text("hi").await.unwrap();
+        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
+        let summary = settled
+            .log
+            .iter()
+            .rev()
+            .find(|fact| fact.kind == "compaction.done")
+            .and_then(|fact| fact.payload.get("summary"))
+            .and_then(|value| value.as_str())
+            .expect("summary");
+        assert!(summary.contains("output-t1"));
+        assert!(!summary.contains("output-t3"));
+        let last = model
+            .inner
+            .messages
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("final infer");
+        assert!(last.iter().any(|line| line.contains("output-t2")));
+        assert!(last.iter().any(|line| line.contains("output-t3")));
+        assert!(last.iter().all(|line| !line.contains("output-t1")));
+    }
+
+    #[tokio::test]
+    async fn repeated_tool_call_is_a_nudge_and_the_turn_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({});
+        let model = Arc::new(ScriptModel {
+            decisions: Mutex::new(
+                vec![
+                    Ok(ModelDecision::Tool {
+                        call: ToolCall {
+                            id: "t1".into(),
+                            name: "read".into(),
+                            args: args.clone(),
+                            needs_confirmation: false,
+                            text: None,
+                            reasoning: None,
+                        },
+
+                        also: Vec::new(),
+                    }),
+                    Ok(ModelDecision::Tool {
+                        call: ToolCall {
+                            id: "t2".into(),
+                            name: "read".into(),
+                            args: args.clone(),
+                            needs_confirmation: false,
+                            text: None,
+                            reasoning: None,
+                        },
+
+                        also: Vec::new(),
+                    }),
+                    Ok(ModelDecision::Tool {
+                        call: ToolCall {
+                            id: "t3".into(),
+                            name: "read".into(),
+                            args: args,
+                            needs_confirmation: false,
+                            text: None,
+                            reasoning: None,
+                        },
+
+                        also: Vec::new(),
+                    }),
+                    Ok(ModelDecision::Text {
+                        text: "changed".into(),
+                    }),
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
+            ),
+            calls: Arc::new(AtomicUsize::new(0)),
+            tool_counts: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = session_harness_config(
+            8,
+            1_000_000,
+            vec![ToolSpec {
+                name: "read".into(),
+                description: "Read".into(),
+            }],
+        )
+        .unwrap()
+        .with_duplicate_threshold(2);
+        let fact = FactRun::open(
+            dir.path(),
+            model.clone(),
+            Arc::new(ScriptTools {
+                calls: Arc::clone(&calls),
+                fail_first: AtomicUsize::new(0),
+            }),
+            config,
+            "duplicate-nudge",
+        )
+        .unwrap();
+        let settled = fact.user_text("hi").await.unwrap();
+        assert_eq!(settled.view.assistant.as_deref(), Some("changed"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let last = model
+            .messages
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("final");
+        assert!(last.iter().any(|line| {
+            line.starts_with("tool-error\n") && line.contains("Change your approach")
+        }));
+        let nudge = settled
+            .log
+            .iter()
+            .find(|fact| {
+                fact.kind == "tool.result"
+                    && fact
+                        .payload
+                        .get("output")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|output| output.contains("Change your approach"))
+            })
+            .expect("nudge result");
+        assert_eq!(
+            nudge.payload.get("ok").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            nudge
+                .payload
+                .get("countRun")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    fn tool_response(calls: Vec<(&str, &str, serde_json::Value)>) -> LlmResponse {
+        LlmResponse {
+            message: Message {
+                role: "assistant".into(),
+                content: calls
+                    .into_iter()
+                    .map(|(id, name, args)| crate::llm::ContentBlock::ToolUse {
+                        id: id.into(),
+                        name: name.into(),
+                        input: args,
+                    })
+                    .collect(),
+                reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: crate::llm::TranscriptVisibility::Wire,
+            },
+            usage: crate::llm::TokenUsage::default(),
+            stop_reason: Some("tool_calls".into()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn one_response_keeps_every_non_question_tool_call() {
+        let policy = PermissionPolicy::default();
+        let both = decision_from_response(
+            &tool_response(vec![
+                ("a", "read_file", serde_json::json!({"path": "a.rs"})),
+                ("b", "grep", serde_json::json!({"pattern": "fn"})),
+            ]),
+            &policy,
+            None,
+        )
+        .await;
+        match both {
+            ModelDecision::Tool { call, also } => {
+                assert_eq!(call.id, "a");
+                assert_eq!(also.len(), 1);
+                assert_eq!(also[0].id, "b");
+            }
+            other => panic!("expected both calls, got {other:?}"),
+        }
+        let mixed = decision_from_response(
+            &tool_response(vec![
+                ("q", "ask_user", serde_json::json!({"question": "which?"})),
+                ("g", "grep", serde_json::json!({"pattern": "fn"})),
+            ]),
+            &policy,
+            None,
+        )
+        .await;
+        match mixed {
+            ModelDecision::Tool { call, also } => {
+                assert_eq!(call.name, "grep");
+                assert!(also.is_empty());
+            }
+            other => panic!("expected the non-question call, got {other:?}"),
+        }
+        let only_question = decision_from_response(
+            &tool_response(vec![(
+                "q",
+                "ask_user",
+                serde_json::json!({"question": "which?"}),
+            )]),
+            &policy,
+            None,
+        )
+        .await;
+        assert!(matches!(only_question, ModelDecision::Question { .. }));
+    }
+
+    #[test]
+    fn parallel_batches_are_reads_or_distinct_writes() {
+        let read = |id: &str, path: &str| ToolCall {
+            id: id.into(),
+            name: "read_file".into(),
+            args: serde_json::json!({ "path": path }),
+            needs_confirmation: false,
+            text: None,
+            reasoning: None,
+        };
+        let write = |id: &str, path: &str| ToolCall {
+            id: id.into(),
+            name: "write_file".into(),
+            args: serde_json::json!({ "path": path }),
+            needs_confirmation: false,
+            text: None,
+            reasoning: None,
+        };
+        assert!(!batch_can_run_in_parallel(&[read("a", "a.rs")]));
+        assert!(batch_can_run_in_parallel(&[
+            read("a", "a.rs"),
+            read("b", "b.rs")
+        ]));
+        assert!(batch_can_run_in_parallel(&[
+            write("a", "a.rs"),
+            write("b", "b.rs")
+        ]));
+        assert!(!batch_can_run_in_parallel(&[
+            write("a", "a.rs"),
+            write("b", "a.rs")
+        ]));
+        assert!(!batch_can_run_in_parallel(&[
+            read("a", "a.rs"),
+            write("b", "b.rs")
+        ]));
+        let bash = ToolCall {
+            id: "sh".into(),
+            name: "bash".into(),
+            args: serde_json::json!({}),
+            needs_confirmation: false,
+            text: None,
+            reasoning: None,
+        };
+        assert!(!batch_can_run_in_parallel(&[bash.clone(), bash]));
+    }
+
+    struct FailingSummaryClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for FailingSummaryClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> Result<LlmResponse> {
+            anyhow::bail!("summary down")
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("unused")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_model_summary_still_shrinks_the_prefix() {
+        let client = Arc::new(FailingSummaryClient);
+        let huge = "y".repeat(40_000);
+        let summary = compact_handoff(
+            client.as_ref(),
+            &[format!("user\n{huge}"), "user\nkeep".into()],
+            128_000,
+        )
+        .await;
+        assert!(summary.contains("[earlier transcript compacted]"));
+        assert!(!summary.contains(&huge));
     }
 
     #[tokio::test]
@@ -2468,6 +3428,8 @@ mod tests {
                     text: None,
                     reasoning: None,
                 },
+
+                also: Vec::new(),
             })],
             None,
             4,

@@ -9,8 +9,8 @@ mod otlp_collector;
 
 use std::time::Duration;
 
-use otlp_collector as col;
 use a3s_code_test_support::{OtelRecorder, OtelSignal};
+use otlp_collector as col;
 
 #[test]
 fn external_stream_grpc_over_tls_end_to_end() {

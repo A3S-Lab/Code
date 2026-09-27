@@ -1,9 +1,9 @@
 //! Runs the full session flow in one temp directory: register, clean unregister, then a register
 //! that drops the entry whose PID is dead and keeps the live one.
 
+use a3s_code_active_sessions::{ActiveSession, list_in, register_in, try_unregister_in};
 use chrono::Utc;
 use tempfile::TempDir;
-use a3s_code_active_sessions::{ActiveSession, list_in, register_in, try_unregister_in};
 
 fn session(id: &str, pid: u32) -> ActiveSession {
     ActiveSession {

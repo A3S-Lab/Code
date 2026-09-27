@@ -1,11 +1,11 @@
 //! Marketplace browsing and install endpoints for the pager modal.
 //! Scanning and install logic live in the `a3s-code-plugin-marketplace` crate.
 
-use agent_client_protocol as acp;
 use a3s_hooks_plugins_types::{
     MarketplaceAction, MarketplaceActionRequest, MarketplaceListResponse, MarketplacePluginEntry,
     MarketplaceScanResult,
 };
+use agent_client_protocol as acp;
 
 use crate::agent::MvpAgent;
 use crate::plugin::add_marketplace_source;

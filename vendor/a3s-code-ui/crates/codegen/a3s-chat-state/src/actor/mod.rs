@@ -22,8 +22,8 @@ use crate::handle::ChatStateHandle;
 use crate::persistence::ChatPersistence;
 use crate::types::{PruningConfig, TurnCapture};
 
-use state::ChatState;
 use a3s_code_sampling_types::{ConversationItem, SamplingConfig};
+use state::ChatState;
 
 /// The actor that owns all chat state.
 /// Runs in a dedicated tokio task and processes commands sequentially.

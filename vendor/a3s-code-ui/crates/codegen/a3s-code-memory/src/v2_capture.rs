@@ -12,8 +12,8 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use a3s_sqlite_journal::{JournalMode, is_network_fs};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
 use crate::storage::MemoryStorage;
 use crate::v2::{V2ManifestBudget, V2MemoryScope, persist_scope_manifest, render_scope_manifest};

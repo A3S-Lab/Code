@@ -21,6 +21,8 @@ pub mod overrides;
 pub mod resume;
 pub mod types;
 
+pub use a3s_code_agent::config::AgentDefinition;
+pub use a3s_code_agent::prompt::paths::PathsConfig;
 pub use config::{PersonaIOField, SubagentPersona, SubagentRole};
 pub use definition::{
     DefinitionResolutionContext, DefinitionValidationContext, HarnessToolsetContext,
@@ -33,5 +35,3 @@ pub use definition::{
 pub use overrides::{intersect_capability_modes, resolve_effective_overrides};
 pub use resume::{ResumeValidationError, validate_resume_identity};
 pub use types::{ContextSource, EffectiveRuntimeConfig, ResolutionError, ResumeSourceData};
-pub use a3s_code_agent::config::AgentDefinition;
-pub use a3s_code_agent::prompt::paths::PathsConfig;

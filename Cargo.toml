@@ -41,3 +41,4 @@ a3s-apofasi = { path = "../apofasi" }
 
 [patch.crates-io]
 a3s-vec = { path = "../vec" }
+a3s-effect = { path = "../../packages/effect" }

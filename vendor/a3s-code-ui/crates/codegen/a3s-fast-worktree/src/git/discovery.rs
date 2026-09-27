@@ -71,8 +71,8 @@ pub(crate) fn get_head_commit(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use a3s_test_utils::git::{git_commit_all, init_git_repo};
+    use tempfile::TempDir;
 
     #[test]
     fn test_find_worktree_git_dir_resolves_relative_gitdir() {

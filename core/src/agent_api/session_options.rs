@@ -94,6 +94,7 @@ impl std::fmt::Debug for SessionOptions {
             .field("mcp_manager", &self.mcp_manager.is_some())
             .field("temperature", &self.temperature)
             .field("thinking_budget", &self.thinking_budget)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("max_tool_rounds", &self.max_tool_rounds)
             .field("max_parallel_tasks", &self.max_parallel_tasks)
             .field("auto_delegation", &self.auto_delegation)
@@ -736,6 +737,13 @@ impl SessionOptions {
 
     pub fn with_thinking_budget(mut self, budget: usize) -> Self {
         self.thinking_budget = Some(budget);
+        self
+    }
+
+    /// Pass an effort token through to the provider's own parameter.
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        let effort = effort.into();
+        self.reasoning_effort = (!effort.trim().is_empty()).then_some(effort);
         self
     }
 

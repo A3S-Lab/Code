@@ -23,9 +23,9 @@
 use std::fs;
 use std::path::Path;
 
+use a3s_fsnotify::{FsConfig, FsEventSource};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
-use a3s_fsnotify::{FsConfig, FsEventSource};
 
 const TOTAL_DIRS: usize = 12_000;
 

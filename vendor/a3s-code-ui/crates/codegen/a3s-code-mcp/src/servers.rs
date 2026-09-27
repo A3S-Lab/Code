@@ -1,11 +1,11 @@
 //! MCP server integration using the official rmcp SDK.
 
+use a3s_code_telemetry::region;
+use a3s_code_telemetry::region::Parent;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
-use a3s_code_telemetry::region;
-use a3s_code_telemetry::region::Parent;
 
 use agent_client_protocol as acp;
 use tokio::{

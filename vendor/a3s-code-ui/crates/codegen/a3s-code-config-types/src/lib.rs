@@ -17,11 +17,11 @@ pub use mcp::*;
 mod permission;
 pub use permission::*;
 mod auth_provider;
-pub use auth_provider::*;
-use serde::{Deserialize, Serialize};
 use a3s_code_announcements::RemoteAnnouncement;
 pub use a3s_code_config::DisplayRefreshSettings;
 use a3s_code_config::deserialize::optional_bool as de_opt_bool_tolerant;
+pub use auth_provider::*;
+use serde::{Deserialize, Serialize};
 /// A remote `campaigns[]` entry: an `id` gate plus a flattened patch that can set any config key.
 /// It is the JSON sibling of a `[[campaigns]]` TOML override.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]

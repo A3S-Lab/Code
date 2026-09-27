@@ -2,13 +2,13 @@
 use crate::capability::CapabilityMode;
 use crate::hub::HubConfig;
 use crate::permission::ToolApprovalGate;
+pub use a3s_code_hooks::discovery::HookSourceConfig;
+use a3s_code_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
+use a3s_tool_runtime::ToolApprovalPolicy;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-pub use a3s_code_hooks::discovery::HookSourceConfig;
-use a3s_code_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
-use a3s_tool_runtime::ToolApprovalPolicy;
 /// Default capacity for the workspace event broadcast channel.
 pub const DEFAULT_EVENT_BUFFER_CAPACITY: usize = 64;
 /// A session-lifetime terminal backend (background-task registry and persistent shell) paired with its explicit shutdown hook.

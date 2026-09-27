@@ -21,15 +21,15 @@ use crate::session::two_pass::{
     TWO_PASS_DEFAULT_SPLIT_FRACTION, build_two_pass_pass1_history, build_two_pass_pass2_history,
     note_for_two_pass_pass2, split_conversation_for_two_pass,
 };
-use a3s_code_sampling_types::{ApiBackend, ConversationItem};
-use agent_client_protocol as acp;
-use std::sync::Arc;
 use a3s_chat_state::compaction_image_context::CompactionImageContext;
 use a3s_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
+use a3s_code_sampling_types::{ApiBackend, ConversationItem};
+use agent_client_protocol as acp;
+use std::sync::Arc;
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
 /// Human-readable "next fire" for a scheduled loop in the compaction reminder.

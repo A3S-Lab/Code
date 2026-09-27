@@ -2,8 +2,8 @@ mod otlp_collector;
 
 use std::time::Duration;
 
-use otlp_collector as col;
 use a3s_code_test_support::{OtelExport, OtelRecorder};
+use otlp_collector as col;
 
 #[test]
 fn external_stream_grpc_mtls_fails_without_client_identity() {

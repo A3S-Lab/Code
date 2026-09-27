@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use a3s_code_workspace_types::rpc::fs::FsReadEncoding;
 use base64::Engine;
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
-use a3s_code_workspace_types::rpc::fs::FsReadEncoding;
 
 /// Hard cap on entries collected per list call before sorting.
 /// A pathological directory truncates (`truncated = true`) instead of ballooning memory.

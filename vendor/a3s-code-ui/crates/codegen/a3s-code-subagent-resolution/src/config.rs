@@ -7,8 +7,8 @@
 //! - `discover_personas()` / `discover_roles()`: filesystem discovery coupled to how the shell resolves its config.
 //! - `resolve()`: config layering (CLI > env > TOML > remote) is shell-specific; this crate receives already-resolved maps.
 
-use std::path::PathBuf;
 use a3s_code_tools::implementations::skills::discovery::extract_first_paragraph;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 

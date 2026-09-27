@@ -3,9 +3,9 @@
 //! OS-event delivery tests were removed (flaky by construction). Registry
 //! sharing remains: it locks watcher identity and stats, not event timing.
 
+use a3s_fsnotify::FsConfig;
 use serial_test::serial;
 use tempfile::TempDir;
-use a3s_fsnotify::FsConfig;
 
 #[tokio::test(flavor = "current_thread")]
 #[serial]

@@ -5,10 +5,10 @@ use super::*;
 use crate::error::RefreshTokenFailedReason;
 use crate::recovery::RecoverySource;
 use crate::{GrokAuth, GrokComConfig};
+use a3s_code_telemetry::events::{AuthTokenKind, ManualAuthReason};
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use a3s_code_telemetry::events::{AuthTokenKind, ManualAuthReason};
 
 /// Mock IdP: OIDC discovery, a `/token` endpoint returning a fixed `(status, body)` and counting every hit, and a `/user` endpoint.
 /// `AuthManager::update` calls `/user` after a successful refresh.

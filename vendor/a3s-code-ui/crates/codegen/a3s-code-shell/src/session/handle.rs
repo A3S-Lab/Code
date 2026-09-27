@@ -4,11 +4,11 @@
 use super::commands::SessionCommand;
 use super::persistence::{LocalFeedbackEntry, PersistenceMsg};
 use a3s_code_sampling_types::ReasoningEffort;
+use a3s_file_utils::queue::UploadQueue;
+use a3s_hunk_tracker::HunkTrackerHandle;
 use agent_client_protocol as acp;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
-use a3s_file_utils::queue::UploadQueue;
-use a3s_hunk_tracker::HunkTrackerHandle;
 /// Coarse lifecycle state of a session as known to the leader/agent.
 /// A a3s session is a resumable log on disk with no terminal status field of its own, so "liveness" is residency plus turn state, not a pid.
 /// The agent's join-handle supervisor tracks this per session so a panicked actor is demoted to `Dormant` instead of lingering in the roster.

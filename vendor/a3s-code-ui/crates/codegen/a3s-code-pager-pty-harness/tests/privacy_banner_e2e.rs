@@ -17,11 +17,11 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
 use a3s_code_pager_pty_harness::{
     ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys, pager_binary,
     seed_fake_oauth_coding_data_opted_out, seed_fake_oauth_team_member_can_administer,
 };
+use anyhow::{Context, Result, bail};
 
 const ROWS: u16 = 50;
 const COLS: u16 = 120;

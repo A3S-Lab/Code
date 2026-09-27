@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use a3s_code_auth::AuthCredentialProvider;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
@@ -7,7 +8,6 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::registry::LookupSpan;
-use a3s_code_auth::AuthCredentialProvider;
 
 use crate::config::{OtelClientInfo, OtelLayerConfig};
 

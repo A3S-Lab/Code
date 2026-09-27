@@ -4,9 +4,9 @@
 //! Pass2 rewrites NOTE₁ and the ~5% tail into NOTE₂, the note the successor sees.
 //! Sampling lives in [`super::compaction`]; this module has no I/O.
 
-use a3s_code_sampling_types::ConversationItem;
 use a3s_chat_state::compaction_utils::format_compact_summary_content;
 use a3s_chat_state::estimate_item_tokens;
+use a3s_code_sampling_types::ConversationItem;
 
 /// Default history fraction covered by pass1.
 /// The remainder is the blocking pass2 tail, so keep it small (prod pass2 latency is dominated by tail prefill).

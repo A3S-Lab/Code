@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use a3s_code_config::DisplayRefreshSettings;
+use serde::{Deserialize, Serialize};
 
 use a3s_code_status_line::StatusLineConfig;
 

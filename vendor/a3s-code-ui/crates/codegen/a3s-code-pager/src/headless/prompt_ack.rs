@@ -3,11 +3,11 @@
 
 use std::time::Duration;
 
+use a3s_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
 use a3s_code_telemetry::events::{
     PromptAckDisposition, PromptAckPromptKind, PromptAckSurface, PromptAckTimeoutFired,
 };
 use agent_client_protocol as acp;
-use a3s_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
 
 use crate::app::prompt_ack::{AckSignal, PromptAckDeadlines, queue_changed_acks};
 

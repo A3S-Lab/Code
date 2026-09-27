@@ -1,6 +1,9 @@
 use super::*;
 use crate::sampling::{Client, ContentPart, ConversationItem, SamplerConfig, ToolCall, rs};
 use crate::session::helpers::prepared_compaction_history::build_compaction_chat_history;
+use a3s_chat_state::image_budget::{
+    IMAGE_COMPACT_RECLAIM_TARGET_BYTES, IMAGE_COMPACT_TRIGGER_BYTES,
+};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
@@ -13,9 +16,6 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use a3s_chat_state::image_budget::{
-    IMAGE_COMPACT_RECLAIM_TARGET_BYTES, IMAGE_COMPACT_TRIGGER_BYTES,
-};
 
 const MIB: usize = 1024 * 1024;
 // Mirrors the 50 MiB ingress limit that rejected the request during the original incident

@@ -1,6 +1,6 @@
 use super::*;
-use std::path::{Path, PathBuf};
 use a3s_test_utils::git::{git_init_seed, reflog_only_commit, run_git};
+use std::path::{Path, PathBuf};
 
 const LONG_AGO: &str = "2020-01-01T00:00:00Z";
 

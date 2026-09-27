@@ -49,6 +49,9 @@ pub(crate) mod upload;
 pub mod util;
 pub mod workspace_ops;
 pub mod worktree;
+pub use a3s_code_workspace_client::WorkspaceClient;
+pub use a3s_code_workspace_types::WorkspaceEvent;
+pub use a3s_hunk_tracker::HunkTrackerHandle;
 pub use capability::CapabilityMode;
 pub use channel::{TransportCallResult, TransportContext, TransportError, TransportNotification};
 pub use config::{
@@ -72,9 +75,6 @@ pub use session::{McpServerOutcome, WorkspaceSession, WorkspaceShared};
 pub use session::{file_state, git, jj};
 pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};
-pub use a3s_code_workspace_client::WorkspaceClient;
-pub use a3s_code_workspace_types::WorkspaceEvent;
-pub use a3s_hunk_tracker::HunkTrackerHandle;
 /// Zero-init every workspace metric family so idle panels render a `0` baseline instead of "No data".
 /// Idempotent; call once at workspace-server startup.
 pub fn init_metrics() {

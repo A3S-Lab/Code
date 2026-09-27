@@ -5,12 +5,12 @@
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
 use a3s_code_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, ConversationGroupId,
     DoomLoopRecoveryPolicy, ReasoningEffort, ReasoningSummary,
 };
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 use crate::attribution::SharedAttributionCallback;
 use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};

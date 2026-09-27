@@ -8,11 +8,11 @@
 use crate::config::{TelemetryConfig, TelemetryMode, deployment_id_from_key};
 use crate::http::OriginClientInfo;
 use crate::session_ctx::EmitterOrigin;
+use a3s_code_env::env_bool;
+use a3s_mixpanel::Mixpanel;
 use chrono::{Local, SecondsFormat};
 use serde_json::json;
 use std::sync::{Arc, Mutex, Once, OnceLock};
-use a3s_code_env::env_bool;
-use a3s_mixpanel::Mixpanel;
 /// Event property map shared by all telemetry modules.
 pub type Metadata = serde_json::Map<String, serde_json::Value>;
 /// Strips the [`EmitterOrigin`] prefix so shell events keep their historical `event_value` and workspace events collapse to the same bare suffix.

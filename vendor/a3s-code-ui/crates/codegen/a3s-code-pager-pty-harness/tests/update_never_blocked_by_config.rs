@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
 use a3s_code_pager_pty_harness::pager_binary;
+use serde_json::Value;
 
 // A child forked while the copy's write fd is open, even pager_binary's cargo build, fails the copy's exec with "Text file busy".
 static EXEC_LOCK: Mutex<()> = Mutex::new(());

@@ -22,6 +22,7 @@ use std::sync::Arc;
 pub(super) struct SessionCapabilityInput<'a> {
     pub(super) code_config: &'a CodeConfig,
     pub(super) base_config: &'a AgentConfig,
+    pub(super) limits: &'a super::session_config::ResolvedSessionLimits,
     pub(super) workspace: &'a Path,
     pub(super) llm_client: Arc<dyn LlmClient>,
     pub(super) opts: &'a SessionOptions,
@@ -370,6 +371,15 @@ fn register_task_capability(
                 .unwrap_or_else(|| input.base_config.tool_presentation_profile.clone()),
         ),
         budget_guard: input.opts.budget_guard.clone(),
+        max_tool_rounds: Some(input.limits.max_tool_rounds),
+        auto_compact: Some(input.opts.auto_compact),
+        auto_compact_threshold: Some(
+            input
+                .opts
+                .auto_compact_threshold
+                .unwrap_or(crate::store::DEFAULT_AUTO_COMPACT_THRESHOLD),
+        ),
+        max_context_tokens: Some(input.limits.max_context_tokens),
     };
 
     let registry = Arc::new(registry);

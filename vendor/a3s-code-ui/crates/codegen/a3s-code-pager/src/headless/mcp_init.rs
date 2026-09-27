@@ -4,9 +4,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use a3s_acp_lib::{AcpAgentTx, acp_send};
 use a3s_code_shell::util::config as cli_config;
 use agent_client_protocol as acp;
-use a3s_acp_lib::{AcpAgentTx, acp_send};
 
 use crate::headless::reducer::McpServer;
 use crate::views::mcps_modal::{

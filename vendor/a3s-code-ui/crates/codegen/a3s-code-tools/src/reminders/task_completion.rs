@@ -23,11 +23,11 @@ use crate::types::output::ToolOutput;
 use crate::types::resources::{SharedResources, State, Terminal};
 use crate::types::tool::{Reminder, ToolKind};
 use crate::util::truncate::{PREVIEW_SIZE, PartialOutput, truncate_str, truncate_with_preview};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use a3s_tool_types::KillTaskOutput;
 use a3s_tool_types::SubagentCompletedOutput;
 use a3s_tool_types::{TaskOutputOutput, TaskOutputResult};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 /// Default tool name used in auto-wake completion messages.
 pub const DEFAULT_TASK_OUTPUT_TOOL: &str = "get_task_output";
 /// UI/Stop kill with no live waiter: tell the model not to relaunch the task.
@@ -1395,10 +1395,10 @@ mod tests {
         BackgroundHandle, KillOutcome, TerminalBackend, TerminalRunRequest, TerminalRunResult,
     };
     use crate::types::resources::Resources;
-    use std::sync::Arc;
-    use std::time::Duration;
     use a3s_tool_types::KillTaskResult;
     use a3s_tool_types::{MultiTaskOutputResult, TaskOutputResult};
+    use std::sync::Arc;
+    use std::time::Duration;
     struct MockTerminal {
         tasks: Vec<TaskSnapshot>,
     }

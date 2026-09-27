@@ -2,8 +2,8 @@ use super::{
     CompactInputStage, SUMMARY_BUDGET_RESERVE_TOKENS, fitted_input_budget,
     start_verbatim_compact_turns,
 };
-use a3s_code_sampling_types::ConversationItem;
 use a3s_chat_state::estimate_conversation_tokens;
+use a3s_code_sampling_types::ConversationItem;
 
 #[test]
 fn fitted_input_budget_subtracts_reserve_and_tools() {

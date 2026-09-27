@@ -18,6 +18,7 @@ use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use crate::headless::reducer::{
     Lifecycle, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update, reducer_for,
 };
+use a3s_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
 use a3s_code_shell::agent::auth_method::AuthMethodKind;
 use a3s_code_shell::agent::config::Config as AgentConfig;
 use a3s_code_shell::extensions::memory::MemoryFlushResponse;
@@ -36,7 +37,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use a3s_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
 mod ext_protocol;
 mod mcp_init;
 mod prompt_ack;

@@ -13,9 +13,9 @@
 //! cargo test -p a3s-code-tools --test path_suggestions_production
 //! ```
 
+use a3s_code_tools::util::path_suggestions::{format_not_found_error, path_not_found_hint};
 use std::path::PathBuf;
 use tempfile::TempDir;
-use a3s_code_tools::util::path_suggestions::{format_not_found_error, path_not_found_hint};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 

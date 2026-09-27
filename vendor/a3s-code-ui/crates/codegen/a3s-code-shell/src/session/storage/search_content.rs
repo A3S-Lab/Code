@@ -7,7 +7,7 @@ use std::io::{self, BufRead};
 use std::path::Path;
 
 use super::{
-    ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek, A3S_SESSION_UPDATE_METHOD,
+    A3S_SESSION_UPDATE_METHOD, ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek,
     collect_prompts_from_events,
 };
 use crate::session::wire_tags::{REWIND_MARKER, USER_MESSAGE_CHUNK};

@@ -13,15 +13,15 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+use a3s_acp_lib::{
+    AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
+    acp_channels,
+};
 use a3s_code_login::AuthManager;
 use a3s_code_shell::{
     agent::{MvpAgent, activity::SESSION_FLUSH_GRACE, config::Config as AgentConfig},
     config::watcher::{DiscoveryChange, SkillsFileWatcher},
     util::grok_home::grok_home,
-};
-use a3s_acp_lib::{
-    AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
-    acp_channels,
 };
 
 /// Extra slack when joining the agent OS thread after cancel so the flush

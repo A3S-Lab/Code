@@ -1,12 +1,12 @@
 //! `AuthManager` is the single source of truth for `auth.json` and the in-memory bearer cache.
 //! Mutations go through `refresh_chain` or `update`; lock and enrichment helpers live in submodules.
+use a3s_code_auth::bearer_suffix;
 use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio_util::sync::CancellationToken;
-use a3s_code_auth::bearer_suffix;
 #[path = "manager/enrichment.rs"]
 mod enrichment;
 #[path = "manager/lock.rs"]
@@ -38,14 +38,14 @@ use crate::config::GrokComConfig;
 use crate::error::AuthError;
 use crate::side_call_bearer::non_empty_key;
 use crate::token_type::TokenType;
+use a3s_code_shell_base::util::dual_clock::DualClock;
+use a3s_code_telemetry::events::ManualAuthSurface;
 #[cfg(test)]
 use chrono::DateTime;
 #[cfg(test)]
 use enrichment::apply_user_info_enrichment;
 use lock::{LockAcquire, try_lock_auth_file_async};
 use sleep_gate::SleepGate;
-use a3s_code_shell_base::util::dual_clock::DualClock;
-use a3s_code_telemetry::events::ManualAuthSurface;
 /// Why a token refresh is being requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshReason {

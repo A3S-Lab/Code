@@ -9,15 +9,15 @@
 
 use std::path::PathBuf;
 
-use a3s_code_compaction::reminder::{
-    self, ActiveAgentReminderState, BackgroundTask, RunningSubagent, ScheduledLoop, TodoItem,
-    TodoStatus, WorkflowRun,
-};
 pub use a3s_chat_state::compaction_utils::{
     BackgroundTaskSummary, CompactionInputs, CompactionServerSummary, CompactionStateContext,
     RunningSubagentSummary, ScheduledLoopSummary, TodoSummary, TodoSummaryStatus,
     WorkflowRunSummary, extract_last_user_query, extract_messages_since_last_user,
     extract_user_query,
+};
+use a3s_code_compaction::reminder::{
+    self, ActiveAgentReminderState, BackgroundTask, RunningSubagent, ScheduledLoop, TodoItem,
+    TodoStatus, WorkflowRun,
 };
 
 /// Resolved model-facing tool names for the MCP usage hint in compaction reminders.

@@ -24,6 +24,7 @@ use a3s_code_shell::session::storage::chunk_meta_flag;
 use a3s_code_tools::types::output::{BashOutput, ToolOutput};
 use a3s_code_tools::types::output::{ReadFileOutput, SearchToolOutput, WebFetchOutput};
 use a3s_code_tools::util::strip_redundant_session_cd;
+use a3s_tool_types::ReadLineCounts;
 use agent_client_protocol as acp;
 use chrono::{DateTime, Local, TimeZone};
 use std::borrow::Cow;
@@ -32,7 +33,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tracing::debug;
-use a3s_tool_types::ReadLineCounts;
 /// Convert a UTC millisecond timestamp to local time.
 fn utc_ms_to_local(ms: i64) -> DateTime<Local> {
     chrono::Utc

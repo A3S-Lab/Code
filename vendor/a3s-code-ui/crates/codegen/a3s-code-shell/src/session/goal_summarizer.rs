@@ -17,9 +17,9 @@ use a3s_code_tools::implementations::grok_build::task::backend::ChannelBackend;
 use a3s_code_tools::implementations::grok_build::task::types::{
     SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
 };
+use a3s_tool_types::SubagentCapabilityMode;
 use std::path::Path;
 use std::sync::Arc;
-use a3s_tool_types::SubagentCapabilityMode;
 
 // Constants
 

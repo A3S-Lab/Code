@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_mcp::elicitation::{
     ElicitationInbox, ElicitationJob, cancel_result, elicit_result_from_wire,
 };
@@ -9,7 +10,6 @@ use a3s_code_mcp::wire::MCP_ELICIT;
 use a3s_code_tools::mcp_elicitation::{McpElicitExtRequest, McpElicitExtResponse};
 use agent_client_protocol as acp;
 use agent_client_protocol::Client as _;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::session::pending_interaction::{
     PendingInteractionGuard, PendingInteractions, PendingKind,

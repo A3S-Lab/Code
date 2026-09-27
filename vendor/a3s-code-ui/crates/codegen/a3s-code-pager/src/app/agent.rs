@@ -8,13 +8,13 @@ use crate::acp::tracker::{AcpUpdateTracker, TurnActivity};
 use crate::app::actions::PermissionLabel;
 use crate::scrollback::EntryId;
 use crate::scrollback::state::ScrollbackState;
+use a3s_acp_lib::AcpAgentTx;
 use a3s_code_shell::extensions::notification::GoalClassifierVerdict;
 use a3s_code_shell::sampling::types::ReasoningEffort;
 use agent_client_protocol as acp;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
-use a3s_acp_lib::AcpAgentTx;
 /// Unique local identifier for an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AgentId(pub usize);

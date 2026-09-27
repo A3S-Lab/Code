@@ -8,10 +8,10 @@ use crate::handle::WorkspaceHandle;
 use crate::session::WorkspaceSession;
 use crate::session::file_state::{FileRewindResponse, RewindPoint, rewind_files};
 use crate::session::git;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use a3s_hunk_tracker::{HunkId, HunkTrackerSnapshot, HunkTurnDelta};
 use a3s_tool_protocol::turn_hook::TurnHookOutcome;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 /// A turn/prompt boundary routed through [`WorkspaceHandle::on_turn_boundary`].
 /// `prompt_index` `None` is a turn hook; `Some` is a rewind RPC arm. The two effect sets stay disjoint.
 pub(crate) enum TurnBoundary {

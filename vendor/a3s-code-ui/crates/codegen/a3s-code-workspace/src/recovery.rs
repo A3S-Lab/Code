@@ -10,11 +10,11 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
-use prometheus::{IntCounter, IntCounterVec, register_int_counter, register_int_counter_vec};
 use a3s_file_utils::queue::{
     DEFAULT_MAX_AGE, EnqueueOutcome, QueueItemSidecar, SIDECAR_SUFFIX, UploadQueue,
     temp_path_for_sidecar, try_remove_temp,
 };
+use prometheus::{IntCounter, IntCounterVec, register_int_counter, register_int_counter_vec};
 
 /// Successful re-enqueues, labelled by artifact name.
 static ORPHAN_RECOVERED: LazyLock<IntCounterVec> = LazyLock::new(|| {

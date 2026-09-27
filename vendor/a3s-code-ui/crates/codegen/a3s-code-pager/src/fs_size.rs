@@ -1,10 +1,10 @@
 //! Sizes are physical (block-based) on Unix and logical `len()` elsewhere.
 //! Totals differ from du(1): clones and hard links cost their full size at every path.
 //! Walks never follow symlinks and stop at [`Volume`] boundaries, since descending into an unresponsive network mount blocks past any timeout.
+use a3s_fast_worktree::WORKTREE_DEPTH;
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use a3s_fast_worktree::WORKTREE_DEPTH;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct WalkIssues {
     pub(crate) unreadable_dirs: u64,

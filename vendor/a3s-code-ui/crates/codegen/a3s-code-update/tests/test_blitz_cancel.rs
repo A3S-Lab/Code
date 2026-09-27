@@ -21,12 +21,12 @@ use std::time::Duration;
 
 use serial_test::serial;
 
+use a3s_code_update::auto_update::install_internal_from_base;
 use common::artifact_server::{ArtifactServer, Mode};
 use common::{
     can_exec_shell_scripts, host_platform, make_update_config, reset_home, small_good_artifact,
     test_home,
 };
-use a3s_code_update::auto_update::install_internal_from_base;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Artifacts + fixtures

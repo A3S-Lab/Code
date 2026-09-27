@@ -24,6 +24,9 @@
 //! | immutable content adapter | Yes     | Child originals retain the parent's authorized authority |
 //! | sandbox_handle          | Yes       | Child shell commands must keep the parent boundary |
 //! | budget_guard            | Yes       | One shared cost ledger spans the whole fan-out |
+//! | max_tool_rounds         | Yes       | Child keeps the parent safety ceiling unless max_steps tightens it |
+//! | auto_compact            | Yes       | Child compacts on the same policy as the parent |
+//! | max_context_tokens      | Yes       | Child uses the parent's resolved model window |
 //! | Tool presentation profile | Yes     | A child cannot broaden the parent's model surface |
 //! | memory                  | No        | Child has isolated context                     |
 //! | queue_config            | No        | Child runs are synchronous within parent       |
@@ -73,6 +76,13 @@ pub struct ChildRunContext {
     /// guard, so a single ledger can cap an entire delegated fan-out / workflow
     /// rather than each child counting independently.
     pub budget_guard: Option<Arc<dyn crate::budget::BudgetGuard>>,
+    /// Parent tool-round ceiling. Applied only while the child is still on the
+    /// default cap, so a role that already set `max_steps` keeps that cap.
+    /// The task's own `max_steps` argument is applied after this.
+    pub max_tool_rounds: Option<usize>,
+    pub auto_compact: Option<bool>,
+    pub auto_compact_threshold: Option<f32>,
+    pub max_context_tokens: Option<usize>,
 }
 
 struct DelegatedPermissionChecker {
@@ -692,6 +702,20 @@ impl ChildRunContext {
             // field, so exact inheritance is both the least surprising default
             // and a compile-time-owned monotonic boundary.
             config.tool_presentation_profile = profile.clone();
+        }
+        if let Some(rounds) = self.max_tool_rounds {
+            if config.max_tool_rounds == crate::agent::MAX_TOOL_ROUNDS {
+                config.max_tool_rounds = rounds.max(1);
+            }
+        }
+        if let Some(enabled) = self.auto_compact {
+            config.auto_compact = enabled;
+        }
+        if let Some(threshold) = self.auto_compact_threshold {
+            config.auto_compact_threshold = threshold.clamp(0.0, 1.0);
+        }
+        if let Some(tokens) = self.max_context_tokens.filter(|tokens| *tokens > 0) {
+            config.max_context_tokens = tokens;
         }
     }
 }

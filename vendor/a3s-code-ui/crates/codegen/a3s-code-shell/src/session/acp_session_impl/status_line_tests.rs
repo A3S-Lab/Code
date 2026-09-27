@@ -2,6 +2,7 @@ use super::{
     build_context_window, emit_loop, live_turn, split_normalized_remote, strip_trailing_separator,
 };
 use crate::extensions::notification::PromptUsageModel;
+use a3s_acp_lib::AcpClientMessage;
 use a3s_code_workspace::session::git::normalize_repo_url;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
-use a3s_acp_lib::AcpClientMessage;
 
 #[test]
 fn session_usage_splits_fresh_input_from_the_cache_buckets() {

@@ -27,12 +27,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
-use clap::Parser as ClapParser;
 use a3s_code_pager_pty_harness::{
     BenchResults, ContentController, PtyHarness, Scenario, compare_baseline, pager_binary,
     results::{DEFAULT_REGRESSION_THRESHOLD, load_baseline, write_baseline},
 };
+use anyhow::{Context, Result, bail};
+use clap::Parser as ClapParser;
 
 #[derive(ClapParser, Debug)]
 #[command(

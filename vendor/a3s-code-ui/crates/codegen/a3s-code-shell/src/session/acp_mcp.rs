@@ -11,11 +11,11 @@
 
 use std::time::Duration;
 
+use a3s_acp_lib::AcpAgentGatewaySender;
 use a3s_code_mcp::acp_transport::AcpReverseInvoker;
 use a3s_code_mcp::servers::AcpServerEntry;
 use a3s_code_mcp::wire;
 use agent_client_protocol as acp;
-use a3s_acp_lib::AcpAgentGatewaySender;
 
 /// Each entry deserializes directly into the canonical type, so serde checks the `serverId` wire field rather than hand-reading it.
 /// Entries missing `name`/`serverId` are skipped with a warning.

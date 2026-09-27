@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use reqwest::RequestBuilder;
 use a3s_code_auth::{AuthCredentialProvider, CredentialSnapshot, HttpAuth};
+use reqwest::RequestBuilder;
 
 use crate::AuthManager;
 use crate::backend::{ActiveAuthBackend, AuthBackend};
@@ -508,9 +508,9 @@ mod tests {
     use crate::GrokAuth;
     use crate::GrokComConfig;
     use crate::manager::AuthManager;
+    use a3s_code_auth::AuthCredentialProvider;
     use chrono::{Duration as ChronoDuration, Utc};
     use std::sync::Mutex;
-    use a3s_code_auth::AuthCredentialProvider;
 
     /// Serializes tests that pin `GROK_AUTH_EARLY_INVALIDATION_SECS`, since env vars are process-global and parallel tests would race.
     static EARLY_INVALIDATION_LOCK: Mutex<()> = Mutex::new(());
@@ -899,11 +899,8 @@ mod tests {
             );
         }
 
-        let resolved = embedding_session_credentials(
-            "https://api.a3s/v1",
-            Some(&mgr),
-            Some(api_key_provider),
-        );
+        let resolved =
+            embedding_session_credentials("https://api.a3s/v1", Some(&mgr), Some(api_key_provider));
         assert!(!resolved.is_empty());
     }
 

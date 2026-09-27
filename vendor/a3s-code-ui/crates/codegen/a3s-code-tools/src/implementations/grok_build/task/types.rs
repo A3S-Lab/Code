@@ -20,12 +20,12 @@
 
 use std::sync::Arc;
 
-use educe::Educe;
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 use a3s_tool_types::{
     HandedOffSubagentState, SubagentCapabilityMode, SubagentIsolationMode, WaitMode,
 };
+use educe::Educe;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::register_resource;
 

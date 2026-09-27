@@ -3,6 +3,7 @@ use super::spawn::present_child_completion;
 use super::{ShellChildRuntime, ShellCompletionData, SubagentSpawnContext, run_shell_child};
 use crate::session::SessionCommand;
 use crate::util::config::RemoteSettings;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_tools::implementations::grok_build::task::coordinator::{
     ChildCompletion, ChildRunOutput, ChildRunner, LocalBoxFuture, SubagentCoordinator,
 };
@@ -10,6 +11,7 @@ use a3s_code_tools::implementations::grok_build::task::root_control::NoRootContr
 use a3s_code_tools::implementations::grok_build::task::types::{
     SubagentDescribeOutcome, SubagentOwner, SubagentRequest, SubagentValidateTypeOutcome,
 };
+use a3s_tool_types::SubagentIsolationMode;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +19,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use a3s_tool_types::SubagentIsolationMode;
 fn test_gateway() -> GatewaySender {
     let (tx, _rx) = mpsc::unbounded_channel();
     GatewaySender::new(tx)

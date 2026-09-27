@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use a3s_acp_lib::AcpResult;
 use a3s_code_markdown::StreamingMarkdownRenderer;
 pub use a3s_code_tools::implementations::grok_build::ask_user_question::{
     AskUserQuestionMode, Question, QuestionOption,
@@ -20,7 +21,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use a3s_acp_lib::AcpResult;
 
 use unicode_width::UnicodeWidthStr;
 

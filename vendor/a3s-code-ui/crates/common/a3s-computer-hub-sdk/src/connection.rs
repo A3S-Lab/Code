@@ -35,6 +35,11 @@ use crate::demux::Demux;
 use crate::error::{ClientError, RefusalCode};
 use crate::handshake::send_hello;
 use crate::refcount::RefCountedSet;
+use a3s_tool_protocol::{
+    AuthRefreshParams, AuthRefreshResult, ConnectionId, ConnectionKind, JsonRpcError, JsonRpcId,
+    JsonRpcRequest, JsonRpcResponse, JsonRpcVersion, Method, PingFrame, PongFrame, ResponseOutcome,
+    ServerId, SessionBindServerParams, SessionId,
+};
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
 use futures::{SinkExt, Stream, StreamExt};
@@ -53,11 +58,6 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
-use a3s_tool_protocol::{
-    AuthRefreshParams, AuthRefreshResult, ConnectionId, ConnectionKind, JsonRpcError, JsonRpcId,
-    JsonRpcRequest, JsonRpcResponse, JsonRpcVersion, Method, PingFrame, PongFrame, ResponseOutcome,
-    ServerId, SessionBindServerParams, SessionId,
-};
 /// Outbound mpsc bound. Picked to match the server's per-actor outbound
 /// buffer so a single-process roundtrip never dead-blocks on sender
 /// capacity.

@@ -41,10 +41,10 @@ use std::time::Instant;
 /// from tree-sitter AST construction on huge or binary files.
 pub const MAX_INDEXABLE_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
+use a3s_code_paths::to_relative_path;
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use a3s_code_paths::to_relative_path;
 
 use crate::languages::LanguageRegistry;
 use crate::manager::IndexBuilder;

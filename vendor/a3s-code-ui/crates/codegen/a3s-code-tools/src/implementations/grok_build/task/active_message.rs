@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use a3s_tool_types::is_not_sentinel;
 use educe::Educe;
 use tokio::sync::{OwnedSemaphorePermit, oneshot};
-use a3s_tool_types::is_not_sentinel;
 
 /// Maximum UTF-8 byte length of one in-memory V0 agent message.
 pub const MAX_ACTIVE_AGENT_MESSAGE_BYTES: usize = 32 * 1024;

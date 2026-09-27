@@ -1,10 +1,10 @@
 use super::{DbStats, GcReport, RebuildReport};
 use crate::fs_size::{Volume, physical_dir_size};
 use crate::util::{format_age, format_bytes, pad_to_width, truncate_to_width, unix_now};
+use a3s_fast_worktree::WorktreeRecord;
 use std::io::Write;
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
-use a3s_fast_worktree::WorktreeRecord;
 const REPO_WIDTH: usize = 6;
 const BRANCH_WIDTH: usize = 20;
 const AGE_WIDTH: usize = 10;

@@ -672,11 +672,11 @@ pub(crate) async fn resolve_preloaded_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use a3s_code_tools::implementations::skills::discovery::{
         MAX_BODY_PEEK_BYTES, MAX_SKILL_WALK_DEPTH, SkillParseError, extract_first_paragraph,
         is_valid_skill_name, normalize_skill_name, parse_skill_frontmatter,
     };
+    use std::fs;
 
     fn write_skill_md(dir: &Path, name: &str) {
         fs::create_dir_all(dir).unwrap();

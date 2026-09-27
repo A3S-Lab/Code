@@ -7,11 +7,11 @@
 //! unrecognised lands in [`HubNotification::Unknown`] so callers never
 //! lose data.
 
-use serde_json::Value;
-use tracing::warn;
 use a3s_tool_protocol::{
     SessionId, ToolId, ToolNotificationFrame, ToolServerStatusPayload, ToolsChanged,
 };
+use serde_json::Value;
+use tracing::warn;
 
 /// A typed server notification event parsed from a raw JSON-RPC notification frame.
 #[derive(Debug, Clone, PartialEq)]

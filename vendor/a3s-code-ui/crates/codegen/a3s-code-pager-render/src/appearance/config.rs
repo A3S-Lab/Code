@@ -1,11 +1,11 @@
 //! `RawAppearanceConfig` is the serde-friendly shape of pager.toml.
 //! `AppearanceConfig` is the resolved runtime form (ratatui::Color, BlockBackground, etc.).
 
+use a3s_code_shared::ui_config::UiConfig;
 use documented::{Documented, DocumentedFields};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, RawString};
-use a3s_code_shared::ui_config::UiConfig;
 
 // ============================================================================
 // Runtime Config (used by render code)

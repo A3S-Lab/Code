@@ -16,13 +16,13 @@ use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use crate::render::draw::{EscapeWriter, WriterDrain, WriterEvent};
 use crate::theme::system_appearance::{self, SystemAppearanceWatcher};
 use crate::theme::{Theme, ThemeKind, cache as theme_cache};
+use a3s_acp_lib::{AcpClientMessage, acp_send};
 use agent_client_protocol as acp;
 use anyhow::Context as _;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep_until};
-use a3s_acp_lib::{AcpClientMessage, acp_send};
 /// During a continuous terminal drag, dozens of resize events fire per second, and each would rebuild the layout of every entry.
 /// One deferred draw runs after the size stabilizes instead.
 /// Whether authenticated interactive startup should create the unused home session.

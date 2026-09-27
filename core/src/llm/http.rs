@@ -90,6 +90,8 @@ pub(crate) fn is_retryable_http_failure(error: &anyhow::Error) -> bool {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// `Retry-After` header when the provider sent one.
+    pub retry_after: Option<String>,
 }
 
 /// HTTP response from a streaming POST request
@@ -180,6 +182,26 @@ pub struct ReqwestHttpClient {
     client: reqwest::Client,
 }
 
+/// Maximum quiet time between chunks of a streaming response.
+///
+/// The idle bound is what turns a silently stalled provider connection into a
+/// retryable failure: streaming responses have no total deadline (a legitimate
+/// generation may run for minutes), but a connection that delivers no bytes at
+/// all is dead. `A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS` overrides the default;
+/// `0` disables the bound entirely.
+pub(crate) fn stream_idle_timeout() -> Duration {
+    const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+    let configured = env::var("A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let milliseconds = configured.unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
+    Duration::from_millis(if milliseconds == 0 {
+        u64::MAX
+    } else {
+        milliseconds
+    })
+}
+
 impl ReqwestHttpClient {
     pub fn new() -> Self {
         Self {
@@ -213,11 +235,10 @@ impl HttpClient for ReqwestHttpClient {
         let request_body = serde_json::to_string(body).unwrap_or_default();
         let request_bytes = request_body.len() as u64;
 
-        tracing::debug!(
-            "HTTP POST to {}: {}",
-            url,
-            serde_json::to_string_pretty(body)?
-        );
+        // Verbose logs carry endpoint and size only. The request body holds
+        // the whole conversation (system prompt, history, tool results) and
+        // must never land in logs or tracing backends.
+        tracing::debug!("HTTP POST to {} ({} bytes)", url, request_bytes);
 
         let mut request = self.client.post(url);
         for (key, value) in headers {
@@ -237,6 +258,11 @@ impl HttpClient for ReqwestHttpClient {
         };
 
         let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(String::from);
         let response_body = response.text().await.map_err(|error| {
             anyhow::Error::new(HttpClientError::from_reqwest("HTTP response body", error))
         })?;
@@ -256,6 +282,7 @@ impl HttpClient for ReqwestHttpClient {
         Ok(HttpResponse {
             status,
             body: response_body,
+            retry_after,
         })
     }
 
@@ -313,10 +340,25 @@ impl HttpClient for ReqwestHttpClient {
         });
 
         if (200..300).contains(&status) {
-            let byte_stream = response.bytes_stream().map(|result| {
+            let idle_timeout = stream_idle_timeout();
+            let idle_timeout_ms = idle_timeout.as_millis();
+            let raw = response.bytes_stream().map(|result| {
                 result.map_err(|error| {
                     anyhow::Error::new(HttpClientError::from_reqwest("HTTP response stream", error))
                 })
+            });
+            // Bound the inter-chunk idle time. A provider or proxy that stops
+            // sending data without closing the connection must surface as a
+            // retryable transport failure instead of hanging the caller's
+            // stream loop (and the user's session) forever.
+            let guarded = tokio_stream::StreamExt::timeout(Box::pin(raw), idle_timeout);
+            let byte_stream = guarded.map(move |item| match item {
+                Ok(Ok(chunk)) => Ok(chunk),
+                Ok(Err(error)) => Err(error),
+                Err(_elapsed) => Err(anyhow::Error::new(HttpClientError::transport(
+                    "HTTP response stream",
+                    format!("timed out: no stream data received for {idle_timeout_ms}ms"),
+                ))),
             });
             Ok(StreamingHttpResponse {
                 status,
@@ -815,5 +857,67 @@ mod tests {
         // what build_reqwest_client will attach via NoProxy::from_env().
         assert!(reqwest::NoProxy::from_env().is_some());
         clear_proxy_env();
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_post_streaming_surfaces_stalled_stream_as_timeout_error() {
+        let _guard = proxy_env_lock().lock().unwrap();
+        clear_proxy_env();
+        unsafe {
+            env::set_var("A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS", "150");
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            // Deliver one chunk, then go silent without finishing the
+            // chunked response and without closing the connection — the
+            // stalled-proxy shape that previously hung callers forever.
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
+                .await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let client = ReqwestHttpClient::new();
+        let response = client
+            .post_streaming(
+                &format!("http://{addr}/v1/messages"),
+                Vec::new(),
+                &serde_json::json!({"model": "test"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+
+        let mut stream = response.byte_stream;
+        let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .expect("first chunk must arrive before the stall")
+            .expect("first chunk must not be an error");
+        assert_eq!(&first[..], &b"hello"[..]);
+
+        let second = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .expect("the idle timeout must yield a terminal item");
+        let error = second.expect_err("a stalled stream must surface as an error");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("timed out"),
+            "idle timeout must render as a retryable timeout, got: {message}"
+        );
+        assert!(message.contains("150ms"), "got: {message}");
+
+        server.abort();
+        unsafe {
+            env::remove_var("A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS");
+        }
     }
 }

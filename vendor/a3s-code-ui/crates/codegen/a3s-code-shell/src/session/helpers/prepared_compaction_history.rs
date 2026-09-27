@@ -2,11 +2,11 @@
 
 use std::num::NonZeroU64;
 
-use a3s_code_sampling_types::ConversationItem;
 use a3s_chat_state::compaction_utils::ModelRequestHistory;
 use a3s_chat_state::image_budget::{
     ImageBudgetOutcome, apply_image_budget_with_limits, image_budget_limits,
 };
+use a3s_code_sampling_types::ConversationItem;
 
 use super::session_compact::build_compaction_prompt;
 

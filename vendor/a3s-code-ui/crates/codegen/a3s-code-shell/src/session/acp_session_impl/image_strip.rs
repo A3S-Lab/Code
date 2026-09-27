@@ -8,8 +8,8 @@
 //! - Scope: `chat_history.jsonl` only.
 //!   A rebuild replaying `updates.jsonl` (e.g. a remote pull) restores the image and pays one more strip cycle.
 
-use a3s_code_sampler::{RequestId, StripReason};
 use a3s_chat_state::StripOutcome;
+use a3s_code_sampler::{RequestId, StripReason};
 
 use crate::extensions::notification::SessionUpdate as A3sSessionUpdate;
 use crate::session::acp_session::{PendingImageStrip, SessionActor};

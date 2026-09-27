@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use a3s_computer_hub_sdk::{
+    AuthCredential, AuthIdentity, AuthProvider, OnRefreshCallback, PrincipalKey, RefreshEvent,
+};
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use prometheus::{
@@ -19,9 +22,6 @@ use rand::Rng;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-use a3s_computer_hub_sdk::{
-    AuthCredential, AuthIdentity, AuthProvider, OnRefreshCallback, PrincipalKey, RefreshEvent,
-};
 
 use crate::status_config::ProactiveRefreshConfig;
 

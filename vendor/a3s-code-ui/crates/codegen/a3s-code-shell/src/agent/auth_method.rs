@@ -19,7 +19,7 @@ pub(crate) fn new_shared_auth_method_id(initial: Option<acp::AuthMethodId>) -> S
 // (auth needs them without pulling in shell's `ModelEntry`); re-exported here so
 // `crate::agent::auth_method::{A3S_API_KEY_ENV_VAR, ..}` call sites keep resolving.
 pub use a3s_code_login::auth_method::{
-    LEGACY_A3S_API_KEY_ENV_VAR, A3S_API_KEY_ENV_VAR, has_a3s_api_key_env, read_a3s_api_key_env,
+    A3S_API_KEY_ENV_VAR, LEGACY_A3S_API_KEY_ENV_VAR, has_a3s_api_key_env, read_a3s_api_key_env,
 };
 
 /// Whether `a3s.api_key` should be advertised (and pushed FIRST) when building the `auth_methods` list at `initialize()` time.

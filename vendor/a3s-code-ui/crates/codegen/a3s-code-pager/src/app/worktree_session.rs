@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
+use a3s_acp_lib::{AcpAgentTx, acp_send};
 use a3s_code_workspace::session::git::RestoreDegree;
 use agent_client_protocol as acp;
 use serde::Serialize;
-use a3s_acp_lib::{AcpAgentTx, acp_send};
 
 use super::effects::{
     acp_send_bounded, parse_worktree_restore_payload, parse_worktree_strategy_summary,

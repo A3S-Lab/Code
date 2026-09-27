@@ -4,11 +4,11 @@
 //! The `#[path]` attribute there keeps this a plain child module (`super::*` still reaches the private items under test).
 
 use super::*;
-use ratatui::style::Color;
 use a3s_code_pager::scrollback::block::RenderBlock;
 use a3s_code_pager::scrollback::entry::ScrollbackEntry;
 use a3s_code_pager::scrollback::state::ScrollbackState;
 use a3s_code_pager_diff::DiffLine;
+use ratatui::style::Color;
 
 fn test_cwd() -> &'static std::path::Path {
     std::path::Path::new("/test/session")
@@ -622,8 +622,8 @@ fn committed_blocks_fit_desired_height() {
 /// That washed out assistant/thinking markdown body text on light terminals; `highlight_bash_command` leaked raw syntect RGB.
 #[test]
 fn terminal_native_lock_paints_only_native_colors() {
-    use ratatui::buffer::Buffer;
     use a3s_code_pager::theme::cache as theme_cache;
+    use ratatui::buffer::Buffer;
 
     let _guard = theme_cache::test_lock()
         .lock()
@@ -784,10 +784,10 @@ fn small_commit_is_not_capped() {
 
 #[test]
 fn committed_edit_keeps_diff_line_backgrounds() {
+    use a3s_code_pager::theme::cache as theme_cache;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use similar::ChangeTag;
-    use a3s_code_pager::theme::cache as theme_cache;
 
     // EditToolCallBlock::rendered_output reads Theme::current(), not the renderer theme.
     // pin_theme serializes against terminal_native_lock_paints_only_native_colors so this
@@ -969,10 +969,10 @@ fn no_block_spends_the_accent_column() {
 
 #[test]
 fn committed_thinking_paints_a_dim_rail_under_the_bullet() {
+    use a3s_code_pager::theme::cache as theme_cache;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
-    use a3s_code_pager::theme::cache as theme_cache;
 
     let _guard = theme_cache::test_lock()
         .lock()

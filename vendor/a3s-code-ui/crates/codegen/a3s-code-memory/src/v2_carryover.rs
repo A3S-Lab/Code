@@ -9,9 +9,9 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{OptionalExtension as _, params};
 use a3s_code_tools::util::truncate_str;
 use a3s_sqlite_journal::JournalMode;
+use rusqlite::{OptionalExtension as _, params};
 
 use crate::storage::slugify;
 use crate::v2::V2MemoryScope;

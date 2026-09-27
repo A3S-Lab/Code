@@ -4,8 +4,8 @@
 //! catalog table is shared with the sandbox, so the tools that would call the API with the
 //! server's own credential are cut per host here and nowhere else.
 
-use a3s_computer_hub_sdk::SharedAuthProvider;
 use a3s_code_tools::registry::types::ToolServerConfig;
+use a3s_computer_hub_sdk::SharedAuthProvider;
 
 use crate::session::tool_config::WorkspaceSessionContextFactory;
 

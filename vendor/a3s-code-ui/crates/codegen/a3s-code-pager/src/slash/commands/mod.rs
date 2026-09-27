@@ -7,7 +7,6 @@ pub mod cd;
 pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
-pub mod model_config_cmd;
 pub mod context;
 pub mod copy;
 pub mod dashboard;
@@ -25,6 +24,7 @@ pub mod feedback;
 pub mod find;
 pub mod fork;
 pub mod gboom;
+pub mod goal;
 pub mod help;
 pub mod history;
 pub mod home;
@@ -39,6 +39,7 @@ pub mod mcps;
 pub mod memory;
 pub mod memory_ops;
 pub mod model;
+pub mod model_config_cmd;
 pub mod multiline;
 pub mod new;
 pub mod personas;
@@ -89,6 +90,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(new::NewCommand),
         // Per turn.
         Arc::new(effort::EffortCommand),
+        Arc::new(goal::GoalCommand),
         Arc::new(model::ModelCommand),
         Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),

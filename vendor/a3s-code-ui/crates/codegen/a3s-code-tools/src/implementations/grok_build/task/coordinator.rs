@@ -23,10 +23,10 @@ mod wake;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use a3s_tool_types::HandedOffSubagentState;
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, oneshot};
-use a3s_tool_types::HandedOffSubagentState;
 
 use super::active_message::ActiveMessageIngress;
 use super::admission::Admission;

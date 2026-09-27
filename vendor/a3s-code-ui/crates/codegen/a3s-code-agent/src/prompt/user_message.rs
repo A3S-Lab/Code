@@ -10,13 +10,13 @@
 //! The shell layer gathers session-scoped inputs (cwd, VCS root, rule files, skill registry, MCP servers).
 //! It hands them to `UserMessageContext::render`, which dispatches on `template`.
 use crate::prompt::agents_md::AgentConfigFile;
+use a3s_code_tools::bridge::ToolBridge;
+use a3s_code_tools::implementations::skills::types::SkillInfo;
+use a3s_code_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use a3s_code_tools::bridge::ToolBridge;
-use a3s_code_tools::implementations::skills::types::SkillInfo;
-use a3s_code_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 /// Date format for the `Today's date` field of the user-message preamble (e.g. "Friday Apr 24, 2026").
 /// Any format change is observable to the model.
 pub const USER_MESSAGE_DATE_FORMAT: &str = "%A %b %-d, %Y";

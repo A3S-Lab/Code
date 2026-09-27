@@ -1,10 +1,10 @@
 //! Envelope-shape tests for the JSON-RPC 2.0 wrappers.
 
-use serde_json::{Value, json};
 use a3s_tool_protocol::{
     FrameSeq, JsonRpcError, JsonRpcId, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     JsonRpcVersion, RequestId, ResponseOutcome, SessionId,
 };
+use serde_json::{Value, json};
 
 fn session() -> SessionId {
     SessionId::new("sess_abc").unwrap()

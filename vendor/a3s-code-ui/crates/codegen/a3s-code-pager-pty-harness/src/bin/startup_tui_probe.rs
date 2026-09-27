@@ -2,10 +2,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use a3s_code_pager_pty_harness::{ContentController, PtyExitPoll, PtyHarness};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use serde::Serialize;
-use a3s_code_pager_pty_harness::{ContentController, PtyExitPoll, PtyHarness};
 
 const WELCOME_SENTINEL: &str = "Quit";
 const COMPOSER_PROBE_KEYS: &str = "zzx";

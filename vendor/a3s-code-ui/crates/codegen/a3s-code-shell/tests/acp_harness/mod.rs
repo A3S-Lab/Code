@@ -4,15 +4,15 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
+use a3s_acp_lib::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 use a3s_code_shell::agent::config::Config as AgentConfig;
 use a3s_code_shell::agent::mvp_agent::MvpAgent;
 use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::json;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use a3s_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 
 /// Matches production's `MAX_BUFFER_SIZE` in `agent::app`.
 pub const DUPLEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;

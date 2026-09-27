@@ -6,12 +6,12 @@ use crate::config::{
 use crate::error::WorkspaceError;
 use crate::session::tool_config::resolve_session_toolset;
 use crate::session::tool_config::test_support::{TestSessionContextFactory, baseline_config, tc};
-use axum::response::IntoResponse;
-use std::sync::Arc;
 use a3s_code_tools::registry::types::ToolServerConfig;
 use a3s_code_tools::types::tool::ToolKind;
 use a3s_code_workspace_types::WorkspaceEvent;
 use a3s_tool_runtime::ToolCallContext;
+use axum::response::IntoResponse;
+use std::sync::Arc;
 /// Create a test workspace handle with a "main" session pre-created.
 pub(crate) fn make_handle() -> WorkspaceHandle {
     make_handle_with_rewind_all_outcomes(false)
@@ -221,8 +221,8 @@ pub(crate) async fn drain_terminal_ok(
         Item = a3s_tool_runtime::ToolStreamItem<a3s_tool_runtime::TypedToolOutput>,
     > + Unpin,
 ) -> a3s_tool_runtime::TypedToolOutput {
-    use futures::StreamExt;
     use a3s_tool_runtime::ToolStreamItem;
+    use futures::StreamExt;
     while let Some(item) = stream.next().await {
         match item {
             ToolStreamItem::Terminal(Ok(t)) => return t,
@@ -4635,8 +4635,8 @@ async fn drain_terminal_err(
         Item = a3s_tool_runtime::ToolStreamItem<a3s_tool_runtime::TypedToolOutput>,
     > + Unpin,
 ) -> a3s_tool_runtime::ToolError {
-    use futures::StreamExt;
     use a3s_tool_runtime::ToolStreamItem;
+    use futures::StreamExt;
     while let Some(item) = stream.next().await {
         match item {
             ToolStreamItem::Terminal(Err(e)) => return e,

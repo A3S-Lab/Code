@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The TUI session auto-compacts when the provider's last prompt-token count
+  reaches 80% of the model window, and keeps a recent token budget of that
+  transcript. A model with no configured window uses 128000 tokens. Delegated
+  `task` children inherit that ceiling, compaction policy, and window unless
+  `max_steps` tightens the tool cap.
+- The main session forwards provider usage and auto-compact start/finish to
+  the pager. Subagent progress reports duration, turns, tools, and errors.
+- An identical tool call past the duplicate threshold is returned to the model
+  as an error result. The turn continues, and the call still counts toward the
+  tool ceiling. Retryable provider failures wait with jitter and honor
+  `Retry-After`. A hard connect failure is not retried.
+- One model message runs every tool call. Calls that do not conflict run
+  together. A call that needs confirmation stays parked, and the others still
+  run. Auto-compact summarizes the older prefix with the model instead of
+  clipping the head and tail. `/goal` stays on later turns until it is cleared
+  and is reloaded from the workspace after a restart. A finished subagent
+  reports the tool calls, turns, and tokens it actually used. Steer from the
+  pager is injected on the next model step.
+- Every effort level keeps an output window of at least 65536 tokens.
+- `/effort` no longer changes parallel fan-out or continuation turns. Every
+  level shares one host limit. The effort menu lists only values the selected
+  model accepts. Subagent progress reports the resolved context window and
+  how full it is.
+- `/effort` now sets the fact-log tool budget. A turn no longer stops after 8
+  tool calls while the selected effort still allows more rounds.
+- `/effort` passes the provider's own effort parameter and keeps one tool-round
+  ceiling for every level. High effort also raises the output window so
+  thinking does not consume the answer. Models without that parameter still
+  receive the depth guideline.
+
+### Added
+
+- `/goal` in the pager. It stores one durable objective per session and turns
+  Core planning on until `/goal pause` or `/goal clear`. `/goal status` reports
+  the objective without a model turn.
+- `/compact` summarizes the live fact log and appends `compaction.done`. An
+  optional focus is passed to the summary prompt. The next turn continues from
+  that summary.
+
 ## [9.1.0] - 2026-09-27
 
 ### Added

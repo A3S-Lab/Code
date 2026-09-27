@@ -1328,8 +1328,8 @@ mod tests {
     #[test]
     fn try_btrfs_delegate_reclaims_on_post_snapshot_failure() {
         a3s_test_utils::require_git!();
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use a3s_test_utils::git::{git_commit_all, init_git_repo};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let tmp = TempDir::new().unwrap();
         let worktree = tmp.path().join("wt");
         std::fs::create_dir(&worktree).unwrap();
@@ -1358,8 +1358,8 @@ mod tests {
     #[test]
     fn try_btrfs_delegate_no_reclaim_on_success() {
         a3s_test_utils::require_git!();
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use a3s_test_utils::git::{git_commit_all, init_git_repo};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let tmp = TempDir::new().unwrap();
         let worktree = tmp.path().join("wt");
         std::fs::create_dir(&worktree).unwrap();

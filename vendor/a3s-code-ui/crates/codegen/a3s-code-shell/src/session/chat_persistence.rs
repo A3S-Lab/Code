@@ -1,8 +1,8 @@
 use std::io;
 
+use a3s_chat_state::{ChatPersistence, StrictAppendAck, StrictAppendError};
 use a3s_code_sampling_types::ConversationItem;
 use tokio::sync::{mpsc, oneshot};
-use a3s_chat_state::{ChatPersistence, StrictAppendAck, StrictAppendError};
 
 use super::persistence::PersistenceMsg;
 

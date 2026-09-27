@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use chrono::{DateTime, TimeZone, Utc};
 use a3s_code_workspace_types::*;
+use chrono::{DateTime, TimeZone, Utc};
 
 fn round_trip<T>(value: T)
 where

@@ -9,15 +9,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use a3s_code_telemetry::events::{CloneCancellationDisposition, CloneOutcome, WorktreeLifecycle};
+use a3s_code_telemetry::region;
+use a3s_code_telemetry::region::Parent;
+use a3s_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
 use anyhow::{Context, Result};
 use git2::{DiffOptions, Oid, Repository};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
-use a3s_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
-use a3s_code_telemetry::events::{CloneCancellationDisposition, CloneOutcome, WorktreeLifecycle};
-use a3s_code_telemetry::region;
-use a3s_code_telemetry::region::Parent;
 
 use crate::session::git::{
     GitFileChange, change_type_from_git2_delta, find_git_root_from_path,
@@ -2968,8 +2968,8 @@ pub fn clean_artifacts_mgmt(id_or_path: &str) -> Result<a3s_fast_worktree::Clean
 pub fn worktree_auto_gc_layer_from_settings(
     s: &a3s_code_config_types::WorktreeAutoGcSettings,
 ) -> WorktreeAutoGcLayer {
-    use std::collections::BTreeMap;
     use a3s_code_config_types::WorktreeKindMaxAge;
+    use std::collections::BTreeMap;
 
     // Exhaustive destructure: a new settings field becomes a compile error here
     // Otherwise it would be a silently dropped knob on both the shell and workspace resolve paths

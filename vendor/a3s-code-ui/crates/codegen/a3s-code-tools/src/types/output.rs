@@ -1,8 +1,8 @@
 use crate::implementations::grok_build::send_subagent_message::SendSubagentMessageOutput;
+use a3s_tool_types::SubagentCompletedOutput;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use strip_ansi_escapes::strip_str;
-use a3s_tool_types::SubagentCompletedOutput;
 /// `(added, removed)` line counts for the `edit.lines` telemetry counter.
 pub fn line_diff(old: &str, new: &str) -> (i64, i64) {
     let mut added = 0i64;
@@ -1272,9 +1272,9 @@ impl a3s_tool_runtime::ToolOutput for MCPOutput {}
 mod tests {
     use super::*;
     use crate::implementations::grok_build::todo::{TodoPriority, TodoStatus};
-    use serde_json::json;
     use a3s_tool_types::KillTaskResult;
     use a3s_tool_types::TaskOutputResult;
+    use serde_json::json;
     #[test]
     fn send_subagent_message_error_classification_is_closed() {
         use crate::implementations::grok_build::send_subagent_message::SendSubagentMessageOutput::*;

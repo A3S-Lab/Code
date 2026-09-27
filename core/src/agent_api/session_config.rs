@@ -437,10 +437,12 @@ fn resolve_limits(
             .unwrap_or(base.max_parallel_tasks)
             .max(1),
         max_execution_time_ms: options.max_execution_time_ms.or(base.max_execution_time_ms),
-        max_context_tokens: options
-            .max_context_tokens
-            .or_else(|| configured_model_context_tokens(&agent.code_config, model_name))
-            .unwrap_or(base.max_context_tokens),
+        max_context_tokens: crate::agent::resolve_context_window(
+            options.max_context_tokens,
+            configured_model_context_tokens(&agent.code_config, model_name),
+            options.auto_compact,
+            base.max_context_tokens,
+        ),
         retention: Some(options.retention_limits.unwrap_or_default()),
     }
 }
@@ -493,7 +495,10 @@ pub(super) fn resolve_session_llm_client(
     let model_ref = if let Some(ref model) = opts.model {
         model.as_str()
     } else {
-        if opts.temperature.is_some() || opts.thinking_budget.is_some() {
+        if opts.temperature.is_some()
+            || opts.thinking_budget.is_some()
+            || opts.reasoning_effort.is_some()
+        {
             tracing::warn!(
                 "temperature/thinking_budget set without model override - these will be ignored. \
                  Use with_model() to apply LLM parameter overrides."
@@ -538,6 +543,9 @@ pub(super) fn resolve_session_llm_client(
         }
         if let Some(budget) = opts.thinking_budget {
             llm_config = llm_config.with_thinking_budget(budget);
+        }
+        if let Some(effort) = opts.reasoning_effort.clone() {
+            llm_config = llm_config.with_reasoning_effort(effort);
         }
     }
 
@@ -1012,6 +1020,44 @@ mod tests {
         assert_eq!(
             configured_model_context_tokens(&config, "openai/missing"),
             None
+        );
+    }
+
+    #[test]
+    fn auto_compact_uses_the_model_window_or_the_unknown_fallback() {
+        let million = crate::agent::resolve_context_window(None, Some(1_000_000), true, 200_000);
+        assert_eq!(million, 1_000_000);
+        assert_eq!(
+            crate::agent::fact_compact_char_budget(true, million, 0.80),
+            3_200_000
+        );
+
+        let unknown = crate::agent::resolve_context_window(None, None, true, 200_000);
+        assert_eq!(unknown, crate::agent::UNKNOWN_MODEL_CONTEXT_TOKENS);
+        assert_eq!(
+            crate::agent::fact_compact_char_budget(true, unknown, 0.80),
+            409_600
+        );
+        assert_eq!(
+            crate::agent::fact_compact_char_budget(false, unknown, 0.80),
+            1_000_000
+        );
+        assert_eq!(
+            crate::agent::fact_compact_after_tokens(true, million, 0.80),
+            Some(800_000)
+        );
+        assert_eq!(
+            crate::agent::fact_compact_after_tokens(true, unknown, 0.80),
+            Some(102_400)
+        );
+        assert_eq!(
+            crate::agent::fact_compact_after_tokens(false, unknown, 0.80),
+            None
+        );
+        assert_eq!(crate::agent::fact_compact_keep_tokens(unknown), 25_600);
+        assert_eq!(
+            crate::agent::resolve_context_window(None, None, false, 200_000),
+            200_000
         );
     }
 }

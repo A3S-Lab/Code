@@ -26,6 +26,7 @@ use a3s_code_shell::session::info::Info;
 use a3s_code_shell::session::persistence::Summary;
 use a3s_code_shell::session::storage::{JsonlStorageAdapter, StorageAdapter};
 use a3s_code_shell::session::unified_list::{ListReq, UnifiedListResult, build_unified_list};
+use a3s_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 use agent_client_protocol as acp;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use criterion::{
@@ -33,7 +34,6 @@ use criterion::{
 };
 use filetime::{FileTime, set_file_mtime};
 use tempfile::TempDir;
-use a3s_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 
 const WORKSPACE_COUNT: usize = 3_000;
 // Bump whenever the shape of the workload changes, even if aggregate counts do not

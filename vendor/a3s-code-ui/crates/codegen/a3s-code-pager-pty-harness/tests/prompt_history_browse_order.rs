@@ -5,8 +5,8 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use a3s_code_pager_pty_harness::{ContentController, PtyHarness, keys, pager_binary};
+use anyhow::{Context, Result};
 
 const ROWS: u16 = 50;
 const COLS: u16 = 120;

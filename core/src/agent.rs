@@ -63,6 +63,57 @@ mod turn_context;
 
 /// Maximum number of tool execution rounds before stopping
 pub(crate) const MAX_TOOL_ROUNDS: usize = 50;
+
+/// Window used when auto-compact is on and the model has no configured context.
+pub(crate) const UNKNOWN_MODEL_CONTEXT_TOKENS: usize = 128_000;
+
+/// Explicit option, then the model's configured window, then a fallback.
+///
+/// Auto-compact uses the conservative unknown window so a missing catalog
+/// entry compacts before the provider rejects the prompt. Sessions that leave
+/// auto-compact off keep the historical default.
+pub(crate) fn resolve_context_window(
+    explicit: Option<usize>,
+    configured: Option<usize>,
+    auto_compact: bool,
+    default_window: usize,
+) -> usize {
+    explicit.or(configured).unwrap_or(if auto_compact {
+        UNKNOWN_MODEL_CONTEXT_TOKENS
+    } else {
+        default_window
+    })
+}
+
+/// Character budget for the fact-log compactor.
+///
+/// About four characters per token, measured at the auto-compact threshold of
+/// the resolved window. Auto-compact stays off this path until the host
+/// enables it.
+pub(crate) fn fact_compact_char_budget(auto_compact: bool, window: usize, threshold: f32) -> usize {
+    if !auto_compact {
+        return 1_000_000;
+    }
+    let tokens = (window as f32 * threshold).max(1.0) as usize;
+    tokens.saturating_mul(4).max(1)
+}
+
+/// Prompt-token watermark for fact-log auto-compact. `None` leaves compaction off.
+pub(crate) fn fact_compact_after_tokens(
+    auto_compact: bool,
+    window: usize,
+    threshold: f32,
+) -> Option<u64> {
+    if !auto_compact {
+        return None;
+    }
+    Some((window as f32 * threshold).max(1.0) as u64)
+}
+
+/// Recent transcript kept verbatim after compaction: one fifth of the window.
+pub(crate) fn fact_compact_keep_tokens(window: usize) -> usize {
+    window.saturating_div(5).max(1)
+}
 pub(crate) const DEFAULT_MAX_PARALLEL_TASKS: usize = 8;
 
 /// Internal agent loop configuration.
@@ -535,6 +586,15 @@ pub enum AgentEvent {
     #[serde(rename = "model_usage_bound")]
     ModelUsageBound {
         snapshot: crate::harness_evidence::ModelUsageSnapshotV1,
+    },
+
+    /// Automatic compaction started or finished in the fact log.
+    #[serde(rename = "auto_compact")]
+    AutoCompact {
+        phase: String,
+        tokens_used: u64,
+        context_window: u64,
+        tokens_after: u64,
     },
 
     /// One run is using the exact cognitive-package generation retained by

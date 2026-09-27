@@ -13,6 +13,7 @@
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use a3s_tool_protocol::{MAX_DONATION_BYTES, MAX_METRICS_PER_DONATION};
 use arc_swap::ArcSwapOption;
 use base64::Engine as _;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -26,7 +27,6 @@ use prometheus::proto::{MetricFamily, MetricType};
 use prost::Message as _;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use a3s_tool_protocol::{MAX_DONATION_BYTES, MAX_METRICS_PER_DONATION};
 
 use crate::donate_pump::{
     PENDING_FLUSHES, PumpMsg, make_resource, now_unix_nanos, run_pump, string_kv,

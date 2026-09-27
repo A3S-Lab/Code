@@ -15,9 +15,9 @@
 //! The tool returns the absolute path so the model can copy or move the
 //! image into the project working directory when it needs a persistent asset.
 
+use a3s_tool_runtime::ToolError;
 use base64::Engine as _;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
-use a3s_tool_runtime::ToolError;
 
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
 use crate::implementations::grok_build::media_bearer::MediaBearer;

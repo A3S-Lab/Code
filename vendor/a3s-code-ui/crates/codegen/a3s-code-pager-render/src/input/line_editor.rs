@@ -1,7 +1,7 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use a3s_ratatui_textarea::{
     EditBuffer, EditCommand, EditOutcome, SingleLineViewport, classify_key_event,
 };
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineEditOutcome {

@@ -59,8 +59,8 @@ async fn handle_session_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use a3s_code_sampling_types::TokenUsage;
     use a3s_chat_state::UsageLedger;
+    use a3s_code_sampling_types::TokenUsage;
 
     fn usage(prompt: u32, completion: u32) -> TokenUsage {
         TokenUsage {

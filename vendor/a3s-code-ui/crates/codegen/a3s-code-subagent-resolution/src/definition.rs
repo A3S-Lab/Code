@@ -1,8 +1,6 @@
 //! Subagent definition discovery and tool-policy resolution, matching the production spawn path.
 use crate::config::{SubagentPersona, SubagentRole};
 use crate::types::{EffectiveRuntimeConfig, ResolutionError};
-use std::collections::HashMap;
-use std::path::Path;
 use a3s_code_agent::config::{AgentDefinition, IsolationMode};
 use a3s_code_agent::plugins::PluginRegistry;
 use a3s_code_agent::prompt::context::{PromptAudience, PromptContext};
@@ -14,6 +12,8 @@ use a3s_code_tools::types::compat::CompatConfig;
 use a3s_code_tools::types::template_renderer::TemplateRenderer;
 use a3s_code_tools::types::tool::ToolKind;
 use a3s_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
+use std::collections::HashMap;
+use std::path::Path;
 /// Inputs that affect definition discovery and spawn permission.
 pub struct DefinitionResolutionContext<'a> {
     pub cwd: &'a Path,

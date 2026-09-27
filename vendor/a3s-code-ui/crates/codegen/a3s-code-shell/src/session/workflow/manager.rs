@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use a3s_code_sampling_types::ReasoningEffort;
 use a3s_code_telemetry::events::{WorkflowRunStarted, WorkflowSourceKind};
 use a3s_code_tools::implementations::grok_build::workflow::WorkflowControl;
+use a3s_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use a3s_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 
 use super::host_service::{
     HostDrainOutcome, TelemetryHook, WorkflowHostParams, spawn_workflow_host_service,

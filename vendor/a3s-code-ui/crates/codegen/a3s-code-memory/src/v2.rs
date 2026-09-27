@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
 use a3s_code_tools::util::truncate_str;
 use a3s_sqlite_journal::JournalMode;
+use rusqlite::params;
 
 const STATE_SCHEMA_VERSION: &str = "1";
 pub(crate) const MAX_DISCOVERED_FILES: usize = 10_000;

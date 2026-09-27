@@ -13,6 +13,8 @@
 //! A user turn that contains image blocks is routed through the vision model before being pushed onto chat state.
 //! If the describe call fails the whole turn fails; we never silently drop the images.
 use crate::sampling::{Client as OaiCompatClient, ConversationRequest, SyntheticReason};
+use a3s_chat_state::compaction_image_context::render_image_files_block;
+use a3s_chat_state::compaction_utils::{extract_real_user_queries, extract_user_query};
 use a3s_code_sampling_types::conversation::{ContentPart, ConversationItem, UserItem};
 use a3s_code_tools::util::truncate::truncate_middle;
 use agent_client_protocol::ImageContent;
@@ -20,8 +22,6 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use a3s_chat_state::compaction_image_context::render_image_files_block;
-use a3s_chat_state::compaction_utils::{extract_real_user_queries, extract_user_query};
 /// Per-entry character cap for the conversation outline sent to the vision model.
 /// Mirrors the compat-harness behavior.
 pub(crate) const OUTLINE_PER_ENTRY_CAP: usize = 1_500;

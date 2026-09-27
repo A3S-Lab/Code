@@ -1,6 +1,6 @@
 use super::*;
-use std::path::PathBuf;
 use a3s_tracing_macros::teprintln;
+use std::path::PathBuf;
 
 #[test]
 fn test_map_event_kind() {

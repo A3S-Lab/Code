@@ -1,8 +1,8 @@
 //! These types live here so the data-collector engine can construct a [`TelemetryClient`](crate::client::TelemetryClient) without depending on shell.
 //!
 //! Shell still re-exports these types from their original paths so existing call sites (and `Config` derive impls) compile unchanged.
-use serde::{Deserialize, Serialize};
 use a3s_code_env::env_bool;
+use serde::{Deserialize, Serialize};
 /// Telemetry mode: `true`/`false` (legacy bool) or `"session_metrics"` (string). `Disabled`: nothing sent (enterprise
 /// default); `SessionMetrics`: metadata-only lifecycle events, no content; `Enabled`: full product telemetry (events and
 /// Mixpanel).

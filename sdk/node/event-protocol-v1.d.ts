@@ -34,6 +34,7 @@ export type KnownAgentEventTypeV1 =
   | 'model_presentation_bound'
   | 'model_input_bound'
   | 'model_usage_bound'
+  | 'auto_compact'
   | 'cognitive_context_bound'
   | 'command_dead_lettered'
   | 'command_retry'

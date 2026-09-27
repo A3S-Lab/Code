@@ -6,9 +6,9 @@
 use super::SessionActor;
 use crate::extensions::notification::CompactionSegmentFile;
 use crate::session::persistence::PersistenceMsg;
-use a3s_code_sampling_types::ConversationItem;
 use a3s_chat_state::CompactionMode;
 use a3s_chat_state::compaction_utils::format_compact_summary;
+use a3s_code_sampling_types::ConversationItem;
 use a3s_compaction_transcript::COMPACTION_DIR;
 impl SessionActor {
     /// Persist the per-segment store (`Segments` only; no-op for `Summary` and `Transcript`).

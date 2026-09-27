@@ -12,9 +12,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use a3s_tool_protocol::ToolCallId;
 use dashmap::{DashMap, DashSet};
 use tokio_util::sync::CancellationToken;
-use a3s_tool_protocol::ToolCallId;
 
 /// Upper bound on outstanding pre-registration tombstones. Tombstones
 /// cover the microscopic window between a `Cancel` hook and the matching

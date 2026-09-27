@@ -1,7 +1,7 @@
 use super::RemoteSettings;
+use a3s_fast_worktree::CreationMode;
 use serde::{Deserialize, Serialize};
 use toml::Value as TomlValue;
-use a3s_fast_worktree::CreationMode;
 
 /// Mirrors the internal `CreationMode` enum from a3s-fast-worktree but uses config-friendly naming (lowercase strings in TOML).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

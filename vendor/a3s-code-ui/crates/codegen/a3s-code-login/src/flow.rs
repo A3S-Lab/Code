@@ -1,14 +1,14 @@
 use crate::backend::{ActiveAuthBackend, AuthBackend, LoginRequest};
 use crate::config::LEGACY_AUTH_SCOPE;
 use crate::{AuthManager, GrokAuth, GrokComConfig, parse_output};
+use a3s_code_http::TransportFailureKind;
+use a3s_code_shell_base::util::grok_home;
+use a3s_code_telemetry::events::{LoginFailed, LoginFailureKind};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::{mpsc, oneshot};
-use a3s_code_http::TransportFailureKind;
-use a3s_code_shell_base::util::grok_home;
-use a3s_code_telemetry::events::{LoginFailed, LoginFailureKind};
 pub type StderrCallback = Box<dyn Fn(&str)>;
 /// Reject a cached credential that lacks `oidc_issuer`, has a mismatched issuer, or whose team principal violates the `force_login_team_uuid` pin.
 /// Interactive login then starts fresh instead of reusing a stale or wrong-team session.
@@ -1005,9 +1005,9 @@ mod tests {
     use super::*;
     use crate::AuthMode;
     use crate::config::A3S_OAUTH2_ISSUER;
+    use a3s_code_shell_base::env::EnvVarGuard;
     use chrono::Utc;
     use std::path::Path;
-    use a3s_code_shell_base::env::EnvVarGuard;
     /// `os_error` and the reqwest classification are covered in `a3s-code-http`.
     /// What's local is which `LoginFailureKind` each maps to, and that a decode failure never reads as a transport one.
     #[test]

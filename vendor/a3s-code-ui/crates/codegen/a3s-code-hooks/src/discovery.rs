@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use a3s_code_config::resolve_global_hook_sources;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{self, HookSpec};
 use crate::error::HookError;
@@ -337,28 +337,30 @@ pub fn discover_hook_source_paths(
     let include_claude = include_claude_hooks(compat, claude_import_marked);
     let include_cursor = include_cursor_hooks(compat);
 
-    let mut global: Vec<HookSourceConfig> =
-        match resolve_global_hook_sources(grok.as_deref(), /* reject_symlinks */ false) {
-            Ok(resolved) => {
-                if let Some(e) = &resolved.configured_error {
-                    tracing::warn!(
-                        error = %e,
-                        "hooks-paths unreadable; retaining fixed A3S Code hook discovery sources only"
-                    );
-                }
-                resolved
-                    .discovery_sources()
-                    .map(|s| classify_grok_hook_source(s.path.clone()))
-                    .collect()
-            }
-            Err(e) => {
+    let mut global: Vec<HookSourceConfig> = match resolve_global_hook_sources(
+        grok.as_deref(),
+        /* reject_symlinks */ false,
+    ) {
+        Ok(resolved) => {
+            if let Some(e) = &resolved.configured_error {
                 tracing::warn!(
                     error = %e,
-                    "global hook source resolve hard-failed; omitting A3S Code global sources"
+                    "hooks-paths unreadable; retaining fixed A3S Code hook discovery sources only"
                 );
-                Vec::new()
             }
-        };
+            resolved
+                .discovery_sources()
+                .map(|s| classify_grok_hook_source(s.path.clone()))
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "global hook source resolve hard-failed; omitting A3S Code global sources"
+            );
+            Vec::new()
+        }
+    };
 
     if let Some(h) = home.as_deref() {
         if include_claude {

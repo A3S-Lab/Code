@@ -5,10 +5,10 @@
 //! at the SDK boundary so consumers can match on a single enum without
 //! re-deriving the numeric/string code mapping.
 
+use a3s_tool_protocol::{IdError, JsonRpcError, ToolCallId, ToolErrorWire};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
-use a3s_tool_protocol::{IdError, JsonRpcError, ToolCallId, ToolErrorWire};
 
 /// The most of an unknown code that is kept as spelled (the same cap as the IdP body excerpt in
 /// the daemon's `cause`): the 403 body is a stranger's bytes, and the code reaches the user's
@@ -282,11 +282,11 @@ impl From<tokio::sync::oneshot::error::RecvError> for ClientError {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
     use a3s_tool_protocol::{
         WORKSPACE_UNAVAILABLE_SUBCODE, WorkspaceGonePhase, WorkspaceGoneReason,
         workspace_unavailable_wire,
     };
+    use serde_json::json;
 
     use super::*;
 

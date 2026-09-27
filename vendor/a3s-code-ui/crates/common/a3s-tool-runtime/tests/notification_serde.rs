@@ -350,8 +350,8 @@ fn variant_count_matches_variant_name() {
 
 #[test]
 fn handle_send_helpers_round_trip_through_channel() {
-    use futures::stream::StreamExt;
     use a3s_tool_runtime::ToolNotificationHandle;
+    use futures::stream::StreamExt;
 
     let (handle, mut rx) = ToolNotificationHandle::channel();
     handle.send_bash_output_chunk(BashOutputChunk { base: base() });

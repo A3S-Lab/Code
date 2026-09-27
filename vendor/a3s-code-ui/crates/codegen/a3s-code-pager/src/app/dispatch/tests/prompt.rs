@@ -4535,8 +4535,8 @@ fn plain_send_during_pending_subagent_wait_keeps_confirmed_queue_row_reachable()
     use crate::app::agent_view::{ActivePane, test_fixtures::simulate_subagent_wait};
     use crate::app::app_view::InputOutcome;
     use crate::app::prompt_queue::QueueEntryWire;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use a3s_acp_lib::AcpClientMessage;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -6742,7 +6742,10 @@ fn a3s_code_effective_slash_commands_change_visible_state() {
     assert_eq!(modal_kind(&send_slash("/help")), Some("palette"));
     assert_eq!(modal_kind(&send_slash("/settings")), Some("settings"));
     assert_eq!(modal_kind(&send_slash("/context")), Some("context"));
-    assert_eq!(modal_kind(&send_slash("/session-info")), Some("session-info"));
+    assert_eq!(
+        modal_kind(&send_slash("/session-info")),
+        Some("session-info")
+    );
 
     let app = send_slash("/always-approve");
     assert!(agent_ref(&app, id).session.is_yolo());
@@ -7016,10 +7019,7 @@ fn a3s_code_tui_function_coverage_is_at_least_95_percent() {
     }
 
     for name in crate::app::app_view::A3S_CODE_EFFECTIVE_COMMANDS {
-        record(
-            format!("command:{name}"),
-            command_changes_the_screen(name),
-        );
+        record(format!("command:{name}"), command_changes_the_screen(name));
     }
 
     crate::app::A3S_CODE_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
@@ -7053,7 +7053,10 @@ fn a3s_code_tui_function_coverage_is_at_least_95_percent() {
         "effort-menu".to_string(),
         efforts == ["low", "medium", "high", "xhigh", "max"],
     );
-    record("plan-mode-excluded".to_string(), shift_tab_never_selects_plan());
+    record(
+        "plan-mode-excluded".to_string(),
+        shift_tab_never_selects_plan(),
+    );
 
     let total = covered.len() + missing.len();
     let percent = covered.len() * 100 / total.max(1);
@@ -7068,7 +7071,8 @@ fn a3s_code_tui_function_coverage_is_at_least_95_percent() {
 
 fn command_changes_the_screen(name: &str) -> bool {
     if name == "toggle-mouse-reporting" {
-        crate::app::MOUSE_REPORTING_TOGGLE_ENABLED.store(true, std::sync::atomic::Ordering::Release);
+        crate::app::MOUSE_REPORTING_TOGGLE_ENABLED
+            .store(true, std::sync::atomic::Ordering::Release);
         super::reset_mouse_capture_enabled(true);
     }
     let mut app = test_app_with_agent();

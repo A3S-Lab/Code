@@ -10,14 +10,14 @@ use std::time::Instant;
 use agent_client_protocol::{self as acp};
 
 use crate::acp_harness;
-use a3s_code_shell::agent::config::Config as AgentConfig;
-use a3s_code_shell::agent::mvp_agent::MvpAgent;
-use serde_json::Value;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use a3s_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
+use a3s_code_shell::agent::config::Config as AgentConfig;
+use a3s_code_shell::agent::mvp_agent::MvpAgent;
+use serde_json::Value;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[derive(Debug)]
 pub struct DispatchEvent {

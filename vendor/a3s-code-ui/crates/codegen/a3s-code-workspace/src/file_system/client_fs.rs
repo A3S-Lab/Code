@@ -15,8 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use sha2::{Digest, Sha256};
 use a3s_code_workspace_types::rpc::fs::{
     ClientFsListNode as FsListNode, ClientFsListReq as FsListReq, ClientFsListRes as FsListRes,
     ClientFsReadFileReq as FsReadFileReq, ClientFsReadFileRes as FsReadFileRes,
@@ -24,6 +22,8 @@ use a3s_code_workspace_types::rpc::fs::{
     ClientFsWriteFileReq as FsWriteFileReq, ClientFsWriteFileRes as FsWriteFileRes, FsContentType,
     FsNodeType, MAX_CLIENT_FS_WRITE_CHUNK_BYTES, MAX_CLIENT_FS_WRITE_FILE_BYTES,
 };
+use base64::Engine;
+use sha2::{Digest, Sha256};
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::handle::{ClientFsBase, WorkspaceHandle};
@@ -1011,8 +1011,8 @@ pub(crate) fn spawn_staged_upload_maintenance(
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine;
     use a3s_code_workspace_types::rpc::fs::FsReadEncoding;
+    use base64::Engine;
 
     use super::*;
     use crate::handle::tests::make_handle;

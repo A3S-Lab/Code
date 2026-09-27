@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Once};
 
+use a3s_code_sampler::{SamplerConfig, SamplingClient};
+use a3s_code_sampling_types::SamplingError;
+use a3s_code_test_support::{TestSandbox, spawn_counting_server};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::Version;
@@ -14,9 +17,6 @@ use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use rustls::server::WebPkiClientVerifier;
 use support::{send_one, test_config};
-use a3s_code_sampler::{SamplerConfig, SamplingClient};
-use a3s_code_sampling_types::SamplingError;
-use a3s_code_test_support::{TestSandbox, spawn_counting_server};
 
 const ONE_MIB: usize = 1024 * 1024;
 

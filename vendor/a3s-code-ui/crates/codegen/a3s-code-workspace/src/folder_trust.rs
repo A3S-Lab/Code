@@ -30,8 +30,8 @@ use std::sync::LazyLock;
 
 use parking_lot::Mutex;
 
-use toml::Value as TomlValue;
 use a3s_code_config_types::{BoolFlag, RemoteSettings};
+use toml::Value as TomlValue;
 
 use crate::trust::{TrustStore, workspace_key};
 

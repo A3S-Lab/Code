@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use a3s_fast_worktree::{NfsStatusView, NfsWorktreeClient};
+use anyhow::Context;
 
 /// Dest-layout root and optional source identity when libgit2 is skipped.
 #[derive(Debug, Clone)]

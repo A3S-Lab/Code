@@ -26,17 +26,34 @@ impl AgentLoop {
     }
 
     /// Character budget for the fact-log compactor.
-    ///
-    /// Auto-compact stays off this path until the host enables it. The budget is
-    /// the configured token window times the threshold, at about four characters
-    /// per token, so a filled turn compacts before the next model call.
     pub(crate) fn fact_compact_after_chars(&self) -> usize {
-        if !self.config.auto_compact {
-            return 1_000_000;
-        }
-        let tokens = (self.config.max_context_tokens as f32 * self.config.auto_compact_threshold)
-            .max(1.0) as usize;
-        tokens.saturating_mul(4).max(1)
+        super::fact_compact_char_budget(
+            self.config.auto_compact,
+            self.config.max_context_tokens,
+            self.config.auto_compact_threshold,
+        )
+    }
+
+    /// Provider-token watermark. `None` when auto-compact is off.
+    pub(crate) fn fact_compact_after_tokens(&self) -> Option<u64> {
+        super::fact_compact_after_tokens(
+            self.config.auto_compact,
+            self.config.max_context_tokens,
+            self.config.auto_compact_threshold,
+        )
+    }
+
+    /// Recent transcript retained after a fact-log compaction.
+    pub(crate) fn fact_compact_keep_tokens(&self) -> usize {
+        super::fact_compact_keep_tokens(self.config.max_context_tokens)
+    }
+
+    pub(crate) fn duplicate_tool_threshold(&self) -> u32 {
+        self.config.duplicate_tool_call_threshold
+    }
+
+    pub(crate) fn context_window_tokens(&self) -> usize {
+        self.config.max_context_tokens
     }
 
     pub(crate) fn skill_restriction_denial(&self, name: &str) -> Option<(String, String)> {

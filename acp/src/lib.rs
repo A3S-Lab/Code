@@ -6,6 +6,7 @@
 mod agent;
 mod cc_switch;
 mod config;
+mod goal;
 mod grok_account;
 
 pub use agent::A3sCodeAgent;

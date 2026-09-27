@@ -172,6 +172,10 @@ fn parent_context(
         sandbox_handle: None,
         tool_presentation_profile: None,
         budget_guard: None,
+        max_tool_rounds: None,
+        auto_compact: None,
+        auto_compact_threshold: None,
+        max_context_tokens: None,
     }
 }
 
@@ -836,4 +840,81 @@ async fn delegated_confirmation_requires_confirmation_and_policy_merge() {
         .await;
     let updated = provider.policy().await;
     assert_eq!(updated.default_timeout_ms, 2_000);
+}
+
+fn parent_safety_policy(rounds: usize) -> ChildRunContext {
+    ChildRunContext {
+        max_tool_rounds: Some(rounds),
+        auto_compact: Some(true),
+        auto_compact_threshold: Some(0.80),
+        max_context_tokens: Some(128_000),
+        ..parent_context(PermissionDecision::Allow, None)
+    }
+}
+
+fn delegated_child(parent: &ChildRunContext, max_steps: Option<usize>) -> AgentConfig {
+    let mut config = AgentConfig::default();
+    parent.apply_to(&mut config);
+    config.planning_mode = crate::prompts::PlanningMode::Disabled;
+    if let Some(max_steps) = max_steps {
+        config.max_tool_rounds = max_steps;
+    }
+    config
+}
+
+#[test]
+fn delegated_child_inherits_the_parent_safety_policy() {
+    let parent = parent_safety_policy(3_200);
+    let child = delegated_child(&parent, None);
+    assert_eq!(child.max_tool_rounds, 3_200);
+    assert!(child.auto_compact);
+    assert_eq!(child.max_context_tokens, 128_000);
+    assert_eq!(child.planning_mode, crate::prompts::PlanningMode::Disabled);
+
+    let tightened = delegated_child(&parent, Some(3));
+    assert_eq!(tightened.max_tool_rounds, 3);
+    assert!(tightened.auto_compact);
+    assert_eq!(tightened.max_context_tokens, 128_000);
+}
+
+#[tokio::test]
+async fn delegated_child_finalizes_at_the_inherited_ceiling() {
+    let hermetic_root = crate::test_support::hermetic_workspace();
+    let mock_client = std::sync::Arc::new(crate::agent::tests::MockLlmClient::new(vec![
+        crate::agent::tests::MockLlmClient::tool_call_response(
+            "tool-1",
+            "bash",
+            serde_json::json!({"command": "echo first"}),
+        ),
+        crate::agent::tests::MockLlmClient::tool_call_response(
+            "tool-2",
+            "bash",
+            serde_json::json!({"command": "echo second"}),
+        ),
+        crate::agent::tests::MockLlmClient::text_response("wrapped up"),
+    ]));
+    let config = delegated_child(&parent_safety_policy(2), None);
+    assert_eq!(config.max_tool_rounds, 2);
+    let agent = crate::agent::AgentLoop::new(
+        mock_client.clone(),
+        std::sync::Arc::new(crate::tools::ToolExecutor::new(
+            hermetic_root.display().to_string(),
+        )),
+        crate::tools::ToolContext::new(hermetic_root.clone()),
+        config,
+    );
+    let result = agent
+        .execute(&[], "Collect bounded evidence", None)
+        .await
+        .expect("child finishes");
+    assert_eq!(result.text, "wrapped up");
+    assert_eq!(result.tool_calls_count, 2);
+    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 3);
+    let tools = mock_client.request_tools.lock().expect("tools");
+    assert!(tools.last().expect("final turn").is_empty());
+    let prompts = mock_client.request_texts.lock().expect("prompts");
+    assert!(prompts
+        .last()
+        .expect("final prompt")
+        .contains("Tool-use budget reached"));
 }

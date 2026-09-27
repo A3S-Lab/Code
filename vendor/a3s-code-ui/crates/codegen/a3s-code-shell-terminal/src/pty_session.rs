@@ -12,9 +12,9 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::{Arc, LazyLock};
 
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::{Mutex, mpsc};
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use a3s_code_workspace::file_system::TargetClientId;
 
@@ -825,8 +825,8 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use agent_client_protocol as acp;
     use a3s_acp_lib::acp_gateway;
+    use agent_client_protocol as acp;
 
     type RecordedNotifications = Rc<RefCell<Vec<(String, serde_json::Value)>>>;
 

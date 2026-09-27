@@ -4,7 +4,6 @@
 //! clients will later replay. They are not produced by serializing the Rust
 //! types. Harness locations: `fixtures/bot_relay/README.md`.
 
-use serde_json::{Value, json};
 use a3s_tool_protocol::{
     BotBindConversationParams, BotCommandParams, BotEmptyResult, BotEventChannel, BotEventEnvelope,
     BotRelayError, BotRelayErrorCode, BotRelaySiblingAccount, BotRelaySignIn, BotRosterResult,
@@ -18,6 +17,7 @@ use a3s_tool_protocol::{
     COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED, COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE, HubChannel,
     HubResyncRequiredEvent, HubTurnFinishedEvent,
 };
+use serde_json::{Value, json};
 
 const ERROR_IDENTITY_UNAVAILABLE: &str =
     include_str!("../fixtures/bot_relay/error_identity_unavailable.json");

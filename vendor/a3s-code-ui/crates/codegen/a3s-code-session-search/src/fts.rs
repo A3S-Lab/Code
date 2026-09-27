@@ -16,8 +16,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
 use a3s_sqlite_journal::JournalMode;
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::recovery;
 

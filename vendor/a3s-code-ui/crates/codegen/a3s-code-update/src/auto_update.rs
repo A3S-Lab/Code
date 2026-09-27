@@ -60,9 +60,13 @@ fn manual_install_cmd(channel: &str) -> String {
         };
     }
     if cfg!(windows) {
-        format!("$env:GROK_CHANNEL='{channel}'; irm https://github.com/A3S-Lab/a3s/cli/install.ps1 | iex")
+        format!(
+            "$env:GROK_CHANNEL='{channel}'; irm https://github.com/A3S-Lab/a3s/cli/install.ps1 | iex"
+        )
     } else {
-        format!("curl -fsSL https://github.com/A3S-Lab/a3s/cli/install.sh | GROK_CHANNEL='{channel}' bash")
+        format!(
+            "curl -fsSL https://github.com/A3S-Lab/a3s/cli/install.sh | GROK_CHANNEL='{channel}' bash"
+        )
     }
 }
 
@@ -776,9 +780,7 @@ pub async fn run_update_if_available(
         return Ok(false);
     }
     if inst == WINGET {
-        eprintln!(
-            "A new version of A3S Code is available: {current_version} -> {latest_version}"
-        );
+        eprintln!("A new version of A3S Code is available: {current_version} -> {latest_version}");
         let target = if has_version_cap(&policy) {
             crate::winget::Target::Exact(&latest_version)
         } else {
@@ -2728,7 +2730,10 @@ pub async fn run_update(
         );
         &effective_current
     } else {
-        eprintln!("Updating A3S Code {} → {}", effective_current, install_target);
+        eprintln!(
+            "Updating A3S Code {} → {}",
+            effective_current, install_target
+        );
         &install_target
     };
 

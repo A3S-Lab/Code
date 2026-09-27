@@ -5,6 +5,10 @@ use crate::agent::remote_config::{ModelFetchAuth, prefetch_models_blocking};
 use crate::leader::CursorWorkerStartArgs;
 use crate::leader::protocol::InternalMethod;
 use crate::util::grok_home;
+use a3s_acp_lib::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
 #[cfg(test)]
 use a3s_code_login::AuthMode;
 use a3s_code_login::{AuthManager, GrokAuth, GrokComConfig, run_auth_flow};
@@ -19,10 +23,6 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tracing::{debug, info, warn};
-use a3s_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
 const MAX_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 use indexmap::IndexMap;
 /// Configuration for periodic auto-update checking in leader mode. A long-running leader periodically calls `check_fn` to check for updates.
@@ -1474,7 +1474,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn embedded_otel_gate_keeps_a_session_user_fail_closed() {
-        use crate::agent::auth_method::{LEGACY_A3S_API_KEY_ENV_VAR, A3S_API_KEY_ENV_VAR};
+        use crate::agent::auth_method::{A3S_API_KEY_ENV_VAR, LEGACY_A3S_API_KEY_ENV_VAR};
         use a3s_code_telemetry::external::{
             is_settings_gate_open, mark_external_otel_settings_resolved,
         };

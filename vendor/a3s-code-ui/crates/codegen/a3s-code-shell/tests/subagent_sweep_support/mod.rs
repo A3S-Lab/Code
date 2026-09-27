@@ -11,10 +11,10 @@ use a3s_code_test_support::{
     InferenceEndpoint, InferenceRequestMatcher, MockInferenceServer, ResourceSnapshot, RssSampler,
     ScriptedResponse, SseEvent,
 };
+use a3s_test_utils::env::env_usize;
 use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use a3s_test_utils::env::env_usize;
 
 use crate::acp_harness;
 use crate::perf_harness::{PerfRecorder, spawn_agent_thread};

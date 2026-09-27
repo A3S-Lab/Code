@@ -14,6 +14,8 @@ use std::fs::File as StdFile;
 // Positional read traits live in different modules per platform; the
 // methods we use (read_at on Unix, seek_read on Windows) have the same
 // signature, so the call site cfg-branches on the method name only.
+use a3s_circuit_breaker::{BreakerConfig, BreakerOpen, CircuitBreaker, Outcome, RetryPolicy};
+use a3s_code_auth::AuthCredentialProvider;
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
@@ -26,8 +28,6 @@ use tokio::sync::Semaphore;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::ReaderStream;
-use a3s_circuit_breaker::{BreakerConfig, BreakerOpen, CircuitBreaker, Outcome, RetryPolicy};
-use a3s_code_auth::AuthCredentialProvider;
 
 use crate::circuit_breaker_observer::TracingObserver;
 

@@ -1,6 +1,6 @@
 use super::{format_mcp_image, mcp_output_from_call_result};
-use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use a3s_code_tools::types::output::MCPOutputDetails;
+use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 
 /// George's shape: payload in `structuredContent`, one-line summary in `content`.
 const SUMMARY: &str = "7 product folders, 2 custom folders";

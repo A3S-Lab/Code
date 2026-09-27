@@ -194,6 +194,10 @@ impl AgentSession {
             budget_guard: self
                 .budget_guard()
                 .or_else(|| self.config.budget_guard.clone()),
+            max_tool_rounds: Some(self.config.max_tool_rounds),
+            auto_compact: Some(self.config.auto_compact),
+            auto_compact_threshold: Some(self.config.auto_compact_threshold),
+            max_context_tokens: Some(self.config.max_context_tokens),
         }
     }
 }

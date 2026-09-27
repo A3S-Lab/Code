@@ -4957,15 +4957,16 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
 }
 
 #[tokio::test]
-async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
+async fn test_duplicate_guard_keeps_the_turn_alive_after_repeated_feedback() {
     let temp_dir = tempfile::tempdir().unwrap();
     let workspace = temp_dir.path().to_string_lossy().to_string();
     let args = serde_json::json!({"mode": "grep", "query": "never-matches"});
-    let responses = (1..=5)
+    let mut responses: Vec<_> = (1..=4)
         .map(|index| {
             MockLlmClient::tool_call_response(&format!("grep-{index}"), "search", args.clone())
         })
         .collect();
+    responses.push(MockLlmClient::text_response("Changed approach."));
     let mock_client = Arc::new(MockLlmClient::new(responses));
     let agent = AgentLoop::new(
         mock_client.clone(),
@@ -4979,15 +4980,26 @@ async fn test_agent_aborts_after_ignoring_duplicate_guard_feedback_twice() {
         },
     );
 
-    let error = agent
-        .execute(&[], "Repeat forever", None)
+    let (tx, rx) = mpsc::channel(100);
+    let result = agent
+        .execute(&[], "Repeat then recover", Some(tx))
         .await
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("failed to converge")
-            || error.to_string().contains("stopping after")
-    );
-    assert_eq!(mock_client.call_count.load(Ordering::SeqCst), 4);
+        .unwrap();
+    let events = collect_events(rx).await;
+    assert_eq!(result.text, "Changed approach.");
+    let nudges = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolEnd { output, .. } if output.contains("Change your approach")
+            )
+        })
+        .count();
+    assert!(nudges >= 2, "repeated identical calls stay in the turn");
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::Error { .. })));
 }
 
 #[tokio::test]

@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use a3s_tty_utils::{ProcessGroup, git_command, git_command_locking, global_process_scope};
 use anyhow::{Context, Result, bail};
 use wait_timeout::ChildExt;
-use a3s_tty_utils::{ProcessGroup, git_command, git_command_locking, global_process_scope};
 
 /// Shared wall-clock budget for head and base targeted fetches.
 pub(crate) const RESTORE_FETCH_BUDGET: Duration = Duration::from_secs(60);

@@ -7,12 +7,12 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use serde_json::Value;
-use tracing::{debug, info, warn};
 use a3s_tool_protocol::{SessionId, ToolId};
 use a3s_tool_runtime::{ToolCallContext, ToolError, ToolStream, TypedToolOutput, terminal_only};
 use a3s_tool_types::ToolDescription;
+use async_trait::async_trait;
+use serde_json::Value;
+use tracing::{debug, info, warn};
 
 use crate::transport::McpTransport;
 use crate::types::{McpCallResult, McpContent, McpError, McpServerInfo, McpToolDefinition};
@@ -278,12 +278,12 @@ fn translate_mcp_result(mut result: McpCallResult) -> Result<Value, serde_json::
 mod tests {
     use super::*;
     use crate::types::{McpCallResult, McpContent, McpServerInfo, McpToolDefinition};
+    use a3s_computer_hub_sdk::ToolServerHandler;
+    use a3s_tool_runtime::{ContentBlock, ToolStreamItem};
     use futures::StreamExt;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Mutex;
-    use a3s_computer_hub_sdk::ToolServerHandler;
-    use a3s_tool_runtime::{ContentBlock, ToolStreamItem};
 
     struct MockTransport {
         server_info: McpServerInfo,

@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+use a3s_sqlite_journal::JournalMode;
 use rusqlite::params;
 use tempfile::TempDir;
-use a3s_sqlite_journal::JournalMode;
 
 use super::*;
 use crate::v2::{V2ManifestBudget, ensure_scope_initialized, render_scope_manifest};

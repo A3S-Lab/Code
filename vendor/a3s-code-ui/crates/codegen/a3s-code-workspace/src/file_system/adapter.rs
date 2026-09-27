@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use agent_client_protocol as acp;
 use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_tools::computer::types::{AsyncFileSystem, ComputerError};
+use agent_client_protocol as acp;
 
 /// Wraps the ACP gateway as `AsyncFileSystem`.
 /// When the client advertises `fs.readTextFile` and `writeTextFile`, tools stop hitting local disk and route through the gateway.

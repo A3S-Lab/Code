@@ -530,8 +530,8 @@ mod tests {
     use a3s_code_tools::types::output::{GrepSearchOutput, TextOutput};
     use a3s_code_tools::types::resources::resolve_model_path;
     use a3s_code_tools::types::tool::ToolNamespace;
-    use std::path::Path;
     use a3s_tool_runtime::Tool;
+    use std::path::Path;
 
     fn registered(namespace: ToolNamespace, tool: &impl Tool) -> CanonicalToolId {
         CanonicalToolId::from_qualified(&qualified_id(namespace, &tool.id())).expect("qualified id")

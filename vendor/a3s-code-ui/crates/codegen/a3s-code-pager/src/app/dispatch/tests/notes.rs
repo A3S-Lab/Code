@@ -1942,8 +1942,8 @@ fn acp_question_displaces_feedback_modal_and_keeps_main_draft() {
 /// A permission request evicts the open modal through the production enqueue path.
 #[test]
 fn permission_ingress_displaces_feedback_modal() {
-    use std::sync::Arc;
     use a3s_acp_lib::AcpClientMessage;
+    use std::sync::Arc;
 
     let mut app = test_app_with_agent();
     open_feedback_modal(&mut app, Some("unsent report"));

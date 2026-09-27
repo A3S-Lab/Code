@@ -3,8 +3,8 @@
 //! tools server enforces at finalize/bind. Errors carry the offending input
 //! so callers can render gRPC violations without re-parsing.
 
-use serde_json::{Map, Value};
 use a3s_tool_protocol::ToolId;
+use serde_json::{Map, Value};
 
 /// Why a [`ToolConfigEntry`](crate::ToolConfigEntry) is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -129,8 +129,8 @@ mod idle_notification_delay_tests {
 #[cfg(test)]
 mod idle_after_interrupt_tests {
     use super::*;
-    use std::cell::RefCell;
     use a3s_agent_lifecycle::TurnAbortReason;
+    use std::cell::RefCell;
 
     #[derive(Default)]
     struct RecordingSink {

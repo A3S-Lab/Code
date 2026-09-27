@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use a3s_code_telemetry::instrument_task;
 use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use a3s_code_telemetry::instrument_task;
 
 use super::{
     ShellChildRuntime, SpawnerAddressTarget, SubagentMeta, SubagentSpawnContext,

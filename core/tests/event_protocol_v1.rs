@@ -451,6 +451,17 @@ fn representative_events() -> Vec<EventCase> {
             serde_json::to_value(model_usage_snapshot()).unwrap(),
         ),
         case(
+            "auto_compact",
+            AgentEvent::AutoCompact {
+                phase: "completed".into(),
+                tokens_used: 80_000,
+                context_window: 128_000,
+                tokens_after: 20_000,
+            },
+            "phase",
+            json!("completed"),
+        ),
+        case(
             "cognitive_context_bound",
             AgentEvent::CognitiveContextBound {
                 binding: cognitive_binding(),

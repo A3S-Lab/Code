@@ -25,8 +25,8 @@
 //! Projection (`PromptUsage`) never invents tokens; it only ORs completeness
 //! and scrubs costs when partial or incomplete.
 
-use indexmap::IndexMap;
 use a3s_code_sampling_types::TokenUsage;
+use indexmap::IndexMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageTotals {

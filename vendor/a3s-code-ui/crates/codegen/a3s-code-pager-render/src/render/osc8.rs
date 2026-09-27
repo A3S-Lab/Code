@@ -723,7 +723,9 @@ mod tests {
         std::fs::write(dir.path().join("images/1.jpg"), b"x").unwrap();
         let media = vec![dir.path().join("images/1.jpg")];
 
-        assert!(local_link_to_file_target("https://github.com/A3S-Lab/a3s", &media, None).is_none());
+        assert!(
+            local_link_to_file_target("https://github.com/A3S-Lab/a3s", &media, None).is_none()
+        );
         assert!(local_link_to_file_target("mailto:a@b.c", &media, None).is_none());
         assert!(local_link_to_file_target("#section", &media, None).is_none());
         // Relative path that isn't a known generated media file (no cwd).

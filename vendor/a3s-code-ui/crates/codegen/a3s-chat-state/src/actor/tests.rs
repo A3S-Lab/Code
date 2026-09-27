@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use a3s_code_sampling_types::{ConversationItem, SamplingConfig, SyntheticReason};
+use tokio::sync::mpsc;
 
 use crate::StrictAppendAck;
 use crate::actor::ChatStateActor;

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use agent_client_protocol as acp;
 use a3s_acp_lib::AcpAgentMessage;
+use agent_client_protocol as acp;
 
 use super::resolve_mcp_servers_until;
 use crate::views::mcps_modal::{McpsListResponse, McpsServerEntry, McpsServerSession};

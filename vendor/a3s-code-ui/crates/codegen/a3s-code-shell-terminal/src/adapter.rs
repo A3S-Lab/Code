@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use super::exit_watcher::{poll_for_terminal_exit, release_terminal, watch_for_exit};
 use super::output_recorder::{OutputRecorder, read_log_tail};
-use agent_client_protocol as acp;
 use a3s_acp_lib::{AcpAgentGatewaySender as GatewaySender, acp_channel_failure};
 use a3s_code_tools::computer::types::{
     BackgroundHandle, ComputerError, KillOutcome, KillSource, TaskKind, TaskSnapshot,
     TerminalBackend, TerminalRunRequest, TerminalRunResult,
 };
+use agent_client_protocol as acp;
 
 /// A snapshot's per-completion fields, grouped to avoid transposed positional args.
 #[derive(Clone)]

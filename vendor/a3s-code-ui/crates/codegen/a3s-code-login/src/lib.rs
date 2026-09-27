@@ -35,6 +35,7 @@ pub mod single_flight;
 pub mod storage;
 pub mod token_output;
 pub mod token_type;
+pub use a3s_code_config_types::AuthProviderConfig;
 pub use api_key_probe::{
     DEFAULT_PROBE_TIMEOUT, first_party_env_key_allows_advertise, should_probe_first_party_env_key,
 };
@@ -46,8 +47,8 @@ pub use auth_provider::{
 pub use auth_provider::{test_backdate_provider_mint, test_counting_provider};
 pub use config::LEGACY_AUTH_SCOPE;
 pub use config::{
-    ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig, PreferredAuthMethod,
-    A3S_OAUTH2_ISSUER, is_a3s_oauth2_issuer, a3s_oauth2_issuer,
+    A3S_OAUTH2_ISSUER, ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig,
+    PreferredAuthMethod, a3s_oauth2_issuer, is_a3s_oauth2_issuer,
 };
 pub use config::{
     force_login_team_from_env, force_login_team_from_requirements_value, resolve_force_login_team,
@@ -64,7 +65,6 @@ pub use flow::{
 };
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
 pub use pre_tui::{PreTuiLoginOutcome, maybe_run_pre_tui_external_login};
-pub use a3s_code_config_types::AuthProviderConfig;
 pub mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::AuthManager;

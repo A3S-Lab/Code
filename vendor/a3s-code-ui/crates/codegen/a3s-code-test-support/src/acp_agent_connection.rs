@@ -8,12 +8,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use a3s_acp_lib::LineBufferedRead;
 use agent_client_protocol::{self as acp, Agent as _};
 use futures_util::future::LocalBoxFuture;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tokio_util::task::AbortOnDropHandle;
-use a3s_acp_lib::LineBufferedRead;
 
 use crate::acp_policy::{ClientPolicy, Interactivity};
 use crate::acp_scripted_client::ScriptedClient;

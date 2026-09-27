@@ -5,12 +5,12 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use a3s_acp_lib::AcpAgentTx;
 use a3s_code_telemetry::unified_log::{
     ClientLogEntry, LOG_METHOD, LogLevel, LogNotificationParams, LogSource,
 };
 use agent_client_protocol as acp;
 use tokio::runtime::Handle;
-use a3s_acp_lib::AcpAgentTx;
 
 static ACP_TX: OnceLock<AcpAgentTx> = OnceLock::new();
 static BUFFER: Mutex<Vec<ClientLogEntry>> = Mutex::new(Vec::new());

@@ -9,8 +9,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use a3s_code_test_support::{MockInferenceServer, TestSandbox};
+use anyhow::{Context, Result};
 
 pub use a3s_code_test_support::mock_server::FeedbackPost;
 pub use a3s_code_test_support::mock_server::LogEntry;

@@ -49,16 +49,16 @@ pub async fn collect_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::stream;
     use a3s_code_sampling_types::{ConversationItem, SamplingError, StopReason};
+    use futures_util::stream;
 
     use crate::events::SamplingChannel;
     use crate::stream::stream_chat_completions;
     use crate::types::RequestId;
-    use std::time::Duration;
     use a3s_code_sampling_types::{
         ChatChunkChoice, ChatChunkDelta, ChatCompletionChunk, FinishReason, Role,
     };
+    use std::time::Duration;
 
     fn rid() -> RequestId {
         RequestId::from("collect-test")

@@ -7,11 +7,11 @@ use crate::permission::{
     grants::web_fetch_deny_key_from_url,
     types::{AccessKind, ClientType, HOOK_ASK_META_KEY, HookAsk},
 };
-use agent_client_protocol::{self as acp, Client as _};
 use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_mcp::servers::parse_mcp_qualified_name;
 use a3s_code_session_events::{Event, EventWriter, PermissionDecision};
 use a3s_code_tools::implementations::grok_build::web_fetch::domain_from_url;
+use agent_client_protocol::{self as acp, Client as _};
 
 const REJECT_ONCE_LABEL: &str = "No, and tell A3S Code what to do differently";
 
@@ -1827,7 +1827,10 @@ mod tests {
     fn mcp_titleize_segment_handles_snake_camel_kebab() {
         // snake_case: split into words, each title-cased
         assert_eq!(mcp_titleize_segment("list_issues"), "List Issues");
-        assert_eq!(mcp_titleize_segment("grok_com_notion"), "A3S Code Com Notion");
+        assert_eq!(
+            mcp_titleize_segment("grok_com_notion"),
+            "A3S Code Com Notion"
+        );
         // single word: capitalize first letter
         assert_eq!(mcp_titleize_segment("linear"), "Linear");
         // camelCase preserved (no `_` to split on, only first letter touched)

@@ -6,8 +6,8 @@ use crate::{
     CaptureOutcomeDraft, CaptureRange, ClaimRequest, ObservationDraft, ObservationType,
     V2CaptureStore, ensure_scope_initialized,
 };
-use tempfile::TempDir;
 use a3s_sqlite_journal::JournalMode;
+use tempfile::TempDir;
 
 struct Fixture {
     _temp: TempDir,

@@ -10,11 +10,11 @@ fn nth<T>(xs: &[T], i: usize) -> &T {
     };
     x
 }
-use std::pin::pin;
 use a3s_code_sampling_types::messages::{
     ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
     StreamDelta, StreamError,
 };
+use std::pin::pin;
 
 fn rid() -> RequestId {
     RequestId::from("msg-test")

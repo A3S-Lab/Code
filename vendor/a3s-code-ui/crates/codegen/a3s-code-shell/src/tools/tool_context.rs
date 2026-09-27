@@ -3,15 +3,15 @@
 //! The session actor needs it for non-tool operations (ACP communication, git, rewind, etc.).
 //! Tool execution goes through the ToolBridge, which has its own SessionContext from a3s-code-tools.
 use crate::terminal::AsyncTerminalRunner;
+use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use a3s_code_paths::AbsPathBuf;
 use a3s_code_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use a3s_code_workspace::session::file_state::FileStateHandle;
+use a3s_hunk_tracker::HunkTrackerHandle;
+use a3s_tty_utils::ProcessScope;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
 use std::sync::Arc;
-use a3s_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use a3s_hunk_tracker::HunkTrackerHandle;
-use a3s_tty_utils::ProcessScope;
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutputTokenBudget {
     inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
@@ -403,9 +403,9 @@ mod tests {
     use crate::{terminal::AsyncTerminalRunner, tools::ToolContext};
     use a3s_code_paths::AbsPathBuf;
     use a3s_code_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
+    use a3s_hunk_tracker::HunkTrackerHandle;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use a3s_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
         pub(crate) fn new_local_context(
             cwd: AbsPathBuf,
