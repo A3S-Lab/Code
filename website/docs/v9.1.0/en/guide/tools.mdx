@@ -435,7 +435,8 @@ path executes configured native API engines first, then conventional HTTP/RSS
 engines only when the combined structural retrieval requirements are not met
 (`core/src/tools/builtin/web_search/fallback.rs`). `cascade_order` overrides
 the order. The published Node.js, Python, and Go SDK builds provide these two
-tiers only.
+tiers only. A3S Code v8.5.1 pinned `a3s-search` v3.1.0. The current core
+dependency is `a3s-search` 3.1.4.
 
 A third, headless browser tier exists only in Rust or custom builds that enable
 the Core Cargo feature `headless-search` (included in the `scientific` and

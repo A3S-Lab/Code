@@ -16,13 +16,13 @@ kept, so core tool behavior (reading, writing, running commands) is preserved.
 There are five text slots (Node.js / Python names shown; Rust uses the
 `SystemPromptSlots::with_*` builders and Go uses the `PromptSlots` fields):
 
-| Slot                                 | Effect on the system prompt                                     |
-| ------------------------------------ | --------------------------------------------------------------- |
-| `role` / `role`                      | Replaces the default identity line.                             |
-| `guidelines` / `guidelines`          | Added to the `Guidelines` section.                              |
-| `responseStyle` / `response_style`   | Replaces the default `Response Format` section.                 |
-| `outputLanguage` / `output_language` | Pins user-facing replies to a BCP-47 tag such as `zh-CN`.       |
-| `extra` / `extra`                    | Appended verbatim at the end.                                   |
+| Slot                                 | Effect on the system prompt                               |
+| ------------------------------------ | --------------------------------------------------------- |
+| `role` / `role`                      | Replaces the default identity line.                       |
+| `guidelines` / `guidelines`          | Added to the `Guidelines` section.                        |
+| `responseStyle` / `response_style`   | Replaces the default `Response Format` section.           |
+| `outputLanguage` / `output_language` | Pins user-facing replies to a BCP-47 tag such as `zh-CN`. |
+| `extra` / `extra`                    | Appended verbatim at the end.                             |
 
 Rust's `SystemPromptSlots` also has `with_style`, which forces one of the built-in
 prompt styles.

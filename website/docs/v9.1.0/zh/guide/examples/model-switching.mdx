@@ -82,7 +82,9 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 
 // 快速模型用于高频、低风险工作。
-const fast = await agent.sessionAsync('/repo', { model: 'provider/fast-model' });
+const fast = await agent.sessionAsync('/repo', {
+  model: 'provider/fast-model',
+});
 const draft = await fast.run('为这个项目起草一段简短的 README 介绍。');
 console.log('草稿：', draft.text);
 await fast.closeAsync();
@@ -248,7 +250,9 @@ await scout.closeAsync();
 const review = await agent.sessionAsync('/repo', {
   model: 'provider/review-model',
 });
-const plan = await review.send(`根据这些发现，提出重构方案：\n${findings.text}`);
+const plan = await review.send(
+  `根据这些发现，提出重构方案：\n${findings.text}`,
+);
 console.log(plan.text);
 
 await review.closeAsync();

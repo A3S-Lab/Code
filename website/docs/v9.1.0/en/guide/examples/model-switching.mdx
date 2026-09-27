@@ -83,7 +83,9 @@ import { Agent } from '@a3s-lab/code';
 const agent = await Agent.create('agent.acl');
 
 // A fast model for high-volume, low-stakes work.
-const fast = await agent.sessionAsync('/repo', { model: 'provider/fast-model' });
+const fast = await agent.sessionAsync('/repo', {
+  model: 'provider/fast-model',
+});
 const draft = await fast.run('Draft a short README intro for this project.');
 console.log('draft:', draft.text);
 await fast.closeAsync();

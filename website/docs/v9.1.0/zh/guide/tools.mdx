@@ -371,7 +371,8 @@ Lifecycle 见[工作区检索](/guide/context#workspace-retrieval)。
 `web_search` 会在元数据中报告 `complete`、`partial` 或 `failed`。默认路径先执行
 已配置的原生 API 引擎；只有合并结果未达到结构化检索要求时，才运行普通 HTTP/RSS
 引擎（`core/src/tools/builtin/web_search/fallback.rs`）。`cascade_order` 可以覆盖该
-顺序。已发布的 Node.js、Python 和 Go SDK 构建只提供这两层。
+顺序。已发布的 Node.js、Python 和 Go SDK 构建只提供这两层。A3S Code v8.5.1
+锁定了 `a3s-search` v3.1.0。当前 Core 依赖是 `a3s-search` 3.1.4。
 
 第三层无头浏览器只存在于启用 Core Cargo 特性 `headless-search` 的 Rust 或自定义构建中
 （`scientific` 和 `full` 配置包含该特性，Core 默认特性和任何已发布的 SDK 构建都不包含）。

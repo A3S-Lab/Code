@@ -20,9 +20,9 @@ A3S Code 9.0.0 提供 `a3s-code-tui`：以
 
 ## 两个终端面
 
-| 表面 | 如何落到 9.0.0 |
-| ---- | -------------- |
-| `a3s-code-tui` | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) 工作区成员；path 依赖 `a3s-code-core` 9.0.0。 |
+| 表面              | 如何落到 9.0.0                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `a3s-code-tui`    | [A3S-Lab/Code](https://github.com/A3S-Lab/Code) 工作区成员；path 依赖 `a3s-code-core` 9.0.0。 |
 | `a3s code`（CLI） | 非 smoke 会话 **拉起** `a3s-code-tui`，编码回合走 9.0.0 fact-log。smoke 仍用更薄的进程内 UI。 |
 
 ## 运行
@@ -31,12 +31,12 @@ A3S Code 9.0.0 提供 `a3s-code-tui`：以
 cargo run -p a3s-code-tui -- --workspace . --home "$HOME"
 ```
 
-| 参数 | 含义 |
-| ---- | ---- |
-| `--workspace <PATH>` | 会话工作区，默认 `.`。 |
-| `--explicit-config` / `--config` | 单层 ACL（跳过用户 + 工作区合并）。 |
-| `--home <PATH>` | 存放 `.a3s/config.acl` 的用户层目录。 |
-| `--model <ID>` | ACL 合并失败时页眉回退；回合始终用合并后的 `default_model`。 |
+| 参数                             | 含义                                                         |
+| -------------------------------- | ------------------------------------------------------------ |
+| `--workspace <PATH>`             | 会话工作区，默认 `.`。                                       |
+| `--explicit-config` / `--config` | 单层 ACL（跳过用户 + 工作区合并）。                          |
+| `--home <PATH>`                  | 存放 `.a3s/config.acl` 的用户层目录。                        |
+| `--model <ID>`                   | ACL 合并失败时页眉回退；回合始终用合并后的 `default_model`。 |
 
 stdout 不是终端时，打印产品名与模型后退出。
 
@@ -53,13 +53,13 @@ stdout 不是终端时，打印产品名与模型后退出。
 
 ## 按键与权限模式
 
-| 输入 | 动作 |
-| ---- | ---- |
-| Enter | 提交 prompt 或执行 slash。 |
-| `/` | 打开 A3S 目录的模糊菜单。 |
-| Up / Down / Tab | 浏览 / 补全菜单。 |
+| 输入                | 动作                                     |
+| ------------------- | ---------------------------------------- |
+| Enter               | 提交 prompt 或执行 slash。               |
+| `/`                 | 打开 A3S 目录的模糊菜单。                |
+| Up / Down / Tab     | 浏览 / 补全菜单。                        |
 | Shift+Tab (BackTab) | 循环权限：default → plan → auto → yolo。 |
-| Esc | 退出。 |
+| Esc                 | 退出。                                   |
 
 页眉显示当前权限；`/plan`、`/ask`、`/auto`、`/yolo` 可直接设置。
 
@@ -67,17 +67,17 @@ stdout 不是终端时，打印产品名与模型后退出。
 
 菜单列出从 CLI TUI 迁入的 A3S 编码目录。当前已接线：
 
-| 命令 | 动作 |
-| ---- | ---- |
-| `/help` | 列出目录项。 |
-| `/status` | 工作区、模型、权限。 |
-| `/model` | 打印回合所用模型。 |
-| `/history [q]` | 在滚动区搜索既往 prompt。 |
-| `/export [path]` | 将转录写为 Markdown。 |
-| `/plan`、`/ask` | 权限设为 plan。 |
-| `/auto`、`/yolo` | 自主别名。 |
-| `/clear` | 清空滚动区（保留 fact-log）。 |
-| `/exit`、`/quit` | 退出。 |
+| 命令             | 动作                          |
+| ---------------- | ----------------------------- |
+| `/help`          | 列出目录项。                  |
+| `/status`        | 工作区、模型、权限。          |
+| `/model`         | 打印回合所用模型。            |
+| `/history [q]`   | 在滚动区搜索既往 prompt。     |
+| `/export [path]` | 将转录写为 Markdown。         |
+| `/plan`、`/ask`  | 权限设为 plan。               |
+| `/auto`、`/yolo` | 自主别名。                    |
+| `/clear`         | 清空滚动区（保留 fact-log）。 |
+| `/exit`、`/quit` | 退出。                        |
 
 其余目录项转发给 core 会话的 slash 分发（与键入 `/compact …` 相同路径）。空 `/`
 浏览会隐藏高级别名（见源码 `SLASH_BROWSE_HIDDEN`）。
@@ -94,6 +94,6 @@ stdout 不是终端时，打印产品名与模型后退出。
 
 ## 相关
 
-- 箱内文档：`crates/code/tui/docs/ARCHITECTURE.md`
+- 箱内文档：`tui/docs/ARCHITECTURE.md`
 - [Sessions](/guide/sessions) · [Commands](/guide/commands) ·
   [Architecture](/guide/architecture)

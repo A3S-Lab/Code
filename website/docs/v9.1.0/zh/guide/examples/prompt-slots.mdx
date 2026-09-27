@@ -15,13 +15,13 @@ Prompt slots 是以声明式方式塑造智能体系统提示词的会话选项�
 共有五个文本槽位（下表列出 Node.js / Python 名称；Rust 使用
 `SystemPromptSlots::with_*` 构建方法，Go 使用 `PromptSlots` 字段）：
 
-| 槽位                                 | 对系统提示词的作用                               |
-| ------------------------------------ | ------------------------------------------------ |
-| `role` / `role`                      | 替换默认的身份说明行。                           |
-| `guidelines` / `guidelines`          | 加入 `Guidelines` 小节。                         |
-| `responseStyle` / `response_style`   | 替换默认的 `Response Format` 小节。              |
+| 槽位                                 | 对系统提示词的作用                                   |
+| ------------------------------------ | ---------------------------------------------------- |
+| `role` / `role`                      | 替换默认的身份说明行。                               |
+| `guidelines` / `guidelines`          | 加入 `Guidelines` 小节。                             |
+| `responseStyle` / `response_style`   | 替换默认的 `Response Format` 小节。                  |
 | `outputLanguage` / `output_language` | 把面向用户的回复固定为某个 BCP-47 标签，如 `zh-CN`。 |
-| `extra` / `extra`                    | 逐字追加在末尾。                                 |
+| `extra` / `extra`                    | 逐字追加在末尾。                                     |
 
 Rust 的 `SystemPromptSlots` 还提供 `with_style`，用于强制使用某种内置提示词风格。
 
@@ -69,8 +69,7 @@ async function main() {
 
   const session = await agent.sessionAsync('/repo', {
     role: '发布就绪审查员',
-    guidelines:
-      '先找阻塞项，再提改进；完成结论必须有命令证据。',
+    guidelines: '先找阻塞项，再提改进；完成结论必须有命令证据。',
     responseStyle: '简洁，发现优先',
   });
 

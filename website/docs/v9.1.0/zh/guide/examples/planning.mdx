@@ -14,11 +14,11 @@ import { Tab, Tabs } from '@rspress/core/theme';
 通过会话的规划选项设置：Rust 和 Go 使用 `PlanningMode`，Node.js 使用
 `planningMode`，Python 使用 `planning_mode`。可接受的值为：
 
-| 值           | 每个回合之前的行为                               |
-| ------------ | ------------------------------------------------ |
-| `"auto"`     | 默认值。执行一次预分析模型调用；不发布计划。     |
-| `"enabled"`  | 执行预分析，再请模型生成计划并发布。             |
-| `"disabled"` | 不做预分析，也不做规划。                         |
+| 值           | 每个回合之前的行为                           |
+| ------------ | -------------------------------------------- |
+| `"auto"`     | 默认值。执行一次预分析模型调用；不发布计划。 |
+| `"enabled"`  | 执行预分析，再请模型生成计划并发布。         |
+| `"disabled"` | 不做预分析，也不做规划。                     |
 
 <Tabs>
 <Tab label="Rust">
@@ -56,9 +56,7 @@ const session = await agent.sessionAsync('/repo', {
   planningMode: 'enabled',
 });
 
-const result = await session.send(
-  '规划并完成发布就绪审查。',
-);
+const result = await session.send('规划并完成发布就绪审查。');
 console.log(result.text);
 console.log(`执行了 ${result.toolCallsCount} 次工具调用`);
 

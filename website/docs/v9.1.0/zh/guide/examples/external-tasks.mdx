@@ -118,7 +118,9 @@ while (!task) {
   await new Promise((resolve) => setTimeout(resolve, 50));
   [task] = await session.pendingExternalTasks();
 }
-console.log(`待处理：${task.task_id}，lane ${task.lane}（${task.command_type}）`);
+console.log(
+  `待处理：${task.task_id}，lane ${task.lane}（${task.command_type}）`,
+);
 
 try {
   // ……宿主在这里完成实际工作（运行 CI、调用服务、询问人工）……

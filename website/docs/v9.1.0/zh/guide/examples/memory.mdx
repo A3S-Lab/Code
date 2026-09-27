@@ -82,11 +82,9 @@ await session.rememberSuccess(
   ['read', 'edit', 'bash'],
   '提取 AuthService 后所有测试均通过',
 );
-await session.rememberFailure(
-  '迁移尝试',
-  '5432 端口上的 psql 连接被拒绝',
-  ['bash'],
-);
+await session.rememberFailure('迁移尝试', '5432 端口上的 psql 连接被拒绝', [
+  'bash',
+]);
 
 // 稍后按时间、工具标签或文本相似度召回。
 const recent = await session.memoryRecent(10);
