@@ -230,8 +230,13 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
             .or_else(|| agent_config.models.default.clone());
         a3s_spawn::spawn_a3s_acp(&agent_config, cancel, cwd.as_deref(), model.as_deref()).await?
     } else {
-        let memory_config = agent_config.memory_config.clone();
-        spawn::spawn_grok_shell(agent_config, cancel, memory_config).await?
+        // No ACP sidecar configured. The legacy shell has no reachable backend
+        // in this product, so fail fast with an actionable message instead of
+        // idling on the welcome screen's "Connecting..." past the bounded
+        // connect budget.
+        return Err(anyhow::anyhow!(
+            "no agent backend available: A3S_ACP_AGENT_BIN is not set; launch via `a3s code` or point it at a3s-code-acp"
+        ));
     };
     let auth_manager = spawned.auth_manager.clone();
     initialize_connection(AgentEndpoint::from(spawned), &flags, auth_manager).await
