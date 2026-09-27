@@ -44,7 +44,7 @@ agent.local.hcl
 .claude/cache/
 
 # Logs
-logs/
+/logs/
 /.a3s/workflow/
 
 # Git Worktrees
