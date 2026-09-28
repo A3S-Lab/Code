@@ -1188,6 +1188,80 @@ impl ToolRunner for ExecutorTools {
                     args = updated;
                 }
             }
+            // Tool-owned escalation: a tool that declares `requires_confirmation`
+            // settles through the confirmation flow even when the permission
+            // checker allows it — the policy view alone cannot waive the
+            // declaration. Sessions without a confirmation authority fail closed.
+            if tools
+                .executor
+                .registry()
+                .requires_confirmation(&call.name, &call.args)
+            {
+                let settlement: Result<(), String> = async {
+                    let agent = tools.agent.as_ref().ok_or_else(|| {
+                        format!(
+                            "Tool '{}' requires confirmation but no confirmation authority is configured in this run.",
+                            call.name
+                        )
+                    })?;
+                    let decision = agent
+                        .tool_safety_gate()
+                        .confirmation_decision(&call.name, &call.args, true)
+                        .await;
+                    match decision {
+                        crate::safety_gate::ToolGateDecision::Confirm {
+                            timeout_ms,
+                            timeout_action,
+                        } => {
+                            let manager = agent.confirmation_provider().ok_or_else(|| {
+                                format!(
+                                    "Tool '{}' requires confirmation but no HITL confirmation manager is configured.",
+                                    call.name
+                                )
+                            })?;
+                            let runtime = crate::tool_confirmation::ToolConfirmationRuntime::new(
+                                manager.as_ref(),
+                                tools.events.as_ref(),
+                            );
+                            match runtime
+                                .resolve_with_cancellation(
+                                    crate::tool_confirmation::ToolConfirmationRequest {
+                                        tool_id: &call.id,
+                                        tool_name: &call.name,
+                                        args: &call.args,
+                                        timeout_ms,
+                                        timeout_action,
+                                    },
+                                    &tools.context.cancellation_token(),
+                                )
+                                .await
+                            {
+                                crate::tool_confirmation::ToolConfirmationResolution::Approved => {
+                                    Ok(())
+                                }
+                                crate::tool_confirmation::ToolConfirmationResolution::Rejected {
+                                    output,
+                                } => Err(output),
+                            }
+                        }
+                        crate::safety_gate::ToolGateDecision::Deny { output, .. } => Err(output),
+                        crate::safety_gate::ToolGateDecision::Execute { .. } => Ok(()),
+                    }
+                }
+                .await;
+                if let Err(output) = settlement {
+                    tools
+                        .emit(crate::agent::AgentEvent::PermissionDenied {
+                            tool_id: call.id.clone(),
+                            tool_name: call.name.clone(),
+                            args: call.args.clone(),
+                            reason: output.clone(),
+                        })
+                        .await;
+                    tools.save_checkpoint(&call, &output, true).await;
+                    return Ok(serde_json::Value::String(output));
+                }
+            }
             tools
                 .emit(crate::agent::AgentEvent::ToolExecutionStart {
                     id: call.id.clone(),

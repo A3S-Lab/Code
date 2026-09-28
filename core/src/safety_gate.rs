@@ -217,7 +217,7 @@ impl<'a> ToolSafetyGate<'a> {
             .unwrap_or(PermissionDecision::Ask)
     }
 
-    async fn confirmation_decision(
+    pub(crate) async fn confirmation_decision(
         &self,
         tool_name: &str,
         args: &serde_json::Value,

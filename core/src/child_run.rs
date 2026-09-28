@@ -132,19 +132,24 @@ impl PermissionChecker for DelegatedPermissionChecker {
             return false;
         }
 
-        if self
-            .child_policy
-            .as_ref()
-            .is_some_and(|policy| policy.declares_tool_access(tool_name))
-        {
-            // A worker's explicitly declared capability may cross a host's
-            // ordinary parent-only visibility filter. A serializable parent
-            // deny remains authoritative and keeps the tool hidden.
-            return self
-                .parent_policy
-                .as_ref()
-                .map(|policy| policy.expose_to_model(tool_name))
-                .unwrap_or_else(|| self.parent.expose_to_model(tool_name));
+        if let Some(policy) = self.child_policy.as_ref() {
+            if policy.declares_tool_access(tool_name) {
+                // A worker's explicitly declared capability may cross a host's
+                // ordinary parent-only visibility filter. A serializable parent
+                // deny remains authoritative and keeps the tool hidden.
+                return self
+                    .parent_policy
+                    .as_ref()
+                    .map(|policy| policy.expose_to_model(tool_name))
+                    .unwrap_or_else(|| self.parent.expose_to_model(tool_name));
+            }
+            if policy.default_decision == PermissionDecision::Deny {
+                // A deny-by-default worker policy is a capability allow-list:
+                // a tool it does not declare stays hidden from the worker's
+                // model even when the inherited checker would expose it to
+                // the host (e.g. a newly registered built-in like `Skill`).
+                return false;
+            }
         }
 
         self.parent.expose_to_model(tool_name)

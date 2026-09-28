@@ -18,6 +18,19 @@ impl AgentLoop {
         self.config.permission_checker.clone()
     }
 
+    /// Safety gate bound to this loop's configuration, for callers outside the
+    /// agent module tree that must enforce the same tool-owned escalation rules.
+    pub(crate) fn tool_safety_gate(&self) -> crate::safety_gate::ToolSafetyGate<'_> {
+        crate::safety_gate::ToolSafetyGate::new(&self.config)
+    }
+
+    /// The HITL confirmation authority configured for this loop, if any.
+    pub(crate) fn confirmation_provider(
+        &self,
+    ) -> Option<Arc<dyn crate::hitl::ConfirmationProvider>> {
+        self.config.confirmation_manager.clone()
+    }
+
     pub(crate) fn sanitize_tool_output(&self, text: &str) -> String {
         match self.config.security_provider.as_ref() {
             Some(provider) => provider.sanitize_output(text),
