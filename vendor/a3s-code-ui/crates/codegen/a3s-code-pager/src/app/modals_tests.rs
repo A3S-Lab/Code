@@ -52,10 +52,10 @@ fn arg_picker_effort_phase_opens_on_default_row() {
         panic!("expected the /model picker to chain into the effort phase");
     };
     assert_eq!("Reasoning X ", args_query);
-    assert_eq!(1, state.selected);
+    assert_eq!(2, state.selected);
     assert_eq!(
         Some("Reasoning X high"),
-        items.get(1).map(|item| item.insert_text.as_str())
+        items.get(2).map(|item| item.insert_text.as_str())
     );
 }
 

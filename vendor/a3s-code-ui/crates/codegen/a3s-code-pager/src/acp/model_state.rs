@@ -268,10 +268,15 @@ impl ModelState {
         self.reject_unknown_effort(id, token, self.resolve_cli_effort_token_for(id, token))
     }
 
-    /// Resolve a user-supplied name to a `ModelId` via case-insensitive ASCII match against the catalog.
+    /// Resolve a user-supplied name to a `ModelId` via case- and separator-insensitive
+    /// ASCII match against the catalog: `/model grok 4.5` resolves to id `grok-4.5`,
+    /// `/model A3S code 4.5` to display name `A3S Code 4.5`.
     pub fn resolve_by_name_or_id(&self, query: &str) -> Option<acp::ModelId> {
+        let query = canonical_model_query(query);
         self.available.iter().find_map(|(id, info)| {
-            if info.name.eq_ignore_ascii_case(query) || id.0.as_ref().eq_ignore_ascii_case(query) {
+            let name = canonical_model_query(&info.name);
+            let id_key = canonical_model_query(id.0.as_ref());
+            if name == query || id_key == query {
                 Some(id.clone())
             } else {
                 None
@@ -324,6 +329,21 @@ impl From<Option<acp::SessionModelState>> for ModelState {
             })
             .unwrap_or_default()
     }
+}
+
+/// Lowercase and collapse separator styles so typed queries match catalog keys:
+/// spaces, underscores, and dashes are equivalent (`grok 4.5` == `grok-4.5`).
+fn canonical_model_query(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c == ' ' || c == '_' || c == '-' {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -431,7 +451,7 @@ mod tests {
 
     #[test]
     fn reasoning_effort_options_falls_back_to_builtin_menu() {
-        // Supported but no server list falls back to today's four-row built-in menu
+        // Supported but no server list falls back to the built-in menu (EFFORT_LEVELS: low → max)
         let state = state_with_meta(Some(serde_json::json!({
             "supportsReasoningEffort": true,
         })));
@@ -440,7 +460,7 @@ mod tests {
             .into_iter()
             .map(|o| o.id)
             .collect();
-        assert_eq!(ids, ["xhigh", "high", "medium", "low"]);
+        assert_eq!(ids, ["low", "medium", "high", "xhigh", "max"]);
     }
 
     #[test]
@@ -459,7 +479,7 @@ mod tests {
                 .into_iter()
                 .map(|o| o.id)
                 .collect();
-            assert_eq!(ids, ["xhigh", "high", "medium", "low"], "for meta {meta}");
+            assert_eq!(ids, ["low", "medium", "high", "xhigh", "max"], "for meta {meta}");
         }
     }
 

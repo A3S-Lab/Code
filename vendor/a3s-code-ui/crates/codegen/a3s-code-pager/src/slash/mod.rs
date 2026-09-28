@@ -3729,7 +3729,7 @@ mod tests {
         let text = "/model Reasoning X ";
         ctrl.refresh(&state, text, text.len(), &models);
         let snap = state.snapshot();
-        assert_eq!(1, snap.selected);
+        assert_eq!(2, snap.selected);
         assert_eq!(
             Some("Reasoning X high"),
             snap.selection().map(|row| row.insert_text.as_str())
@@ -3738,7 +3738,7 @@ mod tests {
         // Arrow navigation survives a same-text refresh; the opening row applies only to a new args context
         ctrl.move_selection(&state, 1);
         ctrl.refresh(&state, text, text.len(), &models);
-        assert_eq!(2, state.snapshot().selected);
+        assert_eq!(3, state.snapshot().selected);
 
         let text = "/model Reasoning X h";
         ctrl.refresh(&state, text, text.len(), &models);

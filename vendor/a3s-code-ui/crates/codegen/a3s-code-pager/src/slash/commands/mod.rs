@@ -24,7 +24,6 @@ pub mod feedback;
 pub mod find;
 pub mod fork;
 pub mod gboom;
-pub mod goal;
 pub mod help;
 pub mod history;
 pub mod home;
@@ -90,7 +89,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(new::NewCommand),
         // Per turn.
         Arc::new(effort::EffortCommand),
-        Arc::new(goal::GoalCommand),
         Arc::new(model::ModelCommand),
         Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),

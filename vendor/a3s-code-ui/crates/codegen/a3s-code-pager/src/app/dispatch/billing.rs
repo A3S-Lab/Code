@@ -21,8 +21,14 @@ pub(super) fn is_max_tier(subscription_tier: Option<&str>) -> bool {
     let Some(t) = subscription_tier else {
         return false; // Unknown: default to Q&A.
     };
-    // Lowercase and replace spaces with underscores to match both JWT-derived keys ("supergrok_heavy") and CCP display names ("A3S Code Heavy")
-    t.to_ascii_lowercase().replace(' ', "_") == "supergrok_heavy"
+    // Case-, separator-, and style-insensitive: matches JWT-derived keys
+    // ("supergrok_heavy", "supergrok heavy") and CCP display names in every
+    // style ("A3S Code Heavy", "A3sCodeHeavy").
+    let compact = t
+        .to_ascii_lowercase()
+        .replace([' ', '_', '-'], "")
+        .to_string();
+    matches!(compact.as_str(), "supergrokheavy" | "a3scodeheavy")
 }
 
 /// URL for upgrading the subscription tier.

@@ -441,9 +441,10 @@ mod tests {
             current_title: None,
         };
         // The preselection must name a row `suggest_args` actually builds, or the consumers fall back to row 0
+        // EFFORT_LEVELS order is low → max, so `high` sits at index 2
         let high_row = cmd
             .suggest_args(&ctx, "Reasoning X ")
-            .and_then(|items| items.get(1).map(|item| item.insert_text.clone()));
+            .and_then(|items| items.get(2).map(|item| item.insert_text.clone()));
         assert_eq!(Some("Reasoning X high".to_owned()), high_row);
         assert_eq!(high_row, cmd.preselected_arg(&ctx, "Reasoning X "));
         assert_eq!(None, cmd.preselected_arg(&ctx, "Reasoning X h"));

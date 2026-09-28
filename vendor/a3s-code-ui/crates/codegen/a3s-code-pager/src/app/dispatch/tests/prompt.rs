@@ -7077,6 +7077,21 @@ fn command_changes_the_screen(name: &str) -> bool {
     }
     let mut app = test_app_with_agent();
     app.apply_a3s_code_slash_gate();
+    // `/goal` is ACP-backed, not a pager builtin: a3s-code-acp advertises it in
+    // the session catalog (gate `BuiltinGate::Goal`), so mirror that sync here.
+    if name == "goal" {
+        let agent = agent_ref(&app, AgentId(0));
+        let models = agent.session.models.clone();
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.prompt.sync_acp_commands(
+            &[agent_client_protocol::AvailableCommand::new(
+                "goal".to_string(),
+                "Set, manage, or check an autonomous goal".to_string(),
+            )],
+            None,
+            &models,
+        );
+    }
     let offered = agent_ref(&app, AgentId(0))
         .prompt
         .slash_controller
