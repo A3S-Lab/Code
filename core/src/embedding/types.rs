@@ -92,7 +92,9 @@ pub struct EmbeddingBatchRequest {
 }
 
 impl EmbeddingBatchRequest {
-    pub(crate) fn new(inputs: Vec<EmbeddingInput>) -> Self {
+    /// Public so hosts outside core (e.g. the CLI memory store) can build
+    /// batches for their own providers.
+    pub fn new(inputs: Vec<EmbeddingInput>) -> Self {
         let text_bytes = inputs.iter().fold(0usize, |total, input| {
             total.saturating_add(input.text_bytes())
         });

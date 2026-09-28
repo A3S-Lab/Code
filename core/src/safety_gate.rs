@@ -165,14 +165,14 @@ impl<'a> ToolSafetyGate<'a> {
                 error_kind: None,
             },
             PermissionDecision::Allow if input.tool_requires_confirmation => {
-                self.confirmation_decision(input.tool_name, input.args)
+                self.confirmation_decision(input.tool_name, input.args, true)
                     .await
             }
             PermissionDecision::Allow => ToolGateDecision::Execute {
                 reason: ToolGateApproval::PermissionAllow,
             },
             PermissionDecision::Ask => {
-                self.confirmation_decision(input.tool_name, input.args)
+                self.confirmation_decision(input.tool_name, input.args, true)
                     .await
             }
         }
@@ -221,6 +221,7 @@ impl<'a> ToolSafetyGate<'a> {
         &self,
         tool_name: &str,
         args: &serde_json::Value,
+        tool_requires_confirmation: bool,
     ) -> ToolGateDecision {
         let Some(cm) = &self.config.confirmation_manager else {
             return missing_confirmation_manager(tool_name);
@@ -230,7 +231,11 @@ impl<'a> ToolSafetyGate<'a> {
             return confirmation_unavailable(tool_name);
         };
 
-        if !cm.requires_confirmation_for(tool_name, args).await {
+        // A tool that declares `requires_confirmation` owns that decision:
+        // the policy view alone cannot waive it (tool-owned escalation
+        // requests must reach the confirmation flow, never fall through to
+        // execution).
+        if !tool_requires_confirmation && !cm.requires_confirmation_for(tool_name, args).await {
             return ToolGateDecision::Execute {
                 reason: ToolGateApproval::ConfirmationNotRequired,
             };
