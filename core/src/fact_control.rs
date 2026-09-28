@@ -1243,17 +1243,18 @@ impl ToolRunner for ExecutorTools {
                                 let timeout = std::time::Duration::from_millis(
                                     timeout_ms.max(1),
                                 );
-                                tokio::time::timeout(timeout, settlement_future)
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        let _ = manager.cancel(&call.id.clone());
+                                match tokio::time::timeout(timeout, settlement_future).await {
+                                    Ok(resolution) => resolution,
+                                    Err(_) => {
+                                        manager.cancel(&call.id).await;
                                         crate::tool_confirmation::ToolConfirmationResolution::Rejected {
                                             output: format!(
                                                 "Tool '{}' confirmation timed out; execution rejected.",
                                                 call.name
                                             ),
                                         }
-                                    })
+                                    }
+                                }
                             };
                             match settle.await {
                                 crate::tool_confirmation::ToolConfirmationResolution::Approved => {
