@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tools that declare `requires_confirmation` settle through the confirmation
+  flow in fact-log sessions even when the permission checker allows them: the
+  policy view alone cannot waive a tool-owned escalation. Sessions whose
+  confirmation authority is unavailable (non-interactive Auto) deny
+  fail-closed instead of executing.
+- A deny-by-default delegated worker policy no longer inherits the host
+  checker's model visibility for tools the policy does not declare, so newly
+  registered built-ins stay hidden from dedicated workers.
+- `/goal` passes through to the agent as an advertised ACP command again
+  (including bare `/goal` for status) instead of being shadowed by a
+  pager-local built-in; mid-text `/goal` only toasts when the backend
+  actually advertises the command.
+- The max-tier check recognizes the `A3S Code Heavy` display name (plus
+  camel-case and separator variants), so top-tier users no longer receive
+  tier upsell prompts.
+- `/model` resolves typed queries against catalog ids and display names
+  case- and separator-insensitively: `grok 4.5` finds `grok-4.5`.
+- `/context` answers with explicit feedback when the backend info snapshot
+  does not settle within ten seconds instead of staying silent.
+- The thin `a3s-code-tui` fallback surface interrupts a running turn on Esc
+  instead of trapping the terminal until the transport idle timeout.
+
 - The TUI session auto-compacts when the provider's last prompt-token count
   reaches 80% of the model window, and keeps a recent token budget of that
   transcript. A model with no configured window uses 128000 tokens. Delegated
