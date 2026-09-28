@@ -22,6 +22,7 @@ sed -i.bak \
   -e 's|a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }|' \
   -e 's|a3s-flow = { version = "0.4.3", path = "../../flow" }|a3s-flow = "0.4.3"|' \
   -e 's|a3s-flow = { version = "0.4.2", path = "../../flow" }|a3s-flow = "0.4.2"|' \
+  -e 's|a3s-effect = "0.1.0"|a3s-effect = { version = "0.1.1", git = "https://github.com/A3S-Lab/Effect.git", rev = "08a11f782190cf8f83e034064dd018a3f99ec9e1" }|' \
   -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
   -e 's|a3s-sandbox = { version = "=0.1.3", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.3", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "b8440ba0eae2647813d42de2b295b2f0c0ff3ec1" }|' \
   -e 's|a3s-sandbox = { version = "0.1.3", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.3", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "b8440ba0eae2647813d42de2b295b2f0c0ff3ec1" }|' \
@@ -31,6 +32,18 @@ sed -i.bak \
   -e 's|a3s-sandbox = { version = "0.1.1", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.1" }|' \
   core/Cargo.toml
 rm -f core/Cargo.toml.bak
+
+# sdk/go/bridge — same a3s-effect treatment: the published 0.1.0 predates the
+# 9.1.0 trait surface that core (and therefore this bridge) compiles against.
+sed -i.bak \
+  -e 's|a3s-effect = "0.1.0"|a3s-effect = { version = "0.1.1", git = "https://github.com/A3S-Lab/Effect.git", rev = "08a11f782190cf8f83e034064dd018a3f99ec9e1" }|' \
+  sdk/go/bridge/Cargo.toml
+rm -f sdk/go/bridge/Cargo.toml.bak
+
+if grep -nE 'a3s-effect = "0.1.0"' core/Cargo.toml sdk/go/bridge/Cargo.toml; then
+  echo "setup-workspace left an unpatched a3s-effect 0.1.0 dependency" >&2
+  exit 1
+fi
 
 # Fail closed if any monorepo-sibling path deps remain. Standalone CI checkouts
 # do not include crates next to Code, so unresolved path deps break fmt/clippy.
