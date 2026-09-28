@@ -109,7 +109,7 @@ impl VecMemoryStore {
         let collection_path = collection_path
             .to_str()
             .ok_or_else(|| anyhow!("memory collection path is not UTF-8"))?;
-        let collection = if collection_path_exists(&collection_path) {
+        let collection = if collection_path_exists(collection_path) {
             Collection::open(collection_path, None).map_err(display_error)?
         } else {
             let schema = memory_schema()?;
@@ -387,8 +387,8 @@ impl MemoryStore for VecMemoryStore {
         let mut items = Vec::with_capacity(hits.len());
         for document in self.collection.iter().map_err(display_error)? {
             let document = document.map_err(display_error)?;
-            if memory_id(&document)?.as_str().is_empty()
-                || !wanted.contains(memory_id(&document)?.as_str())
+            let document_id = memory_id(&document)?;
+            if document_id.is_empty() || !wanted.contains(document_id.as_str())
             {
                 continue;
             }
@@ -430,7 +430,7 @@ impl MemoryStore for VecMemoryStore {
         for document in self.collection.iter().map_err(display_error)? {
             items.push(doc_to_item(&document.map_err(display_error)?)?);
         }
-        items.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+        items.sort_by_key(|item| std::cmp::Reverse(item.timestamp));
         items.truncate(limit);
         Ok(items)
     }

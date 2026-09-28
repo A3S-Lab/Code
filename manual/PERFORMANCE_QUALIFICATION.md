@@ -25,6 +25,8 @@ claims.
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.0.0 `fa0a92ca`) | [`35947892108`](https://github.com/A3S-Lab/Code/actions/runs/35947892108) | `hermetic-integrations-35947892108-1` | `00ee5ea7eb32a09a9fd4cf8eacc40642c4d548319d01822ef3e809f753207269` |
 | Nine release performance profiles (prior tip `c9e26504`)        | [`35667548466`](https://github.com/A3S-Lab/Code/actions/runs/35667548466) | `performance-35667548466-1`           | `c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (tip) | [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718) | `hermetic-integrations-35667552718-1` | `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` |
+| Nine release performance profiles (GA candidate `2858b228` line, tip `139c4680`) | [`36428840848`](https://github.com/A3S-Lab/Code/actions/runs/36428840848) | `performance-36428840848-1`           | `sha256:fc5fe4a8d0849a96f47ebc42c7ed3fc2a3831cf7560514640e8f9566656a7cee` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (GA candidate line) | [`36428848277`](https://github.com/A3S-Lab/Code/actions/runs/36428848277) | `hermetic-integrations-36428848277-1` | `sha256:58c6e91b4e57c06aa1020e3a75f09f252235120c743d60e229c81ca79dfdc666` |
 | Nine release performance profiles (prior RC)                    | [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682) | `performance-35639843682-1`           | `17851eb61d21970a46582c277a5fe7704f38f098bfaea074feaf23b19a246a04` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry | [`35642286881`](https://github.com/A3S-Lab/Code/actions/runs/35642286881) | `hermetic-integrations-35642286881-1` | `7cc70e465fe01d22a0ef59e190241b406b2e844cdcc80b76b03816c75074494b` |
 | Nine release performance profiles (including evaluation substrate) | [`33844533910`](https://github.com/A3S-Lab/Code/actions/runs/33844533910) | `performance-33844533910-1`           | `c6062c73f46fae51d665fc754a2bf7824db02648b1ccf5c6dbbf3ac3e92ff7e3` |
@@ -34,6 +36,11 @@ claims.
 GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
+
+Run `36428840848` on commit `139c4680` (the 9.1.0 GA candidate line) produced all nine
+performance reports with `passed: true`; run `36428848277` produced the hermetic
+integrations reports with `passed: true`. These are the current-line L6 digests for the
+Enterprise GA board.
 
 Run `36160896419` on commit `b91462d3` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
