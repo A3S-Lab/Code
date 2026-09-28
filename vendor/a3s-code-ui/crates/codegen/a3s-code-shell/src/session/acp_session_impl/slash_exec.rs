@@ -71,7 +71,32 @@ impl SessionActor {
                     .await;
                 ok_end_turn(0, None)
             }
-            BuiltinAction::ContextInfo => ok_end_turn(0, None),
+            BuiltinAction::ContextInfo => {
+                let info = self.build_session_info().await;
+                let ctx = &info.context;
+                let mut lines = vec![format!(
+                    "Context: {}/{} tokens ({}% used, {} free) · auto-compact at {}%",
+                    ctx.used,
+                    ctx.total,
+                    ctx.usage_pct,
+                    ctx.free_tokens,
+                    ctx.auto_compact_threshold_percent
+                )];
+                lines.push(format!(
+                    "Turns {} · messages {} · tool calls {} · compactions {}",
+                    info.turns, ctx.message_count, ctx.tool_call_count, ctx.compaction_count
+                ));
+                for row in &ctx.usage_categories {
+                    let detail = row
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" ({detail})"))
+                        .unwrap_or_default();
+                    lines.push(format!("{}: {} tokens{}", row.label, row.tokens, detail));
+                }
+                self.send_host_turn_slash_command_output(&lines.join("\n")).await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::HooksTrust => {
                 let msg = match Self::do_hooks_trust_project(&self.session_info.cwd) {
                     Ok(root) => {
