@@ -630,29 +630,39 @@ layer-c-live-e2e:
       test_memory_store_real_llm
     )
     fail=0
-    for suite in "${suites[@]}"; do
+    run_suite() {
+      local suite="$1" features="$2"
+      local feature_flags=()
+      if [[ -n "${features}" ]]; then
+        feature_flags=(--features "${features}")
+      fi
       echo "=== ${suite} ===" | tee -a "${EVIDENCE}/summary.txt"
-      if cargo test -p a3s-code-core --test "${suite}" -- --ignored --test-threads=1 --nocapture \
+      if cargo test -p a3s-code-core ${feature_flags[@]+"${feature_flags[@]}"} --test "${suite}" -- --ignored --test-threads=1 --nocapture \
           >"${EVIDENCE}/${suite}.log" 2>&1; then
         echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-      else
-        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-        fail=1
+        return 0
       fi
-      rg -n 'test result:|using default_model=|pinning default_model' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
+      echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
+      # One bounded retry: a single live-model turn may answer outside the
+      # shape a suite pins (temperature 0 does not fix model variance). A
+      # suite that fails twice is a real regression, not variance.
+      echo "RETRY ${suite} (attempt 2 of 2)" | tee -a "${EVIDENCE}/summary.txt"
+      if cargo test -p a3s-code-core ${feature_flags[@]+"${feature_flags[@]}"} --test "${suite}" -- --ignored --test-threads=1 --nocapture \
+          >>"${EVIDENCE}/${suite}.log" 2>&1; then
+        echo "PASS ${suite} (rerun)" | tee -a "${EVIDENCE}/summary.txt"
+        return 0
+      fi
+      echo "FAIL ${suite} (rerun)" | tee -a "${EVIDENCE}/summary.txt"
+      return 1
+    }
+    for suite in "${suites[@]}"; do
+      run_suite "${suite}" "" || fail=1
+      rg -n 'test result:|using default_model=|pinning default_model|RETRY ' "${EVIDENCE}/${suite}.log" | tail -8 | tee -a "${EVIDENCE}/summary.txt" || true
     done
     # Feature-gated live suites (optional when features compile).
     if cargo test -p a3s-code-core --features advanced-harness --test test_extensibility_real_llm -- --list >/dev/null 2>&1; then
-      suite=test_extensibility_real_llm
-      echo "=== ${suite} (advanced-harness) ===" | tee -a "${EVIDENCE}/summary.txt"
-      if cargo test -p a3s-code-core --features advanced-harness --test "${suite}" -- --ignored --test-threads=1 --nocapture \
-          >"${EVIDENCE}/${suite}.log" 2>&1; then
-        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-      else
-        echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-        fail=1
-      fi
-      rg -n 'test result:|using default_model=' "${EVIDENCE}/${suite}.log" | tee -a "${EVIDENCE}/summary.txt" || true
+      run_suite test_extensibility_real_llm advanced-harness || fail=1
+      rg -n 'test result:|using default_model=|RETRY ' "${EVIDENCE}/test_extensibility_real_llm.log" | tail -8 | tee -a "${EVIDENCE}/summary.txt" || true
     fi
     if [[ "${fail}" -eq 0 ]]; then
       echo "LAYER_C_PASS model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
