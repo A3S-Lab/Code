@@ -72,31 +72,50 @@ impl SessionActor {
                 ok_end_turn(0, None)
             }
             BuiltinAction::ContextInfo => {
-                let info = self.build_session_info().await;
-                let ctx = &info.context;
-                let mut lines = vec![format!(
-                    "Context: {}/{} tokens ({}% used, {} free) · auto-compact at {}%",
-                    ctx.used,
-                    ctx.total,
-                    ctx.usage_pct,
-                    ctx.free_tokens,
-                    ctx.auto_compact_threshold_percent
-                )];
-                lines.push(format!(
-                    "Turns {} · messages {} · tool calls {} · compactions {}",
-                    info.turns, ctx.message_count, ctx.tool_call_count, ctx.compaction_count
-                ));
-                for row in &ctx.usage_categories {
-                    let detail = row
-                        .detail
-                        .as_deref()
-                        .map(|detail| format!(" ({detail})"))
-                        .unwrap_or_default();
-                    lines.push(format!("{}: {} tokens{}", row.label, row.tokens, detail));
-                }
-                self.send_host_turn_slash_command_output(&lines.join("\n")).await;
+                // Bound the snapshot: a backend handle that never answers must
+                // degrade to explicit feedback, never to a silent command.
+                const CONTEXT_INFO_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(10);
+                let rendered = match tokio::time::timeout(
+                    CONTEXT_INFO_TIMEOUT,
+                    self.build_session_info(),
+                )
+                .await
+                {
+                    Ok(info) => {
+                        let ctx = &info.context;
+                        let mut lines = vec![format!(
+                            "Context: {}/{} tokens ({}% used, {} free) · auto-compact at {}%",
+                            ctx.used,
+                            ctx.total,
+                            ctx.usage_pct,
+                            ctx.free_tokens,
+                            ctx.auto_compact_threshold_percent
+                        )];
+                        lines.push(format!(
+                            "Turns {} · messages {} · tool calls {} · compactions {}",
+                            info.turns, ctx.message_count, ctx.tool_call_count, ctx.compaction_count
+                        ));
+                        for row in &ctx.usage_categories {
+                            let detail = row
+                                .detail
+                                .as_deref()
+                                .map(|detail| format!(" ({detail})"))
+                                .unwrap_or_default();
+                            lines
+                                .push(format!("{}: {} tokens{}", row.label, row.tokens, detail));
+                        }
+                        lines.join("\n")
+                    }
+                    Err(_elapsed) => format!(
+                        "Context information is unavailable right now (no response within {}).",
+                        CONTEXT_INFO_TIMEOUT.as_secs()
+                    ),
+                };
+                self.send_host_turn_slash_command_output(&rendered).await;
                 ok_end_turn(0, None)
             }
+            
             BuiltinAction::HooksTrust => {
                 let msg = match Self::do_hooks_trust_project(&self.session_info.cwd) {
                     Ok(root) => {
