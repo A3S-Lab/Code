@@ -1131,7 +1131,10 @@ impl BridgeState {
                 Ok(json!({ "compacted": true }))
             }
             "session_context_window_tokens" => {
-                let tokens = self.request_session(&request.params).await?.context_window_tokens();
+                let tokens = self
+                    .request_session(&request.params)
+                    .await?
+                    .context_window_tokens();
                 Ok(json!({ "tokens": tokens }))
             }
             "session_close" => {

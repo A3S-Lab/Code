@@ -388,8 +388,7 @@ impl MemoryStore for VecMemoryStore {
         for document in self.collection.iter().map_err(display_error)? {
             let document = document.map_err(display_error)?;
             let document_id = memory_id(&document)?;
-            if document_id.is_empty() || !wanted.contains(document_id.as_str())
-            {
+            if document_id.is_empty() || !wanted.contains(document_id.as_str()) {
                 continue;
             }
             items.push(doc_to_item(&document)?);
