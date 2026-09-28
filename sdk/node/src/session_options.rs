@@ -403,6 +403,9 @@ pub struct SessionOptions {
     /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
     /// Only applied when `model` is also set. Provider must support extended thinking.
     pub thinking_budget: Option<u32>,
+    /// Provider reasoning effort level (e.g. "low" | "medium" | "high" | "xhigh" | "max").
+    /// Only applied when `model` is also set. Providers without the parameter reject it.
+    pub reasoning_effort: Option<String>,
     /// Request token-level log probabilities from OpenAI-compatible backends.
     ///
     /// Providers that do not support logprobs may reject the request.
@@ -1076,6 +1079,9 @@ pub(super) fn js_session_options_to_rust(
     }
     if let Some(budget) = o.thinking_budget {
         opts = opts.with_thinking_budget(budget as usize);
+    }
+    if let Some(effort) = o.reasoning_effort.as_deref() {
+        opts = opts.with_reasoning_effort(effort);
     }
     if let Some(enabled) = o.llm_logprobs {
         opts = opts.with_llm_logprobs(enabled);

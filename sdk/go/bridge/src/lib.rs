@@ -89,6 +89,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_cancel",
     "session_cancel_and_settle",
     "session_history",
+    "session_compact_conversation",
+    "session_context_window_tokens",
     "session_close",
     "session_save",
     "session_tool_names",
@@ -1115,6 +1117,22 @@ impl BridgeState {
             "session_history" => {
                 let history = self.request_session(&request.params).await?.history();
                 Ok(json!({ "messages": history }))
+            }
+            "session_compact_conversation" => {
+                let focus = request
+                    .params
+                    .get("focus")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                self.request_session(&request.params)
+                    .await?
+                    .compact_conversation(focus.as_deref())
+                    .await?;
+                Ok(json!({ "compacted": true }))
+            }
+            "session_context_window_tokens" => {
+                let tokens = self.request_session(&request.params).await?.context_window_tokens();
+                Ok(json!({ "tokens": tokens }))
             }
             "session_close" => {
                 self.request_session(&request.params).await?.close().await;
@@ -3232,6 +3250,7 @@ struct BridgeSessionOptions {
     max_continuation_turns: Option<u32>,
     temperature: Option<f32>,
     thinking_budget: Option<usize>,
+    reasoning_effort: Option<String>,
     max_tool_rounds: Option<usize>,
     max_parallel_tasks: Option<usize>,
     auto_delegation_enabled: Option<bool>,
@@ -3595,6 +3614,9 @@ impl BridgeSessionOptions {
         }
         if let Some(value) = self.thinking_budget {
             options = options.with_thinking_budget(value);
+        }
+        if let Some(effort) = self.reasoning_effort.as_deref() {
+            options = options.with_reasoning_effort(effort);
         }
         if let Some(value) = self.max_tool_rounds {
             options = options.with_max_tool_rounds(value);

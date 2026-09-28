@@ -801,6 +801,25 @@ impl Session {
         self.inner.model_name().to_string()
     }
 
+    /// Summarize the current conversation and keep that summary for later
+    /// turns. `focus` is host instruction for the summary and is not written
+    /// into the transcript. A session with fewer than two visible messages
+    /// errors and leaves the log unchanged.
+    #[napi]
+    pub async fn compact_conversation(&self, focus: Option<String>) -> napi::Result<()> {
+        let focus = focus.as_deref().map(str::trim).filter(|f| !f.is_empty());
+        self.inner
+            .compact_conversation(focus)
+            .await
+            .map_err(|e| napi::Error::from_reason(e.to_string()))
+    }
+
+    /// Return the resolved context window for the session model, in tokens.
+    #[napi]
+    pub fn context_window_tokens(&self) -> i64 {
+        i64::try_from(self.inner.context_window_tokens()).unwrap_or(i64::MAX)
+    }
+
     /// Return the workspace path.
     #[napi(getter)]
     pub fn workspace(&self) -> String {

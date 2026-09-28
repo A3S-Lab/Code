@@ -69,6 +69,44 @@ func (session *Session) Workspace() string {
 	return session.workspace
 }
 
+// CompactConversation summarizes the current conversation and keeps that
+// summary for later turns. focus is host instruction for the summary and is
+// not written into the transcript. A session with fewer than two visible
+// messages errors and leaves the log unchanged.
+func (session *Session) CompactConversation(ctx context.Context, focus string) error {
+	const op = "session_compact_conversation"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	params := session.params()
+	if strings.TrimSpace(focus) != "" {
+		params["focus"] = focus
+	}
+	var result struct {
+		Compacted bool `json:"compacted"`
+	}
+	if err := session.runtime.Request(ctx, op, params, &result); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ContextWindowTokens returns the resolved context window for the session
+// model, in tokens.
+func (session *Session) ContextWindowTokens(ctx context.Context) (uint64, error) {
+	const op = "session_context_window_tokens"
+	if err := validateSession(session, ctx, op); err != nil {
+		return 0, err
+	}
+	var result struct {
+		Tokens uint64 `json:"tokens"`
+	}
+	if err := session.runtime.Request(ctx, op, session.params(), &result); err != nil {
+		return 0, err
+	}
+	return result.Tokens, nil
+}
+
 func (session *Session) InitWarning() *string {
 	if session == nil || session.initWarning == nil {
 		return nil

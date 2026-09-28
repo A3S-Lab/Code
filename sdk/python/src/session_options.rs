@@ -92,6 +92,9 @@ pub(super) struct PySessionOptions {
     /// Extended thinking token budget (e.g. 10_000). Enables chain-of-thought reasoning.
     /// Only applied when ``model`` is also set. Provider must support extended thinking.
     pub(super) thinking_budget: Option<usize>,
+    /// Provider reasoning effort level (e.g. "low" | "medium" | "high" | "xhigh" | "max").
+    /// Only applied when ``model`` is also set.
+    pub(super) reasoning_effort: Option<String>,
     /// Request token-level log probabilities from OpenAI-compatible backends.
     pub(super) llm_logprobs: Option<bool>,
     /// Number of top token log probabilities to request when logprobs are enabled.
@@ -257,6 +260,7 @@ impl Clone for PySessionOptions {
             duplicate_tool_call_threshold: self.duplicate_tool_call_threshold,
             temperature: self.temperature,
             thinking_budget: self.thinking_budget,
+            reasoning_effort: self.reasoning_effort.clone(),
             llm_logprobs: self.llm_logprobs,
             llm_top_logprobs: self.llm_top_logprobs,
             continuation_enabled: self.continuation_enabled,
@@ -359,6 +363,7 @@ impl PySessionOptions {
             duplicate_tool_call_threshold: None,
             temperature: None,
             thinking_budget: None,
+            reasoning_effort: None,
             llm_logprobs: None,
             llm_top_logprobs: None,
             continuation_enabled: None,
@@ -930,6 +935,17 @@ impl PySessionOptions {
     #[setter]
     fn set_thinking_budget(&mut self, value: Option<usize>) {
         self.thinking_budget = value;
+    }
+
+    /// Provider reasoning effort level. Only applied when ``model`` is also set.
+    #[getter]
+    fn get_reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort.clone()
+    }
+
+    #[setter]
+    fn set_reasoning_effort(&mut self, value: Option<String>) {
+        self.reasoning_effort = value;
     }
 
     /// Request token-level log probabilities from OpenAI-compatible backends.

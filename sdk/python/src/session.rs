@@ -1026,6 +1026,30 @@ impl PySession {
         self.inner.model_name().to_string()
     }
 
+    /// Summarize the current conversation and keep that summary for later
+    /// turns. ``focus`` is host instruction for the summary and is not written
+    /// into the transcript. A session with fewer than two visible messages
+    /// errors and leaves the log unchanged.
+    #[pyo3(signature = (focus=None))]
+    fn compact_conversation(
+        &self,
+        py: Python<'_>,
+        focus: Option<String>,
+    ) -> PyResult<()> {
+        let session = self.inner.clone();
+        let focus = focus.as_deref().map(str::trim).filter(|f| !f.is_empty());
+        py.allow_threads(move || {
+            get_runtime().block_on(session.compact_conversation(focus))
+        })
+        .map_err(py_code_error)?;
+        Ok(())
+    }
+
+    /// Return the resolved context window for the session model, in tokens.
+    fn context_window_tokens(&self) -> u64 {
+        u64::try_from(self.inner.context_window_tokens()).unwrap_or(u64::MAX)
+    }
+
     /// Return the workspace path.
     #[getter]
     fn workspace(&self) -> String {

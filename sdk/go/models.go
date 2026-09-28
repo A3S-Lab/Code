@@ -290,6 +290,7 @@ type SessionOptions struct {
 	MaxContinuationTurns       *uint32                         `json:"max_continuation_turns,omitempty"`
 	Temperature                *float32                        `json:"temperature,omitempty"`
 	ThinkingBudget             *uint                           `json:"thinking_budget,omitempty"`
+	ReasoningEffort            *string                         `json:"reasoning_effort,omitempty"`
 	MaxToolRounds              *uint                           `json:"max_tool_rounds,omitempty"`
 	MaxParallelTasks           *uint                           `json:"max_parallel_tasks,omitempty"`
 	AutoDelegationEnabled      *bool                           `json:"auto_delegation_enabled,omitempty"`

@@ -683,6 +683,8 @@ export interface SessionOptions {
    * Only applied when `model` is also set. Provider must support extended thinking.
    */
   thinkingBudget?: number
+  /** Provider reasoning effort level (e.g. "low" | "medium" | "high" | "xhigh" | "max"). Only applied when `model` is also set. */
+  reasoningEffort?: string | undefined | null
   /**
    * Request token-level log probabilities from OpenAI-compatible backends.
    *
@@ -1795,6 +1797,15 @@ export declare class Session {
   get sessionId(): string
   /** Return the model identifier bound to this session. */
   get modelName(): string
+  /**
+   * Summarize the current conversation and keep that summary for later turns.
+   * `focus` is host instruction for the summary and is not written into the
+   * transcript. A session with fewer than two visible messages errors and
+   * leaves the log unchanged.
+   */
+  compactConversation(focus?: string | undefined | null): Promise<void>
+  /** Return the resolved context window for the session model, in tokens. */
+  contextWindowTokens(): number
   /** Return the workspace path. */
   get workspace(): string
   /** Return any deferred init warning (e.g. memory store failed to initialize). */

@@ -350,6 +350,9 @@ fn build_rust_session_options_inner(
     if let Some(budget) = so.thinking_budget {
         o = o.with_thinking_budget(budget);
     }
+    if let Some(effort) = so.reasoning_effort.as_deref() {
+        o = o.with_reasoning_effort(effort);
+    }
     if let Some(enabled) = so.llm_logprobs {
         o = o.with_llm_logprobs(enabled);
     }
