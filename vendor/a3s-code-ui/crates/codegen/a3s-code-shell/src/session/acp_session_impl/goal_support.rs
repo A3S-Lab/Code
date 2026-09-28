@@ -1013,9 +1013,14 @@ pub(crate) fn planner_failure_pause_message() -> String {
     format!("No plan was produced. {GOAL_RESUME_HINT}")
 }
 
-pub(crate) fn goal_slash_and_harness_available(goal_enabled: bool, tool_names: &[String]) -> bool {
-    use a3s_code_tools::implementations::grok_build::UPDATE_GOAL_TOOL_NAME;
-    goal_enabled && tool_names.iter().any(|n| n == UPDATE_GOAL_TOOL_NAME)
+pub(crate) fn goal_slash_and_harness_available(goal_enabled: bool, _tool_names: &[String]) -> bool {
+    // A3S resolves /goal through the shell's own prompt interception
+    // (GoalSet/Status/Pause/Clear), not through an upstream `update_goal`
+    // tool that a3s sessions never register. Requiring that tool here kept
+    // /goal permanently unadvertised, so the command vanished from every
+    // session. The remote-settings and env kill switches still gate through
+    // `goal_enabled`.
+    goal_enabled
 }
 
 /// True for an active `/goal` session with the goal harness enabled (laziness, continuation, TodoGate goal arm).
