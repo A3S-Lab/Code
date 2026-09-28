@@ -2264,9 +2264,9 @@ mod tests {
         assert!(!args.no_alt_screen);
     }
     #[test]
-    fn cli_command_name_is_grok() {
+    fn cli_command_name_matches_binary() {
         use clap::CommandFactory;
-        assert_eq!(PagerArgs::command().get_name(), "grok");
+        assert_eq!(PagerArgs::command().get_name(), "a3s-code-tui");
     }
     #[test]
     fn cli_help_output_header() {
@@ -2278,7 +2278,7 @@ mod tests {
             vec![
                 "A3S Code TUI",
                 "",
-                "Usage: grok [OPTIONS] [PROMPT] [COMMAND]",
+                "Usage: a3s-code-tui [OPTIONS] [PROMPT] [COMMAND]",
                 "",
                 "Arguments:",
             ]
