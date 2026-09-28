@@ -248,7 +248,7 @@ impl A3sCodeAgent {
         if text.is_empty() {
             return;
         }
-        tracing::info!(target: "perf_probe", len = text.len(), "chunk_emit");
+        tracing::info!(target: "perf_probe", len = text.len(), preview = %text.chars().take(60).collect::<String>(), "chunk_emit");
         self.emit(acp::SessionNotification::new(
             session_id.clone(),
             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
@@ -575,6 +575,7 @@ impl A3sCodeAgent {
                 if !text.is_empty() {
                     state.saw_text = true;
                 }
+                state.delta_text.push_str(&text);
                 self.emit_text(session_id, &text).await;
             }
             AgentEvent::ReasoningDelta { text } => {
@@ -715,6 +716,7 @@ impl A3sCodeAgent {
                 .await;
             }
             AgentEvent::End { text, .. } => {
+                state.end_text = Some(text.clone());
                 if should_emit_end_text(state.saw_text, &text) {
                     self.emit_text(session_id, &text).await;
                 }
@@ -893,6 +895,8 @@ impl A3sCodeAgent {
         let mut state = TurnState {
             turn_failure: None,
             saw_text: false,
+            delta_text: String::new(),
+            end_text: None,
             subagent_started_ms: HashMap::new(),
             child_progress: HashMap::new(),
             prompted_questions: std::collections::HashSet::new(),
@@ -903,6 +907,13 @@ impl A3sCodeAgent {
                 .await;
         }
         let events_drained = drain_started.elapsed();
+        tracing::info!(
+            target: "perf_probe",
+            delta_chars = state.delta_text.chars().count(),
+            delta_preview = %state.delta_text.chars().take(120).collect::<String>(),
+            end_preview = %state.end_text.as_deref().unwrap_or("").chars().take(120).collect::<String>(),
+            "turn_text_assembly"
+        );
         let _ = join.await;
         tracing::info!(
             target: "perf_probe",
@@ -974,6 +985,8 @@ impl A3sCodeAgent {
 struct TurnState {
     turn_failure: Option<String>,
     saw_text: bool,
+    delta_text: String,
+    end_text: Option<String>,
     subagent_started_ms: HashMap<String, u64>,
     child_progress: HashMap<String, ChildProgress>,
     prompted_questions: std::collections::HashSet<String>,
@@ -2381,6 +2394,8 @@ mod tests {
         let mut state = TurnState {
             turn_failure: None,
             saw_text: false,
+            delta_text: String::new(),
+            end_text: None,
             subagent_started_ms: HashMap::new(),
             child_progress: HashMap::new(),
             prompted_questions: std::collections::HashSet::new(),

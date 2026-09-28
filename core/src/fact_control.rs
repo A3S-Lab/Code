@@ -356,7 +356,7 @@ async fn read_model_response(
                 };
                 match event {
                     crate::llm::StreamEvent::TextDelta(text) => {
-                        let event = crate::agent::AgentEvent::TextDelta { text };
+                                                let event = crate::agent::AgentEvent::TextDelta { text };
                         if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
                             store.record_event(run_id, event.clone()).await;
                         }

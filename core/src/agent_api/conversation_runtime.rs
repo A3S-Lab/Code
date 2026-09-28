@@ -245,16 +245,35 @@ async fn spawn_fact_stream(
         emit_gated(&tx, &settled, &mapped).await;
         // Channel close is host settlement. Extraction is post-turn work.
         drop(tx);
+        let teardown_started = std::time::Instant::now();
         if let Some(surface) = parts.surface.as_mut() {
             surface.events.take();
         }
-        extract_settled_memory(&parts, &prompt, &mapped).await;
+        // Persist the settled transcript first: the host's turn-end RPC
+        // returns right after the stream task ends, and memory extraction
+        // (an LLM/summary pass that measured ~1.1s even on a tiny turn)
+        // must not sit on that critical path.
         finish.publish(&prompt, &mapped, update_history).await;
-        drop(parts);
+        let publish_done = teardown_started.elapsed();
         let _ = capability_run.close().await;
         if let Some(committer) = committer {
             let _ = committer.await;
         }
+        tokio::spawn(async move {
+            let extract_started = std::time::Instant::now();
+            extract_settled_memory(&parts, &prompt, &mapped).await;
+            tracing::info!(
+                target: "perf_probe",
+                extract_ms = extract_started.elapsed().as_millis() as u64,
+                "background_memory_extract"
+            );
+        });
+        tracing::info!(
+            target: "perf_probe",
+            publish_ms = publish_done.as_millis() as u64,
+            total_teardown_ms = teardown_started.elapsed().as_millis() as u64,
+            "core_stream_teardown"
+        );
     });
     let abort = handle.abort_handle();
     Ok((

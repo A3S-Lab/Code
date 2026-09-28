@@ -280,10 +280,10 @@ impl OpenAiClient {
                                                         &mut text_content,
                                                         &content,
                                                     ) {
-                                                        let _ = tx
+                                                                                                                let _ = tx
                                                             .send(StreamEvent::TextDelta(delta))
                                                             .await;
-                                                    }
+                                                                                                                }
                                                 }
                                             }
                                             if let Some(tcs) = message.tool_calls {
@@ -320,7 +320,7 @@ impl OpenAiClient {
                                                     &mut text_content,
                                                     &content,
                                                 ) {
-                                                    let _ = tx
+                                                                                                        let _ = tx
                                                         .send(StreamEvent::TextDelta(delta))
                                                         .await;
                                                 }
