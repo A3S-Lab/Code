@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 fn init_logging() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("perf_probe=info"))
-
         .try_init();
 }
 
@@ -80,6 +79,9 @@ async fn times_a_plain_text_turn_end_to_end() {
     )
     .await
     .expect("second prompt timed out");
-    println!("PROBE second turn prompt() latency: {:?}", started.elapsed());
+    println!(
+        "PROBE second turn prompt() latency: {:?}",
+        started.elapsed()
+    );
     let _ = result;
 }
