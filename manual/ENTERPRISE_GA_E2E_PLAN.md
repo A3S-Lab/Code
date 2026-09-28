@@ -154,6 +154,8 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
+| L6 performance.yml on the GA candidate `2858b228` | **Triggered** — run [36426480397](https://github.com/A3S-Lab/Code/actions/runs/36426480397); digests to be archived on completion |
+| L6 hermetic-integrations on the GA candidate `2858b228` | **Triggered** — run [36426581099](https://github.com/A3S-Lab/Code/actions/runs/36426581099); digests to be archived on completion |
 | L5 Layer C on the 9.1.0 tip `b3249a7e` | **PASS** — `/tmp/a3s-layer-c-run4/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/deepseek-v4-flash`; 22/22 suites (one live-model variance absorbed by the bounded suite retry, recorded `PASS (rerun)`). Runs 1–3 (`/tmp/a3s-layer-c-live/summary.run1.txt`, `/tmp/a3s-layer-c-run2-archive/`) documented the variance: each full run failed a different suite once, always passing on isolation. The recipe now retries a failed suite once and still fails the gate on a double failure (`b3249a7e`). |
 | 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — earlier `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22). That FINAL does not cover `fa0a92ca`. |
 | L5 Layer C on tip `ee8f68ad` | **PASS** — `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. `test_context_tools_real_llm` recovered after stream-worker join timeout fix. |
