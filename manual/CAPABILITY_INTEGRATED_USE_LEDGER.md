@@ -1,6 +1,21 @@
 # Capability integrated-use ledger
 
-Snapshot for Core line `9.0.0` (fact-log control), recorded 2026-09-25.
+Snapshot for Core line `9.1.0` (fact-log control), recorded 2026-09-28.
+The 9.0.0 snapshot (2026-09-25) remains below as supporting history; the
+`9.1.0` delta carries no `sdk_capabilities()` id changes (inventory still
+30 ids, schema `a3s-code/sdk-capabilities/v2`), so the per-capability
+matrix rows carry over with refreshed evidence roots.
+
+## 9.1.0 delta evidence (this run, 2026-09-28)
+
+| Root | Path / fact |
+| --- | --- |
+| Layer C | Tip `b3249a7e` evidence `/tmp/a3s-layer-c-run4/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/deepseek-v4-flash` (22/22 suites; one variance suite absorbed by the bounded suite retry recorded in the summary). Variance analysis across runs 1–3 archived in `/tmp/a3s-layer-c-run2-archive/` and the GA board. |
+| L0/L1 hermetic | `just harness-convergence-check` on the 9.1.0 tip (2026-09-28): thin default tree clean, `local-code` lib tests green, SDK alignment check green — see the harness-convergence evidence in FULL_FEATURE §13 for this cut. |
+| L8 pins | Re-verified 2026-09-28 on the 9.1.0 tip: `fact_log` 34/34, `tool_round_cap` 1/1, bm25 persistent a3s-vec FTS 23/23. |
+| SDK discovery | Inventory unchanged at 30 ids (`core/src/sdk_capabilities.rs`); Node/Python/Go projections re-checked by the alignment script in the same run. |
+
+## 9.0.0 snapshot (2026-09-25, supporting)
 
 Every `sdk_capabilities()` id must be **effective**, **efficient**, and
 **integrated/used** (not unit-only). Host-owned advanced surfaces prove the

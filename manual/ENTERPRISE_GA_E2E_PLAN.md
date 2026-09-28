@@ -150,15 +150,16 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
 | L6 hermetic-integrations on prior tip `c9e26504` | **PASS** — run [`35667552718`](https://github.com/A3S-Lab/Code/actions/runs/35667552718); S3/CDP/OTLP `passed: true`; digest `308370110f9f69cf8b71c75084e5853a0adbead77a46ca171338b5f9d9bef764` in PERFORMANCE_QUALIFICATION |
 | L6 performance.yml on `9b28f066` | **PASS** — prior RC [`35639843682`](https://github.com/A3S-Lab/Code/actions/runs/35639843682); superseded by tip digests above |
 | Standalone patch strip + relock | **Landed** on `9b28f066` |
-| L7 Harbor / CAR | **Not claimed** — TB-QUAL1 still In progress (diagnostic Harbor install-only green on wheel 8.6.0 job `2026-09-22__07-32-16`; agent smoke hits completion-gate without host waiver). DM-PROD1 / CAR checklist empty. No product waiver recorded. |
+| L7 Harbor / CAR | **Waived by recorded product decision (2026-09-26)** — TB-QUAL1 waived; DM-PROD1 closed with the host pack (all seven dimensions, `HYGIENE_OK`); CAR-01/03/04/05 out of scope because A3S Cloud, their only certifier, was retired (Code-side contracts remain in place; CAR-02 delivered). Dispositions recorded in CHANGELOG v9.0.0 Notes. |
 | TD-A…TD-E | Implemented; live Flash complex cases previously green |
 | TD-PERF Flash billing triage | **Measured** (§4.4) — p50 2531.9 ms, Evidence 7/7 |
 | TD-PERF neural billing triage | **Measured** (§4.4) — p50 45.5 ms, escalate 20/20 at 0.7 |
+| L5 Layer C on the 9.1.0 tip `b3249a7e` | **PASS** — `/tmp/a3s-layer-c-run4/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/deepseek-v4-flash`; 22/22 suites (one live-model variance absorbed by the bounded suite retry, recorded `PASS (rerun)`). Runs 1–3 (`/tmp/a3s-layer-c-live/summary.run1.txt`, `/tmp/a3s-layer-c-run2-archive/`) documented the variance: each full run failed a different suite once, always passing on isolation. The recipe now retries a failed suite once and still fails the gate on a double failure (`b3249a7e`). |
 | 9.0.0 fact-log cut, local L5 through `74356768` | **PASS** — earlier `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash` (22/22). That FINAL does not cover `fa0a92ca`. |
 | L5 Layer C on tip `ee8f68ad` | **PASS** — `/tmp/a3s-layer-c-9.0.0-tip/FINAL.txt` is exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. `test_context_tools_real_llm` recovered after stream-worker join timeout fix. |
 | L5 Layer C on `fa0a92ca` | **PASS** — `just layer-c-live-e2e` wrote exactly `LAYER_C_PASS model=boyue/bailian/deepseek-v4-flash`. 22 suites passed, including `test_extensibility_real_llm`. The runner log ends `LAYER:0`. Pin remapped to `boyue/bailian/deepseek-v4.1-flash`. |
 | L6 on the 9.0.0 commit `fa0a92ca` | **PASS** — performance.yml `35947891976` and hermetic-integrations via CI `35947892108`, both `passed: true`, archived above |
-| Enterprise GA | **Not achieved** — L7 TB-QUAL1, DM-PROD1, and CAR-01…CAR-05 still have no close receipt and no product waiver. |
+| Enterprise GA | **Blocked only on gate refresh for the current line** — L7 dispositions are recorded (row above). Remaining: L5 Layer C re-run on the 9.1.0 tip, L6 performance.yml + hermetic-integrations digests on the GA candidate commit, and a dated integrated-use ledger refresh. |
 
 ## 6. Closure checklist
 
@@ -170,7 +171,7 @@ escalate-all as a defect; Auto requires confidence ≥ 0.7.
       digest into PERFORMANCE_QUALIFICATION
 - [x] Re-run `performance.yml` on tip `c9e26504` (`35667548466`); archive nine
       `passed: true` digests (`c4c96e0bf2544319354b09bdbf4e3954931eac4cd46d77b7a33ce044f1849c87`)
-- [ ] Collect L7 Harbor TB-QUAL1, DM-PROD1, CAR-01…05 or write a product waiver
+- [x] Collect L7 Harbor TB-QUAL1, DM-PROD1, CAR-01…05 or write a product waiver (waivers/dispositions recorded 2026-09-26; see CHANGELOG v9.0.0 Notes and the L7 board row)
 - [x] Re-measure TD-PERF neural on release Metal without changing the gate
 - [x] Update FULL_FEATURE §13 L6 status with current performance digests
 
