@@ -248,6 +248,7 @@ impl A3sCodeAgent {
         if text.is_empty() {
             return;
         }
+        tracing::info!(target: "perf_probe", len = text.len(), "chunk_emit");
         self.emit(acp::SessionNotification::new(
             session_id.clone(),
             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
@@ -896,11 +897,19 @@ impl A3sCodeAgent {
             child_progress: HashMap::new(),
             prompted_questions: std::collections::HashSet::new(),
         };
+        let drain_started = std::time::Instant::now();
         while let Some(event) = rx.recv().await {
             self.handle_event(session_id, session, &mut state, event)
                 .await;
         }
+        let events_drained = drain_started.elapsed();
         let _ = join.await;
+        tracing::info!(
+            target: "perf_probe",
+            events_drained_ms = events_drained.as_millis() as u64,
+            join_ms = (drain_started.elapsed() - events_drained).as_millis() as u64,
+            "stream_turn_tail"
+        );
         if let Some(message) = state.turn_failure {
             return Err(agent_failure_error(&message));
         }
@@ -1097,6 +1106,7 @@ impl acp::Agent for A3sCodeAgent {
     }
 
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
+        tracing::info!(target: "perf_probe", "prompt_enter");
         let session_key = args.session_id.0.to_string();
         let session = {
             let sessions = self.sessions.lock().await;
@@ -1111,11 +1121,14 @@ impl acp::Agent for A3sCodeAgent {
             return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
         }
         if let Some(op) = crate::goal::parse_goal_command(&prompt) {
+            tracing::info!(target: "perf_probe", "goal_command_branch");
             return self.handle_goal(&args.session_id, &session, op).await;
         }
         let goal = self.goals.lock().await.get(&session_key).cloned();
         let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
-        self.stream_turn(&args.session_id, &session, &prompt).await
+        let response = self.stream_turn(&args.session_id, &session, &prompt).await;
+        tracing::info!(target: "perf_probe", "prompt_return");
+        response
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
