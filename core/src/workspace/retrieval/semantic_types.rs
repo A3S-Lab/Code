@@ -97,6 +97,13 @@ impl WorkspaceRetrievalOptions {
         }
     }
 
+    /// The host-supplied embedding provider, shared with other in-process
+    /// consumers (e.g. durable Memory hybrid recall) so one model instance
+    /// serves every embedding consumer in the session.
+    pub fn embedding_provider(&self) -> Arc<dyn EmbeddingProvider> {
+        Arc::clone(&self.provider)
+    }
+
     /// Override bounded provider execution and retry behavior.
     pub fn with_embedding_config(mut self, config: EmbeddingExecutorConfig) -> Self {
         self.embedding = config;

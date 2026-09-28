@@ -178,7 +178,22 @@ impl CodeAgentAdapter {
         let stream_line = scrollback.len().saturating_sub(1);
         let mut assembled = String::new();
 
-        while let Some(event) = rx.recv().await {
+        // The composer is the only escape hatch a fallback host has while a
+        // turn streams: watch for Esc alongside stream events so a hung model
+        // call never traps the terminal until the transport times out.
+        let mut interrupted = false;
+        loop {
+            let event = tokio::select! {
+                biased;
+                () = wait_for_esc() => {
+                    interrupted = true;
+                    break;
+                }
+                event = rx.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
             match event {
                 AgentEvent::TextDelta { text } => {
                     assembled.push_str(&text);
@@ -242,6 +257,13 @@ impl CodeAgentAdapter {
                 _ => {}
             }
         }
+        if interrupted {
+            let _ = session.cancel().await;
+            scrollback.push_assistant("turn interrupted");
+            on_delta(scrollback);
+            let _ = join.await;
+            return Err(anyhow::anyhow!("turn interrupted by user"));
+        }
         let _ = join.await;
         Ok(AgentTurn {
             text: assembled,
@@ -252,5 +274,23 @@ impl CodeAgentAdapter {
     /// Drop the live session so the next prompt rebuilds with current permission mode.
     pub fn cancel_session(&mut self) {
         self.session = None;
+    }
+}
+
+/// Resolve once the user presses Esc while a turn is streaming. Keys other
+/// than Esc are discarded: the composer is suspended for the duration of the
+/// turn in this fallback surface.
+async fn wait_for_esc() {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+    loop {
+        if event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = event::read() {
+                if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
+                    return;
+                }
+            }
+            continue;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
