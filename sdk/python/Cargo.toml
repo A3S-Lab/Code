@@ -33,3 +33,7 @@ server = ["s3"]
 advanced-harness = ["a3s-code-core/advanced-harness"]
 extension-module = ["pyo3/extension-module", "pyo3/abi3-py310"]
 a3s-vec-fts = ["a3s-code-core/a3s-vec-fts"]
+
+[patch.crates-io]
+# The published 0.1.0 predates the 9.1.0 trait surface core requires.
+a3s-effect = { git = "https://github.com/A3S-Lab/Effect", rev = "08a11f782190cf8f83e034064dd018a3f99ec9e1" }
