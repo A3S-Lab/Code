@@ -1003,7 +1003,13 @@ impl acp::Agent for A3sCodeAgent {
                     "agentVersion": env!("CARGO_PKG_VERSION"),
                     "currentWorkingDirectory": cwd,
                     "modelState": model_state,
-                    "availableCommands": [],
+                    "availableCommands": [{
+                        "name": "goal",
+                        "description": "Set, pause, resume, or clear a durable goal",
+                        "input": {
+                            "hint": "<objective> | status | pause | resume | clear"
+                        },
+                    }],
                     "cancelRewind": false,
                     "sessionRecap": false,
                     "feedbackTraceOffer": false,
