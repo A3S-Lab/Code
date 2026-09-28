@@ -1223,19 +1223,39 @@ impl ToolRunner for ExecutorTools {
                                 manager.as_ref(),
                                 tools.events.as_ref(),
                             );
-                            match runtime
-                                .resolve_with_cancellation(
-                                    crate::tool_confirmation::ToolConfirmationRequest {
-                                        tool_id: &call.id,
-                                        tool_name: &call.name,
-                                        args: &call.args,
-                                        timeout_ms,
-                                        timeout_action,
-                                    },
-                                    &tools.context.cancellation_token(),
-                                )
-                                .await
-                            {
+                            // 9.1.0 moved timer settlement to the host, so an
+                            // absent host would wait forever on the fact-log
+                            // path. Bound the wait by the policy timeout and
+                            // settle fail-closed (Reject never manufactures
+                            // consent).
+                            let cancellation = tools.context.cancellation_token();
+                            let settlement_future = runtime.resolve_with_cancellation(
+                                crate::tool_confirmation::ToolConfirmationRequest {
+                                    tool_id: &call.id,
+                                    tool_name: &call.name,
+                                    args: &call.args,
+                                    timeout_ms,
+                                    timeout_action,
+                                },
+                                &cancellation,
+                            );
+                            let settle = async {
+                                let timeout = std::time::Duration::from_millis(
+                                    timeout_ms.max(1),
+                                );
+                                tokio::time::timeout(timeout, settlement_future)
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        let _ = manager.cancel(&call.id.clone());
+                                        crate::tool_confirmation::ToolConfirmationResolution::Rejected {
+                                            output: format!(
+                                                "Tool '{}' confirmation timed out; execution rejected.",
+                                                call.name
+                                            ),
+                                        }
+                                    })
+                            };
+                            match settle.await {
                                 crate::tool_confirmation::ToolConfirmationResolution::Approved => {
                                     Ok(())
                                 }
