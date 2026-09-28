@@ -96,6 +96,8 @@ pub mod core_event_log;
 pub mod core_identity;
 pub mod directory_projection;
 pub mod durable_memory;
+#[cfg(feature = "a3s-vec-fts")]
+pub mod durable_memory_vec;
 #[cfg(feature = "dynamic-workflow")]
 pub mod dynamic_workflow;
 pub mod effect_isolation;
