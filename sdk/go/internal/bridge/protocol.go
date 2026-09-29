@@ -65,6 +65,8 @@ var RequiredOperations = []string{
 	"session_cancel",
 	"session_cancel_and_settle",
 	"session_history",
+	"session_durable_transcript",
+	"session_recorded_usage_tokens",
 	"session_close",
 	"session_save",
 	"session_tool_names",

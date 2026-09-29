@@ -601,6 +601,22 @@ impl PySession {
         messages_to_py_list(py, &messages)
     }
 
+    /// Product-visible transcript committed to this session's fact log.
+    fn durable_transcript<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let messages = self.inner.durable_transcript();
+        messages_to_py_list(py, &messages)
+    }
+
+    /// Provider token totals already accumulated for this session.
+    fn recorded_usage_tokens<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (prompt_tokens, completion_tokens, total_tokens) = self.inner.recorded_usage_tokens();
+        let usage = PyDict::new(py);
+        usage.set_item("prompt_tokens", prompt_tokens)?;
+        usage.set_item("completion_tokens", completion_tokens)?;
+        usage.set_item("total_tokens", total_tokens)?;
+        Ok(usage)
+    }
+
     /// Return run snapshots recorded by this session.
     fn runs(&self, py: Python<'_>) -> PyResult<PyObject> {
         let session = self.inner.clone();
@@ -1031,17 +1047,11 @@ impl PySession {
     /// into the transcript. A session with fewer than two visible messages
     /// errors and leaves the log unchanged.
     #[pyo3(signature = (focus=None))]
-    fn compact_conversation(
-        &self,
-        py: Python<'_>,
-        focus: Option<String>,
-    ) -> PyResult<()> {
+    fn compact_conversation(&self, py: Python<'_>, focus: Option<String>) -> PyResult<()> {
         let session = self.inner.clone();
         let focus = focus.as_deref().map(str::trim).filter(|f| !f.is_empty());
-        py.allow_threads(move || {
-            get_runtime().block_on(session.compact_conversation(focus))
-        })
-        .map_err(py_code_error)?;
+        py.allow_threads(move || get_runtime().block_on(session.compact_conversation(focus)))
+            .map_err(py_code_error)?;
         Ok(())
     }
 
@@ -1275,9 +1285,7 @@ impl PySession {
     /// ``send`` / ``stream``.
     fn set_planning_mode(&self, mode: String) -> PyResult<()> {
         let mode = crate::session_options_conversion::parse_planning_mode(&mode)?;
-        self.inner
-            .set_planning_mode(mode)
-            .map_err(py_code_error)
+        self.inner.set_planning_mode(mode).map_err(py_code_error)
     }
 
     /// Clear a prior ``set_planning_mode`` override so the next loop uses the

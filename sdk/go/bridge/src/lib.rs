@@ -89,6 +89,8 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_cancel",
     "session_cancel_and_settle",
     "session_history",
+    "session_durable_transcript",
+    "session_recorded_usage_tokens",
     "session_compact_conversation",
     "session_context_window_tokens",
     "session_close",
@@ -1117,6 +1119,24 @@ impl BridgeState {
             "session_history" => {
                 let history = self.request_session(&request.params).await?.history();
                 Ok(json!({ "messages": history }))
+            }
+            "session_durable_transcript" => {
+                let messages = self
+                    .request_session(&request.params)
+                    .await?
+                    .durable_transcript();
+                Ok(json!({ "messages": messages }))
+            }
+            "session_recorded_usage_tokens" => {
+                let (prompt_tokens, completion_tokens, total_tokens) = self
+                    .request_session(&request.params)
+                    .await?
+                    .recorded_usage_tokens();
+                Ok(json!({
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                }))
             }
             "session_compact_conversation" => {
                 let focus = request

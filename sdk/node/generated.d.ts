@@ -1574,6 +1574,11 @@ export declare class Harness {
   /** Validate and return a compose recipe for `SessionOptions.harness`. */
   static compose(options: HarnessComposeOptions): HarnessComposeOptions
 }
+export interface RecordedUsageTokens {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
   /**
@@ -1715,6 +1720,10 @@ export declare class Session {
   streamWithAttachments(prompt: string, attachments: Array<AttachmentObject>, history?: Array<MessageObject> | undefined | null): Promise<EventStream>
   /** Return the session's conversation history. */
   history(): Array<MessageObject>
+  /** Product-visible transcript committed to this session's fact log. */
+  durableTranscript(): Array<MessageObject>
+  /** Provider token totals already accumulated for this session. */
+  recordedUsageTokens(): RecordedUsageTokens
   /** Return run snapshots recorded by this session. */
   runs(): Promise<any>
   /** Return a run snapshot by ID, or null when it is unknown. */

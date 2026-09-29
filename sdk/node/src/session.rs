@@ -12,6 +12,14 @@ pub struct Session {
     pub(super) inner: Arc<RustAgentSession>,
 }
 
+/// Provider token totals already accumulated for one session.
+#[napi(object)]
+pub struct RecordedUsageTokens {
+    pub prompt_tokens: f64,
+    pub completion_tokens: f64,
+    pub total_tokens: f64,
+}
+
 #[napi]
 impl Session {
     /// Return current occupancy of the Agent-wide priority scheduler shared by
@@ -417,6 +425,23 @@ impl Session {
     #[napi]
     pub fn history(&self) -> Vec<MessageObject> {
         rust_messages_to_js(&self.inner.history())
+    }
+
+    /// Product-visible transcript committed to this session's fact log.
+    #[napi]
+    pub fn durable_transcript(&self) -> Vec<MessageObject> {
+        rust_messages_to_js(&self.inner.durable_transcript())
+    }
+
+    /// Provider token totals already accumulated for this session.
+    #[napi]
+    pub fn recorded_usage_tokens(&self) -> RecordedUsageTokens {
+        let (prompt_tokens, completion_tokens, total_tokens) = self.inner.recorded_usage_tokens();
+        RecordedUsageTokens {
+            prompt_tokens: prompt_tokens as f64,
+            completion_tokens: completion_tokens as f64,
+            total_tokens: total_tokens as f64,
+        }
     }
 
     /// Return run snapshots recorded by this session.
@@ -1146,9 +1171,7 @@ impl Session {
     #[napi(js_name = "setPlanningMode")]
     pub fn set_planning_mode(&self, mode: String) -> napi::Result<()> {
         let mode = crate::session_options::parse_planning_mode(&mode)?;
-        self.inner
-            .set_planning_mode(mode)
-            .map_err(node_code_error)
+        self.inner.set_planning_mode(mode).map_err(node_code_error)
     }
 
     /// Clear a prior `setPlanningMode` override so the next loop uses the

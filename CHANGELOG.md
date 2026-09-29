@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `--resume` and `--continue` reopen that session's durable transcript.
+- Node, Python, and Go sessions expose that durable transcript and the recorded token totals.
 - Session info counts submitted user prompts and recorded token usage, including a turn that used tools.
 - Deleting a session removes its durable summary.
 - A prompt id stays on the session that submitted it.

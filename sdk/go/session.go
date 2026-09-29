@@ -525,6 +525,28 @@ func (session *Session) History(ctx context.Context) ([]Message, error) {
 	if err := validateSession(session, ctx, op); err != nil {
 		return nil, err
 	}
+	return session.messages(ctx, op)
+}
+
+func (session *Session) DurableTranscript(ctx context.Context) ([]Message, error) {
+	const op = "session_durable_transcript"
+	if err := validateSession(session, ctx, op); err != nil {
+		return nil, err
+	}
+	return session.messages(ctx, op)
+}
+
+func (session *Session) RecordedUsageTokens(ctx context.Context) (TokenUsage, error) {
+	const op = "session_recorded_usage_tokens"
+	if err := validateSession(session, ctx, op); err != nil {
+		return TokenUsage{}, err
+	}
+	var usage TokenUsage
+	err := session.runtime.Request(ctx, op, session.params(), &usage)
+	return usage, err
+}
+
+func (session *Session) messages(ctx context.Context, op string) ([]Message, error) {
 	var result struct {
 		Messages []Message `json:"messages"`
 	}
