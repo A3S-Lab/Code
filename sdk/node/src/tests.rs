@@ -602,6 +602,8 @@ fn harness_compose_maps_to_rust_session_options() {
                 "infer".into(),
             ]),
             components: None,
+            step_limit: None,
+            model_attempts: None,
         }),
         ..Default::default()
     }))
@@ -672,6 +674,52 @@ fn harness_host_mount_installs_builtin_registry() {
         opts.host_harness_registry.is_some(),
         "SDK sessions resolve host mounts through Core's builtin registry"
     );
+}
+
+#[test]
+fn harness_compose_limits_round_trip_into_the_spec() {
+    let defaults = a3s_code_core::HarnessConfig::new(8, 1_000, 32, 2, vec![], vec![]).unwrap();
+    let opts = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            components: Some(vec!["system".into(), "infer".into()]),
+            tool_budget: Some(3),
+            step_limit: Some(11),
+            model_attempts: Some(4),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    let harness = opts.harness.expect("harness");
+    let spec = harness.to_spec(Vec::new(), &defaults);
+    assert_eq!(spec.step_limit, 11);
+    assert_eq!(spec.model_attempts, 4);
+    assert_eq!(spec.budget, 3);
+    assert_eq!(spec.tool_round_cap, defaults.tool_round_cap());
+
+    let omitted = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            components: Some(vec!["system".into(), "infer".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+    .unwrap();
+    let spec = omitted
+        .harness
+        .expect("harness")
+        .to_spec(Vec::new(), &defaults);
+    assert_eq!(spec.step_limit, defaults.step_limit());
+    assert_eq!(spec.model_attempts, 2);
+
+    let zero = js_session_options_to_rust(Some(SessionOptions {
+        harness: Some(HarnessComposeOptions {
+            model_attempts: Some(0),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }));
+    assert!(zero.is_err());
 }
 
 #[test]

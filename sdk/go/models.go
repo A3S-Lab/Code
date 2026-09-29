@@ -345,6 +345,12 @@ type HarnessOptions struct {
 	ToolBudget        *uint32  `json:"tool_budget,omitempty"`
 	CompactAfterChars *uint    `json:"compact_after_chars,omitempty"`
 	System            []string `json:"system,omitempty"`
+	// StepLimit is the actor step budget. Nil keeps the derived session default
+	// and does not change ToolBudget.
+	StepLimit *uint32 `json:"step_limit,omitempty"`
+	// ModelAttempts is the provider attempt count for one infer, including the
+	// first call. Nil keeps 2. Zero is rejected.
+	ModelAttempts *uint32 `json:"model_attempts,omitempty"`
 }
 
 type CompletionWaiver struct {

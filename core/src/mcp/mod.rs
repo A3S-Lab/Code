@@ -80,5 +80,6 @@ pub use protocol::{
     CallToolResult, McpNotification, McpResource, McpServerConfig, McpTool, McpToolAnnotations,
     McpTransportConfig, OAuthConfig, ServerCapabilities, ToolContent,
 };
+pub(crate) use result::project_tool_result;
 pub use result::tool_result_to_string;
 pub use tools::{create_mcp_tools, McpToolWrapper};

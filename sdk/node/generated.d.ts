@@ -470,6 +470,10 @@ export interface HarnessComposeOptions {
    * `parts`. Entries are stock names or `host:<id>` (Rust registry).
    */
   components?: Array<string>
+  /** Actor step limit. Omit to keep the derived session default. Independent of `toolBudget`. */
+  stepLimit?: number
+  /** Provider attempts for one infer, including the first call. Omit to keep 2. Zero is rejected. */
+  modelAttempts?: number
 }
 /**
  * Host-provided deterministic ID and clock configuration.

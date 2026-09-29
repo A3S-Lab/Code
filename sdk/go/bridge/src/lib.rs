@@ -3289,6 +3289,8 @@ struct BridgeHarnessCompose {
     system: Vec<String>,
     parts: Vec<String>,
     components: Vec<String>,
+    step_limit: Option<u32>,
+    model_attempts: Option<u32>,
 }
 
 impl BridgeHarnessCompose {
@@ -3298,13 +3300,22 @@ impl BridgeHarnessCompose {
         } else {
             self.components
         };
-        a3s_code_core::HarnessComposeOptions::compose(
+        if self.step_limit == Some(0) || self.model_attempts == Some(0) {
+            return Err(BridgeFailure::new(
+                "INVALID_REQUEST",
+                "harness step_limit and model_attempts must be at least 1",
+            ));
+        }
+        let mut composed = a3s_code_core::HarnessComposeOptions::compose(
             list,
             self.tool_budget,
             self.compact_after_chars,
             self.system,
         )
-        .map_err(|error| BridgeFailure::new("INVALID_REQUEST", format!("harness: {error}")))
+        .map_err(|error| BridgeFailure::new("INVALID_REQUEST", format!("harness: {error}")))?;
+        composed.step_limit = self.step_limit;
+        composed.model_attempts = self.model_attempts;
+        Ok(composed)
     }
 }
 
@@ -4427,6 +4438,43 @@ mod tests {
         );
         assert_eq!(harness.tool_budget, Some(4));
         assert_eq!(harness.system, vec!["careful coding agent".to_string()]);
+        assert_eq!(harness.step_limit, None);
+        assert_eq!(harness.model_attempts, None);
+
+        let limited: BridgeSessionOptions = serde_json::from_value(json!({
+            "harness": {
+                "components": ["system", "infer"],
+                "tool_budget": 3,
+                "step_limit": 11,
+                "model_attempts": 4
+            }
+        }))
+        .unwrap();
+        let limited = limited.into_core(None).unwrap().harness.expect("limits");
+        let defaults = a3s_effect::HarnessConfig::new(8, 1_000, 32, 2, vec![], vec![]).unwrap();
+        let spec = limited.to_spec(Vec::new(), &defaults);
+        assert_eq!(spec.step_limit, 11);
+        assert_eq!(spec.model_attempts, 4);
+        assert_eq!(spec.budget, 3);
+        assert_eq!(spec.tool_round_cap, defaults.tool_round_cap());
+
+        let omitted: BridgeSessionOptions = serde_json::from_value(json!({
+            "harness": {"components": ["system", "infer"]}
+        }))
+        .unwrap();
+        let spec = omitted
+            .into_core(None)
+            .unwrap()
+            .harness
+            .expect("omitted")
+            .to_spec(Vec::new(), &defaults);
+        assert_eq!(spec.step_limit, defaults.step_limit());
+        assert_eq!(spec.model_attempts, 2);
+
+        let zero: std::result::Result<BridgeSessionOptions, _> = serde_json::from_value(json!({
+            "harness": {"model_attempts": 0}
+        }));
+        assert!(zero.unwrap().into_core(None).is_err());
 
         // The SDK installs the builtin registry, so the host mount admits.
         let registry = options

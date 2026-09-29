@@ -345,7 +345,7 @@ pub use meta_harness::{
     admit_component_tree, admit_default_graph, admit_from_compose,
     admit_from_compose_with_registry, admit_spec_graph, host_component_id, parse_harness_component,
     parse_harness_components, parse_harness_part, parse_harness_parts, BuiltinHostHarnessRegistry,
-    HarnessComponentRef, HarnessComposeOptions, HarnessPartId, HostHarnessAssembler,
+    HarnessComponentRef, HarnessComposeOptions, HarnessConfig, HarnessPartId, HostHarnessAssembler,
     HostHarnessRegistry, KernelPolicy, INTENT_STAMP_MARKER,
 };
 #[cfg(feature = "headless-search")]

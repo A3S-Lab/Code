@@ -31,6 +31,25 @@ def test_compose_accepts_stock_and_host_components():
     assert recipe.tool_budget == 4
 
 
+def test_compose_limits_round_trip_and_reject_zero():
+    recipe = Harness.compose(
+        components=[Harness.system(), Harness.infer()],
+        tool_budget=3,
+        step_limit=11,
+        model_attempts=4,
+    )
+    assert recipe.step_limit == 11
+    assert recipe.model_attempts == 4
+    assert recipe.tool_budget == 3
+
+    omitted = Harness.compose(components=[Harness.system(), Harness.infer()])
+    assert omitted.step_limit is None
+    assert omitted.model_attempts is None
+
+    with pytest.raises(ValueError):
+        Harness.compose(components=[Harness.system()], model_attempts=0)
+
+
 def test_compose_rejects_unknown_part():
     with pytest.raises(ValueError):
         Harness.compose(components=["system", "not-a-part"])

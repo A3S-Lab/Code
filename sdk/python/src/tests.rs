@@ -812,6 +812,8 @@ fn session_options_map_harness_compose() {
             "infer".into(),
         ],
         components: Vec::new(),
+        step_limit: None,
+        model_attempts: None,
     });
     let opts = build_rust_session_options(session_options).unwrap();
     let harness = opts.harness.expect("harness");
@@ -840,7 +842,11 @@ fn session_options_map_harness_compose() {
     assert!(host_core.parts.is_empty());
     assert_eq!(
         host_core.components,
-        vec!["system".into(), "host:intent_stamp".into(), "infer".into(),]
+        vec![
+            "system".to_string(),
+            "host:intent_stamp".to_string(),
+            "infer".to_string(),
+        ]
     );
 
     let invalid = PyHarnessComposeOptions {
@@ -859,6 +865,8 @@ fn session_options_host_mount_installs_builtin_registry() {
         system: Vec::new(),
         parts: Vec::new(),
         components: vec!["system".into(), "host:intent_stamp".into(), "infer".into()],
+        step_limit: None,
+        model_attempts: None,
     });
     let opts = build_rust_session_options(session_options).unwrap();
     assert!(opts.harness.is_some());
@@ -866,6 +874,47 @@ fn session_options_host_mount_installs_builtin_registry() {
         opts.host_harness_registry.is_some(),
         "SDK sessions resolve host mounts through Core's builtin registry"
     );
+}
+
+#[test]
+fn harness_compose_limits_round_trip_into_the_spec() {
+    let defaults = a3s_code_core::HarnessConfig::new(8, 1_000, 32, 2, vec![], vec![]).unwrap();
+    let mut session_options = PySessionOptions::new();
+    session_options.harness = Some(PyHarnessComposeOptions {
+        components: vec!["system".into(), "infer".into()],
+        tool_budget: Some(3),
+        step_limit: Some(11),
+        model_attempts: Some(4),
+        ..PyHarnessComposeOptions::default()
+    });
+    let opts = build_rust_session_options(session_options).unwrap();
+    let spec = opts
+        .harness
+        .expect("harness")
+        .to_spec(Vec::new(), &defaults);
+    assert_eq!(spec.step_limit, 11);
+    assert_eq!(spec.model_attempts, 4);
+    assert_eq!(spec.budget, 3);
+    assert_eq!(spec.tool_round_cap, defaults.tool_round_cap());
+
+    let mut omitted = PySessionOptions::new();
+    omitted.harness = Some(PyHarnessComposeOptions {
+        components: vec!["system".into(), "infer".into()],
+        ..PyHarnessComposeOptions::default()
+    });
+    let spec = build_rust_session_options(omitted)
+        .unwrap()
+        .harness
+        .expect("harness")
+        .to_spec(Vec::new(), &defaults);
+    assert_eq!(spec.step_limit, defaults.step_limit());
+    assert_eq!(spec.model_attempts, 2);
+
+    let zero = PyHarnessComposeOptions {
+        model_attempts: Some(0),
+        ..PyHarnessComposeOptions::default()
+    };
+    assert!(zero.to_core().is_err());
 }
 
 #[test]

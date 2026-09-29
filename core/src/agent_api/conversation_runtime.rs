@@ -242,7 +242,15 @@ async fn spawn_fact_stream(
             .map(|settled| agent_result(settled, messages, usage))
             .map_err(|error| anyhow::anyhow!("{error:#}"))
             .and_then(|result| gate_result(&parts, result));
-        let streamed = parts.surface.as_ref().map(|surface| surface.streamed_text.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false);
+        let streamed = parts
+            .surface
+            .as_ref()
+            .map(|surface| {
+                surface
+                    .streamed_text
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .unwrap_or(false);
         let streamed_text = streamed;
         emit_gated(&tx, &settled, &mapped, streamed_text).await;
         // Channel close is host settlement. Extraction is post-turn work.
@@ -299,6 +307,7 @@ fn spawn_fact_worker(
             finish,
         } = pinned;
         let settled = async {
+            parts.set_events(tx.clone());
             let run = parts.open()?;
             if resume_only {
                 run.resume_limit(32).await
@@ -316,7 +325,15 @@ fn spawn_fact_worker(
             .map(|settled| agent_result(settled, messages, usage))
             .map_err(|error| anyhow::anyhow!("{error:#}"))
             .and_then(|result| gate_result(&parts, result));
-        let streamed = parts.surface.as_ref().map(|surface| surface.streamed_text.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false);
+        let streamed = parts
+            .surface
+            .as_ref()
+            .map(|surface| {
+                surface
+                    .streamed_text
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .unwrap_or(false);
         let streamed_text = streamed;
         emit_gated(&tx, &settled, &mapped, streamed_text).await;
         // Channel close is host settlement. Extraction is post-turn work.
@@ -583,7 +600,8 @@ pub(super) async fn resume_run(
                 ))
             });
         }
-        let pinned = prepare_pinned(session, "", false).await?;
+        let mut pinned = prepare_pinned(session, "", false).await?;
+        attach_host_run_events(session, &mut pinned).await;
         let settled = async {
             let run = pinned.parts.open()?;
             run.resume_limit(32).await
@@ -601,7 +619,8 @@ pub(super) async fn resume_run(
         .find(|message| message.role == "user")
         .map(|message| message.text())
         .unwrap_or_default();
-    let pinned = prepare_pinned(session, &resume_prompt, true).await?;
+    let mut pinned = prepare_pinned(session, &resume_prompt, true).await?;
+    attach_host_run_events(session, &mut pinned).await;
     let settled = async {
         let run = pinned.parts.open()?;
         let mut seed = checkpoint.messages.clone();
@@ -636,6 +655,35 @@ pub(super) async fn resume_run(
     pinned.finish.publish(&resume_prompt, &gated, false).await;
     pinned.close().await;
     gated.map_err(|error| CodeError::Session(error.to_string()))
+}
+
+async fn attach_host_run_events(session: &AgentSession, pinned: &mut PinnedFact) {
+    let already = pinned
+        .parts
+        .surface
+        .as_ref()
+        .is_some_and(|surface| surface.run_store.is_some() && surface.run_id.is_some());
+    if already {
+        return;
+    }
+    let run_id = match session.current_run_id.lock().await.clone() {
+        Some(run_id) => Some(run_id),
+        None => session
+            .run_store
+            .list()
+            .await
+            .into_iter()
+            .filter(|run| run.session_id == session.session_id)
+            .max_by_key(|run| (run.updated_at_ms, run.created_at_ms))
+            .map(|run| run.id),
+    };
+    let Some(run_id) = run_id else {
+        return;
+    };
+    if let Some(surface) = pinned.parts.surface.as_mut() {
+        surface.run_store = Some(Arc::clone(&session.run_store));
+        surface.run_id = Some(run_id);
+    }
 }
 
 fn session_fact_log_is_empty(session: &AgentSession) -> bool {

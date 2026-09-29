@@ -139,6 +139,10 @@ opts := &code.SessionOptions{
 }
 ```
 
+`stepLimit` / `step_limit` and `modelAttempts` / `model_attempts` are optional and
+independent of `toolBudget`. Omit them to keep the derived step limit
+(`max_tool_rounds * 4`, at least 32) and 2 model attempts. Zero is rejected.
+
 Unknown part names fail closed when the session is created; unknown `host:<id>`
 values fail closed on the first run. Rust embedders supply
 `SessionOptions::with_host_harness_registry`. Node, Python, and Go sessions that

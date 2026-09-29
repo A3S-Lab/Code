@@ -136,6 +136,12 @@ pub struct HarnessComposeOptions {
     /// Ordered assemble list. When set, takes precedence over
     /// `parts`. Entries are stock names or `host:<id>` (Rust registry).
     pub components: Option<Vec<String>>,
+    /// Actor step limit. Omit to keep the derived session default.
+    /// Independent of `toolBudget`.
+    pub step_limit: Option<u32>,
+    /// Provider attempts for one infer, including the first call.
+    /// Omit to keep 2. Zero is rejected.
+    pub model_attempts: Option<u32>,
 }
 
 /// Typed Meta Harness builders for SessionOptions.harness.
@@ -215,13 +221,21 @@ fn js_harness_to_core(
         .filter(|entries| !entries.is_empty())
         .or_else(|| options.parts.clone())
         .unwrap_or_default();
-    a3s_code_core::HarnessComposeOptions::compose(
+    if options.step_limit == Some(0) || options.model_attempts == Some(0) {
+        return Err(napi::Error::from_reason(
+            "harness stepLimit and modelAttempts must be at least 1".to_string(),
+        ));
+    }
+    let mut composed = a3s_code_core::HarnessComposeOptions::compose(
         list,
         options.tool_budget,
         options.compact_after_chars.map(|value| value as usize),
         options.system.clone().unwrap_or_default(),
     )
-    .map_err(|error| napi::Error::from_reason(error.to_string()))
+    .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+    composed.step_limit = options.step_limit;
+    composed.model_attempts = options.model_attempts;
+    Ok(composed)
 }
 
 /// Host-provided deterministic ID and clock configuration.

@@ -76,18 +76,28 @@ pub(super) struct PyHarnessComposeOptions {
     /// over ``parts``.
     #[pyo3(get, set)]
     pub(super) components: Vec<String>,
+    /// Actor step limit. ``None`` keeps the derived session default.
+    /// Independent of ``tool_budget``.
+    #[pyo3(get, set)]
+    pub(super) step_limit: Option<u32>,
+    /// Provider attempts for one infer, including the first call.
+    /// ``None`` keeps 2. Zero is rejected.
+    #[pyo3(get, set)]
+    pub(super) model_attempts: Option<u32>,
 }
 
 #[pymethods]
 impl PyHarnessComposeOptions {
     #[new]
-    #[pyo3(signature = (tool_budget=None, compact_after_chars=None, system=None, parts=None, components=None))]
+    #[pyo3(signature = (tool_budget=None, compact_after_chars=None, system=None, parts=None, components=None, step_limit=None, model_attempts=None))]
     fn new(
         tool_budget: Option<u32>,
         compact_after_chars: Option<usize>,
         system: Option<Vec<String>>,
         parts: Option<Vec<String>>,
         components: Option<Vec<String>>,
+        step_limit: Option<u32>,
+        model_attempts: Option<u32>,
     ) -> Self {
         Self {
             tool_budget,
@@ -95,13 +105,15 @@ impl PyHarnessComposeOptions {
             system: system.unwrap_or_default(),
             parts: parts.unwrap_or_default(),
             components: components.unwrap_or_default(),
+            step_limit,
+            model_attempts,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "HarnessComposeOptions(tool_budget={:?}, compact_after_chars={:?}, system={:?}, parts={:?}, components={:?})",
-            self.tool_budget, self.compact_after_chars, self.system, self.parts, self.components
+            "HarnessComposeOptions(tool_budget={:?}, compact_after_chars={:?}, system={:?}, parts={:?}, components={:?}, step_limit={:?}, model_attempts={:?})",
+            self.tool_budget, self.compact_after_chars, self.system, self.parts, self.components, self.step_limit, self.model_attempts
         )
     }
 }
@@ -113,13 +125,21 @@ impl PyHarnessComposeOptions {
         } else {
             self.parts.clone()
         };
-        a3s_code_core::HarnessComposeOptions::compose(
+        if self.step_limit == Some(0) || self.model_attempts == Some(0) {
+            return Err(PyValueError::new_err(
+                "harness step_limit and model_attempts must be at least 1",
+            ));
+        }
+        let mut composed = a3s_code_core::HarnessComposeOptions::compose(
             list,
             self.tool_budget,
             self.compact_after_chars,
             self.system.clone(),
         )
-        .map_err(|error| PyValueError::new_err(error.to_string()))
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        composed.step_limit = self.step_limit;
+        composed.model_attempts = self.model_attempts;
+        Ok(composed)
     }
 }
 
@@ -179,13 +199,15 @@ impl PyHarness {
 
     /// Validate and return a compose recipe for ``SessionOptions.harness``.
     #[staticmethod]
-    #[pyo3(signature = (parts=None, components=None, tool_budget=None, compact_after_chars=None, system=None))]
+    #[pyo3(signature = (parts=None, components=None, tool_budget=None, compact_after_chars=None, system=None, step_limit=None, model_attempts=None))]
     pub(super) fn compose(
         parts: Option<Vec<String>>,
         components: Option<Vec<String>>,
         tool_budget: Option<u32>,
         compact_after_chars: Option<usize>,
         system: Option<Vec<String>>,
+        step_limit: Option<u32>,
+        model_attempts: Option<u32>,
     ) -> PyResult<PyHarnessComposeOptions> {
         let options = PyHarnessComposeOptions {
             tool_budget,
@@ -193,6 +215,8 @@ impl PyHarness {
             system: system.unwrap_or_default(),
             parts: parts.unwrap_or_default(),
             components: components.unwrap_or_default(),
+            step_limit,
+            model_attempts,
         };
         let _ = options.to_core()?;
         Ok(options)

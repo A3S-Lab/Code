@@ -11,11 +11,10 @@
 
 use a3s_effect::{
     budget, coding_scheduler, compact, component, compose_coding_actor, system, tools,
-    CodingServices, ErasedComponent, HarnessConfig, HarnessGraph, HarnessView, MetaHarnessSpec,
-    ToolSpec,
+    CodingServices, ErasedComponent, HarnessGraph, HarnessView, MetaHarnessSpec, ToolSpec,
 };
 
-pub use a3s_effect::HarnessPartId;
+pub use a3s_effect::{HarnessConfig, HarnessPartId};
 
 /// One entry in an ordered `components: [...]` assemble list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +38,12 @@ pub struct HarnessComposeOptions {
     /// Ordered assemble list. When non-empty, takes precedence over
     /// [`Self::parts`]. Entries are stock names or `host:<id>`.
     pub components: Vec<String>,
+    /// Actor step limit. Omitted keeps the session's derived default
+    /// (`max_tool_rounds * 4`, at least 32). Independent of [`Self::tool_budget`].
+    pub step_limit: Option<u32>,
+    /// Provider attempts for one infer, including the first call. Omitted keeps
+    /// 2. Zero is rejected when the harness config is built.
+    pub model_attempts: Option<u32>,
 }
 
 impl HarnessComposeOptions {
@@ -49,8 +54,10 @@ impl HarnessComposeOptions {
             compact_after_chars: self
                 .compact_after_chars
                 .unwrap_or_else(|| defaults.compact_after_chars()),
-            step_limit: defaults.step_limit(),
-            model_attempts: defaults.model_attempts(),
+            step_limit: self.step_limit.unwrap_or_else(|| defaults.step_limit()),
+            model_attempts: self
+                .model_attempts
+                .unwrap_or_else(|| defaults.model_attempts()),
             system: if self.system.is_empty() {
                 defaults.system().to_vec()
             } else {
@@ -104,6 +111,8 @@ impl HarnessComposeOptions {
             system,
             parts,
             components,
+            step_limit: None,
+            model_attempts: None,
         })
     }
 }
@@ -409,6 +418,8 @@ mod tests {
             system: vec!["compose".into()],
             parts: vec![HarnessPartId::System, HarnessPartId::Infer],
             components: Vec::new(),
+            step_limit: None,
+            model_attempts: None,
         };
         let spec = options.to_spec(Vec::new(), &defaults);
         assert_eq!(spec.budget, 3);
@@ -717,10 +728,44 @@ mod tests {
             system: vec![],
             parts: vec![HarnessPartId::System],
             components: Vec::new(),
+            step_limit: None,
+            model_attempts: None,
         };
         let spec = options.to_spec(Vec::new(), &defaults);
         assert_eq!(spec.budget, 4);
         assert_eq!(spec.compact_after_chars, 10);
         assert_eq!(spec.system, vec!["default-sys".to_string()]);
+        assert_eq!(spec.step_limit, 8);
+        assert_eq!(spec.model_attempts, 1);
+    }
+
+    #[test]
+    fn compose_step_limit_and_model_attempts_round_trip_independently() {
+        let defaults = HarnessConfig::new(8, 1_000, 32, 2, vec![], vec![]).expect("config");
+        let mut options = HarnessComposeOptions::compose(
+            vec!["system".into(), "infer".into()],
+            Some(3),
+            None,
+            vec![],
+        )
+        .expect("compose");
+        options.step_limit = Some(11);
+        options.model_attempts = Some(4);
+        let spec = options.to_spec(Vec::new(), &defaults);
+        assert_eq!(spec.step_limit, 11);
+        assert_eq!(spec.model_attempts, 4);
+        assert_eq!(spec.budget, 3);
+        assert_eq!(spec.tool_round_cap, defaults.tool_round_cap());
+
+        let omitted = HarnessComposeOptions::default();
+        let spec = omitted.to_spec(Vec::new(), &defaults);
+        assert_eq!(spec.step_limit, defaults.step_limit());
+        assert_eq!(spec.model_attempts, defaults.model_attempts());
+
+        let zero = HarnessComposeOptions {
+            model_attempts: Some(0),
+            ..HarnessComposeOptions::default()
+        };
+        assert!(zero.to_spec(Vec::new(), &defaults).into_config().is_err());
     }
 }

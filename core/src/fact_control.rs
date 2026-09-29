@@ -17,7 +17,7 @@ use anyhow::Result;
 
 use crate::ask_user::{self, AskUserError};
 use crate::llm::{LlmClient, LlmResponse, Message, ToolDefinition};
-use crate::permissions::{PermissionDecision, PermissionPolicy};
+use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::queue::SessionLane;
 use crate::tools::ToolExecutor;
 
@@ -140,6 +140,10 @@ pub struct LiveCompletion {
     client: Arc<dyn LlmClient>,
     calls: Arc<AtomicUsize>,
     policy: PermissionPolicy,
+    /// Model-visible tool filter. A session checker wins; otherwise the policy.
+    visibility: Arc<dyn crate::permissions::PermissionChecker>,
+    /// Model attempts on this completion. Early returns do not increment it.
+    model_turns: Arc<AtomicUsize>,
     catalog: Vec<ToolDefinition>,
     surface: Option<SessionSurface>,
     context_ready: Arc<AtomicBool>,
@@ -159,6 +163,8 @@ impl LiveCompletion {
             Self {
                 client,
                 calls: Arc::clone(&calls),
+                visibility: Arc::new(policy.clone()),
+                model_turns: Arc::new(AtomicUsize::new(0)),
                 policy,
                 catalog,
                 surface: None,
@@ -173,6 +179,14 @@ impl LiveCompletion {
 
     pub(crate) fn with_surface(mut self, surface: SessionSurface) -> Self {
         self.surface = Some(surface);
+        self
+    }
+
+    pub(crate) fn with_visibility(
+        mut self,
+        checker: Arc<dyn crate::permissions::PermissionChecker>,
+    ) -> Self {
+        self.visibility = checker;
         self
     }
 }
@@ -549,6 +563,98 @@ fn append_steer_fact(surface: &SessionSurface, request_id: &str, text: &str) {
     );
 }
 
+const FACT_TOOL_RESULT_KIND: &str = "a3s.fact_tool_result";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FactToolResultEnvelope {
+    kind: String,
+    text: String,
+    is_error: bool,
+    #[serde(default)]
+    images: Vec<FactToolImage>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FactToolImage {
+    media_type: String,
+    data: String,
+}
+
+fn exposed_tool_specs(catalog: &[ToolDefinition], expose: impl Fn(&str) -> bool) -> Vec<ToolSpec> {
+    catalog
+        .iter()
+        .filter(|tool| expose(&tool.name))
+        .map(|tool| ToolSpec {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+        })
+        .collect()
+}
+
+fn fact_tool_runner_value(
+    output: &str,
+    is_error: bool,
+    images: &[crate::llm::Attachment],
+) -> serde_json::Value {
+    if !is_error && images.is_empty() {
+        return serde_json::Value::String(output.to_string());
+    }
+    let envelope = FactToolResultEnvelope {
+        kind: FACT_TOOL_RESULT_KIND.to_string(),
+        text: output.to_string(),
+        is_error,
+        images: images
+            .iter()
+            .map(|image| FactToolImage {
+                media_type: image.media_type.clone(),
+                data: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &image.data,
+                ),
+            })
+            .collect(),
+    };
+    match serde_json::to_string(&envelope) {
+        Ok(encoded) => serde_json::Value::String(encoded),
+        Err(_) => serde_json::Value::String(output.to_string()),
+    }
+}
+
+fn decode_fact_tool_result(body: &str) -> Option<FactToolResultEnvelope> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    if value.get("kind").and_then(|kind| kind.as_str()) != Some(FACT_TOOL_RESULT_KIND) {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn message_from_folded_tool(id: &str, body: &str, folded_error: bool) -> Message {
+    let Some(envelope) = decode_fact_tool_result(body) else {
+        return Message::tool_result(id, body, folded_error);
+    };
+    let is_error = folded_error || envelope.is_error;
+    let images = envelope
+        .images
+        .iter()
+        .filter_map(|image| {
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                image.data.as_bytes(),
+            )
+            .ok()?;
+            if bytes.is_empty() {
+                return None;
+            }
+            Some(crate::llm::Attachment::new(bytes, image.media_type.clone()))
+        })
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        Message::tool_result(id, &envelope.text, is_error)
+    } else {
+        Message::tool_result_with_images(id, &envelope.text, &images, is_error)
+    }
+}
+
 fn definitions_for(catalog: &[ToolDefinition], specs: &[ToolSpec]) -> Vec<ToolDefinition> {
     specs
         .iter()
@@ -783,6 +889,8 @@ impl Completion for LiveCompletion {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let client = Arc::clone(&self.client);
         let policy = self.policy.clone();
+        let visibility = Arc::clone(&self.visibility);
+        let model_turns = Arc::clone(&self.model_turns);
         let catalog = self.catalog.clone();
         let surface = self.surface.clone();
         let ready_flag = Arc::clone(&self.context_ready);
@@ -916,7 +1024,7 @@ impl Completion for LiveCompletion {
                         let id = call.id.clone();
                         vec![
                             assistant_tool_call(&call),
-                            Message::tool_result(&id, &body, role == "tool-error"),
+                            message_from_folded_tool(&id, &body, role == "tool-error"),
                         ]
                     } else {
                         vec![Message::user(&body)]
@@ -931,15 +1039,50 @@ impl Completion for LiveCompletion {
                     });
                 }
             }
-            let tools = definitions_for(&catalog, &request.tools);
-            let response = model_response(
+            let tools = definitions_for(&catalog, &request.tools)
+                .into_iter()
+                .filter(|tool| visibility.expose_to_model(&tool.name))
+                .collect();
+            let turn = model_turns.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            if let Some(surface) = &surface {
+                record_run_event(surface, crate::agent::AgentEvent::TurnStart { turn }).await;
+            }
+            let response = match model_response(
                 Arc::clone(&client),
                 messages.clone(),
                 system.clone(),
                 tools,
                 surface.clone(),
             )
-            .await?;
+            .await
+            {
+                Ok(response) => {
+                    if let Some(surface) = &surface {
+                        record_run_event(
+                            surface,
+                            crate::agent::AgentEvent::TurnEnd {
+                                turn,
+                                usage: response.usage.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                    response
+                }
+                Err(error) => {
+                    if let Some(surface) = &surface {
+                        record_run_event(
+                            surface,
+                            crate::agent::AgentEvent::TurnEnd {
+                                turn,
+                                usage: crate::llm::TokenUsage::default(),
+                            },
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            };
             if let Some(surface) = &surface {
                 if surface.cancel.is_cancelled() {
                     apply_run_controls(surface, &mut messages).await;
@@ -1045,7 +1188,13 @@ impl ExecutorTools {
         }
     }
 
-    async fn save_checkpoint(&self, call: &ToolCall, output: &str, is_error: bool) {
+    async fn save_checkpoint(
+        &self,
+        call: &ToolCall,
+        output: &str,
+        is_error: bool,
+        images: &[crate::llm::Attachment],
+    ) {
         let Some(checkpoint) = &self.checkpoint else {
             return;
         };
@@ -1074,7 +1223,11 @@ impl ExecutorTools {
                         transcript_text: None,
                         transcript_visibility: Default::default(),
                     },
-                    Message::tool_result(&call.id, output, is_error),
+                    if images.is_empty() {
+                        Message::tool_result(&call.id, output, is_error)
+                    } else {
+                        Message::tool_result_with_images(&call.id, output, images, is_error)
+                    },
                 ],
                 total_usage: crate::llm::TokenUsage::default(),
                 tool_calls_count: turn,
@@ -1143,7 +1296,7 @@ impl ToolRunner for ExecutorTools {
                             reason,
                         })
                         .await;
-                    tools.save_checkpoint(&call, &output, true).await;
+                    tools.save_checkpoint(&call, &output, true, &[]).await;
                     return Ok(serde_json::Value::String(output));
                 }
             }
@@ -1166,7 +1319,7 @@ impl ToolRunner for ExecutorTools {
                         reason: "Blocked by deny rule in permission policy".into(),
                     })
                     .await;
-                tools.save_checkpoint(&call, &output, true).await;
+                tools.save_checkpoint(&call, &output, true, &[]).await;
                 return Ok(serde_json::Value::String(output));
             }
             tools
@@ -1288,7 +1441,7 @@ impl ToolRunner for ExecutorTools {
                             reason: output.clone(),
                         })
                         .await;
-                    tools.save_checkpoint(&call, &output, true).await;
+                    tools.save_checkpoint(&call, &output, true, &[]).await;
                     return Ok(serde_json::Value::String(output));
                 }
             }
@@ -1421,9 +1574,13 @@ impl ToolRunner for ExecutorTools {
                 })
                 .await;
             tools
-                .save_checkpoint(&call, &output, result.exit_code != 0)
+                .save_checkpoint(&call, &output, result.exit_code != 0, &result.images)
                 .await;
-            Ok(serde_json::Value::String(output))
+            Ok(fact_tool_runner_value(
+                &output,
+                result.exit_code != 0,
+                &result.images,
+            ))
         })
     }
 
@@ -1601,6 +1758,115 @@ struct RecordedCall {
     reasoning: Option<String>,
 }
 
+struct SeededTool {
+    id: String,
+    text: String,
+    is_error: bool,
+    images: Vec<crate::llm::Attachment>,
+}
+
+fn seeded_tool(message: &Message) -> Option<SeededTool> {
+    for block in &message.content {
+        let crate::llm::ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let is_error = is_error.unwrap_or(false);
+        let (text, images) = match content {
+            crate::llm::ToolResultContentField::Text(text) => (text.clone(), Vec::new()),
+            crate::llm::ToolResultContentField::Blocks(blocks) => {
+                let mut text = String::new();
+                let mut images = Vec::new();
+                for block in blocks {
+                    match block {
+                        crate::llm::ToolResultContent::Text { text: part } => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(part);
+                        }
+                        crate::llm::ToolResultContent::Image { source } => {
+                            let Ok(bytes) = base64::Engine::decode(
+                                &base64::engine::general_purpose::STANDARD,
+                                source.data.as_bytes(),
+                            ) else {
+                                continue;
+                            };
+                            if bytes.is_empty() {
+                                continue;
+                            }
+                            images.push(crate::llm::Attachment::new(
+                                bytes,
+                                source.media_type.clone(),
+                            ));
+                        }
+                    }
+                }
+                (text, images)
+            }
+        };
+        if images.is_empty() && !is_error {
+            continue;
+        }
+        return Some(SeededTool {
+            id: tool_use_id.clone(),
+            text,
+            is_error,
+            images,
+        });
+    }
+    None
+}
+
+fn append_seeded_tool(log: &FileLog, thread: &str, turn: u64, seeded: &SeededTool) -> Result<()> {
+    let output = match fact_tool_runner_value(&seeded.text, seeded.is_error, &seeded.images) {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    };
+    let decision = ModelDecision::Tool {
+        call: ToolCall {
+            id: seeded.id.clone(),
+            name: "tool".into(),
+            args: serde_json::json!({}),
+            needs_confirmation: false,
+            text: None,
+            reasoning: None,
+        },
+        also: Vec::new(),
+    };
+    let payload = serde_json::to_value(decision).map_err(|error| anyhow::anyhow!(error))?;
+    log.append(
+        thread,
+        &[NewFact {
+            kind: "model.turn".into(),
+            key: format!("model:{turn}:0"),
+            payload,
+        }],
+        Some(&format!("infer:{turn}:0")),
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
+    log.append(
+        thread,
+        &[NewFact {
+            kind: "tool.result".into(),
+            key: format!("tool-result:{turn}:0:{}", seeded.id),
+            payload: serde_json::json!({
+                "toolCallId": seeded.id,
+                "ok": !seeded.is_error,
+                "output": output,
+            }),
+        }],
+        None,
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(())
+}
+
 fn seeded_user_text(message: &Message) -> String {
     let tool_text = message
         .content
@@ -1756,13 +2022,25 @@ fn session_harness_config(
     compact_after_chars: usize,
     specs: Vec<ToolSpec>,
 ) -> Result<HarnessConfig> {
+    session_harness_config_with(max_tool_rounds, compact_after_chars, specs, None, None)
+}
+
+fn session_harness_config_with(
+    max_tool_rounds: usize,
+    compact_after_chars: usize,
+    specs: Vec<ToolSpec>,
+    step_limit: Option<u32>,
+    model_attempts: Option<u32>,
+) -> Result<HarnessConfig> {
     let rounds = u32::try_from(max_tool_rounds).unwrap_or(u32::MAX).max(1);
-    let step_limit = rounds.saturating_mul(4).max(32);
+    let derived_steps = rounds.saturating_mul(4).max(32);
+    let step_limit = step_limit.unwrap_or(derived_steps);
+    let model_attempts = model_attempts.unwrap_or(2);
     Ok(HarnessConfig::new(
         rounds,
         compact_after_chars,
         step_limit,
-        2,
+        model_attempts,
         Vec::new(),
         specs,
     )
@@ -1880,14 +2158,8 @@ impl FactRun {
         max_tool_rounds: usize,
     ) -> Result<Self> {
         let catalog = executor.definitions();
-        let specs = catalog
-            .iter()
-            .map(|tool| ToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-            })
-            .collect();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
+        let specs = exposed_tool_specs(&catalog, |name| permission.expose_to_model(name));
         let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
         let config = session_harness_config(max_tool_rounds, 1_000_000, specs)?;
         let context = executor.registry().context();
@@ -1927,29 +2199,36 @@ impl FactRun {
         surface: SessionSurface,
     ) -> Result<Self> {
         let catalog = executor.definitions();
-        let specs = catalog
-            .iter()
-            .map(|tool| ToolSpec {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-            })
-            .collect();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
+        let checker = surface.agent.permission_checker();
+        let specs = exposed_tool_specs(&catalog, |name| match &checker {
+            Some(checker) => checker.expose_to_model(name),
+            None => permission.expose_to_model(name),
+        });
         let (completion, _) = LiveCompletion::new(Arc::clone(&client), permission.clone(), catalog);
+        let completion = match &checker {
+            Some(checker) => completion.with_visibility(Arc::clone(checker)),
+            None => completion,
+        };
         let events = surface.events.clone();
         let run_store = surface.run_store.clone();
         let run_id = surface.run_id.clone();
         let ledger = Some(Arc::clone(&surface.ledger));
         let reports = Some(Arc::clone(&surface.reports));
-        let checker = surface.agent.permission_checker();
         let agent = surface.agent.clone();
         let context = surface
             .agent
             .tool_context_handle()
             .with_cancellation(surface.cancel.clone());
         let completion = completion.with_surface(surface.clone());
-        let mut config =
-            session_harness_config(max_tool_rounds, agent.fact_compact_after_chars(), specs)?;
+        let limits = surface.harness.as_ref();
+        let mut config = session_harness_config_with(
+            max_tool_rounds,
+            agent.fact_compact_after_chars(),
+            specs,
+            limits.and_then(|options| options.step_limit),
+            limits.and_then(|options| options.model_attempts),
+        )?;
         if let Some(after_tokens) = agent.fact_compact_after_tokens() {
             config = config.with_token_compact(after_tokens, agent.fact_compact_keep_tokens());
         }
@@ -2044,15 +2323,30 @@ impl FactRun {
                 "user" => {
                     turn += 1;
                     cycle = 0;
-                    log.append(
-                        &self.thread,
-                        &[message_fact(
-                            format!("m-hist-{turn}"),
-                            seeded_user_text(message),
-                        )],
-                        None,
-                    )
-                    .map_err(|error| anyhow::anyhow!(error))?;
+                    if let Some(seeded) = seeded_tool(message) {
+                        // The tool turn consumes `infer:{turn}:0`. The new
+                        // prompt is the next user message and gets its own infer.
+                        log.append(
+                            &self.thread,
+                            &[message_fact(
+                                format!("m-hist-{turn}"),
+                                seeded_user_text(message),
+                            )],
+                            None,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error))?;
+                        append_seeded_tool(&log, &self.thread, turn, &seeded)?;
+                    } else {
+                        log.append(
+                            &self.thread,
+                            &[message_fact(
+                                format!("m-hist-{turn}"),
+                                seeded_user_text(message),
+                            )],
+                            None,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error))?;
+                    }
                 }
                 "assistant" => {
                     let payload = serde_json::to_value(ModelDecision::Text {
@@ -2693,7 +2987,17 @@ mod tests {
         let config = session_harness_config(1_200, 1_000_000, Vec::new()).expect("config");
         assert_eq!(config.budget(), 1_200);
         assert_eq!(config.tool_round_cap(), Some(1_200));
+        assert_eq!(config.model_attempts(), 2);
         assert!(config.step_limit() >= 4_800);
+
+        let overridden =
+            session_harness_config_with(5, 1_000, Vec::new(), Some(11), Some(4)).expect("limits");
+        assert_eq!(overridden.budget(), 5);
+        assert_eq!(overridden.tool_round_cap(), Some(5));
+        assert_eq!(overridden.step_limit(), 11);
+        assert_eq!(overridden.model_attempts(), 4);
+        assert!(session_harness_config_with(5, 1_000, Vec::new(), None, Some(0)).is_err());
+        assert!(session_harness_config_with(5, 1_000, Vec::new(), Some(0), None).is_err());
     }
 
     #[tokio::test]
