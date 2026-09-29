@@ -108,6 +108,9 @@ pub(crate) struct SessionSurface {
     pub(crate) session_id: String,
     pub(crate) checkpoint: Option<CheckpointEmit>,
     pub(crate) events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    /// Set when this surface already streamed text deltas to the host, so the
+    /// settled replay must not re-send the full assistant text.
+    pub(crate) streamed_text: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) transcript: Arc<Mutex<Vec<Message>>>,
     pub(crate) usage: Arc<Mutex<crate::llm::TokenUsage>>,
@@ -356,7 +359,13 @@ async fn read_model_response(
                 };
                 match event {
                     crate::llm::StreamEvent::TextDelta(text) => {
-                                                let event = crate::agent::AgentEvent::TextDelta { text };
+                        // This is the streaming path to the host: forward each
+                        // delta and mark the surface so the settled replay does
+                        // not re-send the full assistant text.
+                        surface
+                            .streamed_text
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        let event = crate::agent::AgentEvent::TextDelta { text };
                         if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
                             store.record_event(run_id, event.clone()).await;
                         }
@@ -3377,6 +3386,7 @@ mod tests {
             session_id: "timeout-session".into(),
             checkpoint: None,
             events: None,
+            streamed_text: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cancel: tokio_util::sync::CancellationToken::new(),
             transcript: Arc::new(Mutex::new(Vec::new())),
             usage: Arc::new(Mutex::new(crate::llm::TokenUsage::default())),
@@ -3903,6 +3913,7 @@ mod tests {
             session_id: THREAD.into(),
             checkpoint: None,
             events: None,
+            streamed_text: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cancel: tokio_util::sync::CancellationToken::new(),
             transcript: Arc::new(Mutex::new(Vec::new())),
             usage: Arc::new(Mutex::new(crate::llm::TokenUsage::default())),

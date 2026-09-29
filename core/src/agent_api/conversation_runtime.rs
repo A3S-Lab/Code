@@ -242,7 +242,9 @@ async fn spawn_fact_stream(
             .map(|settled| agent_result(settled, messages, usage))
             .map_err(|error| anyhow::anyhow!("{error:#}"))
             .and_then(|result| gate_result(&parts, result));
-        emit_gated(&tx, &settled, &mapped).await;
+        let streamed = parts.surface.as_ref().map(|surface| surface.streamed_text.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false);
+        let streamed_text = streamed;
+        emit_gated(&tx, &settled, &mapped, streamed_text).await;
         // Channel close is host settlement. Extraction is post-turn work.
         drop(tx);
         let teardown_started = std::time::Instant::now();
@@ -314,7 +316,9 @@ fn spawn_fact_worker(
             .map(|settled| agent_result(settled, messages, usage))
             .map_err(|error| anyhow::anyhow!("{error:#}"))
             .and_then(|result| gate_result(&parts, result));
-        emit_gated(&tx, &settled, &mapped).await;
+        let streamed = parts.surface.as_ref().map(|surface| surface.streamed_text.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false);
+        let streamed_text = streamed;
+        emit_gated(&tx, &settled, &mapped, streamed_text).await;
         // Channel close is host settlement. Extraction is post-turn work.
         drop(tx);
         if let Some(surface) = parts.surface.as_mut() {
@@ -352,6 +356,7 @@ async fn emit_gated(
     tx: &mpsc::Sender<AgentEvent>,
     settled: &anyhow::Result<a3s_effect::Settlement<a3s_effect::CodingView>>,
     mapped: &std::result::Result<AgentResult, anyhow::Error>,
+    streamed_text: bool,
 ) {
     if let Err(error) = mapped {
         let _ = tx
@@ -361,17 +366,23 @@ async fn emit_gated(
             .await;
         return;
     }
-    emit_settled(tx, settled).await;
+    emit_settled(tx, settled, streamed_text).await;
 }
 
 async fn emit_settled(
     tx: &mpsc::Sender<AgentEvent>,
     settled: &anyhow::Result<a3s_effect::Settlement<a3s_effect::CodingView>>,
+    streamed_text: bool,
 ) {
     match settled {
         Ok(settled) => {
             let text = settled.view.assistant.clone().unwrap_or_default();
-            let _ = tx.send(AgentEvent::TextDelta { text: text.clone() }).await;
+            // The streamed deltas already carried this text to the host; the
+            // settled replay only adds the End marker. Re-sending the full
+            // text as another delta duplicated every message.
+            if !streamed_text {
+                let _ = tx.send(AgentEvent::TextDelta { text: text.clone() }).await;
+            }
             let _ = tx
                 .send(AgentEvent::End {
                     text,
@@ -1123,6 +1134,7 @@ async fn prepare_pinned(
         prepared.run_control().update_turn(1).await;
         run_control = Some(prepared.run_control());
     }
+    let streamed_text = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let parts = FactSession::from(session)
         .with_executor(agent_loop.tool_executor_handle())
         .with_surface(crate::fact_control::SessionSurface {
@@ -1130,6 +1142,7 @@ async fn prepare_pinned(
             session_id: session.session_id.clone(),
             checkpoint,
             events: None,
+            streamed_text: streamed_text.clone(),
             cancel: cancellation,
             transcript: Arc::new(std::sync::Mutex::new(Vec::new())),
             usage: Arc::new(std::sync::Mutex::new(crate::llm::TokenUsage::default())),
