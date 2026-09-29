@@ -1080,6 +1080,33 @@ impl acp::Agent for A3sCodeAgent {
         Ok(acp::NewSessionResponse::new(acp::SessionId::new(session_id)).models(models))
     }
 
+    /// ACP session modes: the A3S permission/mode surface. `plan` enables
+    /// maker planning; every other mode runs with the session's configured
+    /// planning default.
+    async fn set_session_mode(
+        &self,
+        args: acp::SetSessionModeRequest,
+    ) -> acp::Result<acp::SetSessionModeResponse> {
+        let session_key = args.session_id.0.to_string();
+        let mode_id = args.mode_id.0.to_string();
+        let session = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(&session_key)
+                .map(|live| Arc::clone(&live.session))
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?
+        };
+        let planning = if mode_id.eq_ignore_ascii_case("plan") {
+            a3s_code_core::PlanningMode::Enabled
+        } else {
+            a3s_code_core::PlanningMode::Disabled
+        };
+        session
+            .set_planning_mode(planning)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::SetSessionModeResponse::new())
+    }
+
     async fn set_session_model(
         &self,
         args: acp::SetSessionModelRequest,

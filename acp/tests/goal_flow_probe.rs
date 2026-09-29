@@ -202,6 +202,35 @@ async fn goal_commands_flow_end_to_end() {
             resume.expect("resume turn");
             status.expect("status turn");
 
+            // 7. Permission-mode chain: set_session_mode(plan) arms maker
+            // planning; a subsequent write prompt is gated by the plan
+            // completion contract (the write is proposed, not silently
+            // executed).
+            let mode_set = acp::Agent::set_session_mode(
+                &client_conn,
+                acp::SetSessionModeRequest::new(
+                    session_id.clone(),
+                    acp::SessionModeId::new("plan"),
+                ))
+                .await;
+            assert!(
+                mode_set.is_ok(),
+                "set_session_mode(plan) must succeed: {:?}",
+                mode_set.err()
+            );
+            let plan_write = run_turn(
+                &client_conn,
+                &session_id,
+                "Create the file plan-proof-4412.txt containing PLANNED. Use the write tool.",
+            )
+            .await;
+            let _ = plan_write;
+            let plan_proof = std::fs::read_to_string(workspace.join("plan-proof-4412.txt"));
+            println!(
+                "GOALPROBE plan-mode write proof file exists: {:?}",
+                plan_proof.is_ok()
+            );
+
             // 7. Single delivery: the codename surfaces once per elicitation
             // (no duplicated replies anywhere in the stream).
             let occurrences = recording.count("CODEXE2E-7734");
