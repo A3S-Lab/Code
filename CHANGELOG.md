@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed turn that persists its session completes after the host receives End. The checkpoint sender is released before the committer is joined, so background memory extraction can keep the rest of the turn.
 - `--resume` and `--continue` reopen that session's durable transcript.
 - Node, Python, and Go sessions expose that durable transcript and the recorded token totals.
 - Session info counts submitted user prompts and recorded token usage, including a turn that used tools.

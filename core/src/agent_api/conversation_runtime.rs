@@ -258,6 +258,10 @@ async fn spawn_fact_stream(
         let teardown_started = std::time::Instant::now();
         if let Some(surface) = parts.surface.as_mut() {
             surface.events.take();
+            // The fact run's clones of this sender are already gone. The
+            // committer reads until the last sender drops, and `parts` has
+            // to stay alive for the background memory extract below.
+            surface.checkpoint.take();
         }
         // Persist the settled transcript first: the host's turn-end RPC
         // returns right after the stream task ends, and memory extraction
