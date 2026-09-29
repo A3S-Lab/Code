@@ -30,9 +30,9 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     # The complete default and feature-gated workspace suites are intentionally
-    # part of this gate.  A cold hosted runner can take longer than the
-    # lightweight 25-minute budget even when the tests are making progress.
-    timeout-minutes: 45
+    # part of this gate, and the shipped pager is built before those tests.
+    # A cold hosted runner needs more than the old 45-minute budget.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -114,6 +114,23 @@ jobs:
         run: |
           cargo install cargo-semver-checks --version 0.50.0 --locked
           bash scripts/check_semver.sh 5.3.5
+
+      - name: Check out a3s-acl for the shipped pager
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/ACL
+          ref: 5317e166222495585909d81f2caffdca90273c99
+          path: ci-acl
+          fetch-depth: 1
+
+      - name: Build the shipped TUI
+        # shipped_tui_e2e launches vendor/a3s-code-ui/target/debug/a3s-code-tui.
+        # The pager path-depends on the sibling ACL crate.
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/ci-acl" "$GITHUB_WORKSPACE/../acl"
+          bash .github/build-shipped-tui.sh
 
       - name: Default tests
         env:

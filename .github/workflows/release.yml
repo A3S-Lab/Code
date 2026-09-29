@@ -149,6 +149,23 @@ jobs:
       - name: Reclaim build space before tests
         run: cargo clean
 
+      - name: Check out a3s-acl for the shipped pager
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/ACL
+          ref: 5317e166222495585909d81f2caffdca90273c99
+          path: ci-acl
+          fetch-depth: 1
+
+      - name: Build the shipped TUI
+        # shipped_tui_e2e launches vendor/a3s-code-ui/target/debug/a3s-code-tui.
+        # The pager path-depends on the sibling ACL crate.
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/ci-acl" "$GITHUB_WORKSPACE/../acl"
+          bash .github/build-shipped-tui.sh
+
       - name: Default tests
         env:
           RUST_MIN_STACK: "16777216"
