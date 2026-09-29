@@ -5,8 +5,8 @@
 //! Nothing here substitutes a scripted `LlmClient` or the pager's content mock.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use agent_client_protocol as acp;
 use async_trait::async_trait;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const MODEL_ID: &str = "mock/gpt";
@@ -236,7 +236,10 @@ fn decide(raw: &str, state: &mut MockState) -> String {
         return reply_tool("ask_user", &args, state, streaming);
     }
     if raw.contains("CANCEL-ORACLE") && tools {
-        let command = format!("sleep 4; printf LATE > '{}'", state.late_path.replace('\'', ""));
+        let command = format!(
+            "sleep 4; printf LATE > '{}'",
+            state.late_path.replace('\'', "")
+        );
         let args = serde_json::json!({ "command": command }).to_string();
         return reply_tool("bash", &args, state, streaming);
     }
@@ -390,10 +393,9 @@ impl acp::Client for TestClient {
             .and_then(|meta| meta.get("promptId"))
             .and_then(serde_json::Value::as_str)
         {
-            self.stamps.borrow_mut().push((
-                args.session_id.0.to_string(),
-                prompt_id.to_string(),
-            ));
+            self.stamps
+                .borrow_mut()
+                .push((args.session_id.0.to_string(), prompt_id.to_string()));
         }
         let is_replay = args
             .meta
@@ -402,11 +404,9 @@ impl acp::Client for TestClient {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         if let Some(text) = chunk_text(&args.update) {
-            self.replayed.borrow_mut().push((
-                args.session_id.0.to_string(),
-                is_replay,
-                text,
-            ));
+            self.replayed
+                .borrow_mut()
+                .push((args.session_id.0.to_string(), is_replay, text));
         }
         if let acp::SessionUpdate::ToolCall(call) = &args.update {
             if !call.title.is_empty() {
@@ -545,7 +545,10 @@ fn user_prompt_id(session: &acp::SessionId, text: &str, prompt_id: &str) -> acp:
     user_prompt(session, text).meta(Some(meta))
 }
 
-async fn session_info_body(conn: &acp::ClientSideConnection, session: &acp::SessionId) -> serde_json::Value {
+async fn session_info_body(
+    conn: &acp::ClientSideConnection,
+    session: &acp::SessionId,
+) -> serde_json::Value {
     let params = serde_json::value::to_raw_value(&serde_json::json!({
         "sessionId": session.0.as_ref(),
     }))
@@ -663,8 +666,11 @@ async fn shipped_agent_session_wire() {
                 let conn = agent.conn.clone();
                 let session_id = session_id.clone();
                 async move {
-                    acp::Agent::prompt(conn.as_ref(), user_prompt(&session_id, "LIST-FILES the workspace"))
-                        .await
+                    acp::Agent::prompt(
+                        conn.as_ref(),
+                        user_prompt(&session_id, "LIST-FILES the workspace"),
+                    )
+                    .await
                 }
             });
             let listed = listed.await.expect("join").expect("low prompt");
@@ -685,7 +691,10 @@ async fn shipped_agent_session_wire() {
                 "completed turn still reports no token usage: {info}"
             );
             let low_bodies = bodies_since(&state.lock().expect("mock"), start);
-            assert!(!low_bodies.is_empty(), "low effort produced no model request");
+            assert!(
+                !low_bodies.is_empty(),
+                "low effort produced no model request"
+            );
             let low_thinking = budget_number(&low_bodies[0], "thinking_budget=")
                 .expect("thinking budget in the request the model receives");
             let low_rounds = budget_number(&low_bodies[0], "tool_rounds=")
@@ -697,7 +706,9 @@ async fn shipped_agent_session_wire() {
             oracle(
                 WIRE_TEST,
                 "session-info-turn-usage",
-                &format!("turn={turn_index} used={used} prompts={product_prompts} rounds={low_rounds}"),
+                &format!(
+                    "turn={turn_index} used={used} prompts={product_prompts} rounds={low_rounds}"
+                ),
             );
             let tool_requests = low_bodies.iter().filter(|body| {
                 serde_json::from_str::<serde_json::Value>(body)
@@ -751,7 +762,8 @@ async fn shipped_agent_session_wire() {
             let high = high.await.expect("join").expect("high prompt");
             assert_eq!(high.stop_reason, acp::StopReason::EndTurn);
             let high_bodies = bodies_since(&state.lock().expect("mock"), start);
-            let high_thinking = budget_number(&high_bodies[0], "thinking_budget=").expect("high thinking");
+            let high_thinking =
+                budget_number(&high_bodies[0], "thinking_budget=").expect("high thinking");
             let high_rounds = budget_number(&high_bodies[0], "tool_rounds=").expect("high rounds");
             assert!(high_thinking > low_thinking);
             assert!(high_rounds > low_rounds);
@@ -766,9 +778,7 @@ async fn shipped_agent_session_wire() {
             oracle(
                 WIRE_TEST,
                 "effort-budget",
-                &format!(
-                    "low={low_thinking}/{low_rounds} high={high_thinking}/{high_rounds}"
-                ),
+                &format!("low={low_thinking}/{low_rounds} high={high_thinking}/{high_rounds}"),
             );
 
             // Permission blocks until AllowOnce. The side-effect file stays absent.
@@ -803,9 +813,7 @@ async fn shipped_agent_session_wire() {
                 !write_path.exists(),
                 "write ran before the permission was answered"
             );
-            gate.reply
-                .send("allow-once".to_string())
-                .expect("allow");
+            gate.reply.send("allow-once".to_string()).expect("allow");
             let wrote = writing.await.expect("join");
             // The file is the side effect. An unverified mutation must not
             // EndTurn; the pager shows this completion gate as TurnFailed.
@@ -854,8 +862,11 @@ async fn shipped_agent_session_wire() {
                 let conn = agent.conn.clone();
                 let ask_session = ask_session.clone();
                 async move {
-                    acp::Agent::prompt(conn.as_ref(), user_prompt(&ask_session, "ASK-ORACLE a choice"))
-                        .await
+                    acp::Agent::prompt(
+                        conn.as_ref(),
+                        user_prompt(&ask_session, "ASK-ORACLE a choice"),
+                    )
+                    .await
                 }
             });
             let gate = tokio::time::timeout(Duration::from_secs(30), agent.gates.recv())
@@ -872,9 +883,7 @@ async fn shipped_agent_session_wire() {
                 !parked.contains("\"question.answered\""),
                 "question settled before the answer"
             );
-            gate.reply
-                .send("question-0".to_string())
-                .expect("answer");
+            gate.reply.send("question-0".to_string()).expect("answer");
             let asked = asking.await.expect("join").expect("ask prompt");
             assert_eq!(asked.stop_reason, acp::StopReason::EndTurn);
             let answered = log_text(&workspace);
@@ -952,12 +961,10 @@ async fn shipped_agent_session_wire() {
             .expect("compact session")
             .session_id;
             for text in ["first note", "second note"] {
-                let response = acp::Agent::prompt(
-                    agent.conn.as_ref(),
-                    user_prompt(&compact_session, text),
-                )
-                .await
-                .expect("seed");
+                let response =
+                    acp::Agent::prompt(agent.conn.as_ref(), user_prompt(&compact_session, text))
+                        .await
+                        .expect("seed");
                 assert_eq!(response.stop_reason, acp::StopReason::EndTurn);
             }
             let params = serde_json::value::to_raw_value(&serde_json::json!({
@@ -966,10 +973,7 @@ async fn shipped_agent_session_wire() {
             .expect("params");
             acp::Agent::ext_method(
                 agent.conn.as_ref(),
-                acp::ExtRequest::new(
-                    "x.ai/compact_conversation",
-                    std::sync::Arc::from(params),
-                ),
+                acp::ExtRequest::new("x.ai/compact_conversation", std::sync::Arc::from(params)),
             )
             .await
             .expect("compact");
@@ -1015,8 +1019,9 @@ async fn shipped_agent_session_wire() {
             )
             .await
             .expect("goal set");
-            let goal_file = std::fs::read_to_string(workspace.join(".a3s").join("durable-goal.json"))
-                .expect("durable goal");
+            let goal_file =
+                std::fs::read_to_string(workspace.join(".a3s").join("durable-goal.json"))
+                    .expect("durable goal");
             assert!(goal_file.contains("ship the durable objective"));
             oracle(
                 WIRE_TEST,
@@ -1081,12 +1086,9 @@ async fn shipped_agent_session_wire() {
             );
 
             // A second process reloads the same session id and still sees the token.
-            acp::Agent::prompt(
-                agent.conn.as_ref(),
-                user_prompt(&session_id, DURABLE_TOKEN),
-            )
-            .await
-            .expect("seed token");
+            acp::Agent::prompt(agent.conn.as_ref(), user_prompt(&session_id, DURABLE_TOKEN))
+                .await
+                .expect("seed token");
             drop(agent.conn);
             let _ = agent.child.start_kill();
             let _ = agent.child.wait().await;
@@ -1127,7 +1129,9 @@ async fn shipped_agent_session_wire() {
             .expect("resumed prompt");
             let resumed_bodies = bodies_since(&state.lock().expect("mock"), start);
             assert!(
-                resumed_bodies.iter().any(|body| body.contains(DURABLE_TOKEN)),
+                resumed_bodies
+                    .iter()
+                    .any(|body| body.contains(DURABLE_TOKEN)),
                 "resume opened a blank session"
             );
             oracle(WIRE_TEST, "load-session-replay", DURABLE_TOKEN);
@@ -1159,23 +1163,13 @@ fn tui_binary() -> PathBuf {
         .join("../vendor/a3s-code-ui/target/debug/a3s-code-tui")
 }
 
-fn open_pty(
-    binary: &Path,
-    args: &[&str],
-    env: &[(&str, &str)],
-    cwd: &Path,
-) -> PtySession {
+fn open_pty(binary: &Path, args: &[&str], env: &[(&str, &str)], cwd: &Path) -> PtySession {
     open_pty_inner(binary, args, env, cwd, false)
 }
 
 /// Same as [`open_pty`], after dropping the parent environment.
 /// portable-pty still injects `SHELL` from the password database.
-fn open_pty_cleared(
-    binary: &Path,
-    args: &[&str],
-    env: &[(&str, &str)],
-    cwd: &Path,
-) -> PtySession {
+fn open_pty_cleared(binary: &Path, args: &[&str], env: &[(&str, &str)], cwd: &Path) -> PtySession {
     open_pty_inner(binary, args, env, cwd, true)
 }
 
@@ -1244,7 +1238,11 @@ impl PtySession {
         // Inline mode asks the terminal where the cursor is (`CSI 6 n`).
         // A real terminal answers; this PTY has to do the same or the switch aborts.
         let query = b"\x1b[6n";
-        if let Some(at) = self.raw.windows(query.len()).rposition(|window| window == query) {
+        if let Some(at) = self
+            .raw
+            .windows(query.len())
+            .rposition(|window| window == query)
+        {
             if at >= self.cpr_replied_through {
                 self.cpr_replied_through = self.raw.len();
                 let _ = self.writer.write_all(b"\x1b[12;1R");
@@ -1328,7 +1326,8 @@ impl PtySession {
             let visible: String = screen.chars().filter(|ch| !ch.is_whitespace()).collect();
             if visible.len() > 12 {
                 if screen == last {
-                    if stable_since.is_some_and(|start| start.elapsed() > Duration::from_millis(500))
+                    if stable_since
+                        .is_some_and(|start| start.elapsed() > Duration::from_millis(500))
                     {
                         return screen;
                     }
@@ -1480,11 +1479,14 @@ fn palette_offers(screen: &str, name: &str, description: &str) -> bool {
 }
 
 fn config_texts(home: &Path) -> String {
-    [home.join("grok").join("config.toml"), home.join(".grok").join("config.toml")]
-        .iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
+    [
+        home.join("grok").join("config.toml"),
+        home.join(".grok").join("config.toml"),
+    ]
+    .iter()
+    .filter_map(|path| std::fs::read_to_string(path).ok())
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 fn wait_config(home: &Path, needle: &str, timeout: Duration) -> bool {
@@ -1546,9 +1548,14 @@ fn wait_body(state: &Arc<Mutex<MockState>>, needle: &str, timeout: Duration) -> 
 fn wait_body_all(state: &Arc<Mutex<MockState>>, needles: &[&str], timeout: Duration) -> String {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Some(body) = state.lock().expect("mock").bodies.iter().rev().find(|body| {
-            needles.iter().all(|needle| body.contains(needle))
-        }) {
+        if let Some(body) = state
+            .lock()
+            .expect("mock")
+            .bodies
+            .iter()
+            .rev()
+            .find(|body| needles.iter().all(|needle| body.contains(needle)))
+        {
             return body.clone();
         }
         std::thread::sleep(Duration::from_millis(40));
@@ -1565,10 +1572,7 @@ fn wait_body_all(state: &Arc<Mutex<MockState>>, needles: &[&str], timeout: Durat
 }
 
 fn looks_like_session_id(token: &str) -> bool {
-    token.len() >= 8
-        && token
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
+    token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
 }
 
 fn launch_cleared_session(env: &[(&str, &str)], cwd: &Path) -> (String, String, String) {
@@ -1623,7 +1627,10 @@ fn launch_once(continue_last: bool, env: &[(&str, &str)], cwd: &Path) -> (String
         "session info did not show the ACL model\n{info}"
     );
     let session_id = session_id_from_screen(&info);
-    assert!(!session_id.is_empty(), "session info had no session id\n{info}");
+    assert!(
+        !session_id.is_empty(),
+        "session info had no session id\n{info}"
+    );
     pty.escape();
     pty.pump(Duration::from_millis(200));
     pty.type_text("/quit");
@@ -1800,7 +1807,9 @@ fn shipped_tui_xai_key_keeps_acl_model() {
     );
     let owned = key_only_env(env!("CARGO_BIN_EXE_a3s-code-acp"), &config, &home);
     assert!(
-        owned.iter().any(|(key, value)| key == "XAI_API_KEY" && !value.is_empty()),
+        owned
+            .iter()
+            .any(|(key, value)| key == "XAI_API_KEY" && !value.is_empty()),
         "XAI_API_KEY missing from the cleared launch"
     );
     for (key, _) in &owned {
@@ -1843,10 +1852,7 @@ fn shipped_tui_xai_key_keeps_acl_model() {
 fn shipped_tui_launch_resume_and_visible_commands() {
     let binary = tui_binary();
     if !binary.is_file() {
-        panic!(
-            "build a3s-code-tui before this test: {}",
-            binary.display()
-        );
+        panic!("build a3s-code-tui before this test: {}", binary.display());
     }
     let workspace = isolate_dir("pty");
     let home = isolate_dir("pty-home");
@@ -1870,11 +1876,7 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         ),
     )
     .expect("editor script");
-    std::fs::set_permissions(
-        &editor,
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .expect("editor mode");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("editor mode");
     let acp_bin = env!("CARGO_BIN_EXE_a3s-code-acp");
     let mut owned = child_env(acp_bin, &config, &home);
     owned.push(("EDITOR".into(), editor.display().to_string()));
@@ -1930,9 +1932,11 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     let resume_marker = "RESUME-MARKER-9e4b";
     let resume_ws = isolate_dir("pty-resume");
     let seeded_id = seed_marked_session(&env, &resume_ws, &state, resume_marker);
-    let (resumed_id, resumed_frame) =
-        launch_resumed(&seeded_id, &env, &resume_ws, resume_marker);
-    assert_eq!(resumed_id, seeded_id, "--resume reopened a different session");
+    let (resumed_id, resumed_frame) = launch_resumed(&seeded_id, &env, &resume_ws, resume_marker);
+    assert_eq!(
+        resumed_id, seeded_id,
+        "--resume reopened a different session"
+    );
     assert!(
         resumed_frame.contains(MODEL_ID) && resumed_frame.contains(resume_marker),
         "--resume frame lost the model or the prior transcript\n{resumed_frame}"
@@ -2031,7 +2035,11 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         bodies_before_goal,
         "/goal status started a model turn"
     );
-    oracle(PTY_TEST, "goal-status", "empty objective, zero model requests");
+    oracle(
+        PTY_TEST,
+        "goal-status",
+        "empty objective, zero model requests",
+    );
     pty.write_bytes(b"\x15");
     pty.type_text("/compact");
     pty.enter();
@@ -2262,8 +2270,7 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     pty.enter();
     let help = pty.wait_for("Commands", Duration::from_secs(5));
     assert!(
-        help.contains("Settings")
-            && (help.contains("Quit") || help.contains("Keyboard Shortcuts")),
+        help.contains("Settings") && (help.contains("Quit") || help.contains("Keyboard Shortcuts")),
         "help did not open the command palette\n{help}"
     );
     oracle(PTY_TEST, "help", "Commands palette");
@@ -2323,9 +2330,9 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         Some(product_prompts),
         "context Turns is not the {product_prompts} prompts submitted in this session\n{context}"
     );
-    let context_used = context.lines().any(|line| {
-        line.contains("tokens") && line.contains('/') && !line.contains("0 /")
-    });
+    let context_used = context
+        .lines()
+        .any(|line| line.contains("tokens") && line.contains('/') && !line.contains("0 /"));
     assert!(
         context_used,
         "context after a completed turn still shows no tokens\n{context}"
@@ -2406,10 +2413,7 @@ fn shipped_tui_launch_resume_and_visible_commands() {
             break;
         }
     }
-    assert!(
-        multiline_off,
-        "multiline stayed on\n{multiline_screen}"
-    );
+    assert!(multiline_off, "multiline stayed on\n{multiline_screen}");
     oracle(PTY_TEST, "multiline-off", "footer cleared");
 
     pty.write_bytes(b"\x15");
@@ -2445,8 +2449,14 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     );
     let high_thinking = budget_number(&high_body, "thinking_budget=").expect("tui high thinking");
     let high_rounds = budget_number(&high_body, "tool_rounds=").expect("tui high rounds");
-    assert!(high_thinking > low_thinking, "tui effort did not change thinking budget");
-    assert!(high_rounds > low_rounds, "tui effort did not change tool rounds");
+    assert!(
+        high_thinking > low_thinking,
+        "tui effort did not change thinking budget"
+    );
+    assert!(
+        high_rounds > low_rounds,
+        "tui effort did not change tool rounds"
+    );
     oracle(
         PTY_TEST,
         "effort",
@@ -2501,7 +2511,10 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         pty.pump(Duration::from_millis(200));
     }
     let wrote = std::fs::read_to_string(&write_path).unwrap_or_default();
-    assert_eq!(wrote, "wrote-marker", "always-approve did not select AllowOnce");
+    assert_eq!(
+        wrote, "wrote-marker",
+        "always-approve did not select AllowOnce"
+    );
     oracle(PTY_TEST, "always-approve", "wrote-marker");
 
     pty.write_bytes(b"\x15");
@@ -2535,14 +2548,21 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     while Instant::now() < mouse_deadline {
         pty.pump(Duration::from_millis(100));
         let tail = String::from_utf8_lossy(&pty.raw[mouse_at.min(pty.raw.len())..]);
-        if tail.contains("1000l") || tail.contains("1002l") || tail.contains("1003l") || tail.contains("1006l")
-            || tail.contains("1000h") || tail.contains("1002h")
+        if tail.contains("1000l")
+            || tail.contains("1002l")
+            || tail.contains("1003l")
+            || tail.contains("1006l")
+            || tail.contains("1000h")
+            || tail.contains("1002h")
         {
             mouse_changed = true;
             break;
         }
     }
-    assert!(mouse_changed, "toggle-mouse-reporting did not change mouse capture");
+    assert!(
+        mouse_changed,
+        "toggle-mouse-reporting did not change mouse capture"
+    );
     oracle(PTY_TEST, "toggle-mouse-reporting", "mouse capture changed");
 
     pty.write_bytes(b"\x15");
@@ -2573,7 +2593,10 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     pty.enter();
     let created = pty.wait_for("Session ID", Duration::from_secs(15));
     let created_id = session_id_from_screen(&created);
-    assert!(!created_id.is_empty(), "new did not open a session\n{created}");
+    assert!(
+        !created_id.is_empty(),
+        "new did not open a session\n{created}"
+    );
     assert_ne!(created_id, tour_id, "new reused the session home just left");
     oracle(PTY_TEST, "new", &format!("session={created_id}"));
     pty.focus_composer();
@@ -2609,7 +2632,10 @@ fn shipped_tui_launch_resume_and_visible_commands() {
                 break path;
             }
             if Instant::now() >= deadline {
-                panic!("new session {created_id} was not persisted under {}", home.display());
+                panic!(
+                    "new session {created_id} was not persisted under {}",
+                    home.display()
+                );
             }
             pty.pump(Duration::from_millis(100));
         }

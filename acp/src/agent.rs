@@ -1201,7 +1201,9 @@ impl A3sCodeAgent {
             .or_else(|| request.get("session_id"))
             .and_then(|value| value.as_str())
             .filter(|value| uuid::Uuid::parse_str(value).is_ok())
-            .ok_or_else(|| acp::Error::invalid_params().data("session delete request: sessionId"))?;
+            .ok_or_else(|| {
+                acp::Error::invalid_params().data("session delete request: sessionId")
+            })?;
         let cwd = request
             .get("cwd")
             .and_then(|value| value.as_str())
@@ -1517,7 +1519,8 @@ impl acp::Agent for A3sCodeAgent {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         if let Some(live) = self.sessions.lock().await.get(&session_key) {
-            *live.active_prompt_id
+            *live
+                .active_prompt_id
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()) = client_prompt_id.clone();
         }
@@ -2202,10 +2205,7 @@ mod tests {
             .as_ref()
             .and_then(|slots| slots.guidelines.as_deref())
             .expect("native models still receive the budget line");
-        assert!(claude_budget.contains(&format!(
-            "thinking_budget={}",
-            high.thinking_budget
-        )));
+        assert!(claude_budget.contains(&format!("thinking_budget={}", high.thinking_budget)));
         assert!(claude_budget.contains(&format!("tool_rounds={}", high.max_tool_rounds)));
         assert!(claude.auto_compact);
         assert_eq!(
@@ -2220,10 +2220,7 @@ mod tests {
             .as_ref()
             .and_then(|slots| slots.guidelines.as_deref())
             .expect("host budget line");
-        assert!(local_budget.contains(&format!(
-            "thinking_budget={}",
-            high.thinking_budget
-        )));
+        assert!(local_budget.contains(&format!("thinking_budget={}", high.thinking_budget)));
         assert!(local_budget.contains(effort_guideline("high").expect("high guideline")));
     }
 

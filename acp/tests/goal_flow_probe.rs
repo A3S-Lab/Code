@@ -50,10 +50,7 @@ impl acp::Client for RecordingClient {
         ))
     }
 
-    async fn session_notification(
-        &self,
-        args: acp::SessionNotification,
-    ) -> Result<(), acp::Error> {
+    async fn session_notification(&self, args: acp::SessionNotification) -> Result<(), acp::Error> {
         if let acp::SessionUpdate::AgentMessageChunk(chunk) = &args.update {
             if let acp::ContentBlock::Text(text) = &chunk.content {
                 self.chunks.borrow_mut().push(text.text.clone());
@@ -64,7 +61,8 @@ impl acp::Client for RecordingClient {
 }
 
 const SET_PROMPT: &str = "/goal The workspace codename is CODEXE2E-7734. When asked for the codename, reply with exactly CODEXE2E-7734. Do not use any tools.";
-const ASK_PROMPT: &str = "What is the workspace codename? Reply with exactly the codename and nothing else.";
+const ASK_PROMPT: &str =
+    "What is the workspace codename? Reply with exactly the codename and nothing else.";
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires the model configured in .a3s/config.acl"]
@@ -94,14 +92,10 @@ async fn goal_commands_flow_end_to_end() {
             let (client_in_r, agent_out_w) = tokio::io::duplex(65536);
             let agent_out_w = agent_out_w.compat_write();
             let agent_in_r = agent_in_r.compat();
-            let (agent_conn, agent_io) = acp::AgentSideConnection::new(
-                agent.clone(),
-                agent_out_w,
-                agent_in_r,
-                |fut| {
+            let (agent_conn, agent_io) =
+                acp::AgentSideConnection::new(agent.clone(), agent_out_w, agent_in_r, |fut| {
                     tokio::task::spawn_local(fut);
-                },
-            );
+                });
             agent.set_client(Rc::new(agent_conn));
             let (client_conn, client_io) = acp::ClientSideConnection::new(
                 recording.clone(),
@@ -211,8 +205,9 @@ async fn goal_commands_flow_end_to_end() {
                 acp::SetSessionModeRequest::new(
                     session_id.clone(),
                     acp::SessionModeId::new("plan"),
-                ))
-                .await;
+                ),
+            )
+            .await;
             assert!(
                 mode_set.is_ok(),
                 "set_session_mode(plan) must succeed: {:?}",
