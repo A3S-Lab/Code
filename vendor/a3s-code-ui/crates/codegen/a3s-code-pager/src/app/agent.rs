@@ -1031,7 +1031,11 @@ impl AgentSession {
             .zip(id_strings.iter())
             .map(|(p, id)| CombineGate {
                 id: id.as_str(),
-                is_plain_prompt: p.kind == QueueEntryKind::Prompt,
+                // A queued slash command must drain as its own turn: merging
+                // "/a" and "/b" into "/a\n/b" changes the command semantics
+                // (the backend parses only the first line).
+                is_plain_prompt: p.kind == QueueEntryKind::Prompt
+                    && !p.text.starts_with('/'),
                 is_synthetic: false,
                 is_expanded_skill: !p.wire_matches_display(),
                 is_bash: p.kind == QueueEntryKind::BashCommand,
