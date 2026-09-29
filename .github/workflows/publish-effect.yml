@@ -1,0 +1,34 @@
+name: Publish a3s-effect
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish a3s-effect 0.1.1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout a3s-effect 0.1.1
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/Effect
+          ref: 08a11f782190cf8f83e034064dd018a3f99ec9e1
+          path: effect
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish a3s-effect 0.1.1
+        working-directory: effect
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if curl -fsSL -A 'a3s-release' https://crates.io/api/v1/crates/a3s-effect/0.1.1 >/dev/null; then
+            echo "a3s-effect 0.1.1 already exists on crates.io"
+            exit 0
+          fi
+          cargo publish
