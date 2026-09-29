@@ -21,6 +21,9 @@ struct LiveSession {
     /// failing with "already has an active operation" (the pager's send-now
     /// and queue reissue both rely on the agent accepting and serializing).
     turn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The client's prompt id for the in-flight turn, echoed on every
+    /// session notification per the ACP prompt-ack contract.
+    active_prompt_id: std::sync::Mutex<Option<String>>,
 }
 
 /// ACP agent that owns live [`AgentSession`] values keyed by ACP session id.
@@ -35,6 +38,11 @@ pub struct A3sCodeAgent {
     effort: Mutex<Option<EffortLimits>>,
     /// Durable `/goal` objectives keyed by ACP session id.
     goals: Mutex<HashMap<String, crate::goal::DurableGoal>>,
+    /// Monotonic turn generation per session. `cancel` records the generation
+    /// that was in flight, so a late cancel cannot mark the next turn.
+    turn_generation: Mutex<HashMap<String, u64>>,
+    /// Generation `cancel` observed for each session.
+    cancelled_generation: Mutex<HashMap<String, u64>>,
 }
 
 impl A3sCodeAgent {
@@ -49,10 +57,28 @@ impl A3sCodeAgent {
             // a3s-code TUI default is BudgetProfile index 2 (`high`).
             effort: Mutex::new(effort_limits("high")),
             goals: Mutex::new(HashMap::new()),
+            turn_generation: Mutex::new(HashMap::new()),
+            cancelled_generation: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Wire the outbound client connection after `AgentSideConnection::new`.
+    /// The in-flight prompt id for this notification's session.
+    ///
+    /// A try-lock miss leaves the update unstamped. Falling through to another
+    /// session's id would make the pager drop the update.
+    fn prompt_id_for_session(&self, session_id: &acp::SessionId) -> Option<String> {
+        let key = session_id.0.as_ref();
+        let sessions = self.sessions.try_lock().ok()?;
+        let prompt_id = sessions.get(key).and_then(|live| {
+            live.active_prompt_id
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+        });
+        drop(sessions);
+        prompt_id
+    }
+
     pub fn set_client(&self, conn: Rc<acp::AgentSideConnection>) {
         *self.client.borrow_mut() = Some(conn);
     }
@@ -159,6 +185,7 @@ impl A3sCodeAgent {
         if let Some(limits) = effort {
             options = options
                 .with_reasoning_effort(limits.token)
+                .with_thinking_budget(limits.thinking_budget)
                 .with_max_tool_rounds(limits.max_tool_rounds)
                 .with_max_parallel_tasks(limits.max_parallel_tasks)
                 .with_max_continuation_turns(limits.max_continuation_turns);
@@ -169,15 +196,42 @@ impl A3sCodeAgent {
                     .with_auto_parallel_delegation(true)
                     .with_manual_delegation_enabled(true);
             }
+            // The numbers are part of the completion the model receives, including
+            // native-effort models whose provider parameter does not carry a token count.
+            let mut guideline = format!(
+                "Session budget: thinking_budget={} tool_rounds={}.",
+                limits.thinking_budget, limits.max_tool_rounds
+            );
             if !a3s_code_core::llm::model_sends_native_effort(model_id) {
-                if let Some(guideline) = effort_guideline(limits.token) {
-                    options = options.with_prompt_slots(
-                        a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
-                    );
+                if let Some(extra) = effort_guideline(limits.token) {
+                    guideline.push('\n');
+                    guideline.push_str(extra);
                 }
             }
+            options = options.with_prompt_slots(
+                a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
+            );
         }
         options
+    }
+
+    /// The terminal host asks before a mutation and lets known-safe reads run.
+    ///
+    /// `InteractiveToolGuardrail` is the shared classifier. An enabled
+    /// confirmation policy is what turns its Ask into a parked
+    /// `ConfirmationRequired` the pager answers through `request_permission`.
+    /// A session with neither runs every tool, including writes.
+    fn host_session_options(
+        session_id: &str,
+        model_id: &str,
+        effort: Option<EffortLimits>,
+        workspace: &std::path::Path,
+    ) -> SessionOptions {
+        let guardrail = a3s_code_core::permissions::InteractiveToolGuardrail::default()
+            .with_workspace(workspace);
+        Self::core_session_options(session_id, model_id, effort)
+            .with_permission_checker(Arc::new(guardrail))
+            .with_confirmation_policy(a3s_code_core::hitl::ConfirmationPolicy::enabled())
     }
 
     async fn open_core_session(
@@ -192,7 +246,7 @@ impl A3sCodeAgent {
         let agent = agent_guard
             .as_ref()
             .ok_or_else(|| acp::Error::internal_error().data("core agent missing"))?;
-        let options = Self::core_session_options(session_id, model_id, effort);
+        let options = Self::host_session_options(session_id, model_id, effort, &workspace);
         let session = agent
             .session_async(workspace.to_string_lossy().to_string(), Some(options))
             .await
@@ -202,6 +256,7 @@ impl A3sCodeAgent {
             workspace,
             model_id: model_id.to_string(),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            active_prompt_id: std::sync::Mutex::new(None),
         })
     }
 
@@ -220,7 +275,8 @@ impl A3sCodeAgent {
         let agent = agent_guard
             .as_ref()
             .ok_or_else(|| acp::Error::internal_error().data("core agent missing"))?;
-        let mut options = Self::core_session_options(current.session_id(), model_id, effort);
+        let mut options =
+            Self::host_session_options(current.session_id(), model_id, effort, &workspace);
         let session = if let Some(store) = current.session_store() {
             options = options.with_session_store(store);
             agent
@@ -240,12 +296,25 @@ impl A3sCodeAgent {
             workspace,
             model_id: model_id.to_string(),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            active_prompt_id: std::sync::Mutex::new(None),
         })
     }
 
     async fn emit(&self, notification: acp::SessionNotification) {
         let client = self.client.borrow().clone();
         if let Some(client) = client {
+            let mut notification = notification;
+            // Echo the in-flight turn's client prompt id on every
+            // notification (the ACP prompt-ack contract: the pager disarms
+            // its ack watch on the first update naming the prompt).
+            if notification.meta.is_none() {
+                let prompt_id = self.prompt_id_for_session(&notification.session_id);
+                if let Some(prompt_id) = prompt_id {
+                    let mut meta = acp::Meta::new();
+                    meta.insert("promptId".to_string(), serde_json::json!(prompt_id));
+                    notification.meta = Some(meta);
+                }
+            }
             let _ = client.session_notification(notification).await;
         }
     }
@@ -933,6 +1002,36 @@ impl A3sCodeAgent {
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
+    /// A cancel for this generation wins over both a normal end and a stream error.
+    /// The word "cancel" inside an unrelated error is not a cancellation.
+    async fn finish_prompt(
+        &self,
+        session_key: &str,
+        generation: u64,
+        response: acp::Result<acp::PromptResponse>,
+    ) -> acp::Result<acp::PromptResponse> {
+        {
+            let sessions = self.sessions.lock().await;
+            if let Some(live) = sessions.get(session_key) {
+                *live
+                    .active_prompt_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+        }
+        let cancelled = self
+            .cancelled_generation
+            .lock()
+            .await
+            .get(session_key)
+            .copied()
+            == Some(generation);
+        if cancelled {
+            return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
+        }
+        response
+    }
+
     async fn handle_compact_extension(
         &self,
         args: &acp::ExtRequest,
@@ -986,6 +1085,201 @@ impl A3sCodeAgent {
             .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
         Ok(acp::ExtResponse::new(body.into()))
     }
+
+    /// `x.ai/session/info` is the pager's `/session-info` and `/context` source.
+    /// The pager decodes `ExtMethodResult<SessionInfoResponse>` and treats any
+    /// other body, including JSON null, as an invalid response.
+    async fn handle_session_info(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        let request: serde_json::Value =
+            serde_json::from_str(args.params.get()).map_err(|error| {
+                acp::Error::invalid_params().data(format!("session info request: {error}"))
+            })?;
+        let session_id = request
+            .get("sessionId")
+            .or_else(|| request.get("session_id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| acp::Error::invalid_params().data("session info request: sessionId"))?;
+        let live = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_id).map(|live| {
+                // The fact scheduler increments its turn only on `user.message`.
+                // Tool rounds and assistant tool lines are other fact kinds, and
+                // the folded transcript stores those lines with role=user.
+                let turns = product_prompt_turns(live.workspace.as_path(), session_id);
+                let (prompt_tokens, completion_tokens, total_tokens) =
+                    live.session.recorded_usage_tokens();
+                let used = if total_tokens > 0 {
+                    total_tokens
+                } else {
+                    prompt_tokens.saturating_add(completion_tokens)
+                };
+                let total = live.session.context_window_tokens() as u64;
+                (
+                    live.workspace.display().to_string(),
+                    live.model_id.clone(),
+                    turns,
+                    used,
+                    total,
+                )
+            })
+        };
+        let body = match live {
+            Some((cwd, model_id, turns, used, total)) => {
+                let usage_pct = usage_percent(used, total);
+                serde_json::json!({
+                    "result": {
+                        "sessionId": session_id,
+                        "cwd": cwd,
+                        "model": &model_id,
+                        "resolvedModelId": &model_id,
+                        "modelFingerprint": null,
+                        "turns": turns,
+                        "turnIndex": turns,
+                        "context": {
+                            "used": used,
+                            "total": total,
+                            "usagePct": usage_pct,
+                            "turnCount": turns,
+                            "freeTokens": total.saturating_sub(used)
+                        }
+                    }
+                })
+            }
+            None => serde_json::json!({
+                "result": null,
+                "error": "unknown session id"
+            }),
+        };
+        let raw = serde_json::value::to_raw_value(&body)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(raw.into()))
+    }
+
+    /// Push the fact-log transcript as historical session updates.
+    ///
+    /// The pager does not read the fact log itself. `session/load` is the
+    /// path `--resume` already calls, and untagged updates are dropped once
+    /// the load window closes.
+    async fn replay_loaded_transcript(&self, session_id: &acp::SessionId, session: &AgentSession) {
+        let mut meta = acp::Meta::new();
+        meta.insert("isReplay".to_string(), serde_json::json!(true));
+        for message in session.durable_transcript() {
+            if !message.is_product_transcript() {
+                continue;
+            }
+            let text = message.transcript_display_text();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let block = acp::ContentBlock::Text(acp::TextContent::new(text));
+            let update = if message.role.eq_ignore_ascii_case("assistant") {
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(block))
+            } else if message.role.eq_ignore_ascii_case("user") {
+                acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(block))
+            } else {
+                continue;
+            };
+            let mut notification = acp::SessionNotification::new(session_id.clone(), update);
+            notification.meta = Some(meta.clone());
+            self.emit(notification).await;
+        }
+    }
+
+    /// `x.ai/session/delete` is the pager's `/delete` confirmation.
+    ///
+    /// The pager removes its live view only after this returns without an
+    /// error. The session directory under the a3s home is what `--continue`
+    /// reads, so a null body would report success and leave that directory.
+    async fn handle_session_delete(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        let request: serde_json::Value =
+            serde_json::from_str(args.params.get()).map_err(|error| {
+                acp::Error::invalid_params().data(format!("session delete request: {error}"))
+            })?;
+        let session_id = request
+            .get("sessionId")
+            .or_else(|| request.get("session_id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| uuid::Uuid::parse_str(value).is_ok())
+            .ok_or_else(|| acp::Error::invalid_params().data("session delete request: sessionId"))?;
+        let cwd = request
+            .get("cwd")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let workspace = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(session_id).map(|live| live.workspace)
+        };
+        self.goals.lock().await.remove(session_id);
+        self.turn_generation.lock().await.remove(session_id);
+        self.cancelled_generation.lock().await.remove(session_id);
+        if let Some(workspace) = workspace.as_deref() {
+            remove_fact_log(workspace, session_id);
+        }
+        if let Some(cwd) = cwd.as_deref() {
+            remove_fact_log(std::path::Path::new(cwd), session_id);
+        }
+        remove_recorded_session(session_id);
+        let body = serde_json::json!({ "success": true });
+        let raw = serde_json::value::to_raw_value(&body)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(raw.into()))
+    }
+}
+
+fn product_prompt_turns(workspace: &std::path::Path, session_id: &str) -> u64 {
+    let thread = a3s_code_core::fact_control::thread_for_session(session_id);
+    let Ok(facts) = a3s_code_core::fact_control::read_workspace_facts(workspace, &thread) else {
+        return 0;
+    };
+    facts
+        .iter()
+        .filter(|fact| fact.kind == "user.message")
+        .count() as u64
+}
+
+fn remove_fact_log(workspace: &std::path::Path, session_id: &str) {
+    let path = workspace
+        .join(".a3s")
+        .join("effect-log")
+        .join(format!("{session_id}.jsonl"));
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Remove `{a3s-home}/sessions/{cwd}/{session_id}` for every recorded cwd.
+///
+/// The directory name is the url-encoded cwd. Matching the session id keeps
+/// the delete on that session's own record.
+fn remove_recorded_session(session_id: &str) {
+    let mut homes = Vec::new();
+    if let Some(env) = std::env::var_os("GROK_HOME").filter(|value| !value.is_empty()) {
+        homes.push(PathBuf::from(env));
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        homes.push(PathBuf::from(home).join(".grok"));
+    }
+    for home in homes {
+        let Ok(entries) = std::fs::read_dir(home.join("sessions")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path().join(session_id);
+            if dir.is_dir() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+}
+
+fn usage_percent(used: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+    ((used as f64) / (total as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u8
 }
 
 struct TurnState {
@@ -1020,7 +1314,7 @@ impl acp::Agent for A3sCodeAgent {
         Ok(acp::InitializeResponse::new(acp::ProtocolVersion::V1)
             .agent_capabilities(
                 acp::AgentCapabilities::new()
-                    .load_session(false)
+                    .load_session(true)
                     .prompt_capabilities(acp::PromptCapabilities::new().embedded_context(true)),
             )
             .auth_methods(Vec::new())
@@ -1078,6 +1372,39 @@ impl acp::Agent for A3sCodeAgent {
         self.reapply_active_goal(&session_id).await;
 
         Ok(acp::NewSessionResponse::new(acp::SessionId::new(session_id)).models(models))
+    }
+
+    async fn load_session(
+        &self,
+        args: acp::LoadSessionRequest,
+    ) -> acp::Result<acp::LoadSessionResponse> {
+        let session_id = args.session_id.0.to_string();
+        if session_id.is_empty() {
+            return Err(acp::Error::invalid_params().data("session id is empty"));
+        }
+        let workspace = if args.cwd.as_os_str().is_empty() {
+            self.launch.workspace.clone()
+        } else {
+            args.cwd.clone()
+        };
+        let model_id = self.model_id.lock().await.clone();
+        let effort = self.effort.lock().await.clone();
+        let live = self
+            .open_core_session(&session_id, workspace.clone(), &model_id, effort)
+            .await?;
+        let effort_token = self.effort.lock().await.map(|limits| limits.token);
+        let models = self.model_state_with(&live.model_id, effort_token);
+        let transcript = Arc::clone(&live.session);
+        self.sessions.lock().await.insert(session_id.clone(), live);
+        if let Some(goal) = crate::goal::load_goal(&workspace) {
+            self.goals.lock().await.insert(session_id.clone(), goal);
+        }
+        self.reapply_active_goal(&session_id).await;
+        // The pager keeps `isReplay` updates only while this load is in flight
+        // (and for a short grace after). Emit before the response returns.
+        self.replay_loaded_transcript(&args.session_id, &transcript)
+            .await;
+        Ok(acp::LoadSessionResponse::new().models(models))
     }
 
     /// ACP session modes: the A3S permission/mode surface. `plan` enables
@@ -1154,12 +1481,17 @@ impl acp::Agent for A3sCodeAgent {
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::info!(target: "perf_probe", "prompt_enter");
         let session_key = args.session_id.0.to_string();
-        let (session, turn_lock) = {
+        let (session, turn_lock, _prompt_echo) = {
             let sessions = self.sessions.lock().await;
             let live = sessions
                 .get(&session_key)
                 .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
-            (Arc::clone(&live.session), Arc::clone(&live.turn_lock))
+            let echo = live
+                .active_prompt_id
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            (Arc::clone(&live.session), Arc::clone(&live.turn_lock), echo)
         };
 
         let prompt = Self::prompt_text(&args.prompt);
@@ -1169,16 +1501,37 @@ impl acp::Agent for A3sCodeAgent {
         // Queue behind an active turn instead of failing: the pager's
         // send-now / queue-reissue expect the agent to accept and serialize.
         let turn_permit = turn_lock.lock().await;
-        if let Some(op) = crate::goal::parse_goal_command(&prompt) {
-            tracing::info!(target: "perf_probe", "goal_command_branch");
-            return self.handle_goal(&args.session_id, &session, op).await;
+        let generation = {
+            let mut generations = self.turn_generation.lock().await;
+            let slot = generations.entry(session_key.clone()).or_insert(0);
+            *slot = slot.saturating_add(1);
+            *slot
+        };
+        // Echo the client's prompt id on every notification (the ACP
+        // prompt-ack contract): the pager disarms its ack watch on the
+        // first update naming the prompt.
+        let client_prompt_id = args
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("promptId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(live) = self.sessions.lock().await.get(&session_key) {
+            *live.active_prompt_id
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = client_prompt_id.clone();
         }
-        let goal = self.goals.lock().await.get(&session_key).cloned();
-        let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
-        let response = self.stream_turn(&args.session_id, &session, &prompt).await;
+        let response = if let Some(op) = crate::goal::parse_goal_command(&prompt) {
+            tracing::info!(target: "perf_probe", "goal_command_branch");
+            self.handle_goal(&args.session_id, &session, op).await
+        } else {
+            let goal = self.goals.lock().await.get(&session_key).cloned();
+            let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
+            self.stream_turn(&args.session_id, &session, &prompt).await
+        };
         tracing::info!(target: "perf_probe", "prompt_return");
         drop(turn_permit);
-        response
+        self.finish_prompt(&session_key, generation, response).await
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
@@ -1192,6 +1545,12 @@ impl acp::Agent for A3sCodeAgent {
         if args.method.as_ref().starts_with("x.ai/interject") {
             return self.handle_interject(&args).await;
         }
+        if args.method.as_ref() == "x.ai/session/info" {
+            return self.handle_session_info(&args).await;
+        }
+        if args.method.as_ref() == "x.ai/session/delete" {
+            return self.handle_session_delete(&args).await;
+        }
         Ok(acp::ExtResponse::new(
             serde_json::value::RawValue::NULL.to_owned().into(),
         ))
@@ -1199,6 +1558,17 @@ impl acp::Agent for A3sCodeAgent {
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
         let session_key = args.session_id.0.to_string();
+        let generation = self
+            .turn_generation
+            .lock()
+            .await
+            .get(&session_key)
+            .copied()
+            .unwrap_or(0);
+        self.cancelled_generation
+            .lock()
+            .await
+            .insert(session_key.clone(), generation);
         let session = {
             let sessions = self.sessions.lock().await;
             sessions.get(&session_key).map(|live| live.session.clone())
@@ -1245,24 +1615,37 @@ fn task_to_plan_entry(task: &a3s_code_core::planning::Task) -> acp::PlanEntry {
 
 /// Effort selection for one session.
 ///
-/// `token` is passed to the provider as its own effort parameter. Tool rounds
-/// stay on one safety ceiling for every level so a lower effort cannot end
-/// the task early.
+/// `token` is the provider effort parameter when the model has one.
+/// `thinking_budget` and `max_tool_rounds` are the host budget. Each level
+/// has its own pair. `max` and `ultracode` keep the tool-round safety ceiling
+/// as their cap; every other level is strictly below it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EffortLimits {
     token: &'static str,
+    thinking_budget: usize,
     max_tool_rounds: usize,
     max_parallel_tasks: usize,
     max_continuation_turns: u32,
 }
 
-/// Advertise only the effort values this model accepts.
+/// Host budget levels offered when the provider has no native effort parameter.
+/// `ultracode` stays off the menu: it is not a `ReasoningEffort` variant.
+const HOST_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// Advertise the effort values `/effort` can apply.
 ///
+/// A native menu wins when the provider has one (GLM stays on low/high/max).
+/// Every other model still gets the host budget menu, because thinking budget
+/// and tool rounds apply whether or not the provider has an effort parameter.
 /// Each entry includes `value` so the pager's `ReasoningEffortOption` parser
-/// accepts it. `ultracode` is not a `ReasoningEffort` variant, so it stays off
-/// the menu. Models without a native parameter get an empty list.
+/// accepts it.
 fn reasoning_effort_catalog_meta(model_id: &str) -> serde_json::Map<String, serde_json::Value> {
-    let levels = a3s_code_core::llm::native_effort_menu(model_id);
+    let native = a3s_code_core::llm::native_effort_menu(model_id);
+    let levels: &[&str] = if native.is_empty() {
+        HOST_EFFORT_LEVELS
+    } else {
+        native
+    };
     let mut meta = serde_json::Map::new();
     meta.insert(
         "supportsReasoningEffort".into(),
@@ -1460,20 +1843,22 @@ const HOST_PARALLEL_TASKS: usize = 8;
 const HOST_CONTINUATION_TURNS: u32 = 8;
 
 fn effort_limits(token: &str) -> Option<EffortLimits> {
-    let token = match token.to_ascii_lowercase().as_str() {
-        "none" => "none",
-        "minimal" => "minimal",
-        "low" => "low",
-        "medium" => "medium",
-        "high" => "high",
-        "xhigh" => "xhigh",
-        "max" => "max",
-        "ultracode" => "ultracode",
+    let ceiling = a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING;
+    let (token, thinking_budget, max_tool_rounds) = match token.to_ascii_lowercase().as_str() {
+        "none" => ("none", 1024, 4),
+        "minimal" => ("minimal", 1536, 8),
+        "low" => ("low", 2048, 16),
+        "medium" => ("medium", 8192, 48),
+        "high" => ("high", 16_384, 128),
+        "xhigh" => ("xhigh", 32_768, 512),
+        "max" => ("max", 65_536, ceiling),
+        "ultracode" => ("ultracode", 65_536, ceiling),
         _ => return None,
     };
     Some(EffortLimits {
         token,
-        max_tool_rounds: a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING,
+        thinking_budget,
+        max_tool_rounds,
         max_parallel_tasks: HOST_PARALLEL_TASKS,
         max_continuation_turns: HOST_CONTINUATION_TURNS,
     })
@@ -1798,22 +2183,30 @@ mod tests {
         let low = effort_limits("low").expect("low");
         let high = effort_limits("high").expect("high");
         let max = effort_limits("max").expect("max");
-        assert_eq!(low.max_tool_rounds, high.max_tool_rounds);
-        assert_eq!(high.max_tool_rounds, max.max_tool_rounds);
+        assert!(low.max_tool_rounds < high.max_tool_rounds);
+        assert!(high.max_tool_rounds < max.max_tool_rounds);
+        assert!(low.thinking_budget < high.thinking_budget);
+        assert!(high.thinking_budget < max.thinking_budget);
         assert_eq!(
-            high.max_tool_rounds,
+            max.max_tool_rounds,
             a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
         );
 
         let claude =
             A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(high));
         assert_eq!(claude.reasoning_effort.as_deref(), Some("high"));
-        assert!(claude.thinking_budget.is_none());
-        assert_eq!(
-            claude.max_tool_rounds,
-            Some(a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING)
-        );
-        assert!(claude.prompt_slots.is_none());
+        assert_eq!(claude.thinking_budget, Some(high.thinking_budget));
+        assert_eq!(claude.max_tool_rounds, Some(high.max_tool_rounds));
+        let claude_budget = claude
+            .prompt_slots
+            .as_ref()
+            .and_then(|slots| slots.guidelines.as_deref())
+            .expect("native models still receive the budget line");
+        assert!(claude_budget.contains(&format!(
+            "thinking_budget={}",
+            high.thinking_budget
+        )));
+        assert!(claude_budget.contains(&format!("tool_rounds={}", high.max_tool_rounds)));
         assert!(claude.auto_compact);
         assert_eq!(
             claude.auto_compact_threshold,
@@ -1822,13 +2215,16 @@ mod tests {
         assert!(claude.max_context_tokens.is_none());
 
         let local = A3sCodeAgent::core_session_options("sid", "ollama/llama3", Some(high));
-        assert_eq!(
-            local
-                .prompt_slots
-                .as_ref()
-                .and_then(|slots| slots.guidelines.as_deref()),
-            effort_guideline("high")
-        );
+        let local_budget = local
+            .prompt_slots
+            .as_ref()
+            .and_then(|slots| slots.guidelines.as_deref())
+            .expect("host budget line");
+        assert!(local_budget.contains(&format!(
+            "thinking_budget={}",
+            high.thinking_budget
+        )));
+        assert!(local_budget.contains(effort_guideline("high").expect("high guideline")));
     }
 
     #[test]
@@ -1860,10 +2256,9 @@ mod tests {
     #[test]
     fn effort_limits_share_the_tool_ceiling() {
         let medium = effort_limits("medium").expect("medium");
-        assert_eq!(
-            medium.max_tool_rounds,
-            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
-        );
+        assert!(medium.max_tool_rounds < a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING);
+        assert_eq!(medium.thinking_budget, 8192);
+        assert_eq!(medium.max_tool_rounds, 48);
         assert_eq!(medium.max_parallel_tasks, HOST_PARALLEL_TASKS);
         assert_eq!(medium.max_continuation_turns, HOST_CONTINUATION_TURNS);
 
@@ -1874,7 +2269,13 @@ mod tests {
         assert_eq!(low.max_continuation_turns, max.max_continuation_turns);
         assert_eq!(ultra.max_parallel_tasks, max.max_parallel_tasks);
         assert_eq!(ultra.max_continuation_turns, max.max_continuation_turns);
-        assert_eq!(max.max_tool_rounds, medium.max_tool_rounds);
+        assert_eq!(
+            max.max_tool_rounds,
+            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
+        );
+        assert_eq!(ultra.max_tool_rounds, max.max_tool_rounds);
+        assert_eq!(ultra.thinking_budget, max.thinking_budget);
+        assert!(medium.max_tool_rounds < max.max_tool_rounds);
         let ultra_options =
             A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(ultra));
         assert_eq!(
@@ -1911,9 +2312,12 @@ mod tests {
         let local = reasoning_effort_catalog_meta("ollama/llama3");
         assert_eq!(
             local.get("supportsReasoningEffort"),
-            Some(&serde_json::Value::Bool(false))
+            Some(&serde_json::Value::Bool(true))
         );
-        assert!(effort_values(&local).is_empty());
+        assert_eq!(
+            effort_values(&local),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[test]
@@ -2719,7 +3123,9 @@ mod tests {
             "effort-high-budget",
             effort_limits("high").is_some_and(|limits| {
                 limits.token == "high"
-                    && limits.max_tool_rounds == a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
+                    && limits.thinking_budget == 16_384
+                    && limits.max_tool_rounds == 128
+                    && limits.max_tool_rounds < a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
             }),
         );
         record(

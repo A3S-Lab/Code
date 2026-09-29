@@ -31,6 +31,10 @@ struct SessionPersistenceSeed {
 }
 
 impl SessionPersistenceState {
+    pub(super) fn recorded_usage(&self) -> crate::llm::TokenUsage {
+        self.total_usage.clone()
+    }
+
     pub(super) fn record_usage(&mut self, usage: &crate::llm::TokenUsage) {
         self.total_usage.prompt_tokens = self
             .total_usage

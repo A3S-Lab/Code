@@ -235,7 +235,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
         // idling on the welcome screen's "Connecting..." past the bounded
         // connect budget.
         return Err(anyhow::anyhow!(
-            "no agent backend available: A3S_ACP_AGENT_BIN is not set; launch via `a3s code` or point it at a3s-code-acp"
+            "no agent backend available: a3s-code-acp was not found beside the pager and A3S_ACP_AGENT_BIN is not set; launch via `a3s code` or point it at a3s-code-acp"
         ));
     };
     let auth_manager = spawned.auth_manager.clone();

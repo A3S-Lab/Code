@@ -432,6 +432,27 @@ impl AgentSession {
         SessionView::from_session(self).history()
     }
 
+    /// Product-visible transcript already committed to this session's fact log.
+    ///
+    /// `history()` is the live in-memory buffer. A resumed session has to show
+    /// the log even when that buffer was never copied into the pager.
+    pub fn durable_transcript(&self) -> Vec<Message> {
+        crate::fact_control::compaction_transcript(&self.workspace, &self.session_id)
+            .unwrap_or_default()
+    }
+
+    /// Provider token totals already accumulated for this session.
+    ///
+    /// `(prompt, completion, total)`.
+    pub fn recorded_usage_tokens(&self) -> (u64, u64, u64) {
+        let usage = SessionView::from_session(self).recorded_token_usage();
+        (
+            usage.prompt_tokens as u64,
+            usage.completion_tokens as u64,
+            usage.total_tokens as u64,
+        )
+    }
+
     /// Return a reference to the session's memory.
     ///
     /// Normal sessions always have memory; `None` is reserved for

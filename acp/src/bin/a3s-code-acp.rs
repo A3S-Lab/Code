@@ -45,6 +45,12 @@ fn parse_args() -> Result<(PathBuf, Option<PathBuf>, Option<String>)> {
             }
         }
     }
+    // The pager forwards the ACL as `A3S_CONFIG`. `--config` still wins.
+    if config.is_none() {
+        if let Some(value) = std::env::var_os("A3S_CONFIG").filter(|value| !value.is_empty()) {
+            config = Some(PathBuf::from(value));
+        }
+    }
     Ok((cwd, config, model))
 }
 

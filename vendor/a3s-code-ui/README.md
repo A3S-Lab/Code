@@ -1,7 +1,7 @@
 # A3S Code TUI UI (pager)
 
 This tree is the **A3S Code** interactive TUI UI — rebranded and wired to
-`a3s-code-core` 9.1.0.
+`a3s-code-core` 9.1.1.
 
 | Item | Value |
 | --- | --- |

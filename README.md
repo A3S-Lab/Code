@@ -65,7 +65,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   inherits the provider.
 - **Search stays fast (9.1.0).** Automatic `web_search` is API, then HTTP,
   then headless. Moli is taken from the binary already shipped beside `a3s`
-  before any download. Current package on npm, crates.io, and PyPI: **9.1.0**.
+  before any download. Current package on npm, crates.io, and PyPI: **9.1.1**.
 
 ## What's new in 9.0
 
@@ -161,7 +161,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   Release workflow failed musl and did not complete the full Node matrix.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.1` line;
-current package **9.1.0**).
+current package **9.1.1**).
 
 ### Earlier lines
 

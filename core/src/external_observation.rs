@@ -119,10 +119,7 @@ fn claim_identity(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
     let root = canonical_root(workspace);
     let raw = Path::new(relative);
     let under_root = if raw.is_absolute() {
-        raw.strip_prefix(&root)
-            .or_else(|_| raw.strip_prefix(workspace))
-            .map(Path::to_path_buf)
-            .map_err(|_| "write path must stay inside the workspace".to_string())?
+        absolute_inside_root(&root, workspace, raw)?
     } else {
         raw.to_path_buf()
     };
@@ -151,6 +148,60 @@ fn canonical_root(workspace: &Path) -> PathBuf {
     workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf())
+}
+
+/// An absolute write is inside the workspace when it lands under the canonical
+/// root. `/var` and `/private/var` are the same directory on macOS; comparing
+/// the spellings with `strip_prefix` rejects an in-workspace file.
+fn absolute_inside_root(root: &Path, workspace: &Path, raw: &Path) -> Result<PathBuf, String> {
+    if let Ok(relative) = raw.strip_prefix(root) {
+        return Ok(relative.to_path_buf());
+    }
+    if let Ok(relative) = raw.strip_prefix(workspace) {
+        return Ok(relative.to_path_buf());
+    }
+    let normalized = normalize_existing_prefix(raw);
+    normalized
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .map_err(|_| "write path must stay inside the workspace".to_string())
+}
+
+fn normalize_existing_prefix(path: &Path) -> PathBuf {
+    let mut lexical = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => lexical.push(prefix.as_os_str()),
+            Component::RootDir => lexical.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            Component::CurDir => {}
+            Component::Normal(part) => lexical.push(part),
+            Component::ParentDir => {
+                lexical.pop();
+            }
+        }
+    }
+    if let Ok(canonical) = lexical.canonicalize() {
+        return canonical;
+    }
+    let mut current = lexical.as_path();
+    let mut suffix = Vec::new();
+    while !current.exists() {
+        let Some(name) = current.file_name() else {
+            return lexical;
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = current.parent() else {
+            return lexical;
+        };
+        current = parent;
+    }
+    let mut normalized = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    for part in suffix.iter().rev() {
+        normalized.push(part);
+    }
+    normalized
 }
 
 pub fn claim_write(session_id: &str, workspace: &Path, relative: &str) -> Result<(), String> {
@@ -315,6 +366,28 @@ mod tests {
         claim_write("one", root.path(), "src/lib.rs").unwrap();
         release_session("one");
         release_session("two");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_path_through_a_symlink_prefix_claims_the_workspace_file() {
+        let real = tempfile::tempdir().unwrap();
+        let alias_dir = tempfile::tempdir().unwrap();
+        let alias = alias_dir.path().join("workspace");
+        std::os::unix::fs::symlink(real.path(), &alias).unwrap();
+        let absolute = alias.join("side-effect.txt");
+
+        claim_write("session", real.path(), absolute.to_str().unwrap()).unwrap();
+        assert!(session_owns_write(
+            "session",
+            real.path(),
+            "side-effect.txt"
+        ));
+
+        let outside = alias.join("..").join("outside.txt");
+        let error = claim_write("session", real.path(), outside.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("inside the workspace"));
+        release_session("session");
     }
 
     #[test]

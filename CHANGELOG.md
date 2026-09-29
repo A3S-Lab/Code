@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.1] - 2026-09-29
+
 ### Fixed
 
+- `--resume` and `--continue` reopen that session's durable transcript.
+- Session info counts submitted user prompts and recorded token usage, including a turn that used tools.
+- Deleting a session removes its durable summary.
+- A prompt id stays on the session that submitted it.
+- `XAI_API_KEY` alone leaves the session model on the merged ACL default.
 - Tools that declare `requires_confirmation` settle through the confirmation
   flow in fact-log sessions even when the permission checker allows them: the
   policy view alone cannot waive a tool-owned escalation. Sessions whose

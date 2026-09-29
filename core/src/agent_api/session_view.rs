@@ -24,6 +24,10 @@ impl<'a> SessionView<'a> {
         read_or_recover(&self.session.history).clone()
     }
 
+    pub(super) fn recorded_token_usage(&self) -> crate::llm::TokenUsage {
+        read_or_recover(&self.session.persistence_state).recorded_usage()
+    }
+
     pub(super) fn memory(&self) -> Option<&'a Arc<crate::memory::AgentMemory>> {
         self.session.memory.as_ref()
     }

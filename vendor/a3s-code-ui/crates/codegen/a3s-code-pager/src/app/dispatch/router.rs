@@ -708,7 +708,19 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::MinimalExpandLast => {
-            app.minimal_expand_last();
+            if !app.minimal_expand_last() {
+                // Minimal mode prints scrollback into the terminal. A toast
+                // stays on the fullscreen overlay, which this mode does not draw.
+                if let ActiveView::Agent(id) = app.active_view
+                    && let Some(agent) = app.agents.get_mut(&id)
+                {
+                    crate::app::mode_switch::push_block_behind_live_stream(
+                        &mut agent.scrollback,
+                        crate::scrollback::block::RenderBlock::system("Nothing to expand"),
+                    );
+                }
+                app.show_toast("Nothing to expand");
+            }
             vec![]
         }
         Action::CopyBlockMeta => {

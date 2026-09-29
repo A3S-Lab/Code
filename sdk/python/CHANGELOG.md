@@ -4,6 +4,12 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [9.1.1] - 2026-09-29
+
+- Bundled Core 9.1.1. `--resume` and `--continue` reopen the durable
+  transcript, session info counts submitted prompts and recorded usage, and
+  `XAI_API_KEY` alone does not replace the merged ACL default model.
+
 ## [9.1.0] - 2026-09-27
 
 - Bundled Core 9.1.0: directory projection onto the stock Meta Harness,

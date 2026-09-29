@@ -53,7 +53,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   一对 `provider/model`。模型的 URL 或 key 留空时继承 provider。
 - **搜索保持快路径（9.1.0）。** 自动 `web_search` 依次是 API、HTTP、headless。
   Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。npm、crates.io、
-  PyPI 当前包版本是 **9.1.0**。
+  PyPI 当前包版本是 **9.1.1**。
 
 ## 9.0 有什么新内容
 
@@ -128,7 +128,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.1` 文档线；
-当前包版本 **9.1.0**）。
+当前包版本 **9.1.1**）。
 
 ### 更早的版本线
 

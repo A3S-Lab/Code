@@ -1,6 +1,7 @@
 //! Spawn the A3S Code ACP agent as a stdio subprocess and bridge it into
 //! the pager's typed ACP channels (same pattern as [`super::leader_bridge`]).
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
 
@@ -19,15 +20,18 @@ use a3s_code_shell::agent::config::Config as AgentConfig;
 
 const MAX_BUF: usize = 8 * 1024 * 1024;
 
-/// Spawn `A3S_ACP_AGENT_BIN` (or fail) and bridge its stdio into an [`SpawnedAgent`].
+/// Spawn the shipped ACP agent and bridge its stdio into an [`SpawnedAgent`].
 pub async fn spawn_a3s_acp(
     agent_config: &AgentConfig,
     cancel: &CancellationToken,
     cwd: Option<&std::path::Path>,
     model: Option<&str>,
 ) -> Result<SpawnedAgent> {
-    let bin = std::env::var("A3S_ACP_AGENT_BIN")
-        .map_err(|_| anyhow!("A3S_ACP_AGENT_BIN is not set; cannot spawn a3s-code-acp"))?;
+    let bin = a3s_acp_executable().ok_or_else(|| {
+        anyhow!(
+            "no a3s-code-acp beside the pager and A3S_ACP_AGENT_BIN is not set; cannot spawn the agent"
+        )
+    })?;
     let auth_manager = boot_auth_manager(&grok_home(), agent_config);
 
     let agent_cancel = cancel.child_token();
@@ -59,9 +63,13 @@ pub async fn spawn_a3s_acp(
                 if let Some(model) = model.as_deref() {
                     command.arg("--model").arg(model);
                 }
+                if let Some(config) = std::env::var_os("A3S_CONFIG").filter(|value| !value.is_empty())
+                {
+                    command.arg("--config").arg(config);
+                }
                 let mut child = command
                     .spawn()
-                    .with_context(|| format!("failed to spawn a3s ACP agent at {bin}"))?;
+                    .with_context(|| format!("failed to spawn a3s ACP agent at {}", bin.display()))?;
                 let child_stdin = child
                     .stdin
                     .take()
@@ -157,7 +165,60 @@ pub async fn spawn_a3s_acp(
     })
 }
 
-/// True when the pager should use the A3S ACP subprocess instead of A3S Code shell.
+/// True when the pager can spawn the shipped ACP agent.
+///
+/// An explicit `A3S_ACP_AGENT_BIN` wins. Otherwise the agent is the sibling of
+/// this binary, then the local Code debug or release build. That is the same
+/// agent `a3s code` launches when the variable is unset.
 pub fn a3s_acp_enabled() -> bool {
-    std::env::var_os("A3S_ACP_AGENT_BIN").is_some()
+    a3s_acp_executable().is_some()
+}
+
+/// Path of the ACP agent this process should spawn.
+pub fn a3s_acp_executable() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("A3S_ACP_AGENT_BIN") {
+        return Some(PathBuf::from(configured));
+    }
+    let name = if cfg!(windows) {
+        "a3s-code-acp.exe"
+    } else {
+        "a3s-code-acp"
+    };
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(dir) = current.parent() {
+            let sibling = dir.join(name);
+            if is_executable(&sibling) {
+                return Some(sibling);
+            }
+        }
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for profile in ["debug", "release"] {
+        let dev = manifest
+            .join("../../../../../target")
+            .join(profile)
+            .join(name);
+        if is_executable(&dev) {
+            return Some(dev);
+        }
+    }
+    None
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }

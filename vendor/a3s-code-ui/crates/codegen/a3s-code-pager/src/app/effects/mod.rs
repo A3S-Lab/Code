@@ -81,6 +81,44 @@ pub(crate) async fn discover_mcp_servers(
     );
     servers
 }
+/// Record the shell summary `--continue` reads.
+///
+/// `a3s-code-acp` keeps the live session in its own store. The pager lookup
+/// only sees shell summaries, and an untitled zero-message summary is skipped
+/// as an unused husk. The model id is the generated title so the bound session
+/// stays selectable without pretending the user renamed it.
+///
+/// The gate is the `meta.a3sCode` handshake, which is set for the shipped
+/// agent whether it was found via `A3S_ACP_AGENT_BIN` or beside the pager.
+async fn persist_a3s_session_for_continue(cwd: &Path, resp: &acp::NewSessionResponse) {
+    if !crate::app::a3s_code_active() {
+        return;
+    }
+    use a3s_code_shell::session::storage::StorageAdapter;
+    let info = a3s_code_shell::session::info::Info {
+        id: resp.session_id.clone(),
+        cwd: cwd.to_string_lossy().into_owned(),
+    };
+    let model_id = resp
+        .models
+        .as_ref()
+        .map(|models| models.current_model_id.clone())
+        .filter(|id| !id.0.is_empty())
+        .unwrap_or_else(|| acp::ModelId::new("a3s"));
+    let storage = a3s_code_shell::session::storage::JsonlStorageAdapter::with_root(
+        a3s_code_shell::util::grok_home::grok_home(),
+    );
+    if let Err(error) = storage.init_session(&info, model_id.clone()).await {
+        tracing::warn!(%error, "a3s session summary was not recorded");
+        return;
+    }
+    if let Err(error) = storage
+        .set_generated_title_if_absent(&info, model_id.0.to_string())
+        .await
+    {
+        tracing::warn!(%error, "a3s session title was not recorded");
+    }
+}
 fn apply_permission_mode_override(
     meta: &mut Option<acp::Meta>,
     permission_mode_override: Option<PermissionModeKind>,
@@ -274,6 +312,7 @@ pub(crate) fn execute(
                         Some(serde_json::json!({"mcp_server_count": mcp_count})),
                     );
                     let create_start = std::time::Instant::now();
+                    let persisted_cwd = session_cwd.clone();
                     let result = create_session_in_backend_rpc(
                             acp::NewSessionRequest::new(session_cwd)
                                 .mcp_servers(mcp_servers),
@@ -295,6 +334,7 @@ pub(crate) fn execute(
                             }),
                                 ),
                             );
+                            persist_a3s_session_for_continue(&persisted_cwd, &resp).await;
                             TaskResult::WithPinnedMemoryMode {
                                 agent_id,
                                 memory_mode: parse_session_memory_mode(resp.meta.as_ref()),
