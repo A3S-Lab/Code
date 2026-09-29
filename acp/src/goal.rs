@@ -186,7 +186,9 @@ pub fn apply_goal(current: Option<DurableGoal>, op: GoalOp) -> AppliedGoal {
 pub fn standing_goal_prompt(goal: Option<&DurableGoal>, user: &str) -> String {
     match goal {
         Some(goal) if !goal.paused && !goal.objective.trim().is_empty() => format!(
-            "Durable goal, still in force until it is cleared:\n{}\n\n{user}",
+            "Note: a durable goal is set for this workspace: \"{}\". It stays in force until \"/goal clear\".\
+If the user's message asks to work on this goal or clearly continues it, proceed; a greeting or \
+an unrelated question needs only a normal reply — do not start executing the goal unprompted.\n\n{user}",
             goal.objective.trim()
         ),
         _ => user.to_string(),

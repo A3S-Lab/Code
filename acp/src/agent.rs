@@ -17,6 +17,10 @@ struct LiveSession {
     session: Arc<AgentSession>,
     workspace: PathBuf,
     model_id: String,
+    /// Serializes turns: a prompt arriving mid-turn queues here instead of
+    /// failing with "already has an active operation" (the pager's send-now
+    /// and queue reissue both rely on the agent accepting and serializing).
+    turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// ACP agent that owns live [`AgentSession`] values keyed by ACP session id.
@@ -197,6 +201,7 @@ impl A3sCodeAgent {
             session: Arc::new(session),
             workspace,
             model_id: model_id.to_string(),
+            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -234,6 +239,7 @@ impl A3sCodeAgent {
             session: Arc::new(session),
             workspace,
             model_id: model_id.to_string(),
+            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -1121,18 +1127,21 @@ impl acp::Agent for A3sCodeAgent {
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::info!(target: "perf_probe", "prompt_enter");
         let session_key = args.session_id.0.to_string();
-        let session = {
+        let (session, turn_lock) = {
             let sessions = self.sessions.lock().await;
-            sessions
+            let live = sessions
                 .get(&session_key)
-                .map(|live| live.session.clone())
-                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+            (Arc::clone(&live.session), Arc::clone(&live.turn_lock))
         };
 
         let prompt = Self::prompt_text(&args.prompt);
         if prompt.trim().is_empty() {
             return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
         }
+        // Queue behind an active turn instead of failing: the pager's
+        // send-now / queue-reissue expect the agent to accept and serialize.
+        let turn_permit = turn_lock.lock().await;
         if let Some(op) = crate::goal::parse_goal_command(&prompt) {
             tracing::info!(target: "perf_probe", "goal_command_branch");
             return self.handle_goal(&args.session_id, &session, op).await;
@@ -1141,6 +1150,7 @@ impl acp::Agent for A3sCodeAgent {
         let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
         let response = self.stream_turn(&args.session_id, &session, &prompt).await;
         tracing::info!(target: "perf_probe", "prompt_return");
+        drop(turn_permit);
         response
     }
 
