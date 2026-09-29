@@ -578,6 +578,27 @@ pub(super) fn maybe_drain_queue(agent: &mut AgentView, notices: &mut Vec<String>
         QueueEntryKind::Command => {
             let invocation = crate::slash::parse_invocation(&queued.text);
             let token = invocation.as_ref().map_or("", |inv| inv.token);
+            // A3S: slash commands other than the pager-local memory/compact
+            // effects ride the prompt path — the backend intercepts
+            // server-side commands (/goal). The old fallback forced a
+            // Compact for every other queued command, swallowing replies
+            // like "/goal status".
+            if !matches!(token, "flush" | "dream" | "compact") {
+                let prompt_id = uuid::Uuid::new_v4().to_string();
+                agent.begin_local_turn(&prompt_id);
+                agent.note_self_originated_prompt(&prompt_id);
+                agent.turn_started_at = Some(Instant::now());
+                return QueueDrain {
+                    effects: vec![Effect::SendPrompt {
+                        agent_id,
+                        session_id,
+                        text: queued.text.clone(),
+                        prompt_id,
+                        skill_token_ranges: queued.skill_token_ranges.clone(),
+                    }],
+                    page_flip_entry: None,
+                };
+            }
             let (command, started, effect) = match token {
                 "flush" => (
                     AgentCommand::MemoryFlush,
