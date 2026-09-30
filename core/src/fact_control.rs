@@ -16,7 +16,7 @@ use a3s_effect::{
 use anyhow::Result;
 
 use crate::ask_user::{self, AskUserError};
-use crate::llm::{LlmClient, LlmResponse, Message, ToolDefinition};
+use crate::llm::{Attachment, LlmClient, LlmResponse, Message, ToolDefinition};
 use crate::permissions::{PermissionChecker, PermissionDecision, PermissionPolicy};
 use crate::queue::SessionLane;
 use crate::tools::ToolExecutor;
@@ -993,6 +993,16 @@ impl Completion for LiveCompletion {
             }
             folded.extend(request.messages.iter().cloned());
             let prompt_index = usize::from(!request.summary.is_empty());
+            let summary_offset = prompt_index;
+            let (kept_len, mut user_images) = surface
+                .as_ref()
+                .map(|surface| {
+                    user_attachment_plan(
+                        &surface.agent.tool_context_handle().workspace,
+                        &thread_for_session(&surface.session_id),
+                    )
+                })
+                .unwrap_or_else(|| (0, std::collections::VecDeque::new()));
             let mut recorded_calls = surface
                 .as_ref()
                 .map(|surface| {
@@ -1027,7 +1037,12 @@ impl Completion for LiveCompletion {
                             message_from_folded_tool(&id, &body, role == "tool-error"),
                         ]
                     } else {
-                        vec![Message::user(&body)]
+                        let images = if text.starts_with("user\n") {
+                            images_for_user_line(index, summary_offset, kept_len, &mut user_images)
+                        } else {
+                            Vec::new()
+                        };
+                        vec![user_message_with_images(&body, images)]
                     }
                 })
                 .collect();
@@ -1911,6 +1926,109 @@ fn assistant_tool_call(call: &RecordedCall) -> Message {
     }
 }
 
+fn user_message_fact(key: String, text: &str, attachments: &[Attachment]) -> NewFact {
+    if attachments.is_empty() {
+        return message_fact(key, text);
+    }
+    NewFact {
+        kind: "user.message".into(),
+        key,
+        payload: serde_json::json!({
+            "text": text,
+            "images": attachments
+                .iter()
+                .map(|image| serde_json::json!({
+                    "media_type": image.media_type,
+                    "data": base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &image.data,
+                    ),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn attachments_from_user_payload(payload: &serde_json::Value) -> Vec<Attachment> {
+    let Some(images) = payload.get("images").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    images
+        .iter()
+        .filter_map(|image| {
+            let media_type = image.get("media_type").and_then(|value| value.as_str())?;
+            if !media_type.starts_with("image/") {
+                return None;
+            }
+            let data = image.get("data").and_then(|value| value.as_str())?;
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+                .ok()
+                .filter(|bytes| !bytes.is_empty())?;
+            Some(Attachment::new(bytes, media_type))
+        })
+        .collect()
+}
+
+/// Image bytes for user lines that the effect fold still has after the latest
+/// compaction. `kept` lines are already in the scheduler transcript and are
+/// not paired with these facts.
+fn user_attachment_plan(
+    workspace: &Path,
+    thread: &str,
+) -> (usize, std::collections::VecDeque<Vec<Attachment>>) {
+    let Ok(facts) = read_workspace_facts(workspace, thread) else {
+        return (0, std::collections::VecDeque::new());
+    };
+    let start = facts
+        .iter()
+        .rposition(|fact| fact.kind == "compaction.done")
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let kept_len = if start > 0 {
+        facts[start - 1]
+            .payload
+            .get("kept")
+            .and_then(|value| value.as_array())
+            .map(|kept| kept.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let mut images = std::collections::VecDeque::new();
+    for fact in facts.iter().skip(start) {
+        match fact.kind.as_str() {
+            "user.message" => images.push_back(attachments_from_user_payload(&fact.payload)),
+            "question.answered" => images.push_back(Vec::new()),
+            _ => {}
+        }
+    }
+    (kept_len, images)
+}
+
+fn images_for_user_line(
+    index: usize,
+    summary_offset: usize,
+    kept_len: usize,
+    queue: &mut std::collections::VecDeque<Vec<Attachment>>,
+) -> Vec<Attachment> {
+    if index < summary_offset {
+        return Vec::new();
+    }
+    let request_index = index - summary_offset;
+    if request_index < kept_len {
+        return Vec::new();
+    }
+    queue.pop_front().unwrap_or_default()
+}
+
+fn user_message_with_images(body: &str, images: Vec<Attachment>) -> Message {
+    if images.is_empty() {
+        Message::user(body)
+    } else {
+        Message::user_with_attachments(body, &images)
+    }
+}
+
 /// Tool calls that already have a result, in log order.
 ///
 /// The folded transcript only keeps `tool\n{output}`. The provider still needs
@@ -2376,6 +2494,19 @@ impl FactRun {
     }
 
     pub async fn user_text(&self, text: &str) -> Result<a3s_effect::Settlement<CodingView>> {
+        self.user_text_with_attachments(text, &[]).await
+    }
+
+    /// Same turn as [`Self::user_text`], with image bytes stored beside `text`.
+    ///
+    /// The effect fold only copies `text` into the scheduler transcript. The
+    /// model call reads `images` back from this fact so the pixels are not
+    /// reduced to a byte count.
+    pub async fn user_text_with_attachments(
+        &self,
+        text: &str,
+        attachments: &[Attachment],
+    ) -> Result<a3s_effect::Settlement<CodingView>> {
         let log = self.open_log()?;
         let key = format!("m-{}", log.read(&self.thread).unwrap_or_default().len());
         ingest_coding(
@@ -2383,7 +2514,7 @@ impl FactRun {
             &log,
             Arc::clone(&self.services),
             &self.thread,
-            message_fact(key, text),
+            user_message_fact(key, text, attachments),
             self.limit,
         )
         .await
@@ -4362,5 +4493,79 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "new");
         assert_eq!(calls[0].name, "write");
+    }
+
+    #[test]
+    fn user_attachment_plan_restores_png_bytes_after_compaction() {
+        use a3s_effect::LogStore;
+        let workspace = tempfile::tempdir().unwrap();
+        let dir = log_dir(workspace.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = a3s_effect::FileLog::open(&dir).unwrap();
+        let png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let append = |key: &str, kind: &str, payload: serde_json::Value| {
+            log.append(
+                THREAD,
+                &[a3s_effect::NewFact {
+                    kind: kind.into(),
+                    key: key.into(),
+                    payload,
+                }],
+                None,
+            )
+            .unwrap();
+        };
+        append(
+            "old",
+            "user.message",
+            user_message_fact("old".into(), "earlier", &[Attachment::png(png.clone())]).payload,
+        );
+        append(
+            "c1",
+            "compaction.done",
+            serde_json::json!({
+                "summary": "earlier image",
+                "kept": ["user\nearlier", "assistant\nstored"]
+            }),
+        );
+        append(
+            "answered",
+            "question.answered",
+            serde_json::json!({"text": "continue"}),
+        );
+        append(
+            "new",
+            "user.message",
+            user_message_fact(
+                "new".into(),
+                "describe the image",
+                &[Attachment::png(png.clone())],
+            )
+            .payload,
+        );
+        let (kept_len, mut images) = user_attachment_plan(workspace.path(), THREAD);
+        assert_eq!(kept_len, 2);
+        assert!(images_for_user_line(0, 1, kept_len, &mut images).is_empty());
+        assert!(images_for_user_line(1, 1, kept_len, &mut images).is_empty());
+        assert!(images_for_user_line(2, 1, kept_len, &mut images).is_empty());
+        let answered = images_for_user_line(3, 1, kept_len, &mut images);
+        assert!(answered.is_empty());
+        let message = user_message_with_images(
+            "describe the image",
+            images_for_user_line(4, 1, kept_len, &mut images),
+        );
+        assert_eq!(message.text(), "describe the image");
+        match &message.content[0] {
+            crate::llm::ContentBlock::Image { source } => {
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    source.data.as_bytes(),
+                )
+                .unwrap();
+                assert_eq!(bytes, png);
+                assert_eq!(source.media_type, "image/png");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
     }
 }

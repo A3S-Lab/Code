@@ -59,7 +59,7 @@ pub(super) async fn send(
     }
 
     warn_deferred_init(session);
-    settle_prompt(session, prompt, history).await
+    settle_prompt(session, prompt, &[], history).await
 }
 
 pub(super) async fn send_with_attachments(
@@ -70,8 +70,7 @@ pub(super) async fn send_with_attachments(
 ) -> Result<AgentResult> {
     reject_oversized_attachments(attachments)?;
     let _lease = ExecutionCoordinator::admit(session, "send-with-attachments").await?;
-    let prompt = prompt_with_attachments(prompt, attachments);
-    settle_prompt(session, &prompt, history).await
+    settle_prompt(session, prompt, attachments, history).await
 }
 
 pub(super) async fn stream_with_attachments(
@@ -82,8 +81,7 @@ pub(super) async fn stream_with_attachments(
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
     reject_oversized_attachments(attachments)?;
     let lease = ExecutionCoordinator::admit(session, "stream-with-attachments").await?;
-    let prompt = prompt_with_attachments(prompt, attachments);
-    spawn_fact_stream(session, &prompt, history, lease).await
+    spawn_fact_stream(session, prompt, attachments, history, lease).await
 }
 
 fn reject_oversized_attachments(attachments: &[Attachment]) -> Result<()> {
@@ -118,7 +116,7 @@ pub(super) async fn stream(
         ));
     }
 
-    spawn_fact_stream(session, prompt, history, lease).await
+    spawn_fact_stream(session, prompt, &[], history, lease).await
 }
 
 /// Start one detached Code run at an exact host-selected identity.
@@ -209,6 +207,7 @@ pub(super) async fn spawn_recovery_with_run_id(
 async fn spawn_fact_stream(
     session: &AgentSession,
     prompt: &str,
+    attachments: &[Attachment],
     history: Option<&[Message]>,
     lease: run_admission::RunAdmissionLease,
 ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
@@ -216,6 +215,7 @@ async fn spawn_fact_stream(
     let mut pinned = prepare_pinned(session, prompt, true).await?;
     pinned.parts.set_events(tx.clone());
     let prompt = prompt.to_string();
+    let attachments = attachments.to_vec();
     let update_history = history.is_none();
     let history = history.map(|messages| messages.to_vec());
     let handle = tokio::spawn(async move {
@@ -231,7 +231,9 @@ async fn spawn_fact_stream(
                 run.seed_history(history)?;
             }
             prepare_pre_analysis(&parts, &prompt).await?;
-            let settled = run.user_text(&prompt).await?;
+            let settled = run
+                .user_text_with_attachments(&prompt, &attachments)
+                .await?;
             settle_confirmations(&run, settled, &parts).await
         }
         .await;
@@ -1079,22 +1081,6 @@ fn agent_result(
     }
 }
 
-fn prompt_with_attachments(prompt: &str, attachments: &[Attachment]) -> String {
-    if attachments.is_empty() {
-        return prompt.to_string();
-    }
-    let mut text = prompt.to_string();
-    for (index, attachment) in attachments.iter().enumerate() {
-        text.push_str(&format!(
-            "\n[attachment {} {} {} bytes]",
-            index + 1,
-            attachment.media_type,
-            attachment.data.len()
-        ));
-    }
-    text
-}
-
 async fn bind_external_run(session: &AgentSession, pinned: &mut PinnedFact, run_id: &str) {
     if let Some(surface) = pinned.parts.surface.as_mut() {
         surface.run_store = Some(Arc::clone(&session.run_store));
@@ -1228,9 +1214,11 @@ async fn prepare_pinned(
 async fn settle_prompt(
     session: &AgentSession,
     prompt: &str,
+    attachments: &[Attachment],
     history: Option<&[Message]>,
 ) -> Result<AgentResult> {
     let update_history = history.is_none();
+    let attachments = attachments.to_vec();
     let pinned = prepare_pinned(session, prompt, true).await?;
     let outcome = async {
         let run = pinned.parts.open()?;
@@ -1238,7 +1226,7 @@ async fn settle_prompt(
             run.seed_history(history)?;
         }
         prepare_pre_analysis(&pinned.parts, prompt).await?;
-        let settled = run.user_text(prompt).await?;
+        let settled = run.user_text_with_attachments(prompt, &attachments).await?;
         settle_confirmations(&run, settled, &pinned.parts).await
     }
     .await;

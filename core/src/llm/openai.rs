@@ -202,6 +202,15 @@ impl OpenAiClient {
                 let content: serde_json::Value = if msg.content.len() == 1 {
                     match &msg.content[0] {
                         ContentBlock::Text { text } => serde_json::json!(text),
+                        ContentBlock::Image { source } => serde_json::json!([{
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!(
+                                    "data:{};base64,{}",
+                                    source.media_type, source.data
+                                ),
+                            }
+                        }]),
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,

@@ -4029,6 +4029,31 @@ mod multimodal_tests {
     }
 
     #[test]
+    fn test_openai_convert_single_image_message() {
+        let client = OpenAiClient::new("key".to_string(), "gpt-4o".to_string());
+        let msgs = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: "image/png".to_string(),
+                    data: "abc123".to_string(),
+                },
+            }],
+            reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
+        }];
+        let converted = client.convert_messages(&msgs);
+        let content = converted[0]["content"].as_array().expect("image content");
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(
+            content[0]["image_url"]["url"],
+            "data:image/png;base64,abc123"
+        );
+    }
+
+    #[test]
     fn test_openai_convert_tool_result_with_multimodal_content() {
         let client = OpenAiClient::new("key".to_string(), "gpt-4o".to_string());
         let msgs = vec![Message {
