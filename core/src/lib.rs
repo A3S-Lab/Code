@@ -88,6 +88,7 @@ pub mod code_intelligence;
 pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
+pub(crate) mod compaction_carry;
 pub mod completion_attestor;
 pub mod config;
 pub mod content_digest;

@@ -1714,7 +1714,11 @@ async fn compact_handoff(
     match crate::compaction::summarize_folded_prefix(client, messages, window_tokens as usize).await
     {
         Ok(summary) => summary,
-        Err(_) => bounded_summary(messages),
+        Err(_) => {
+            let mut carried = crate::compaction_carry::obligations_from_folded(messages);
+            crate::compaction_carry::cap_fallback_goals(&mut carried);
+            crate::compaction_carry::seal_summary(&bounded_summary(messages), &carried)
+        }
     }
 }
 

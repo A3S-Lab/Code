@@ -144,8 +144,12 @@ pub(crate) async fn compact_messages(
     // the Core's private split boundary. Preserve tool calls and observations:
     // `Message::text` intentionally returns text blocks only and would silently
     // forget commands and tool results.
+    let carried = crate::compaction_carry::obligations_from_messages(messages);
+    // Standing instructions are reattached after the summary. They are not
+    // summarizer input, so a compaction model cannot rewrite them.
     let conversation_text = messages
         .iter()
+        .filter(|message| !crate::compaction_carry::is_pure_standing_message(message))
         .map(render_message_for_summary)
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -158,10 +162,10 @@ pub(crate) async fn compact_messages(
         .clamp(512, 600_000);
     let conversation_text = truncate_middle(&conversation_text, max_summary_chars);
 
-    // Pin the original goal outside the LLM path. Rolling compaction must not
-    // drop paths/constraints when a later summary forgets the ## Goal section.
-    let pinned_goal = extract_pinned_goal(messages);
-    let goal_for_prompt = pinned_goal.as_deref().unwrap_or("");
+    // The active obligation is the latest explicit revision, else the pinned
+    // goal. It is applied again after the model returns so a summary that
+    // drops or contradicts it does not become the next turn's goal.
+    let goal_for_prompt = carried.active_goal.as_deref().unwrap_or("");
     let mut summarization_prompt = crate::prompts::render(
         crate::prompts::CONTEXT_COMPACT,
         &[
@@ -193,10 +197,11 @@ pub(crate) async fn compact_messages(
         .message_token_limit
         .saturating_sub(summary_overhead)
         .clamp(1, MAX_COMPACT_SUMMARY_TOKENS);
-    // Pin the goal after truncation so a token trim cannot drop it, and so a
-    // second rewrite does not treat freeform summary text as the Goal body.
+    // Seal after truncation so a token trim cannot drop the obligation, and so
+    // summary prose cannot replace a revision, an unrevoked constraint, or an
+    // open step.
     let summary_text = truncate_summary_to_token_limit(summary_text.trim(), summary_token_limit);
-    let summary_text = ensure_goal_section(&summary_text, pinned_goal.as_deref());
+    let summary_text = crate::compaction_carry::seal_summary(&summary_text, &carried);
     tracing::debug!("Generated summary: {} chars", summary_text.len());
 
     let summary_message = Message::user_wire(&format!(
@@ -323,7 +328,7 @@ fn truncate_summary_to_token_limit(summary: &str, token_limit: usize) -> String 
 }
 
 /// Prefer a previously pinned `## Goal` body; otherwise the first product user turn.
-fn extract_pinned_goal(messages: &[Message]) -> Option<String> {
+pub(crate) fn extract_pinned_goal(messages: &[Message]) -> Option<String> {
     for message in messages.iter().rev() {
         if message.role != "user" {
             continue;
@@ -715,14 +720,19 @@ pub(crate) async fn summarize_folded_prefix(
     lines: &[String],
     window_tokens: usize,
 ) -> Result<String> {
+    let carried = crate::compaction_carry::obligations_from_folded(lines);
     let protect = TOOL_OUTPUT_PROTECT_TOKENS.min(window_tokens / 4);
     let pruned = prune_folded_tool_outputs(lines, protect);
-    let conversation = pruned.join("\n");
-    let pinned_goal = folded_goal_section(&conversation);
+    let conversation = pruned
+        .iter()
+        .filter(|line| !crate::compaction_carry::is_pure_standing_line(line))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     let prompt = crate::prompts::render(
         crate::prompts::CONTEXT_COMPACT,
         &[
-            ("goal", pinned_goal.as_deref().unwrap_or("")),
+            ("goal", carried.active_goal.as_deref().unwrap_or("")),
             ("conversation", &conversation),
         ],
     );
@@ -740,7 +750,10 @@ pub(crate) async fn summarize_folded_prefix(
     }
     let summary_text =
         truncate_summary_to_token_limit(summary_text.trim(), MAX_COMPACT_SUMMARY_TOKENS);
-    Ok(ensure_goal_section(&summary_text, pinned_goal.as_deref()))
+    Ok(crate::compaction_carry::seal_summary(
+        &summary_text,
+        &carried,
+    ))
 }
 
 /// Replace older folded tool results once the protected recent budget is spent.
@@ -764,10 +777,6 @@ pub(crate) fn prune_folded_tool_outputs(lines: &[String], protect_tokens: usize)
         *line = format!("{prefix}{PRUNED_MARKER}");
     }
     pruned
-}
-
-fn folded_goal_section(text: &str) -> Option<String> {
-    goal_section_body(text)
 }
 
 // ============================================================================
@@ -1155,7 +1164,7 @@ mod tests {
         );
         assert!(
             compacted.summary.contains("history"),
-            "first product user turn is the pinned goal"
+            "without a later revision, the first product user turn stays the pinned goal"
         );
         assert!(
             compacted.summary.contains("durable compact summary"),
@@ -1244,6 +1253,198 @@ mod tests {
         assert!(compacted.summary.contains("/app/build_part.py"));
         assert!(compacted.summary.contains("/app/part.FCStd"));
         assert!(compacted.summary.contains("PartDesign"));
+    }
+
+    /// A later `Revision:` is the active obligation. The first user turn stays
+    /// history. This replaces the older "first product turn is always the goal"
+    /// pin when the user explicitly revises the task.
+    #[tokio::test]
+    async fn compaction_carries_revision_constraint_and_open_step() {
+        const STANDING: &str = "# Instructions (personal + project AGENTS.md chain)\n\nPersonal: never print the token named CARRY-PERSONAL-7f3a.\n\n--- instruction-doc ---\n\nProject: format Rust with cargo fmt before finishing CARRY-PROJECT-7f3a.";
+        const FIRST_TASK: &str = "Add a CSV parser in crates/import.";
+        const CONSTRAINTS: &str = "Must: prefer the example-csv crate.\nRevoke: prefer the example-csv crate.\nMust not: add a dependency to parse CSV.";
+        const REVISION: &str = "Revision: the active task is a JSON exporter in crates/export.";
+        const ACTIVE: &str = "the active task is a JSON exporter in crates/export.";
+        let plan = serde_json::json!({
+            "plan": [
+                {"id": "schema", "step": "read the export schema", "status": "completed"},
+                {"id": "write", "step": "write the JSON exporter", "status": "pending"}
+            ]
+        });
+
+        let mut messages = vec![
+            Message::user(STANDING),
+            Message::user(FIRST_TASK),
+            Message::user(CONSTRAINTS),
+            Message::user(REVISION),
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "plan-1".to_string(),
+                    name: "update_plan".to_string(),
+                    input: plan.clone(),
+                }],
+                reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
+            },
+        ];
+        for index in 0..5 {
+            messages.push(Message::user(&format!("status note {index}")));
+        }
+
+        struct DroppingSummarizer {
+            prompts: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmClient for DroppingSummarizer {
+            async fn complete(
+                &self,
+                messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+            ) -> Result<LlmResponse> {
+                self.prompts.lock().unwrap().push(
+                    messages
+                        .iter()
+                        .map(Message::text)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                Ok(LlmResponse {
+                    message: Message::assistant(
+                        "The task is finished. All required steps are done. Goal: Add a CSV parser in crates/import. No constraints remain.",
+                    ),
+                    usage: TokenUsage::default(),
+                    stop_reason: Some("stop".to_string()),
+                    token_logprobs: Vec::new(),
+                    meta: None,
+                })
+            }
+
+            async fn complete_streaming(
+                &self,
+                _messages: &[Message],
+                _system: Option<&str>,
+                _tools: &[ToolDefinition],
+                _cancel_token: tokio_util::sync::CancellationToken,
+            ) -> Result<mpsc::Receiver<StreamEvent>> {
+                anyhow::bail!("streaming is not used by compaction")
+            }
+        }
+
+        let client = Arc::new(DroppingSummarizer {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let llm_client: Arc<dyn LlmClient> = client.clone();
+        let compacted = compact_messages(
+            "carry-obligations",
+            &messages,
+            &llm_client,
+            CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("history should compact");
+
+        let sent = compacted
+            .messages
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>();
+        let context = crate::compaction_carry::next_turn_context(STANDING, &sent);
+        assert!(
+            context.starts_with(STANDING),
+            "standing instructions are the prefix of the next turn"
+        );
+        assert!(
+            compacted.summary.contains(STANDING),
+            "standing instructions are reattached unchanged"
+        );
+        assert!(
+            !client.prompts.lock().unwrap()[0].contains("CARRY-PERSONAL-7f3a"),
+            "standing instructions stay outside the summarizer input"
+        );
+        assert_eq!(
+            goal_section_body(&compacted.summary).as_deref(),
+            Some(ACTIVE)
+        );
+        let goal = goal_section_body(&compacted.summary).unwrap();
+        assert!(
+            !goal.contains("CSV parser"),
+            "the earlier goal must not override the revision"
+        );
+        assert!(compacted.summary.contains("## Earlier goal"));
+        assert!(compacted.summary.contains(FIRST_TASK));
+        let constraints = section_after(&compacted.summary, "## Constraints");
+        assert!(constraints.contains("Must not: add a dependency to parse CSV."));
+        assert!(
+            !constraints.contains("example-csv"),
+            "a revoked constraint is not carried"
+        );
+        let open = section_after(&compacted.summary, "## Open steps");
+        assert!(open.contains("write the JSON exporter"));
+        assert!(
+            !open.contains("read the export schema"),
+            "a finished step is not listed as open"
+        );
+        let done = section_after(&compacted.summary, "## Completed steps");
+        assert!(done.contains("read the export schema"));
+        assert!(
+            compacted.summary.contains("The task is finished"),
+            "summary prose is kept, but it does not close the open step"
+        );
+        assert!(
+            sent[1..].iter().all(|text| !text.contains(ACTIVE)),
+            "the retained tail does not already contain the revision"
+        );
+        assert!(context.contains(ACTIVE));
+        assert!(context.contains("write the JSON exporter"));
+
+        let folded = vec![
+            format!("user\n{STANDING}"),
+            format!("user\n{FIRST_TASK}"),
+            format!("user\n{CONSTRAINTS}"),
+            format!("user\n{REVISION}"),
+            format!("assistant\ntool update_plan\n{plan}"),
+        ];
+        let folded_client = Arc::new(DroppingSummarizer {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let folded_summary = summarize_folded_prefix(folded_client.as_ref(), &folded, 8_000)
+            .await
+            .expect("folded summary");
+        let folded_context =
+            crate::compaction_carry::next_turn_context(STANDING, &[folded_summary.clone()]);
+        assert!(folded_context.starts_with(STANDING));
+        assert_eq!(goal_section_body(&folded_summary).as_deref(), Some(ACTIVE));
+        assert!(!goal_section_body(&folded_summary)
+            .unwrap()
+            .contains("CSV parser"));
+        assert!(folded_summary.contains("## Earlier goal"));
+        assert!(folded_summary.contains(FIRST_TASK));
+        assert!(section_after(&folded_summary, "## Constraints")
+            .contains("Must not: add a dependency to parse CSV."));
+        assert!(!section_after(&folded_summary, "## Constraints").contains("example-csv"));
+        assert!(section_after(&folded_summary, "## Open steps").contains("write the JSON exporter"));
+        assert!(!section_after(&folded_summary, "## Open steps").contains("read the export schema"));
+        assert!(
+            section_after(&folded_summary, "## Completed steps").contains("read the export schema")
+        );
+        assert!(folded_summary.contains("The task is finished"));
+        assert!(!folded_client.prompts.lock().unwrap()[0].contains("CARRY-PERSONAL-7f3a"));
+    }
+
+    fn section_after<'a>(text: &'a str, heading: &str) -> &'a str {
+        let Some(start) = text.find(heading) else {
+            return "";
+        };
+        let after = &text[start + heading.len()..];
+        let after = after.strip_prefix('\n').unwrap_or(after);
+        let end = after.find("\n## ").unwrap_or(after.len());
+        after[..end].trim()
     }
 
     #[test]
