@@ -188,6 +188,12 @@ fn absorb_message(
             }
         }
     }
+    // `/compact` renders model.turn calls as assistant prose (`Tool call …`)
+    // and turns a kept `assistant\ntool update_plan` line into the same role.
+    // The sealed summary is the only text the next turn keeps.
+    if message.role == "assistant" {
+        absorb_plan_prose(carried, &text);
+    }
 }
 
 fn absorb_folded(carried: &mut CarriedObligations, revisions: &mut Vec<String>, line: &str) {
@@ -314,6 +320,32 @@ fn required_steps(text: &str) -> Option<Vec<Step>> {
         }
     }
     (!steps.is_empty()).then_some(steps)
+}
+
+fn absorb_plan_prose(carried: &mut CarriedObligations, text: &str) {
+    let trimmed = text.trim();
+    if let Some(json) = trimmed.strip_prefix("tool update_plan\n") {
+        if let Some(steps) = steps_from_plan_json(json) {
+            apply_steps(carried, &steps);
+            return;
+        }
+    }
+    for line in trimmed.lines() {
+        let Some(rest) = line.trim().strip_prefix("Tool call update_plan (") else {
+            continue;
+        };
+        let Some((_, json)) = rest.split_once("): ") else {
+            continue;
+        };
+        if let Some(steps) = steps_from_plan_json(json) {
+            apply_steps(carried, &steps);
+        }
+    }
+}
+
+fn steps_from_plan_json(json: &str) -> Option<Vec<Step>> {
+    let value = serde_json::from_str::<serde_json::Value>(json.trim()).ok()?;
+    steps_from_plan_value(&value)
 }
 
 fn steps_from_plan_value(input: &serde_json::Value) -> Option<Vec<Step>> {

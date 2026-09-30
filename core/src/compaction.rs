@@ -1435,6 +1435,180 @@ mod tests {
         );
         assert!(folded_summary.contains("The task is finished"));
         assert!(!folded_client.prompts.lock().unwrap()[0].contains("CARRY-PERSONAL-7f3a"));
+
+        // `/compact` compacts compaction_transcript. That list renders
+        // model.turn update_plan as prose, including calls in `also`, and
+        // turns kept folded lines into messages. The stored fact is the
+        // summary alone, so the open step and the late constraint have to
+        // be in that summary.
+        let stale = serde_json::json!({
+            "plan": [
+                {"id": "stale", "step": "stale kept step", "status": "pending"}
+            ]
+        });
+        let live_workspace = tempfile::tempdir().expect("workspace");
+        let live_dir = live_workspace.path().join(".a3s").join("effect-log");
+        std::fs::create_dir_all(&live_dir).expect("log dir");
+        let live_log = a3s_effect::FileLog::open(&live_dir).expect("log");
+        let live_thread = crate::fact_control::thread_for_session("carry-live");
+        let append = |log: &a3s_effect::FileLog,
+                      thread: &str,
+                      key: &str,
+                      kind: &str,
+                      payload: serde_json::Value| {
+            use a3s_effect::LogStore;
+            log.append(
+                thread,
+                &[a3s_effect::NewFact {
+                    kind: kind.into(),
+                    key: key.into(),
+                    payload,
+                }],
+                None,
+            )
+            .expect("append fact");
+        };
+        append(
+            &live_log,
+            &live_thread,
+            "c1",
+            "compaction.done",
+            serde_json::json!({
+                "summary": "The task is finished. All required steps are done. No constraints remain.",
+                "kept": [
+                    "user\nMust not: add a dependency to parse CSV.",
+                    format!("assistant\ntool update_plan\n{stale}")
+                ]
+            }),
+        );
+        append(
+            &live_log,
+            &live_thread,
+            "m1",
+            "model.turn",
+            serde_json::json!({
+                "kind": "tool",
+                "call": {
+                    "id": "read-1",
+                    "name": "read",
+                    "args": {"path": "crates/export/schema.json"},
+                    "needs_confirmation": false
+                },
+                "also": [{
+                    "id": "plan-1",
+                    "name": "update_plan",
+                    "args": plan.clone(),
+                    "needs_confirmation": false
+                }]
+            }),
+        );
+        append(
+            &live_log,
+            &live_thread,
+            "u1",
+            "user.message",
+            serde_json::json!({"text": "status note after the plan"}),
+        );
+        let transcript =
+            crate::fact_control::compaction_transcript(live_workspace.path(), "carry-live")
+                .expect("transcript");
+        let rendered = transcript
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("Tool call update_plan (plan-1):"),
+            "a plan stored on model.turn.also must reach the transcript as prose"
+        );
+        assert!(rendered.contains("Must not: add a dependency to parse CSV."));
+        assert!(transcript.iter().any(|message| {
+            message.role == "assistant" && message.text().starts_with("tool update_plan\n")
+        }));
+        assert!(transcript.iter().all(|message| {
+            message
+                .content
+                .iter()
+                .all(|block| !matches!(block, ContentBlock::ToolUse { .. }))
+        }));
+        let live_client = Arc::new(DroppingSummarizer {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let live_llm: Arc<dyn LlmClient> = live_client.clone();
+        let live = compact_messages(
+            "carry-live",
+            &transcript,
+            &live_llm,
+            CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+            None,
+        )
+        .await
+        .expect("compact")
+        .expect("transcript should compact");
+        let live_open = section_after(&live.summary, "## Open steps");
+        assert!(live_open.contains("write the JSON exporter"));
+        assert!(!live_open.contains("read the export schema"));
+        assert!(!live_open.contains("stale kept step"));
+        assert!(
+            section_after(&live.summary, "## Completed steps").contains("read the export schema")
+        );
+        assert!(section_after(&live.summary, "## Constraints")
+            .contains("Must not: add a dependency to parse CSV."));
+        assert!(live.summary.contains("The task is finished"));
+
+        let kept_workspace = tempfile::tempdir().expect("workspace");
+        let kept_dir = kept_workspace.path().join(".a3s").join("effect-log");
+        std::fs::create_dir_all(&kept_dir).expect("log dir");
+        let kept_log = a3s_effect::FileLog::open(&kept_dir).expect("log");
+        let kept_thread = crate::fact_control::thread_for_session("carry-kept");
+        append(
+            &kept_log,
+            &kept_thread,
+            "c1",
+            "compaction.done",
+            serde_json::json!({
+                "summary": "The task is finished. All required steps are done.",
+                "kept": [
+                    format!("assistant\ntool update_plan\n{plan}"),
+                    "user\nMust not: ship a parser dependency."
+                ]
+            }),
+        );
+        append(
+            &kept_log,
+            &kept_thread,
+            "u1",
+            "user.message",
+            serde_json::json!({"text": "status note after the kept tail"}),
+        );
+        let kept_transcript =
+            crate::fact_control::compaction_transcript(kept_workspace.path(), "carry-kept")
+                .expect("kept transcript");
+        assert!(kept_transcript.iter().any(|message| {
+            message.role == "assistant" && message.text().starts_with("tool update_plan\n")
+        }));
+        assert!(kept_transcript.iter().any(|message| {
+            message.role == "user" && message.text() == "Must not: ship a parser dependency."
+        }));
+        let kept_client = Arc::new(DroppingSummarizer {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let kept_llm: Arc<dyn LlmClient> = kept_client.clone();
+        let kept = compact_messages(
+            "carry-kept",
+            &kept_transcript,
+            &kept_llm,
+            CompactionBudget::for_auto_compaction(128_000, 0.85, 0),
+            None,
+        )
+        .await
+        .expect("compact kept")
+        .expect("kept transcript should compact");
+        let kept_open = section_after(&kept.summary, "## Open steps");
+        assert!(kept_open.contains("write the JSON exporter"));
+        assert!(!kept_open.contains("read the export schema"));
+        assert!(section_after(&kept.summary, "## Constraints")
+            .contains("Must not: ship a parser dependency."));
     }
 
     fn section_after<'a>(text: &'a str, heading: &str) -> &'a str {

@@ -2556,6 +2556,11 @@ fn message_from_kept_line(line: &serde_json::Value) -> Option<Message> {
     if let Some(output) = line.strip_prefix("tool\n") {
         return Some(Message::user(&format!("Tool result: {output}")));
     }
+    // Effect auto-compact stores the recent tail as folded lines. A later
+    // `/compact` only reseals what this transcript still contains.
+    if let Some(body) = line.strip_prefix("user\n") {
+        return Some(Message::user(body));
+    }
     line.strip_prefix("assistant\n").map(Message::assistant)
 }
 
@@ -2569,10 +2574,14 @@ fn message_from_fact(fact: &a3s_effect::Fact) -> Option<Message> {
             let decided = serde_json::from_value::<ModelDecision>(fact.payload.clone()).ok()?;
             match decided {
                 ModelDecision::Text { text } => Some(Message::assistant(&text)),
-                ModelDecision::Tool { call, .. } => Some(Message::assistant(&format!(
-                    "Tool call {} ({}): {}",
-                    call.name, call.id, call.args
-                ))),
+                ModelDecision::Tool { call, also } => {
+                    let rendered = std::iter::once(call)
+                        .chain(also)
+                        .map(|call| format!("Tool call {} ({}): {}", call.name, call.id, call.args))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(Message::assistant(&rendered))
+                }
                 ModelDecision::Question { question, .. } => Some(Message::assistant(&question)),
             }
         }
