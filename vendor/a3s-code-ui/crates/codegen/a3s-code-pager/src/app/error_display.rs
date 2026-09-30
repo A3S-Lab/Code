@@ -159,6 +159,17 @@ pub(crate) fn format_request_failure(
     error_type: Option<WireErrorType>,
     raw: &str,
 ) -> FormattedRequestFailure {
+    // The kernel sentence already says what happened and what would close it.
+    // Truncating it and appending a retry hides the cause: sending again does
+    // not bind a Passed verification.
+    if let Some(gate) = completion_gate_text(raw) {
+        return FormattedRequestFailure {
+            status: None,
+            headline: gate,
+            detail: String::new(),
+            wire: WireErrorType::Other,
+        };
+    }
     let untyped = error_type.is_none();
     let wire = if truncation_recovered_from_untyped_raw(error_type, raw) {
         WireErrorType::MaxTokensTruncation
@@ -356,9 +367,31 @@ fn compose_detail(why: Option<&str>, action: Option<&str>) -> String {
             } else if a.contains(&w) {
                 action.to_string()
             } else {
-                format!("{}. {action}", why.trim_end_matches('.').trim_end())
+                format!("{} {action}", join_sentence(why))
             }
         }
+    }
+}
+
+/// One sentence period before the next step. An ellipsis is the truncation
+/// marker, so it stays; stripping every trailing `.` turns `...` into a
+/// mid-word cut (`does not co. Try sending again.`).
+fn join_sentence(why: &str) -> String {
+    let why = why.trim_end();
+    if why.ends_with('…') || why.ends_with("...") {
+        why.to_string()
+    } else {
+        format!("{}.", why.strip_suffix('.').unwrap_or(why))
+    }
+}
+
+fn completion_gate_text(raw: &str) -> Option<String> {
+    let start = raw.find("completion gate:")?;
+    let text = raw.get(start..)?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
     }
 }
 
@@ -699,6 +732,42 @@ mod tests {
             formatted.message(),
             "Response truncated: The model hit its output limit."
         );
+    }
+
+    #[test]
+    fn completion_gate_keeps_the_kernel_sentence() {
+        let digest = "c60e0037dfda61103939b7a6e16da59becad8e0f6d026156469921cedafb43d63";
+        let raw = format!(
+            "completion gate: workspace mutation {digest} (apps/docs/components/home/project-links.ts) has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
+        );
+        let formatted = format_request_failure(None, None, &raw);
+        assert_eq!(formatted.message(), raw);
+        assert!(
+            formatted
+                .message()
+                .contains("Assistant text does not count")
+        );
+        assert!(!formatted.message().contains("Try sending again"));
+        assert!(!formatted.message().contains("does not co."));
+    }
+
+    #[test]
+    fn long_untyped_error_keeps_its_ellipsis_before_the_retry() {
+        let raw = format!("{} trailing words", "x".repeat(220));
+        let formatted = format_request_failure(None, None, &raw);
+        assert!(
+            formatted.message().contains('…'),
+            "truncation must stay visible: {}",
+            formatted.message()
+        );
+        assert!(formatted.message().contains("Try sending again."));
+        assert!(
+            formatted.message().ends_with('…')
+                || formatted.detail.contains('…'),
+            "ellipsis must not collapse into a mid-word period: {}",
+            formatted.message()
+        );
+        assert!(!formatted.detail.ends_with("x. Try sending again."));
     }
 
     #[test]

@@ -536,8 +536,9 @@ pub fn decide_with_observations(
             effect_digest: digest,
         });
     }
+    let paths = mutation_paths_for_gate(ledger);
     let message = format!(
-        "completion gate: workspace mutation {digest} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
+        "completion gate: workspace mutation {digest}{paths} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
     );
     // A host waiver is not model-grantable, and editor-authored reports are
     // rejected. Built-in bash may bind a digest only when an existence check
@@ -547,6 +548,28 @@ pub fn decide_with_observations(
     // only invites another tool call. An open external observation still
     // continues, because a workspace write can satisfy that subject.
     CompletionGate::Incomplete { message }
+}
+
+/// A few ledger paths, so a failed turn names what changed. The digest stays
+/// the identity a report or waiver has to match.
+fn mutation_paths_for_gate(ledger: &MutationLedger) -> String {
+    let mut paths = ledger.paths().collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    if paths.is_empty() {
+        return String::new();
+    }
+    const SHOWN: usize = 4;
+    let body = if paths.len() <= SHOWN {
+        paths.join(", ")
+    } else {
+        format!(
+            "{}, and {} more",
+            paths[..SHOWN].join(", "),
+            paths.len() - SHOWN
+        )
+    };
+    format!(" ({body})")
 }
 
 fn report_binds_pass(report: &VerificationReport, digest: &str) -> bool {
@@ -757,6 +780,7 @@ mod tests {
         match decide_completion(&ledger, &[], &[], true) {
             CompletionGate::Incomplete { message } => {
                 assert!(message.starts_with("completion gate:"));
+                assert!(message.contains("src/lib.rs"));
                 assert!(message.contains("Assistant text does not count"));
             }
             other => panic!("expected incomplete, got {other:?}"),

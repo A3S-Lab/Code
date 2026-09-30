@@ -454,8 +454,13 @@ pub(crate) fn sanitize_user_error(raw: &str) -> String {
         result = result.replace(pattern, replacement);
     }
     if result.chars().count() > 200 {
-        let truncated: String = result.chars().take(180).collect();
-        result = format!("{truncated}...");
+        let taken: String = result.chars().take(180).collect();
+        let broken = match taken.rfind(char::is_whitespace) {
+            Some(space) if taken[..space].chars().count() >= 140 => taken[..space].to_string(),
+            _ => taken,
+        };
+        // One character, so a later sentence join cannot eat it as trailing dots.
+        result = format!("{broken}…");
     }
     result
 }
