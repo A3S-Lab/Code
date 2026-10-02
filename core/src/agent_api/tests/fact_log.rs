@@ -280,6 +280,101 @@ impl LlmClient for ScriptedClient {
     }
 }
 
+#[tokio::test]
+async fn seam_admission_open_run_stays_frozen() {
+    let workspace = tempfile::tempdir().unwrap();
+    crate::fact_control::reset_session_fact_log(workspace.path());
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(CountingText {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            &crate::SessionOptions::new()
+                .with_session_id("seam-admission")
+                .with_permission_policy(crate::permissions::policy_for_posture("default"))
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled),
+        )
+        .unwrap();
+    assert_ne!(session.session_id, "tui-session");
+
+    let open = super::super::conversation_runtime::FactSession::from(&session)
+        .open()
+        .expect("first admission");
+    let catalog = open.admitted_tool_catalog().to_vec();
+    let step_limit = open.admitted_step_limit();
+    let empty = serde_json::json!({});
+    assert!(open.completion_gate_required());
+    assert!(
+        catalog
+            .iter()
+            .any(|name| name == "write" || name == "bash"),
+        "default admission should expose a mutating tool, got {catalog:?}"
+    );
+    assert_eq!(
+        open.admitted_permission().check("bash", &empty),
+        crate::permissions::PermissionDecision::Ask
+    );
+    assert_eq!(
+        open.admitted_permission().check("write", &empty),
+        crate::permissions::PermissionDecision::Ask
+    );
+
+    session
+        .set_permission_posture("plan")
+        .expect("posture is recorded for the next admission");
+
+    assert_eq!(open.admitted_tool_catalog(), catalog.as_slice());
+    assert_eq!(open.admitted_step_limit(), step_limit);
+    assert!(open.completion_gate_required());
+    assert_eq!(
+        open.admitted_permission().check("write", &empty),
+        crate::permissions::PermissionDecision::Ask
+    );
+    assert_eq!(
+        open.admitted_permission().check("bash", &empty),
+        crate::permissions::PermissionDecision::Ask
+    );
+
+    let next = super::super::conversation_runtime::FactSession::from(&session)
+        .open()
+        .expect("next admission");
+
+    assert_eq!(open.admitted_tool_catalog(), catalog.as_slice());
+    assert_eq!(open.admitted_step_limit(), step_limit);
+    assert!(open.completion_gate_required());
+    assert_eq!(
+        open.admitted_permission().check("write", &empty),
+        crate::permissions::PermissionDecision::Ask
+    );
+    assert!(next.completion_gate_required());
+    assert_eq!(next.admitted_step_limit(), step_limit);
+    assert_eq!(
+        next.admitted_permission().check("write", &empty),
+        crate::permissions::PermissionDecision::Deny
+    );
+    assert_eq!(
+        next.admitted_permission()
+            .check("read", &serde_json::json!({"file_path": "README.md"})),
+        crate::permissions::PermissionDecision::Allow
+    );
+    assert!(
+        next.admitted_tool_catalog()
+            .iter()
+            .all(|name| name != "write" && name != "bash"),
+        "plan admission hides denied mutations, got {:?}",
+        next.admitted_tool_catalog()
+    );
+    assert!(
+        next.admitted_tool_catalog()
+            .iter()
+            .any(|name| name == "read"),
+        "plan admission keeps read, got {:?}",
+        next.admitted_tool_catalog()
+    );
+}
+
 fn session_for(
     agent: &crate::Agent,
     workspace: &std::path::Path,

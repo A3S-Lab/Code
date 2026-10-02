@@ -3,6 +3,23 @@ use serde::{Deserialize, Serialize};
 use super::{MatchingRules, PermissionChecker, PermissionDecision, PermissionRule};
 use crate::queue::SessionLane;
 
+/// Policy the next run admission freezes.
+///
+/// `default` asks. `plan` allows reads and denies mutations. `auto` allows
+/// known reads and still asks before execute. `always-approve`, `yolo`, and
+/// `force` add execute-lane allow rules. Deny rules added by the caller still
+/// win, because [`PermissionPolicy::check`] evaluates deny before allow.
+pub fn policy_for_posture(posture: &str) -> PermissionPolicy {
+    match posture.trim().to_ascii_lowercase().as_str() {
+        "plan" => super::style_specialty::plan_permissions(),
+        "auto" => PermissionPolicy::new().allow_all(&["read", "search", "ls", "update_plan"]),
+        "always-approve" | "yolo" | "force" => {
+            PermissionPolicy::new().allow_yolo_lanes([SessionLane::Execute])
+        }
+        _ => PermissionPolicy::new(),
+    }
+}
+
 fn yolo_lane_rule(lane: SessionLane) -> String {
     match lane {
         SessionLane::Control => "lane:control".to_string(),

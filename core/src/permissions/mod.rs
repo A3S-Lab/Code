@@ -23,7 +23,7 @@ use std::sync::Arc;
 pub use crate::tool_name::canonical_tool_name;
 pub use interactive::{InteractiveApprovalMode, InteractiveToolGuardrail};
 pub use manager::{MatchingRules, PermissionManager};
-pub use policy::PermissionPolicy;
+pub use policy::{policy_for_posture, PermissionPolicy};
 pub use risk::{
     EnvironmentSensitivity, ImpactScope, OperationTarget, Reversibility, ToolRiskAction,
     ToolRiskAssessment, ToolRiskDimensions, ToolRiskLevel, ToolRiskReason, ToolRiskType,

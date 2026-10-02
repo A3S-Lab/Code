@@ -1,17 +1,17 @@
 [package]
 name = "a3s-code-acp"
-version = "9.1.1"
+version = "9.1.2"
 edition = "2021"
 authors = ["A3S Lab Team"]
 license = "MIT"
-description = "ACP stdio agent bridging a3s-code-core 9.1.1 to the forked grok-build pager"
+description = "ACP stdio agent bridging a3s-code-core 9.1.2 to the forked grok-build pager"
 
 [[bin]]
 name = "a3s-code-acp"
 path = "src/bin/a3s-code-acp.rs"
 
 [dependencies]
-a3s-code-core = { version = "9.1.1", path = "../core", default-features = true, features = ["headless-search"] }
+a3s-code-core = { version = "9.1.2", path = "../core", default-features = true, features = ["headless-search"] }
 agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
 anyhow = "1"
 async-trait = "0.1"

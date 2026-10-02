@@ -57,6 +57,12 @@ pub struct FactRun {
     actor: a3s_effect::Actor<CodingServices, CodingView>,
     services: Arc<CodingServices>,
     limit: u32,
+    /// Tool names exposed when this run was admitted. A later posture does not rewrite them.
+    admitted_tools: Vec<String>,
+    /// Copied from [`crate::meta_harness::KernelPolicy::admit`]. Hosts cannot clear it.
+    completion_gate: bool,
+    /// Permission policy frozen at admission, including posture allow rules.
+    admitted_permission: PermissionPolicy,
 }
 
 /// Optional host mounts for Meta Harness admission.
@@ -749,6 +755,23 @@ fn question_from_call(call: &crate::llm::ToolCall) -> ModelDecision {
         allow_free_text,
         options,
     }
+}
+
+/// Project one tool through the admitted policy. Deny does not run `execute`.
+///
+/// Ask does not run it either: the fact log parks until a confirmation fact.
+/// Allow is the only decision that calls `execute`.
+pub fn admit_tool_call<T>(
+    policy: &PermissionPolicy,
+    tool_name: &str,
+    args: &serde_json::Value,
+    execute: impl FnOnce() -> T,
+) -> std::result::Result<T, PermissionDecision> {
+    let decision = execution_permission(policy, None, tool_name, args);
+    if decision != PermissionDecision::Allow {
+        return Err(decision);
+    }
+    Ok(execute())
 }
 
 /// Allow, deny, or ask for one tool call.
@@ -2249,7 +2272,7 @@ impl FactRun {
         graph: HarnessGraph,
         compactor: Option<Arc<dyn Compactor>>,
     ) -> Result<Self> {
-        let _kernel = crate::meta_harness::KernelPolicy::default().admit();
+        let kernel = crate::meta_harness::KernelPolicy::default().admit();
         let dir = dir.into();
         let capped = Arc::new(CappedCompletion {
             inner: completion,
@@ -2267,6 +2290,9 @@ impl FactRun {
             actor: graph.into_actor(),
             services,
             limit: step_limit,
+            admitted_tools: Vec::new(),
+            completion_gate: kernel.completion_gate,
+            admitted_permission: PermissionPolicy::default(),
         })
     }
 
@@ -2282,6 +2308,7 @@ impl FactRun {
         let catalog = executor.definitions();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
         let specs = exposed_tool_specs(&catalog, |name| permission.expose_to_model(name));
+        let admitted_tools = specs.iter().map(|spec| spec.name.clone()).collect();
         let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
         let config = session_harness_config(max_tool_rounds, 1_000_000, specs)?;
         let context = executor.registry().context();
@@ -2306,7 +2333,29 @@ impl FactRun {
             session_id,
         )?;
         run.thread = thread_for_session(session_id);
+        run.admitted_tools = admitted_tools;
+        run.admitted_permission = permission;
         Ok(run)
+    }
+
+    /// Tool catalog frozen at admission.
+    pub fn admitted_tool_catalog(&self) -> &[String] {
+        &self.admitted_tools
+    }
+
+    /// Step limit frozen at admission.
+    pub fn admitted_step_limit(&self) -> u32 {
+        self.limit
+    }
+
+    /// Completion gate required for this run. Admission cannot turn it off.
+    pub fn completion_gate_required(&self) -> bool {
+        self.completion_gate
+    }
+
+    /// Permission policy frozen at admission.
+    pub fn admitted_permission(&self) -> &PermissionPolicy {
+        &self.admitted_permission
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2327,6 +2376,8 @@ impl FactRun {
             Some(checker) => checker.expose_to_model(name),
             None => permission.expose_to_model(name),
         });
+        let admitted_tools = specs.iter().map(|spec| spec.name.clone()).collect();
+        let admitted_permission = permission.clone();
         let (completion, _) = LiveCompletion::new(Arc::clone(&client), permission.clone(), catalog);
         let completion = match &checker {
             Some(checker) => completion.with_visibility(Arc::clone(checker)),
@@ -2403,6 +2454,8 @@ impl FactRun {
             },
         )?;
         run.thread = thread_for_session(session_id);
+        run.admitted_tools = admitted_tools;
+        run.admitted_permission = admitted_permission;
         Ok(run)
     }
 
@@ -3932,6 +3985,80 @@ mod tests {
         assert!(!crate::hitl::ConfirmationPolicy::enabled()
             .with_yolo_lanes([SessionLane::Execute])
             .is_yolo("bash"));
+    }
+
+    #[test]
+    fn seam_admission_mutation_still_needs_digest_gate() {
+        let allowed = crate::permissions::policy_for_posture("always-approve");
+        assert_eq!(
+            allowed.check("write", &serde_json::json!({})),
+            PermissionDecision::Allow
+        );
+        let kernel = crate::meta_harness::KernelPolicy {
+            permission_overlay: false,
+            completion_gate: false,
+        }
+        .admit();
+        assert!(kernel.completion_gate);
+        let mut ledger = crate::harness_loop::MutationLedger::default();
+        ledger.observe_tool(
+            "write",
+            0,
+            Some(&serde_json::json!({"file_path": "out.txt", "after": "changed"})),
+        );
+        let gate = crate::harness_loop::decide_with_observations(&ledger, &[], &[], false, &[]);
+        assert!(matches!(
+            gate,
+            crate::harness_loop::CompletionGate::Incomplete { .. }
+        ));
+
+        let denied = crate::permissions::policy_for_posture("always-approve").deny("bash(*)");
+        let mut executed = false;
+        let decision = admit_tool_call(
+            &denied,
+            "bash",
+            &serde_json::json!({"command": "echo hi"}),
+            || {
+                executed = true;
+            },
+        );
+        assert_eq!(decision, Err(PermissionDecision::Deny));
+        assert!(!executed);
+    }
+
+    #[tokio::test]
+    async fn seam_admission_denied_write_under_always_approve_does_not_run() {
+        let workspace = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(SeqClient {
+            calls: Arc::clone(&calls),
+            tools: Mutex::new(Vec::new()),
+            seen: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![
+                Message::assistant("done"),
+                tool_use(
+                    "write",
+                    "w1",
+                    serde_json::json!({"file_path": "secret.txt", "content": "leaked"}),
+                ),
+            ]),
+        });
+        let executor = Arc::new(ToolExecutor::new(
+            workspace.path().to_string_lossy().to_string(),
+        ));
+        let fact = FactRun::open_session(
+            workspace.path(),
+            "deny-write",
+            client,
+            executor,
+            crate::permissions::policy_for_posture("always-approve").deny("write(*)"),
+            &[],
+            4,
+        )
+        .unwrap();
+        let _ = fact.user_text("write the file").await;
+        assert!(!workspace.path().join("secret.txt").exists());
+        assert_ne!(fact.thread, "tui-session");
     }
 
     #[tokio::test]

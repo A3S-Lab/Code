@@ -1,13 +1,13 @@
 [package]
 name = "a3s-code-tui"
-version = "9.1.1"
+version = "9.1.2"
 edition = "2021"
-description = "A3S Code full-screen TUI: grok-build UI surfaces + A3S business on a3s-code-core 9.1.1"
+description = "A3S Code full-screen TUI: grok-build UI surfaces + A3S business on a3s-code-core 9.1.2"
 license = "MIT"
 readme = "docs/ARCHITECTURE.md"
 
 [dependencies]
-a3s-code-core = { version = "9.1.1", path = "../core", default-features = true }
+a3s-code-core = { version = "9.1.2", path = "../core", default-features = true }
 a3s-prompt-textarea = { version = "0.1.0", path = "vendor/prompt-textarea" }
 a3s-ratatui-inline = { version = "0.1.0", path = "vendor/ratatui-inline" }
 a3s-markdown-core = { version = "0.1.0", path = "vendor/markdown-core" }

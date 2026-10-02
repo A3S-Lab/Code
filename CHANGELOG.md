@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.2] - 2026-10-02
+
+### Changed
+
+- A permission posture (`default`, `plan`, `auto`, `always-approve` / `yolo`) is a Core policy fact for the next fact-run admission. An already-open run keeps the tool catalog, step limit, and completion gate it froze at open. Deny wins over always-approve, and a mutating success still requires the digest-bound completion gate.
+- Compaction still carries standing instructions, the current goal, unrevoked constraints, and open steps. Skills enter `skill_dirs` on the next admission. A due schedule is a host send on `schedule:<name>`; an idle schedule appends no fact.
+- The thin TUI adapter admits that posture through Core. It no longer uses the session id `tui-session` or a local auto-approve callback as the permission authority.
+
 ## [9.1.1] - 2026-09-29
 
 ### Fixed

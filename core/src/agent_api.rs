@@ -657,6 +657,9 @@ pub struct AgentSession {
     /// the next agent-loop build so hosts can disable forced planning on a
     /// verifier turn without rebuilding the session.
     runtime_planning_mode: std::sync::Mutex<Option<PlanningMode>>,
+    /// Permission posture for the next fact-run admission. An open run keeps
+    /// the policy copied at `FactRun::open`.
+    runtime_permission_policy: std::sync::Mutex<Option<crate::permissions::PermissionPolicy>>,
     /// Runtime override for user-facing reply language. Outer `None` means unset
     /// (use `prompt_slots.output_language`). `Some(None)` clears an earlier pin.
     /// `Some(Some(tag))` pins replies for the next agent-loop build.

@@ -634,6 +634,30 @@ mod tests {
     }
 
     #[test]
+    fn seam_admission_directory_skills_and_schedules() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        let projection = DirectoryProjection::load(dir.path()).unwrap();
+        let options = projection.session_options().unwrap();
+        assert_eq!(options.skill_dirs.len(), 1);
+        assert!(options.skill_dirs[0].ends_with("skills"));
+
+        let due = DateTime::parse_from_rfc3339("2026-09-27T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let fires = projection.due(due);
+        assert_eq!(fires.len(), 1);
+        assert_eq!(fires[0].session_key, "schedule:morning");
+        assert_eq!(fires[0].name, "morning");
+        assert!(!fires[0].prompt.is_empty());
+
+        let idle = DateTime::parse_from_rfc3339("2026-09-27T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(projection.due(idle).is_empty());
+    }
+
+    #[test]
     fn due_schedule_is_a_prompt_for_the_existing_send_path() {
         let dir = tempfile::tempdir().unwrap();
         sample(dir.path());

@@ -586,7 +586,7 @@ impl A3sCodeAgent {
     }
 
     /// Ask the ACP client (pager) whether a tool may run. Fail closed when no client is wired.
-    /// YOLO auto-approve still happens on the pager side when `session.is_yolo()`.
+    /// A pager allow is a confirmation fact. Core still projects the admitted policy, and a deny is not executed.
     async fn request_tool_permission(
         &self,
         session_id: &acp::SessionId,
@@ -2544,6 +2544,54 @@ mod tests {
             model_id: "anthropic/claude-sonnet-4-20250514".to_string(),
             config,
         }
+    }
+
+    #[tokio::test]
+    async fn seam_admission_acp_permission_and_goal() {
+        let root = std::env::temp_dir().join(format!(
+            "a3s-acp-seam-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp workspace");
+        let mut launch = test_launch(Some(root.join("sessions")));
+        launch.workspace = root.clone();
+        let agent = A3sCodeAgent::new(launch);
+        let created = acp::Agent::new_session(&agent, acp::NewSessionRequest::new(root.clone()))
+            .await
+            .expect("new session");
+        let session_id = created.session_id.0.as_ref();
+        assert_ne!(session_id, "tui-session");
+        assert!(!session_id.is_empty());
+
+        let applied = crate::goal::apply_goal(
+            None,
+            crate::goal::parse_goal_command("/goal ship the seam").expect("goal command"),
+        );
+        assert_eq!(
+            applied.plan.mode(),
+            Some(a3s_code_core::PlanningMode::Enabled)
+        );
+        assert_eq!(
+            applied.next.as_ref().map(|goal| goal.objective.as_str()),
+            Some("ship the seam")
+        );
+        let registered = agent.sessions.lock().await.contains_key(session_id);
+        drop(created);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(registered);
+
+        let mut executed = false;
+        let decision = crate::check_admitted_tool(
+            "always-approve",
+            "bash(*)",
+            "bash",
+            &serde_json::json!({"command": "echo hi"}),
+            || {
+                executed = true;
+            },
+        );
+        assert_eq!(decision, Err("deny"));
+        assert!(!executed);
     }
 
     #[tokio::test]

@@ -2,6 +2,36 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn seam_admission_permission_posture_denies_under_always_approve() {
+    for posture in ["always-approve", "yolo", "force"] {
+        let policy = policy_for_posture(posture).deny("bash(*)");
+        assert_eq!(
+            policy.check("bash", &json!({"command": "echo hi"})),
+            PermissionDecision::Deny,
+            "{posture} deny wins over the execute-lane allow"
+        );
+        assert_eq!(
+            policy.check("write", &json!({})),
+            PermissionDecision::Allow,
+            "{posture} still allows an execute tool that is not denied"
+        );
+    }
+
+    let plan = policy_for_posture("plan");
+    assert_eq!(plan.check("read", &json!({"file_path": "README.md"})), PermissionDecision::Allow);
+    assert_eq!(plan.check("write", &json!({"file_path": "README.md"})), PermissionDecision::Deny);
+    assert_eq!(plan.check("bash", &json!({})), PermissionDecision::Deny);
+
+    let auto = policy_for_posture("auto");
+    assert_eq!(auto.check("read", &json!({})), PermissionDecision::Allow);
+    assert_eq!(auto.check("bash", &json!({})), PermissionDecision::Ask);
+
+    let default_policy = policy_for_posture("default");
+    assert_eq!(default_policy.check("read", &json!({})), PermissionDecision::Ask);
+    assert_eq!(default_policy.check("bash", &json!({})), PermissionDecision::Ask);
+}
+
+#[test]
 fn interactive_approval_mode_from_name_maps_aliases_and_unknown() {
     use InteractiveApprovalMode::*;
 

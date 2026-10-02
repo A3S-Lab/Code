@@ -426,7 +426,9 @@ fn revision_text(line: &str) -> Option<String> {
 
 fn strip_label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
     let line = line.trim();
-    if line.len() < label.len() {
+    // Labels are ASCII. A multibyte character that overlaps `label.len()`
+    // cannot be that prefix, and slicing there panics.
+    if line.len() < label.len() || !line.is_char_boundary(label.len()) {
         return None;
     }
     if line[..label.len()].eq_ignore_ascii_case(label) {
@@ -604,4 +606,73 @@ fn revision_text_in(text: &str) -> Option<String> {
         }
     }
     section_body(text, "## Revision").filter(|body| !body.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_scan_survives_a_multibyte_char_before_the_label_width() {
+        // U+2013 occupies bytes 7..10, so a 9-byte ASCII label must not slice it.
+        let unicode = format!("abcdefg\u{2013}more");
+        assert!(!unicode.is_char_boundary(9));
+        let carried = obligations_from_messages(&[Message::user(&unicode)]);
+        assert!(carried.constraints.is_empty());
+        let carried = obligations_from_folded(&[format!("user\n{unicode}")]);
+        assert!(carried.constraints.is_empty());
+
+        let carried = obligations_from_messages(&[Message::user("Revision: keep the pin")]);
+        assert_eq!(carried.active_goal.as_deref(), Some("keep the pin"));
+    }
+
+    #[test]
+    fn seam_admission_compaction_carry() {
+        let standing = format!(
+            "{STANDING_HEADER}\nKeep the repository building.\n{STANDING_END}"
+        );
+        let user = "\
+Revision: ship the permission seam
+Constraint: do not skip the completion gate
+Constraint: drop this later
+Revoke: drop this later
+Required steps:
+- [ ] admit the policy on the next run
+- [x] trace the call sites";
+        let carried = obligations_from_messages(&[Message::user(&standing), Message::user(user)]);
+        assert!(carried
+            .standing
+            .iter()
+            .any(|block| block.contains("Keep the repository building.")));
+        assert_eq!(
+            carried.active_goal.as_deref(),
+            Some("ship the permission seam")
+        );
+        assert!(carried
+            .constraints
+            .iter()
+            .any(|constraint| constraint.contains("do not skip the completion gate")));
+        assert!(carried
+            .constraints
+            .iter()
+            .all(|constraint| !constraint.to_ascii_lowercase().contains("drop this later")));
+        assert_eq!(
+            carried.open_steps,
+            vec!["admit the policy on the next run".to_string()]
+        );
+        assert!(carried
+            .completed_steps
+            .iter()
+            .any(|step| step == "trace the call sites"));
+
+        let sealed = seal_summary(
+            "The task is finished and the constraints are gone.",
+            &carried,
+        );
+        assert!(sealed.contains("Keep the repository building."));
+        assert!(sealed.contains("ship the permission seam"));
+        assert!(sealed.contains("do not skip the completion gate"));
+        assert!(sealed.contains("admit the policy on the next run"));
+        assert!(!sealed.to_ascii_lowercase().contains("drop this later"));
+    }
 }

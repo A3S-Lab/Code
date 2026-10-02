@@ -775,7 +775,10 @@ impl FactSession {
             session_id: session.session_id.clone(),
             client: Arc::clone(&session.llm_client),
             executor: Arc::clone(&session.tool_executor),
-            permission: session.config.permission_policy.clone().unwrap_or_default(),
+            permission: session
+                .runtime_permission_policy()
+                .or_else(|| session.config.permission_policy.clone())
+                .unwrap_or_default(),
             yolo_lanes: session
                 .config
                 .confirmation_policy

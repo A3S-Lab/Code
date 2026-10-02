@@ -145,6 +145,33 @@ impl AgentSession {
         })?
     }
 
+    /// Record a permission posture for the next fact-run admission.
+    ///
+    /// The open run keeps the policy, tool catalog, step limit, and completion
+    /// gate it froze at open. `always-approve` and `yolo` add execute-lane
+    /// allow rules. A deny rule on that policy still wins.
+    pub fn set_permission_posture(&self, posture: &str) -> crate::error::Result<()> {
+        let policy = crate::permissions::policy_for_posture(posture);
+        self.close_handle.mutate_immediate(|| {
+            let mut slot = self
+                .runtime_permission_policy
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *slot = Some(policy);
+            Ok(())
+        })?
+    }
+
+    /// Policy the next [`super::conversation_runtime::FactSession`] admission reads.
+    pub(crate) fn runtime_permission_policy(
+        &self,
+    ) -> Option<crate::permissions::PermissionPolicy> {
+        self.runtime_permission_policy
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
     /// Clear a prior [`Self::set_planning_mode`] override so the next loop
     /// uses the session-built `config.planning_mode` again.
     pub fn clear_planning_mode_override(&self) -> crate::error::Result<()> {

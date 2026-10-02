@@ -73,8 +73,8 @@ Browse-hidden (typed only): see `SLASH_BROWSE_HIDDEN` in chrome.rs.
 | Logged-in Grok account models (`grok/…`) | ✅ via `a3s-code-acp` |
 | Streaming deltas / tool chrome | ✅ `prompt_streaming` + tool lines |
 | Markdown flatten for scrollback | ✅ `markdown_to_plain` |
-| Session resume | fact-log shared id `tui-session` ✅ |
-| Permission prompts | ✅ y/n confirm; auto/yolo auto-approve |
+| Session resume | fact log on the admitted session; not the literal id `tui-session` |
+| Permission prompts | Core permission policy at the next admission; deny wins over always-approve |
 | `/compact` | ✅ `x.ai/compact_conversation` writes `compaction.done` |
 | Interactive question options | **port** (displayed; answer path TBD) |
 | Full `/ctx` `/use` panel UIs | **port** (CLI panels; forward string for now) |

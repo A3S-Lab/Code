@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use a3s_code_core::llm::LlmClient;
+use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
 use a3s_code_core::{Agent, AgentEvent, AgentSession, PlanningMode, SessionOptions};
 use anyhow::Context;
 
@@ -51,8 +52,17 @@ impl PermissionMode {
         }
     }
 
-    fn auto_approve_tools(self) -> bool {
-        matches!(self, Self::Auto | Self::Yolo)
+    fn posture_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::Yolo => "always-approve",
+        }
+    }
+
+    fn policy(self) -> PermissionPolicy {
+        a3s_code_core::permissions::policy_for_posture(self.posture_name())
     }
 }
 
@@ -67,8 +77,10 @@ pub struct AgentTurn {
 pub struct CodeAgentAdapter {
     layers: LaunchLayers,
     merged: MergedLaunch,
+    /// Posture applied on the next session admission, not on an open run.
     permission: PermissionMode,
-    session_id: String,
+    /// Posture frozen into the live session. `None` until the first admission.
+    admitted: Option<PermissionMode>,
     responder: Option<Arc<dyn LlmClient>>,
     session: Option<AgentSession>,
 }
@@ -81,7 +93,7 @@ impl CodeAgentAdapter {
             layers,
             merged,
             permission: PermissionMode::Default,
-            session_id: "tui-session".to_string(),
+            admitted: None,
             responder: None,
             session: None,
         })
@@ -118,17 +130,21 @@ impl CodeAgentAdapter {
     }
 
     /// Ensure a live [`AgentSession`] exists (lazy on first prompt).
+    ///
+    /// A posture change is a permission-policy fact for the next admission.
+    /// This method does not rewrite an already-open run.
     pub async fn ensure_session(&mut self) -> anyhow::Result<&mut AgentSession> {
         if self.session.is_none() {
             let agent = Agent::from_config(self.merged.config.clone())
                 .await
                 .context("Agent::from_config")?;
+            let posture = self.permission;
             let mut options = SessionOptions::new()
-                .with_session_id(self.session_id.clone())
                 .with_model(self.merged.model_id.clone())
-                .with_planning_mode(self.permission.planning_mode())
+                .with_planning_mode(posture.planning_mode())
+                .with_permission_policy(posture.policy())
                 .with_auto_delegation_enabled(matches!(
-                    self.permission,
+                    posture,
                     PermissionMode::Auto | PermissionMode::Yolo
                 ));
             if let Some(responder) = self.responder.clone() {
@@ -141,7 +157,20 @@ impl CodeAgentAdapter {
                 )
                 .await
                 .context("session_async")?;
+            self.admitted = Some(posture);
             self.session = Some(session);
+        } else if self.admitted != Some(self.permission) {
+            let posture = self.permission;
+            let session = self.session.as_ref().expect("session present");
+            session
+                .set_permission_posture(posture.posture_name())
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .context("set_permission_posture")?;
+            session
+                .set_planning_mode(posture.planning_mode())
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .context("set_planning_mode")?;
+            self.admitted = Some(posture);
         }
         Ok(self.session.as_mut().expect("session just inserted"))
     }
@@ -160,8 +189,8 @@ impl CodeAgentAdapter {
     /// ACP-shaped `session/prompt` with streaming into scrollback.
     ///
     /// Text deltas update the stream line. When a tool needs confirmation,
-    /// `ask_confirm(tool_name)` decides approval (`true`/`false`). Callers in
-    /// auto/yolo typically return `true` without prompting.
+    /// the admitted Core policy decides. Deny is not approved. Allow is the
+    /// policy's allow fact. Ask calls `ask_confirm`.
     pub async fn prompt_streaming(
         &mut self,
         text: &str,
@@ -169,8 +198,9 @@ impl CodeAgentAdapter {
         mut on_delta: impl FnMut(&Scrollback),
         mut ask_confirm: impl FnMut(&str) -> bool,
     ) -> anyhow::Result<AgentTurn> {
-        let auto_approve = self.permission.auto_approve_tools();
-        let session = self.ensure_session().await?;
+        self.ensure_session().await?;
+        let policy = self.admitted.unwrap_or(self.permission).policy();
+        let session = self.session.as_mut().expect("session admitted");
         let model_name = session.model_name().to_string();
         let (mut rx, join) = session.stream(text, None).await.context("session.stream")?;
 
@@ -211,14 +241,19 @@ impl CodeAgentAdapter {
                     on_delta(scrollback);
                 }
                 AgentEvent::ConfirmationRequired {
-                    tool_id, tool_name, ..
+                    tool_id,
+                    tool_name,
+                    args,
+                    ..
                 } => {
-                    let approved = if auto_approve {
-                        true
-                    } else {
-                        scrollback.push_assistant(&format!("allow tool `{tool_name}`? [y/N]"));
-                        on_delta(scrollback);
-                        tokio::task::block_in_place(|| ask_confirm(&tool_name))
+                    let approved = match policy.check(&tool_name, &args) {
+                        PermissionDecision::Deny => false,
+                        PermissionDecision::Allow => true,
+                        PermissionDecision::Ask => {
+                            scrollback.push_assistant(&format!("allow tool `{tool_name}`? [y/N]"));
+                            on_delta(scrollback);
+                            tokio::task::block_in_place(|| ask_confirm(&tool_name))
+                        }
                     };
                     let reason = if approved {
                         Some("approved".to_string())
@@ -271,9 +306,10 @@ impl CodeAgentAdapter {
         })
     }
 
-    /// Drop the live session so the next prompt rebuilds with current permission mode.
+    /// Drop the live session so the next prompt admits the current posture again.
     pub fn cancel_session(&mut self) {
         self.session = None;
+        self.admitted = None;
     }
 }
 

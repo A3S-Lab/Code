@@ -40,7 +40,7 @@ fn explore_permissions() -> PermissionPolicy {
     policy
 }
 
-fn plan_permissions() -> PermissionPolicy {
+pub(crate) fn plan_permissions() -> PermissionPolicy {
     let mut policy = PermissionPolicy::new()
         .allow_all(&["read", "search", "ls", "update_plan"])
         .deny_all(&["write", "edit", "download", "bash", "task", "parallel_task"]);
