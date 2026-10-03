@@ -26,6 +26,22 @@ mod web_fetch;
 mod web_search;
 mod write;
 
+#[cfg(test)]
+pub(crate) use batch::{BatchTool, MAX_BATCH_INVOCATIONS};
+#[cfg(test)]
+pub(crate) use read::read_image_file;
+#[cfg(test)]
+pub(crate) use safe_http::{
+    get_with_redirects_observed, set_resolution_script, RedirectQueryPolicy, ResolutionScript,
+    SafeHttpError,
+};
+#[cfg(test)]
+pub(crate) use web_fetch::WebFetchTool;
+#[cfg(test)]
+pub(crate) use web_search::add_http_engine;
+#[cfg(test)]
+pub(crate) use write::WriteTool;
+
 use super::registry::ToolRegistry;
 use std::sync::Arc;
 

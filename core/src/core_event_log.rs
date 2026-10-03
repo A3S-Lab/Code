@@ -342,18 +342,33 @@ impl CoreEventLog {
         capability_stamp: Option<crate::core_identity::CapabilityStamp>,
         record: &RunEventRecord,
     ) -> Result<CoreLogAppendOutcomeV1, CoreEventLogError> {
-        let identity = CoreIdentity::new(
-            operation_id,
+        let core_event = CoreEventIdentity::from_run_event(
+            operation_id.clone(),
             source_revision,
             capability_stamp,
-            EvidenceCursor::new(0),
-        );
-        let core_event = CoreEventIdentity::from_run_event(
-            identity.operation_id.clone(),
-            identity.source_revision,
-            identity.capability_stamp.clone(),
             record,
         )?;
+        // Classify a repeated cursor before binding previous_digest. Chaining
+        // first makes an identical payload look like a different entry.
+        {
+            let state = self
+                .inner
+                .read()
+                .map_err(|_| CoreEventLogError::LockPoisoned)?;
+            if let Some(buffer) = state.get(&operation_id) {
+                if let Some(existing) = buffer.entries.iter().find(|entry| {
+                    entry.event.identity.evidence_cursor == core_event.identity.evidence_cursor
+                }) {
+                    if existing.event == core_event {
+                        return Ok(CoreLogAppendOutcomeV1 {
+                            appended: false,
+                            replayed: true,
+                        });
+                    }
+                    return Err(CoreEventLogError::CursorConflict);
+                }
+            }
+        }
         let artifact_refs = collect_artifact_refs(
             &serde_json::to_value(&record.event)
                 .map_err(|error| CoreEventLogError::Serialization(error.to_string()))?,
@@ -681,6 +696,46 @@ mod tests {
             log.append(forged),
             Err(CoreEventLogError::CursorConflict)
         ));
+    }
+
+    #[test]
+    fn retained_run_journal_replays_and_fails_closed() {
+        let log = CoreEventLog::new();
+        let operation = OperationId::new("session-1/run-1").unwrap();
+        let revision = SourceRevision::new(1);
+        let record = crate::run::RunEventRecord {
+            sequence: 0,
+            timestamp_ms: 10,
+            event: AgentEvent::TextDelta {
+                text: "ok".to_string(),
+            },
+        };
+        let appended = log
+            .append_run_event(operation.clone(), revision, None, &record)
+            .unwrap();
+        assert!(appended.appended && !appended.replayed);
+        let replayed = log
+            .append_run_event(operation.clone(), revision, None, &record)
+            .unwrap();
+        assert!(!replayed.appended && replayed.replayed);
+        let page = log.page(&operation, None, usize::MAX).unwrap().unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(
+            page.entries[0].previous_digest,
+            CORE_LOG_GENESIS_PREVIOUS_DIGEST
+        );
+        let conflict = crate::run::RunEventRecord {
+            event: AgentEvent::TextDelta {
+                text: "no".to_string(),
+            },
+            ..record
+        };
+        assert!(matches!(
+            log.append_run_event(operation.clone(), revision, None, &conflict),
+            Err(CoreEventLogError::CursorConflict)
+        ));
+        let page = log.page(&operation, None, usize::MAX).unwrap().unwrap();
+        assert_eq!(page.entries.len(), 1);
     }
 
     #[test]

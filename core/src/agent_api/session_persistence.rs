@@ -91,7 +91,7 @@ fn add_optional_usage(left: Option<usize>, right: Option<usize>) -> Option<usize
 }
 
 #[derive(Clone)]
-pub(super) struct SessionPersistenceContext {
+pub(crate) struct SessionPersistenceContext {
     session_store: Option<Arc<dyn SessionStore>>,
     session_id: String,
     workspace: PathBuf,
@@ -121,7 +121,7 @@ pub(super) struct SessionPersistenceContext {
 }
 
 impl SessionPersistenceContext {
-    pub(super) fn from_session(session: &AgentSession) -> Self {
+    pub(crate) fn from_session(session: &AgentSession) -> Self {
         Self {
             session_store: session.session_store.clone(),
             session_id: session.session_id.clone(),
@@ -180,7 +180,7 @@ impl SessionPersistenceContext {
         write_or_recover(&self.persistence_state).record_usage(usage);
     }
 
-    pub(super) async fn save(&self) -> Result<()> {
+    pub(crate) async fn save(&self) -> Result<()> {
         let store = match &self.session_store {
             Some(store) => store,
             None => return Ok(()),

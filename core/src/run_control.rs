@@ -609,7 +609,7 @@ impl RunControlInbox {
     /// Admit one request while the caller holds the transition gate.  Keeping
     /// the state mutation in one helper lets hook-backed admission publish its
     /// `accepted` observation before the loop can drain the queue.
-    async fn submit_locked(
+    pub(crate) async fn submit_locked(
         &self,
         request: RunControlRequest,
         now_ms: u64,

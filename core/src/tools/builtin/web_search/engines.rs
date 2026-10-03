@@ -80,7 +80,7 @@ pub(super) fn provider_setup_failure(
         .with_transient(error.is_transient())
 }
 
-pub(super) fn add_http_engine(
+pub(crate) fn add_http_engine(
     search: &mut Search,
     shortcut: &str,
     proxy_url: Option<&str>,

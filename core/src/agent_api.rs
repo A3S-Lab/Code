@@ -44,9 +44,21 @@ mod capabilities;
 mod capability_facade;
 mod command_runtime;
 mod conversation_runtime;
+#[cfg(test)]
+pub(crate) use agent_sessions::create_session;
+#[cfg(test)]
+pub(crate) use conversation_runtime::exact_run_replay;
 pub(crate) use conversation_runtime::{
     ExactRecoveryError, ExactRecoveryPreparation, PreparedExactRecovery,
 };
+#[cfg(test)]
+pub(crate) use run_lifecycle::RunControlState;
+#[cfg(test)]
+pub(crate) use session_persistence::SessionPersistenceContext;
+#[cfg(test)]
+pub(crate) use session_sandbox::select_default_local_sandbox;
+#[cfg(test)]
+pub(crate) use tests::test_config;
 mod direct_tool_facade;
 mod direct_tools;
 mod execution_coordinator;
@@ -85,6 +97,9 @@ mod session_verification;
 mod session_view;
 mod workflow_facade;
 pub use agent_facade::{Agent, SessionBuilder};
+#[cfg(test)]
+pub(crate) use direct_tools::DirectToolRuntime;
+#[cfg(not(test))]
 use direct_tools::DirectToolRuntime;
 use hook_control::HookControl;
 #[cfg(feature = "dynamic-workflow")]
@@ -92,6 +107,9 @@ pub use projected_flow::ProjectedFlowHandle;
 pub use projected_ui::ProjectedUiHandle;
 use runtime_events::ActiveToolState;
 use session_close::SessionCloseHandle;
+#[cfg(test)]
+pub(crate) use session_extensions::SessionExtensionRuntime;
+#[cfg(not(test))]
 use session_extensions::SessionExtensionRuntime;
 use session_hitl::HitlControl;
 use session_queue::QueueControl;

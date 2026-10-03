@@ -189,7 +189,26 @@ impl TelemetryGuard {
     }
 }
 
-fn shutdown_provider(provider: opentelemetry_sdk::trace::TracerProvider) {
+#[cfg(test)]
+impl TelemetryGuard {
+    pub(crate) fn from_provider(provider: opentelemetry_sdk::trace::TracerProvider) -> Self {
+        Self {
+            tracer_provider: Some(provider),
+        }
+    }
+
+    pub(crate) fn holds_provider(&self) -> bool {
+        self.tracer_provider.is_some()
+    }
+
+    pub(crate) fn shutdown_held(&mut self) {
+        if let Some(provider) = self.tracer_provider.take() {
+            shutdown_provider(provider);
+        }
+    }
+}
+
+pub(crate) fn shutdown_provider(provider: opentelemetry_sdk::trace::TracerProvider) {
     let run = move || {
         if let Err(error) = provider.shutdown() {
             eprintln!("Failed to shutdown tracer provider: {error}");

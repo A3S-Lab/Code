@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A new fact-log run admits a standing-context digest before the first model call. The effect log stores only the SHA-256 of `instructions.md`, the skills tree, activated memory, and the tools and budget admitted for that run. Later completions keep the open-time projection. A resume whose files changed fails closed before a client call. Checkpoints written without the field still load.
+- An identical run-event cursor is replayed before the log binds a new chain digest. A different payload at that cursor still returns a cursor conflict.
 
 ## [9.1.2] - 2026-10-02
 

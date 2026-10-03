@@ -208,7 +208,7 @@ impl LocalCodeIntelligence {
         Ok(())
     }
 
-    fn spawn_status_forwarder(
+    pub(crate) fn spawn_status_forwarder(
         &self,
         generation: u64,
         receiver: &mut watch::Receiver<CodeIntelligenceStatus>,

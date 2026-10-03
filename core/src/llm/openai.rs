@@ -450,7 +450,7 @@ impl OpenAiClient {
     }
 
     /// Execute a fully-built (non-streaming) chat-completions request.
-    async fn send_request(&self, request: serde_json::Value) -> Result<LlmResponse> {
+    pub(crate) async fn send_request(&self, request: serde_json::Value) -> Result<LlmResponse> {
         {
             let request_started_at = Instant::now();
             let url = join_chat_completions_url(&self.base_url, &self.chat_completions_path);

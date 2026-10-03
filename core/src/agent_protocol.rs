@@ -807,7 +807,7 @@ const AGENT_PROTOCOL_PAYLOAD_TRUNCATION_MARK: &str = "\n…[a3s.code.agent-proto
 /// validates. Prefer truncating the largest string leaves; if that cannot fit,
 /// replace the payload with a bounded stub that preserves small identity fields
 /// and a digest of the original payload.
-fn bound_projected_event_record(
+pub(crate) fn bound_projected_event_record(
     projected: &mut AgentProtocolEventRecordV1,
 ) -> Result<(), AgentProtocolError> {
     let original_payload = projected.event.payload.clone();

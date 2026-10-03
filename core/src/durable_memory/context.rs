@@ -28,11 +28,11 @@ const PROVIDER: &str = "durable_memory_v2";
 const RELATED_SCORE_FACTOR: f32 = 0.75;
 
 #[derive(Clone)]
-pub(super) struct RecallCandidate {
-    pub(super) node: MemoryNode,
-    pub(super) score: f32,
-    pub(super) channel: DurableMemoryRecallChannel,
-    pub(super) related_from: Option<String>,
+pub(crate) struct RecallCandidate {
+    pub(crate) node: MemoryNode,
+    pub(crate) score: f32,
+    pub(crate) channel: DurableMemoryRecallChannel,
+    pub(crate) related_from: Option<String>,
 }
 
 impl RecallCandidate {
@@ -145,7 +145,7 @@ impl DurableMemorySession {
         Ok(DurableMemoryContextBatch { result, identities })
     }
 
-    async fn query_recall_candidates(
+    pub(crate) async fn query_recall_candidates(
         &self,
         text: &str,
         cancellation: CancellationToken,

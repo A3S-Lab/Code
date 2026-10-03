@@ -1791,7 +1791,7 @@ pub(crate) use parallel_params::ParallelTaskParams;
 mod parallel_task;
 pub(crate) use parallel_task::ParallelTaskTool;
 
-fn apply_structured_output_sanitization(
+pub(crate) fn apply_structured_output_sanitization(
     provider: &dyn crate::security::SecurityProvider,
     value: serde_json::Value,
     output_schema: Option<&serde_json::Value>,

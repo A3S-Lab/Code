@@ -667,7 +667,11 @@ fn image_media_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn read_image_file(file_path: &str, args: &serde_json::Value, ctx: &ToolContext) -> ToolOutput {
+pub(crate) fn read_image_file(
+    file_path: &str,
+    args: &serde_json::Value,
+    ctx: &ToolContext,
+) -> ToolOutput {
     if args.get("offset").is_some() || args.get("limit").is_some() {
         return ToolOutput::error(
             "offset and limit apply to text files only; omit them when reading an image",

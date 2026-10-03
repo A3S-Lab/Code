@@ -72,7 +72,11 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
 
 #[cfg(feature = "headless-search")]
 use engines::add_headless_engine;
-use engines::{add_http_engine, default_engine_selection, EngineTier};
+#[cfg(test)]
+pub(crate) use engines::add_http_engine;
+#[cfg(not(test))]
+use engines::add_http_engine;
+use engines::{default_engine_selection, EngineTier};
 use fallback::{
     failure_metadata, failure_summary, outcome_metadata, resolved_tier_order, text_notice_note,
     tier_timeout, tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,

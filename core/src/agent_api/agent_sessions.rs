@@ -396,7 +396,7 @@ fn oauth_eq(
     }
 }
 
-pub(super) fn create_session(
+pub(crate) fn create_session(
     agent: &Agent,
     workspace: impl Into<String>,
     options: Option<SessionOptions>,

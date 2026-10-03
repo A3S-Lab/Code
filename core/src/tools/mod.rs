@@ -30,6 +30,12 @@ pub use crate::dynamic_workflow::{
     register_dynamic_workflow_with_scheduler,
 };
 pub use artifacts::{ArtifactStore, ArtifactStoreError, ArtifactStoreLimits, ToolArtifact};
+#[cfg(test)]
+pub(crate) use builtin::{
+    add_http_engine, get_with_redirects_observed, read_image_file, set_resolution_script,
+    BatchTool, RedirectQueryPolicy, ResolutionScript, SafeHttpError, WebFetchTool, WriteTool,
+    MAX_BATCH_INVOCATIONS,
+};
 pub use builtin::{
     register_generate_object, register_program, register_program_with_catalog, register_task,
     register_task_with_mcp, register_task_with_mcp_managers,
@@ -59,6 +65,8 @@ pub use presentation::{
     ToolPresentationError, ToolPresentationModeV1, ToolPresentationProfileV1,
     TOOL_PRESENTATION_PROFILE_V1_SCHEMA,
 };
+#[cfg(test)]
+pub(crate) use program_tool::execute_script_program;
 pub use program_tool::{ProgramTool, MAX_PROGRAM_SCRIPT_SOURCE_BYTES};
 pub use registry::ToolRegistry;
 pub(crate) use registry::ToolRegistrySnapshotError;

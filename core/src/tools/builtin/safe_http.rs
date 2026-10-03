@@ -30,9 +30,37 @@ const DOH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const DOH_ENDPOINT: &str = "https://1.1.1.1/dns-query";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RedirectQueryPolicy {
+pub(crate) enum RedirectQueryPolicy {
     Preserve,
     RemoveSensitive,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResolutionScript {
+    Unset = 0,
+    FakeIpDohFail = 1,
+    FakeIpPrivateDoh = 2,
+    PrivateOnly = 3,
+}
+
+#[cfg(test)]
+static RESOLUTION_SCRIPT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(test)]
+pub(crate) fn set_resolution_script(script: Option<ResolutionScript>) {
+    let value = script.unwrap_or(ResolutionScript::Unset) as u8;
+    RESOLUTION_SCRIPT.store(value, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn resolution_script() -> Option<ResolutionScript> {
+    match RESOLUTION_SCRIPT.load(std::sync::atomic::Ordering::SeqCst) {
+        1 => Some(ResolutionScript::FakeIpDohFail),
+        2 => Some(ResolutionScript::FakeIpPrivateDoh),
+        3 => Some(ResolutionScript::PrivateOnly),
+        _ => None,
+    }
 }
 
 pub(super) struct SafeHttpResponse {
@@ -48,7 +76,7 @@ enum SafeHttpErrorKind {
 }
 
 #[derive(Debug)]
-pub(super) struct SafeHttpError {
+pub(crate) struct SafeHttpError {
     kind: SafeHttpErrorKind,
     message: String,
 }
@@ -156,6 +184,20 @@ pub(super) fn parse_macos_proxy(text: &str) -> Option<String> {
     None
 }
 
+/// Test entry that calls [`get_with_redirects`] and drops the private response.
+#[cfg(test)]
+pub(crate) async fn get_with_redirects_observed(
+    url: Url,
+    proxy_url: Option<&str>,
+    headers: HeaderMap,
+    max_redirects: usize,
+    query_policy: RedirectQueryPolicy,
+) -> Result<(), SafeHttpError> {
+    get_with_redirects(url, proxy_url, headers, max_redirects, query_policy)
+        .await
+        .map(|_| ())
+}
+
 /// Send one GET and follow a bounded redirect chain.
 ///
 /// The caller owns the timeout and cancellation scope. Dropping this future
@@ -167,6 +209,14 @@ pub(super) async fn get_with_redirects(
     max_redirects: usize,
     query_policy: RedirectQueryPolicy,
 ) -> Result<SafeHttpResponse, SafeHttpError> {
+    // A scripted resolution must stay on the direct path. A configured proxy
+    // would skip public-address checks and open a real socket.
+    #[cfg(test)]
+    let proxy_url = if resolution_script().is_some() {
+        None
+    } else {
+        proxy_url
+    };
     for redirect_count in 0..=max_redirects {
         validate_url_target(&url).map_err(SafeHttpError::invalid)?;
         let client = match proxy_url {
@@ -275,6 +325,20 @@ fn lookup_system(host: &str, port: u16) -> HostLookup {
 /// non-public answers (loopback, RFC1918, link-local, …) stay hard failures so
 /// DoH cannot turn a poisoned private answer into a public connect.
 async fn resolve_public_target(url: &Url) -> Result<ResolvedTarget, SafeHttpError> {
+    #[cfg(test)]
+    if let Some(script) = resolution_script() {
+        let lookup = move |_host: &str, port: u16| -> HostLookup {
+            let address = match script {
+                ResolutionScript::PrivateOnly => Ipv4Addr::new(127, 0, 0, 1),
+                ResolutionScript::FakeIpDohFail | ResolutionScript::FakeIpPrivateDoh => {
+                    Ipv4Addr::new(198, 18, 0, 1)
+                }
+                ResolutionScript::Unset => Ipv4Addr::new(198, 18, 0, 1),
+            };
+            Box::pin(async move { Ok(vec![SocketAddr::new(IpAddr::V4(address), port)]) })
+        };
+        return resolve_public_target_with(url, lookup).await;
+    }
     resolve_public_target_with(url, lookup_system).await
 }
 
@@ -346,6 +410,21 @@ fn is_fake_ipv4(address: Ipv4Addr) -> bool {
 /// Resolve `host` through Cloudflare DoH JSON. Answers are not trusted until
 /// [`validate_resolved_addresses`] runs on the returned sockets.
 async fn resolve_via_dns_over_https(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    #[cfg(test)]
+    if let Some(script) = resolution_script() {
+        return match script {
+            ResolutionScript::FakeIpDohFail | ResolutionScript::Unset => {
+                Err("scripted DNS-over-HTTPS failure".to_string())
+            }
+            ResolutionScript::FakeIpPrivateDoh => Ok(vec![SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)),
+                port,
+            )]),
+            ResolutionScript::PrivateOnly => {
+                Err("private resolution must not reach DNS-over-HTTPS".to_string())
+            }
+        };
+    }
     let client = reqwest::Client::builder()
         .redirect(Policy::none())
         .no_proxy()

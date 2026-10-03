@@ -55,7 +55,7 @@ fn allow_process_host_sandbox(opts: &SessionOptions) -> bool {
     })
 }
 
-fn select_default_local_sandbox(
+pub(crate) fn select_default_local_sandbox(
     local_root: &Path,
     allow_process_host: bool,
     native: anyhow::Result<crate::sandbox::native::NativeBashSandbox>,

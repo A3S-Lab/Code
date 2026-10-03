@@ -95,6 +95,8 @@ pub mod content_digest;
 pub mod context;
 pub mod core_event_log;
 pub mod core_identity;
+#[cfg(test)]
+mod deep_e2e_live;
 pub mod directory_projection;
 pub mod durable_memory;
 #[cfg(feature = "a3s-vec-fts")]

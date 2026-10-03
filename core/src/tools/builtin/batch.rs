@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-const MAX_BATCH_INVOCATIONS: usize = 32;
+pub(crate) const MAX_BATCH_INVOCATIONS: usize = 32;
 const MAX_BATCH_STEPS: usize = 32;
 const DEFAULT_BATCH_CONCURRENCY: usize = 8;
 const MAX_BATCH_CONCURRENCY: usize = 16;

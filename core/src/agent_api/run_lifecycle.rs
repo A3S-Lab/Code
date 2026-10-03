@@ -43,7 +43,7 @@ impl StreamRunWorkerState {
 }
 
 #[derive(Clone)]
-pub(super) struct RunControlState {
+pub(crate) struct RunControlState {
     session_id: String,
     run_store: Arc<crate::run::InMemoryRunStore>,
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
@@ -55,7 +55,7 @@ pub(super) struct RunControlState {
 }
 
 impl RunControlState {
-    pub(super) fn from_session(session: &AgentSession) -> Self {
+    pub(crate) fn from_session(session: &AgentSession) -> Self {
         Self {
             session_id: session.session_id.clone(),
             run_store: Arc::clone(&session.run_store),
@@ -126,7 +126,7 @@ impl RunControlState {
     }
 
     #[cfg(test)]
-    pub(super) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
+    pub(crate) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
         let id = format!("run-{}", self.host_env.next_id());
         let snapshot = self
             .run_store

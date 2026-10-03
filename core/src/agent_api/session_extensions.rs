@@ -167,12 +167,12 @@ impl SessionSkillOwnership {
     }
 }
 
-pub(super) struct SessionExtensionRuntime<'a> {
+pub(crate) struct SessionExtensionRuntime<'a> {
     session: &'a AgentSession,
 }
 
 impl<'a> SessionExtensionRuntime<'a> {
-    pub(super) fn from_session(session: &'a AgentSession) -> Self {
+    pub(crate) fn from_session(session: &'a AgentSession) -> Self {
         Self { session }
     }
 
@@ -230,7 +230,7 @@ impl<'a> SessionExtensionRuntime<'a> {
         );
     }
 
-    pub(super) async fn add_mcp_server(&self, config: McpServerConfig) -> Result<usize> {
+    pub(crate) async fn add_mcp_server(&self, config: McpServerConfig) -> Result<usize> {
         let _mutation = self.extension_mutation().await?;
         let server_name = config.name.clone();
         self.session.ensure_compatibility_name_available(
@@ -340,7 +340,7 @@ impl<'a> SessionExtensionRuntime<'a> {
         Ok(count)
     }
 
-    pub(super) async fn remove_mcp_server(&self, server_name: &str) -> Result<()> {
+    pub(crate) async fn remove_mcp_server(&self, server_name: &str) -> Result<()> {
         let _mutation = self.extension_mutation().await?;
         self.session.ensure_compatibility_name_available(
             crate::capability::CapabilityKind::Mcp,

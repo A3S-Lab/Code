@@ -147,7 +147,7 @@ struct ScriptCallRecord {
     metadata: Option<serde_json::Value>,
 }
 
-async fn execute_script_program(
+pub(crate) async fn execute_script_program(
     args: &serde_json::Value,
     inputs: serde_json::Value,
     invoker: Arc<dyn ToolInvoker>,

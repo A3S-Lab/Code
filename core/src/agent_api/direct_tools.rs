@@ -23,7 +23,7 @@ mod event_stream;
 #[cfg(test)]
 mod governed_tests;
 
-pub(super) struct DirectToolRuntime {
+pub(crate) struct DirectToolRuntime {
     tool_executor: Arc<ToolExecutor>,
     tool_context: ToolContext,
     agent_loop: AgentLoop,
@@ -37,7 +37,7 @@ pub(super) struct DirectToolRuntime {
 }
 
 impl DirectToolRuntime {
-    pub(super) fn from_session(session: &AgentSession) -> Self {
+    pub(crate) fn from_session(session: &AgentSession) -> Self {
         Self {
             tool_executor: Arc::clone(&session.tool_executor),
             tool_context: session.tool_context.clone(),
@@ -154,7 +154,7 @@ impl DirectToolRuntime {
         .await
     }
 
-    pub(super) async fn call_governed(
+    pub(crate) async fn call_governed(
         &self,
         name: &str,
         args: serde_json::Value,

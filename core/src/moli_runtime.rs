@@ -571,7 +571,7 @@ async fn hash_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-async fn acquire_install_lock(root: &Path, deadline: Instant) -> Result<std::fs::File> {
+pub(crate) async fn acquire_install_lock(root: &Path, deadline: Instant) -> Result<std::fs::File> {
     let path = root.join(".install.lock");
     let path_for_open = path.clone();
     let file = tokio::task::spawn_blocking(move || {

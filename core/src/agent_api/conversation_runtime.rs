@@ -1461,7 +1461,7 @@ fn drain_detached_events(
     })
 }
 
-async fn exact_run_replay(
+pub(crate) async fn exact_run_replay(
     session: &AgentSession,
     run_id: &str,
     prompt: &str,
