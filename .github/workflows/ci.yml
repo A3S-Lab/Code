@@ -32,7 +32,13 @@ jobs:
     # The complete default and feature-gated workspace suites are intentionally
     # part of this gate, and the shipped pager is built before those tests.
     # A cold hosted runner needs more than the old 45-minute budget.
+    # debuginfo=2 plus every workspace test binary fills the hosted disk:
+    # rust-lld bus-errors, then rustc reports "No space left on device".
     timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +54,8 @@ jobs:
         run: bash .github/relock-standalone-deps.sh
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: debug0
 
       - name: Install Linux build and sandbox prerequisites
         shell: bash
@@ -131,6 +139,11 @@ jobs:
           set -euo pipefail
           ln -sfn "$GITHUB_WORKSPACE/ci-acl" "$GITHUB_WORKSPACE/../acl"
           bash .github/build-shipped-tui.sh
+
+      - name: Free disk before workspace tests
+        run: |
+          rm -rf target/doc target/debug/incremental
+          df -h
 
       - name: Default tests
         env:

@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The thin TUI adapter admits that posture through Core. It no longer uses the session id `tui-session` or a local auto-approve callback as the permission authority.
 - Node, Python, and Go sessions expose `set_permission_posture` for the same next-admission policy.
 
+### Notes
+
+- Channel candidate, not Enterprise GA. L6 on `6ad2d6dc` is
+  `performance.yml` run `37082677055` and `hermetic-integrations.yml` run
+  `37082696544`, both `passed: true`, archived in
+  [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md).
+  The Check job then lowers debuginfo so `cargo test --workspace` fits on
+  the hosted runner; that workflow change does not alter the measured code.
+- L7 disposition for this channel cut: `DM-PROD1` closed with host pack
+  `/tmp/dm-prod1-host-3b2f72aa` on `3b2f72aa`. `TB-QUAL1` / Terminal-Bench 4.0
+  is deferred by product decision (2026-10-03); this tip has no Harbor verifier
+  receipt. `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` stay out of scope because
+  A3S Cloud was retired by product decision (2026-09-26). Enterprise GA is not
+  claimed.
+
 ## [9.1.1] - 2026-09-29
 
 ### Fixed
