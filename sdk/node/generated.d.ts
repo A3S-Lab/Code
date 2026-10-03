@@ -1951,6 +1951,14 @@ export declare class Session {
    */
   setPlanningMode(mode: string): void
   /**
+   * Record a permission posture for the next fact-run admission.
+   *
+   * Accepts `default`, `plan`, `auto`, or `always-approve` (`yolo` is the
+   * same posture). An open run keeps the policy it froze at open. Takes
+   * effect on the next `send` / `stream`.
+   */
+  setPermissionPosture(posture: string): void
+  /**
    * Clear a prior `setPlanningMode` override so the next loop uses the
    * session-built `planningMode` again.
    */

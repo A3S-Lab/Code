@@ -1486,6 +1486,23 @@ fn test_find_balanced_escaped_quote_before_brace() {
 }
 
 #[test]
+fn test_find_balanced_escaped_quote_inside_object() {
+    // The escape sits after `{`, so the depth scan must treat `\"` as data.
+    let input = r#"prose {"key": "say \"hi\""} tail"#;
+    let result = extract_json_value(input).unwrap();
+    assert_eq!(result["key"], "say \"hi\"");
+}
+
+#[test]
+fn test_find_balanced_unclosed_object_is_not_json() {
+    let error = extract_json_value(r#"prose {"key": "no-close""#).unwrap_err();
+    assert!(
+        error.to_string().contains("No valid JSON"),
+        "{error}"
+    );
+}
+
+#[test]
 fn test_find_balanced_nested_strings_with_braces() {
     let input = r#"{"template": "Hello {name}!", "data": {"name": "World"}}"#;
     let result = extract_json_value(input).unwrap();

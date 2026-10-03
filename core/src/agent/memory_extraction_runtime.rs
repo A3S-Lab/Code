@@ -128,6 +128,31 @@ pub(super) struct TurnMemoryExtractionSchedule<'a> {
 }
 
 impl AgentLoop {
+    /// Register one extraction before a stream worker returns.
+    ///
+    /// Session close only waits for tickets that already exist. The model call
+    /// itself stays off the host's turn-end path.
+    pub(crate) fn admit_fact_memory_extraction(
+        &self,
+        prompt: &str,
+        response: &str,
+        cancel: &CancellationToken,
+    ) -> Option<crate::memory::MemoryExtractionTicket> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let Some(memory) = self.config.memory.as_ref() else {
+            return None;
+        };
+        if !memory.llm_extraction_enabled() {
+            return None;
+        }
+        if prompt.trim().is_empty() || response.trim().is_empty() {
+            return None;
+        }
+        Some(memory.enqueue_llm_extraction())
+    }
+
     /// Extract durable memory after a fact-log turn.
     ///
     /// The fact log does not own an execution-loop snapshot. The prompt and
@@ -139,22 +164,24 @@ impl AgentLoop {
         session_id: &str,
         cancel: &CancellationToken,
     ) {
-        if cancel.is_cancelled() {
+        let Some(ticket) = self.admit_fact_memory_extraction(prompt, response, cancel) else {
             return;
-        }
+        };
+        self.finish_admitted_fact_extraction(prompt, response, session_id, cancel, ticket)
+            .await;
+    }
+
+    pub(crate) async fn finish_admitted_fact_extraction(
+        &self,
+        prompt: &str,
+        response: &str,
+        session_id: &str,
+        cancel: &CancellationToken,
+        ticket: crate::memory::MemoryExtractionTicket,
+    ) {
         let snapshot = MemoryExtractionSnapshot {
             messages: vec![Message::user(prompt), Message::assistant(response)],
         };
-        let Some(memory) = self.config.memory.as_ref() else {
-            return;
-        };
-        if !memory.llm_extraction_enabled() {
-            return;
-        }
-        if !should_attempt_llm_memory_extraction(&snapshot, prompt, response) {
-            return;
-        }
-        let ticket = memory.enqueue_llm_extraction();
         let no_events = None;
         self.extract_turn_memories_with_llm(
             TurnMemoryExtraction {
@@ -260,6 +287,11 @@ impl AgentLoop {
         };
         if !memory.llm_extraction_enabled() {
             return;
+        }
+        // An explicit remember is the user's fact. Persist it before the
+        // extraction model call so a bounded close wait still leaves it.
+        if is_explicit_remember_request(prompt) {
+            remember_explicit_preference(&memory, prompt).await;
         }
 
         let max_items = memory.llm_extraction_max_items().clamp(1, 10);

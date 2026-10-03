@@ -164,6 +164,7 @@ var RequiredOperations = []string{
 	"session_set_budget_guard",
 	"session_set_output_language",
 	"session_set_planning_mode",
+	"session_set_permission_posture",
 	"session_clear_planning_mode_override",
 	"session_set_session_checkpoint_export_sink",
 	"session_register_command",

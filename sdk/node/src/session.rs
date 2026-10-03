@@ -1174,6 +1174,18 @@ impl Session {
         self.inner.set_planning_mode(mode).map_err(node_code_error)
     }
 
+    /// Record a permission posture for the next fact-run admission.
+    ///
+    /// Accepts `default`, `plan`, `auto`, or `always-approve` (`yolo` is the
+    /// same posture). An open run keeps the policy it froze at open. Takes
+    /// effect on the next `send` / `stream`.
+    #[napi(js_name = "setPermissionPosture")]
+    pub fn set_permission_posture(&self, posture: String) -> napi::Result<()> {
+        self.inner
+            .set_permission_posture(&posture)
+            .map_err(node_code_error)
+    }
+
     /// Clear a prior `setPlanningMode` override so the next loop uses the
     /// session-built `planningMode` again.
     #[napi(js_name = "clearPlanningModeOverride")]

@@ -191,6 +191,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_set_budget_guard",
     "session_set_output_language",
     "session_set_planning_mode",
+    "session_set_permission_posture",
     "session_clear_planning_mode_override",
     "session_set_session_checkpoint_export_sink",
     "session_register_command",
@@ -2034,6 +2035,13 @@ impl BridgeState {
                 self.request_session(&request.params)
                     .await?
                     .set_output_language(language)?;
+                Ok(json!({ "configured": true }))
+            }
+            "session_set_permission_posture" => {
+                let posture: String = required(&request.params, "posture")?;
+                self.request_session(&request.params)
+                    .await?
+                    .set_permission_posture(&posture)?;
                 Ok(json!({ "configured": true }))
             }
             "session_set_planning_mode" => {

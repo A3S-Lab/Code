@@ -1288,6 +1288,17 @@ impl PySession {
         self.inner.set_planning_mode(mode).map_err(py_code_error)
     }
 
+    /// Record a permission posture for the next fact-run admission.
+    ///
+    /// Accepts ``default``, ``plan``, ``auto``, or ``always-approve`` (``yolo``
+    /// is the same posture). An open run keeps the policy it froze at open.
+    /// Takes effect on the next ``send`` / ``stream``.
+    fn set_permission_posture(&self, posture: String) -> PyResult<()> {
+        self.inner
+            .set_permission_posture(&posture)
+            .map_err(py_code_error)
+    }
+
     /// Clear a prior ``set_planning_mode`` override so the next loop uses the
     /// session-built ``planning_mode`` again.
     fn clear_planning_mode_override(&self) -> PyResult<()> {

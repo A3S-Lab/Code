@@ -275,9 +275,22 @@ async fn spawn_fact_stream(
         if let Some(committer) = committer {
             let _ = committer.await;
         }
+        // Admit before this worker returns. `session.close` drains tickets
+        // that already exist; a ticket created inside the detached task is
+        // invisible to that wait.
+        let admitted = match (&mapped, parts.surface.as_ref()) {
+            (Ok(result), Some(surface)) => surface.agent.admit_fact_memory_extraction(
+                &prompt,
+                &result.text,
+                &surface.cancel,
+            ),
+            _ => None,
+        };
         tokio::spawn(async move {
             let extract_started = std::time::Instant::now();
-            extract_settled_memory(&parts, &prompt, &mapped).await;
+            if let Some(ticket) = admitted {
+                extract_admitted_memory(&parts, &prompt, &mapped, ticket).await;
+            }
             tracing::info!(
                 target: "perf_probe",
                 extract_ms = extract_started.elapsed().as_millis() as u64,
@@ -372,6 +385,30 @@ async fn extract_settled_memory(
     surface
         .agent
         .fact_extract_turn_memory(prompt, &result.text, &surface.session_id, &surface.cancel)
+        .await;
+}
+
+async fn extract_admitted_memory(
+    parts: &FactSession,
+    prompt: &str,
+    mapped: &std::result::Result<AgentResult, anyhow::Error>,
+    ticket: crate::memory::MemoryExtractionTicket,
+) {
+    let Ok(result) = mapped else {
+        return;
+    };
+    let Some(surface) = parts.surface.as_ref() else {
+        return;
+    };
+    surface
+        .agent
+        .finish_admitted_fact_extraction(
+            prompt,
+            &result.text,
+            &surface.session_id,
+            &surface.cancel,
+            ticket,
+        )
         .await;
 }
 

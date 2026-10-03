@@ -252,6 +252,19 @@ func (session *Session) SetPlanningMode(ctx context.Context, mode string) error 
 	return session.runtime.Request(ctx, op, params, nil)
 }
 
+// SetPermissionPosture records a permission posture for the next fact-run
+// admission. Accepts "default", "plan", "auto", or "always-approve" ("yolo"
+// is the same posture). An open run keeps the policy it froze at open.
+func (session *Session) SetPermissionPosture(ctx context.Context, posture string) error {
+	const op = "session_set_permission_posture"
+	if err := validateSession(session, ctx, op); err != nil {
+		return err
+	}
+	params := session.params()
+	params["posture"] = posture
+	return session.runtime.Request(ctx, op, params, nil)
+}
+
 // ClearPlanningModeOverride clears a prior SetPlanningMode override so the
 // next loop uses the session-built PlanningMode again.
 func (session *Session) ClearPlanningModeOverride(ctx context.Context) error {
