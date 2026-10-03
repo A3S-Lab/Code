@@ -11,8 +11,10 @@ Layer A–D verification matrix used by the E2E goal.
 | `HARNESS-CONV5` | Delivered | Core/SDK `default` ≈ `local-code` / a3s-vec; CLI pins `scientific` |
 | `HARNESS-CONV6` | Delivered | Prompt bodies are a replaceable default pack; permission overlays stay Core-owned |
 | `HARNESS-CONV7` | Code prep Done / external In progress | Runbooks below; close only with secret-free linked reports |
-| `TB-QUAL1` | Deferred by product (2026-10-03); no verifier receipt on `9f521169` | [TERMINAL_BENCH.md](TERMINAL_BENCH.md) |
-| `DM-PROD1` | Delivered on `3b2f72aa`; does not cover tip `9f521169` | [DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md) |
+| `TB-QUAL1` | Deferred by product (2026-10-03); no verifier receipt on `439cc740` | [TERMINAL_BENCH.md](TERMINAL_BENCH.md) |
+| `DM-PROD1` | Delivered on `3b2f72aa`; does not cover changelog fold `439cc740` | [DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md) |
+| L6 on `439cc740` | Recorded; not Enterprise GA | CI [`37117714232`](https://github.com/A3S-Lab/Code/actions/runs/37117714232) attempt 2; performance [`37117721745`](https://github.com/A3S-Lab/Code/actions/runs/37117721745) nine `passed: true`; hermetic artifact `hermetic-integrations-37117714232-1` three `passed: true`. F-table and Layer C stay on parent `9f521169`. See [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
+| L7 on `439cc740` | Not closed | `DM-PROD1` pack `3b2f72aa` does not cover this fold. `TB-QUAL1` has no verifier receipt. CAR stays out of scope |
 | L6 on `9f521169` | Recorded; not Enterprise GA | CI [`37110650044`](https://github.com/A3S-Lab/Code/actions/runs/37110650044); performance [`37112230393`](https://github.com/A3S-Lab/Code/actions/runs/37112230393) nine `passed: true`; hermetic artifact `hermetic-integrations-37110650044-1` three `passed: true`; F-table 44/44 kernels ≥ 95%; Layer C `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. See [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
 | L7 on `9f521169` | Not closed | `DM-PROD1` pack `3b2f72aa` does not cover this tip. `TB-QUAL1` has no verifier receipt. CAR stays out of scope |
 | L6 on `2bd6a234` | Recorded; not Enterprise GA | CI [`37103577874`](https://github.com/A3S-Lab/Code/actions/runs/37103577874); performance [`37103577761`](https://github.com/A3S-Lab/Code/actions/runs/37103577761) nine `passed: true`; hermetic artifact `hermetic-integrations-37103577874-1` three `passed: true`; F-table 44/44 kernels ≥ 95%; Layer C `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. See [PERFORMANCE_QUALIFICATION.md](PERFORMANCE_QUALIFICATION.md) |
@@ -68,7 +70,7 @@ prompts.
 | --- | --- |
 | Harbor dataset tag | `terminal-bench@4.0.0` (complete) |
 | Job / artifact digests | Diagnostic only (not TB-QUAL1 close): tip RC `b91462d3` Flash job `2026-09-26__02-14-59` / `bun-sourcemap-leak__QqXF2Yf` — Harbor exceptions 0, native `verifier_result.rewards.reward=0.0` retained, host completion-gate binds exercised (`boyue/bailian/deepseek-v4-flash`). Prior install-only `2026-09-22__07-32-16` and smoke `2026-09-22__09-41-11` remain supporting. Full tagged dataset `-k 5` still required for TB-QUAL1. |
-| `-n` / `-k` | Diagnostic close: `-n 1 -k 1` on `bun-sourcemap-leak`. TB-QUAL1 is deferred by the 2026-10-03 product decision. Tips `2bd6a234` and `9f521169` have no Harbor verifier receipt. The earlier job was stopped and is not a pass. |
+| `-n` / `-k` | Diagnostic close: `-n 1 -k 1` on `bun-sourcemap-leak`. TB-QUAL1 is deferred by the 2026-10-03 product decision. Tips `2bd6a234`, `9f521169`, and changelog fold `439cc740` have no Harbor verifier receipt. The earlier job was stopped and is not a pass. |
 | GPU sandbox | Docker Desktop on darwin host for tip Flash runs; prior WSL2+RTX 4090 evidence retained for GPU-tagged tasks |
 | Trials with native `verifier_result` | Diagnostic `1/1` present (`reward: 0.0`); Harbor agent exception none. Full-matrix retention pending TB-QUAL1 job completion. |
 | Failures classified | Diagnostic: other — task incorrect / incomplete under verifier; host completion-gate + verifier retention no longer blocked. Full-matrix classification pending. |

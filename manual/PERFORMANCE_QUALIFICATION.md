@@ -46,6 +46,22 @@ Every suite passed, with no retry. The clean deep end-to-end receipt is parent
 on `3b2f72aa` does not cover this tip. Terminal-Bench was not started. There
 is no `v*` tag.
 
+Changelog fold
+[`439cc740`](https://github.com/A3S-Lab/Code/commit/439cc740f2520806bb06f6d6391100c236be8d1f)
+keeps that withhold. Kernel sources are unchanged since `9f521169`. CI
+[`37117714232`](https://github.com/A3S-Lab/Code/actions/runs/37117714232)
+succeeded on attempt 2. Attempt 1 failed the Windows library test
+`baseline_sees_a_mode_change_on_an_already_dirty_file` with
+`PathDelta { paths: [], incomplete: true }`; the rerun is the score. Its
+hermetic integrations artifact has top-level `passed: true` on
+`s3-compat.json`, `headless-cdp.json`, and `opentelemetry.json`. Performance
+Qualification
+[`37117721745`](https://github.com/A3S-Lab/Code/actions/runs/37117721745)
+was dispatched on this commit and produced the nine release reports; each
+top-level `passed` is true. The F-table and Layer C were not re-run; those
+scores stay on `9f521169`. The `DM-PROD1` host pack on `3b2f72aa` does not
+cover this fold. Terminal-Bench was not started. There is no `v*` tag.
+
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
 why the budgets are suitable regression ceilings rather than universal speed
@@ -55,6 +71,8 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| Nine release performance profiles (changelog fold `439cc740`)   | [`37117721745`](https://github.com/A3S-Lab/Code/actions/runs/37117721745) | `performance-37117721745-1`           | `sha256:c4742314329a60b97eee8cafaefd061ee34c8364e57fa1de84c58965c5c06b48` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (changelog fold `439cc740`, CI job) | [`37117714232`](https://github.com/A3S-Lab/Code/actions/runs/37117714232) | `hermetic-integrations-37117714232-1` | `sha256:a796bc2339adf47e6cf08a5edb054e7cf335d01bf168083860b5b51a4fe36a94` |
 | Nine release performance profiles (tip `9f521169`)              | [`37112230393`](https://github.com/A3S-Lab/Code/actions/runs/37112230393) | `performance-37112230393-1`           | `sha256:5147989419a3925091931b2e5484c808d5b692baf31f75d9b433d4113ceea05e` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (tip `9f521169`, CI job) | [`37110650044`](https://github.com/A3S-Lab/Code/actions/runs/37110650044) | `hermetic-integrations-37110650044-1` | `sha256:d0e786d34f7a1919b0afefc2429075628924a298f08b3e8985131b8de832a404` |
 | Nine release performance profiles (tip `2bd6a234`)              | [`37103577761`](https://github.com/A3S-Lab/Code/actions/runs/37103577761) | `performance-37103577761-1`           | `sha256:e13d4598fae533ad6c1ff4924158e0596c4cf71eb30ebaaa9c1877d7515ef017` |
@@ -82,6 +100,14 @@ claims.
 GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
+
+Run `37117721745` on commit `439cc740` produced all nine performance reports with
+`passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
+flow-state-graph, code-intelligence, context-memory, durable-memory-semantic-refresh,
+persistence, evaluation-substrate). CI run `37117714232` on the same commit
+archived S3-compat, controlled CDP, and OpenTelemetry reports with `passed: true`.
+These rows do not replace the 9.1.2 tip record below, and they do not claim
+Enterprise GA.
 
 Run `37112230393` on commit `9f521169` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
