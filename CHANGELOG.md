@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - Tip `2bd6a234` records CI `37103577874` and Performance Qualification `37103577761` in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). All nine performance reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. The `DM-PROD1` host pack on `3b2f72aa` does not cover this admission. Enterprise GA is not claimed. Terminal-Bench was not run. There is no release tag.
+- Clean checkout `5f5528f42595d0747515c79607cd0fa1e7d1cb5b` records one pinned-route completion inside each of the 38 deep cases in [DEEP_E2E_RECEIPTS.md](manual/DEEP_E2E_RECEIPTS.md). Every served model was `deepseek-v4.1-flash`. Enterprise GA is not claimed. Terminal-Bench was not run.
 
 ## [9.1.2] - 2026-10-02
 
