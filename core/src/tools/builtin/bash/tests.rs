@@ -889,6 +889,10 @@ async fn test_bash_curl_json_literal_is_normalized_end_to_end() {
                 Err(error) => panic!("test server accept failed: {error}"),
             }
         };
+        // The listener is non-blocking so accept can poll. Windows keeps that
+        // flag on the accepted socket, and the first read then returns
+        // WSAEWOULDBLOCK before curl has written the body.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
