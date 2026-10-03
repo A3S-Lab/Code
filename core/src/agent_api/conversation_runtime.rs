@@ -34,8 +34,8 @@ pub(crate) enum ExactRecoveryError {
 }
 
 pub(crate) enum ExactRecoveryPreparation {
-    Replayed(AgentRunSpawn),
-    Ready(PreparedExactRecovery),
+    Replayed(Box<AgentRunSpawn>),
+    Ready(Box<PreparedExactRecovery>),
 }
 
 pub(crate) struct PreparedExactRecovery {
@@ -512,7 +512,7 @@ async fn prepare_exact_recovery(
 
     let prompt = exact_recovery_prompt(checkpoint_identity);
     if let Some(replay) = exact_run_replay(session, run_id, &prompt).await? {
-        return Ok(ExactRecoveryPreparation::Replayed(replay));
+        return Ok(ExactRecoveryPreparation::Replayed(Box::new(replay)));
     }
 
     let lease = ExecutionCoordinator::admit(session, "prepare-exact-recovery").await?;
@@ -542,13 +542,15 @@ async fn prepare_exact_recovery(
             },
         )?;
     }
-    Ok(ExactRecoveryPreparation::Ready(PreparedExactRecovery {
-        checkpoint,
-        evidence: evidence.clone(),
-        run_id: run_id.to_string(),
-        prompt,
-        lease,
-    }))
+    Ok(ExactRecoveryPreparation::Ready(Box::new(
+        PreparedExactRecovery {
+            checkpoint,
+            evidence: evidence.clone(),
+            run_id: run_id.to_string(),
+            prompt,
+            lease,
+        },
+    )))
 }
 
 /// Admit a previously validated immutable recovery plan and start its worker.

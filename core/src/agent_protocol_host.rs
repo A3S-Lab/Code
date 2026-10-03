@@ -315,7 +315,7 @@ impl AgentProtocolHost {
             ExactRecoveryPreparation::Replayed(spawned) => spawned.replayed(),
             ExactRecoveryPreparation::Ready(prepared) => {
                 let baseline = self.prepare_change_set(&request.identity).await;
-                let spawned = match self.session.spawn_prepared_recovery(prepared).await {
+                let spawned = match self.session.spawn_prepared_recovery(*prepared).await {
                     Ok(spawned) => spawned,
                     Err(error) => {
                         self.mark_change_set_unavailable(&request.identity).await;

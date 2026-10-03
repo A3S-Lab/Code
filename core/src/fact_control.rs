@@ -63,6 +63,8 @@ pub struct FactRun {
     completion_gate: bool,
     /// Permission policy frozen at admission, including posture allow rules.
     admitted_permission: PermissionPolicy,
+    /// Digest admitted for this run. Legacy opens leave this empty.
+    standing_digest: Option<String>,
 }
 
 /// Optional host mounts for Meta Harness admission.
@@ -156,6 +158,7 @@ pub struct LiveCompletion {
     cached_system: Arc<Mutex<Option<String>>>,
     cached_prompt: Arc<Mutex<Option<String>>>,
     prompt_tokens: Arc<AtomicU64>,
+    standing_system: Option<String>,
 }
 
 impl LiveCompletion {
@@ -178,9 +181,15 @@ impl LiveCompletion {
                 cached_system: Arc::new(Mutex::new(None)),
                 cached_prompt: Arc::new(Mutex::new(None)),
                 prompt_tokens: Arc::new(AtomicU64::new(0)),
+                standing_system: None,
             },
             calls,
         )
+    }
+
+    pub(crate) fn with_standing(mut self, projection: String) -> Self {
+        self.standing_system = Some(projection);
+        self
     }
 
     pub(crate) fn with_surface(mut self, surface: SessionSurface) -> Self {
@@ -920,6 +929,7 @@ impl Completion for LiveCompletion {
         let system_slot = Arc::clone(&self.cached_system);
         let prompt_slot = Arc::clone(&self.cached_prompt);
         let prompt_tokens = Arc::clone(&self.prompt_tokens);
+        let standing_system = self.standing_system.clone();
         Box::pin(async move {
             prompt_tokens.store(0, Ordering::SeqCst);
             if request.messages.len() == 1 {
@@ -955,7 +965,60 @@ impl Completion for LiveCompletion {
                 Some(request.system.join("\n"))
             };
             let mut prompt_override = None;
-            if let Some(surface) = &surface {
+            if let Some(standing) = standing_system.clone() {
+                if !standing.is_empty() {
+                    system = Some(standing.clone());
+                }
+                if let Some(surface) = &surface {
+                    if ready_flag
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        let prompt = request
+                            .messages
+                            .first()
+                            .map(|text| split_folded_message(text).1)
+                            .unwrap_or_default();
+                        let (effective, augmented) =
+                            model_context(surface, &prompt, request.messages.len()).await?;
+                        prompt_override = Some(effective);
+                        if let Some(augmented) = augmented.filter(|text| !text.is_empty()) {
+                            let base = surface.agent.admitted_system_prompt();
+                            let extras = augmented
+                                .strip_prefix(base.as_str())
+                                .unwrap_or(augmented.as_str())
+                                .trim();
+                            if !extras.is_empty() {
+                                system = Some(match system {
+                                    Some(admitted) if !admitted.is_empty() => {
+                                        format!("{admitted}\n\n{extras}")
+                                    }
+                                    _ => extras.to_string(),
+                                });
+                            }
+                        }
+                        *prompt_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            prompt_override.clone();
+                        *system_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = system.clone();
+                    } else {
+                        prompt_override = prompt_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        if let Some(admitted) = system_slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                        {
+                            system = Some(admitted);
+                        }
+                    }
+                }
+            } else if let Some(surface) = &surface {
                 if ready_flag
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
@@ -1196,6 +1259,7 @@ struct CheckpointState {
     run_id: String,
     session_id: String,
     capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
+    standing_context_digest: Option<String>,
     turns: Arc<AtomicUsize>,
 }
 
@@ -1248,6 +1312,7 @@ impl ExecutorTools {
                 run_id: checkpoint.run_id.clone(),
                 session_id: checkpoint.session_id.clone(),
                 capability_binding: checkpoint.capability_binding.clone(),
+                standing_context_digest: checkpoint.standing_context_digest.clone(),
                 turn,
                 messages: vec![
                     Message {
@@ -2293,6 +2358,7 @@ impl FactRun {
             admitted_tools: Vec::new(),
             completion_gate: kernel.completion_gate,
             admitted_permission: PermissionPolicy::default(),
+            standing_digest: None,
         })
     }
 
@@ -2308,9 +2374,24 @@ impl FactRun {
         let catalog = executor.definitions();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
         let specs = exposed_tool_specs(&catalog, |name| permission.expose_to_model(name));
-        let admitted_tools = specs.iter().map(|spec| spec.name.clone()).collect();
+        let admitted_tools: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
         let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
         let config = session_harness_config(max_tool_rounds, 1_000_000, specs)?;
+        let admission = crate::standing_context::admit(
+            &log_dir(workspace),
+            &thread_for_session(session_id),
+            None,
+            &[],
+            &admitted_tools,
+            config.budget(),
+            config.step_limit(),
+            config.model_attempts(),
+        )?;
+        let standing_digest = admission.as_ref().map(|item| item.digest.clone());
+        let completion = match admission {
+            Some(admitted) => completion.with_standing(admitted.projection),
+            None => completion,
+        };
         let context = executor.registry().context();
         let mut run = Self::open(
             log_dir(workspace),
@@ -2335,6 +2416,7 @@ impl FactRun {
         run.thread = thread_for_session(session_id);
         run.admitted_tools = admitted_tools;
         run.admitted_permission = permission;
+        run.standing_digest = standing_digest;
         Ok(run)
     }
 
@@ -2358,6 +2440,11 @@ impl FactRun {
         &self.admitted_permission
     }
 
+    /// Digest admitted for this run. Legacy logs leave this empty.
+    pub fn standing_context_digest(&self) -> Option<&str> {
+        self.standing_digest.as_deref()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_projected(
         workspace: &Path,
@@ -2376,7 +2463,7 @@ impl FactRun {
             Some(checker) => checker.expose_to_model(name),
             None => permission.expose_to_model(name),
         });
-        let admitted_tools = specs.iter().map(|spec| spec.name.clone()).collect();
+        let admitted_tools: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
         let admitted_permission = permission.clone();
         let (completion, _) = LiveCompletion::new(Arc::clone(&client), permission.clone(), catalog);
         let completion = match &checker {
@@ -2406,6 +2493,27 @@ impl FactRun {
             config = config.with_token_compact(after_tokens, agent.fact_compact_keep_tokens());
         }
         config = config.with_duplicate_threshold(agent.duplicate_tool_threshold());
+        let agent_system = agent.admitted_system_prompt();
+        let harness_system = surface
+            .harness
+            .as_ref()
+            .map(|options| options.system.clone())
+            .unwrap_or_default();
+        let admission = crate::standing_context::admit(
+            &log_dir(workspace),
+            &thread_for_session(session_id),
+            Some(agent_system.as_str()),
+            &harness_system,
+            &admitted_tools,
+            config.budget(),
+            config.step_limit(),
+            config.model_attempts(),
+        )?;
+        let standing_digest = admission.as_ref().map(|item| item.digest.clone());
+        let completion = match admission {
+            Some(admitted) => completion.with_standing(admitted.projection),
+            None => completion,
+        };
         let prompt_tokens = Arc::new(AtomicU64::new(0));
         let completion = Arc::new(UsageStamp {
             inner: Arc::new(completion),
@@ -2425,6 +2533,7 @@ impl FactRun {
             run_id: checkpoint.run_id,
             session_id: checkpoint.session_id,
             capability_binding: checkpoint.capability_binding,
+            standing_context_digest: standing_digest.clone(),
             turns: Arc::new(AtomicUsize::new(0)),
         });
         let mut run = Self::open_composed_with_hosts(
@@ -2456,6 +2565,7 @@ impl FactRun {
         run.thread = thread_for_session(session_id);
         run.admitted_tools = admitted_tools;
         run.admitted_permission = admitted_permission;
+        run.standing_digest = standing_digest;
         Ok(run)
     }
 
@@ -2481,13 +2591,16 @@ impl FactRun {
     /// Record prior turns so the new prompt is the only infer that runs.
     ///
     /// Each assistant text is a `model.turn` whose cause is `infer:{turn}:{cycle}`.
-    /// An existing log is already the control source and is left unchanged.
+    /// An existing conversation log is already the control source and is left
+    /// unchanged. A standing-context digest alone is not that conversation.
     pub fn seed_history(&self, history: &[Message]) -> Result<()> {
         let log = self.open_log()?;
-        if !log
+        let existing = log
             .read(&self.thread)
-            .map_err(|error| anyhow::anyhow!(error))?
-            .is_empty()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        if existing
+            .iter()
+            .any(|fact| fact.kind != crate::standing_context::STANDING_CONTEXT_FACT_KIND)
         {
             return Ok(());
         }

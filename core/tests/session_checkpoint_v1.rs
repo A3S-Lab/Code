@@ -100,6 +100,7 @@ fn logical_resume() -> LoopCheckpoint {
         run_id: "source-run".into(),
         session_id: "session-checkpoint-1".into(),
         capability_binding: None,
+        standing_context_digest: None,
         turn: 3,
         messages: vec![Message::user("retain exact state")],
         total_usage: TokenUsage {

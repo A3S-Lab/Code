@@ -112,7 +112,7 @@ async fn cutover_after_exact_preparation_cannot_change_the_pinned_recovery_gener
         .apply_capability_batch(batch(2, 'c'), CancellationToken::new())
         .await
         .unwrap();
-    let error = match session.spawn_prepared_recovery(prepared).await {
+    let error = match session.spawn_prepared_recovery(*prepared).await {
         Err(error) => error,
         Ok(_) => panic!("the post-validation cutover must be observed before target admission"),
     };

@@ -106,6 +106,11 @@ pub struct LoopCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
 
+    /// Digest of the standing context admitted for this run. Checkpoints written
+    /// before that admission omit the field and stay loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_context_digest: Option<String>,
+
     /// 1-based tool round counter at checkpoint time.
     /// `0` is reserved for "no rounds completed yet".
     pub turn: usize,
@@ -166,6 +171,14 @@ impl LoopCheckpoint {
             binding.validate().map_err(|error| {
                 anyhow::anyhow!(
                     "loop checkpoint for run {} has an invalid capability binding: {error}",
+                    self.run_id
+                )
+            })?;
+        }
+        if let Some(digest) = &self.standing_context_digest {
+            crate::content_digest::validate_digest(digest).map_err(|_| {
+                anyhow::anyhow!(
+                    "loop checkpoint for run {} has an invalid standing context digest",
                     self.run_id
                 )
             })?;
@@ -279,6 +292,7 @@ mod tests {
             run_id: run_id.to_string(),
             session_id: "session-1".to_string(),
             capability_binding: None,
+            standing_context_digest: None,
             turn,
             messages: vec![Message::user("hi")],
             total_usage: TokenUsage::default(),
@@ -323,6 +337,8 @@ mod tests {
         let cp: LoopCheckpoint = serde_json::from_str(json).unwrap();
         assert_eq!(cp.schema_version, 0);
         assert_eq!(cp.convergence, LoopConvergenceState::default());
+        assert!(cp.standing_context_digest.is_none());
+        assert!(cp.ensure_loadable().is_ok());
     }
 
     #[test]

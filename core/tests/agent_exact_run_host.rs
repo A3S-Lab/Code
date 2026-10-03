@@ -366,6 +366,7 @@ async fn protocol_recovery_uses_code_checkpoint_semantics_and_a_fresh_exact_run(
         run_id: checkpoint_run_id.into(),
         session_id: "cloud-conversation-4".into(),
         capability_binding: None,
+        standing_context_digest: None,
         turn: 2,
         messages: vec![Message::user("continue from durable work")],
         total_usage: TokenUsage {

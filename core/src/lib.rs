@@ -157,6 +157,7 @@ pub mod session_review;
 pub mod shell_session;
 pub mod skills;
 pub(crate) mod sse;
+pub(crate) mod standing_context;
 #[cfg(feature = "state-graph")]
 pub mod state_graph;
 pub mod store;

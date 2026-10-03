@@ -163,6 +163,7 @@ fn logical_resume_with_binding(
         run_id: "portable-source-run".into(),
         session_id: session_id.into(),
         capability_binding,
+        standing_context_digest: None,
         turn,
         messages: vec![Message::user(&format!("continue portable round {turn}"))],
         total_usage: TokenUsage {

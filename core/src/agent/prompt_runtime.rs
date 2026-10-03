@@ -13,6 +13,10 @@ impl AgentLoop {
         self.config.prompt_slots.build()
     }
 
+    pub(crate) fn admitted_system_prompt(&self) -> String {
+        self.system_prompt()
+    }
+
     /// Get the assembled system prompt from slots with an explicit style.
     fn system_prompt_for_style(&self, style: AgentStyle) -> String {
         let mut slots = self.config.prompt_slots.clone();

@@ -1062,3 +1062,153 @@ async fn fact_log_session_attachments_steer_and_history_stay_on_the_log() {
     // Steer is another user message, so it performs one new completion.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
+
+struct StandingClient {
+    calls: Arc<AtomicUsize>,
+    systems: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl LlmClient for StandingClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.systems
+            .lock()
+            .unwrap()
+            .push(system.unwrap_or("").to_string());
+        Ok(LlmResponse {
+            message: Message::assistant("ok"),
+            usage: TokenUsage::default(),
+            stop_reason: None,
+            token_logprobs: Vec::new(),
+            meta: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("unused")
+    }
+}
+
+#[tokio::test]
+async fn standing_context_stays_the_admitted_projection() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("instructions.md"),
+        "OPEN-TIME-INSTRUCTIONS\n",
+    )
+    .unwrap();
+    crate::fact_control::reset_session_fact_log(workspace.path());
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let systems = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(StandingClient {
+                calls: Arc::clone(&calls),
+                systems: Arc::clone(&systems),
+            }),
+            &crate::SessionOptions::new()
+                .with_session_id("standing-seal")
+                .with_permission_policy(crate::permissions::policy_for_posture("default"))
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled),
+        )
+        .unwrap();
+    let open = super::super::conversation_runtime::FactSession::from(&session)
+        .open()
+        .unwrap();
+    let digest = open.standing_context_digest().unwrap().to_string();
+    let payload = open
+        .read_facts()
+        .unwrap()
+        .into_iter()
+        .find(|fact| fact.kind == crate::standing_context::STANDING_CONTEXT_FACT_KIND)
+        .unwrap()
+        .payload
+        .to_string();
+    assert!(payload.contains(&digest));
+    assert!(!payload.contains("OPEN-TIME-INSTRUCTIONS"));
+
+    std::fs::write(
+        workspace.path().join("instructions.md"),
+        "CHANGED-INSTRUCTIONS\n",
+    )
+    .unwrap();
+    open.user_text("ping").await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let seen = systems.lock().unwrap();
+    assert!(seen[0].contains("OPEN-TIME-INSTRUCTIONS"));
+    assert!(!seen[0].contains("CHANGED-INSTRUCTIONS"));
+    drop(seen);
+    drop(open);
+
+    let mismatch = super::super::conversation_runtime::FactSession::from(&session)
+        .open()
+        .err()
+        .expect("changed instructions fail closed");
+    assert!(mismatch
+        .to_string()
+        .contains("standing context digest mismatch"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    std::fs::write(
+        workspace.path().join("instructions.md"),
+        "OPEN-TIME-INSTRUCTIONS\n",
+    )
+    .unwrap();
+    let resumed = super::super::conversation_runtime::FactSession::from(&session)
+        .open()
+        .unwrap();
+    assert_eq!(resumed.standing_context_digest(), Some(digest.as_str()));
+}
+
+#[tokio::test]
+async fn a_new_run_without_a_standing_digest_does_not_call_the_model() {
+    use a3s_effect::LogStore;
+    let workspace = tempfile::tempdir().unwrap();
+    crate::fact_control::reset_session_fact_log(workspace.path());
+    let log_dir = workspace.path().join(".a3s").join("effect-log");
+    a3s_effect::FileLog::open(&log_dir)
+        .unwrap()
+        .append(
+            "no-digest",
+            &[a3s_effect::NewFact {
+                kind: crate::standing_context::STANDING_CONTEXT_FACT_KIND.to_string(),
+                key: "standing-context".into(),
+                payload: serde_json::json!({}),
+            }],
+            None,
+        )
+        .unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(StandingClient {
+                calls: Arc::clone(&calls),
+                systems: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }),
+            &crate::SessionOptions::new()
+                .with_session_id("no-digest")
+                .with_permission_policy(crate::permissions::policy_for_posture("default"))
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled),
+        )
+        .unwrap();
+    let opened = super::super::conversation_runtime::FactSession::from(&session).open();
+    let error = opened.err().expect("missing digest fails closed");
+    assert!(error.to_string().contains("missing a digest"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

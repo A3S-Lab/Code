@@ -378,6 +378,7 @@ async fn checkpoint_resume_preserves_accounting(agent: &Agent) -> Result<CaseRes
                 run_id: run_id.to_string(),
                 session_id: "deterministic-benchmark-resume".to_string(),
                 capability_binding: None,
+                standing_context_digest: None,
                 turn: 3,
                 messages: vec![Message::user("Continue the interrupted task.")],
                 total_usage: TokenUsage {

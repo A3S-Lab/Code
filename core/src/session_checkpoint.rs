@@ -442,6 +442,7 @@ mod tests {
             run_id: "run-checkpoint-test".into(),
             session_id: session_id.into(),
             capability_binding: None,
+            standing_context_digest: None,
             turn: 1,
             messages: Vec::new(),
             total_usage: Default::default(),

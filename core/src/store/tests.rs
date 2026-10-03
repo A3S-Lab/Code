@@ -1268,6 +1268,7 @@ fn sample_checkpoint(run_id: &str) -> crate::loop_checkpoint::LoopCheckpoint {
         run_id: run_id.to_string(),
         session_id: "s-1".to_string(),
         capability_binding: None,
+        standing_context_digest: None,
         turn: 2,
         messages: vec![Message::user("hi")],
         total_usage: TokenUsage::default(),

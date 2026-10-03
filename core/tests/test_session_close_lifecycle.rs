@@ -647,6 +647,7 @@ async fn cluster_ops_consolidated_session_lifecycle() {
         run_id: seeded_run_id.to_string(),
         session_id: session_a.id().to_string(),
         capability_binding: None,
+        standing_context_digest: None,
         turn: 2,
         messages: vec![
             Message::user("refactor the auth module"),
@@ -814,6 +815,7 @@ async fn loop_checkpoint_round_trips_through_session_store() {
         run_id: run_id.to_string(),
         session_id: "session-pillar3".to_string(),
         capability_binding: None,
+        standing_context_digest: None,
         turn: 4,
         messages: vec![
             a3s_code_core::llm::Message::user("seed prompt"),

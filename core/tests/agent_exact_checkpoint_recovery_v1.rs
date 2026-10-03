@@ -114,6 +114,7 @@ fn checkpoint(source_run_id: &str, session_id: &str, turn: usize) -> LoopCheckpo
         run_id: source_run_id.into(),
         session_id: session_id.into(),
         capability_binding: None,
+        standing_context_digest: None,
         turn,
         messages: vec![Message::user(&format!("continue after tool round {turn}"))],
         total_usage: TokenUsage {

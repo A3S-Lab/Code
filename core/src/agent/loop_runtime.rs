@@ -443,6 +443,7 @@ impl AgentLoop {
             run_id: run_id.clone(),
             session_id: session_id.unwrap_or("").to_string(),
             capability_binding: self.checkpoint_capability_binding.clone(),
+            standing_context_digest: None,
             turn,
             messages: state.messages.clone(),
             total_usage: state.total_usage.clone(),
