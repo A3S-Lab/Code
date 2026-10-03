@@ -7,6 +7,27 @@ Prior tip L6 pairs remain on `b91462d3` / `ee8f68ad` / `91d34757`. Enterprise GA
 remains unclaimed: `TB-QUAL1` has no verifier receipt on this tip, and CAR is
 not certified.
 
+Tip [`2bd6a234`](https://github.com/A3S-Lab/Code/commit/2bd6a234d171f1484ac4cc29999d943085f17fd1)
+keeps that withhold. Standing-context admission is
+[`9fb1cb79`](https://github.com/A3S-Lab/Code/commit/9fb1cb7985226c7971ef59a20710b46391af2f2b).
+CI [`37103577874`](https://github.com/A3S-Lab/Code/actions/runs/37103577874)
+succeeded, and its hermetic integrations artifact has top-level `passed: true`
+on `s3-compat.json`, `headless-cdp.json`, and `opentelemetry.json`. Performance
+Qualification
+[`37103577761`](https://github.com/A3S-Lab/Code/actions/runs/37103577761)
+produced the nine release reports and each top-level `passed` is true. The
+F-table gate on this tip scored 44 of 44 kernel files at or above 95% line
+coverage (`content_digest.rs` 100.00%, `loop_checkpoint.rs` 96.74%, lowest
+`durable_memory.rs` 95.00%). An earlier instrumented run stopped on a contended
+repository lock before scoring; the rerun is the score above.
+`just layer-c-live-e2e` with `A3S_TEST_MODEL=boyue/bailian/deepseek-v4.1-flash`
+printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash` and exited 0.
+The same route served `deepseek-v4.1-flash` on the deep end-to-end receipt. A
+run that left the recipe default `boyue/deepseek-v4-flash` did not: the
+agent-protocol write suite observed reasoning events and no write tool. The
+`DM-PROD1` host pack on `3b2f72aa` is unchanged and does not cover this
+admission. Terminal-Bench was not started. There is no `v*` tag on this tip.
+
 This record is the human-readable companion to the machine-readable release
 profiles. It documents what was measured, what was deliberately excluded, and
 why the budgets are suitable regression ceilings rather than universal speed
@@ -16,6 +37,8 @@ claims.
 
 | Evidence                                                        | GitHub Actions run                                                        | Artifact                              | Archive SHA-256                                                    |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| Nine release performance profiles (tip `2bd6a234`)              | [`37103577761`](https://github.com/A3S-Lab/Code/actions/runs/37103577761) | `performance-37103577761-1`           | `sha256:e13d4598fae533ad6c1ff4924158e0596c4cf71eb30ebaaa9c1877d7515ef017` |
+| MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (tip `2bd6a234`, CI job) | [`37103577874`](https://github.com/A3S-Lab/Code/actions/runs/37103577874) | `hermetic-integrations-37103577874-1` | `sha256:71afbc50cd874fb2b4015560dc16f3d9bff3a511a6d358da84f99ea6bb16db42` |
 | Nine release performance profiles (9.1.2 tip `6ad2d6dc`)        | [`37082677055`](https://github.com/A3S-Lab/Code/actions/runs/37082677055) | `performance-37082677055-1`           | `sha256:5b2e717d581277e0e835888f87513f40e5cb829ca5a6811519089b2873418512` |
 | MinIO/S3-compat, controlled Chrome/CDP, and local OpenTelemetry (9.1.2 tip `6ad2d6dc`) | [`37082696544`](https://github.com/A3S-Lab/Code/actions/runs/37082696544) | `hermetic-integrations-37082696544-1` | `sha256:7ac2db6708bfc0e07c315b703df3ca83020ce85d12c8cd13f18b5753b42adb79` |
 | Nine release performance profiles (9.0.0 tip `b91462d3`)        | [`36160896419`](https://github.com/A3S-Lab/Code/actions/runs/36160896419) | `performance-36160896419-1`           | `11edc0a40a51cbfeb21aeaa3d285a912ab1c8d5b6b387af672c2fae0e1c3f778` |
@@ -39,6 +62,14 @@ claims.
 GitHub reported digests for the uploaded ZIP archives. The artifacts are
 retained for 30 days; the workflow also runs weekly and whenever a measured
 critical path changes, producing a refreshed independently downloadable record.
+
+Run `37103577761` on commit `2bd6a234` produced all nine performance reports with
+`passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,
+flow-state-graph, code-intelligence, context-memory, durable-memory-semantic-refresh,
+persistence, evaluation-substrate). CI run `37103577874` on the same commit
+archived S3-compat, controlled CDP, and OpenTelemetry reports with `passed: true`.
+These rows do not replace the 9.1.2 tip record below, and they do not claim
+Enterprise GA.
 
 Run `37082677055` on commit `6ad2d6dc` produced all nine performance reports with
 `passed: true` (agent-convergence, workspace-retrieval, workspace-retrieval-portable,

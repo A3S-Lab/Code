@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new fact-log run admits a standing-context digest before the first model call. The effect log stores only the SHA-256 of `instructions.md`, the skills tree, activated memory, and the tools and budget admitted for that run. Later completions keep the open-time projection. A resume whose files changed fails closed before a client call. Checkpoints written without the field still load.
 - An identical run-event cursor is replayed before the log binds a new chain digest. A different payload at that cursor still returns a cursor conflict.
 
+### Notes
+
+- Tip `2bd6a234` records CI `37103577874` and Performance Qualification `37103577761` in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). All nine performance reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. The `DM-PROD1` host pack on `3b2f72aa` does not cover this admission. Enterprise GA is not claimed. Terminal-Bench was not run. There is no release tag.
+
 ## [9.1.2] - 2026-10-02
 
 ### Changed
