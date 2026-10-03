@@ -2548,10 +2548,7 @@ mod tests {
 
     #[tokio::test]
     async fn seam_admission_acp_permission_and_goal() {
-        let root = std::env::temp_dir().join(format!(
-            "a3s-acp-seam-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("a3s-acp-seam-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("temp workspace");
         let mut launch = test_launch(Some(root.join("sessions")));
         launch.workspace = root.clone();

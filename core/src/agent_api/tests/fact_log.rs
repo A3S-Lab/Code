@@ -307,9 +307,7 @@ async fn seam_admission_open_run_stays_frozen() {
     let empty = serde_json::json!({});
     assert!(open.completion_gate_required());
     assert!(
-        catalog
-            .iter()
-            .any(|name| name == "write" || name == "bash"),
+        catalog.iter().any(|name| name == "write" || name == "bash"),
         "default admission should expose a mutating tool, got {catalog:?}"
     );
     assert_eq!(

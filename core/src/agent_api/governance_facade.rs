@@ -163,9 +163,7 @@ impl AgentSession {
     }
 
     /// Policy the next [`super::conversation_runtime::FactSession`] admission reads.
-    pub(crate) fn runtime_permission_policy(
-        &self,
-    ) -> Option<crate::permissions::PermissionPolicy> {
+    pub(crate) fn runtime_permission_policy(&self) -> Option<crate::permissions::PermissionPolicy> {
         self.runtime_permission_policy
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())

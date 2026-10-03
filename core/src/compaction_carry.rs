@@ -27,9 +27,9 @@ struct Step {
     open: bool,
 }
 
-/// Text the next model call sees: standing instructions, then each compacted
-/// message. This is the session system prefix plus the messages compaction
-/// just produced.
+/// Text a test uses to read the next model call: standing instructions, then
+/// each compacted message.
+#[cfg(test)]
 pub(crate) fn next_turn_context(
     prefix_instructions: &str,
     compacted_messages: &[String],
@@ -628,9 +628,7 @@ mod tests {
 
     #[test]
     fn seam_admission_compaction_carry() {
-        let standing = format!(
-            "{STANDING_HEADER}\nKeep the repository building.\n{STANDING_END}"
-        );
+        let standing = format!("{STANDING_HEADER}\nKeep the repository building.\n{STANDING_END}");
         let user = "\
 Revision: ship the permission seam
 Constraint: do not skip the completion gate

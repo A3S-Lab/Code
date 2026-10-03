@@ -18,8 +18,14 @@ fn seam_admission_permission_posture_denies_under_always_approve() {
     }
 
     let plan = policy_for_posture("plan");
-    assert_eq!(plan.check("read", &json!({"file_path": "README.md"})), PermissionDecision::Allow);
-    assert_eq!(plan.check("write", &json!({"file_path": "README.md"})), PermissionDecision::Deny);
+    assert_eq!(
+        plan.check("read", &json!({"file_path": "README.md"})),
+        PermissionDecision::Allow
+    );
+    assert_eq!(
+        plan.check("write", &json!({"file_path": "README.md"})),
+        PermissionDecision::Deny
+    );
     assert_eq!(plan.check("bash", &json!({})), PermissionDecision::Deny);
 
     let auto = policy_for_posture("auto");
@@ -27,8 +33,14 @@ fn seam_admission_permission_posture_denies_under_always_approve() {
     assert_eq!(auto.check("bash", &json!({})), PermissionDecision::Ask);
 
     let default_policy = policy_for_posture("default");
-    assert_eq!(default_policy.check("read", &json!({})), PermissionDecision::Ask);
-    assert_eq!(default_policy.check("bash", &json!({})), PermissionDecision::Ask);
+    assert_eq!(
+        default_policy.check("read", &json!({})),
+        PermissionDecision::Ask
+    );
+    assert_eq!(
+        default_policy.check("bash", &json!({})),
+        PermissionDecision::Ask
+    );
 }
 
 #[test]

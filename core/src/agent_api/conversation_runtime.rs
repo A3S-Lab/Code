@@ -279,11 +279,11 @@ async fn spawn_fact_stream(
         // that already exist; a ticket created inside the detached task is
         // invisible to that wait.
         let admitted = match (&mapped, parts.surface.as_ref()) {
-            (Ok(result), Some(surface)) => surface.agent.admit_fact_memory_extraction(
-                &prompt,
-                &result.text,
-                &surface.cancel,
-            ),
+            (Ok(result), Some(surface)) => {
+                surface
+                    .agent
+                    .admit_fact_memory_extraction(&prompt, &result.text, &surface.cancel)
+            }
             _ => None,
         };
         tokio::spawn(async move {

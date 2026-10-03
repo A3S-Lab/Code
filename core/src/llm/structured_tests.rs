@@ -1496,10 +1496,7 @@ fn test_find_balanced_escaped_quote_inside_object() {
 #[test]
 fn test_find_balanced_unclosed_object_is_not_json() {
     let error = extract_json_value(r#"prose {"key": "no-close""#).unwrap_err();
-    assert!(
-        error.to_string().contains("No valid JSON"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("No valid JSON"), "{error}");
 }
 
 #[test]

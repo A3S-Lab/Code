@@ -377,6 +377,7 @@ fn goal_section_body(text: &str) -> Option<String> {
 }
 
 /// Force a durable `## Goal` section when a pinned goal is known.
+#[cfg(test)]
 fn ensure_goal_section(summary: &str, pinned_goal: Option<&str>) -> String {
     let Some(goal) = pinned_goal.map(str::trim).filter(|goal| !goal.is_empty()) else {
         return summary.to_string();
@@ -401,6 +402,7 @@ fn ensure_goal_section(summary: &str, pinned_goal: Option<&str>) -> String {
 }
 
 /// Remove an existing `## Goal` section so a pinned goal can replace it.
+#[cfg(test)]
 fn strip_goal_section(text: &str) -> String {
     let marker = "## Goal";
     let Some(start) = text.find(marker) else {

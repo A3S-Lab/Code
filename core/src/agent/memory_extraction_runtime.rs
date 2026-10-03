@@ -141,9 +141,7 @@ impl AgentLoop {
         if cancel.is_cancelled() {
             return None;
         }
-        let Some(memory) = self.config.memory.as_ref() else {
-            return None;
-        };
+        let memory = self.config.memory.as_ref()?;
         if !memory.llm_extraction_enabled() {
             return None;
         }
