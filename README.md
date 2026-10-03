@@ -65,7 +65,16 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   inherits the provider.
 - **Search stays fast (9.1.0).** Automatic `web_search` is API, then HTTP,
   then headless. Moli is taken from the binary already shipped beside `a3s`
-  before any download. Current package on npm, crates.io, and PyPI: **9.1.1**.
+  before any download.
+- **Standing context and replay (9.1.2).** A new fact-log run admits a
+  standing-context digest before the first model call. An identical run-event
+  cursor is replayed before a new chain digest. A permission posture is
+  admitted on the next fact run; an open run keeps the tools, step limit, and
+  completion gate it froze at open. Current package on npm, crates.io, and
+  PyPI: **9.1.2**.
+- **Release status.** 9.1.2 is a channel release, not Enterprise GA.
+  Terminal-Bench 4.0 stays deferred. The `DM-PROD1` pack on `3b2f72aa` does
+  not cover this admission. CAR stays out of scope.
 
 ## What's new in 9.0
 
@@ -161,7 +170,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   Release workflow failed musl and did not complete the full Node matrix.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.1` line;
-current package **9.1.1**).
+current package **9.1.2**).
 
 ### Earlier lines
 
