@@ -4,9 +4,10 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
-## [9.1.2] - 2026-10-02
+## [9.1.2] - 2026-10-03
 
 - Bundled Core 9.1.2. A permission posture is admitted on the next fact run. An open run keeps its frozen tool catalog, step limit, and completion gate. Deny wins over always-approve. `Session.set_permission_posture` records that posture.
+- A new fact run admits a standing-context digest before the first model call. An identical run-event cursor is replayed before a new chain digest.
 
 ## [9.1.1] - 2026-09-29
 

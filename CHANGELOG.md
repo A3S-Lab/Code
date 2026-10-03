@@ -7,18 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- A new fact-log run admits a standing-context digest before the first model call. The effect log stores only the SHA-256 of `instructions.md`, the skills tree, activated memory, and the tools and budget admitted for that run. Later completions keep the open-time projection. A resume whose files changed fails closed before a client call. Checkpoints written without the field still load.
-- An identical run-event cursor is replayed before the log binds a new chain digest. A different payload at that cursor still returns a cursor conflict.
-
-### Notes
-
-- Tip `2bd6a234` records CI `37103577874` and Performance Qualification `37103577761` in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). All nine performance reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. The `DM-PROD1` host pack on `3b2f72aa` does not cover this admission. Enterprise GA is not claimed. Terminal-Bench was not run. There is no release tag.
-- Clean checkout `5f5528f42595d0747515c79607cd0fa1e7d1cb5b` records one pinned-route completion inside each of the 38 deep cases in [DEEP_E2E_RECEIPTS.md](manual/DEEP_E2E_RECEIPTS.md). Every served model was `deepseek-v4.1-flash`. Enterprise GA is not claimed. Terminal-Bench was not run.
-- Tip `9f521169` records CI `37110650044` and Performance Qualification `37112230393` in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). All nine performance reports and the three hermetic reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. The `DM-PROD1` host pack on `3b2f72aa` does not cover this tip. Enterprise GA is not claimed. Terminal-Bench was not run. There is no release tag.
-
-## [9.1.2] - 2026-10-02
+## [9.1.2] - 2026-10-03
 
 ### Changed
 
@@ -26,21 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compaction still carries standing instructions, the current goal, unrevoked constraints, and open steps. Skills enter `skill_dirs` on the next admission. A due schedule is a host send on `schedule:<name>`; an idle schedule appends no fact.
 - The thin TUI adapter admits that posture through Core. It no longer uses the session id `tui-session` or a local auto-approve callback as the permission authority.
 - Node, Python, and Go sessions expose `set_permission_posture` for the same next-admission policy.
+- A new fact-log run admits a standing-context digest before the first model call. The effect log stores only the SHA-256 of `instructions.md`, the skills tree, activated memory, and the tools and budget admitted for that run. Later completions keep the open-time projection. A resume whose files changed fails closed before a client call. Checkpoints written without the field still load.
+- An identical run-event cursor is replayed before the log binds a new chain digest. A different payload at that cursor still returns a cursor conflict.
 
 ### Notes
 
-- Channel candidate, not Enterprise GA. L6 on `6ad2d6dc` is
-  `performance.yml` run `37082677055` and `hermetic-integrations.yml` run
-  `37082696544`, both `passed: true`, archived in
-  [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md).
-  The Check job then lowers debuginfo so `cargo test --workspace` fits on
-  the hosted runner; that workflow change does not alter the measured code.
-- L7 disposition for this channel cut: `DM-PROD1` closed with host pack
-  `/tmp/dm-prod1-host-3b2f72aa` on `3b2f72aa`. `TB-QUAL1` / Terminal-Bench 4.0
-  is deferred by product decision (2026-10-03); this tip has no Harbor verifier
-  receipt. `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` stay out of scope because
-  A3S Cloud was retired by product decision (2026-09-26). Enterprise GA is not
-  claimed.
+- Channel release. Enterprise GA is not claimed.
+- L7 disposition for this channel cut: the `DM-PROD1` host pack on `3b2f72aa` does not cover the standing-context admission. `TB-QUAL1` / Terminal-Bench 4.0 is deferred by product decision (2026-10-03); this cut has no Harbor verifier receipt. `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` stay out of scope because A3S Cloud was retired by product decision (2026-09-26).
+- Earlier candidate `6ad2d6dc` records `performance.yml` run `37082677055` and `hermetic-integrations.yml` run `37082696544`, both `passed: true`, archived in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). The Check job then lowers debuginfo so `cargo test --workspace` fits on the hosted runner; that workflow change does not alter the measured code.
+- Tip `2bd6a234` records CI `37103577874` and Performance Qualification `37103577761`. All nine performance reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. That tip is an ancestor of this cut.
+- Clean checkout `5f5528f42595d0747515c79607cd0fa1e7d1cb5b` records one pinned-route completion inside each of the 38 deep cases in [DEEP_E2E_RECEIPTS.md](manual/DEEP_E2E_RECEIPTS.md). Every served model was `deepseek-v4.1-flash`.
+- Tip `9f521169` records CI `37110650044` and Performance Qualification `37112230393`. All nine performance reports and the three hermetic reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. That tip is the parent of the changelog fold. Its performance run does not bind the fold commit. The release binding is the Performance Qualification workflow whose head SHA is the fold.
 
 ## [9.1.1] - 2026-09-29
 
