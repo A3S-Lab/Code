@@ -174,7 +174,10 @@ jobs:
       - name: Feature-gated library tests
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib
+        # deep_e2e_live_receipts is a live receipt: one provider completion
+        # per case. Runners have no ACL, and a missing ACL panics rather
+        # than printing rows. The clean-tree log is the receipt.
+        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib -- --skip deep_e2e_live_receipts
 
   # ───────────────────────────────────────────────
   # Windows cross-compile check

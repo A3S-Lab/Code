@@ -1,16 +1,23 @@
-//! Ignored live kernel oracles for the deep end-to-end case list.
+//! Live kernel oracles for the deep end-to-end case list.
 //!
-//! Each `DEEP_E2E_ROW` is printed only after that case's kernel oracle passes.
-//! The receipt file is written by the runner after this process exits 0.
+//! `deep_e2e_live_receipts` is not ignored. Without `ci-all` it returns
+//! before any row: several cases need optional features, and a default-feature
+//! run must not claim a receipt. With `ci-all` the test requires a clean
+//! worktree, then each case performs one pinned-route completion and prints
+//! that response model on its own row. GitHub runners have no provider ACL,
+//! so the ci-all library job skips this test by name. A ci-all run that
+//! reaches the model without an ACL panics `acl unreadable` instead of
+//! printing rows.
+
+#![cfg_attr(not(feature = "ci-all"), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-const ADMISSION_COMMIT: &str = "9fb1cb7985226c7971ef59a20710b46391af2f2b";
 const PINNED_MODEL: &str = "boyue/bailian/deepseek-v4.1-flash";
 
 struct ClearResolutionScript;
@@ -21,16 +28,27 @@ impl Drop for ClearResolutionScript {
     }
 }
 
-fn row(id: &str, model: &str, oracle: &str) {
+fn row(commit: &str, id: &str, model: &str, oracle: &str) {
     assert!(
-        !oracle.contains(' ') && !oracle.contains("commit="),
+        commit.len() == 40
+            && commit
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()),
+        "commit must be the full HEAD sha"
+    );
+    assert!(
+        !id.is_empty() && !id.contains('=') && !id.contains('\n'),
+        "case id must stay on one row"
+    );
+    assert!(
+        !oracle.is_empty() && !oracle.contains(' ') && !oracle.contains('='),
         "oracle token must be a single token"
     );
     assert!(
-        !model.contains(' ') && !model.contains("commit="),
+        !model.is_empty() && !model.contains(' ') && !model.contains('=') && !model.contains('\n'),
         "model token must be a single token"
     );
-    println!("DEEP_E2E_ROW id={id} commit={ADMISSION_COMMIT} model={model} oracle={oracle}");
+    println!("DEEP_E2E_ROW id={id} commit={commit} model={model} oracle={oracle}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
@@ -81,8 +99,63 @@ fn accept_model(raw: &str) -> String {
     }
 }
 
-fn assert_admission_head() {
+fn porcelain_path(line: &str) -> &str {
+    line.get(3..).map(str::trim).unwrap_or("")
+}
+
+/// `cargo test` rewrites the unused-patch order of `a3s-apofasi` and
+/// `a3s-sandbox` without changing the admitted source. Any other dirty path,
+/// including a real `Cargo.lock` edit, still refuses the receipt.
+fn cargo_lock_is_unused_patch_reorder(diff: &str) -> bool {
+    diff.lines()
+        .filter(|line| line.starts_with('+') || line.starts_with('-'))
+        .filter(|line| !line.starts_with("+++") && !line.starts_with("---"))
+        .all(|line| {
+            matches!(
+                line[1..].trim(),
+                "" | "[[patch.unused]]"
+                    | "name = \"a3s-apofasi\""
+                    | "name = \"a3s-sandbox\""
+                    | "version = \"0.1.2\""
+                    | "version = \"0.2.0\""
+            )
+        })
+}
+
+fn assert_clean_receipt_commit() -> String {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .expect("git status");
+    assert!(status.status.success(), "git status failed");
+    let porcelain = String::from_utf8_lossy(&status.stdout);
+    let blockers: Vec<&str> = porcelain
+        .lines()
+        .filter(|line| porcelain_path(line) != "Cargo.lock")
+        .collect();
+    assert!(
+        blockers.is_empty(),
+        "dirty tree cannot stamp a receipt: {}",
+        blockers.join("\n")
+    );
+    if porcelain
+        .lines()
+        .any(|line| porcelain_path(line) == "Cargo.lock")
+    {
+        let diff = std::process::Command::new("git")
+            .args(["diff", "--", "Cargo.lock"])
+            .current_dir(&repo)
+            .output()
+            .expect("git diff Cargo.lock");
+        assert!(diff.status.success(), "git diff Cargo.lock failed");
+        let diff = String::from_utf8_lossy(&diff.stdout);
+        assert!(
+            cargo_lock_is_unused_patch_reorder(&diff),
+            "Cargo.lock changed beyond unused-patch order"
+        );
+    }
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&repo)
@@ -90,14 +163,17 @@ fn assert_admission_head() {
         .expect("git rev-parse");
     assert!(output.status.success(), "git rev-parse failed");
     let head = String::from_utf8_lossy(&output.stdout);
-    let head = head.trim();
+    let head = head.trim().to_string();
     assert!(
-        head.starts_with(ADMISSION_COMMIT),
-        "live receipt requires admission commit {ADMISSION_COMMIT}, HEAD is {head}"
+        head.len() == 40 && head.chars().all(|character| character.is_ascii_hexdigit()),
+        "live receipt requires a full HEAD sha, got {head}"
     );
+    println!("DEEP_E2E_HEAD commit={head}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    head
 }
 
-async fn served_model() -> String {
+async fn pinned_completion(case_id: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.a3s/config.acl");
     let config = match crate::CodeConfig::from_file(&path) {
         Ok(config) => config,
@@ -108,12 +184,9 @@ async fn served_model() -> String {
         None => panic!("route missing"),
     };
     let client = crate::llm::create_client_with_config(llm);
+    let prompt = format!("Reply with the single word ok. case={case_id}");
     let response = match client
-        .complete(
-            &[crate::llm::Message::user("Reply with the single word ok")],
-            None,
-            &[],
-        )
+        .complete(&[crate::llm::Message::user(&prompt)], None, &[])
         .await
     {
         Ok(response) => response,
@@ -124,7 +197,14 @@ async fn served_model() -> String {
         .as_ref()
         .and_then(|meta| meta.response_model.clone())
         .unwrap_or_default();
-    accept_model(&served)
+    let model = accept_model(&served);
+    assert!(
+        !model.contains(' ') && !model.contains("http") && !model.contains('@'),
+        "served model must stay a single token"
+    );
+    println!("DEEP_E2E_COMPLETION id={case_id} model={model}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    model
 }
 
 fn workspace_dir() -> tempfile::TempDir {
@@ -162,53 +242,62 @@ fn json_has_key(value: &Value, key: &str) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "live deep e2e against the admission commit"]
 async fn deep_e2e_live_receipts() {
-    let _clear_resolution = ClearResolutionScript;
-    assert_admission_head();
-    let model = served_model().await;
+    // Default `cargo test --lib` does not enable the optional cases. Returning
+    // here prints no receipt row. The ci-all body below is the live path.
+    #[cfg(not(feature = "ci-all"))]
+    {
+        eprintln!("DEEP_E2E_SKIP reason=ci-all feature is required for the live receipt");
+        return;
+    }
+    #[cfg(feature = "ci-all")]
+    {
+        let _clear_resolution = ClearResolutionScript;
+        let commit = assert_clean_receipt_commit();
 
-    case_agent_runtime(&model).await;
-    case_conversation(&model).await;
-    case_run_control(&model).await;
-    case_governed_tools(&model).await;
-    case_workspace_tools(&model).await;
-    case_workspace_retrieval(&model).await;
-    case_model_adapters(&model).await;
-    case_structured_output(&model).await;
-    case_mcp_and_skills(&model).await;
-    case_planning_delegation(&model).await;
-    case_priority_scheduling(&model).await;
-    case_persistence(&model).await;
-    case_governance(&model).await;
-    case_run_observability(&model).await;
-    case_context_memory(&model).await;
-    case_web_search(&model).await;
-    case_web_fetch(&model).await;
-    case_code_intelligence(&model).await;
-    case_cognitive_packages(&model).await;
-    case_use_runtime_tasks(&model).await;
-    case_program(&model).await;
-    case_programmable_workflows(&model).await;
-    case_state_graph(&model).await;
-    case_agent_release_contract(&model).await;
-    case_agent_protocol(&model).await;
-    case_evaluation_substrate(&model).await;
-    case_typed_decisions(&model).await;
-    case_moli_runtime(&model).await;
-    case_s3_workspace(&model).await;
-    case_opentelemetry(&model).await;
-    case_effect_isolation(&model).await;
-    case_native_sandbox(&model).await;
-    case_safe_http(&model).await;
-    case_mutation_verify_gate(&model).await;
-    case_batch_schema(&model).await;
-    case_image_read(&model).await;
-    case_event_envelope(&model).await;
-    case_research_wire(&model).await;
+        case_agent_runtime(&commit).await;
+        case_conversation(&commit).await;
+        case_run_control(&commit).await;
+        case_governed_tools(&commit).await;
+        case_workspace_tools(&commit).await;
+        case_workspace_retrieval(&commit).await;
+        case_model_adapters(&commit).await;
+        case_structured_output(&commit).await;
+        case_mcp_and_skills(&commit).await;
+        case_planning_delegation(&commit).await;
+        case_priority_scheduling(&commit).await;
+        case_persistence(&commit).await;
+        case_governance(&commit).await;
+        case_run_observability(&commit).await;
+        case_context_memory(&commit).await;
+        case_web_search(&commit).await;
+        case_web_fetch(&commit).await;
+        case_code_intelligence(&commit).await;
+        case_cognitive_packages(&commit).await;
+        case_use_runtime_tasks(&commit).await;
+        case_program(&commit).await;
+        case_programmable_workflows(&commit).await;
+        case_state_graph(&commit).await;
+        case_agent_release_contract(&commit).await;
+        case_agent_protocol(&commit).await;
+        case_evaluation_substrate(&commit).await;
+        case_typed_decisions(&commit).await;
+        case_moli_runtime(&commit).await;
+        case_s3_workspace(&commit).await;
+        case_opentelemetry(&commit).await;
+        case_effect_isolation(&commit).await;
+        case_native_sandbox(&commit).await;
+        case_safe_http(&commit).await;
+        case_mutation_verify_gate(&commit).await;
+        case_batch_schema(&commit).await;
+        case_image_read(&commit).await;
+        case_event_envelope(&commit).await;
+        case_research_wire(&commit).await;
+    }
 }
 
-async fn case_agent_runtime(model: &str) {
+async fn case_agent_runtime(commit: &str) {
+    let model = pinned_completion("agent_runtime").await;
     let (agent, _session, _dir) = open_session("session-1").await;
     agent.close().await;
     let before = agent.list_sessions().await;
@@ -224,10 +313,11 @@ async fn case_agent_runtime(model: &str) {
     let after = agent.list_sessions().await;
     assert_eq!(before, after);
     assert!(!after.iter().any(|id| id == "session-closed-again"));
-    row("agent_runtime", model, "SessionClosed");
+    row(commit, "agent_runtime", &model, "SessionClosed");
 }
 
-async fn case_conversation(model: &str) {
+async fn case_conversation(commit: &str) {
+    let model = pinned_completion("conversation").await;
     let (_agent, session, _dir) = open_session("session-1").await;
     let state = crate::agent_api::RunControlState::from_session(&session);
     let handle = state.start_run("replay-prompt").await;
@@ -245,10 +335,11 @@ async fn case_conversation(model: &str) {
         Err(other) => panic!("conversation: expected RunIdentityConflict, got {other}"),
         Ok(_) => panic!("conversation: expected RunIdentityConflict"),
     }
-    row("conversation", model, "RunIdentityConflict");
+    row(commit, "conversation", &model, "RunIdentityConflict");
 }
 
-async fn case_run_control(model: &str) {
+async fn case_run_control(commit: &str) {
+    let model = pinned_completion("run_control").await;
     let inbox =
         crate::run_control::RunControlInbox::new("session-1", "run-1", CancellationToken::new());
     let snapshot = inbox.update_turn(1).await;
@@ -261,10 +352,11 @@ async fn case_run_control(model: &str) {
         other => panic!("run_control: expected StaleTurn, got {other:?}"),
     }
     assert_eq!(inbox.snapshot().await.queued_controls, 0);
-    row("run_control", model, "StaleTurn");
+    row(commit, "run_control", &model, "StaleTurn");
 }
 
-async fn case_governed_tools(model: &str) {
+async fn case_governed_tools(commit: &str) {
+    let model = pinned_completion("governed_tools").await;
     let (_agent, session, _dir) = open_session("governed-1").await;
     let runtime = crate::agent_api::DirectToolRuntime::from_session(&session);
     session.close().await;
@@ -275,10 +367,11 @@ async fn case_governed_tools(model: &str) {
         Err(crate::CodeError::SessionClosed { session_id }) if session_id == "governed-1" => {}
         other => panic!("governed_tools: expected SessionClosed, got {other:?}"),
     }
-    row("governed_tools", model, "SessionClosed");
+    row(commit, "governed_tools", &model, "SessionClosed");
 }
 
-async fn case_workspace_tools(model: &str) {
+async fn case_workspace_tools(commit: &str) {
+    let model = pinned_completion("workspace_tools").await;
     use crate::tools::Tool;
     use crate::workspace::{
         WorkspaceDirEntry, WorkspaceError, WorkspaceFileSystem, WorkspaceFileSystemExt,
@@ -357,10 +450,11 @@ async fn case_workspace_tools(model: &str) {
         result.error_kind,
         Some(crate::ToolErrorKind::VersionConflict { .. })
     ));
-    row("workspace_tools", model, "VersionConflict");
+    row(commit, "workspace_tools", &model, "VersionConflict");
 }
 
-async fn case_workspace_retrieval(model: &str) {
+async fn case_workspace_retrieval(commit: &str) {
+    let model = pinned_completion("workspace_retrieval").await;
     use crate::workspace::conformance::InMemoryFileSystem;
     use crate::{
         ChunkCatalogLimits, ChunkingConfig, EmbeddingBatchRequest, EmbeddingBatchResponse,
@@ -428,10 +522,11 @@ async fn case_workspace_retrieval(model: &str) {
         .expect("replayed semantic search");
     assert_eq!(first.hits.len(), second.hits.len());
     assert!(first.hits.is_empty(), "empty index must not invent a hit");
-    row("workspace_retrieval", model, "InvalidQuery");
+    row(commit, "workspace_retrieval", &model, "InvalidQuery");
 }
 
-async fn case_model_adapters(model: &str) {
+async fn case_model_adapters(commit: &str) {
+    let model = pinned_completion("model_adapters").await;
     use crate::llm::{
         HttpClient, HttpResponse, NonRetryableLlmError, OpenAiClient, RetryConfig,
         StreamingHttpResponse,
@@ -488,10 +583,11 @@ async fn case_model_adapters(model: &str) {
         .expect("terminal provider error");
     assert_eq!(typed.provider(), Some("openai"));
     assert_eq!(typed.status(), Some(402));
-    row("model_adapters", model, "openai-402");
+    row(commit, "model_adapters", &model, "openai-402");
 }
 
-async fn case_structured_output(model: &str) {
+async fn case_structured_output(commit: &str) {
+    let model = pinned_completion("structured_output").await;
     let provider = crate::security::NoOpSecurityProvider;
     let schema = json!({
         "type": "object",
@@ -511,10 +607,11 @@ async fn case_structured_output(model: &str) {
         Some(&schema),
     );
     assert!(rejected.is_err());
-    row("structured_output", model, "schema-rejected");
+    row(commit, "structured_output", &model, "schema-rejected");
 }
 
-async fn case_mcp_and_skills(model: &str) {
+async fn case_mcp_and_skills(commit: &str) {
+    let model = pinned_completion("mcp_and_skills").await;
     use crate::mcp::{McpServerConfig, McpTransportConfig};
 
     let (_agent, session, _dir) = open_session("mcp-1").await;
@@ -550,10 +647,11 @@ async fn case_mcp_and_skills(model: &str) {
     }
     assert_eq!(session.tool_names(), names);
     assert_eq!(session.trace_events().len(), traces);
-    row("mcp_and_skills", model, "SessionClosed");
+    row(commit, "mcp_and_skills", &model, "SessionClosed");
 }
 
-async fn case_planning_delegation(model: &str) {
+async fn case_planning_delegation(commit: &str) {
+    let model = pinned_completion("planning_delegation").await;
     use crate::llm::{LlmClient, Message, ToolDefinition};
     use crate::tools::Tool;
 
@@ -606,10 +704,11 @@ async fn case_planning_delegation(model: &str) {
         result.error_kind,
         Some(crate::ToolErrorKind::InvalidArgument { .. })
     ));
-    row("planning_delegation", model, "InvalidArgument");
+    row(commit, "planning_delegation", &model, "InvalidArgument");
 }
 
-async fn case_priority_scheduling(model: &str) {
+async fn case_priority_scheduling(commit: &str) {
+    let model = pinned_completion("priority_scheduling").await;
     let scheduler = Arc::new(
         crate::TaskScheduler::new(crate::TaskSchedulerConfig {
             max_active: 1,
@@ -651,10 +750,11 @@ async fn case_priority_scheduling(model: &str) {
         scheduler.stats().await,
         Err(crate::TaskSchedulerError::Closed)
     ));
-    row("priority_scheduling", model, "Closed");
+    row(commit, "priority_scheduling", &model, "Closed");
 }
 
-async fn case_persistence(model: &str) {
+async fn case_persistence(commit: &str) {
+    let model = pinned_completion("persistence").await;
     use crate::store::SessionStore;
 
     struct BoomStore;
@@ -721,10 +821,11 @@ async fn case_persistence(model: &str) {
         Err(crate::CodeError::Session(message)) if message.contains("Failed to save session") => {}
         other => panic!("persistence: expected Session, got {other:?}"),
     }
-    row("persistence", model, "snapshot-digest");
+    row(commit, "persistence", &model, "snapshot-digest");
 }
 
-async fn case_governance(model: &str) {
+async fn case_governance(commit: &str) {
+    let model = pinned_completion("governance").await;
     use crate::hitl::{ConfirmationPolicy, ConfirmationProvider, ConfirmationResponse};
 
     struct StubConfirm;
@@ -790,10 +891,11 @@ async fn case_governance(model: &str) {
         Err(crate::CodeError::Session(message)) if message.contains("manager down") => {}
         other => panic!("governance: expected Session, got {other:?}"),
     }
-    row("governance", model, "Session");
+    row(commit, "governance", &model, "Session");
 }
 
-async fn case_run_observability(model: &str) {
+async fn case_run_observability(commit: &str) {
+    let model = pinned_completion("run_observability").await;
     let log = crate::CoreEventLog::new();
     let operation = crate::OperationId::new("deep-e2e-op").expect("operation");
     let revision = crate::SourceRevision::new(1);
@@ -822,10 +924,11 @@ async fn case_run_observability(model: &str) {
         .append_run_event(operation, revision, None, &conflict)
         .expect_err("cursor conflict");
     assert!(matches!(err, crate::CoreEventLogError::CursorConflict));
-    row("run_observability", model, "CursorConflict");
+    row(commit, "run_observability", &model, "CursorConflict");
 }
 
-async fn case_context_memory(model: &str) {
+async fn case_context_memory(commit: &str) {
+    let model = pinned_completion("context_memory").await;
     use a3s_memory::repository::{
         DurableMemoryKind, EvidenceKind, EvidenceRef, InMemoryRepository, MemoryChangeSet,
         MemoryNamespace, MemoryNodeDraft, MemoryOperation, MemoryRelation, MemoryRelationKind,
@@ -995,7 +1098,7 @@ async fn case_context_memory(model: &str) {
     assert!(candidates
         .iter()
         .all(|candidate| candidate.node.id != "candidate-related"));
-    row("context_memory", model, "candidate-related-absent");
+    row(commit, "context_memory", &model, "candidate-related-absent");
 }
 
 fn search_config(endpoint: &str) -> crate::config::SearchConfig {
@@ -1020,7 +1123,8 @@ fn search_config(endpoint: &str) -> crate::config::SearchConfig {
     }
 }
 
-async fn case_web_search(model: &str) {
+async fn case_web_search(commit: &str) {
+    let model = pinned_completion("web_search").await;
     let mut rejected = a3s_search::Search::new();
     let failure = crate::tools::add_http_engine(
         &mut rejected,
@@ -1040,10 +1144,11 @@ async fn case_web_search(model: &str) {
     )
     .expect("https endpoint");
     assert!(added);
-    row("web_search", model, "EngineFailure-tavily");
+    row(commit, "web_search", &model, "EngineFailure-tavily");
 }
 
-async fn case_web_fetch(model: &str) {
+async fn case_web_fetch(commit: &str) {
+    let model = pinned_completion("web_fetch").await;
     use crate::tools::Tool;
 
     let dir = workspace_dir();
@@ -1058,11 +1163,20 @@ async fn case_web_fetch(model: &str) {
     crate::tools::set_resolution_script(None);
     assert!(!result.success);
     assert!(result.images.is_empty());
+    assert!(result.metadata.is_none());
+    assert!(
+        result
+            .content
+            .contains("resolves to a non-public address and was blocked"),
+        "web_fetch: {}",
+        result.content
+    );
     assert!(!result.content.contains("Example Domain"));
-    row("web_fetch", model, "SafeHttpError");
+    row(commit, "web_fetch", &model, "ToolOutput-FetchFailure");
 }
 
-async fn case_code_intelligence(model: &str) {
+async fn case_code_intelligence(commit: &str) {
+    let model = pinned_completion("code_intelligence").await;
     use crate::WorkspaceCodeIntelligence;
 
     let dir = workspace_dir();
@@ -1085,7 +1199,7 @@ async fn case_code_intelligence(model: &str) {
         Some("deep-e2e-must-not-publish")
     );
     provider.shutdown().await;
-    row("code_intelligence", model, "status-not-published");
+    row(commit, "code_intelligence", &model, "status-not-published");
 }
 
 fn cognitive_binding(content_digest: &str) -> crate::CognitivePackageBindingV1 {
@@ -1097,7 +1211,8 @@ fn cognitive_binding(content_digest: &str) -> crate::CognitivePackageBindingV1 {
     )
 }
 
-async fn case_cognitive_packages(model: &str) {
+async fn case_cognitive_packages(commit: &str) {
+    let model = pinned_completion("cognitive_packages").await;
     let store = crate::InMemoryRunStore::new();
     let run = store.create_run("session-1", "bind").await;
     let binding = cognitive_binding(
@@ -1135,7 +1250,7 @@ async fn case_cognitive_packages(model: &str) {
         admitted.cognitive_package_binding
     );
     assert_eq!(stored.event_count, 0);
-    row("cognitive_packages", model, "Conflict");
+    row(commit, "cognitive_packages", &model, "Conflict");
 }
 
 fn use_projection() -> crate::UseRuntimeTaskProjectionV1 {
@@ -1173,7 +1288,8 @@ fn use_execution(generation: u64) -> crate::UseRuntimeTaskExecutionV1 {
     }
 }
 
-async fn case_use_runtime_tasks(model: &str) {
+async fn case_use_runtime_tasks(commit: &str) {
+    let model = pinned_completion("use_runtime_tasks").await;
     let projection = use_projection();
     projection.validate().expect("projection");
     use_execution(7)
@@ -1184,10 +1300,11 @@ async fn case_use_runtime_tasks(model: &str) {
         drifted,
         Err(crate::UseRuntimeTaskError::ResponseDrift(_))
     ));
-    row("use_runtime_tasks", model, "ResponseDrift");
+    row(commit, "use_runtime_tasks", &model, "ResponseDrift");
 }
 
-async fn case_program(model: &str) {
+async fn case_program(commit: &str) {
+    let model = pinned_completion("program").await;
     use crate::tools::{ToolInvocation, ToolInvoker, ToolResult};
 
     struct NoInvoker;
@@ -1240,10 +1357,11 @@ async fn case_program(model: &str) {
         .expect("replay");
     assert!(replayed.success, "program: replay failed");
     assert!(replayed.content.contains('3'));
-    row("program", model, "script-timeout");
+    row(commit, "program", &model, "script-timeout");
 }
 
-async fn case_programmable_workflows(model: &str) {
+async fn case_programmable_workflows(commit: &str) {
+    let model = pinned_completion("programmable_workflows").await;
     use crate::store::SessionStore;
     use std::collections::HashMap;
 
@@ -1314,11 +1432,12 @@ async fn case_programmable_workflows(model: &str) {
         .await;
     assert_eq!(out[0].output, "cached-a");
     assert_eq!(*ran.lock().await, vec!["b".to_string()]);
-    row("programmable_workflows", model, "cached-a");
+    row(commit, "programmable_workflows", &model, "cached-a");
 }
 
 #[cfg(feature = "state-graph")]
-async fn case_state_graph(model: &str) {
+async fn case_state_graph(commit: &str) {
+    let model = pinned_completion("state_graph").await;
     use crate::{GraphEvent, GraphPatch, GraphRuntime, PatchOperation};
 
     let mut runtime = GraphRuntime::new();
@@ -1366,11 +1485,11 @@ async fn case_state_graph(model: &str) {
         runtime.events().last().expect("event").event,
         GraphEvent::PatchRejected { .. }
     ));
-    row("state_graph", model, "PatchRejected");
+    row(commit, "state_graph", &model, "PatchRejected");
 }
 
 #[cfg(not(feature = "state-graph"))]
-async fn case_state_graph(_model: &str) {
+async fn case_state_graph(_commit: &str) {
     panic!("feature required: state-graph");
 }
 
@@ -1389,7 +1508,8 @@ fn evaluation_record(decision: &str) -> crate::EvaluationRecordV1 {
 }
 
 #[cfg(feature = "evaluation")]
-async fn case_evaluation_substrate(model: &str) {
+async fn case_evaluation_substrate(commit: &str) {
+    let model = pinned_completion("evaluation_substrate").await;
     use crate::EvaluationResultSink;
 
     let store = crate::InMemoryEvaluationResultStore::new();
@@ -1408,16 +1528,17 @@ async fn case_evaluation_substrate(model: &str) {
     assert_eq!(kept.record_digest, digest);
     let again = store.write(original).await.expect("replay after conflict");
     assert!(!again.written && again.replayed);
-    row("evaluation_substrate", model, "Conflict");
+    row(commit, "evaluation_substrate", &model, "Conflict");
 }
 
 #[cfg(not(feature = "evaluation"))]
-async fn case_evaluation_substrate(_model: &str) {
+async fn case_evaluation_substrate(_commit: &str) {
     panic!("feature required: evaluation");
 }
 
 #[cfg(feature = "apofasi")]
-async fn case_typed_decisions(model: &str) {
+async fn case_typed_decisions(commit: &str) {
+    let model = pinned_completion("typed_decisions").await;
     let planning = crate::admit_planning_pre_analysis();
     crate::enforce_ineligible(planning).expect("ineligible stays");
     let err = crate::enforce_ineligible(crate::GenerationAdmission {
@@ -1426,16 +1547,17 @@ async fn case_typed_decisions(model: &str) {
     })
     .expect_err("eligible cannot replace");
     assert!(matches!(err, crate::TypedDecisionError::CannotReplace(_)));
-    row("typed_decisions", model, "CannotReplace");
+    row(commit, "typed_decisions", &model, "CannotReplace");
 }
 
 #[cfg(not(feature = "apofasi"))]
-async fn case_typed_decisions(_model: &str) {
+async fn case_typed_decisions(_commit: &str) {
     panic!("feature required: apofasi");
 }
 
 #[cfg(feature = "headless-search")]
-async fn case_moli_runtime(model: &str) {
+async fn case_moli_runtime(commit: &str) {
+    let model = pinned_completion("moli_runtime").await;
     use fs2::FileExt;
 
     let dir = workspace_dir();
@@ -1452,35 +1574,33 @@ async fn case_moli_runtime(model: &str) {
         Duration::from_secs(2),
         crate::moli_runtime::acquire_install_lock(
             dir.path(),
-            Instant::now() + Duration::from_millis(30),
+            std::time::Instant::now() + Duration::from_millis(40),
         ),
     )
-    .await;
-    let denied = match contended {
-        Ok(Err(_)) => true,
-        Ok(Ok(file)) => {
-            drop(file);
-            crate::moli_runtime::acquire_install_lock(
-                dir.path(),
-                Instant::now() - Duration::from_secs(1),
-            )
-            .await
-            .is_err()
+    .await
+    .expect("moli_runtime: acquire hung");
+    match contended {
+        Err(error) => {
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("timed out waiting for the Moli install lock"),
+                "moli_runtime: {message}"
+            );
         }
-        Err(_) => false,
-    };
+        Ok(_file) => panic!("moli_runtime: install lock file was returned"),
+    }
     drop(held);
-    assert!(denied, "moli_runtime: install lock was not denied");
-    row("moli_runtime", model, "install-lock-denied");
+    row(commit, "moli_runtime", &model, "install-lock-timeout");
 }
 
 #[cfg(not(feature = "headless-search"))]
-async fn case_moli_runtime(_model: &str) {
+async fn case_moli_runtime(_commit: &str) {
     panic!("feature required: headless-search");
 }
 
 #[cfg(feature = "s3")]
-async fn case_s3_workspace(model: &str) {
+async fn case_s3_workspace(commit: &str) {
+    let model = pinned_completion("s3_workspace").await;
     use crate::workspace::{
         WorkspaceError, WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspacePath,
     };
@@ -1555,16 +1675,17 @@ async fn case_s3_workspace(model: &str) {
         .await
         .expect("get again");
     assert_eq!(again, "alpha-body");
-    row("s3_workspace", model, "VersionConflict");
+    row(commit, "s3_workspace", &model, "VersionConflict");
 }
 
 #[cfg(not(feature = "s3"))]
-async fn case_s3_workspace(_model: &str) {
+async fn case_s3_workspace(_commit: &str) {
     panic!("feature required: s3");
 }
 
 #[cfg(feature = "telemetry")]
-async fn case_opentelemetry(model: &str) {
+async fn case_opentelemetry(commit: &str) {
+    let model = pinned_completion("opentelemetry").await;
     let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
     crate::telemetry_otel::shutdown_provider(provider);
     let mut guard = crate::telemetry_otel::TelemetryGuard::from_provider(
@@ -1573,11 +1694,11 @@ async fn case_opentelemetry(model: &str) {
     assert!(guard.holds_provider());
     guard.shutdown_held();
     assert!(!guard.holds_provider());
-    row("opentelemetry", model, "shutdown-empty-slot");
+    row(commit, "opentelemetry", &model, "shutdown-empty-slot");
 }
 
 #[cfg(not(feature = "telemetry"))]
-async fn case_opentelemetry(_model: &str) {
+async fn case_opentelemetry(_commit: &str) {
     panic!("feature required: telemetry");
 }
 
@@ -1603,7 +1724,8 @@ fn init_repo(root: &Path) {
     git(root, &["commit", "-m", "init"]);
 }
 
-async fn case_effect_isolation(model: &str) {
+async fn case_effect_isolation(commit: &str) {
+    let model = pinned_completion("Effect isolation / orphan `.a3s-isolate-*`").await;
     let parent = workspace_dir();
     let root = parent.path().join("repo");
     init_repo(&root);
@@ -1648,13 +1770,15 @@ async fn case_effect_isolation(model: &str) {
         });
     assert!(!orphans, "isolation directory remained");
     row(
+        commit,
         "Effect isolation / orphan `.a3s-isolate-*`",
-        model,
+        &model,
         "PromoteOutcome-Conflict",
     );
 }
 
-async fn case_native_sandbox(model: &str) {
+async fn case_native_sandbox(commit: &str) {
+    let model = pinned_completion("Native sandbox and process-host opt-in").await;
     use crate::sandbox::BashSandbox;
 
     let dir = workspace_dir();
@@ -1670,16 +1794,28 @@ async fn case_native_sandbox(model: &str) {
         &dir.path().to_string_lossy(),
     )
     .await;
-    assert!(failed.is_err());
-    assert!(!marker.exists());
+    let message = match failed {
+        Err(error) => format!("{error:#}"),
+        Ok(_) => panic!("native sandbox: command ran on the process host"),
+    };
+    assert!(
+        message.contains("the default A3S native sandbox is unavailable"),
+        "native sandbox: {message}"
+    );
+    assert!(
+        !marker.exists(),
+        "native sandbox: command created the marker"
+    );
     row(
+        commit,
         "Native sandbox and process-host opt-in",
-        model,
-        "sandbox-denied",
+        &model,
+        "UnavailableDefaultSandbox",
     );
 }
 
-async fn case_safe_http(model: &str) {
+async fn case_safe_http(commit: &str) {
+    let model = pinned_completion("Safe HTTP / Fake-IP / SSRF").await;
     use crate::tools::{get_with_redirects_observed, RedirectQueryPolicy, ResolutionScript};
 
     let url = reqwest::Url::parse("https://example.com/deep-e2e").expect("url");
@@ -1708,10 +1844,16 @@ async fn case_safe_http(model: &str) {
             Err(_) => panic!("safe_http: script {script:?} hung"),
         }
     }
-    row("Safe HTTP / Fake-IP / SSRF", model, "SafeHttpError");
+    row(
+        commit,
+        "Safe HTTP / Fake-IP / SSRF",
+        &model,
+        "SafeHttpError",
+    );
 }
 
-async fn case_agent_release_contract(model: &str) {
+async fn case_agent_release_contract(commit: &str) {
+    let model = pinned_completion("agent_release_contract").await;
     use crate::release::{
         AgentReleaseCapability, AgentReleaseCompatibility, AgentReleaseError, AgentReleaseManifest,
         AGENT_PROTOCOL_V1,
@@ -1744,7 +1886,12 @@ async fn case_agent_release_contract(model: &str) {
         .verify_compatibility(&matching)
         .expect("compatible");
     assert_eq!(manifest.artifact().digest(), digest);
-    row("agent_release_contract", model, "IncompatibleProtocol");
+    row(
+        commit,
+        "agent_release_contract",
+        &model,
+        "IncompatibleProtocol",
+    );
 }
 
 fn protocol_identity(run_id: &str) -> crate::AgentProtocolRunIdentityV1 {
@@ -1774,7 +1921,8 @@ fn protocol_record(
     }
 }
 
-async fn case_agent_protocol(model: &str) {
+async fn case_agent_protocol(commit: &str) {
+    let model = pinned_completion("agent_protocol").await;
     let identity = protocol_identity("run-bound-meta");
     identity.validate().expect("identity");
     let record = protocol_record(&identity);
@@ -1784,10 +1932,11 @@ async fn case_agent_protocol(model: &str) {
     let err = record.validate_for(&swapped).expect_err("mismatch");
     assert!(matches!(err, crate::AgentProtocolError::IdentityMismatch));
     record.validate_for(&identity).expect("record unchanged");
-    row("agent_protocol", model, "IdentityMismatch");
+    row(commit, "agent_protocol", &model, "IdentityMismatch");
 }
 
-async fn case_mutation_verify_gate(model: &str) {
+async fn case_mutation_verify_gate(commit: &str) {
+    let model = pinned_completion("Mutation verify gate").await;
     use crate::harness_loop::{
         decide_completion, CompletionGate, CompletionTerminal, MutationLedger,
     };
@@ -1820,10 +1969,16 @@ async fn case_mutation_verify_gate(model: &str) {
         decide_completion(&ledger, &[unbound], &[], false),
         CompletionGate::Incomplete { .. }
     ));
-    row("Mutation verify gate", model, "Incomplete-then-Verified");
+    row(
+        commit,
+        "Mutation verify gate",
+        &model,
+        "Incomplete-then-Verified",
+    );
 }
 
-async fn case_batch_schema(model: &str) {
+async fn case_batch_schema(commit: &str) {
+    let model = pinned_completion("`batch` schema pin (no application `$ref` in `examples`)").await;
     use crate::tools::Tool;
 
     let dir = workspace_dir();
@@ -1846,8 +2001,9 @@ async fn case_batch_schema(model: &str) {
     assert!(!result.success);
     assert!(result.content.contains("at most"));
     row(
+        commit,
         "`batch` schema pin (no application `$ref` in `examples`)",
-        model,
+        &model,
         "maxItems-no-examples",
     );
 }
@@ -1860,7 +2016,8 @@ const PNG: &[u8] = &[
     0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
 ];
 
-async fn case_image_read(model: &str) {
+async fn case_image_read(commit: &str) {
+    let model = pinned_completion("Image `read` attachments").await;
     let dir = workspace_dir();
     std::fs::write(dir.path().join("shot.png"), PNG).expect("png");
     std::fs::write(dir.path().join("note.txt"), "hello").expect("text");
@@ -1872,16 +2029,27 @@ async fn case_image_read(model: &str) {
     );
     assert!(!ranged.success);
     assert!(ranged.images.is_empty());
+    assert!(ranged.metadata.is_none());
+    assert_eq!(
+        ranged.content,
+        "offset and limit apply to text files only; omit them when reading an image"
+    );
     let text = crate::tools::read_image_file("note.txt", &json!({"file_path": "note.txt"}), &ctx);
     assert!(text.images.is_empty());
     let image = crate::tools::read_image_file("shot.png", &json!({"file_path": "shot.png"}), &ctx);
     assert_eq!(image.images.len(), 1);
     assert_eq!(image.images[0].media_type, "image/png");
     assert_eq!(image.images[0].data, PNG);
-    row("Image `read` attachments", model, "image-png");
+    row(
+        commit,
+        "Image `read` attachments",
+        &model,
+        "ToolOutput-ranged-image",
+    );
 }
 
-async fn case_event_envelope(model: &str) {
+async fn case_event_envelope(commit: &str) {
+    let model = pinned_completion("Event envelope and oversized projection").await;
     let marker = "DEEP-E2E-PAYLOAD-MARKER".repeat(4_000);
     let identity = protocol_identity("run-bound-meta");
     let mut oversized = protocol_record(&identity);
@@ -1910,14 +2078,16 @@ async fn case_event_envelope(model: &str) {
         crate::AgentProtocolError::InvalidField("event")
     ));
     row(
+        commit,
         "Event envelope and oversized projection",
-        model,
+        &model,
         "InvalidField-event",
     );
 }
 
 #[cfg(feature = "research")]
-async fn case_research_wire(model: &str) {
+async fn case_research_wire(commit: &str) {
+    let model = pinned_completion("research wire").await;
     let core = crate::CoreEventIdentity::from_agent_event(
         crate::CoreIdentity::new(
             crate::OperationId::new("session-1/run-1").expect("operation"),
@@ -1947,10 +2117,10 @@ async fn case_research_wire(model: &str) {
     let replayed = crate::ResearchEventV1::from_core_event("project-1", 3, &core).expect("replay");
     assert_eq!(replayed.payload_digest, projected.payload_digest);
     assert_eq!(replayed.event_digest, projected.event_digest);
-    row("research wire", model, "payload-digest");
+    row(commit, "research wire", &model, "payload-digest");
 }
 
 #[cfg(not(feature = "research"))]
-async fn case_research_wire(_model: &str) {
+async fn case_research_wire(_commit: &str) {
     panic!("feature required: research");
 }
