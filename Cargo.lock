@@ -180,6 +180,8 @@ dependencies = [
 [[package]]
 name = "a3s-effect"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfb61930f6936ffdb9eb7afc07b5e61b95fbd75c978fe9ea3c4b11838299e89e"
 dependencies = [
  "serde",
  "serde_json",
@@ -288,7 +290,6 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.2.2"
-source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=7e948a365d8fe4d870dc90a2fa75f1b9082cc42a#7e948a365d8fe4d870dc90a2fa75f1b9082cc42a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8539,7 +8540,3 @@ dependencies = [
 [[patch.unused]]
 name = "a3s-apofasi"
 version = "0.1.2"
-
-[[patch.unused]]
-name = "a3s-sandbox"
-version = "0.2.0"

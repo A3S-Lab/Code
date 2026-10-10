@@ -541,7 +541,7 @@ fn release_manifest_declares_an_optional_inference_env_slot() {
         "  provenance \"builder\" { uri = \"urn:a3s:builder:template\" digest = \"sha256:4444444444444444444444444444444444444444444444444444444444444444\" }\n",
         "}\n",
     );
-    let manifest = a3s_code_core::AgentReleaseManifest::parse(source).expect("manifest with slot");
+    let manifest = a3s_code_core::release::AgentReleaseManifest::parse(source).expect("manifest with slot");
     let inference = manifest.inference().expect("declared inference slot");
     assert_eq!(inference.endpoint_env_prefix(), "A3S_INFERENCE_ENDPOINT_");
 
@@ -549,7 +549,7 @@ fn release_manifest_declares_an_optional_inference_env_slot() {
     for invalid in ["a3s_inference_endpoint_" , "SHORT_", "A3S-INFERENCE-"] {
         let broken = source.replace("A3S_INFERENCE_ENDPOINT_", invalid);
         assert!(
-            a3s_code_core::AgentReleaseManifest::parse(&broken).is_err(),
+            a3s_code_core::release::AgentReleaseManifest::parse(&broken).is_err(),
             "{invalid} must refuse"
         );
     }
@@ -559,7 +559,7 @@ fn release_manifest_declares_an_optional_inference_env_slot() {
         "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
         "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
     );
-    assert!(a3s_code_core::AgentReleaseManifest::parse(&doubled).is_err());
+    assert!(a3s_code_core::release::AgentReleaseManifest::parse(&doubled).is_err());
 }
 
 #[test]
@@ -590,4 +590,37 @@ fn start_command_model_pins_name_the_inference_model_reference() {
         profile_digest: format!("sha256:{}", "a".repeat(64)),
     }]);
     assert!(broken.validate().is_err());
+}
+
+#[test]
+fn a3s_inference_provider_resolves_from_envs_and_fails_closed() {
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    // Missing both environments: no configuration (session construction
+    // then refuses with its named field error).
+    std::env::remove_var("A3S_INFERENCE_ENDPOINT_CHAT_MODEL");
+    std::env::remove_var("A3S_INFERENCE_CREDENTIAL_CHAT_MODEL");
+    let none = a3s_code_core::config::CodeConfig::default();
+    assert!(none.llm_config("a3s-inference", "chat-model").is_none());
+
+    // Endpoint without credential still fails closed.
+    std::env::set_var("A3S_INFERENCE_ENDPOINT_CHAT_MODEL", "https://edge.example.internal/v1");
+    assert!(none.llm_config("a3s-inference", "chat-model").is_none());
+
+    // Both present: OpenAI-compatible configuration at the endpoint.
+    std::env::set_var("A3S_INFERENCE_CREDENTIAL_CHAT_MODEL", "a3s_inf_test_key");
+    let config = none
+        .llm_config("a3s-inference", "chat-model")
+        .expect("both environments resolve");
+    assert_eq!(config.provider, "a3s-inference");
+    assert_eq!(config.model, "chat-model");
+    assert_eq!(
+        config.base_url.as_deref(),
+        Some("https://edge.example.internal/v1")
+    );
+
+    std::env::remove_var("A3S_INFERENCE_ENDPOINT_CHAT_MODEL");
+    std::env::remove_var("A3S_INFERENCE_CREDENTIAL_CHAT_MODEL");
 }
