@@ -13,9 +13,9 @@ pub use error::{AgentReleaseError, AgentReleaseField};
 pub use manifest::AgentReleaseManifest;
 pub use types::{
     AgentReleaseArtifact, AgentReleaseCacheMode, AgentReleaseCapability, AgentReleaseCompatibility,
-    AgentReleaseEntrypoint, AgentReleaseHealth, AgentReleasePersistentDataMode,
-    AgentReleaseProvenance, AgentReleaseSecretRequirement, AgentReleaseSecretTarget,
-    AgentReleaseStorage, AgentReleaseWorkspaceMode,
+    AgentReleaseEntrypoint, AgentReleaseHealth, AgentReleaseInference,
+    AgentReleasePersistentDataMode, AgentReleaseProvenance, AgentReleaseSecretRequirement,
+    AgentReleaseSecretTarget, AgentReleaseStorage, AgentReleaseWorkspaceMode,
 };
 
 use a3s_acl::ParseLimits;

@@ -52,6 +52,10 @@ pub(crate) fn release_schema() -> Schema {
     let provenance = Schema::new()
         .attribute("uri", AttributeSchema::required(ValueSchema::string()))
         .attribute("digest", AttributeSchema::required(ValueSchema::string()));
+    let inference = Schema::new().attribute(
+        "endpoint_env_prefix",
+        AttributeSchema::required(ValueSchema::string()),
+    );
     let release = Schema::new()
         .attribute("schema", AttributeSchema::required(ValueSchema::string()))
         .attribute("protocol", AttributeSchema::required(ValueSchema::string()))
@@ -84,6 +88,11 @@ pub(crate) fn release_schema() -> Schema {
                 .occurrences(Cardinality::at_least(0))
                 .labels(Cardinality::exactly(1))
                 .unordered(true),
+        )
+        .block(
+            "inference",
+            BlockSchema::new(inference)
+                .occurrences(Cardinality::new(0, Some(1)).expect("bounded cardinality")),
         )
         .block(
             "provenance",

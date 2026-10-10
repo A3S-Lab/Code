@@ -520,3 +520,42 @@ fn start_command_admits_sorted_unique_model_pins_and_refuses_drift() {
         serde_json::from_value(encoded).expect("decode pinned start");
     assert_eq!(decoded, command);
 }
+
+#[test]
+fn release_manifest_declares_an_optional_inference_env_slot() {
+    let source = concat!(
+        "agent_release {\n",
+        "  schema = \"a3s.code.agent-release.v1\"\n",
+        "  protocol = \"a3s.code.agent.v1\"\n",
+        "  artifact { digest = \"sha256:1111111111111111111111111111111111111111111111111111111111111111\" media_type = \"application/vnd.oci.image.manifest.v1+json\" }\n",
+        "  entrypoint { command = \"/usr/bin/a3s\" args = [\"code\", \"harness\", \"--manifest\", \"/app/.a3s/asset.acl\"] }\n",
+        "  health { transport = \"http\" port = 8080 readiness_path = \"/health/ready\" liveness_path = \"/health/live\" shutdown_grace_seconds = 30 }\n",
+        "  storage { workspace = \"ephemeral\" cache = \"ephemeral\" persistent_data = \"none\" }\n",
+        "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
+        "  capability \"runtime.service\" { level = 1 }\n",
+        "  capability \"secrets.external\" { level = 1 }\n",
+        "  capability \"workspace.local\" { level = 1 }\n",
+        "  provenance \"source\" { uri = \"urn:a3s:source:template\" digest = \"sha256:2222222222222222222222222222222222222222222222222222222222222222\" }\n",
+        "  provenance \"builder\" { uri = \"urn:a3s:builder:template\" digest = \"sha256:4444444444444444444444444444444444444444444444444444444444444444\" }\n",
+        "}\n",
+    );
+    let manifest = a3s_code_core::AgentReleaseManifest::parse(source).expect("manifest with slot");
+    let inference = manifest.inference().expect("declared inference slot");
+    assert_eq!(inference.endpoint_env_prefix(), "A3S_INFERENCE_ENDPOINT_");
+
+    // Lowercase, too short, and non-underscore-terminated prefixes refuse.
+    for invalid in ["a3s_inference_endpoint_" , "SHORT_", "A3S-INFERENCE-"] {
+        let broken = source.replace("A3S_INFERENCE_ENDPOINT_", invalid);
+        assert!(
+            a3s_code_core::AgentReleaseManifest::parse(&broken).is_err(),
+            "{invalid} must refuse"
+        );
+    }
+
+    // A second inference block refuses (at most one).
+    let doubled = source.replace(
+        "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
+        "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
+    );
+    assert!(a3s_code_core::AgentReleaseManifest::parse(&doubled).is_err());
+}

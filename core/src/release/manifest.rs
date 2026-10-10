@@ -1,11 +1,11 @@
 use super::schema::release_schema;
 use super::types::{
     AgentReleaseArtifact, AgentReleaseCapability, AgentReleaseCompatibility,
-    AgentReleaseEntrypoint, AgentReleaseHealth, AgentReleaseProvenance,
+    AgentReleaseEntrypoint, AgentReleaseInference, AgentReleaseHealth, AgentReleaseProvenance,
     AgentReleaseSecretRequirement, AgentReleaseStorage,
 };
 use super::validation::{
-    parse_artifact, parse_capability, parse_entrypoint, parse_health, parse_provenance,
+    parse_artifact, parse_capability, parse_entrypoint, parse_health, parse_inference, parse_provenance,
     parse_secret, parse_storage, required_block, required_string, unique_capabilities,
     unique_provenance, unique_secrets, validate_digest, validate_protocol,
 };
@@ -32,6 +32,7 @@ pub struct AgentReleaseManifest {
     required_capabilities: Vec<AgentReleaseCapability>,
     required_secrets: Vec<AgentReleaseSecretRequirement>,
     provenance: Vec<AgentReleaseProvenance>,
+    inference: Option<AgentReleaseInference>,
     identity: String,
     canonical_acl: String,
 }
@@ -116,6 +117,12 @@ impl AgentReleaseManifest {
                 .map(parse_provenance)
                 .collect::<Result<Vec<_>, _>>()?,
         )?;
+        let inference = root
+            .blocks
+            .iter()
+            .find(|block| block.name == "inference")
+            .map(parse_inference)
+            .transpose()?;
 
         let canonical_acl = String::from_utf8(canonical_bytes_with_schema(&document, &schema)?)
             .map_err(|_| AgentReleaseError::CanonicalEncoding)?;
@@ -131,6 +138,7 @@ impl AgentReleaseManifest {
             required_capabilities,
             required_secrets,
             provenance,
+            inference,
             identity,
             canonical_acl,
         })
@@ -167,6 +175,11 @@ impl AgentReleaseManifest {
 
     pub fn health(&self) -> &AgentReleaseHealth {
         &self.health
+    }
+
+    /// Declared inference env-slot contract, when the release authorizes one.
+    pub fn inference(&self) -> Option<&AgentReleaseInference> {
+        self.inference.as_ref()
     }
 
     pub fn storage(&self) -> &AgentReleaseStorage {
