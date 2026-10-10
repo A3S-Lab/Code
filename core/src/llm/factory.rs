@@ -253,7 +253,7 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         // OpenAI-compatible providers (deepseek, groq, together, ollama, grok, etc.)
-        "openai" | "gpt" | "grok" | "xai" => {
+        "openai" | "gpt" | "grok" | "xai" | "a3s-inference" => {
             let native_structured_support = config.native_structured_support.unwrap_or_else(|| {
                 default_openai_native_structured_support(
                     &config.provider,

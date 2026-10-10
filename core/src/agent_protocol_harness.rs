@@ -14,6 +14,7 @@ use crate::agent_protocol_host::{
     AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,
 };
 use crate::error::CodeError;
+use crate::config::A3S_INFERENCE_PROVIDER;
 use crate::release::{agent_harness_compatibility_v1, AgentReleaseError, AgentReleaseManifest};
 use crate::session_checkpoint::{SessionCheckpointError, SessionCheckpointExportV1};
 use std::collections::HashMap;
@@ -266,7 +267,20 @@ impl AgentProtocolHarness {
         // recovery has its own exact admission API below and may construct an
         // unpublished Session from the supplied checkpoint.
         let create_if_missing = matches!(command, AgentProtocolCommandV1::Start { .. });
-        let host = self.host_for(command.identity(), create_if_missing).await?;
+        // Model pins ride the Start command from the governing host; the
+        // first sorted pin names the conversation's Inference route model
+        // and is applied when the Session is created.
+        let model_override = match command {
+            AgentProtocolCommandV1::Start { request } => request
+                .models
+                .as_ref()
+                .and_then(|models| models.first())
+                .map(|pin| format!("{A3S_INFERENCE_PROVIDER}/{}", pin.alias)),
+            _ => None,
+        };
+        let host = self
+            .host_for(command.identity(), create_if_missing, model_override)
+            .await?;
         // Harness close drains an already admitted session. Callers see harness Closed.
         match host.execute(command).await {
             Ok(receipt) => Ok(receipt),
@@ -493,7 +507,7 @@ impl AgentProtocolHarness {
         request: &AgentProtocolEventPageRequestV1,
     ) -> Result<AgentProtocolEventPageV1, AgentProtocolHarnessError> {
         request.validate()?;
-        let host = self.host_for(&request.identity, false).await?;
+        let host = self.host_for(&request.identity, false, None).await?;
         host.event_page_for(request).await.map_err(Into::into)
     }
 
@@ -503,7 +517,7 @@ impl AgentProtocolHarness {
         request: &AgentProtocolChangeSetRequestV1,
     ) -> Result<AgentProtocolChangeSetV1, AgentProtocolHarnessError> {
         request.validate()?;
-        let host = self.host_for(&request.identity, false).await?;
+        let host = self.host_for(&request.identity, false, None).await?;
         host.change_set_for(request).await.map_err(Into::into)
     }
 
@@ -521,6 +535,7 @@ impl AgentProtocolHarness {
         &self,
         identity: &AgentProtocolRunIdentityV1,
         create_if_missing: bool,
+        model_override: Option<String>,
     ) -> Result<Arc<AgentProtocolHost>, AgentProtocolHarnessError> {
         identity.validate()?;
         if identity.agent_release_identity != self.manifest.artifact().digest() {
@@ -557,11 +572,14 @@ impl AgentProtocolHarness {
         }
 
         let workspace = HarnessSessionWorkspace::prepare(PathBuf::from(&self.workspace)).await?;
-        let options = self
+        let mut options = self
             .session_options
             .clone()
             .with_session_id(&identity.session_id)
             .with_auto_save(true);
+        if let Some(model) = model_override {
+            options.model = Some(model);
+        }
         let session = self
             .agent
             .open_protocol_session_async(

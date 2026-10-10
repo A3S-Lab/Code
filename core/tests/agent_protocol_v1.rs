@@ -476,6 +476,7 @@ fn model_pin(fill: char) -> a3s_code_core::AgentProtocolModelPinV1 {
     a3s_code_core::AgentProtocolModelPinV1 {
         model_id: uuid::Uuid::new_v4(),
         model_revision_id: uuid::Uuid::new_v4(),
+        alias: format!("chat-model-{fill}"),
         profile_digest: format!("sha256:{fill}{}", "0".repeat(63)),
     }
 }
@@ -507,6 +508,7 @@ fn start_command_admits_sorted_unique_model_pins_and_refuses_drift() {
     request.models = Some(vec![a3s_code_core::AgentProtocolModelPinV1 {
         model_id: uuid::Uuid::nil(),
         model_revision_id: uuid::Uuid::new_v4(),
+        alias: "chat-model".into(),
         profile_digest: format!("sha256:{}", "a".repeat(64)),
     }]);
     assert!(nil_model.validate().is_err());
@@ -558,4 +560,34 @@ fn release_manifest_declares_an_optional_inference_env_slot() {
         "  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n  inference { endpoint_env_prefix = \"A3S_INFERENCE_ENDPOINT_\" }\n",
     );
     assert!(a3s_code_core::AgentReleaseManifest::parse(&doubled).is_err());
+}
+
+#[test]
+fn start_command_model_pins_name_the_inference_model_reference() {
+    let mut command = start_command();
+    let AgentProtocolCommandV1::Start { request } = &mut command else {
+        panic!("fixture must be a start command");
+    };
+    request.models = Some(vec![model_pin('a')]);
+    // The harness derives the session model override from the first
+    // sorted pin: "a3s-inference/{alias}".
+    let reference = request
+        .models
+        .as_ref()
+        .and_then(|models| models.first())
+        .map(|pin| format!("a3s-inference/{}", pin.alias))
+        .unwrap_or_default();
+    assert_eq!(reference, "a3s-inference/chat-model-a");
+    // An alias with non-graphic bytes refuses validation.
+    let mut broken = command.clone();
+    let AgentProtocolCommandV1::Start { request } = &mut broken else {
+        panic!("fixture must be a start command");
+    };
+    request.models = Some(vec![a3s_code_core::AgentProtocolModelPinV1 {
+        model_id: uuid::Uuid::new_v4(),
+        model_revision_id: uuid::Uuid::new_v4(),
+        alias: "chat model".into(),
+        profile_digest: format!("sha256:{}", "a".repeat(64)),
+    }]);
+    assert!(broken.validate().is_err());
 }

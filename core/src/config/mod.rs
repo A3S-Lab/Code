@@ -13,6 +13,7 @@
 mod acl_render;
 mod editor;
 mod loader;
+pub use loader::A3S_INFERENCE_PROVIDER;
 #[cfg(test)]
 mod loader_tests;
 mod provider;

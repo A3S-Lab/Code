@@ -117,6 +117,10 @@ pub struct AgentProtocolRunStartV1 {
 pub struct AgentProtocolModelPinV1 {
     pub model_id: Uuid,
     pub model_revision_id: Uuid,
+    /// The route's stable name for the model; names the environment pair
+    /// (`A3S_INFERENCE_ENDPOINT_<ALIAS>` / `A3S_INFERENCE_CREDENTIAL_<ALIAS>`)
+    /// the governing host materializes for this pin.
+    pub alias: String,
     pub profile_digest: String,
 }
 
@@ -124,6 +128,9 @@ impl AgentProtocolModelPinV1 {
     pub fn validate(&self) -> Result<(), AgentProtocolError> {
         if self.model_id.is_nil()
             || self.model_revision_id.is_nil()
+            || self.alias.is_empty()
+            || self.alias.len() > 128
+            || !self.alias.bytes().all(|byte| byte.is_ascii_graphic())
             || !valid_model_digest(&self.profile_digest)
         {
             return Err(AgentProtocolError::InvalidField("models"));

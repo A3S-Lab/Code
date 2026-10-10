@@ -927,6 +927,9 @@ impl CodeConfig {
     ///
     /// Returns None if provider/model is not found or API key is missing.
     pub fn llm_config(&self, provider_name: &str, model_id: &str) -> Option<LlmConfig> {
+        if provider_name == A3S_INFERENCE_PROVIDER {
+            return a3s_inference_llm_config(model_id);
+        }
         let provider = self.find_provider(provider_name)?;
         let model = provider.find_model(model_id)?;
         let api_key = provider.get_api_key(model)?;
@@ -980,4 +983,49 @@ impl CodeConfig {
     pub fn has_providers(&self) -> bool {
         !self.providers.is_empty()
     }
+}
+
+
+/// Built-in provider name for Cloud-admitted Inference route models.
+pub const A3S_INFERENCE_PROVIDER: &str = "a3s-inference";
+
+/// Sanitize a model alias into the environment-variable suffix the
+/// governing host materializes (`A3S_INFERENCE_ENDPOINT_<SUFFIX>` and
+/// `A3S_INFERENCE_CREDENTIAL_<SUFFIX>`).
+fn a3s_inference_env_suffix(alias: &str) -> Option<String> {
+    if alias.is_empty() || alias.len() > 128 {
+        return None;
+    }
+    let suffix: String = alias
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                byte.to_ascii_uppercase() as char
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix)
+    }
+}
+
+/// Build the Inference-route client configuration from the environment
+/// the governing host materialized for the pinned model. Fails closed
+/// (None) when either the endpoint or the credential is missing.
+fn a3s_inference_llm_config(alias: &str) -> Option<LlmConfig> {
+    let suffix = a3s_inference_env_suffix(alias)?;
+    let endpoint = std::env::var(format!("A3S_INFERENCE_ENDPOINT_{suffix}"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let credential = std::env::var(format!("A3S_INFERENCE_CREDENTIAL_{suffix}"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    Some(
+        LlmConfig::new(A3S_INFERENCE_PROVIDER, alias, credential)
+            .with_base_url(endpoint),
+    )
 }
