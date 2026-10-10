@@ -52,10 +52,15 @@ pub(crate) fn release_schema() -> Schema {
     let provenance = Schema::new()
         .attribute("uri", AttributeSchema::required(ValueSchema::string()))
         .attribute("digest", AttributeSchema::required(ValueSchema::string()));
-    let inference = Schema::new().attribute(
-        "endpoint_env_prefix",
-        AttributeSchema::required(ValueSchema::string()),
-    );
+    let inference = Schema::new()
+        .attribute(
+            "endpoint_env_prefix",
+            AttributeSchema::required(ValueSchema::string()),
+        )
+        .attribute(
+            "credential_env_prefix",
+            AttributeSchema::optional(ValueSchema::string()),
+        );
     let release = Schema::new()
         .attribute("schema", AttributeSchema::required(ValueSchema::string()))
         .attribute("protocol", AttributeSchema::required(ValueSchema::string()))

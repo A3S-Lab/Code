@@ -28,6 +28,7 @@ pub enum AgentReleaseField {
     ProvenanceUri,
     ProvenanceDigest,
     InferenceEndpointEnvPrefix,
+    InferenceCredentialEnvPrefix,
 }
 
 impl fmt::Display for AgentReleaseField {
@@ -56,6 +57,7 @@ impl fmt::Display for AgentReleaseField {
             Self::ProvenanceUri => "agent_release.provenance.uri",
             Self::ProvenanceDigest => "agent_release.provenance.digest",
             Self::InferenceEndpointEnvPrefix => "agent_release.inference.endpoint_env_prefix",
+            Self::InferenceCredentialEnvPrefix => "agent_release.inference.credential_env_prefix",
         })
     }
 }
