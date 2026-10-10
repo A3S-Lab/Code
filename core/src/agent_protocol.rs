@@ -13,6 +13,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use uuid::Uuid;
 
 pub const AGENT_PROTOCOL_MAX_ID_BYTES: usize = 256;
 pub const AGENT_PROTOCOL_MAX_REASON_BYTES: usize = 1_024;
@@ -22,6 +23,7 @@ pub const AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENT_METADATA_BYTES: usize = 16 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENT_RECORD_BYTES: usize = 64 * 1024;
 pub const AGENT_PROTOCOL_MAX_EVENTS_PER_PAGE: usize = 64;
+pub const AGENT_PROTOCOL_MAX_MODEL_PINS: usize = 128;
 pub const AGENT_PROTOCOL_MAX_EVENT_PAGE_BYTES: usize = 6 * 1024 * 1024;
 pub const AGENT_PROTOCOL_MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
 pub const AGENT_PROTOCOL_MAX_CHANGE_SET_RESPONSE_BYTES: usize =
@@ -100,6 +102,43 @@ pub struct AgentProtocolRunStartV1 {
     pub request_id: String,
     pub identity: AgentProtocolRunIdentityV1,
     pub prompt: String,
+    /// Immutable Inference model identity pins the governing host admitted
+    /// for this run. Absent for hosts that pin no models. The protocol
+    /// carries identity only: endpoints and credentials never enter it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<AgentProtocolModelPinV1>>,
+}
+
+/// One exact Inference model pin: a stable model identity, its derived
+/// revision identity, and the canonical projection digest both were
+/// admitted from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentProtocolModelPinV1 {
+    pub model_id: Uuid,
+    pub model_revision_id: Uuid,
+    pub profile_digest: String,
+}
+
+impl AgentProtocolModelPinV1 {
+    pub fn validate(&self) -> Result<(), AgentProtocolError> {
+        if self.model_id.is_nil()
+            || self.model_revision_id.is_nil()
+            || !valid_model_digest(&self.profile_digest)
+        {
+            return Err(AgentProtocolError::InvalidField("models"));
+        }
+        Ok(())
+    }
+}
+
+fn valid_model_digest(digest: &str) -> bool {
+    digest.strip_prefix("sha256:").is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
 }
 
 impl AgentProtocolRunStartV1 {
@@ -114,6 +153,20 @@ impl AgentProtocolRunStartV1 {
             || self.prompt.contains('\0')
         {
             return Err(AgentProtocolError::InvalidField("prompt"));
+        }
+        if let Some(models) = &self.models {
+            if models.len() > AGENT_PROTOCOL_MAX_MODEL_PINS {
+                return Err(AgentProtocolError::InvalidField("models"));
+            }
+            for model in models {
+                model.validate()?;
+            }
+            if !models.windows(2).all(|pair| {
+                (pair[0].model_id, pair[0].model_revision_id)
+                    < (pair[1].model_id, pair[1].model_revision_id)
+            }) {
+                return Err(AgentProtocolError::InvalidField("models"));
+            }
         }
         Ok(())
     }

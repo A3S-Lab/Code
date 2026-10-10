@@ -221,6 +221,7 @@ async fn protocol_host_executes_and_observes_the_code_owned_run() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "cloud-execution-2:start".into(),
             identity: identity.clone(),
+            models: None,
             prompt: "explain the protocol".into(),
         },
     };
@@ -312,6 +313,7 @@ async fn protocol_cancellation_targets_only_the_active_code_run() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "cloud-execution-3:start".into(),
             identity: identity.clone(),
+            models: None,
             prompt: "wait for cancellation".into(),
         },
     };
@@ -497,6 +499,7 @@ async fn protocol_host_rejects_invalid_release_digest_and_observation_bounds() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "bounds:start".into(),
             identity: foreign_release,
+            models: None,
             prompt: "nope".into(),
         },
     };
@@ -515,6 +518,7 @@ async fn protocol_host_rejects_invalid_release_digest_and_observation_bounds() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "bounds:start-session".into(),
             identity: foreign_session,
+            models: None,
             prompt: "nope".into(),
         },
     };
@@ -570,6 +574,7 @@ async fn protocol_host_change_set_pending_until_terminal_without_capture() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "changeset:start".into(),
             identity: identity.clone(),
+            models: None,
             prompt: "hang".into(),
         },
     };
@@ -647,6 +652,7 @@ async fn protocol_host_event_page_rejects_bad_limit_and_identity_mismatch() {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "page-limit:start".into(),
             identity: identity.clone(),
+            models: None,
             prompt: "observe".into(),
         },
     })

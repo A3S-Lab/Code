@@ -51,6 +51,7 @@ fn start_command() -> AgentProtocolCommandV1 {
             schema: AgentProtocolRunStartV1::SCHEMA.into(),
             request_id: "execution-018f4f86:start".into(),
             identity: identity("run-execution-018f4f86-attempt-1"),
+            models: None,
             prompt: "Explain the failing test and fix it.".into(),
         },
     }
@@ -469,4 +470,53 @@ fn the_protocol_is_closed_bounded_and_send_sync() {
     assert_send_sync::<AgentProtocolEventPageV1>();
     assert_send_sync::<AgentProtocolChangeSetRequestV1>();
     assert_send_sync::<AgentProtocolChangeSetV1>();
+}
+
+fn model_pin(fill: char) -> a3s_code_core::AgentProtocolModelPinV1 {
+    a3s_code_core::AgentProtocolModelPinV1 {
+        model_id: uuid::Uuid::new_v4(),
+        model_revision_id: uuid::Uuid::new_v4(),
+        profile_digest: format!("sha256:{fill}{}", "0".repeat(63)),
+    }
+}
+
+#[test]
+fn start_command_admits_sorted_unique_model_pins_and_refuses_drift() {
+    let mut command = start_command();
+    let AgentProtocolCommandV1::Start { request } = &mut command else {
+        panic!("fixture must be a start command");
+    };
+    request.models = Some(vec![model_pin('a'), model_pin('b')]);
+    command.validate().expect("sorted unique pins admit");
+
+    // Unsorted or duplicated pins refuse.
+    let mut unsorted = command.clone();
+    let AgentProtocolCommandV1::Start { request } = &mut unsorted else {
+        panic!("fixture must be a start command");
+    };
+    if let Some(models) = &mut request.models {
+        models.reverse();
+    }
+    assert!(unsorted.validate().is_err());
+
+    // A nil identity or malformed digest refuses.
+    let mut nil_model = command.clone();
+    let AgentProtocolCommandV1::Start { request } = &mut nil_model else {
+        panic!("fixture must be a start command");
+    };
+    request.models = Some(vec![a3s_code_core::AgentProtocolModelPinV1 {
+        model_id: uuid::Uuid::nil(),
+        model_revision_id: uuid::Uuid::new_v4(),
+        profile_digest: format!("sha256:{}", "a".repeat(64)),
+    }]);
+    assert!(nil_model.validate().is_err());
+
+    // The field round-trips as camelCase and stays absent when unset.
+    let encoded = serde_json::to_value(&command).expect("encode pinned start");
+    assert!(encoded["request"]["models"].is_array());
+    let plain = serde_json::to_value(start_command()).expect("encode plain start");
+    assert!(plain["request"].get("models").is_none());
+    let decoded: AgentProtocolCommandV1 =
+        serde_json::from_value(encoded).expect("decode pinned start");
+    assert_eq!(decoded, command);
 }
