@@ -3754,6 +3754,10 @@ fn workspace_boundary_error(message: &str) -> bool {
     message.contains("escapes workspace") || message.contains("Workspace boundary")
 }
 
+fn repeat_note_prefix(name: &str) -> String {
+    format!("\n\n[a3s host: `{name}` returned byte-identical output for identical arguments")
+}
+
 /// Mechanical feedback when a call repeats the name, arguments and output of the
 /// previous call with the same name and arguments in this run. It never blocks.
 /// A JSON result stays parseable for its consumer, so it carries no note.
@@ -3781,7 +3785,8 @@ fn repeated_result_note(
     let structured = serde_json::from_str::<serde_json::Value>(output).is_ok();
     (entry.1 > 1 && !structured).then(|| {
         format!(
-            "\n\n[a3s host: `{name}` returned byte-identical output for identical arguments {} times in a row this run; it observed nothing new.]",
+            "{} {} times in a row this run; it observed nothing new.]",
+            repeat_note_prefix(name),
             entry.1
         )
     })
@@ -4579,6 +4584,59 @@ pub fn read_workspace_facts(workspace: &Path, thread: &str) -> Result<Vec<a3s_ef
     let log = FileLog::open(crate::session_folder::effect_log_dir(workspace, thread))
         .map_err(|error| anyhow::anyhow!(error))?;
     log.read(thread).map_err(|error| anyhow::anyhow!(error))
+}
+
+/// One tool result as the model received it, for the session context view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolResultWeight {
+    pub(crate) tool: String,
+    pub(crate) tool_call_id: String,
+    pub(crate) bytes: usize,
+    /// The same tool, arguments and text already appeared earlier in the thread.
+    pub(crate) repeat: bool,
+}
+
+/// Every tool result in `thread`, paired with its call in scheduler order. A
+/// read-only view: a result without a recorded call keeps an empty tool name.
+pub(crate) fn tool_result_weights(workspace: &Path, thread: &str) -> Result<Vec<ToolResultWeight>> {
+    let mut pending = std::collections::VecDeque::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut weights = Vec::new();
+    for fact in read_workspace_facts(workspace, thread)? {
+        if fact.kind == "model.turn" {
+            if let Ok(ModelDecision::Tool { call, also }) =
+                serde_json::from_value::<ModelDecision>(fact.payload)
+            {
+                pending = std::iter::once(call).chain(also).collect();
+            }
+        } else if fact.kind == "tool.result" {
+            let output = fact
+                .payload
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let text = decode_fact_tool_result(output)
+                .map_or_else(|| output.to_string(), |envelope| envelope.text);
+            let (tool, id, args) = pending
+                .pop_front()
+                .map(|call| (call.name, call.id, call.args))
+                .unwrap_or_default();
+            let observed = text
+                .rsplit_once(&repeat_note_prefix(&tool))
+                .map_or(text.as_str(), |(observed, _)| observed);
+            let key = crate::content_digest::digest_bytes(
+                "a3s.code.context-view.result.v1",
+                format!("{tool}\n{args}\n{observed}").as_bytes(),
+            );
+            weights.push(ToolResultWeight {
+                repeat: !seen.insert(key),
+                tool,
+                tool_call_id: id,
+                bytes: text.len(),
+            });
+        }
+    }
+    Ok(weights)
 }
 
 /// Messages the next model call can still see, plus assistant text that the

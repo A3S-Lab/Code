@@ -552,6 +552,17 @@ impl AgentSession {
         )
     }
 
+    /// Tokens, cache share and the tool results that weigh most in this session.
+    pub fn context_report(&self) -> crate::error::Result<SessionContextReport> {
+        let usage = SessionView::from_session(self).recorded_token_usage();
+        let weights = crate::fact_control::tool_result_weights(
+            &self.workspace,
+            &crate::fact_control::thread_for_session(&self.session_id),
+        )
+        .map_err(|error| CodeError::Session(format!("context report: {error}")))?;
+        Ok(SessionContextReport::from_parts(usage, weights))
+    }
+
     /// Return a reference to the session's memory.
     ///
     /// Normal sessions always have memory; `None` is reserved for

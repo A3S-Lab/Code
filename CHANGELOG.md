@@ -31,8 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `grep` and `search` (`mode=grep`) name the files they did not search because
   they exceed the 16 MiB text-file limit, in every output mode and in
   `metadata.skipped_oversize`. "No matches found" no longer hides them.
+- `AgentSession::context_report()` returns a `SessionContextReport`: provider
+  tokens, the cache-read share of prompt tokens, the total tool-result bytes,
+  the five heaviest results, and the results that repeat an earlier tool,
+  arguments and text. `/cost` prints it.
 
 ### Changed
+
+- `CommandContext` has a new public field, `context_report`. A host that
+  builds the struct sets it to `None`.
 
 - `WorkspaceGrepOutcome` has a new public field, `skipped_oversize`. A custom
   backend that builds the struct sets it to an empty `Vec`.
@@ -45,6 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/cost` reported 0 tokens for every session. It now reads the recorded
+  provider usage.
 - The `ultracode` effort guideline names the registered `program` tool instead
   of `dynamic_workflow`, which ACP never registers.
 - A replayed or conflicting run id returns the typed `RunIdentityConflict`

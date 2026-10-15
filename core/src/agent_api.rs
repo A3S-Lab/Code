@@ -86,6 +86,7 @@ mod session_close;
 mod session_commands;
 mod session_compact;
 mod session_config;
+mod session_context_report;
 mod session_extensions;
 mod session_facade;
 mod session_hitl;
@@ -111,6 +112,7 @@ pub use projected_flow::ProjectedFlowHandle;
 pub use projected_ui::ProjectedUiHandle;
 use runtime_events::ActiveToolState;
 use session_close::SessionCloseHandle;
+pub use session_context_report::{HeavyToolResult, SessionContextReport};
 #[cfg(test)]
 pub(crate) use session_extensions::SessionExtensionRuntime;
 #[cfg(not(test))]

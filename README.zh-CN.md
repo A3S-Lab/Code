@@ -70,6 +70,9 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   制品，模型可以搜索或分页读取，不必重新抓取。
 - **如实报告未检索的文件（9.1.3，未发布）。** `grep` 会列出因大小超限而未检索的
   文件，不再只回答“No matches found”。
+- **会话上下文视图（9.1.3，未发布）。** `/cost` 和
+  `AgentSession::context_report()` 显示 token、缓存命中占比、最重的工具结果和
+  重复的结果。
 - **无人值守 ACP 试验臂（9.1.3，未发布）。** `a3s-code-acp --unattended` 支持
   `--engineering-policy NAME` 和 `--goal-continuation`（第一次尝试作为已准入的
   单步目标切片运行）。`ultracode` 力度现在指向已注册的 `program` 工具。

@@ -214,7 +214,8 @@ pub use agent::{
 pub use agent_api::ProjectedFlowHandle;
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentRunStream, AgentSession, GoalTickAdmission, GoalTickStream,
-    ProjectedUiHandle, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
+    HeavyToolResult, ProjectedUiHandle, ReadFileOptions, SessionBuilder, SessionContextReport,
+    SessionOptions, ToolCallResult,
 };
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,

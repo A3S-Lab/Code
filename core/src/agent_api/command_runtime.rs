@@ -23,6 +23,7 @@ pub(super) struct OwnedCommandInputs {
     model: String,
     history: Arc<RwLock<Vec<Message>>>,
     security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
+    usage: crate::llm::TokenUsage,
 }
 
 impl OwnedCommandInputs {
@@ -33,6 +34,7 @@ impl OwnedCommandInputs {
             model: session.model_name.clone(),
             history: Arc::clone(&session.history),
             security_provider: session.config.security_provider.clone(),
+            usage: super::SessionView::from_session(session).recorded_token_usage(),
         }
     }
 
@@ -190,15 +192,22 @@ fn build_command_context(
     let mut mcp_servers: Vec<(String, usize)> = mcp_map.into_iter().collect();
     mcp_servers.sort_by(|a, b| a.0.cmp(&b.0));
 
+    let context_report = crate::fact_control::tool_result_weights(
+        std::path::Path::new(&inputs.workspace),
+        &crate::fact_control::thread_for_session(&inputs.session_id),
+    )
+    .ok()
+    .map(|weights| super::SessionContextReport::from_parts(inputs.usage.clone(), weights).render());
     CommandContext {
         session_id: inputs.session_id.clone(),
         workspace: inputs.workspace.clone(),
         model: inputs.model.clone(),
         history_len: history.len(),
-        total_tokens: 0,
+        total_tokens: inputs.usage.total_tokens as u64,
         total_cost: 0.0,
         tool_names,
         mcp_servers,
+        context_report,
     }
 }
 

@@ -965,6 +965,7 @@ mod tests {
             total_cost: 0.0,
             tool_names: vec![],
             mcp_servers: vec![],
+            context_report: None,
         };
         assert_eq!(command.execute("", &command_ctx).text, "ok");
         assert!(projection.hook(&ids[2]).is_some());

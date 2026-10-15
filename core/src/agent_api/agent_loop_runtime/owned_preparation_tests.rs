@@ -801,6 +801,7 @@ async fn actual_command_none_is_pre_admission_and_slash_some_closes_before_outpu
         total_cost: 0.0,
         tool_names: vec![],
         mcp_servers: vec![],
+        context_report: None,
     };
     assert!(owned
         .command

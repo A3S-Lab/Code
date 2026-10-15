@@ -89,6 +89,9 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   fetching it again.
 - **Honest search misses (9.1.3, unreleased).** `grep` names files it skipped
   for size instead of answering only "No matches found".
+- **Session context view (9.1.3, unreleased).** `/cost` and
+  `AgentSession::context_report()` show tokens, the cache-read share, the
+  heaviest tool results and the repeated results.
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

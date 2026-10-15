@@ -1654,3 +1654,66 @@ async fn fact_log_identical_call_and_result_get_a_non_blocking_host_note() {
     );
     assert!(results[2].starts_with("ready") && !results[2].contains("a3s host"));
 }
+
+#[tokio::test]
+async fn context_report_and_cost_command_read_usage_weights_and_repeats_from_the_session() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let mut answer = text_response("ready");
+    answer.usage = TokenUsage {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        cache_read_tokens: Some(4),
+        cache_write_tokens: Some(1),
+    };
+    let session = session_for(
+        &agent,
+        workspace.path(),
+        "context-report",
+        Arc::new(ScriptedClient {
+            seen: Arc::default(),
+            responses: std::sync::Mutex::new(vec![
+                tool_response("probe-1", "probe_state", serde_json::json!({})),
+                tool_response("probe-2", "probe_state", serde_json::json!({})),
+                tool_response("probe-3", "probe_state", serde_json::json!({})),
+                answer,
+            ]),
+        }),
+        &crate::SessionOptions::new()
+            .with_permission_policy(crate::permissions::PermissionPolicy::new().allow("*")),
+    );
+    session
+        .register_dynamic_tool(Arc::new(SettlingProbe(AtomicUsize::new(0))))
+        .unwrap();
+    session.send("wait for the probe", None).await.unwrap();
+
+    let report = session.context_report().unwrap();
+    assert_eq!(report.usage.total_tokens, 12);
+    assert_eq!(report.cache_read_share(), Some(0.4));
+    assert_eq!(report.tool_results, 3);
+    assert_eq!(report.repeated_results, 1, "{report:?}");
+    let heaviest = &report.heaviest[0];
+    assert_eq!(
+        (heaviest.tool.as_str(), heaviest.tool_call_id.as_str()),
+        ("probe_state", "probe-2")
+    );
+    assert_eq!(
+        report.tool_result_bytes,
+        report
+            .heaviest
+            .iter()
+            .map(|heavy| heavy.bytes)
+            .sum::<usize>()
+    );
+
+    let cost = session.send("/cost", None).await.unwrap().text;
+    assert!(cost.contains("12 total"), "{cost}");
+    assert!(
+        cost.contains("4 read (40.0% of prompt), 1 written"),
+        "{cost}"
+    );
+    assert!(cost.contains("3 tool results"), "{cost}");
+    assert!(cost.contains("1 repeated"), "{cost}");
+    assert!(cost.contains("probe_state (probe-2)"), "{cost}");
+}

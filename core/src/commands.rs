@@ -67,6 +67,9 @@ pub struct CommandContext {
     pub tool_names: Vec<String>,
     /// Connected MCP servers and their tool counts: `(server_name, tool_count)`.
     pub mcp_servers: Vec<(String, usize)>,
+    /// Rendered session context view (cache share, heaviest tool results,
+    /// repeats), when the session fact log is readable.
+    pub context_report: Option<String>,
 }
 
 /// Result of a slash command execution.
@@ -338,16 +341,19 @@ impl SlashCommand for CostCommand {
         "Show token usage and estimated cost"
     }
     fn execute(&self, _args: &str, ctx: &CommandContext) -> CommandOutput {
-        CommandOutput::text(format!(
+        let head = format!(
             "Session: {}\n\
-             Model:   {}\n\
-             Tokens:  {}\n\
-             Cost:    ${:.4}",
+             Model:   {}",
             &ctx.session_id[..ctx.session_id.len().min(8)],
             ctx.model,
-            ctx.total_tokens,
-            ctx.total_cost,
-        ))
+        );
+        CommandOutput::text(match &ctx.context_report {
+            Some(report) => format!("{head}\n{report}"),
+            None => format!(
+                "{head}\nTokens:  {}\nCost:    ${:.4}",
+                ctx.total_tokens, ctx.total_cost
+            ),
+        })
     }
 }
 
@@ -536,6 +542,7 @@ mod tests {
                 "mcp__github__list_repos".into(),
             ],
             mcp_servers: vec![("github".into(), 2)],
+            context_report: None,
         }
     }
 
