@@ -84,6 +84,9 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
 - **Repeat and gate feedback (9.1.3, unreleased).** A call that returns the
   same text for the same arguments again is marked with a host note instead of
   being blocked. The completion gate names a `bash` check that closes it.
+- **Searchable fetched pages (9.1.3, unreleased).** A long `web_fetch` page is
+  kept whole as an artifact, so the model greps or pages it instead of
+  fetching it again.
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

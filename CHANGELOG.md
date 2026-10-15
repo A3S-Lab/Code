@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The unbound-mutation completion gate names the step the model can take: one
   passing `bash` command with `test -f PATH` for a changed file whose bytes the
   ledger recorded.
+- A `web_fetch` page that needs more than one result keeps the whole converted
+  text as an `a3s://tool-output/web_fetch/...` artifact. `read` pages it and
+  `search` greps it without a second fetch. Each page also stops inside the
+  result budget.
 
 ### Changed
 

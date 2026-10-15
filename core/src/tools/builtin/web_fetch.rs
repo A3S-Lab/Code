@@ -166,10 +166,19 @@ impl Tool for WebFetchTool {
             }
         };
 
-        let range = match content_range(&page.content, offset, max_chars) {
+        let max_bytes = ctx
+            .result_budget_bytes()
+            .saturating_sub(super::read::PAGE_CONTINUATION_RESERVE_BYTES);
+        let mut range = match content_range(&page.content, offset, max_chars, max_bytes) {
             Ok(range) => range,
             Err(error) => return Ok(invalid_fetch_argument(&error)),
         };
+        let artifact_uri = retain_full_text(ctx, &page.content, &range, offset);
+        if let Some(uri) = &artifact_uri {
+            range.content.push_str(&format!(
+                "Full fetched text: {uri} (`read` pages it and `search` with mode=grep searches it without fetching again)\n"
+            ));
+        }
 
         let mut source_anchors = vec![request_url];
         let Some(final_url) = super::safe_http_source_url(page.final_url.as_str()) else {
@@ -195,6 +204,7 @@ impl Tool for WebFetchTool {
                     "eof": range.next_offset.is_none(),
                     "limit_clamped": requested_max_chars != max_chars,
                 },
+                "artifact_uri": artifact_uri,
             })),
         )
     }
@@ -407,10 +417,36 @@ struct ContentRange {
     next_offset: Option<usize>,
 }
 
+/// Keep the whole converted page as a content-addressed artifact when one result
+/// does not hold it, so the model can page and grep it without a second fetch.
+fn retain_full_text(
+    ctx: &ToolContext,
+    content: &str,
+    range: &ContentRange,
+    offset: usize,
+) -> Option<String> {
+    if offset == 0 && range.next_offset.is_none() {
+        return None;
+    }
+    let store = ctx.artifact_store.as_ref()?;
+    let artifact = crate::tools::tool_output_artifact("web_fetch", content, 0);
+    // The URI is the content digest, so a conflict can only be differing metadata.
+    let _ = store.put_content_addressed(crate::tools::ToolArtifact {
+        artifact_id: artifact.artifact_id,
+        artifact_uri: artifact.artifact_uri.clone(),
+        tool_name: "web_fetch".to_string(),
+        content: content.to_string(),
+        original_bytes: artifact.original_bytes,
+        shown_bytes: artifact.shown_bytes,
+    });
+    Some(artifact.artifact_uri)
+}
+
 fn content_range(
     content: &str,
     offset: usize,
     max_chars: usize,
+    max_bytes: usize,
 ) -> std::result::Result<ContentRange, String> {
     let total_chars = content.chars().count();
     if offset > total_chars {
@@ -418,10 +454,17 @@ fn content_range(
             "offset {offset} exceeds converted content length {total_chars}"
         ));
     }
+    let mut bytes = 0usize;
     let content = content
         .chars()
         .skip(offset)
         .take(max_chars)
+        .enumerate()
+        .take_while(|(index, ch)| {
+            bytes += ch.len_utf8();
+            *index == 0 || bytes <= max_bytes
+        })
+        .map(|(_, ch)| ch)
         .collect::<String>();
     let returned_chars = content.chars().count();
     let end = offset.saturating_add(returned_chars);

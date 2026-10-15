@@ -334,13 +334,13 @@ fn markdown_conversion_drops_script_source_and_source_url_drops_query() {
 
 #[test]
 fn content_range_is_unicode_safe_and_resumable() {
-    let first = content_range("甲乙丙丁戊", 1, 2).unwrap();
+    let first = content_range("甲乙丙丁戊", 1, 2, usize::MAX).unwrap();
     assert!(first.content.starts_with("乙丙"));
     assert_eq!(first.returned_chars, 2);
     assert_eq!(first.total_chars, 5);
     assert_eq!(first.next_offset, Some(3));
 
-    let second = content_range("甲乙丙丁戊", 3, 2).unwrap();
+    let second = content_range("甲乙丙丁戊", 3, 2, usize::MAX).unwrap();
     assert_eq!(second.content, "丁戊");
     assert_eq!(second.next_offset, None);
 }
@@ -423,7 +423,7 @@ async fn soak_private_redirect_never_connects_and_body_stays_capped() {
 
     let bulky = "A".repeat(200_000);
     for _ in 0..40 {
-        let range = content_range(&bulky, 0, MAX_CONTENT_CHARS).expect("range");
+        let range = content_range(&bulky, 0, MAX_CONTENT_CHARS, usize::MAX).expect("range");
         assert!(range.returned_chars <= MAX_CONTENT_CHARS);
         assert!(range.content.chars().count() <= MAX_CONTENT_CHARS + 80);
     }
@@ -431,4 +431,46 @@ async fn soak_private_redirect_never_connects_and_body_stays_capped() {
     stop.store(true, Ordering::SeqCst);
     acceptor.join().expect("acceptor");
     assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn content_range_stops_inside_the_byte_budget_on_a_char_boundary() {
+    let range = content_range("甲乙丙丁戊", 0, 50, 7).unwrap();
+    assert!(range.content.starts_with("甲乙"));
+    assert_eq!(range.returned_chars, 2);
+    assert_eq!(range.next_offset, Some(2));
+    let first = content_range("甲乙丙丁戊", 0, 50, 1).unwrap();
+    assert_eq!(first.returned_chars, 1, "one char always returns");
+}
+
+#[tokio::test]
+async fn a_multi_page_fetch_retains_the_full_text_for_read_and_grep() {
+    let store = crate::tools::ArtifactStore::new();
+    let ctx = ToolContext::new(std::env::temp_dir()).with_artifact_store(store.clone());
+    let page = (0..3000)
+        .map(|index| format!("paragraph {index:04}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\nNEEDLE at the end\n";
+    let range = content_range(&page, 0, DEFAULT_MAX_CHARS, 16 * 1024).unwrap();
+    assert!(range.content.len() <= 16 * 1024 + 128);
+    let uri = retain_full_text(&ctx, &page, &range, 0).expect("multi-page fetch retains");
+    assert!(uri.starts_with("a3s://tool-output/web_fetch/"));
+    assert_eq!(store.get(&uri).unwrap().content, page);
+    assert_eq!(retain_full_text(&ctx, &page, &range, 0), Some(uri.clone()));
+
+    let grep = crate::tools::artifact_view::grep(&ctx, &uri, "NEEDLE", false, 0, 10);
+    assert!(grep.success, "{}", grep.content);
+    assert!(grep.content.contains("3001"), "{}", grep.content);
+    let read = crate::tools::artifact_view::read_page(&ctx, &uri, 2999, 5, 0);
+    assert!(
+        read.content.contains("NEEDLE at the end"),
+        "{}",
+        read.content
+    );
+
+    let whole = content_range("short page", 0, DEFAULT_MAX_CHARS, 16 * 1024).unwrap();
+    assert_eq!(retain_full_text(&ctx, "short page", &whole, 0), None);
+    let bare = ToolContext::new(std::env::temp_dir());
+    assert_eq!(retain_full_text(&bare, &page, &range, 0), None);
 }
