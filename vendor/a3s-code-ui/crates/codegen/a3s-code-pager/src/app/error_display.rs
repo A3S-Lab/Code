@@ -742,6 +742,10 @@ mod tests {
         );
         let formatted = format_request_failure(None, None, &raw);
         assert_eq!(formatted.message(), raw);
+        assert!(formatted.message().contains("completion gate:"));
+        assert!(formatted
+            .message()
+            .contains("apps/docs/components/home/project-links.ts"));
         assert!(
             formatted
                 .message()

@@ -1,10 +1,11 @@
 # Fork status
 
-The thin `a3s-code-tui` scaffold under `crates/code/tui/src` is **not** the
-product TUI. The product surface is the Apache-2.0, A3S-branded UI fork at:
+The thin hybrid scaffold under `apps/code/tui` is **not** the product TUI.
+Its binary name is `a3s-code-tui-hybrid`. The product surface is the
+Apache-2.0, A3S-branded UI fork at:
 
 ```text
-crates/code/vendor/a3s-code-ui/
+apps/code/vendor/a3s-code-ui/
 ```
 
 Binary: `a3s-code-pager-bin` → `a3s-code-tui`
@@ -14,8 +15,8 @@ Binary: `a3s-code-pager-bin` → `a3s-code-tui`
 ## Agent
 
 When `A3S_ACP_AGENT_BIN` is set (as `just code` does), the pager spawns
-`a3s-code-acp` (`crates/code/acp`) over stdio. That binary implements ACP and
-drives `a3s-code-core` 9.1.0 sessions — not an upstream in-process agent.
+`a3s-code-acp` (`apps/code/acp`) over stdio. That binary implements ACP and
+drives `a3s-code-core` 9.1.2 sessions — not an upstream in-process agent.
 `a3s-code-acp` is built with `headless-search` and uses the Moli sidecar
 shipped beside the `a3s` CLI (`A3S_CODE_MOLI_EXECUTABLE`, or `bin/moli/moli`
 next to the `a3s` executable on `PATH`).
@@ -74,7 +75,7 @@ keys that are protocol identifiers (`x.ai/…`) stay unchanged.
 
 Welcome braille art is the A3S circular mark (stylized A + wave) in
 `assets/logo/logo07.txt` / `logo05.txt`. The version badge reads
-`a3s-code-version` (aligned to a3s-code **9.1.0**).
+`a3s-code-version` (aligned to a3s-code **9.1.2**).
 
 ## Model picker Provider Tabs
 
@@ -87,8 +88,8 @@ provider. Tab labels are the provider segment of each model id.
 Every catalog model advertises `supportsReasoningEffort` and a
 `reasoningEfforts` menu whose entries include `value` (`low`, `medium`, `high`,
 `xhigh`, `max`). `high` is the default, matching the a3s-code TUI. The pager
-sends `_meta.reasoningEffort`. `a3s-code-acp` applies the matching a3s
-`BudgetProfile` from `crates/cli/src/budget.rs` on the core session: thinking
+sends `_meta.reasoningEffort`. `a3s-code-acp` applies the matching effort
+limits in `apps/code/acp/src/agent.rs` on the core session: thinking
 budget, max tool rounds, max parallel tasks, max continuation turns, and the
 profile's effort guideline. `ultracode`, if the token arrives, also turns on
 automatic delegation.

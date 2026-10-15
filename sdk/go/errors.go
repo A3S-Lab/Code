@@ -25,6 +25,7 @@ const (
 	CodeSessionInitialization ErrorCode = "SESSION_INITIALIZATION_ERROR"
 	CodeSessionClosed         ErrorCode = "SESSION_CLOSED"
 	CodeSessionBusy           ErrorCode = "SESSION_BUSY"
+	CodeRunCancelled          ErrorCode = "RUN_CANCELLED"
 	CodeBudgetExhausted       ErrorCode = "BUDGET_EXHAUSTED"
 	CodeSecurity              ErrorCode = "SECURITY_ERROR"
 	CodeContext               ErrorCode = "CONTEXT_ERROR"
@@ -73,6 +74,7 @@ var (
 	ErrSessionInitialization = &Error{Code: CodeSessionInitialization}
 	ErrSessionClosed         = &Error{Code: CodeSessionClosed}
 	ErrSessionBusy           = &Error{Code: CodeSessionBusy}
+	ErrRunCancelled          = &Error{Code: CodeRunCancelled}
 	ErrBudgetExhausted       = &Error{Code: CodeBudgetExhausted}
 	ErrSecurity              = &Error{Code: CodeSecurity}
 	ErrContext               = &Error{Code: CodeContext}

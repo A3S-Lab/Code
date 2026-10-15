@@ -1,0 +1,42 @@
+suite "native-bash-refusal-recovery" {
+    version = 1
+
+    scenario "direct-bash-refusal-then-independent-read" {
+        surface = "tui"
+        timeout_ms = 300000
+
+        wait "real-model-ready" {
+            text = "DeepSeek V4 Flash"
+        }
+        expect "configured-provider" {
+            text = "boyue/"
+        }
+        terminal_paste "refusal-request" {
+            text = "Invoke bash exactly once with these exact arguments: {\"command\": \"printf must-not-run > must-not-run.txt\"}. I authorize this invocation. Use the default sandbox. Do not escalate or retry. Do not invoke any other tool. After observing its refusal, reply REFUSAL-OBSERVED."
+        }
+        press "submit-refusal-request" {
+            key = "Enter"
+        }
+        wait "owned-command-confirmation" {
+            text = "Yes, proceed"
+        }
+        press "approve-this-invocation" {
+            key = "1"
+        }
+        wait "refusal-request-ended" {
+            regex = "(?s)REFUSAL-OBSERVED.*Worked for"
+        }
+        terminal_paste "independent-read-request" {
+            text = "Read recovery.txt exactly once. Quote its exact contents. Do not call other tools."
+        }
+        press "submit-independent-read" {
+            key = "Enter"
+        }
+        wait "read-request-ended" {
+            regex = "(?s)RECOVERED-[0-9a-f-]+.*Worked for"
+        }
+        terminal_recording "bounded-terminal-evidence" {
+            path = "terminal/recovery.vt"
+        }
+    }
+}

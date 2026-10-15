@@ -44,6 +44,69 @@ async fn semantic_query_ranks_filters_and_verifies_current_source() {
 }
 
 #[tokio::test]
+async fn orthogonal_chunks_are_not_padded_into_semantic_results() {
+    // One axis-0 document answers the query; three orthogonal axis-1
+    // documents used to fill the vector top-k as zero-similarity padding
+    // and reach the model as pseudo-evidence.
+    let fixture = QueryFixture::start(&[
+        ("src/cache.rs", "release temporary session vector memory\n"),
+        ("src/a.rs", "unrelated first filler module\n"),
+        ("src/b.rs", "unrelated second filler module\n"),
+        ("src/c.rs", "unrelated third filler module\n"),
+    ])
+    .await;
+
+    let result = fixture
+        .search(WorkspaceSemanticSearchRequest::new("session cleanup").with_limit(5))
+        .await;
+
+    assert_eq!(
+        result.hits.len(),
+        1,
+        "only positively similar chunks are evidence"
+    );
+    assert_eq!(result.hits[0].chunk.path.as_ref(), "src/cache.rs");
+    assert_eq!(result.fallback, None);
+    fixture.runtime.close().await;
+}
+
+#[tokio::test]
+async fn semantic_min_score_is_strict_and_validated_at_startup() {
+    // The floor is strictly-greater: an exact-cosine match at the floor is
+    // still filtered, so raising it to 1.0 removes even the one-hot match.
+    let fixture = QueryFixture::start_with_options(
+        &[("src/cache.rs", "release temporary session vector memory\n")],
+        |provider| WorkspaceRetrievalOptions::new(provider).with_semantic_min_score(1.0),
+    )
+    .await;
+    let result = fixture
+        .search(WorkspaceSemanticSearchRequest::new("session cleanup").with_limit(5))
+        .await;
+    assert!(
+        result.hits.is_empty(),
+        "a score exactly at the floor is not evidence: {:?}",
+        result.hits
+    );
+    fixture.runtime.close().await;
+
+    let catalog = populated_catalog(&[]);
+    let out_of_range = WorkspaceRetrievalRuntime::start(
+        catalog,
+        WorkspaceRetrievalOptions::new(Arc::new(QueryProvider::new())).with_semantic_min_score(1.5),
+        CancellationToken::new(),
+    );
+    assert!(
+        out_of_range.is_err(),
+        "an out-of-range floor must fail closed at startup"
+    );
+    let error = out_of_range.err().unwrap().to_string();
+    assert!(
+        error.contains("semantic_min_score"),
+        "the failure must name the closed set field: {error}"
+    );
+}
+
+#[tokio::test]
 async fn stale_source_is_never_returned_before_manifest_reconciliation() {
     let fixture =
         QueryFixture::start(&[("src/cache.rs", "release temporary session vector memory\n")]).await;
@@ -170,12 +233,19 @@ struct QueryFixture {
 
 impl QueryFixture {
     async fn start(entries: &[(&str, &str)]) -> Self {
+        Self::start_with_options(entries, WorkspaceRetrievalOptions::new).await
+    }
+
+    async fn start_with_options(
+        entries: &[(&str, &str)],
+        build_options: impl FnOnce(Arc<dyn EmbeddingProvider>) -> WorkspaceRetrievalOptions,
+    ) -> Self {
         let catalog = populated_catalog(entries);
         let files = MemoryFiles::from_entries(entries);
         let provider: Arc<dyn EmbeddingProvider> = Arc::new(QueryProvider::new());
         let runtime = WorkspaceRetrievalRuntime::start(
             catalog,
-            WorkspaceRetrievalOptions::new(provider),
+            build_options(provider),
             CancellationToken::new(),
         )
         .unwrap();

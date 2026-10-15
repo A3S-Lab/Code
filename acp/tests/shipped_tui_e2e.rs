@@ -1,6 +1,7 @@
 //! End-to-end coverage of the shipped pager and the shipped ACP agent.
 //!
-//! The model is a local OpenAI-compatible server. The agent process is
+//! The model is a local OpenAI-compatible server, except the ignored
+//! `shipped_bound_goal_real_llm`, which runs the operator's live ACL. The agent process is
 //! `a3s-code-acp`. Palette and launch cases spawn `a3s-code-tui` on a PTY.
 //! Nothing here substitutes a scripted `LlmClient` or the pager's content mock.
 
@@ -23,6 +24,10 @@ const COMPACT_SUMMARY: &str = "COMPACT-SUMMARY-7f3a";
 const DURABLE_TOKEN: &str = "DURABLE-TOKEN-42";
 const GOAL_OBJECTIVE: &str = "pty-goal-7b2e";
 const WIRE_TEST: &str = "shipped_agent_session_wire";
+/// Mirrors a3s-code-core's READ_ONLY_EVIDENCE_LIMIT: eight read-only tool
+/// results with an empty mutation ledger end evidence gathering, independent
+/// of the advertised tool-round budget.
+const READ_ONLY_EVIDENCE_STOP: usize = 8;
 const PTY_TEST: &str = "shipped_tui_launch_resume_and_visible_commands";
 
 fn oracle(test: &str, name: &str, detail: &str) {
@@ -93,7 +98,7 @@ const FULLSCREEN_PALETTE: &[(&str, &str)] = &[
     ("copy", "Copy last response"),
     ("find", "Search the conversation scrollback"),
     ("theme", "Switch the color theme"),
-    ("always-approve", "skip all permission prompts"),
+    ("yolo", "skip all permission prompts"),
     ("vim-mode", "vim-style scrollback"),
     ("multiline", "multiline input mode"),
     ("compact-mode", "less padding, more content"),
@@ -114,6 +119,7 @@ struct MockState {
     larger_tool_replies: u64,
     tool_seq: u64,
     write_tool_replies: u64,
+    expand_replies: u64,
     ask_tool_replies: u64,
     write_path: String,
     late_path: String,
@@ -128,6 +134,7 @@ fn spawn_mock(write_path: &Path, late_path: &Path) -> (SocketAddr, Arc<Mutex<Moc
         larger_tool_replies: 0,
         tool_seq: 0,
         write_tool_replies: 0,
+        expand_replies: 0,
         ask_tool_replies: 0,
         write_path: write_path.display().to_string(),
         late_path: late_path.display().to_string(),
@@ -137,7 +144,7 @@ fn spawn_mock(write_path: &Path, late_path: &Path) -> (SocketAddr, Arc<Mutex<Moc
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
-            while let Some(body) = read_http_body(&mut stream) {
+            if let Some(body) = read_http_body(&mut stream) {
                 let response = {
                     let mut guard = shared.lock().expect("mock");
                     guard.bodies.push(body.clone());
@@ -222,6 +229,25 @@ fn decide(raw: &str, state: &mut MockState) -> String {
         })
         .to_string();
         return reply_tool("write", &args, state, streaming);
+    }
+    if raw.contains("ASK-WRITE") && tools {
+        if raw.contains("wrote-marker") {
+            return reply_text("ok", streaming);
+        }
+        let args = serde_json::json!({
+            "file_path": state.write_path,
+            "content": "wrote-marker"
+        })
+        .to_string();
+        return reply_tool("write", &args, state, streaming);
+    }
+    if raw.contains("EXPAND-ORACLE") && tools {
+        if state.expand_replies >= 1 {
+            return reply_text("ok", streaming);
+        }
+        state.expand_replies = state.expand_replies.saturating_add(1);
+        let args = serde_json::json!({ "command": "printf 'EXPAND-MARKER\\n'" }).to_string();
+        return reply_tool("bash", &args, state, streaming);
     }
     if raw.contains("ASK-ORACLE") && tools {
         if state.ask_tool_replies >= 1 {
@@ -481,6 +507,7 @@ async fn spawn_agent(workspace: &Path, config: &Path, home: &Path) -> AgentProc 
         .env("A3S_CONFIG", config)
         .env("A3S_DISABLE_CC_SWITCH", "1")
         .env("A3S_DISABLE_GROK_ACCOUNT", "1")
+        .env("A3S_DISABLE_CURSOR_ACCOUNT", "1")
         .env("XAI_API_KEY", "sk-dummy-not-a-model")
         .env("HOME", home)
         .env("GROK_HOME", home.join("grok"))
@@ -571,11 +598,9 @@ fn effort_meta(level: &str) -> acp::Meta {
     meta
 }
 
-fn log_text(workspace: &Path) -> String {
-    let dir = workspace.join(".a3s").join("effect-log");
-    let mut out = String::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
+fn append_jsonl_dir(dir: &Path, out: &mut String) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
     for entry in entries.flatten() {
         if entry.path().extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
@@ -584,6 +609,22 @@ fn log_text(workspace: &Path) -> String {
         if let Ok(text) = std::fs::read_to_string(entry.path()) {
             out.push_str(&text);
             out.push('\n');
+        }
+    }
+}
+
+fn log_text(workspace: &Path) -> String {
+    let mut out = String::new();
+    append_jsonl_dir(&workspace.join(".a3s").join("effect-log"), &mut out);
+    let Ok(dates) = std::fs::read_dir(workspace.join(".a3s").join("sessions")) else {
+        return out;
+    };
+    for date in dates.flatten() {
+        let Ok(homes) = std::fs::read_dir(date.path()) else {
+            continue;
+        };
+        for home in homes.flatten() {
+            append_jsonl_dir(&home.path(), &mut out);
         }
     }
     out
@@ -716,9 +757,16 @@ async fn shipped_agent_session_wire() {
                     .is_some_and(|parsed| has_tools(&parsed))
             });
             let tool_request_count = tool_requests.count();
+            // The advertised budget is a ceiling, and a second safety stop
+            // binds first on this fixture: eight read-only tool results with
+            // an empty mutation ledger end evidence gathering (the core's
+            // READ_ONLY_EVIDENCE_LIMIT), so an `ls`-only loop stops below the
+            // advertised 16. The none-effort phase below stops exactly at its
+            // advertised 4 — the pair proves the enforced stop tracks the
+            // request's budget instead of one hardcoded cap.
             assert_eq!(
-                tool_request_count, low_rounds as usize,
-                "tool calls must stop at the budget parsed from the request, not a hardcoded cap"
+                tool_request_count, READ_ONLY_EVIDENCE_STOP,
+                "a read-only loop must stop at the evidence limit before the advertised {low_rounds}"
             );
             assert!(
                 low_bodies.iter().any(|body| {
@@ -726,7 +774,7 @@ async fn shipped_agent_session_wire() {
                         .ok()
                         .is_some_and(|parsed| !has_tools(&parsed))
                 }),
-                "the round after the cap must be asked to finish with no tools"
+                "the round after the stop must be asked to finish with no tools"
             );
             assert!(
                 agent
@@ -767,18 +815,80 @@ async fn shipped_agent_session_wire() {
             let high_rounds = budget_number(&high_bodies[0], "tool_rounds=").expect("high rounds");
             assert!(high_thinking > low_thinking);
             assert!(high_rounds > low_rounds);
-            let probe = &high_bodies[low_rounds as usize];
-            let probe_tools = serde_json::from_str::<serde_json::Value>(probe)
-                .ok()
-                .is_some_and(|parsed| has_tools(&parsed));
-            assert!(
-                probe_tools,
-                "high still offers tools on the request after the low cap"
+            let high_tool_requests = high_bodies
+                .iter()
+                .filter(|body| {
+                    serde_json::from_str::<serde_json::Value>(body)
+                        .ok()
+                        .is_some_and(|parsed| has_tools(&parsed))
+                })
+                .count();
+            // The evidence stop is conversation-scoped, not per turn: the
+            // eight read-only results from the low turn are still in the
+            // window, so the follow-up read-only prompt is asked to finish
+            // immediately even though the advertised ceiling rose to
+            // {high_rounds}. A fresh session (the none phase below) re-arms
+            // the counter.
+            assert_eq!(
+                high_tool_requests, 0,
+                "a read-only follow-up on the same session must not resume tool looping"
             );
             oracle(
                 WIRE_TEST,
                 "effort-budget",
                 &format!("low={low_thinking}/{low_rounds} high={high_thinking}/{high_rounds}"),
+            );
+
+            // A budget below the evidence limit binds first: effort none
+            // advertises four tool rounds, and the enforced stop lands exactly
+            // there — with the eight-stop above this rules out a hardcoded cap.
+            let none_session = acp::Agent::new_session(
+                agent.conn.as_ref(),
+                acp::NewSessionRequest::new(workspace.clone()),
+            )
+            .await
+            .expect("none session")
+            .session_id;
+            acp::Agent::set_session_model(
+                agent.conn.as_ref(),
+                acp::SetSessionModelRequest::new(none_session.clone(), acp::ModelId::new(MODEL_ID))
+                    .meta(Some(effort_meta("none"))),
+            )
+            .await
+            .expect("effort none");
+            let start = state.lock().expect("mock").bodies.len();
+            let budgeted = tokio::task::spawn_local({
+                let conn = agent.conn.clone();
+                let none_session = none_session.clone();
+                async move {
+                    acp::Agent::prompt(
+                        conn.as_ref(),
+                        user_prompt(&none_session, "LIST-FILES small budget"),
+                    )
+                    .await
+                }
+            });
+            let budgeted = budgeted.await.expect("join").expect("none prompt");
+            assert_eq!(budgeted.stop_reason, acp::StopReason::EndTurn);
+            let none_bodies = bodies_since(&state.lock().expect("mock"), start);
+            let none_rounds = budget_number(&none_bodies[0], "tool_rounds=").expect("none rounds");
+            assert_eq!(none_rounds, 4, "effort none advertises four tool rounds");
+            let none_tool_requests = none_bodies
+                .iter()
+                .filter(|body| {
+                    serde_json::from_str::<serde_json::Value>(body)
+                        .ok()
+                        .is_some_and(|parsed| has_tools(&parsed))
+                })
+                .count();
+            assert_eq!(
+                none_tool_requests, none_rounds as usize,
+                "tool calls must stop at the budget parsed from the request, not a hardcoded cap"
+            );
+            oracle(
+                WIRE_TEST,
+                "effort-budget-stop",
+                &format!("advertised={none_rounds} enforced={none_tool_requests}"),
             );
 
             // Permission blocks until AllowOnce. The side-effect file stays absent.
@@ -1418,6 +1528,7 @@ fn child_env(acp: &str, config: &Path, home: &Path) -> Vec<(String, String)> {
         ("A3S_CONFIG".into(), config.display().to_string()),
         ("A3S_DISABLE_CC_SWITCH".into(), "1".into()),
         ("A3S_DISABLE_GROK_ACCOUNT".into(), "1".into()),
+        ("A3S_DISABLE_CURSOR_ACCOUNT".into(), "1".into()),
         ("XAI_API_KEY".into(), "sk-dummy-not-a-model".into()),
         ("HOME".into(), home.display().to_string()),
         ("GROK_HOME".into(), home.join("grok").display().to_string()),
@@ -1646,7 +1757,6 @@ fn session_info_turn_and_used(screen: &str) -> Option<(u64, u64)> {
         // The session-info modal paints a box glyph before the label.
         if let Some(rest) = line.split_once("Turn:").map(|(_, rest)| rest) {
             if let Some(parsed) = rest
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|token| token.parse().ok())
@@ -1741,6 +1851,135 @@ fn launch_resumed(
     pty.enter();
     let _ = pty.child.wait();
     (resumed_id, resumed)
+}
+
+fn exercise_marker_navigation(
+    env: &[(&str, &str)],
+    cwd: &Path,
+    session_id: &str,
+    marker: &str,
+    state: &Arc<Mutex<MockState>>,
+) {
+    let binary = tui_binary();
+    let cwd_arg = cwd.to_str().expect("cwd");
+    let args = ["--cwd", cwd_arg, "--resume", session_id];
+    let mut pty = open_pty(&binary, &args, env, cwd);
+    let opened = pty.wait_for(marker, Duration::from_secs(30));
+    assert!(
+        opened.contains(marker),
+        "marked session did not show the transcript\n{opened}"
+    );
+
+    pty.write_bytes(b"\x15");
+    pty.type_text(&format!("/find {marker}"));
+    pty.enter();
+    let found = pty.wait_for("search:", Duration::from_secs(6));
+    assert!(
+        found.contains("search:") && found.contains(marker),
+        "find did not show the marker\n{found}"
+    );
+    oracle(PTY_TEST, "find-marker", marker);
+
+    // The picker opens only when the timeline has two turns. One turn toasts
+    // "Nothing to jump to yet" and never paints the title.
+    pty.focus_composer();
+    pty.type_text("JUMP-SECOND-7c1a");
+    pty.enter();
+    let _ = wait_body(state, "JUMP-SECOND-7c1a", Duration::from_secs(25));
+    let _second = pty.wait_for("JUMP-SECOND-7c1a", Duration::from_secs(15));
+
+    pty.focus_composer();
+    pty.type_text("/jump");
+    pty.enter();
+    let jump = pty.wait_for("Jump to which turn?", Duration::from_secs(6));
+    assert!(
+        jump.contains(marker),
+        "jump preview omitted the marker\n{jump}"
+    );
+    // Oldest row is the marked turn. Up is a no-op when the picker already opened there.
+    pty.write_bytes(b"k");
+    pty.pump(Duration::from_millis(200));
+    let selected = pty.screen();
+    assert!(
+        selected.contains("Jump to which turn?") && selected.contains(marker),
+        "jump lost the marker row\n{selected}"
+    );
+    pty.enter();
+    pty.pump(Duration::from_millis(300));
+    pty.focus_composer();
+    pty.type_text("/session-info");
+    pty.enter();
+    let info = pty.wait_for("Session ID", Duration::from_secs(15));
+    let (turn, _) = session_info_turn_and_used(&info).unwrap_or((0, 0));
+    // Turn counts user.message facts. The marker plus this second prompt is 2.
+    // It is not the viewport row the picker selected.
+    assert_eq!(
+        turn, 2,
+        "session-info turn is the product prompt count\n{info}"
+    );
+    oracle(PTY_TEST, "jump-turn", "preview=marker prompts=2");
+    pty.escape();
+    pty.pump(Duration::from_millis(200));
+    pty.focus_composer();
+
+    // Bash asks while the posture is still Ask. /yolo would persist into the
+    // shared grok home and the later tour would skip Allow once.
+    let before_expand = state.lock().expect("mock").bodies.len();
+    pty.type_text("EXPAND-ORACLE");
+    pty.enter();
+    let allow_expand = pty.wait_for("Yes, proceed", Duration::from_secs(20));
+    assert!(
+        allow_expand.contains("Yes, proceed"),
+        "expand bash did not ask\n{allow_expand}"
+    );
+    pty.write_bytes(b"1");
+    let expand_deadline = Instant::now() + Duration::from_secs(25);
+    while Instant::now() < expand_deadline {
+        if state.lock().expect("mock").bodies.len() > before_expand.saturating_add(1) {
+            break;
+        }
+        pty.pump(Duration::from_millis(100));
+    }
+    assert!(
+        state.lock().expect("mock").bodies.len() > before_expand.saturating_add(1),
+        "expand bash did not finish"
+    );
+    pty.write_bytes(b"\x15");
+    pty.type_text("/minimal");
+    pty.enter();
+    let _minimal = pty.wait_for("Switched to minimal mode", Duration::from_secs(6));
+    pty.pump(Duration::from_millis(800));
+    pty.write_bytes(b"\x15");
+    pty.type_text("/expand");
+    pty.enter();
+    let expanded = pty.wait_for("EXPAND-MARKER", Duration::from_secs(8));
+    assert!(
+        expanded.contains("EXPAND-MARKER") && !expanded.contains("Nothing to expand"),
+        "expand did not reprint the folded tool output\n{expanded}"
+    );
+    oracle(PTY_TEST, "expand-marker", "EXPAND-MARKER");
+
+    // Minimal mode quits on a second Ctrl-C while the prompt is idle and empty.
+    // A slash `/quit` clears the composer and leaves the process up.
+    pty.write_bytes(b"\x15");
+    pty.pump(Duration::from_millis(80));
+    pty.write_bytes(b"\x03");
+    pty.pump(Duration::from_millis(200));
+    pty.write_bytes(b"\x03");
+    let quit_deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        pty.pump(Duration::from_millis(80));
+        match pty.child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= quit_deadline => {
+                pty.child.kill().ok();
+                let _ = pty.child.wait();
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => panic!("quit wait failed: {error}"),
+        }
+    }
 }
 
 fn launch_continued(
@@ -1961,6 +2200,7 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         "continue-durable-transcript",
         &format!("session={continued_marked_id} marker={resume_marker}"),
     );
+    exercise_marker_navigation(&env, &resume_ws, &seeded_id, resume_marker, &state);
 
     let args = vec!["--cwd", workspace.to_str().expect("cwd")];
     let mut pty = open_pty(&binary, &args, &env, &workspace);
@@ -2100,6 +2340,38 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         "/goal pause started a model turn"
     );
     oracle(PTY_TEST, "goal-pause", "paused=true, zero model requests");
+    let bodies_before_resume = state.lock().expect("mock").bodies.len();
+    pty.write_bytes(b"\x15");
+    pty.type_text("/goal resume");
+    pty.enter();
+    let resume_deadline = Instant::now() + Duration::from_secs(25);
+    let mut resumed_file = String::new();
+    let mut saw_resume_turn = false;
+    while Instant::now() < resume_deadline {
+        pty.pump(Duration::from_millis(100));
+        saw_resume_turn = state.lock().expect("mock").bodies.iter().any(|body| {
+            body.contains("Continue this durable goal") && body.contains(GOAL_OBJECTIVE)
+        });
+        resumed_file = std::fs::read_to_string(&goal_path).unwrap_or_default();
+        if saw_resume_turn
+            && resumed_file.contains(GOAL_OBJECTIVE)
+            && resumed_file.contains("\"paused\": false")
+        {
+            break;
+        }
+    }
+    assert!(
+        saw_resume_turn
+            && resumed_file.contains(GOAL_OBJECTIVE)
+            && resumed_file.contains("\"paused\": false"),
+        "goal resume did not clear paused or continue the objective: {resumed_file:?}"
+    );
+    assert!(
+        state.lock().expect("mock").bodies.len() > bodies_before_resume,
+        "/goal resume did not send the continuation prompt"
+    );
+    product_prompts += 1;
+    oracle(PTY_TEST, "goal-resume", "paused=false continuation-sent");
     let bodies_before_clear = state.lock().expect("mock").bodies.len();
     pty.write_bytes(b"\x15");
     pty.type_text("/goal clear");
@@ -2498,24 +2770,57 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     );
     oracle(PTY_TEST, "model", "mock/alt");
 
-    // always-approve lets a write through without a permission key.
+    // Ask keeps the write parked until Allow once. The file and the gate
+    // sentence are the observations; the assistant sentence is not.
     pty.write_bytes(b"\x15");
-    pty.type_text("/always-approve");
+    pty.type_text("ASK-WRITE please");
     pty.enter();
-    pty.pump(Duration::from_millis(400));
+    let ask_prompt = pty.wait_for("Yes, proceed", Duration::from_secs(20));
+    assert!(
+        !write_path.exists(),
+        "write ran before Allow once\n{ask_prompt}"
+    );
+    pty.write_bytes(b"1");
+    let ask_gate = pty.wait_for("completion gate:", Duration::from_secs(20));
+    let asked = std::fs::read_to_string(&write_path).unwrap_or_default();
+    assert_eq!(asked, "wrote-marker", "Allow once did not write the marker");
+    assert!(
+        ask_gate.contains("Assistant text does not count") && ask_gate.contains("side-effect.txt"),
+        "Ask turn hid the completion gate\n{ask_gate}"
+    );
+    oracle(PTY_TEST, "ask-allow-once-gate", "side-effect.txt");
+
+    // yolo lets a write through without a permission key.
+    pty.write_bytes(b"\x15");
+    pty.type_text("/yolo");
+    pty.enter();
+    pty.write_bytes(b"\x15");
+    let yolo_frame = pty.pump(Duration::from_millis(400));
+    assert!(
+        yolo_frame.contains("yolo"),
+        "info line did not show the yolo flag\n{yolo_frame}"
+    );
+    assert!(
+        !yolo_frame.contains("/yolo"),
+        "cleared composer still shows the slash\n{yolo_frame}"
+    );
+    assert!(
+        !yolo_frame.contains("always-approve"),
+        "info line still shows always-approve\n{yolo_frame}"
+    );
+    oracle(PTY_TEST, "yolo-flag", "yolo");
     pty.write_bytes(b"\x15");
     pty.type_text("WRITE-ORACLE please");
     pty.enter();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline && !write_path.exists() {
-        pty.pump(Duration::from_millis(200));
-    }
+    let yolo_gate = pty.wait_for("completion gate:", Duration::from_secs(20));
     let wrote = std::fs::read_to_string(&write_path).unwrap_or_default();
-    assert_eq!(
-        wrote, "wrote-marker",
-        "always-approve did not select AllowOnce"
+    assert_eq!(wrote, "wrote-marker", "yolo did not select AllowOnce");
+    assert!(
+        yolo_gate.contains("Assistant text does not count")
+            && yolo_gate.contains("side-effect.txt"),
+        "yolo turn hid the completion gate\n{yolo_gate}"
     );
-    oracle(PTY_TEST, "always-approve", "wrote-marker");
+    oracle(PTY_TEST, "yolo", "wrote-marker completion-gate");
 
     pty.write_bytes(b"\x15");
     let copy_path = workspace.join("copied-reply.txt");
@@ -2678,6 +2983,423 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     oracle(PTY_TEST, "quit", "exit 0");
     let _ = args;
     let _ = late_path;
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+const REAL_GOAL_TEST: &str = "shipped_bound_goal_real_llm";
+const REAL_GOAL_MODEL: &str = "boyue/deepseek-v4-flash";
+
+/// Explicit host ACL: the operator's live file plus trusted goal bounds.
+fn write_real_goal_acl(home: &Path) -> PathBuf {
+    let source = std::env::var_os("A3S_CONFIG_FILE").expect("A3S_CONFIG_FILE names the live ACL");
+    let mut acl = std::fs::read_to_string(source).expect("live ACL");
+    let deadline = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis()
+        + 3_600_000;
+    acl.push_str(&format!(
+        "\ngoal_control {{\n  automatic_enabled = true\n  max_slices = \"4\"\n  \
+         max_no_progress_slices = \"2\"\n  deadline_unix_ms = \"{deadline}\"\n}}\n",
+    ));
+    let path = home.join("goal-host.acl");
+    std::fs::write(&path, acl).expect("goal host acl");
+    path
+}
+
+async fn goal_ext(
+    agent: &AgentProc,
+    method: &'static str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let raw = serde_json::value::to_raw_value(&params).expect("goal params");
+    let response = acp::Agent::ext_method(
+        agent.conn.as_ref(),
+        acp::ExtRequest::new(method, std::sync::Arc::from(raw)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{method}: {error:?}"));
+    serde_json::from_str(response.0.get()).expect("goal json")
+}
+
+async fn goal_state(agent: &AgentProc, id: &acp::SessionId) -> serde_json::Value {
+    goal_ext(
+        agent,
+        "a3s/goal/state",
+        serde_json::json!({"session_id": id.0.as_ref()}),
+    )
+    .await
+}
+
+fn goal_command(kind: &str, operation_id: &str, view: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind, "operation_id": operation_id,
+        "goal_id": view["binding"]["goal_id"], "session_id": view["binding"]["session_id"],
+        "workspace": view["binding"]["workspace"],
+        "work_policy_digest": view["binding"]["work_policy_digest"],
+        "expected_goal_revision": view["binding"]["goal_revision"],
+        "expected_plan_revision": view["plan_revision"],
+        "expected_goal_sequence": view["goal_sequence"],
+    })
+}
+
+/// Agent text since `from`, for one session, excluding replay.
+fn agent_text(agent: &AgentProc, session: &acp::SessionId, from: usize) -> String {
+    agent.replayed.borrow()[from..]
+        .iter()
+        .filter(|(sid, replay, _)| sid == session.0.as_ref() && !replay)
+        .map(|(_, _, text)| text.as_str())
+        .collect()
+}
+
+async fn slash(agent: &AgentProc, session: &acp::SessionId, text: &str) -> String {
+    let from = agent.replayed.borrow().len();
+    acp::Agent::prompt(agent.conn.as_ref(), user_prompt(session, text))
+        .await
+        .unwrap_or_else(|error| panic!("{text}: {error:?}"));
+    agent_text(agent, session, from)
+}
+
+async fn connect_agent(workspace: &Path, config: &Path, home: &Path) -> AgentProc {
+    let agent = spawn_agent(workspace, config, home).await;
+    acp::Agent::initialize(
+        agent.conn.as_ref(),
+        acp::InitializeRequest::new(acp::ProtocolVersion::V1),
+    )
+    .await
+    .expect("initialize");
+    agent
+}
+
+async fn stop_agent(mut agent: AgentProc) {
+    drop(agent.conn);
+    let _ = agent.child.start_kill();
+    let _ = agent.child.wait().await;
+}
+
+fn create_goal_command(
+    session: &acp::SessionId,
+    workspace: &Path,
+    goal_id: &str,
+    description: &str,
+    criterion: &str,
+) -> serde_json::Value {
+    let root = workspace.display().to_string();
+    serde_json::json!({
+        "kind": "create", "operation_id": format!("{goal_id}-create"), "goal_id": goal_id,
+        "session_id": session.0.as_ref(), "workspace": {"id": root, "display_root": root},
+        "goal": {"description": description, "success_criteria": [criterion],
+            "progress": 0.0, "achieved": false, "created_at": 1, "achieved_at": null},
+        "non_goals": ["Do not modify release.txt"], "scope_fact_sequences": [],
+        "work_policy_digest": null,
+        "expected_goal_revision": null, "expected_plan_revision": null,
+        "expected_goal_sequence": null,
+    })
+}
+
+/// A policy session's real Run admits the policy; a goal binds only to that
+/// digest, and review admission works on the bound session.
+async fn policy_goal_review(agent: &AgentProc, workspace: &Path) {
+    let meta = serde_json::json!({"a3sEngineering": {"policy": "engineering-v1"}});
+    let id = acp::Agent::new_session(
+        agent.conn.as_ref(),
+        acp::NewSessionRequest::new(workspace.to_path_buf()).meta(meta.as_object().cloned()),
+    )
+    .await
+    .expect("policy session")
+    .session_id;
+    let unbound = goal_state(agent, &id).await;
+    assert_eq!(unbound["definition"], serde_json::Value::Null);
+    assert_eq!(
+        unbound["work_policy_digest"],
+        serde_json::Value::Null,
+        "no Run yet"
+    );
+    let answer = slash(
+        agent,
+        &id,
+        "Reply with the word ADMITTED and nothing else. Do not use tools.",
+    )
+    .await;
+    assert!(answer.contains("ADMITTED"), "policy turn: {answer}");
+    let digest = goal_state(agent, &id).await["work_policy_digest"].clone();
+    assert!(
+        digest
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:")),
+        "the Run admitted the policy: {digest}"
+    );
+    let mut create = create_goal_command(
+        &id,
+        workspace,
+        "policy-goal",
+        "Review release.txt",
+        "Findings name release.txt",
+    );
+    let raw = serde_json::value::to_raw_value(&create).expect("create");
+    assert!(
+        acp::Agent::ext_method(
+            agent.conn.as_ref(),
+            acp::ExtRequest::new("a3s/goal/definition", std::sync::Arc::from(raw)),
+        )
+        .await
+        .is_err(),
+        "a goal must bind the admitted policy"
+    );
+    create["work_policy_digest"] = digest.clone();
+    let bound = goal_ext(agent, "a3s/goal/definition", create).await;
+    assert_eq!(bound["binding"]["work_policy_digest"], digest);
+    let target = goal_ext(
+        agent,
+        "a3s/review/target",
+        serde_json::json!({"sessionId": id.0.as_ref(), "paths": ["release.txt"]}),
+    )
+    .await["digest"]
+        .clone();
+    let admitted = goal_ext(
+        agent,
+        "a3s/review/admit",
+        serde_json::json!({
+            "sessionId": id.0.as_ref(), "scenarioId": "engineering.change",
+            "sourceReviewId": "pager-review-1", "workPolicyDigest": digest,
+            "target": {"paths": ["release.txt"], "digest": target},
+            "scope": {"type": "sessionTarget"},
+            "findings": [{"findingId": "f-1", "severity": "warning", "category": "correctness",
+                "claim": "The release code has no checksum", "evidence": "release.txt:1",
+                "subject": {"type": "opaque", "kind": "engineering.target", "uri": target}}],
+        }),
+    )
+    .await;
+    assert_eq!(admitted["admitted"], 1);
+    oracle(
+        REAL_GOAL_TEST,
+        "stdio-policy-goal-review",
+        &format!("policy={digest} findings=1"),
+    );
+}
+
+/// Bind a goal and plan to the pager's session, then status and pause.
+async fn bind_pager_session(agent: &AgentProc, workspace: &Path, id: &acp::SessionId) {
+    acp::Agent::load_session(
+        agent.conn.as_ref(),
+        acp::LoadSessionRequest::new(id.clone(), workspace.to_path_buf()),
+    )
+    .await
+    .expect("load the pager session");
+    assert_eq!(
+        goal_state(agent, id).await["definition"],
+        serde_json::Value::Null
+    );
+    let created = goal_ext(
+        agent,
+        "a3s/goal/definition",
+        create_goal_command(
+            id,
+            workspace,
+            "release-report",
+            "Record the release code stored in release.txt in report.txt",
+            "report.txt contains exactly the release code read from release.txt",
+        ),
+    )
+    .await;
+    // The shipped host verifies a write plus a passing shell check of that
+    // path; a read-only step has no host report and is never accepted.
+    let mut propose = goal_command("propose_plan", "pager-propose", &created);
+    propose["proposal_sequence"] = serde_json::Value::Null;
+    propose["plan"] = serde_json::json!({
+        "goal": "Record the release code", "complexity": "Simple", "required_tools": [],
+        "estimated_steps": 1,
+        "steps": [{"id": "report",
+                   "content": "Write the exact release code from release.txt (the code only) to a new file report.txt, then run the shell command `test -f report.txt`",
+                   "status": "pending", "priority": "medium",
+                   "success_criteria": "report.txt holds exactly the release code from release.txt and `test -f report.txt` passed after the write"}],
+    });
+    let proposed = goal_ext(agent, "a3s/goal/plan", propose).await;
+    let mut accept = goal_command("accept_plan", "pager-accept", &proposed);
+    accept["plan"] = serde_json::Value::Null;
+    accept["proposal_sequence"] = proposed["plan_fact_sequence"].clone();
+    let accepted = goal_ext(agent, "a3s/goal/plan", accept).await;
+    assert_eq!(accepted["plan_accepted"], true);
+    let status = slash(agent, id, "/goal status").await;
+    assert!(
+        status.contains("Durable goal active")
+            && status.contains("Plan r1 accepted: 0/1 steps done")
+            && status.contains("Next: advance"),
+        "{status}"
+    );
+    let paused = slash(agent, id, "/goal pause").await;
+    assert!(
+        paused.contains("Durable goal paused") && paused.contains("Next: paused"),
+        "{paused}"
+    );
+    assert_eq!(goal_state(agent, id).await["definition"]["state"], "paused");
+    oracle(
+        REAL_GOAL_TEST,
+        "stdio-bind-status-pause",
+        "create+plan, active 0/1 next advance, paused",
+    );
+}
+
+#[test]
+#[ignore = "requires A3S_CONFIG_FILE with boyue/deepseek-v4-flash and a built a3s-code-tui"]
+fn shipped_bound_goal_real_llm() {
+    let binary = tui_binary();
+    assert!(binary.is_file(), "build a3s-code-tui: {}", binary.display());
+    let started = Instant::now();
+    let workspace = std::fs::canonicalize(isolate_dir("bound-goal")).expect("workspace");
+    let home = isolate_dir("bound-goal-home");
+    let code = format!("RC-{}", uuid::Uuid::new_v4().simple());
+    std::fs::write(
+        workspace.join("release.txt"),
+        format!("release code: {code}\n"),
+    )
+    .expect("release file");
+    let config = write_real_goal_acl(&home);
+    // A policy session refuses a model switch before its first Run admits the
+    // policy, so every agent starts on the model. This ignored test runs alone.
+    std::env::set_var("A3S_DEFAULT_MODEL", REAL_GOAL_MODEL);
+    let acp_bin = env!("CARGO_BIN_EXE_a3s-code-acp");
+    let owned = child_env(acp_bin, &config, &home);
+    let env: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let cwd = workspace.to_str().expect("cwd");
+
+    // The shipped pager creates and registers the session with one real turn.
+    let number = std::process::id() % 9000 + 1000;
+    let reply = format!("SEED-{number}");
+    let mut pty = open_pty(&binary, &["--cwd", cwd], &env, &workspace);
+    pty.wait_for_frame(Duration::from_secs(45));
+    pty.type_text(&format!(
+        "Reply with the word SEED, a hyphen, then the number {number}, and nothing else. Do not use tools."
+    ));
+    pty.enter();
+    pty.wait_for(&reply, Duration::from_secs(180));
+    pty.write_bytes(b"\x15");
+    pty.type_text("/session-info");
+    pty.enter();
+    let info = pty.wait_for("Session ID", Duration::from_secs(15));
+    let session_id = session_id_from_screen(&info);
+    assert!(!session_id.is_empty(), "{info}");
+    pty.escape();
+    pty.pump(Duration::from_millis(200));
+    pty.type_text("/quit");
+    pty.enter();
+    let _ = pty.child.wait();
+    oracle(
+        REAL_GOAL_TEST,
+        "pager-seed",
+        &format!("session={session_id}"),
+    );
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let local = tokio::task::LocalSet::new();
+    let id = acp::SessionId::new(session_id.clone());
+    local.block_on(&runtime, async {
+        let agent = connect_agent(&workspace, &config, &home).await;
+        policy_goal_review(&agent, &workspace).await;
+        bind_pager_session(&agent, &workspace, &id).await;
+        stop_agent(agent).await;
+    });
+
+    // The pager resumes the bound session; `/goal resume` runs one real slice.
+    let mut pty = open_pty(
+        &binary,
+        &["--cwd", cwd, "--resume", &session_id],
+        &env,
+        &workspace,
+    );
+    pty.wait_for(&reply, Duration::from_secs(60));
+    pty.write_bytes(b"\x15");
+    pty.type_text("/goal status");
+    pty.enter();
+    let status = pty.wait_for("Durable goal paused", Duration::from_secs(30));
+    assert!(status.contains("0/1 steps done"), "{status}");
+    oracle(REAL_GOAL_TEST, "pager-reopen-status", "paused 0/1");
+    let slice_started = Instant::now();
+    pty.write_bytes(b"\x15");
+    pty.type_text("/goal resume");
+    pty.enter();
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut screen = String::new();
+    while Instant::now() < deadline {
+        screen = pty.pump(Duration::from_millis(500));
+        if screen.contains("Durable goal completed") {
+            break;
+        }
+        if screen.contains("Yes, proceed") {
+            pty.write_bytes(b"1");
+        }
+    }
+    assert!(screen.contains("Durable goal completed"), "{screen}");
+    assert!(screen.contains("1/1 steps done"), "{screen}");
+    let report = std::fs::read_to_string(workspace.join("report.txt")).expect("report.txt");
+    assert_eq!(report.trim(), code, "{screen}");
+    let slice_ms = slice_started.elapsed().as_millis();
+    oracle(
+        REAL_GOAL_TEST,
+        "pager-resume-completes",
+        &format!("slice_ms={slice_ms}"),
+    );
+    pty.write_bytes(b"\x15");
+    pty.type_text("/quit");
+    pty.enter();
+    let _ = pty.child.wait();
+
+    // A new agent process reopens the completed goal: nothing resumes or runs.
+    local.block_on(&runtime, async {
+        let agent = connect_agent(&workspace, &config, &home).await;
+        acp::Agent::load_session(
+            agent.conn.as_ref(),
+            acp::LoadSessionRequest::new(id.clone(), workspace.clone()),
+        )
+        .await
+        .expect("reopen");
+        let before = goal_state(&agent, &id).await;
+        assert_eq!(before["definition"]["state"], "completed");
+        assert_eq!(before["definition"]["plan"]["steps"][0]["status"], "completed");
+        let resumed = slash(&agent, &id, "/goal resume").await;
+        assert!(
+            resumed.contains("Durable goal completed") && !resumed.contains("Goal slice"),
+            "{resumed}"
+        );
+        assert_eq!(
+            goal_state(&agent, &id).await,
+            before,
+            "a completed goal records nothing"
+        );
+        let info = session_info_body(agent.conn.as_ref(), &id).await;
+        oracle(REAL_GOAL_TEST, "reopen-completed", "no slice, no fact");
+
+        // Clear on the shipped binary cancels an unstarted goal.
+        let other = acp::Agent::new_session(
+            agent.conn.as_ref(),
+            acp::NewSessionRequest::new(workspace.clone()),
+        )
+        .await
+        .expect("second session")
+        .session_id;
+        let created = goal_ext(
+            &agent,
+            "a3s/goal/definition",
+            create_goal_command(&other, &workspace, "clear-me", "Never started", "Cancelled"),
+        )
+        .await;
+        assert_eq!(created["state"], "active");
+        let cleared = slash(&agent, &other, "/goal clear").await;
+        assert!(cleared.contains("Durable goal cancelled"), "{cleared}");
+        oracle(REAL_GOAL_TEST, "stdio-clear", "active→cancelled");
+        eprintln!(
+            "BOUND-GOAL-REAL model={REAL_GOAL_MODEL} total_ms={} slice_ms={slice_ms} session_info={info}",
+            started.elapsed().as_millis()
+        );
+        stop_agent(agent).await;
+    });
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -1,7 +1,8 @@
 use super::*;
 
 impl AgentSession {
-    /// Append a steer as another `user.message` fact and fold the log.
+    /// Submit input to the active run's control inbox.
+    /// An idle session refuses with `NoActiveRun` without appending a fact.
     pub async fn steer(
         &self,
         request: crate::run_control::SteerRequest,
@@ -34,10 +35,9 @@ impl AgentSession {
         RunControl::from_session(self).run_control_snapshot().await
     }
 
-    /// Cancel a specific run only if it is still the active run.
+    /// Request cancellation of the active run matching this ID.
     ///
-    /// This is useful for SDK callers that hold a previously observed run ID:
-    /// stale run IDs will not cancel a newer operation.
+    /// For cancellation bound to one original instance, retain its `RunHandle`.
     pub async fn cancel_run(&self, run_id: &str) -> bool {
         RunControl::from_session(self).cancel_run(run_id).await
     }
@@ -55,6 +55,34 @@ impl AgentSession {
     /// Return recorded runtime events for a run.
     pub async fn run_events(&self, run_id: &str) -> Vec<crate::run::RunEventRecord> {
         RunControl::from_session(self).run_events(run_id).await
+    }
+
+    /// Read bounded evidence from this session's original Run and artifact
+    /// stores, without starting an execution or changing its history.
+    ///
+    /// `complete` describes the requested event window and content only.
+    /// Durable tool receipts and process settlement require their original
+    /// proofs; digest-only evidence does not establish either one.
+    #[cfg(feature = "evaluation")]
+    pub async fn read_evaluation_evidence(
+        &self,
+        request: crate::evaluation::EvidenceReadRequestV1,
+    ) -> std::result::Result<crate::evaluation::EvidenceSnapshotV1, crate::evaluation::EvidenceError>
+    {
+        use crate::evaluation::{EvidenceError, RunEvidenceReader};
+
+        request.validate()?;
+        if request.target.session_id != self.session_id {
+            return Err(EvidenceError::RunNotFound);
+        }
+        RunEvidenceReader::new(Arc::clone(&self.run_store))
+            .with_artifacts(self.tool_executor.artifact_store())
+            .read(request)
+            .await
+            .map_err(|error| match error {
+                EvidenceError::TargetMismatch => EvidenceError::RunNotFound,
+                error => error,
+            })
     }
 
     /// Return a cursor-based page from the run's retained event window.

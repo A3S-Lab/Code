@@ -26,7 +26,20 @@ fn acl_string(value: &a3s_acl::Value) -> Option<String> {
         a3s_acl::Value::String(s) => Some(s.clone()),
         a3s_acl::Value::Call(name, args) if name == "env" => {
             let var_name = args.first().and_then(acl_string)?;
-            std::env::var(var_name).ok()
+            match std::env::var(&var_name) {
+                Ok(resolved) => Some(resolved),
+                Err(_) => {
+                    // Keep optional positions working (an unset env drops the
+                    // attribute), but never silently: an unset required
+                    // secret otherwise surfaces much later as an opaque
+                    // missing-LlmConfig error far from its cause.
+                    tracing::warn!(
+                        var = %var_name,
+                        "ACL env() reference is unset; the attribute is dropped"
+                    );
+                    None
+                }
+            }
         }
         _ => None,
     }
@@ -98,7 +111,10 @@ fn parse_auto_delegation_block(
     config
 }
 
-fn parse_memory_block(block: &a3s_acl::Block, base: Option<&MemoryConfig>) -> MemoryConfig {
+fn parse_memory_block(
+    block: &a3s_acl::Block,
+    base: Option<&MemoryConfig>,
+) -> std::result::Result<MemoryConfig, CodeError> {
     let mut config = base.cloned().unwrap_or_default();
 
     if let Some(max_short_term) = acl_usize_attr(block, &["max_short_term", "maxShortTerm"]) {
@@ -136,10 +152,22 @@ fn parse_memory_block(block: &a3s_acl::Block, base: Option<&MemoryConfig>) -> Me
     }
 
     if let Some(prune_policy) = acl_attr(block, &["prune", "prune_policy", "prunePolicy"]) {
-        config.prune_policy = Some(parse_prune_policy_value(
-            prune_policy,
-            config.prune_policy.as_ref(),
-        ));
+        if let a3s_acl::Value::String(word) = prune_policy {
+            config.prune_policy = match word.trim().to_ascii_lowercase().as_str() {
+                "off" | "none" | "disabled" => None,
+                other => {
+                    return Err(CodeError::Config(format!(
+                        "memory block: prune string must be one of the closed set \
+                         [off, none, disabled]; got {other:?} (an object tunes the policy)"
+                    )))
+                }
+            };
+        } else {
+            config.prune_policy = Some(parse_prune_policy_value(
+                prune_policy,
+                config.prune_policy.as_ref(),
+            ));
+        }
     }
 
     for child in &block.blocks {
@@ -164,7 +192,7 @@ fn parse_memory_block(block: &a3s_acl::Block, base: Option<&MemoryConfig>) -> Me
         }
     }
 
-    config
+    Ok(config)
 }
 
 fn parse_relevance_value(value: &a3s_acl::Value, base: &RelevanceConfig) -> RelevanceConfig {
@@ -365,38 +393,47 @@ fn normalize_lane_name(value: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_lane_map(value: &mut JsonValue, normalize_handler_mode: bool) {
+fn normalize_lane_map(value: &mut JsonValue, normalize_handler_mode: bool) -> Result<()> {
     let JsonValue::Object(entries) = value else {
-        return;
+        return Ok(());
     };
     let previous = std::mem::take(entries);
-    for (name, mut value) in previous {
-        let Some(name) = normalize_lane_name(&name) else {
-            continue;
+    for (raw_name, mut value) in previous {
+        let Some(name) = normalize_lane_name(&raw_name) else {
+            return Err(CodeError::Config(format!(
+                "queue lane `{raw_name}` is not in the closed set control, query, execute, generate"
+            )));
         };
         if normalize_handler_mode {
             if let JsonValue::Object(handler) = &mut value {
                 rename_json_key(handler, "timeoutMs", "timeout_ms");
                 if let Some(JsonValue::String(mode)) = handler.get_mut("mode") {
-                    *mode = match mode.trim().to_ascii_lowercase().as_str() {
+                    let normalized = mode.trim().to_ascii_lowercase();
+                    *mode = match normalized.as_str() {
                         "external" => "External".to_string(),
                         "hybrid" => "Hybrid".to_string(),
-                        _ => "Internal".to_string(),
+                        "internal" => "Internal".to_string(),
+                        other => {
+                            return Err(CodeError::Config(format!(
+                                "queue handler mode `{other}` is not in the closed set internal, external, hybrid"
+                            )));
+                        }
                     };
                 }
             }
         }
         entries.insert(name.to_string(), value);
     }
+    Ok(())
 }
 
 fn parse_queue_block(block: &a3s_acl::Block) -> Result<SessionQueueConfig> {
     let mut value = acl_block_to_json(block);
     if let Some(lane_handlers) = value.get_mut("laneHandlers") {
-        normalize_lane_map(lane_handlers, true);
+        normalize_lane_map(lane_handlers, true)?;
     }
     if let Some(lane_timeouts) = value.get_mut("laneTimeouts") {
-        normalize_lane_map(lane_timeouts, false);
+        normalize_lane_map(lane_timeouts, false)?;
     }
     serde_json::from_value(value)
         .map_err(|error| CodeError::Config(format!("Invalid queue configuration: {error}")))
@@ -430,7 +467,7 @@ fn rename_json_key(object: &mut JsonMap<String, JsonValue>, from: &str, to: &str
     }
 }
 
-fn parse_mcp_server_block(block: &a3s_acl::Block) -> Result<McpServerConfig> {
+pub(crate) fn parse_mcp_server_block(block: &a3s_acl::Block) -> Result<McpServerConfig> {
     let mut value = acl_block_to_json(block);
     let object = value.as_object_mut().ok_or_else(|| {
         CodeError::Config("Invalid MCP server configuration: expected an object".to_string())
@@ -475,6 +512,130 @@ fn acl_object_f64_attr(value: &a3s_acl::Value, keys: &[&str]) -> Option<f64> {
 }
 
 // ============================================================================
+// Host-Authoritative Blocks
+// ============================================================================
+
+/// Every top-level ACL block the loader dispatches (canonical names and
+/// aliases). The unknown-block refusal formats from this list, so the
+/// message cannot drift from the dispatch again (it once named a stale
+/// set — the triage rule's classic). Keep in sync when adding an arm.
+const KNOWN_CONFIG_BLOCKS: &[&str] = &[
+    "agent_dirs",
+    "auto_delegation",
+    "auto_parallel",
+    "default_model",
+    "goal_control",
+    "document_parser",
+    "llm_api_timeout_ms",
+    "max_parallel_tasks",
+    "max_tool_rounds",
+    "memory",
+    "memory_dir",
+    "mcp_server",
+    "mcp_servers",
+    "mcpServers",
+    "os",
+    "project_doc_fallback_filenames",
+    "project_doc_max_bytes",
+    "providers",
+    "queue",
+    "sandbox",
+    "search",
+    "sessions_dir",
+    "skill_dirs",
+    "skills",
+    "storage_backend",
+    "storage_url",
+    "task_scheduler",
+    "thinking_budget",
+    "user_instructions_dir",
+    "workspace_retrieval",
+    "notifications",
+    "verification_contract",
+];
+
+/// Top-level ACL blocks that carry host-authoritative posture: only a
+/// configuration layer the host consented to (`--config`/`A3S_CONFIG` or
+/// `~/.a3s/config.acl`) may set them. An automatically discovered workspace
+/// layer is untrusted repository content; it may configure the agent but
+/// must not arm or reroute host surfaces: the `sandbox` block arms or
+/// narrows egress, and the `providers` block routes the host's model
+/// traffic and credentials to endpoints of its choosing. A workspace-scoped
+/// `verification_contract` grants suite evidence, so it is also host-owned
+/// (decision: manual/HOST_VERIFICATION_CONTRACT.md, 2026-10-12). Finite
+/// `goal_control` bounds are host-owned (manual/HOST_GOAL_CONTROL.md). Extending this
+/// set is a platform decision, not a per-feature one (the `providers`
+/// extension was ratified 2026-10-09).
+pub const HOST_AUTHORITATIVE_BLOCKS: &[&str] = &[
+    "sandbox",
+    "providers",
+    "verification_contract",
+    "goal_control",
+];
+
+/// The first host-authoritative top-level block an ACL document declares,
+/// if any. Uses the real ACL parser, so prose or an attribute that merely
+/// spells the block name is not a declaration, and only top-level blocks
+/// count — nested blocks never reach the loader's dispatch arms.
+pub fn host_authoritative_block(acl: &str) -> Option<&'static str> {
+    let document = a3s_acl::parse_acl(acl).ok()?;
+    HOST_AUTHORITATIVE_BLOCKS.iter().copied().find(|name| {
+        document
+            .blocks
+            .iter()
+            .any(|block| block.name.as_str() == *name)
+    })
+}
+
+/// One configuration layer's ACL text with its trust classification.
+#[derive(Clone, Debug)]
+pub struct LayerAcl {
+    /// Whether the host consented to this layer (explicit `--config` /
+    /// `A3S_CONFIG`, or `~/.a3s/config.acl`) — only trusted layers may
+    /// set [`HOST_AUTHORITATIVE_BLOCKS`].
+    pub trusted: bool,
+    /// The layer's ACL document text.
+    pub acl: String,
+}
+
+/// Overwrite the host-authoritative fields of `config` (the sandbox
+/// posture, providers catalog, verification declarations and continuation policy) from a trusted-only parse of
+/// `layers`, so no later consumer can read a value an untrusted layer
+/// contributed — whatever attribute spelling carried the attempt.
+/// Returns the host-authoritative block names found in untrusted layers,
+/// for the caller's log (empty = nothing was withheld). Fail-closed: an
+/// empty or unparseable trusted side leaves the deny posture and an
+/// empty catalog rather than guessing.
+pub fn withhold_untrusted_host_authoritative_blocks(
+    config: &mut CodeConfig,
+    layers: &[LayerAcl],
+) -> Vec<&'static str> {
+    let mut withheld: Vec<&'static str> = layers
+        .iter()
+        .filter(|layer| !layer.trusted)
+        .filter_map(|layer| host_authoritative_block(&layer.acl))
+        .collect();
+    if withheld.is_empty() {
+        return withheld;
+    }
+    let trusted_layers = layers
+        .iter()
+        .filter(|layer| layer.trusted)
+        .map(|layer| layer.acl.as_str())
+        .collect::<Vec<_>>();
+    // A malformed trusted side cannot acquire authority from another layer.
+    let trusted = CodeConfig::from_acl_layers(&trusted_layers).unwrap_or_default();
+    config.sandbox_network = trusted.sandbox_network;
+    config.sandbox_network_allow = trusted.sandbox_network_allow;
+    config.providers = trusted.providers;
+    config.verification_contracts = trusted.verification_contracts;
+    config.goal_control = trusted.goal_control;
+    withheld.sort_unstable();
+    withheld.dedup();
+    withheld
+}
+
+// ============================================================================
 // CodeConfig Implementation
 // ============================================================================
 
@@ -515,15 +676,42 @@ impl CodeConfig {
     /// ACL (Agent Configuration Language) uses labeled blocks like
     /// `providers "openai" { }`.
     pub fn from_acl(content: &str) -> Result<Self> {
-        use a3s_acl::parse_acl;
+        Self::from_acl_layers(&[content])
+    }
 
-        let doc = parse_acl(content)
-            .map_err(|e| CodeError::Config(format!("Failed to parse ACL: {}", e)))?;
-
+    /// Parse ordered ACL layers without losing per-file validation boundaries.
+    /// This merges values only; launchers must still withhold untrusted host fields.
+    pub fn from_acl_layers(layers: &[&str]) -> Result<Self> {
         let mut config = Self::default();
+        let mut doc = a3s_acl::Document::default();
+        for content in layers {
+            let parsed = a3s_acl::parse_acl(content)
+                .map_err(|error| CodeError::Config(format!("Failed to parse ACL: {error}")))?;
+            if let Some(policy) = super::goal_control::parse_layer(content, &parsed)? {
+                config.goal_control = Some(policy);
+            }
+            doc.blocks.extend(
+                parsed
+                    .blocks
+                    .into_iter()
+                    .filter(|block| block.name != "goal_control"),
+            );
+        }
 
         for block in doc.blocks {
             match block.name.as_str() {
+                "verification_contract" => {
+                    let contract = super::verification_contract::parse(&block)?;
+                    if config.verification_contracts.iter().any(|current| {
+                        current.workspace == contract.workspace
+                            && current.contract.id == contract.contract.id
+                    }) {
+                        return Err(CodeError::Config(
+                            "duplicate verification_contract id in the same workspace".into(),
+                        ));
+                    }
+                    config.verification_contracts.push(contract);
+                }
                 "default_model" => {
                     // ACL: default_model = "openai/gpt-4" or just "openai/gpt-4" as label
                     if let Some(default_model) = acl_label_or_attr(&block, &["default_model"]) {
@@ -533,10 +721,42 @@ impl CodeConfig {
                 "storage_backend" => {
                     if let Some(backend) = acl_string_attr(&block, &["storage_backend"]) {
                         config.storage_backend = match backend.to_ascii_lowercase().as_str() {
+                            "file" => StorageBackend::File,
                             "memory" => StorageBackend::Memory,
                             "custom" => StorageBackend::Custom,
-                            _ => StorageBackend::File,
+                            other => {
+                                return Err(CodeError::Config(format!(
+                                    "storage_backend `{other}` is not in the closed set file, memory, custom"
+                                )));
+                            }
                         };
+                    }
+                }
+                "sandbox" => {
+                    if let Some(mode) = acl_string_attr(&block, &["network", "sandbox_network"]) {
+                        config.sandbox_network = crate::sandbox::SandboxNetworkMode::parse(&mode)
+                            .map_err(|error| {
+                            CodeError::Config(format!("sandbox block: {error}"))
+                        })?;
+                    }
+                    if let Some(origins) =
+                        acl_string_list_attr(&block, &["network_allow", "sandbox_network_allow"])
+                    {
+                        // Fail at parse time: a typo must not wait for the
+                        // first sandboxed command to be discovered.
+                        crate::sandbox::parse_network_allow_rules(&origins).map_err(|error| {
+                            CodeError::Config(format!("sandbox block: {error}"))
+                        })?;
+                        config.sandbox_network_allow = origins;
+                    }
+                    if config.sandbox_network == crate::sandbox::SandboxNetworkMode::Mediated
+                        && config.sandbox_network_allow.is_empty()
+                    {
+                        return Err(CodeError::Config(
+                            "sandbox block: mediated network requires a non-empty network_allow \
+                             list (mediating nothing is not a posture)"
+                                .to_string(),
+                        ));
                     }
                 }
                 "sessions_dir" => {
@@ -550,7 +770,7 @@ impl CodeConfig {
                     }
                 }
                 "memory" => {
-                    config.memory = Some(parse_memory_block(&block, config.memory.as_ref()));
+                    config.memory = Some(parse_memory_block(&block, config.memory.as_ref())?);
                 }
                 "queue" => {
                     config.queue = Some(parse_queue_block(&block)?);
@@ -572,14 +792,140 @@ impl CodeConfig {
                         config.storage_url = Some(storage_url);
                     }
                 }
+                "notifications" => {
+                    let mut run_completion: Option<super::RunCompletionSignal> = None;
+                    let mut min_seconds: Option<u64> = None;
+                    for (name, value) in &block.attributes {
+                        match name.as_str() {
+                            "run_completion" => match value {
+                                a3s_acl::Value::String(text) => {
+                                    run_completion =
+                                        Some(super::RunCompletionSignal::parse(text).map_err(
+                                            |error| {
+                                                CodeError::Config(format!(
+                                                    "notifications block: {error}"
+                                                ))
+                                            },
+                                        )?);
+                                }
+                                _ => {
+                                    return Err(CodeError::Config(
+                                        "notifications run_completion must be a string".to_string(),
+                                    ))
+                                }
+                            },
+                            "min_seconds" => match value {
+                                a3s_acl::Value::Number(number)
+                                    if number.fract() == 0.0
+                                        && *number >= 1.0
+                                        && *number <= 86_400.0 =>
+                                {
+                                    min_seconds = Some(*number as u64);
+                                }
+                                _ => {
+                                    return Err(CodeError::Config(
+                                        "notifications min_seconds must be an integer \
+                                         between 1 and 86400"
+                                            .to_string(),
+                                    ))
+                                }
+                            },
+                            other => {
+                                return Err(CodeError::Config(format!(
+                                    "notifications attribute `{other}` is not in the \
+                                     closed set run_completion, min_seconds"
+                                )))
+                            }
+                        }
+                    }
+                    let run_completion = run_completion.ok_or_else(|| {
+                        CodeError::Config(
+                            "notifications requires run_completion = \"bell\" | \"off\""
+                                .to_string(),
+                        )
+                    })?;
+                    config.notifications = Some(super::NotificationsConfig {
+                        run_completion,
+                        // The long-run floor; absent means one minute.
+                        min_seconds: min_seconds.unwrap_or(60),
+                    });
+                }
+                "workspace_retrieval" => {
+                    // Accepted shape: `enabled` (required bool) plus an
+                    // optional empty `local_cpu {}` marker. The feature is
+                    // host-injected today (`WorkspaceRetrievalOptions` needs
+                    // an embedding provider no ACL can construct), so the
+                    // block parses and is exposed for hosts — sessions do
+                    // NOT silently enable semantic retrieval, and an
+                    // enabled block says so loudly.
+                    let mut enabled: Option<bool> = None;
+                    let mut local_cpu = false;
+                    for (name, value) in &block.attributes {
+                        match name.as_str() {
+                            "enabled" => match value {
+                                a3s_acl::Value::Bool(on) => enabled = Some(*on),
+                                _ => {
+                                    return Err(CodeError::Config(
+                                        "workspace_retrieval enabled must be a bool".to_string(),
+                                    ))
+                                }
+                            },
+                            other => {
+                                return Err(CodeError::Config(format!(
+                                    "workspace_retrieval attribute `{other}` is not in the \
+                                     closed set enabled"
+                                )))
+                            }
+                        }
+                    }
+                    if !block.blocks.is_empty() {
+                        for child in &block.blocks {
+                            match child.name.as_str() {
+                                "local_cpu" if child.attributes.is_empty() => local_cpu = true,
+                                other => {
+                                    return Err(CodeError::Config(format!(
+                                        "workspace_retrieval block `{other}` is not in the \
+                                         closed set local_cpu"
+                                    )))
+                                }
+                            }
+                        }
+                    }
+                    let enabled = enabled.ok_or_else(|| {
+                        CodeError::Config(
+                            "workspace_retrieval requires enabled = <bool>".to_string(),
+                        )
+                    })?;
+                    if enabled {
+                        tracing::warn!(
+                            "workspace_retrieval parsed; semantic retrieval needs a \
+                             host-injected embedding provider and stays off for sessions"
+                        );
+                    }
+                    config.workspace_retrieval =
+                        Some(super::WorkspaceRetrievalConfig { enabled, local_cpu });
+                }
                 "skill_dirs" | "skills" => {
                     if let Some(paths) = acl_path_list_attr(&block, &["skill_dirs", "skills"]) {
-                        config.skill_dirs = paths;
+                        // Layered documents append: a workspace layer's
+                        // skill_dirs extends the user layer's set instead of
+                        // silently discarding it (dedup preserves first
+                        // occurrence order).
+                        for path in paths {
+                            if !config.skill_dirs.contains(&path) {
+                                config.skill_dirs.push(path);
+                            }
+                        }
                     }
                 }
                 "agent_dirs" => {
                     if let Some(paths) = acl_path_list_attr(&block, &["agent_dirs"]) {
-                        config.agent_dirs = paths;
+                        // Same append semantics as skill_dirs for layers.
+                        for path in paths {
+                            if !config.agent_dirs.contains(&path) {
+                                config.agent_dirs.push(path);
+                            }
+                        }
                     }
                 }
                 "user_instructions_dir"
@@ -702,13 +1048,23 @@ impl CodeConfig {
                             "headers" => {
                                 provider.headers = acl_string_map(value);
                             }
-                            _ => {}
+                            other => {
+                                return Err(CodeError::Config(format!(
+                                    "providers attribute `{other}` is not in the closed set api_key, base_url, session_id_header, headers"
+                                )));
+                            }
                         }
                     }
 
                     // Process nested models blocks
                     for model_block in &block.blocks {
-                        if model_block.name == "models" {
+                        if model_block.name != "models" {
+                            return Err(CodeError::Config(format!(
+                                "providers block `{}` is not in the closed set models",
+                                model_block.name
+                            )));
+                        }
+                        {
                             let model_name =
                                 model_block.labels.first().cloned().ok_or_else(|| {
                                     CodeError::Config(
@@ -854,7 +1210,11 @@ impl CodeConfig {
                                             model.cost.cache_write = cache_write;
                                         }
                                     }
-                                    _ => {}
+                                    other => {
+                                        return Err(CodeError::Config(format!(
+                                            "models attribute `{other}` is not in the closed set name, family, api_key, base_url, session_id_header, headers, attachment, reasoning, tool_call, temperature, release_date, maxTokens, contextTokens, limit, modalities, cost"
+                                        )));
+                                    }
                                 }
                             }
 
@@ -864,7 +1224,12 @@ impl CodeConfig {
 
                     config.providers.push(provider);
                 }
-                _ => {}
+                other => {
+                    return Err(CodeError::Config(format!(
+                        "ACL block `{other}` is not in the closed set {}",
+                        KNOWN_CONFIG_BLOCKS.join(", ")
+                    )));
+                }
             }
         }
 
@@ -949,6 +1314,50 @@ impl CodeConfig {
         }
         config = apply_model_caps(config, model, self.thinking_budget);
         Some(config)
+    }
+
+    /// Overlay duplicate same-named providers: a later declaration wins
+    /// for scalars it sets, extends headers, and replaces same-id models
+    /// while keeping the earlier layer's untouched entries.
+    ///
+    /// Layered discovery joins multiple ACL documents into one parse; without
+    /// this normalization `find_provider` resolves to the FIRST declaration
+    /// while `default_model` is last-wins — a workspace layer could pick the
+    /// model but silently run on the user layer's credentials.
+    pub fn overlay_duplicate_providers(&mut self) {
+        let mut merged: Vec<ProviderConfig> = Vec::new();
+        for mut provider in std::mem::take(&mut self.providers) {
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|candidate| candidate.name == provider.name)
+            {
+                if provider.api_key.is_some() {
+                    existing.api_key = provider.api_key;
+                }
+                if provider.base_url.is_some() {
+                    existing.base_url = provider.base_url;
+                }
+                if provider.session_id_header.is_some() {
+                    existing.session_id_header = provider.session_id_header;
+                }
+                let headers = std::mem::take(&mut provider.headers);
+                existing.headers.extend(headers);
+                for model in provider.models {
+                    if let Some(index) = existing
+                        .models
+                        .iter()
+                        .position(|candidate| candidate.id == model.id)
+                    {
+                        existing.models[index] = model;
+                    } else {
+                        existing.models.push(model);
+                    }
+                }
+            } else {
+                merged.push(provider);
+            }
+        }
+        self.providers = merged;
     }
 
     /// List all available models across all providers

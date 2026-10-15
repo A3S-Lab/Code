@@ -36,6 +36,7 @@ providers "anthropic" {
     name = "Claude Sonnet 4"
   }
 }
+memory { prune = "off" }
 """.strip()
 
 

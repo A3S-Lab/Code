@@ -95,10 +95,19 @@ The official `AgentSession` path installs the runtime composition automatically.
 Model-side orchestration and each provider/Tool iteration own Turns. A Tool may
 register reversible effects through `ToolContext::register_capability_effect`;
 its stream bridge is supervised by the same Turn. Foreground Skill/Task Agents
-recurse through `Turn -> Subtask -> Turn`. Background Tasks and streaming memory
-extraction must be synchronously admitted by an active Turn, promoted to a
-Run-owned Subtask, and registered with the Run supervisor. Never use a captured
-Tool context to create work after its Turn closes.
+recurse through `Turn -> Subtask -> Turn`. Background Tasks must be synchronously
+admitted by an active Turn, promoted to a Run-owned Subtask, and registered with
+the Run supervisor. Never use a captured Tool context to create work after its
+Turn closes.
+
+Post-turn memory extraction uses the original session FIFO queue and governed
+model-call pipeline. Its ticket is registered before the first final event;
+streaming extraction runs afterwards. Session close waits up to five seconds
+before requesting cancellation, so it may leave no stored memory. A final event
+is a conversation outcome. `MemoryObserver` reports a successful primary store
+acknowledgement; it does not certify later relation/archive work or owner release.
+Verify durable contents and canonical IDs against a reopened backend when those
+effects are required.
 
 `CAP-PROJ1` supplies the atomic value plane beside those scopes. Start a
 transaction with the complete next-generation `Arc<CapabilitySet>`, stage one

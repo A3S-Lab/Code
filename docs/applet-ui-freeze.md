@@ -3,7 +3,7 @@
 Status: delivered freeze (`HOST-UI1`); continuous maintenance (P2)
 
 Canonical multi-project plan:
-[`docs/desktop-applet-plugin-path.md`](../../../docs/desktop-applet-plugin-path.md).
+[`docs/work-applet-plugin-path.md`](../../../docs/work-applet-plugin-path.md).
 
 ## Ownership
 
@@ -26,11 +26,11 @@ own CSP/origin policy.
 - `HOST-UI1` remains Delivered in [`ROADMAP.md`](../ROADMAP.md).
 - Verification notes in `manual/CAPABILITY_VERIFICATION.md` and
   `manual/SCOPED_CAPABILITY_ARCHITECTURE.md` stay accurate for UI.
-- Monorepo non-Desktop gate (includes Code `ui_binding` / `ui_projection`):
-  `just test::applet-non-desktop` from the a3s root.
+- Monorepo non-Work gate (includes Code `ui_binding` / `ui_projection`):
+  `just test::applet-non-work` from the a3s root.
 
 ## Non-goals
 
 - WebView, payment, camera, or install APIs
-- Desktop shell catalog or Plugins UI
+- Work shell catalog or Plugins UI
 - Becoming a second package mutation path

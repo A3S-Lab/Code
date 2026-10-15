@@ -68,44 +68,6 @@ pub(super) fn resolved_tier_order(config: Option<&crate::config::SearchConfig>) 
     }
 }
 
-#[cfg(test)]
-mod cascade_order_tests {
-    use super::{automatic_tier_order, resolved_tier_order, EngineTier};
-    use crate::config::{SearchCascadeTier, SearchConfig};
-    use std::collections::HashMap;
-
-    #[cfg(feature = "headless-search")]
-    #[test]
-    fn resolved_tier_order_uses_config_and_falls_back_to_defaults() {
-        assert_eq!(resolved_tier_order(None), automatic_tier_order().to_vec());
-
-        let config = SearchConfig {
-            timeout: 10,
-            cascade_order: Some(vec![
-                SearchCascadeTier::Api,
-                SearchCascadeTier::Http,
-                SearchCascadeTier::Api,
-            ]),
-            health: None,
-            engines: HashMap::new(),
-            headless: None,
-        };
-        assert_eq!(
-            resolved_tier_order(Some(&config)),
-            vec![EngineTier::Api, EngineTier::Http]
-        );
-
-        let empty = SearchConfig {
-            cascade_order: Some(Vec::new()),
-            ..config
-        };
-        assert_eq!(
-            resolved_tier_order(Some(&empty)),
-            automatic_tier_order().to_vec()
-        );
-    }
-}
-
 impl EngineTierPlan {
     pub fn is_empty(&self) -> bool {
         self.api.is_empty() && self.http.is_empty() && self.headless.is_empty()
@@ -307,4 +269,45 @@ pub(super) fn text_notice_note(notices: &[String]) -> String {
         note.push_str(&format!("\nNotice: {notice}\n"));
     }
     note
+}
+
+#[cfg(test)]
+mod cascade_order_tests {
+    #[allow(unused_imports)]
+    use super::{automatic_tier_order, resolved_tier_order, EngineTier};
+    #[allow(unused_imports)]
+    use crate::config::{SearchCascadeTier, SearchConfig};
+    #[allow(unused_imports)]
+    use std::collections::HashMap;
+
+    #[cfg(feature = "headless-search")]
+    #[test]
+    fn resolved_tier_order_uses_config_and_falls_back_to_defaults() {
+        assert_eq!(resolved_tier_order(None), automatic_tier_order().to_vec());
+
+        let config = SearchConfig {
+            timeout: 10,
+            cascade_order: Some(vec![
+                SearchCascadeTier::Api,
+                SearchCascadeTier::Http,
+                SearchCascadeTier::Api,
+            ]),
+            health: None,
+            engines: HashMap::new(),
+            headless: None,
+        };
+        assert_eq!(
+            resolved_tier_order(Some(&config)),
+            vec![EngineTier::Api, EngineTier::Http]
+        );
+
+        let empty = SearchConfig {
+            cascade_order: Some(Vec::new()),
+            ..config
+        };
+        assert_eq!(
+            resolved_tier_order(Some(&empty)),
+            automatic_tier_order().to_vec()
+        );
+    }
 }

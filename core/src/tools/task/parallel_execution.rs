@@ -561,6 +561,7 @@ impl TaskExecutor {
     pub(super) async fn coerce_to_schema(
         llm_client: &dyn LlmClient,
         output: &str,
+        system: Option<&str>,
         schema: serde_json::Value,
         cancellation: &CancellationToken,
     ) -> Result<serde_json::Value> {
@@ -570,9 +571,14 @@ impl TaskExecutor {
                  the required schema. Use only information present in the result.\n\n\
                  --- TASK RESULT ---\n{output}"
             ),
-            system: Some(
-                "You output exactly one JSON object matching the provided schema.".to_string(),
-            ),
+            system: Some(match system {
+                Some(system) => format!(
+                    "{system}\n\nYou output exactly one JSON object matching the provided schema."
+                ),
+                None => {
+                    "You output exactly one JSON object matching the provided schema.".to_string()
+                }
+            }),
             schema,
             schema_name: "step_output".to_string(),
             schema_description: None,

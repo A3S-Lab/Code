@@ -71,6 +71,11 @@ pub use retrieval::{
     WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
     WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult,
 };
+#[cfg(feature = "a3s-vec-fts")]
+pub use retrieval::{
+    WikiIndex, WikiReconcileReport, WikiSearchHit, WikiSearchPhase, WikiSearchResult,
+    WIKI_PASSAGE_CHARS,
+};
 #[cfg(feature = "s3")]
 pub use s3::{S3BackendConfig, S3WorkspaceBackend};
 pub use services::{WorkspaceServices, WorkspaceServicesBuilder};
@@ -86,7 +91,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Identity and display metadata for a workspace.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceRef {
     /// Stable workspace identifier used by host backends.
     pub id: String,

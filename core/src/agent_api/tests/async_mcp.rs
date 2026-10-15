@@ -156,6 +156,94 @@ async fn sync_session_compatibility_accepts_preinitialized_resources() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn sync_session_code_intelligence_requires_async_build() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+
+    let error = agent
+        .session(
+            root.path().display().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+                    .with_code_intelligence(),
+            ),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::CodeError::AsyncSessionBuildRequired {
+            resource: crate::error::SessionBuildResource::CodeIntelligence,
+        }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_session_code_intelligence_keeps_host_services() {
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let services = host_workspace_services();
+    let session = agent
+        .session(
+            "/tmp/test-sync-host-code-intelligence",
+            Some(
+                SessionOptions::new()
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+                    .with_workspace_backend(services)
+                    .with_code_intelligence(),
+            ),
+        )
+        .unwrap();
+
+    assert!(!session
+        .tool_names()
+        .iter()
+        .any(|name| name == "code_symbols"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_session_code_intelligence_attaches_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    let plain = agent
+        .session_async(
+            root.path().display().to_string(),
+            Some(SessionOptions::new().with_memory(Arc::new(a3s_memory::InMemoryStore::new()))),
+        )
+        .await
+        .unwrap();
+    assert!(!plain.tool_names().iter().any(|name| name == "code_symbols"));
+    plain.close().await;
+
+    let session = agent
+        .session_async(
+            root.path().display().to_string(),
+            Some(
+                SessionOptions::new()
+                    .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
+                    .with_code_intelligence(),
+            ),
+        )
+        .await
+        .unwrap();
+    let names = session.tool_names();
+    assert!(names.iter().any(|name| name == "code_symbols"));
+    assert!(names.iter().any(|name| name == "code_navigation"));
+    assert!(names.iter().any(|name| name == "code_diagnostics"));
+    session.close().await;
+}
+
+fn host_workspace_services() -> Arc<crate::workspace::WorkspaceServices> {
+    let fs = Arc::new(TestWorkspaceFs::default());
+    let fs_backend: Arc<dyn crate::workspace::WorkspaceFileSystem> = fs;
+    crate::workspace::WorkspaceServices::builder(
+        crate::workspace::WorkspaceRef::new("session-workspace", "session://workspace"),
+        fs_backend,
+    )
+    .build()
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn async_session_keeps_inherited_mcp_sources_separate_from_live_extensions() {
     use crate::mcp::{McpManager, McpServerConfig, McpTransportConfig};
 

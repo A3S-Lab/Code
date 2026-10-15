@@ -213,6 +213,9 @@ pub struct ToolContext {
     pub workspace: PathBuf,
     /// Optional session ID for session-aware tools
     pub session_id: Option<String>,
+    /// Latest clear user-script language for tool prose the user can see.
+    /// Clones share the cell so a turn can publish it before tools run.
+    reply_language: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Run identity for the invocation that owns this context. This is kept
     /// separate from `session_id` so detached work from different runs cannot
     /// accidentally share an admission scope.
@@ -231,7 +234,7 @@ pub struct ToolContext {
     /// Agent-scoped per-engine admission shared by cloned tool contexts.
     search_bulkhead: a3s_search::Bulkhead,
     /// Agent-scoped retry allowance shared across browser requests.
-    search_retry_budget: a3s_search::RetryBudget,
+    search_retry_budget: a3s_search::retry::RetryBudget,
     /// Session-scoped identical-request flights shared by cloned tool contexts.
     search_request_coalescer: a3s_search::SearchCoalescer,
     /// Optional sandbox for routing `bash` tool execution through the configured
@@ -241,6 +244,14 @@ pub struct ToolContext {
     pub command_env: Option<Arc<HashMap<String, String>>>,
     /// Host-provided workspace capabilities used by built-in tools.
     pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
+    /// Session tool-output artifacts that `read` and `search` may page.
+    pub(crate) artifact_store: Option<super::ArtifactStore>,
+    /// The Run's shared fact-log writer. Appends from Run-owned background
+    /// tasks must go through this exact instance: the instance mutex is what
+    /// serializes seq assignment against the actor's own appends. A second
+    /// `FileLog` handle over the same directory would race duplicate seqs.
+    /// Absent on plain host-direct contexts, which have no Run to own.
+    pub(crate) fact_log: Option<Arc<a3s_effect::FileLog>>,
     /// Permission boundary frozen by the agent run that owns this invocation.
     ///
     /// Child-run tools consult this value instead of the mutable session
@@ -251,6 +262,8 @@ pub struct ToolContext {
     /// Distinguishes an agent run that intentionally has no governance
     /// provider from a plain low-level tool context that was never bound.
     pub(crate) run_governance_bound: bool,
+    /// Independent policy resolved by the invoking loop's original admission.
+    pub(crate) run_work_policy: Option<crate::WorkPolicyV1>,
     /// Scoped invocation gateway installed by the agent runtime.
     pub(crate) tool_invoker: Option<Arc<dyn super::invocation::ToolInvoker>>,
     /// Per-run governed LLM facade for tools that perform model sub-calls.
@@ -290,6 +303,8 @@ struct ModelGenerationPermitReservation {
 }
 
 impl ModelGenerationPermitReservation {
+    /// Called from the `dynamic-workflow` surface.
+    #[cfg_attr(not(feature = "dynamic-workflow"), allow(dead_code))]
     fn new(permit: Arc<crate::llm::ModelGenerationPermit>) -> Self {
         Self {
             permit: Mutex::new(Some(permit)),
@@ -386,6 +401,7 @@ impl ToolContext {
         Self {
             workspace: canonical_workspace,
             session_id: None,
+            reply_language: std::sync::Arc::new(std::sync::Mutex::new(None)),
             run_id: None,
             event_tx: None,
             agent_event_tx: None,
@@ -394,14 +410,17 @@ impl ToolContext {
             search_circuit_breaker: search_circuit_breaker(None),
             search_circuit_scope: None,
             search_bulkhead: a3s_search::Bulkhead::default(),
-            search_retry_budget: a3s_search::RetryBudget::default(),
+            search_retry_budget: a3s_search::retry::RetryBudget::default(),
             search_request_coalescer: a3s_search::SearchCoalescer::default(),
             sandbox: None,
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
+            artifact_store: None,
+            fact_log: None,
             run_permission_checker: None,
             run_confirmation_manager: None,
             run_governance_bound: false,
+            run_work_policy: None,
             tool_invoker: None,
             llm_client: None,
             model_generation_admission: None,
@@ -413,6 +432,26 @@ impl ToolContext {
             invocation_stack: Vec::new(),
             inside_tool_queue: false,
         }
+    }
+
+    /// Publish the language of the latest user message that showed a script.
+    pub(crate) fn set_reply_language(&self, language: Option<&str>) {
+        let mut slot = self
+            .reply_language
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = language
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+    }
+
+    /// Language published for this turn, when the user text showed one.
+    pub(crate) fn reply_language(&self) -> Option<String> {
+        self.reply_language
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Set the session ID for this context
@@ -485,14 +524,14 @@ impl ToolContext {
     pub(crate) fn with_search_runtime(
         mut self,
         bulkhead: a3s_search::Bulkhead,
-        retry_budget: a3s_search::RetryBudget,
+        retry_budget: a3s_search::retry::RetryBudget,
     ) -> Self {
         self.search_bulkhead = bulkhead;
         self.search_retry_budget = retry_budget;
         self
     }
 
-    pub(crate) fn search_retry_budget(&self) -> a3s_search::RetryBudget {
+    pub(crate) fn search_retry_budget(&self) -> a3s_search::retry::RetryBudget {
         self.search_retry_budget.clone()
     }
 
@@ -529,6 +568,11 @@ impl ToolContext {
         services: Arc<crate::workspace::WorkspaceServices>,
     ) -> Self {
         self.workspace_services = services;
+        self
+    }
+
+    pub(crate) fn with_artifact_store(mut self, store: super::ArtifactStore) -> Self {
+        self.artifact_store = Some(store);
         self
     }
 
@@ -596,6 +640,37 @@ impl ToolContext {
             .map(crate::capability::AgentToolCapabilityContext::foreground_scope_id)
     }
 
+    /// Observe the actual containing Run instance while this Turn is active.
+    /// Scope addresses may repeat across owners; this instance id does not.
+    /// The observation is not authority and does not keep its owner alive.
+    /// (Restored 2026-10-08: the sibling session's in-flight document_run
+    /// work calls this; the method was lost in a file rewrite.)
+    pub fn capability_run_instance_id(
+        &self,
+    ) -> std::result::Result<uuid::Uuid, crate::capability::CapabilityScopeError> {
+        self.capability_context
+            .as_ref()
+            .ok_or(crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable)?
+            .run_instance_id()
+    }
+
+    /// Obtain live, non-owning workspace authority from the actual Agent Turn.
+    ///
+    /// Plain contexts and denied operations refuse access. Adapters must also
+    /// validate their native workspace/resource binding and own acquired effects.
+    pub fn workspace_operation(
+        &self,
+        operation: crate::capability::WorkspaceOperation,
+    ) -> std::result::Result<
+        crate::capability::WorkspaceOperationAccess,
+        crate::capability::CapabilityScopeError,
+    > {
+        self.capability_context
+            .as_ref()
+            .ok_or(crate::capability::CapabilityScopeError::WorkspaceOperationUnavailable)?
+            .workspace_operation(operation)
+    }
+
     /// Transfer a reversible Tool-owned effect into the current Agent Turn.
     ///
     /// The effect closes after every Tool call produced by that model response
@@ -615,6 +690,25 @@ impl ToolContext {
         context.register_foreground_effect(effect)
     }
 
+    /// Transfer cleanup ownership to the actual Run so a resource can survive
+    /// individual Tool Turns. Register cleanup before acquiring the resource.
+    ///
+    /// The invoking Turn must still be active. This grants no resource access;
+    /// subsequent operations must check their own live authority. Run teardown
+    /// must acknowledge this effect before successful completion is published.
+    pub fn register_run_capability_effect<E>(
+        &self,
+        effect: E,
+    ) -> std::result::Result<(), crate::capability::CapabilityScopeError>
+    where
+        E: crate::capability::CapabilityEffect,
+    {
+        self.capability_context
+            .as_ref()
+            .ok_or(crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable)?
+            .register_run_effect(effect)
+    }
+
     pub(crate) fn with_verifier_read_only(mut self, read_only: bool) -> Self {
         self.verifier_read_only = read_only;
         self
@@ -629,6 +723,12 @@ impl ToolContext {
         context: crate::capability::AgentToolCapabilityContext,
     ) -> Self {
         self.capability_context = Some(context);
+        self
+    }
+
+    /// Bind the Run's shared fact-log writer (see [`Self::fact_log`]).
+    pub(crate) fn with_fact_log(mut self, log: Arc<a3s_effect::FileLog>) -> Self {
+        self.fact_log = Some(log);
         self
     }
 
@@ -677,6 +777,8 @@ impl ToolContext {
         self.model_generation_admission.clone()
     }
 
+    /// Called from the `dynamic-workflow` surface.
+    #[cfg_attr(not(feature = "dynamic-workflow"), allow(dead_code))]
     pub(crate) fn with_model_generation_permit(
         mut self,
         admission: crate::llm::ModelGenerationAdmission,
@@ -745,6 +847,12 @@ impl ToolContext {
         let mut ctx = self.clone();
         ctx.invocation_stack.push(tool_name.to_string());
         Ok(ctx)
+    }
+
+    /// True while this context is inside a tool. A skill child inherits the
+    /// stack, so its prompt is not a new user turn.
+    pub(crate) fn has_open_invocation(&self) -> bool {
+        !self.invocation_stack.is_empty()
     }
 
     pub(crate) fn with_tool_queue_scope(mut self) -> Self {
@@ -853,6 +961,14 @@ pub enum ToolErrorKind {
     PartialFailure { failed: usize, total: usize },
     /// A provider rejected the operation due to rate limiting.
     RateLimited { retry_after_ms: Option<u64> },
+    /// The addressed file exceeds the backend's per-file text size
+    /// bound; the read refused instead of materializing it. Not
+    /// retryable as-is — paginate, narrow, or use a streaming tool.
+    TooLarge {
+        path: String,
+        size_bytes: u64,
+        max_bytes: u64,
+    },
 }
 
 impl ToolErrorKind {
@@ -875,6 +991,15 @@ impl ToolErrorKind {
             }),
             WE::InvalidArgument { message } => Some(Self::InvalidArgument {
                 message: message.clone(),
+            }),
+            WE::TooLarge {
+                path,
+                size_bytes,
+                max_bytes,
+            } => Some(Self::TooLarge {
+                path: path.clone(),
+                size_bytes: *size_bytes,
+                max_bytes: *max_bytes,
             }),
             WE::Unsupported(message) => Some(Self::Unsupported {
                 message: message.clone(),
@@ -1019,6 +1144,18 @@ pub trait Tool: Send + Sync {
     /// Scheduling and result capabilities for this specific invocation.
     fn capabilities(&self, _args: &serde_json::Value) -> ToolCapabilities {
         ToolCapabilities::conservative()
+    }
+
+    /// Side-effect-free admission check against the captured host context.
+    /// A refusal happens before input hooks and execution, so it can carry a
+    /// complete zero-effect receipt. This is not permission to execute: the
+    /// normal permission, confirmation and runtime checks still apply.
+    fn validate_execution_available(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// Whether tool-owned metadata requires this invocation to pass through
@@ -1234,5 +1371,26 @@ mod tests {
             .with_images(vec![crate::llm::Attachment::jpeg(vec![0xFF])]);
         assert!(output.metadata.is_some());
         assert_eq!(output.images.len(), 1);
+    }
+
+    #[test]
+    fn workspace_too_large_maps_to_the_sdk_typed_kind_verbatim() {
+        let err = crate::workspace::WorkspaceError::TooLarge {
+            path: "logs/huge.log".to_string(),
+            size_bytes: 17 * 1024 * 1024,
+            max_bytes: 16 * 1024 * 1024,
+        };
+        match ToolErrorKind::from_workspace_error(&err) {
+            Some(ToolErrorKind::TooLarge {
+                path,
+                size_bytes,
+                max_bytes,
+            }) => {
+                assert_eq!(path, "logs/huge.log");
+                assert_eq!(size_bytes, 17 * 1024 * 1024);
+                assert_eq!(max_bytes, 16 * 1024 * 1024);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
     }
 }

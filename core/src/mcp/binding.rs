@@ -52,6 +52,7 @@ pub struct McpBinding {
     server_name: Box<str>,
     client: Arc<McpClient>,
     tools: Arc<[McpTool]>,
+    owns_stdio_process: bool,
 }
 
 impl McpBinding {
@@ -114,7 +115,13 @@ impl McpBinding {
             server_name: server_name.into_boxed_str(),
             client,
             tools: tools.into(),
+            owns_stdio_process: false,
         })
+    }
+
+    pub(crate) fn with_owned_stdio_process(mut self) -> Self {
+        self.owns_stdio_process = true;
+        self
     }
 
     pub fn server_name(&self) -> &str {
@@ -193,6 +200,19 @@ struct ProjectedMcpTool {
     binding: Arc<McpBinding>,
 }
 
+struct OwnedCallGuard {
+    client: Arc<McpClient>,
+    settled: bool,
+}
+
+impl Drop for OwnedCallGuard {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.client.start_close();
+        }
+    }
+}
+
 impl ProjectedMcpTool {
     fn tool(&self) -> &McpTool {
         &self.binding.tools[self.tool_index]
@@ -226,11 +246,20 @@ impl Tool for ProjectedMcpTool {
         }
 
         let cancellation = context.cancellation_token();
+        let mut owner = self.binding.owns_stdio_process.then(|| OwnedCallGuard {
+            client: Arc::clone(&self.binding.client),
+            settled: false,
+        });
         let call = self
             .binding
             .call_tool(&self.tool().name, Some(args.clone()));
         let result = tokio::select! {
             _ = cancellation.cancelled() => {
+                if self.binding.owns_stdio_process {
+                    if let Err(error) = self.binding.client.close().await {
+                        return Ok(ToolOutput::error(format!("MCP cancellation cleanup was not acknowledged: {error}")));
+                    }
+                }
                 return Ok(ToolOutput::error(format!(
                     "MCP tool '{}' cancelled by caller",
                     self.full_name
@@ -239,8 +268,20 @@ impl Tool for ProjectedMcpTool {
             result = call => result,
         };
         match result {
-            Ok(result) => project_tool_result(&self.full_name, &result, context).await,
-            Err(error) => Ok(ToolOutput::error(format!("MCP tool error: {error}"))),
+            Ok(result) => {
+                if let Some(owner) = &mut owner {
+                    owner.settled = true;
+                }
+                project_tool_result(&self.full_name, &result, context).await
+            }
+            Err(error) => {
+                if self.binding.owns_stdio_process {
+                    if let Err(cleanup) = self.binding.client.close().await {
+                        return Ok(ToolOutput::error(format!("MCP call failed: {error}; process cleanup was not acknowledged: {cleanup}")));
+                    }
+                }
+                Ok(ToolOutput::error(format!("MCP tool error: {error}")))
+            }
         }
     }
 }

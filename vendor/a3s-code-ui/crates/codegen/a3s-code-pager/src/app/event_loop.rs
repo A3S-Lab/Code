@@ -1551,7 +1551,7 @@ pub(crate) async fn run(
     let display_mode: &'static str = if launch_auto {
         "auto"
     } else if launch_yolo.yolo {
-        "always-approve"
+        "yolo"
     } else if let Some(cli) = args.permission_mode_flag.as_deref() {
         a3s_code_shell::util::config::clamped_display_permission_mode(
             a3s_code_shell::util::config::parse_permission_mode_canonical(cli),
@@ -4404,7 +4404,7 @@ mod tests {
     async fn pending_create_uses_auto_selected_before_effect_execution() {
         let mut app = crate::app::app_view::tests::test_app();
         app.default_yolo = true;
-        app.current_ui.permission_mode = Some("always-approve".into());
+        app.current_ui.permission_mode = Some("yolo".into());
         let (acp_tx, mut acp_rx) = tokio::sync::mpsc::unbounded_channel();
         app.acp_tx = acp_tx;
         let create_effects = dispatch::dispatch(Action::NewSession, &mut app);
@@ -4448,14 +4448,14 @@ mod tests {
             expected_auto,
             expected_canonical,
         ) in [
-            ("always-approve", true, "ask", false, false, "ask"),
+            ("yolo", true, "ask", false, false, "ask"),
             (
                 "auto",
                 false,
-                "always-approve",
+                "yolo",
                 true,
                 false,
-                "always-approve",
+                "yolo",
             ),
         ] {
             let mut app = crate::app::app_view::tests::test_app();

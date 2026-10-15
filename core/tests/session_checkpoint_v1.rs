@@ -30,6 +30,7 @@ const CAPABILITY_SNAPSHOT_DIGEST_DOMAIN: &str = "a3s.use.capability-snapshot.v1"
 
 fn session_data() -> SessionData {
     SessionData {
+        durable_source: None,
         id: "session-checkpoint-1".into(),
         config: SessionConfig {
             name: "checkpoint fixture".into(),
@@ -101,6 +102,7 @@ fn logical_resume() -> LoopCheckpoint {
         session_id: "session-checkpoint-1".into(),
         capability_binding: None,
         standing_context_digest: None,
+        durable_source: None,
         turn: 3,
         messages: vec![Message::user("retain exact state")],
         total_usage: TokenUsage {

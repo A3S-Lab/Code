@@ -43,6 +43,15 @@ pub(crate) fn sanitize_tool_error_kind(
             message: text(message),
         },
         ToolErrorKind::NotFound { path } => ToolErrorKind::NotFound { path: text(path) },
+        ToolErrorKind::TooLarge {
+            path,
+            size_bytes,
+            max_bytes,
+        } => ToolErrorKind::TooLarge {
+            path: text(path),
+            size_bytes: *size_bytes,
+            max_bytes: *max_bytes,
+        },
         ToolErrorKind::InvalidArgument { message } => ToolErrorKind::InvalidArgument {
             message: text(message),
         },
@@ -221,11 +230,15 @@ pub fn sanitize_agent_event(
             text: value,
             usage,
             verification_summary: summary,
+            completion_terminal,
+            forced_stop,
             meta,
         } => AgentEvent::End {
             text: text(provider, value),
             usage: usage.clone(),
             verification_summary: Box::new(verification_summary(provider, summary)),
+            completion_terminal: completion_terminal.clone(),
+            forced_stop: *forced_stop,
             meta: response_meta(provider, meta),
         },
         AgentEvent::Error { message } => AgentEvent::Error {

@@ -982,7 +982,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         "auto_light_theme" => Some(Action::SetAutoLightTheme(choice.to_string())),
         // Canonical strings from settings/defs.rs are the source of truth.
         "permission_mode" => match choice {
-            "always-approve" => Some(Action::SetPermissionMode(
+            "yolo" => Some(Action::SetPermissionMode(
                 crate::app::actions::PermissionModeKind::AlwaysApprove,
             )),
             // Auto's feature gate is enforced in `set_permission_mode` (via `app.auto_mode_gate`, the same source the Shift+Tab cycle uses)

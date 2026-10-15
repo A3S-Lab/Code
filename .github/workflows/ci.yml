@@ -32,13 +32,7 @@ jobs:
     # The complete default and feature-gated workspace suites are intentionally
     # part of this gate, and the shipped pager is built before those tests.
     # A cold hosted runner needs more than the old 45-minute budget.
-    # debuginfo=2 plus every workspace test binary fills the hosted disk:
-    # rust-lld bus-errors, then rustc reports "No space left on device".
     timeout-minutes: 90
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +40,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -54,8 +48,6 @@ jobs:
         run: bash .github/relock-standalone-deps.sh
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: debug0
 
       - name: Install Linux build and sandbox prerequisites
         shell: bash
@@ -118,10 +110,10 @@ jobs:
         # --features ci-all: every optional surface except Apple-only apofasi-metal.
         run: cargo clippy -p a3s-code-core -p a3s-code-go-bridge --lib --bins --features ci-all -- -D warnings
 
-      - name: Check public API compatibility with v5.3.5
+      - name: Check public API compatibility with v9.1.2
         run: |
           cargo install cargo-semver-checks --version 0.50.0 --locked
-          bash scripts/check_semver.sh 5.3.5
+          bash scripts/check_semver.sh 9.1.2
 
       - name: Check out a3s-acl for the shipped pager
         uses: actions/checkout@v4
@@ -140,11 +132,6 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/ci-acl" "$GITHUB_WORKSPACE/../acl"
           bash .github/build-shipped-tui.sh
 
-      - name: Free disk before workspace tests
-        run: |
-          rm -rf target/doc target/debug/incremental
-          df -h
-
       - name: Default tests
         env:
           RUST_MIN_STACK: "16777216"
@@ -153,10 +140,7 @@ jobs:
       - name: Feature-gated library tests
         env:
           RUST_MIN_STACK: "16777216"
-        # deep_e2e_live_receipts is a live receipt: one provider completion
-        # per case. Runners have no ACL, and a missing ACL panics rather
-        # than printing rows. The clean-tree log is the receipt.
-        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib -- --skip deep_e2e_live_receipts
+        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib
 
       - name: Agent convergence benchmark
         run: cargo run -p a3s-code-core --example agent_convergence_benchmark
@@ -172,7 +156,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh
@@ -198,10 +182,10 @@ jobs:
 
       - name: Check Go SDK
         run: |
-          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge --features advanced-harness,server
           A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
           RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
-            go test -race ./...
+            go test -race -tags=release_contract ./...
         working-directory: sdk/go
 
   windows-check:
@@ -218,7 +202,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
 
@@ -246,7 +230,7 @@ jobs:
         shell: pwsh
         working-directory: sdk/go
         run: |
-          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge --features advanced-harness,server
           $env:A3S_CODE_GO_BRIDGE_TEST_BINARY = (Resolve-Path "..\..\target\debug\a3s-code-go-bridge.exe").Path
           if (-not $env:RUST_MIN_STACK) { $env:RUST_MIN_STACK = "16777216" }
-          go test ./...
+          go test -tags=release_contract ./...

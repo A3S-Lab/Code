@@ -98,8 +98,10 @@ impl OutcomeLedger {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            crate::secure_state::restrict_state_dir(parent)?;
         }
-        std::fs::write(path, serde_json::to_vec(self).unwrap_or_default())
+        std::fs::write(path, serde_json::to_vec(self).unwrap_or_default())?;
+        crate::secure_state::restrict_state_file(path)
     }
 
     pub fn load(path: &Path) -> std::io::Result<Self> {

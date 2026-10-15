@@ -519,18 +519,32 @@ async fn harness_requires_and_consumes_an_exact_capability_recovery_batch() {
         after_event_sequence: None,
         limit: 64,
     };
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    // The checkpoint carries tool evidence the Harness workspace log cannot
+    // prove, so recovery commits negative provenance and the run fails closed
+    // at the completion gate instead of completing.
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if harness.event_page(&page_request).await.unwrap().state
-                == AgentProtocolRunStateV1::Completed
-            {
-                break;
+            let page = harness.event_page(&page_request).await.unwrap();
+            if matches!(
+                page.state,
+                AgentProtocolRunStateV1::Completed | AgentProtocolRunStateV1::Failed
+            ) {
+                break page;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("Harness capability recovery must finish");
+    .expect("Harness capability recovery must settle");
+    assert_eq!(
+        finished.state,
+        AgentProtocolRunStateV1::Failed,
+        "{finished:?}"
+    );
+    assert!(
+        format!("{finished:?}").contains("tool_effect_unresolved"),
+        "{finished:?}"
+    );
     harness.close().await;
 }
 

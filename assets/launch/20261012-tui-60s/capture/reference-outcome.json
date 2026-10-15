@@ -1,0 +1,17 @@
+{
+  "tui_suite": "passed",
+  "scenarios": 2,
+  "steps": 20,
+  "native_read_only_turns": {
+    "03-response": {
+      "success": true,
+      "file": "capture/03-response.json"
+    },
+    "05-followup": {
+      "success": true,
+      "file": "capture/05-followup.json"
+    }
+  },
+  "settings": "capture-ui/03-settings.json",
+  "failed_coding_attempt_excluded": true
+}

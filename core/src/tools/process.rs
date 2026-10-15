@@ -5,8 +5,9 @@ use crate::workspace::{CommandOutputObserver, CommandOutputSummary};
 use std::collections::VecDeque;
 use std::io;
 use std::process::ExitStatus;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio_util::sync::CancellationToken;
 
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 const OUTPUT_HEAD_BYTES: usize = 64 * 1024;
@@ -151,6 +152,132 @@ pub(crate) struct CapturedProcessOutput {
     pub(crate) timed_out: bool,
 }
 
+/// How an owned executable invocation settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnedProcessTermination {
+    Completed,
+    TimedOut,
+    Cancelled,
+}
+
+/// Bounded output returned only after the direct child has been reaped.
+#[derive(Debug)]
+pub struct OwnedProcessOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: Option<ExitStatus>,
+    pub termination: OwnedProcessTermination,
+}
+
+/// Run an executable with concurrent, bounded pipe capture and owned cleanup.
+/// The deadline includes stdin delivery, pipe draining and process exit. This
+/// supplies lifecycle supervision; callers still own authorization and sandboxing.
+pub async fn execute_owned_process(
+    command: &mut Command,
+    input: &[u8],
+    timeout: std::time::Duration,
+    cancellation: &CancellationToken,
+) -> io::Result<OwnedProcessOutput> {
+    if cancellation.is_cancelled() {
+        return Ok(OwnedProcessOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            status: None,
+            termination: OwnedProcessTermination::Cancelled,
+        });
+    }
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    configure_process_group(command);
+    let mut child = spawn_tokio_child(command)?;
+    let mut owner = match ProcessGroupGuard::try_for_child(&child) {
+        Ok(owner) => owner,
+        Err(error) => {
+            let cleanup = stop_child(&mut child).await;
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let mut capture = BoundedCapture::new();
+    let execution = async {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+        let write = async move {
+            stdin.write_all(input).await?;
+            stdin.shutdown().await?;
+            drop(stdin);
+            Ok::<_, io::Error>(())
+        };
+        let (_, status) =
+            tokio::try_join!(write, read_captured_output(&mut child, &mut capture, None))?;
+        Ok::<_, io::Error>(status)
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Ok((None, OwnedProcessTermination::Cancelled)),
+        result = tokio::time::timeout(timeout, execution) => match result {
+            Ok(Ok(status)) => Ok((Some(status), OwnedProcessTermination::Completed)),
+            Err(_) => Ok((None, OwnedProcessTermination::TimedOut)),
+            Ok(Err(error)) => Err(error),
+        },
+    };
+    // Even a successful executable cannot leave background group members behind.
+    let group_cleanup = owner.try_kill();
+    let child_cleanup = if group_cleanup.is_ok() {
+        reap_child(&mut child).await
+    } else {
+        stop_child(&mut child).await
+    };
+    let cleanup = match (group_cleanup, child_cleanup) {
+        (Err(error), child_cleanup) => Err(with_cleanup_error(error, child_cleanup)),
+        (Ok(()), child_cleanup) => child_cleanup,
+    };
+    let (status, termination) = match result {
+        Ok(result) => result,
+        Err(error) => return Err(with_cleanup_error(error, cleanup)),
+    };
+    cleanup?;
+    Ok(OwnedProcessOutput {
+        stdout: capture.render_stream(OutputStream::Stdout),
+        stderr: capture.render_stream(OutputStream::Stderr),
+        status,
+        termination,
+    })
+}
+
+async fn stop_child(child: &mut Child) -> io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    let kill = child.start_kill();
+    let wait = reap_child(child).await;
+    match wait {
+        Ok(()) => Ok(()),
+        Err(error) => Err(with_cleanup_error(error, kill)),
+    }
+}
+
+async fn reap_child(child: &mut Child) -> io::Result<()> {
+    tokio::time::timeout(
+        tokio::time::Duration::from_millis(PROCESS_SETTLEMENT_MS),
+        child.wait(),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "child cleanup did not settle"))?
+    .map(|_| ())
+}
+
+fn with_cleanup_error(error: io::Error, cleanup: io::Result<()>) -> io::Error {
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => io::Error::other(format!("{error}; process cleanup failed: {cleanup}")),
+    }
+}
+
 /// Configure a child as the leader of its own process group when supported.
 pub(crate) fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
@@ -210,6 +337,29 @@ pub(crate) struct ProcessGroupGuard {
 }
 
 impl ProcessGroupGuard {
+    fn try_for_child(child: &Child) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let pid = child
+                .id()
+                .ok_or_else(|| io::Error::other("child has no process id"))?;
+            let process_group =
+                i32::try_from(pid).map_err(|_| io::Error::other("child process id overflow"))?;
+            Ok(Self {
+                process_group: Some(process_group),
+            })
+        }
+        #[cfg(windows)]
+        {
+            let raw = child
+                .raw_handle()
+                .ok_or_else(|| io::Error::other("child has no process handle"))?;
+            Ok(Self {
+                job: Some(try_own_windows_job(raw)?),
+            })
+        }
+    }
+
     pub(crate) fn for_child(child: &Child) -> Self {
         #[cfg(unix)]
         {
@@ -252,13 +402,20 @@ impl ProcessGroupGuard {
     }
 
     pub(crate) fn kill(&mut self) {
+        let _ = self.try_kill();
+    }
+
+    fn try_kill(&mut self) -> io::Result<()> {
         #[cfg(unix)]
         {
             if let Some(process_group) = self.process_group.take() {
                 // A negative PID addresses the whole group, including
                 // grandchildren spawned by the language server or shell.
-                unsafe {
-                    libc::kill(-process_group, libc::SIGKILL);
+                if unsafe { libc::kill(-process_group, libc::SIGKILL) } != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -268,9 +425,12 @@ impl ProcessGroupGuard {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
             if let Some(job) = self.job.take() {
-                let _ = unsafe { TerminateJobObject(job.as_raw_handle(), 1) };
+                if unsafe { TerminateJobObject(job.as_raw_handle(), 1) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
         }
+        Ok(())
     }
 
     pub(crate) fn disarm(&mut self) {
@@ -286,6 +446,10 @@ impl ProcessGroupGuard {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "process_owned_tests.rs"]
+mod owned_tests;
 
 /// Own a Job Object for timeout/cancel of a process that is not already in a
 /// job. Bash host shells bind their own job first; Assign then fails and this
@@ -340,68 +504,12 @@ pub(crate) async fn read_process_output(
     timeout_ms: u64,
     observer: Option<&dyn CommandOutputObserver>,
 ) -> io::Result<CapturedProcessOutput> {
-    let mut stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            return Err(io::Error::other("child stdout was not piped"));
-        }
-    };
-    let mut stderr = match child.stderr.take() {
-        Some(stderr) => stderr,
-        None => {
-            return Err(io::Error::other("child stderr was not piped"));
-        }
-    };
-
     let mut process_group = ProcessGroupGuard::for_child(child);
     let mut capture = BoundedCapture::new();
-    let mut stdout_done = false;
-    let mut stderr_done = false;
-    let mut stdout_buffer = vec![0_u8; READ_CHUNK_BYTES];
-    let mut stderr_buffer = vec![0_u8; READ_CHUNK_BYTES];
-
-    let execution = tokio::time::timeout(tokio::time::Duration::from_millis(timeout_ms), async {
-        while !stdout_done || !stderr_done {
-            tokio::select! {
-                read = stdout.read(&mut stdout_buffer), if !stdout_done => {
-                    match read {
-                        Ok(0) => stdout_done = true,
-                        Ok(count) => {
-                            let bytes = &stdout_buffer[..count];
-                            capture.push(OutputStream::Stdout, bytes);
-                            if let Some(observer) = observer {
-                                observer.on_output_delta(&String::from_utf8_lossy(bytes)).await;
-                            }
-                        }
-                        Err(error) => {
-                            let message = format!("\n[failed to read command stdout: {error}]\n");
-                            capture.push(OutputStream::Stderr, message.as_bytes());
-                            stdout_done = true;
-                        }
-                    }
-                }
-                read = stderr.read(&mut stderr_buffer), if !stderr_done => {
-                    match read {
-                        Ok(0) => stderr_done = true,
-                        Ok(count) => {
-                            let bytes = &stderr_buffer[..count];
-                            capture.push(OutputStream::Stderr, bytes);
-                            if let Some(observer) = observer {
-                                observer.on_output_delta(&String::from_utf8_lossy(bytes)).await;
-                            }
-                        }
-                        Err(error) => {
-                            let message = format!("\n[failed to read command stderr: {error}]\n");
-                            capture.push(OutputStream::Stderr, message.as_bytes());
-                            stderr_done = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        child.wait().await
-    })
+    let execution = tokio::time::timeout(
+        tokio::time::Duration::from_millis(timeout_ms),
+        read_captured_output(child, &mut capture, observer),
+    )
     .await;
 
     let (status, timed_out, wait_error) = match execution {
@@ -440,6 +548,71 @@ pub(crate) async fn read_process_output(
         status,
         timed_out,
     })
+}
+
+async fn read_captured_output(
+    child: &mut Child,
+    capture: &mut BoundedCapture,
+    observer: Option<&dyn CommandOutputObserver>,
+) -> io::Result<ExitStatus> {
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            return Err(io::Error::other("child stdout was not piped"));
+        }
+    };
+    let mut stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            return Err(io::Error::other("child stderr was not piped"));
+        }
+    };
+
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut stdout_buffer = vec![0_u8; READ_CHUNK_BYTES];
+    let mut stderr_buffer = vec![0_u8; READ_CHUNK_BYTES];
+
+    while !stdout_done || !stderr_done {
+        tokio::select! {
+            read = stdout.read(&mut stdout_buffer), if !stdout_done => {
+                match read {
+                    Ok(0) => stdout_done = true,
+                    Ok(count) => {
+                        let bytes = &stdout_buffer[..count];
+                        capture.push(OutputStream::Stdout, bytes);
+                        if let Some(observer) = observer {
+                            observer.on_output_delta(&String::from_utf8_lossy(bytes)).await;
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("\n[failed to read command stdout: {error}]\n");
+                        capture.push(OutputStream::Stderr, message.as_bytes());
+                        stdout_done = true;
+                    }
+                }
+            }
+            read = stderr.read(&mut stderr_buffer), if !stderr_done => {
+                match read {
+                    Ok(0) => stderr_done = true,
+                    Ok(count) => {
+                        let bytes = &stderr_buffer[..count];
+                        capture.push(OutputStream::Stderr, bytes);
+                        if let Some(observer) = observer {
+                            observer.on_output_delta(&String::from_utf8_lossy(bytes)).await;
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("\n[failed to read command stderr: {error}]\n");
+                        capture.push(OutputStream::Stderr, message.as_bytes());
+                        stderr_done = true;
+                    }
+                }
+            }
+        }
+    }
+
+    child.wait().await
 }
 
 #[cfg(test)]

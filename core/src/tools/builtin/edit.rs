@@ -14,7 +14,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Edit a file by replacing a specific string with another. The old_string must be unique in the file unless replace_all is true."
+        "Edit a file by replacing a specific string with another. The old_string must be unique in the file unless replace_all is true. LF and CRLF match each other, and the file keeps its own line ending. Mixed or CR-only endings are refused."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -137,24 +137,34 @@ impl Tool for EditTool {
             }
         };
 
-        let count = content.matches(old_string).count();
-
-        if count == 0 {
-            return Ok(ToolOutput::error(format!(
-                "old_string not found in {}",
-                display_path
-            )));
-        }
-
-        if count > 1 && !replace_all {
-            return Ok(ToolOutput::error(format!(
-                "old_string found {} times in {}. Use replace_all=true to replace all occurrences, or provide a more specific string.",
-                count,
-                display_path
-            )));
-        }
-
-        let replacement_count = if replace_all { count } else { 1 };
+        let applied = match crate::text::apply_line_ending_edit(
+            &content,
+            old_string,
+            new_string,
+            replace_all,
+        ) {
+            Ok(applied) => applied,
+            Err(crate::text::LineEndingEditError::NotFound) => {
+                return Ok(ToolOutput::error(format!(
+                    "old_string not found in {}",
+                    display_path
+                )));
+            }
+            Err(crate::text::LineEndingEditError::Ambiguous(count)) => {
+                return Ok(ToolOutput::error(format!(
+                    "old_string found {} times in {}. Use replace_all=true to replace all occurrences, or provide a more specific string.",
+                    count,
+                    display_path
+                )));
+            }
+            Err(crate::text::LineEndingEditError::Unsafe) => {
+                return Ok(ToolOutput::error(format!(
+                    "Refusing to edit {display_path}: the file or the replacement mixes LF and CRLF, or a match would split a CRLF pair. Normalize the file to one line ending and retry."
+                )));
+            }
+        };
+        let new_content = applied.content;
+        let replacement_count = applied.count;
         if let Some(expected) = expected_replacements {
             if replacement_count != expected {
                 return Ok(ToolOutput::error(format!(
@@ -181,12 +191,6 @@ impl Tool for EditTool {
                 })));
             }
         }
-
-        let new_content = if replace_all {
-            content.replace(old_string, new_string)
-        } else {
-            content.replacen(old_string, new_string, 1)
-        };
 
         let change_metadata = || {
             serde_json::json!({
@@ -303,6 +307,57 @@ mod tests {
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert_eq!(content, "goodbye world");
         crate::external_observation::release_session("edit-test");
+    }
+
+    #[tokio::test]
+    async fn edit_matches_lf_needle_and_preserves_crlf() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("test.txt"), "keep\r\nalpha\r\nbeta\r\n").unwrap();
+        let tool = EditTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-crlf");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "alpha\nbeta",
+                    "new_string": "alpha\ngamma"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
+        assert_eq!(content, "keep\r\nalpha\r\ngamma\r\n");
+        crate::external_observation::release_session("edit-crlf");
+    }
+
+    #[tokio::test]
+    async fn edit_refuses_mixed_line_endings() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("test.txt"), "alpha\r\nbeta\n").unwrap();
+        let tool = EditTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("edit-mixed");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "test.txt",
+                    "old_string": "alpha\nbeta",
+                    "new_string": "alpha\ngamma"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.success, "{}", result.content);
+        assert!(result.content.contains("mixes LF and CRLF"), "{}", result.content);
+        let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
+        assert_eq!(content, "alpha\r\nbeta\n");
+        crate::external_observation::release_session("edit-mixed");
     }
 
     #[tokio::test]

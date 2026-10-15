@@ -6,8 +6,12 @@
 mod admission;
 pub mod anthropic;
 pub mod codex_login;
+mod cursor_account;
 mod effort;
-pub use effort::{model_sends_native_effort, native_effort_menu, TOOL_ROUND_SAFETY_CEILING};
+pub use effort::{
+    deepseek_thinking_top_p, model_sends_native_effort, native_effort_menu,
+    TOOL_ROUND_SAFETY_CEILING,
+};
 mod error;
 pub mod factory;
 pub mod http;
@@ -21,6 +25,7 @@ mod types;
 pub mod zhipu;
 
 // Re-export public types
+pub use crate::agent::{FactModelBinding, FactModelBindingRequest};
 pub use admission::{
     ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
     ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError,
@@ -55,9 +60,31 @@ use tokio_util::sync::CancellationToken;
 // configure retry authority without reaching into a crate-private module.
 pub use crate::retry::{RetryConfig, RetryExhaustedError, MAX_RETRIES};
 
+/// Bearer and base URL already used for this session's model calls.
+/// The decision request reuses them. The key is not written into traces.
+#[derive(Clone)]
+pub struct GatewayDecisionAuth {
+    pub base_url: String,
+    pub api_key: String,
+}
+
 /// LLM client trait
 #[async_trait]
 pub trait LlmClient: Send + Sync {
+    /// Opaque same-original fact governance. Unknown managed decorators refuse
+    /// by default; a boolean or self-described label is not provenance.
+    fn bind_fact_model_governance(
+        &self,
+        _request: &FactModelBindingRequest,
+    ) -> Option<FactModelBinding> {
+        None
+    }
+
+    /// Credentials for `POST /v1/systemone` on the same gateway as this client.
+    fn gateway_decision_auth(&self) -> Option<GatewayDecisionAuth> {
+        None
+    }
+
     /// Report the client's explicitly supported active-generation capacity.
     ///
     /// The conservative default is single-flight. Providers that can safely
@@ -125,6 +152,16 @@ pub trait LlmClient: Send + Sync {
         &self,
         _timeout: Duration,
     ) -> Option<std::sync::Arc<dyn LlmClient>> {
+        None
+    }
+
+    /// Return a view of this client with a hard output-token cap enforced
+    /// on GENERATION. A sampling bridge must route a server-requested
+    /// maxTokens through this — never clamp only the reported usage.
+    /// Clients that cannot express the cap keep the default `None`, and
+    /// the caller REFUSES: unbounded generation is not a substitute
+    /// (fail closed).
+    fn with_output_cap(&self, _max_tokens: u32) -> Option<std::sync::Arc<dyn LlmClient>> {
         None
     }
 

@@ -1,4 +1,5 @@
-//! One TUI prompt submitted through the a3s-code 9.0.0 fact-log session.
+//! One prompt from the hybrid scaffold. This crate is not the `a3s code`
+//! product path. The session id `tui-turn` is only for this scaffold.
 
 use std::sync::Arc;
 
@@ -17,6 +18,12 @@ pub struct ConfiguredTurn {
     pub provider_names: Vec<String>,
 }
 
+/// The scaffold's default fact-log / transcript thread. `a3s code
+/// --continue` resolves here too: the scaffold always continues this
+/// thread, so the flag is a no-op by construction, not a dropped arg
+/// (CLI issue #149).
+pub const DEFAULT_SESSION_ID: &str = "tui-turn";
+
 /// Submit one prompt the way the TUI does on Enter.
 ///
 /// The model and providers come from the CLI layer stack: explicit config, or
@@ -27,11 +34,22 @@ pub async fn submit_configured_turn(
     responder: Option<Arc<dyn LlmClient>>,
     prompt: &str,
 ) -> anyhow::Result<ConfiguredTurn> {
+    submit_configured_turn_in_session(layers, responder, prompt, DEFAULT_SESSION_ID).await
+}
+
+/// [`submit_configured_turn`] pinned to an explicit session id — the
+/// `--resume <id>` path.
+pub async fn submit_configured_turn_in_session(
+    layers: &LaunchLayers,
+    responder: Option<Arc<dyn LlmClient>>,
+    prompt: &str,
+    session_id: &str,
+) -> anyhow::Result<ConfiguredTurn> {
     let merged = merge_launch_layers(layers).map_err(anyhow::Error::msg)?;
     let provider_names = merged.provider_names.clone();
     let agent = Agent::from_config(merged.config).await?;
     let mut options = SessionOptions::new()
-        .with_session_id("tui-turn")
+        .with_session_id(session_id)
         .with_model(merged.model_id)
         .with_planning_mode(PlanningMode::Disabled)
         .with_auto_delegation_enabled(false);

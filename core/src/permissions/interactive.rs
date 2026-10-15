@@ -31,12 +31,29 @@ pub enum InteractiveApprovalMode {
 }
 
 impl InteractiveApprovalMode {
-    pub fn from_name(value: &str) -> Self {
+    /// Parse the closed set of interactive approval modes. An unknown name
+    /// is REFUSED with the set named — never silently coerced: a typo of
+    /// "plan" must not widen plan's denials into default's confirmations.
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "auto" => Self::Auto,
-            "force" | "yolo" => Self::Force,
-            _ => Self::Default,
+            "default" => Ok(Self::Default),
+            "plan" => Ok(Self::Plan),
+            "auto" => Ok(Self::Auto),
+            "force" | "yolo" => Ok(Self::Force),
+            other => anyhow::bail!(
+                "interactive approval mode must be one of the closed set \
+                 [default, plan, auto, force, yolo]; got {other:?}"
+            ),
+        }
+    }
+
+    /// The canonical name (`"yolo"` parses to `Force` but prints `"force"`).
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::Force => "force",
         }
     }
 
@@ -87,8 +104,8 @@ impl InteractiveToolGuardrail {
         }
     }
 
-    pub fn for_mode(mode: &str) -> Self {
-        Self::new(InteractiveApprovalMode::from_name(mode))
+    pub fn for_mode(mode: &str) -> anyhow::Result<Self> {
+        Ok(Self::new(InteractiveApprovalMode::parse(mode)?))
     }
 
     /// Add a local workspace root so absolute in-workspace paths are admitted
@@ -354,7 +371,7 @@ pub(super) fn classify_atomic_tool(
             classify_scoped_path(args, "path", PermissionDecision::Allow, workspace)
         }
         "web_search" | "web_fetch" | "search_skills" | "generate_object" | "update_plan"
-        | "ask_user" => PermissionDecision::Allow,
+        | "ask_user" | "ask_user_form" => PermissionDecision::Allow,
         "write" | "edit" => {
             classify_scoped_path(args, "file_path", PermissionDecision::Ask, workspace)
         }

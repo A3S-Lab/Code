@@ -71,12 +71,15 @@ impl AgentLoop {
         session_id: &str,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel: &CancellationToken,
-        run_store: Option<&crate::run::InMemoryRunStore>,
-        run_id: Option<&str>,
+        recorded_run: (Option<&crate::run::InMemoryRunStore>, Option<&str>),
+        current_goal: Option<&crate::goal_control::DurableGoalDefinitionV1>,
     ) -> Result<()> {
-        if self.config.planning_mode != crate::prompts::PlanningMode::Enabled {
+        if current_goal.is_none()
+            && self.config.planning_mode != crate::prompts::PlanningMode::Enabled
+        {
             return Ok(());
         }
+        let (run_store, run_id) = recorded_run;
         if cancel.is_cancelled() {
             anyhow::bail!("Operation cancelled by user");
         }
@@ -89,7 +92,9 @@ impl AgentLoop {
             },
         )
         .await;
-        let goal = if self.config.goal_tracking {
+        let goal = if let Some(current) = current_goal {
+            Some(current.goal.clone())
+        } else if self.config.goal_tracking {
             Some(
                 self.extract_goal_scoped(prompt, Some(session_id), event_tx, cancel)
                     .await?,
@@ -97,9 +102,15 @@ impl AgentLoop {
         } else {
             None
         };
-        let plan = self
-            .plan_scoped(prompt, Some(session_id), event_tx, cancel)
-            .await?;
+        let plan = if let Some(current) = current_goal {
+            current
+                .plan
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("admitted Goal plan is absent"))?
+        } else {
+            self.plan_scoped(prompt, Some(session_id), event_tx, cancel)
+                .await?
+        };
         if let Some(goal) = goal {
             self.emit_plan_event(
                 event_tx,
@@ -349,6 +360,8 @@ impl AgentLoop {
                 text: result.text.clone(),
                 usage: result.usage.clone(),
                 verification_summary: Box::new(result.verification_summary()),
+                completion_terminal: result.completion.clone(),
+                forced_stop: None,
                 meta: None,
             })
             .await
@@ -411,6 +424,26 @@ impl AgentLoop {
             .await
     }
 
+    pub(crate) async fn check_achievement_with_usage_scoped(
+        &self,
+        goal: &AgentGoal,
+        current_state: &str,
+        session_id: Option<&str>,
+        event_tx: &Option<mpsc::Sender<AgentEvent>>,
+        cancel: &CancellationToken,
+    ) -> Result<Result<(crate::planning::AchievementResult, crate::llm::TokenUsage)>> {
+        #[cfg(feature = "apofasi")]
+        crate::typed_decision::enforce_ineligible(crate::typed_decision::admit_goal_achievement())?;
+        let operation =
+            self.begin_capability_operation(0, cancel, "goal achievement orchestration")?;
+        let client =
+            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
+        let result = LlmPlanner::check_achievement_with_usage(&client, goal, current_state).await;
+        operation.close().await?;
+        // Capability failures must bypass the legacy model-error fallback.
+        Ok(result)
+    }
+
     async fn check_goal_achievement_scoped(
         &self,
         goal: &AgentGoal,
@@ -419,16 +452,17 @@ impl AgentLoop {
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
         cancel_token: &CancellationToken,
     ) -> Result<bool> {
-        #[cfg(feature = "apofasi")]
-        crate::typed_decision::enforce_ineligible(crate::typed_decision::admit_goal_achievement())?;
-        let operation =
-            self.begin_capability_operation(0, cancel_token, "goal achievement orchestration")?;
-        let llm_client =
-            self.scoped_llm_client_for_parts(session_id, event_tx, operation.cancellation());
-        let result = LlmPlanner::check_achievement(&llm_client, goal, current_state).await;
-        operation.close().await?;
+        let result = self
+            .check_achievement_with_usage_scoped(
+                goal,
+                current_state,
+                session_id,
+                event_tx,
+                cancel_token,
+            )
+            .await?;
         match result {
-            Ok(result) => Ok(result.achieved),
+            Ok((result, _)) => Ok(result.achieved),
             Err(e) if Self::planning_control_error(&e, cancel_token) => Err(e),
             Err(e) => {
                 tracing::warn!("LLM achievement check failed, using fallback: {}", e);

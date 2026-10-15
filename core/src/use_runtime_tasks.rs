@@ -724,7 +724,7 @@ mod tests {
                 .checks
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 + 1;
-            if seen % 4 == 0 {
+            if seen.is_multiple_of(4) {
                 crate::permissions::PermissionDecision::Deny
             } else {
                 crate::permissions::PermissionDecision::Allow

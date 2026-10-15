@@ -25,7 +25,7 @@ jobs:
         run: python3 -m unittest scripts.tests.test_check_publish_dependencies
 
       - name: Verify publish dependencies are available
-        run: python3 scripts/check_publish_dependencies.py core/Cargo.toml
+        run: python3 scripts/check_publish_dependencies.py core/Cargo.toml acp/Cargo.toml --candidate-manifest core/Cargo.toml
 
   retrieval-soak:
     name: Retrieval soak
@@ -68,7 +68,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -119,10 +119,10 @@ jobs:
           test -n "$VERSION"
           bash check-version.sh "$VERSION"
 
-      - name: Check public API compatibility with v5.3.5
+      - name: Check public API compatibility with v9.1.2
         run: |
           cargo install cargo-semver-checks --version 0.50.0 --locked
-          bash scripts/check_semver.sh 5.3.5
+          bash scripts/check_semver.sh 9.1.2
 
       - name: Check SDK protocol and API alignment
         run: |
@@ -140,10 +140,10 @@ jobs:
 
       - name: Check Go SDK
         run: |
-          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+          cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge --features advanced-harness,server
           A3S_CODE_GO_BRIDGE_TEST_BINARY="$PWD/../../target/debug/a3s-code-go-bridge" \
           RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
-            go test -race ./...
+            go test -race -tags=release_contract ./...
         working-directory: sdk/go
 
       - name: Reclaim build space before tests
@@ -174,10 +174,7 @@ jobs:
       - name: Feature-gated library tests
         env:
           RUST_MIN_STACK: "16777216"
-        # deep_e2e_live_receipts is a live receipt: one provider completion
-        # per case. Runners have no ACL, and a missing ACL panics rather
-        # than printing rows. The clean-tree log is the receipt.
-        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib -- --skip deep_e2e_live_receipts
+        run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib
 
   # ───────────────────────────────────────────────
   # Windows cross-compile check
@@ -194,7 +191,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh
@@ -223,6 +220,7 @@ jobs:
         ci,
         ci-windows,
         retrieval-soak,
+        memory-restart-soak,
         sdk-runtime,
         hermetic-integrations,
         performance,
@@ -235,7 +233,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh
@@ -272,8 +270,10 @@ jobs:
   publish-node:
     name: Node SDK
     needs: [publish-crate]
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/publish-node.yml
-    secrets: inherit
 
   # ───────────────────────────────────────────────
   # Build native Python wheels and attach to GitHub Release (reusable).

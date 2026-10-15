@@ -81,6 +81,7 @@ impl Tool for AskUserTool {
                 question: event.question.clone(),
                 options: event.options.clone(),
                 allow_free_text: event.allow_free_text,
+                form: None,
             });
         }
         let thread = crate::fact_control::thread_for_session(run_id);
@@ -91,7 +92,10 @@ impl Tool for AskUserTool {
             options: event.options.clone(),
         })
         .unwrap_or_else(|error| serde_json::json!({ "kind": "text", "text": error.to_string() }));
-        let log = match a3s_effect::FileLog::open(ctx.workspace.join(".a3s").join("effect-log")) {
+        let log = match a3s_effect::FileLog::open(crate::session_folder::effect_log_dir(
+            &ctx.workspace,
+            run_id,
+        )) {
             Ok(log) => log,
             Err(error) => return Ok(ToolOutput::error(error.to_string())),
         };

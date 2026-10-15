@@ -507,7 +507,9 @@ fn plan_options(workspace: &Path) -> SessionOptions {
         .with_session_id("live-plan")
         .with_memory(Arc::new(a3s_memory::InMemoryStore::new()))
         .with_permission_checker(Arc::new(
-            InteractiveToolGuardrail::for_mode("plan").with_workspace(workspace),
+            InteractiveToolGuardrail::for_mode("plan")
+                .expect("plan mode must be valid")
+                .with_workspace(workspace),
         ))
         .with_default_security()
         .with_planning(false)

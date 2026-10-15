@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use a3s_code_core::memory::{
     AgentMemory, MemoryMaintenanceContext, MemoryMaintenanceJob, MemoryMaintenanceOptions,
     MemoryMaintenanceOutcome, MemoryMaintenancePhase, MemoryMaintenanceRuntime,
@@ -53,7 +55,13 @@ async fn close_cancels_then_boundedly_aborts_a_non_cooperative_job() {
         .unwrap();
     let runtime = MemoryMaintenanceRuntime::start(
         "bounded-close-owner",
-        Arc::new(AgentMemory::new(Arc::new(InMemoryStore::new()))),
+        Arc::new(AgentMemory::with_config(
+            Arc::new(InMemoryStore::new()),
+            a3s_code_core::memory::MemoryConfig {
+                prune_policy: None,
+                ..Default::default()
+            },
+        )),
         options,
     )
     .unwrap();

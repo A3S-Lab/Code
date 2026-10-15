@@ -342,11 +342,12 @@ async fn test_session_workflow_is_prewired_with_budget_and_stable_root_id() {
 /// mock LLM so the built-in `explore` agent finishes with that text.
 #[tokio::test]
 async fn test_session_workflow_runs_a_real_child_agent_step() {
+    let workspace = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new();
     let session = agent
         .build_session(
-            "/tmp/test-workflow-e2e".into(),
+            workspace.path().to_string_lossy().into_owned(),
             Arc::new(StaticStreamingClient::new("explored answer")),
             &opts,
         )

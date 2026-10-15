@@ -428,7 +428,7 @@ impl CommandRegistry {
 
     /// Gate `/auto` on the auto permission-mode feature.
     /// When `available` is false, `/auto` is hard-hidden (fail-closed: neither offered nor executable).
-    /// `/always-approve` is always offered; both commands are true toggles and stay on the menu while already active.
+    /// `/yolo` is always offered; both commands are true toggles and stay on the menu while already active.
     pub fn set_auto_mode_available(&mut self, available: bool) {
         if available {
             self.hidden.remove("auto");
@@ -1325,11 +1325,11 @@ mod tests {
         assert!(reg.get("multi").is_some());
     }
 
-    /// Builds a registry with `always-approve` (plus a `yolo` alias to cover alias key handling), `auto`, and a bystander `exit`.
+    /// Builds a registry with `yolo`, `auto`, and a bystander `exit`.
     fn permission_mode_registry() -> CommandRegistry {
         let always_approve: Arc<dyn SlashCommand> = Arc::new(DummyCommand {
-            name: "always-approve",
-            aliases: &["yolo"],
+            name: "yolo",
+            aliases: &[],
         });
         let auto: Arc<dyn SlashCommand> = Arc::new(DummyCommand {
             name: "auto",
@@ -1349,40 +1349,36 @@ mod tests {
         let mut reg = permission_mode_registry();
         reg.set_auto_mode_available(true);
 
-        reg.set_menu_hidden_for_test("always-approve", true);
+        reg.set_menu_hidden_for_test("yolo", true);
         assert!(
-            reg.get("always-approve").is_none(),
+            reg.get("yolo").is_none(),
             "menu lookup hides the command"
         );
         assert!(
             !reg.triggers()
                 .iter()
-                .any(|t| t.canonical == "always-approve"),
+                .any(|t| t.canonical == "yolo"),
             "no completion trigger while menu-hidden"
         );
         assert!(
-            reg.get_for_dispatch("always-approve").is_some(),
-            "typed invocation must still resolve for dispatch"
-        );
-        assert!(
             reg.get_for_dispatch("yolo").is_some(),
-            "aliases of a menu-hidden command must still resolve for dispatch"
+            "typed invocation must still resolve for dispatch"
         );
         // Bystanders unaffected.
         assert!(reg.get("exit").is_some());
         assert!(reg.get("auto").is_some());
 
-        reg.set_menu_hidden_for_test("always-approve", false);
-        assert!(reg.get("always-approve").is_some());
+        reg.set_menu_hidden_for_test("yolo", false);
+        assert!(reg.get("yolo").is_some());
         assert!(
             reg.triggers()
                 .iter()
-                .any(|t| t.canonical == "always-approve")
+                .any(|t| t.canonical == "yolo")
         );
     }
 
     /// The `/auto` feature gate stays HARD (fail-closed): gated off, `/auto` is neither offered nor executable.
-    /// `get_for_dispatch` must NOT resurrect feature-hidden commands. `/always-approve` is ungated.
+    /// `get_for_dispatch` must NOT resurrect feature-hidden commands. `/yolo` is ungated.
     #[test]
     fn auto_feature_gate_blocks_dispatch_resolution() {
         let mut reg = permission_mode_registry();
@@ -1395,16 +1391,16 @@ mod tests {
         reg.set_auto_mode_available(true);
         assert!(reg.get("auto").is_some());
         assert!(reg.get_for_dispatch("auto").is_some());
-        assert!(reg.get("always-approve").is_some());
-        assert!(reg.get_for_dispatch("always-approve").is_some());
+        assert!(reg.get("yolo").is_some());
+        assert!(reg.get_for_dispatch("yolo").is_some());
 
-        // Gate off again: /auto gone everywhere; /always-approve stays.
+        // Gate off again: /auto gone everywhere; /yolo stays.
         reg.set_auto_mode_available(false);
         assert!(reg.get("auto").is_none());
         assert!(reg.get_for_dispatch("auto").is_none());
         assert!(!reg.triggers().iter().any(|t| t.canonical == "auto"));
-        assert!(reg.get("always-approve").is_some());
-        assert!(reg.get_for_dispatch("always-approve").is_some());
+        assert!(reg.get("yolo").is_some());
+        assert!(reg.get_for_dispatch("yolo").is_some());
     }
 
     /// `get_for_dispatch` only bypasses the menu-only hide.

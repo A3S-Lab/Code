@@ -247,9 +247,9 @@ impl LlmClient for CodexLoginClient {
                 };
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-                while let Some(end) = buffer.find("\n\n") {
-                    let frame: String = buffer.drain(..end).collect();
-                    buffer.drain(..2);
+                // Same blank-line splitter as the other model streams. A
+                // trailing CR is not a frame: the next chunk may complete CRLF.
+                for frame in crate::sse::take_sse_events(&mut buffer, false) {
                     for event in parse_sse_frame(&frame) {
                         let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
                         match event_type {
@@ -633,5 +633,205 @@ mod tests {
             .map(|item| item["encrypted_content"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(reasoning, ["encrypted-1", "encrypted-2"]);
+    }
+
+    fn codex_hello_sse(separator: &str) -> String {
+        let delta = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
+        let done = r#"{"type":"response.completed","response":{"id":"resp-1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#;
+        format!("data: {delta}{separator}{separator}data: {done}{separator}{separator}")
+    }
+
+    fn codex_client(http: Arc<dyn HttpClient>) -> CodexLoginClient {
+        CodexLoginClient {
+            access_token: "token".to_string(),
+            account_id: "acct".to_string(),
+            model: "gpt-test".to_string(),
+            reasoning_effort: None,
+            session_id: "sess".to_string(),
+            http,
+            encrypted_reasoning: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    struct ScriptedCodexSse {
+        incoming:
+            std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Option<bytes::Bytes>>>>,
+        parked: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl HttpClient for ScriptedCodexSse {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &Value,
+            _cancel: CancellationToken,
+        ) -> Result<crate::llm::HttpResponse> {
+            anyhow::bail!("post is unused in the scripted codex test")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &Value,
+            _cancel: CancellationToken,
+        ) -> Result<crate::llm::StreamingHttpResponse> {
+            let rx = self
+                .incoming
+                .lock()
+                .expect("scripted sse lock")
+                .take()
+                .expect("one scripted stream");
+            let parked = std::sync::Arc::clone(&self.parked);
+            let byte_stream =
+                futures::stream::unfold((rx, parked, false), |(mut rx, parked, seen)| async move {
+                    if seen {
+                        parked.notify_one();
+                    }
+                    match rx.recv().await {
+                        Some(Some(bytes)) => {
+                            Some((Ok::<bytes::Bytes, anyhow::Error>(bytes), (rx, parked, true)))
+                        }
+                        _ => None,
+                    }
+                });
+            Ok(crate::llm::StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(byte_stream),
+                error_body: String::new(),
+            })
+        }
+    }
+
+    struct ChunkCodexSse {
+        chunks: Vec<bytes::Bytes>,
+    }
+
+    #[async_trait]
+    impl HttpClient for ChunkCodexSse {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &Value,
+            _cancel: CancellationToken,
+        ) -> Result<crate::llm::HttpResponse> {
+            anyhow::bail!("post is unused in the codex frame test")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &Value,
+            _cancel: CancellationToken,
+        ) -> Result<crate::llm::StreamingHttpResponse> {
+            let items = self
+                .chunks
+                .iter()
+                .cloned()
+                .map(Ok::<bytes::Bytes, anyhow::Error>)
+                .collect::<Vec<_>>();
+            Ok(crate::llm::StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(futures::stream::iter(items)),
+                error_body: String::new(),
+            })
+        }
+    }
+
+    async fn codex_text_deltas(wire: String) -> (Vec<String>, LlmResponse) {
+        let client = codex_client(Arc::new(ChunkCodexSse {
+            chunks: vec![bytes::Bytes::from(wire)],
+        }));
+        let mut rx = client
+            .complete_streaming(&[Message::user("go")], None, &[], CancellationToken::new())
+            .await
+            .expect("stream opened");
+        let mut deltas = Vec::new();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::TextDelta(delta) => deltas.push(delta),
+                StreamEvent::Done(response) => {
+                    done = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (deltas, done.expect("Done"))
+    }
+
+    #[tokio::test]
+    async fn codex_login_crlf_data_frame_matches_lf_payload() {
+        let (lf_deltas, lf) = codex_text_deltas(codex_hello_sse("\n")).await;
+        let (crlf_deltas, crlf) = codex_text_deltas(codex_hello_sse("\r\n")).await;
+        assert_eq!(lf_deltas, vec!["hello".to_string()]);
+        assert_eq!(crlf_deltas, lf_deltas);
+        assert_eq!(lf.text(), "hello");
+        assert_eq!(crlf.text(), lf.text());
+        assert!(!crlf.text().contains('\r'));
+    }
+
+    #[tokio::test]
+    async fn codex_login_split_cr_does_not_emit_partial_event() {
+        let wire = codex_hello_sse("\r\n");
+        let blank = wire.find("\r\n\r\n").expect("crlf blank line");
+        let head = wire[..blank + 3].to_string();
+        assert!(head.ends_with('\r'), "the held suffix is a bare CR");
+        let tail = wire[blank + 3..].to_string();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let parked = std::sync::Arc::new(tokio::sync::Notify::new());
+        let client = codex_client(Arc::new(ScriptedCodexSse {
+            incoming: std::sync::Mutex::new(Some(rx)),
+            parked: std::sync::Arc::clone(&parked),
+        }));
+        let mut events = client
+            .complete_streaming(&[Message::user("go")], None, &[], CancellationToken::new())
+            .await
+            .expect("stream opened");
+
+        tx.send(Some(bytes::Bytes::from(head)))
+            .expect("reader accepts the partial frame");
+        tokio::time::timeout(std::time::Duration::from_secs(2), parked.notified())
+            .await
+            .expect("reader parked while the buffer ends on CR");
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "a buffer ending on CR must not emit a partial event"
+        );
+
+        tx.send(Some(bytes::Bytes::from(tail)))
+            .expect("reader accepts the rest of the frame");
+        tx.send(None).expect("close the scripted stream");
+        let mut deltas = Vec::new();
+        let mut done = None;
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                match event {
+                    StreamEvent::TextDelta(delta) => deltas.push(delta),
+                    StreamEvent::Done(response) => {
+                        done = Some(response);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(finished.is_ok(), "the completed CRLF frame must finish");
+        assert_eq!(deltas, vec!["hello".to_string()]);
+        let response = done.expect("Done");
+        assert_eq!(response.text(), "hello");
+        assert!(!response.text().contains('\r'));
     }
 }

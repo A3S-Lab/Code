@@ -3,7 +3,6 @@
 
 use a3s_code_core::config::{CodeConfig, ModelConfig, ModelModalities, ProviderConfig};
 use a3s_code_core::{Agent, SessionOptions};
-use std::ffi::c_void;
 use std::path::Path;
 
 fn offline_config(sessions_dir: &Path) -> CodeConfig {

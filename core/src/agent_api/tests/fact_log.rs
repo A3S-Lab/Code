@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Session send and resume go through the fact log.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,6 +12,16 @@ use crate::agent_api::tests::test_config;
 use crate::fact_control::read_workspace_facts;
 use crate::llm::{LlmClient, LlmResponse, Message, StreamEvent, TokenUsage, ToolDefinition};
 use tokio_util::sync::CancellationToken;
+
+mod child_policy;
+mod durable_source;
+mod final_delivery;
+mod fork_admission;
+mod host_contract_prompt;
+mod host_reports;
+mod loop_source;
+mod navigation;
+mod work_policy;
 
 struct CountingText {
     calls: Arc<AtomicUsize>,
@@ -601,18 +613,25 @@ async fn fact_log_resume_run_emits_turn_boundaries_for_the_continued_model_turn(
     );
     let runs = session.runs().await;
     let run_id = runs.last().expect("the stopped run is recorded").id.clone();
-    let (before_starts, _) = turn_bounds(&session.run_events(&run_id).await);
+    let before_bounds = turn_bounds(&session.run_events(&run_id).await);
     let resumed = session
         .resume_run("ignored-checkpoint")
         .await
         .expect("resume continues the stored model turn");
     assert_eq!(resumed.text, "after-tool");
-    let (after_starts, after_ends) = turn_bounds(&session.run_events(&run_id).await);
-    assert!(
-        after_starts > before_starts,
-        "resume_run must emit TurnStart for the model turn it performs"
+    // Ordinary resume owns a fresh executing Run; it must not append the new
+    // model turn to the historical Run that stopped on its step limit.
+    let runs = session.runs().await;
+    assert_eq!(runs.len(), 2);
+    let resumed_run = runs.iter().find(|run| run.id != run_id).unwrap();
+    assert_eq!(resumed_run.status, crate::run::RunStatus::Completed);
+    let (starts, ends) = turn_bounds(&session.run_events(&resumed_run.id).await);
+    assert!(starts >= 1, "the executing resume Run must emit TurnStart");
+    assert!(ends >= 1, "the executing resume Run must emit TurnEnd");
+    assert_eq!(
+        turn_bounds(&session.run_events(&run_id).await),
+        before_bounds
     );
-    assert!(after_ends >= 1, "resume_run must emit TurnEnd");
 }
 
 #[tokio::test]
@@ -678,10 +697,13 @@ async fn fact_log_read_image_bytes_reach_the_next_request_and_restored_history()
         }),
         &crate::SessionOptions::new(),
     );
-    seeded_session
+    let error = seeded_session
         .send("what is in the image", Some(&history))
         .await
-        .unwrap();
+        .expect_err(
+            "imported tool output without an invocation receipt is not completion authority",
+        );
+    assert!(error.to_string().contains("tool_effect_unresolved"));
     assert_image_payload("seeded", &seeded.lock().unwrap(), &png);
 }
 
@@ -796,9 +818,21 @@ async fn fact_log_session_stream_appends_the_model_turn_and_resume_does_not_rese
 async fn fact_log_session_new_user_message_calls_the_model_after_a_verified_tool() {
     let coding_prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let workspace = tempfile::tempdir().unwrap();
+    // This pins turn/verification protocol, not shell or native containment.
+    // The write tool still produces real bytes, checked independently below.
+    let sandbox = Arc::new(
+        crate::tools::builtin::background::test_backend::DeterministicBackgroundSandbox::new(
+            workspace.path().to_path_buf(),
+            "protocol-file-exists",
+            0,
+            false,
+        ),
+    );
     let agent = crate::Agent::from_config(test_config()).await.unwrap();
-    let mut policy = crate::permissions::PermissionPolicy::default();
-    policy.default_decision = crate::permissions::PermissionDecision::Allow;
+    let policy = crate::permissions::PermissionPolicy {
+        default_decision: crate::permissions::PermissionDecision::Allow,
+        ..Default::default()
+    };
     let session = agent
         .build_session(
             workspace.path().to_string_lossy().to_string(),
@@ -808,6 +842,7 @@ async fn fact_log_session_new_user_message_calls_the_model_after_a_verified_tool
             }),
             &crate::SessionOptions::new()
                 .with_session_id("fact-verified-next-user")
+                .with_sandbox_handle(Arc::clone(&sandbox) as Arc<dyn crate::sandbox::BashSandbox>)
                 .with_planning_mode(crate::prompts::PlanningMode::Disabled)
                 .with_permission_policy(policy),
         )
@@ -825,12 +860,19 @@ async fn fact_log_session_new_user_message_calls_the_model_after_a_verified_tool
         std::fs::read_to_string(workspace.path().join("hello.txt")).unwrap_or_default(),
         "hello"
     );
+    assert!(matches!(
+        first.completion,
+        crate::harness_loop::CompletionTerminal::Verified { .. }
+    ));
+    assert_eq!(sandbox.calls(), 1);
+    assert!(sandbox.was_released());
 
     let second = session
         .send("now read hello.txt and answer", None)
         .await
         .unwrap();
     assert_eq!(second.text, "second-turn");
+    assert_eq!(sandbox.calls(), 1, "the new turn must not replay the tool");
     let prompts = coding_prompts.lock().unwrap();
     assert!(
         prompts
@@ -922,10 +964,11 @@ impl LlmClient for VerifiedThenTextClient {
     }
 }
 
-/// An explicit remember request still lands in the session store when the
-/// extraction model does not return memory JSON.
+/// A natural-language remember request grants no write authority when the
+/// extraction model does not return valid memory JSON. This explicitly retires
+/// the previous raw-input fallback promise while retaining its exact fixture.
 #[tokio::test]
-async fn fact_log_session_explicit_preference_is_stored_when_extraction_json_fails() {
+async fn fact_log_session_explicit_preference_fails_closed_when_extraction_json_fails() {
     let token = "REMEMBER-TOKEN-4411";
     let store: Arc<dyn a3s_memory::MemoryStore> = Arc::new(a3s_memory::InMemoryStore::new());
     let workspace = tempfile::tempdir().unwrap();
@@ -949,9 +992,10 @@ async fn fact_log_session_explicit_preference_is_stored_when_extraction_json_fai
         .await
         .unwrap();
     assert!(
-        hits.iter().any(|item| item.content.contains(token)),
-        "explicit preference must be stored, hits={hits:?}"
+        hits.is_empty(),
+        "invalid extraction must not write, hits={hits:?}"
     );
+    assert_eq!(store.count().await.unwrap(), 0);
 }
 
 struct ProseExtractionClient;
@@ -1000,37 +1044,100 @@ impl LlmClient for ProseExtractionClient {
     }
 }
 
+struct AttachmentSteerClient {
+    text: CountingText,
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+    seen: std::sync::Mutex<Vec<Vec<Message>>>,
+}
+
+#[async_trait]
+impl LlmClient for AttachmentSteerClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        system: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        if !tools.is_empty() {
+            self.seen.lock().unwrap().push(messages.to_vec());
+            self.entered.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+        }
+        self.text.complete(messages, system, tools).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        _: &[Message],
+        _: Option<&str>,
+        _: &[ToolDefinition],
+        _: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("blocking attachment fixture must use complete")
+    }
+}
+
 #[tokio::test]
 async fn fact_log_session_attachments_steer_and_history_stay_on_the_log() {
     let calls = Arc::new(AtomicUsize::new(0));
+    let client = Arc::new(AttachmentSteerClient {
+        text: CountingText {
+            calls: calls.clone(),
+        },
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+        seen: Default::default(),
+    });
     let workspace = tempfile::tempdir().unwrap();
     let agent = crate::Agent::from_config(test_config()).await.unwrap();
     let session = agent
         .build_session(
             workspace.path().to_string_lossy().to_string(),
-            Arc::new(CountingText {
-                calls: Arc::clone(&calls),
-            }),
+            client.clone(),
             &crate::SessionOptions::new()
                 .with_session_id("fact-attach")
                 .with_planning_mode(crate::prompts::PlanningMode::Disabled),
         )
         .unwrap();
     let history = vec![Message::user("earlier"), Message::assistant("stored reply")];
-    let sent = session
-        .send_with_attachments(
-            "see this",
-            &[crate::llm::Attachment::png(vec![1, 2, 3])],
-            Some(&history),
-        )
+    let attachments = [crate::llm::Attachment::png(vec![1, 2, 3])];
+    let send = session.send_with_attachments("see this", &attachments, Some(&history));
+    tokio::pin!(send);
+    tokio::select! {
+        permit = client.entered.acquire() => permit.unwrap().forget(),
+        result = &mut send => panic!("send ended before the active input boundary: {result:?}"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("model was not entered"),
+    }
+    let run = session.current_run().await.unwrap();
+    let mut request = crate::run_control::SteerRequest::new("turn left").with_run_id(run.id());
+    request.request_id = Some("attachment-steer".into());
+    let retry = request.clone().into_protocol(session.id(), run.id());
+    let inbox = super::super::RunControlState::from_session(&session)
+        .current_run_control()
         .await
+        .unwrap();
+    let steered = session.steer(request).await.unwrap();
+    assert_eq!(
+        steered.state,
+        crate::run_control::RunControlReceiptState::Accepted
+    );
+    client.release.add_permits(1);
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(5), &mut send)
+        .await
+        .unwrap()
         .unwrap();
     assert_eq!(sent.text, "session-hello");
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    let steered = session
-        .steer(crate::run_control::SteerRequest::new("turn left"))
-        .await
-        .unwrap();
+    {
+        let requests = client.seen.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(request_has_image_bytes(&requests[0], &[1, 2, 3]));
+        let text = request_text(&requests[0]);
+        assert!(text.contains("earlier"));
+        assert!(text.contains("stored reply"));
+        assert!(text.contains("see this"));
+    }
+    let steered = inbox.submit(retry, 1).await.unwrap();
     assert_eq!(
         steered.state,
         crate::run_control::RunControlReceiptState::Applied
@@ -1059,8 +1166,9 @@ async fn fact_log_session_attachments_steer_and_history_stay_on_the_log() {
     assert!(facts
         .iter()
         .all(|fact| fact.kind != "confirmation.answered"));
-    // Steer is another user message, so it performs one new completion.
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    // Terminal Steer is retained as the next input, not inferred by a new
+    // unowned call after the original Run has completed.
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 struct StandingClient {
@@ -1211,4 +1319,257 @@ async fn a_new_run_without_a_standing_digest_does_not_call_the_model() {
     let error = opened.err().expect("missing digest fails closed");
     assert!(error.to_string().contains("missing a digest"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// Records the user-role texts of every model request, so a fork's effect on
+/// the replayed context is observable at the provider boundary.
+struct ForkRecordingClient {
+    requests: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+}
+
+#[async_trait]
+impl LlmClient for ForkRecordingClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        let users = messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.text())
+            .collect();
+        self.requests.lock().unwrap().push(users);
+        Ok(text_response("fork-ok"))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("unused")
+    }
+}
+
+#[tokio::test]
+async fn fork_session_at_discards_later_facts_and_the_next_turn_replays_the_prefix() {
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(ForkRecordingClient {
+                requests: Arc::clone(&requests),
+            }),
+            &crate::SessionOptions::new()
+                .with_session_id("fact-fork")
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled),
+        )
+        .unwrap();
+    session.send("alpha prompt", None).await.unwrap();
+    session.send("beta prompt", None).await.unwrap();
+    let facts = read_workspace_facts(workspace.path(), "fact-fork").unwrap();
+    let beta = facts
+        .iter()
+        .find(|fact| {
+            fact.kind == "user.message" && fact.payload["text"].as_str() == Some("beta prompt")
+        })
+        .expect("the beta turn is on the log");
+    let cut = beta.seq - 1;
+    let retained = facts.iter().filter(|fact| fact.seq <= cut).count();
+    let removed = session.fork_session_at(cut).await.unwrap();
+    assert_eq!(removed, (facts.len() - retained) as u64);
+    assert_eq!(
+        session.fork_session_at(cut).await.unwrap(),
+        0,
+        "a second cut at the same seq removes nothing"
+    );
+    let after = read_workspace_facts(workspace.path(), "fact-fork").unwrap();
+    assert_eq!(after.len(), retained);
+    assert!(after.iter().all(|fact| fact.seq <= cut));
+    assert!(
+        session
+            .history()
+            .iter()
+            .all(|message| !message.text().contains("beta prompt")),
+        "in-memory history must drop the discarded turn"
+    );
+
+    requests.lock().unwrap().clear();
+    let sent = session.send("gamma prompt", None).await.unwrap();
+    assert_eq!(sent.text, "fork-ok");
+    let seen = requests.lock().unwrap();
+    assert!(
+        seen.iter()
+            .flatten()
+            .all(|text| !text.contains("beta prompt")),
+        "no post-fork model request may see the discarded turn"
+    );
+    assert!(
+        seen.iter()
+            .any(|users| users.iter().any(|text| text.contains("alpha prompt"))),
+        "the retained prefix must stay visible, requests={seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|users| users.iter().any(|text| text.contains("gamma prompt"))),
+        "the new prompt must reach the model, requests={seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn fork_session_at_refuses_while_a_run_is_streaming() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(super::CancellableStreamingClient::new("partial answer")),
+            &crate::SessionOptions::new()
+                .with_session_id("fact-fork-busy")
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled),
+        )
+        .unwrap();
+    let (mut rx, handle) = session.stream("hello", None).await.unwrap();
+    while let Some(event) = rx.recv().await {
+        if matches!(event, crate::AgentEvent::TextDelta { .. }) {
+            break;
+        }
+    }
+    let busy = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        session.fork_session_at(1),
+    )
+    .await
+    .expect("busy admission is fail-fast")
+    .unwrap_err();
+    assert!(matches!(
+        busy,
+        crate::error::CodeError::SessionBusy { ref session_id } if session_id == "fact-fork-busy"
+    ));
+    assert!(session.cancel().await);
+    while rx.recv().await.is_some() {}
+    handle.await.unwrap();
+    assert_eq!(
+        session.fork_session_at(u64::MAX).await.unwrap(),
+        0,
+        "once the run settles, the same fork proceeds"
+    );
+}
+
+/// A context provider with interior-mutable content, so a test can flip a
+/// source between turns and watch the recorded section digest track it.
+struct StaticProbeProvider {
+    name: String,
+    content: Arc<std::sync::Mutex<String>>,
+}
+
+#[async_trait]
+impl crate::context::ContextProvider for StaticProbeProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn query(
+        &self,
+        _query: &crate::context::ContextQuery,
+    ) -> anyhow::Result<crate::context::ContextResult> {
+        let content = self
+            .content
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut result = crate::context::ContextResult::new(&self.name);
+        result.add_item(crate::context::ContextItem::new(
+            format!("{}-item", self.name),
+            crate::context::ContextType::Resource,
+            content,
+        ));
+        Ok(result)
+    }
+}
+
+/// Digested `(provider, digest)` pairs from the last `context.sections` fact.
+fn last_context_sections(facts: &[a3s_effect::Fact]) -> Vec<(String, String)> {
+    let Some(fact) = facts.iter().rfind(|fact| fact.kind == "context.sections") else {
+        panic!("no context.sections fact recorded");
+    };
+    fact.payload["sections"]
+        .as_array()
+        .expect("sections array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["provider"].as_str().expect("provider").to_string(),
+                entry["digest"].as_str().expect("digest").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn context_sections_are_recorded_stable_and_source_tracked() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let content = Arc::new(std::sync::Mutex::new("probe content v1".to_string()));
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let session = agent
+        .build_session(
+            workspace.path().to_string_lossy().to_string(),
+            Arc::new(CountingText {
+                calls: Arc::clone(&calls),
+            }),
+            &crate::SessionOptions::new()
+                .with_session_id("fact-ctx-sections")
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+                .with_context_provider(Arc::new(StaticProbeProvider {
+                    name: "probe".to_string(),
+                    content: Arc::clone(&content),
+                })),
+        )
+        .unwrap();
+
+    session.send("first turn", None).await.unwrap();
+    let facts = read_workspace_facts(workspace.path(), "fact-ctx-sections").unwrap();
+    let context_fact = facts
+        .iter()
+        .find(|fact| fact.kind == "context.sections")
+        .expect("the first model call records its context sections");
+    let first_turn = facts
+        .iter()
+        .find(|fact| fact.kind == "model.turn")
+        .expect("a model turn");
+    assert!(
+        context_fact.seq < first_turn.seq,
+        "the context record precedes the model call it describes"
+    );
+    let first = last_context_sections(&facts);
+    assert_eq!(first.len(), 1, "one provider, one section: {first:?}");
+    assert_eq!(first[0].0, "probe");
+
+    // Unchanged sources: the next turn assembles the same section bytes,
+    // and the recorded digest proves the stability.
+    session.send("second turn", None).await.unwrap();
+    let facts = read_workspace_facts(workspace.path(), "fact-ctx-sections").unwrap();
+    let second = last_context_sections(&facts);
+    assert_eq!(second, first, "unchanged sources must digest identically");
+
+    // A mutated source changes the recorded digest — the replayable record
+    // tracks content, not just provider identity.
+    *content
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = "probe content v2".to_string();
+    session.send("third turn", None).await.unwrap();
+    let facts = read_workspace_facts(workspace.path(), "fact-ctx-sections").unwrap();
+    let third = last_context_sections(&facts);
+    assert_eq!(third[0].0, "probe");
+    assert_ne!(
+        third[0].1, first[0].1,
+        "a changed source must digest differently"
+    );
 }

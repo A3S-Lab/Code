@@ -41,8 +41,8 @@ async fn shift_tab_in_session_cycles_mode() {
 
     harness.inject_keys(b"\x1b[Z").expect("inject BackTab");
     harness
-        .wait_for_text("Switched to mode: Always-Approve", Duration::from_secs(10))
-        .expect("third cycle: Auto -> Always-Approve");
+        .wait_for_text("Switched to mode: YOLO", Duration::from_secs(10))
+        .expect("third cycle: Auto -> yolo");
 
     harness.inject_keys(b"\x1b[Z").expect("inject BackTab");
     harness

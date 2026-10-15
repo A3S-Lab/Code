@@ -37,13 +37,19 @@ impl AgentSession {
                 return Err(CapabilityRuntimeError::SessionClosed.into());
             }
             let projection = self.capability_catalog.pin();
+            let ceiling = self.capability_run_ceiling(
+                projection.projection().set(),
+                projection.allowed_capabilities(),
+            )?;
             let descriptor = projection
                 .projection()
                 .set()
                 .iter()
                 .find_map(|(_, descriptor)| {
-                    (descriptor.id().kind() == kind && descriptor.public_name() == public_name)
-                        .then(|| descriptor.clone())
+                    (descriptor.id().kind() == kind
+                        && descriptor.public_name() == public_name
+                        && ceiling.allows(descriptor.id()))
+                    .then(|| descriptor.clone())
                 });
             let Some(descriptor) = descriptor else {
                 return Ok(None);
@@ -64,7 +70,6 @@ impl AgentSession {
                     message: "the projected host value lost its immutable runtime binding"
                         .to_owned(),
                 })?;
-            let ceiling = self.capability_run_ceiling(projection.projection().set())?;
             (projection, descriptor, value, ceiling)
         };
 
@@ -75,6 +80,7 @@ impl AgentSession {
             &run_local_id,
             ceiling,
             self.session_cancel.child_token(),
+            &self.workspace,
         )
         .await?;
         let closed_during_admission = {

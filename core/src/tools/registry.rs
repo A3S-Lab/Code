@@ -3,6 +3,8 @@
 //! Central registry for all tools (built-in and dynamic).
 //! Provides thread-safe registration, lookup, and execution.
 
+use crate::error::{read_or_recover, write_or_recover};
+
 use super::artifacts::{ArtifactStore, ArtifactStoreLimits, ToolArtifact};
 use super::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use super::ToolResult;
@@ -135,8 +137,8 @@ impl ToolRegistry {
         // Preserve the registry's established lock order: tools before
         // builtins. The remaining fields have no operation that takes either
         // lock while holding their own lock.
-        let mut tools = self.tools.read().unwrap().clone();
-        let builtins = self.builtins.read().unwrap().clone();
+        let mut tools = read_or_recover(&self.tools).clone();
+        let builtins = read_or_recover(&self.builtins).clone();
         for tool in external {
             let name = tool.name().to_owned();
             if tools.contains_key(&name) {
@@ -147,12 +149,12 @@ impl ToolRegistry {
         Ok(Self {
             tools: RwLock::new(tools),
             builtins: RwLock::new(builtins),
-            context: RwLock::new(self.context.read().unwrap().clone()),
+            context: RwLock::new(read_or_recover(&self.context).clone()),
             artifact_store: self.artifact_store.clone(),
             immutable_content_adapter: self.immutable_content_adapter.clone(),
-            trace_sink: RwLock::new(Arc::clone(&self.trace_sink.read().unwrap())),
-            argument_validators: RwLock::new(self.argument_validators.read().unwrap().clone()),
-            transform_policy: RwLock::new(self.transform_policy.read().unwrap().clone()),
+            trace_sink: RwLock::new(Arc::clone(&read_or_recover(&self.trace_sink))),
+            argument_validators: RwLock::new(read_or_recover(&self.argument_validators).clone()),
+            transform_policy: RwLock::new(read_or_recover(&self.transform_policy).clone()),
         })
     }
 
@@ -161,15 +163,15 @@ impl ToolRegistry {
         policy: ToolResultTransformPolicyV1,
     ) -> Result<()> {
         policy.validate()?;
-        *self.transform_policy.write().unwrap() = policy;
+        *write_or_recover(&self.transform_policy) = policy;
         Ok(())
     }
 
     /// Register a builtin tool (cannot be overridden by dynamic tools)
     pub fn register_builtin(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
-        let mut tools = self.tools.write().unwrap();
-        let mut builtins = self.builtins.write().unwrap();
+        let mut tools = write_or_recover(&self.tools);
+        let mut builtins = write_or_recover(&self.builtins);
         tracing::debug!("Registering builtin tool: {}", name);
         tools.insert(name.clone(), tool);
         builtins.insert(name);
@@ -184,8 +186,8 @@ impl ToolRegistry {
         // All operations that need both registry locks take `tools` first.
         // This keeps the builtin check and insertion atomic with
         // `register_builtin` and avoids lock-order inversion.
-        let mut tools = self.tools.write().unwrap();
-        let builtins = self.builtins.read().unwrap();
+        let mut tools = write_or_recover(&self.tools);
+        let builtins = read_or_recover(&self.builtins);
         if builtins.contains(&name) {
             tracing::warn!(
                 "Rejected registration of tool '{}': cannot shadow builtin",
@@ -208,8 +210,8 @@ impl ToolRegistry {
         tool: Arc<dyn Tool>,
     ) -> (bool, Option<Arc<dyn Tool>>) {
         let name = tool.name().to_string();
-        let mut tools = self.tools.write().unwrap();
-        let builtins = self.builtins.read().unwrap();
+        let mut tools = write_or_recover(&self.tools);
+        let builtins = read_or_recover(&self.builtins);
         if builtins.contains(&name) {
             tracing::warn!(
                 "Rejected registration of tool '{}': cannot shadow builtin",
@@ -232,7 +234,7 @@ impl ToolRegistry {
         expected: &Arc<dyn Tool>,
         replacement: Option<Arc<dyn Tool>>,
     ) -> bool {
-        let mut tools = self.tools.write().unwrap();
+        let mut tools = write_or_recover(&self.tools);
         let Some(current) = tools.get(name) else {
             return false;
         };
@@ -254,7 +256,7 @@ impl ToolRegistry {
     /// Register a dynamic tool only when no source currently owns its name.
     pub(crate) fn register_if_absent(&self, tool: Arc<dyn Tool>) -> bool {
         let name = tool.name().to_string();
-        let mut tools = self.tools.write().unwrap();
+        let mut tools = write_or_recover(&self.tools);
         if tools.contains_key(&name) {
             return false;
         }
@@ -267,8 +269,8 @@ impl ToolRegistry {
     ///
     /// Returns true if the tool was found and removed.
     pub fn unregister(&self, name: &str) -> bool {
-        let mut tools = self.tools.write().unwrap();
-        let builtins = self.builtins.read().unwrap();
+        let mut tools = write_or_recover(&self.tools);
+        let builtins = read_or_recover(&self.builtins);
         if builtins.contains(name) {
             tracing::warn!(
                 "Rejected unregister of tool '{}': builtin tools cannot be removed through dynamic unregister",
@@ -282,15 +284,15 @@ impl ToolRegistry {
 
     /// Unregister all tools whose names start with the given prefix.
     pub fn unregister_by_prefix(&self, prefix: &str) {
-        let mut tools = self.tools.write().unwrap();
-        let builtins = self.builtins.read().unwrap();
+        let mut tools = write_or_recover(&self.tools);
+        let builtins = read_or_recover(&self.builtins);
         tools.retain(|name, _| builtins.contains(name) || !name.starts_with(prefix));
         tracing::debug!("Unregistered tools with prefix: {}", prefix);
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        let tools = self.tools.read().unwrap();
+        let tools = read_or_recover(&self.tools);
         let canonical = crate::tool_name::canonical_tool_name(name);
         if let Some(tool) = tools.get(canonical) {
             return Some(tool.clone());
@@ -327,7 +329,7 @@ impl ToolRegistry {
 
     /// Get all tool definitions for LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().unwrap();
+        let tools = read_or_recover(&self.tools);
         let mut definitions = tools
             .values()
             .filter(|tool| tool.is_model_visible())
@@ -339,7 +341,7 @@ impl ToolRegistry {
 
     /// List all registered tool names
     pub fn list(&self) -> Vec<String> {
-        let tools = self.tools.read().unwrap();
+        let tools = read_or_recover(&self.tools);
         let mut names = tools.keys().cloned().collect::<Vec<_>>();
         names.sort();
         names
@@ -388,7 +390,7 @@ impl ToolRegistry {
                         "tool has an invalid parameter schema: {error}"
                     )),
                 };
-                self.argument_validators.write().unwrap().insert(
+                write_or_recover(&self.argument_validators).insert(
                     name.to_string(),
                     ArgumentValidatorCacheEntry {
                         schema_fingerprint,
@@ -428,7 +430,7 @@ impl ToolRegistry {
 
     /// Get the number of registered tools
     pub fn len(&self) -> usize {
-        let tools = self.tools.read().unwrap();
+        let tools = read_or_recover(&self.tools);
         tools.len()
     }
 
@@ -439,7 +441,7 @@ impl ToolRegistry {
 
     /// Get the tool context
     pub fn context(&self) -> ToolContext {
-        self.context.read().unwrap().clone()
+        read_or_recover(&self.context).clone()
     }
 
     /// Return a clone of the registry's artifact store handle.
@@ -459,31 +461,31 @@ impl ToolRegistry {
 
     /// Replace the trace sink used for compact tool/program execution events.
     pub fn set_trace_sink(&self, sink: Arc<dyn TraceSink>) {
-        *self.trace_sink.write().unwrap() = sink;
+        *write_or_recover(&self.trace_sink) = sink;
     }
 
     /// Return the current trace sink.
     pub fn trace_sink(&self) -> Arc<dyn TraceSink> {
-        Arc::clone(&self.trace_sink.read().unwrap())
+        Arc::clone(&read_or_recover(&self.trace_sink))
     }
 
     /// Set the search configuration for the tool context
     pub fn set_search_config(&self, config: crate::config::SearchConfig) {
-        let mut ctx = self.context.write().unwrap();
+        let mut ctx = write_or_recover(&self.context);
         *ctx = ctx.clone().with_search_config(config);
     }
 
     /// Set a sandbox executor so that `bash` tool calls use the sandbox even
     /// when executed without an explicit `ToolContext` (i.e., via `execute()`).
     pub fn set_sandbox(&self, sandbox: std::sync::Arc<dyn crate::sandbox::BashSandbox>) {
-        let mut ctx = self.context.write().unwrap();
+        let mut ctx = write_or_recover(&self.context);
         *ctx = ctx.clone().with_sandbox(sandbox);
     }
 
     /// Set environment overrides used by subprocess-backed tools when executed
     /// without an explicit context.
     pub fn set_command_env(&self, env: Arc<HashMap<String, String>>) {
-        let mut ctx = self.context.write().unwrap();
+        let mut ctx = write_or_recover(&self.context);
         *ctx = ctx.clone().with_command_env(env);
     }
 
@@ -570,7 +572,7 @@ impl ToolRegistry {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<PreparedToolOutput> {
-        let policy = self.transform_policy.read().unwrap().clone();
+        let policy = read_or_recover(&self.transform_policy).clone();
         let transform_binding = ToolResultTransformBindingV1::from_policy(&policy)?;
         let Some(tool) = self.get(name) else {
             return Ok(PreparedToolOutput {
@@ -579,11 +581,23 @@ impl ToolRegistry {
             });
         };
 
+        let scoped;
+        let ctx = if ctx.artifact_store.is_none() && self.immutable_content_adapter.is_none() {
+            scoped = ctx.clone().with_artifact_store(self.artifact_store.clone());
+            &scoped
+        } else {
+            ctx
+        };
         let mut output = tool.execute(args, ctx).await?;
         self.compact_change_metadata(name, &mut output.metadata, ctx)
             .await?;
         let original_content = output.content.clone();
-        let truncated = transform_tool_output_with_artifact(name, &output.content, &policy);
+        let truncated = transform_tool_output_with_artifact(
+            name,
+            &output.content,
+            &policy,
+            self.immutable_content_adapter.is_none(),
+        );
         output.content = truncated.content;
         let loss_mode = truncated.loss_mode;
         let projected_artifact_reference = truncated.artifact.is_some();

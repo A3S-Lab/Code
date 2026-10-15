@@ -411,6 +411,8 @@ async fn test_tool_executor_creation() {
         names,
         [
             "ask_user",
+            "ask_user_form",
+            "background",
             "bash",
             "batch",
             "download",
@@ -689,6 +691,8 @@ fn test_tool_executor_registry() {
         names,
         [
             "ask_user",
+            "ask_user_form",
+            "background",
             "bash",
             "batch",
             "download",

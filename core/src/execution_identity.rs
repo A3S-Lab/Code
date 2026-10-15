@@ -213,6 +213,9 @@ impl ExecutionResultReceiptV1 {
 /// replay-compatible while new code can carry one typed identity through all
 /// claim, renewal, completion, and release operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Constructed today only by the identity tests; the dispatch surface that
+/// claims it lands with the execution-ledger slice.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ExecutionClaimV1 {
     identity: ExecutionIdentityV1,
     record_id: String,
@@ -220,6 +223,7 @@ pub(crate) struct ExecutionClaimV1 {
     owner_id: String,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl ExecutionClaimV1 {
     pub(crate) fn new(
         identity: ExecutionIdentityV1,

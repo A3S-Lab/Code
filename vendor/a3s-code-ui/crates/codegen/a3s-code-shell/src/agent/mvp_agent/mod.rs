@@ -792,7 +792,7 @@ pub struct MvpAgent {
     /// Shared plugin registry handle.
     pub(crate) plugin_registry_handle: a3s_code_agent::plugins::SharedPluginRegistryHandle,
     /// One-shot guard for the lazy launch-dir population of `plugin_registry_handle`. Boot-time plugin discovery is deferred past ACP `initialize`, so the shared snapshot starts empty.
-    /// The walk (cwd to git root, plus user and marketplace dirs) stalled a3s-desktop's first `initialize`.
+    /// The walk (cwd to git root, plus user and marketplace dirs) stalled a3s-work's first `initialize`.
     /// It is built once on the first session-creating call via [`Self::ensure_plugin_registry`]; this flag keeps that to a single discovery walk.
     plugin_registry_initialized: std::cell::Cell<bool>,
     /// Single-flight guard for the proactive bundle sync background task. `maybe_sync_bundle_in_background` is invoked from each post-auth path (initialize, cached-token reauth, oidc).

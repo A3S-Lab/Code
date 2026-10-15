@@ -694,3 +694,51 @@ async fn git_tool_status_works_through_remote_backend() {
         result.content
     );
 }
+
+#[test]
+fn unauthenticated_activation_refuses_non_localhost_endpoints() {
+    let err = RemoteGitBackend::new(RemoteGitBackendConfig::new(
+        "https://git.example.com",
+        "u1/s1",
+    ))
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("refuses to activate"), "got: {message}");
+    assert!(message.contains("git.example.com"), "got: {message}");
+
+    // A non-loopback IP is remote even though it looks local.
+    assert!(
+        RemoteGitBackend::new(RemoteGitBackendConfig::new("http://10.0.0.5:8080", "r")).is_err()
+    );
+    // Garbage is not loopback either — fail closed.
+    assert!(RemoteGitBackend::new(RemoteGitBackendConfig::new("not a url", "r")).is_err());
+}
+
+#[test]
+fn unauthenticated_activation_still_allows_loopback_dev_mode() {
+    for base in [
+        "http://localhost:8080",
+        "http://127.0.0.1:9911",
+        "http://[::1]:9911",
+    ] {
+        let backend = RemoteGitBackend::new(RemoteGitBackendConfig::new(base, "r"))
+            .unwrap_or_else(|e| panic!("{base} must stay constructible: {e}"));
+        assert_eq!(backend.base_url(), base);
+    }
+}
+
+#[test]
+fn authenticated_backends_activate_against_remote_endpoints() {
+    // Bearer token is enough off-loopback…
+    RemoteGitBackend::new(
+        RemoteGitBackendConfig::new("https://git.example.com", "u1/s1").bearer_token("tok"),
+    )
+    .unwrap();
+    // …and the fail-closed mTLS pair check still fires first (cert
+    // without key refuses), keeping its own pin meaningful.
+    assert!(RemoteGitBackend::new(
+        RemoteGitBackendConfig::new("https://git.example.com", "u1/s1")
+            .client_cert_pem("/dev/null")
+    )
+    .is_err());
+}

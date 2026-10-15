@@ -64,16 +64,19 @@ if [[ "$TARGET_ROOT" != /* ]]; then
   TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
 fi
 
-echo "[1/14] Checking patch hygiene"
+echo "[1/15] Checking patch hygiene"
 git diff --check
 
-echo "[2/14] Checking release version consistency"
+echo "[2/15] Checking release version consistency"
 scripts/check_release_versions.sh
 
-echo "[3/14] Checking formatting"
+echo "[3/15] Checking formatting"
 cargo fmt --all --check
 
-echo "[4/14] Checking SDK API alignment"
+echo "[4/15] Checking strict Rust lints"
+rustup run 1.97.1 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+echo "[5/15] Checking SDK API alignment"
 node scripts/generate_event_protocol_artifacts.mjs --check
 node scripts/generate_evaluation_protocol_artifacts.mjs --check
 node scripts/check_evaluation_protocol_artifacts.mjs
@@ -82,30 +85,30 @@ python3 scripts/check_capability_verification.py
 node scripts/sdk_api_alignment_check.mjs
 node sdk/node/scripts/patch-loader.mjs --check
 
-echo "[5/14] Checking rustdoc warnings"
+echo "[6/15] Checking rustdoc warnings"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 
-echo "[6/14] Running default Rust test suite"
+echo "[7/15] Running default Rust test suite"
 cargo test --workspace
 
-echo "[7/14] Running feature-gated library tests"
+echo "[8/15] Running feature-gated library tests"
 cargo test --workspace --all-features --lib
 
-echo "[8/14] Building and testing Node SDK"
+echo "[9/15] Building and testing Node SDK"
 (
   unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
   cd sdk/node && npm run build:debug && npm test && npm run test:helpers
 )
 
-echo "[9/14] Type-checking Node examples"
+echo "[10/15] Type-checking Node examples"
 (cd sdk/node/examples && npm run typecheck)
 
-echo "[10/14] Compiling Python SDK shim"
+echo "[11/15] Compiling Python SDK shim"
 PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
-echo "[11/14] Running Go SDK bridge integration"
-cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge
+echo "[12/15] Running Go SDK bridge integration"
+cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge --features advanced-harness,server
 BRIDGE_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge"
 if [ -f "$BRIDGE_BINARY.exe" ]; then
   BRIDGE_BINARY="$BRIDGE_BINARY.exe"
@@ -116,68 +119,16 @@ fi
   # on macOS; keep local preflight aligned with a larger Rust thread stack.
   A3S_CODE_GO_BRIDGE_TEST_BINARY="$BRIDGE_BINARY" \
   RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
-    go test ./...
+    go test -race -tags=release_contract ./...
 )
 
-echo "[12/14] Checking ACL env injection dry run"
+echo "[13/15] Checking ACL env injection dry run"
 A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh --dry-run
 
-echo "[13/14] Checking real-provider ACL env smoke availability"
+echo "[14/15] Checking real-provider ACL env smoke availability"
 CONFIG_HAS_DEFAULT_PROVIDER_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
-  CONFIG_HAS_DEFAULT_PROVIDER_CREDS="$(
-    python3 - "$CONFIG_FILE" <<'PY'
-import os
-import re
-import sys
-from pathlib import Path
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-default_model = re.search(r'^\s*default_model\s*=\s*"([^"]+)"', text, re.M)
-if not default_model or "/" not in default_model.group(1):
-    print(0)
-    raise SystemExit
-
-provider_name = default_model.group(1).split("/", 1)[0]
-provider = re.search(
-    rf'providers\s+"{re.escape(provider_name)}"\s*\{{(.*?)\n\}}',
-    text,
-    re.S,
-)
-if not provider:
-    print(0)
-    raise SystemExit
-
-body = provider.group(1)
-provider_env = re.sub(r"[^A-Za-z0-9]", "_", provider_name).upper()
-
-def configured_value(names):
-    for name in names:
-        match = re.search(
-            rf'\b{name}\s*=\s*(?:"([^"]*)"|env\("([^"]+)"\))',
-            body,
-        )
-        if match:
-            if match.group(1) is not None:
-                return match.group(1)
-            return os.environ.get(match.group(2))
-    return None
-
-has_key = bool(
-    os.environ.get(f"A3S_{provider_env}_API_KEY")
-    or os.environ.get("A3S_OPENAI_API_KEY")
-    or os.environ.get("MINIMAX_API_KEY")
-    or configured_value(("apiKey", "api_key"))
-)
-has_url = bool(
-    os.environ.get(f"A3S_{provider_env}_BASE_URL")
-    or os.environ.get("A3S_OPENAI_BASE_URL")
-    or os.environ.get("MINIMAX_BASE_URL")
-    or configured_value(("baseUrl", "base_url"))
-)
-print(1 if has_key and has_url else 0)
-PY
-  )"
+  CONFIG_HAS_DEFAULT_PROVIDER_CREDS="$(bash scripts/with_acl_env.sh check "$CONFIG_FILE")"
 fi
 
 if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
@@ -186,17 +137,17 @@ if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
     exit 2
   fi
   echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
-  echo "[14/14] Skipping SDK real-provider smoke"
+  echo "[15/15] Skipping SDK real-provider smoke"
 elif [ "$CONFIG_HAS_DEFAULT_PROVIDER_CREDS" = "1" ]; then
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
-  echo "[14/14] Running SDK real-provider smoke"
+  echo "[15/15] Running SDK real-provider smoke"
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing credentials for the configured default provider; real-provider smoke is required" >&2
   exit 2
 else
   echo "skipped real-provider smoke; configure credentials for the default provider before tagging" >&2
-  echo "[14/14] Skipping SDK real-provider smoke"
+  echo "[15/15] Skipping SDK real-provider smoke"
 fi
 
 echo "release preflight completed"

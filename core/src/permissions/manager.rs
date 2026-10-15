@@ -85,6 +85,13 @@ impl PermissionManager {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> PermissionDecision {
+        // Preserve session overrides and global denies for each file, then
+        // require the whole batch to satisfy the combined decision.
+        if let Some(decision) = super::read_batch::check(tool_name, args, |member| {
+            self.check(session_id, tool_name, member)
+        }) {
+            return decision;
+        }
         // Get session policy or fall back to global
         let policy = self.get_effective_policy(session_id);
 

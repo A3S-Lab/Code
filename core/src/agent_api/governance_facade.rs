@@ -148,10 +148,20 @@ impl AgentSession {
     /// Record a permission posture for the next fact-run admission.
     ///
     /// The open run keeps the policy, tool catalog, step limit, and completion
-    /// gate it froze at open. `always-approve` and `yolo` add execute-lane
-    /// allow rules. A deny rule on that policy still wins.
+    /// gate it froze at open. `yolo` adds execute-lane allow rules. A deny
+    /// rule on that policy still wins.
     pub fn set_permission_posture(&self, posture: &str) -> crate::error::Result<()> {
-        let policy = crate::permissions::policy_for_posture(posture);
+        self.set_permission_policy(crate::permissions::policy_for_posture(posture))
+    }
+
+    /// Store the exact policy the next fact-run admission freezes.
+    ///
+    /// Callers attach deny rules after [`crate::permissions::policy_for_posture`].
+    /// Deny is evaluated before allow, including a `yolo` execute lane.
+    pub fn set_permission_policy(
+        &self,
+        policy: crate::permissions::PermissionPolicy,
+    ) -> crate::error::Result<()> {
         self.close_handle.mutate_immediate(|| {
             let mut slot = self
                 .runtime_permission_policy
@@ -312,6 +322,10 @@ impl AgentSession {
     }
 
     /// Add externally produced verification reports to this session's completion evidence.
+    ///
+    /// The next `send` or `stream` copies these onto the fact surface before
+    /// replaying unsettled mutations. A Passed report whose `effect_digest`
+    /// matches the open mutation can close that turn's completion gate.
     pub fn record_verification_reports(
         &self,
         reports: impl IntoIterator<Item = crate::verification::VerificationReport>,

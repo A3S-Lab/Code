@@ -86,6 +86,7 @@ impl AgentLoop {
                 &None,
                 Some("duplicate_tool_call".to_string()),
             );
+            state.schedule_duplicate_finalization();
             return Ok(true);
         }
 

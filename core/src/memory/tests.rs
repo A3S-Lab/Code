@@ -1,6 +1,7 @@
 use super::*;
 use crate::context::ContextProvider;
 use a3s_memory::InMemoryStore;
+use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -179,6 +180,7 @@ async fn test_agent_memory_working_overflow_trims() {
         llm_extraction: false,
         llm_extraction_max_items: 5,
         llm_extraction_max_input_chars: 8_000,
+        semantic_usage_judge: None,
         extraction_queue: Arc::new(MemoryExtractionQueue::default()),
         observers: Arc::new(Vec::new()),
         durable_memory: None,
@@ -232,6 +234,7 @@ async fn test_agent_memory_short_term_trim() {
         llm_extraction: false,
         llm_extraction_max_items: 5,
         llm_extraction_max_input_chars: 8_000,
+        semantic_usage_judge: None,
         extraction_queue: Arc::new(MemoryExtractionQueue::default()),
         observers: Arc::new(Vec::new()),
         durable_memory: None,
@@ -428,4 +431,395 @@ async fn test_memory_context_provider_does_not_mechanically_store_turns() {
         .unwrap();
 
     assert_eq!(memory.stats().await.unwrap().long_term_count, 0);
+}
+
+struct NoopMaintenanceJob;
+
+#[async_trait::async_trait]
+impl MemoryMaintenanceJob for NoopMaintenanceJob {
+    async fn run(
+        &self,
+        _context: &MemoryMaintenanceContext,
+        _cancellation: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<MemoryMaintenanceOutcome> {
+        Ok(MemoryMaintenanceOutcome::new(0))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn usage_consolidation_merges_near_duplicates_and_leaves_distinct_items() {
+    let store = Arc::new(InMemoryStore::new());
+    let memory = Arc::new(AgentMemory::new(store.clone()));
+
+    let mut canonical = MemoryItem::new(
+        "The release pipeline deploys the staging environment every Tuesday morning",
+    )
+    .with_importance(0.9);
+    canonical
+        .metadata
+        .insert("usage_count".to_string(), "1".to_string());
+    let mut twin = MemoryItem::new(
+        "The release pipeline deploys the staging environment each Tuesday morning",
+    )
+    .with_importance(0.4);
+    twin.metadata
+        .insert("usage_count".to_string(), "2".to_string());
+    let distinct = MemoryItem::new("Rust toolchain for the workspace stays pinned at 1.97.1")
+        .with_importance(0.6);
+    let (canonical_id, twin_id, distinct_id) =
+        (canonical.id.clone(), twin.id.clone(), distinct.id.clone());
+    store.store(canonical).await.unwrap();
+    store.store(twin).await.unwrap();
+    store.store(distinct).await.unwrap();
+
+    let runtime = MemoryMaintenanceRuntime::start(
+        "usage-consolidation-owner",
+        memory,
+        MemoryMaintenanceOptions::new().with_usage_consolidation(std::time::Duration::from_secs(1)),
+    )
+    .unwrap();
+
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    let health = runtime.health();
+    let job = health
+        .jobs
+        .iter()
+        .find(|job| job.name == "v1_usage_consolidation")
+        .expect("built-in usage consolidation job is registered");
+    assert_eq!(job.successful_runs, 1);
+    assert_eq!(job.last_affected_items, Some(1));
+    assert!(job.last_error.is_none());
+
+    assert!(
+        store.retrieve(&twin_id).await.unwrap().is_none(),
+        "the lower-importance near-duplicate is deleted"
+    );
+    let survivor = store
+        .retrieve(&canonical_id)
+        .await
+        .unwrap()
+        .expect("the canonical twin survives");
+    assert_eq!(
+        survivor.metadata.get("usage_count").map(String::as_str),
+        Some("3"),
+        "the twin's usage counter merged into the survivor"
+    );
+    let untouched = store
+        .retrieve(&distinct_id)
+        .await
+        .unwrap()
+        .expect("the distinct item survives untouched");
+    assert_eq!(
+        untouched.metadata.get("usage_count").map(String::as_str),
+        None,
+        "distinct items neither gain usage nor merge"
+    );
+    assert_eq!(store.count().await.unwrap(), 2);
+    assert!(runtime.close().await.is_clean());
+}
+
+#[tokio::test(start_paused = true)]
+async fn usage_consolidation_never_deletes_curation_protected_twins() {
+    let store = Arc::new(InMemoryStore::new());
+    let memory = Arc::new(AgentMemory::new(store.clone()));
+
+    let pinned = MemoryItem::new(
+        "The release pipeline deploys the staging environment each Tuesday morning",
+    )
+    .with_importance(0.4)
+    .with_tag("pinned");
+    let pinned_id = pinned.id.clone();
+    let duplicate = MemoryItem::new(
+        "The release pipeline deploys the staging environment every Tuesday morning",
+    )
+    .with_importance(0.9);
+    store.store(pinned).await.unwrap();
+    store.store(duplicate).await.unwrap();
+
+    let runtime = MemoryMaintenanceRuntime::start(
+        "protected-consolidation-owner",
+        memory,
+        MemoryMaintenanceOptions::new().with_usage_consolidation(std::time::Duration::from_secs(1)),
+    )
+    .unwrap();
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        store.retrieve(&pinned_id).await.unwrap().is_some(),
+        "a pinned near-duplicate is never absorbed"
+    );
+    assert_eq!(store.count().await.unwrap(), 2);
+    assert!(runtime.close().await.is_clean());
+}
+
+#[tokio::test]
+async fn usage_consolidation_is_opt_in_and_reserves_its_job_name() {
+    // Prune defaults ON (product decision 2026-10-08), so a default-config
+    // memory carries the prune schedule; only with prune explicitly off do
+    // empty options leave maintenance with nothing to run.
+    let prune_off = MemoryConfig {
+        prune_policy: None,
+        ..MemoryConfig::default()
+    };
+    let memory = Arc::new(AgentMemory::with_config(
+        Arc::new(InMemoryStore::new()),
+        prune_off,
+    ));
+
+    // Without the built-in and without host jobs, maintenance stays disabled.
+    assert!(matches!(
+        MemoryMaintenanceRuntime::start(
+            "gating-owner",
+            memory.clone(),
+            MemoryMaintenanceOptions::new()
+        ),
+        Err(MemoryMaintenanceError::NoJobsConfigured)
+    ));
+
+    // A default-config memory with empty options registers exactly the
+    // default prune job — usage consolidation stays the explicit opt-in.
+    let default_memory = Arc::new(AgentMemory::new(Arc::new(InMemoryStore::new())));
+    let runtime = MemoryMaintenanceRuntime::start(
+        "prune-default-owner",
+        default_memory,
+        MemoryMaintenanceOptions::new(),
+    )
+    .unwrap();
+    let names: Vec<String> = runtime
+        .health()
+        .jobs
+        .iter()
+        .map(|job| job.name.clone())
+        .collect();
+    assert_eq!(names, vec!["v1_prune".to_string()]);
+    assert!(runtime.close().await.is_clean());
+
+    // The built-in name is reserved exactly like the prune job's.
+    let stolen = ScheduledMemoryMaintenance::try_new(
+        "v1_usage_consolidation",
+        std::time::Duration::from_secs(1),
+        Arc::new(NoopMaintenanceJob),
+    )
+    .unwrap();
+    assert!(matches!(
+        MemoryMaintenanceRuntime::start(
+            "gating-owner",
+            memory.clone(),
+            MemoryMaintenanceOptions::new().with_job(stolen)
+        ),
+        Err(MemoryMaintenanceError::InvalidConfiguration { field, .. }) if field == "jobs.name"
+    ));
+
+    // An invalid interval fails before the runtime starts.
+    assert!(matches!(
+        MemoryMaintenanceRuntime::start(
+            "gating-owner",
+            memory,
+            MemoryMaintenanceOptions::new()
+                .with_usage_consolidation(std::time::Duration::ZERO)
+        ),
+        Err(MemoryMaintenanceError::InvalidConfiguration { field, .. }) if field == "job.interval"
+    ));
+}
+
+/// A scripted judge: verdicts are queued per call; every call is counted.
+struct ScriptedJudge {
+    verdicts: Mutex<Vec<anyhow::Result<bool>>>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedJudge {
+    fn new(verdicts: Vec<anyhow::Result<bool>>) -> Arc<Self> {
+        Arc::new(Self {
+            verdicts: Mutex::new(verdicts),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ConsolidationJudge for ScriptedJudge {
+    async fn same_fact(&self, _left: &MemoryItem, _right: &MemoryItem) -> anyhow::Result<bool> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.verdicts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or(Ok(false))
+    }
+}
+
+/// Seed a three-item store whose first two items are lexical near-duplicates.
+async fn judged_consolidation_store() -> (Arc<InMemoryStore>, Arc<AgentMemory>, String, String) {
+    let store = Arc::new(InMemoryStore::new());
+    let memory = Arc::new(AgentMemory::new(store.clone()));
+    let canonical = MemoryItem::new(
+        "The release pipeline deploys the staging environment every Tuesday morning",
+    )
+    .with_importance(0.9);
+    let twin = MemoryItem::new(
+        "The release pipeline deploys the staging environment each Tuesday morning",
+    )
+    .with_importance(0.4);
+    let (canonical_id, twin_id) = (canonical.id.clone(), twin.id.clone());
+    store.store(canonical).await.unwrap();
+    store.store(twin).await.unwrap();
+    (store, memory, canonical_id, twin_id)
+}
+
+#[tokio::test]
+async fn a_judged_consolidation_merges_only_confirmed_pairs() {
+    let (store, memory, canonical_id, twin_id) = judged_consolidation_store().await;
+    let judge = ScriptedJudge::new(vec![Ok(true)]);
+
+    let runtime = MemoryMaintenanceRuntime::start(
+        "judged-consolidation-owner",
+        memory,
+        MemoryMaintenanceOptions::new()
+            .with_usage_consolidation(std::time::Duration::from_secs(1))
+            .with_consolidation_judge(judge.clone()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while judge.call_count() == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(runtime.close().await.is_clean());
+
+    assert_eq!(
+        judge.call_count(),
+        1,
+        "the lexical recall asked the judge once"
+    );
+    assert!(
+        store.retrieve(&twin_id).await.unwrap().is_none(),
+        "a judge-confirmed pair still merges"
+    );
+    assert!(store.retrieve(&canonical_id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_judge_rejection_or_error_skips_the_pair_without_merging() {
+    // A rejection: lexical near-duplicates that are NOT the same fact must
+    // survive separately when the judge says DIFFERENT.
+    let (store, memory, canonical_id, twin_id) = judged_consolidation_store().await;
+    let judge = ScriptedJudge::new(vec![Ok(false)]);
+    let runtime = MemoryMaintenanceRuntime::start(
+        "judged-rejection-owner",
+        memory,
+        MemoryMaintenanceOptions::new()
+            .with_usage_consolidation(std::time::Duration::from_secs(1))
+            .with_consolidation_judge(judge.clone()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while judge.call_count() == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(runtime.close().await.is_clean());
+    assert_eq!(judge.call_count(), 1);
+    assert!(
+        store.retrieve(&twin_id).await.unwrap().is_some(),
+        "a rejected pair never merges"
+    );
+    assert!(store.retrieve(&canonical_id).await.unwrap().is_some());
+
+    // An erroring judge is equally fail-closed.
+    let (store, memory, canonical_id, twin_id) = judged_consolidation_store().await;
+    let judge = ScriptedJudge::new(vec![Err(anyhow::anyhow!("model unavailable"))]);
+    let runtime = MemoryMaintenanceRuntime::start(
+        "judged-error-owner",
+        memory,
+        MemoryMaintenanceOptions::new()
+            .with_usage_consolidation(std::time::Duration::from_secs(1))
+            .with_consolidation_judge(judge.clone()),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while judge.call_count() == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(runtime.close().await.is_clean());
+    assert_eq!(
+        judge.call_count(),
+        1,
+        "the error path was actually exercised"
+    );
+    assert!(store.retrieve(&twin_id).await.unwrap().is_some());
+    assert!(store.retrieve(&canonical_id).await.unwrap().is_some());
+}
+
+#[test]
+fn llm_judge_classifies_the_closed_set_and_refuses_anything_else() {
+    use crate::llm::{LlmClient, LlmResponse, Message, ToolDefinition};
+
+    struct VerdictClient(&'static str);
+    #[async_trait]
+    impl LlmClient for VerdictClient {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            Ok(LlmResponse {
+                message: Message::assistant(self.0),
+                usage: Default::default(),
+                stop_reason: None,
+                token_logprobs: Vec::new(),
+                meta: None,
+            })
+        }
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _system: Option<&str>,
+            _tools: &[ToolDefinition],
+            _cancel_token: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+            anyhow::bail!("streaming not used by the judge")
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let left = MemoryItem::new("deploys staging every Tuesday");
+    let right = MemoryItem::new("deploys staging each Tuesday");
+
+    let same = LlmConsolidationJudge::new(Arc::new(VerdictClient("SAME.")));
+    assert!(runtime
+        .block_on(ConsolidationJudge::same_fact(&same, &left, &right))
+        .unwrap());
+    let decorated = LlmConsolidationJudge::new(Arc::new(VerdictClient(
+        "DIFFERENT — they cover different weeks",
+    )));
+    assert!(!runtime
+        .block_on(ConsolidationJudge::same_fact(&decorated, &left, &right))
+        .unwrap());
+    let garbage = LlmConsolidationJudge::new(Arc::new(VerdictClient("probably?")));
+    assert!(
+        runtime
+            .block_on(ConsolidationJudge::same_fact(&garbage, &left, &right))
+            .is_err(),
+        "a non-closed-set verdict is an error, and errors skip the pair"
+    );
+    // "NOT SAME" must never classify as SAME via the prefix rule.
+    let negated = LlmConsolidationJudge::new(Arc::new(VerdictClient("NOT SAME")));
+    assert!(runtime
+        .block_on(ConsolidationJudge::same_fact(&negated, &left, &right))
+        .is_err(),);
 }

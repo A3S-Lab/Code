@@ -5,7 +5,27 @@ use crate::workspace::WorkspaceError;
 use anyhow::Result;
 use async_trait::async_trait;
 
+/// Upper bound on files in one `patches` batch: a coordinated multi-file
+/// edit is a handful of files, not a whole-tree rewrite.
+const MAX_PATCH_ENTRIES: usize = 64;
+
+/// Upper bound on a batch's total staged content (the before side of every
+/// entry summed). It mirrors the single-file read bound — a batch may
+/// inspect at most as much content as one max-size file — so staged memory
+/// stays bounded no matter the entry count; without it, N entries of
+/// max-size files stage `before`+`after` without limit.
+const MAX_PATCH_BATCH_BYTES: usize = 16 * 1024 * 1024;
+
 pub struct PatchTool;
+
+struct StagedPatch {
+    file_path: String,
+    display_path: String,
+    workspace_path: crate::workspace::WorkspacePath,
+    before: String,
+    after: String,
+    version: Option<String>,
+}
 
 /// A parsed hunk from a unified diff
 #[derive(Debug)]
@@ -316,7 +336,10 @@ impl Tool for PatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a unified diff patch to a file. Use this for complex multi-line edits where the edit tool would be cumbersome. The diff must be in unified diff format with @@ hunk headers."
+        "Apply a unified diff patch to one file (file_path + diff), or several files in ONE \
+         all-or-nothing call (patches: [{file_path, diff}, ...] — every diff is validated \
+         in memory before any write, so a bad hunk anywhere changes nothing). Prefer the \
+         patches form when editing two or more files in the same step."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -326,18 +349,45 @@ impl Tool for PatchTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Required. Path to the file to patch. Always provide this exact field name: 'file_path'."
+                    "description": "Single-file mode: path to the file to patch. Use exactly this field name."
                 },
                 "diff": {
                     "type": "string",
-                    "description": "Required. Unified diff content with @@ hunk headers."
+                    "description": "Unified diff content with @@ hunk headers for file_path."
+                },
+                "patches": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "description": "Multi-file mode: one entry per file, applied all-or-nothing. \
+                     Takes precedence over file_path/diff.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file this entry patches."
+                            },
+                            "diff": {
+                                "type": "string",
+                                "description": "Unified diff with @@ hunk headers for this file only."
+                            }
+                        },
+                        "required": ["file_path", "diff"]
+                    }
                 }
             },
-            "required": ["file_path", "diff"],
             "examples": [
                 {
                     "file_path": "src/lib.rs",
                     "diff": "@@ -1,3 +1,3 @@\n line1\n-old_line\n+new_line\n line3"
+                },
+                {
+                    "patches": [
+                        {"file_path": "a.txt", "diff": "@@ -1 +1 @@\n-old\n+new"},
+                        {"file_path": "b.txt", "diff": "@@ -1 +1 @@\n-old\n+new"}
+                    ]
                 }
             ]
         })
@@ -350,6 +400,16 @@ impl Tool for PatchTool {
     }
 
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        // Multi-file mode: `patches: [{file_path, diff}, ...]`. Validation is
+        // all-or-nothing — every file is read and every diff applied in
+        // memory before ANY write, so a bad hunk anywhere changes nothing.
+        // The write phase is sequential CAS; on a mid-sequence failure the
+        // output names exactly which paths wrote (the workspace backend has
+        // no cross-file transaction, and pretending otherwise would hide
+        // partial state).
+        if let Some(entries) = args.get("patches").and_then(|v| v.as_array()) {
+            return self.execute_patches(entries, ctx).await;
+        }
         let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return Ok(ToolOutput::error("file_path parameter is required")),
@@ -446,9 +506,349 @@ impl Tool for PatchTool {
     }
 }
 
+impl PatchTool {
+    async fn execute_patches(
+        &self,
+        entries: &[serde_json::Value],
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        if entries.is_empty() {
+            return Ok(ToolOutput::error("patches must contain at least one entry"));
+        }
+        if entries.len() > MAX_PATCH_ENTRIES {
+            return Ok(ToolOutput::error(format!(
+                "patches accepts at most {MAX_PATCH_ENTRIES} entries per call (got {}); \
+                 split the batch",
+                entries.len()
+            )));
+        }
+        // Phase 1 — validate everything in memory. The per-entry chain
+        // (resolve → read → parse diff → apply) is prefetched
+        // CONCURRENTLY: entries are independent up to the write phase,
+        // and awaiting each chain one by one made the batch's wall clock
+        // the sum of per-file reads (each up to the text bound). The
+        // assembly below walks the results in ENTRY ORDER, so the
+        // first-error-wins semantics, the byte bound, and every error
+        // message are exactly the sequential loop's — only unobservable
+        // extra I/O on later entries after an early failure differs.
+        enum PatchFetch {
+            MissingFilePath,
+            MissingDiff {
+                file_path: String,
+            },
+            ResolveErr {
+                file_path: String,
+                error: String,
+            },
+            ReadErr {
+                display_path: String,
+                error: String,
+            },
+            ParseErr {
+                display_path: String,
+                error: String,
+            },
+            ApplyErr {
+                display_path: String,
+                error: String,
+            },
+            Ready {
+                file_path: String,
+                display_path: String,
+                workspace_path: crate::workspace::WorkspacePath,
+                before: String,
+                after: String,
+                version: Option<String>,
+            },
+        }
+        let fetched: Vec<PatchFetch> =
+            futures::future::join_all(entries.iter().map(|entry| async {
+                let Some(file_path) = entry.get("file_path").and_then(|v| v.as_str()) else {
+                    return PatchFetch::MissingFilePath;
+                };
+                let Some(diff) = entry.get("diff").and_then(|v| v.as_str()) else {
+                    return PatchFetch::MissingDiff {
+                        file_path: file_path.to_string(),
+                    };
+                };
+                let workspace_path = match ctx.resolve_workspace_path(file_path) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return PatchFetch::ResolveErr {
+                            file_path: file_path.to_string(),
+                            error: e.to_string(),
+                        }
+                    }
+                };
+                let display_path = ctx.workspace_services.display_path(&workspace_path);
+                let (before, version) =
+                    match ctx.workspace_services.read_for_edit(&workspace_path).await {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            return PatchFetch::ReadErr {
+                                display_path,
+                                error: e.to_string(),
+                            }
+                        }
+                    };
+                let hunks = match parse_hunks(diff) {
+                    Ok(hunks) => hunks,
+                    Err(e) => {
+                        return PatchFetch::ParseErr {
+                            display_path,
+                            error: e.to_string(),
+                        }
+                    }
+                };
+                let after = match apply_hunks(&before, &hunks) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        return PatchFetch::ApplyErr {
+                            display_path,
+                            error: e.to_string(),
+                        }
+                    }
+                };
+                PatchFetch::Ready {
+                    file_path: file_path.to_string(),
+                    display_path,
+                    workspace_path,
+                    before,
+                    after,
+                    version,
+                }
+            }))
+            .await;
+
+        let mut staged: Vec<StagedPatch> = Vec::with_capacity(entries.len());
+        let mut staged_bytes = 0usize;
+        for fetch in fetched {
+            match fetch {
+                PatchFetch::MissingFilePath => {
+                    return Ok(ToolOutput::error("every patches entry requires file_path"));
+                }
+                PatchFetch::MissingDiff { file_path } => {
+                    return Ok(ToolOutput::error(format!(
+                        "patches entry for {file_path} requires diff"
+                    )));
+                }
+                PatchFetch::ResolveErr { file_path, error } => {
+                    return Ok(ToolOutput::error(format!(
+                        "Failed to resolve path {file_path}: {error}"
+                    )));
+                }
+                PatchFetch::ReadErr {
+                    display_path,
+                    error,
+                } => {
+                    return Ok(ToolOutput::error(format!(
+                        "Failed to read {display_path}: {error} (nothing written)"
+                    )));
+                }
+                PatchFetch::ParseErr {
+                    display_path,
+                    error,
+                } => {
+                    return Ok(ToolOutput::error(format!(
+                        "Failed to parse diff for {display_path}: {error} (nothing written)"
+                    )));
+                }
+                PatchFetch::ApplyErr {
+                    display_path,
+                    error,
+                } => {
+                    return Ok(ToolOutput::error(format!(
+                        "Failed to apply patch to {display_path}: {error} (nothing written)"
+                    )));
+                }
+                PatchFetch::Ready {
+                    file_path,
+                    display_path,
+                    workspace_path,
+                    before,
+                    after,
+                    version,
+                } => {
+                    staged_bytes += before.len();
+                    if staged_bytes > MAX_PATCH_BATCH_BYTES {
+                        return Ok(ToolOutput::error(format!(
+                            "patches would stage {staged_bytes} bytes of file content across the \
+                             batch (bound {MAX_PATCH_BATCH_BYTES}); split the batch (nothing written)"
+                        )));
+                    }
+                    staged.push(StagedPatch {
+                        file_path,
+                        display_path,
+                        workspace_path,
+                        before,
+                        after,
+                        version,
+                    });
+                }
+            }
+        }
+        // Phase 2 — sequential writes with precise partial-state reporting.
+        for patch in &staged {
+            if let Err(error) = crate::external_observation::claim_bound_write(
+                ctx.session_id.as_deref(),
+                &ctx.workspace,
+                &patch.file_path,
+            ) {
+                return Ok(ToolOutput::error(error));
+            }
+        }
+        let mut written: Vec<&StagedPatch> = Vec::new();
+        for patch in &staged {
+            match ctx
+                .workspace_services
+                .write_for_edit(
+                    &patch.workspace_path,
+                    &patch.after,
+                    patch.version.as_deref(),
+                )
+                .await
+            {
+                Ok(_) => written.push(patch),
+                Err(e) => {
+                    let typed = crate::tools::ToolErrorKind::from_workspace_error(&e);
+                    let applied: Vec<&str> = written.iter().map(|p| p.file_path.as_str()).collect();
+                    let out = ToolOutput::error(format!(
+                        "Multi-file patch stopped at {}: {e}. Written before the failure:                          [{}]. Unwritten: [{}]. Re-read the failed file and re-apply the                          remainder.",
+                        patch.display_path,
+                        applied.join(", "),
+                        staged[written.len() + 1..]
+                            .iter()
+                            .map(|p| p.file_path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ));
+                    return Ok(match typed {
+                        Some(kind) => out.with_error_kind(kind),
+                        None => out,
+                    });
+                }
+            }
+        }
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "files".to_string(),
+            serde_json::json!(staged
+                .iter()
+                .map(|p| serde_json::json!({
+                    "file_path": p.file_path,
+                    "before": p.before,
+                    "after": p.after,
+                }))
+                .collect::<Vec<_>>()),
+        );
+        let hunks_total: usize = entries.len();
+        Ok(
+            ToolOutput::success(format!("Applied multi-file patch: {hunks_total} file(s)"))
+                .with_metadata(serde_json::Value::Object(metadata)),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_advertises_the_multi_file_patches_mode() {
+        // The mode was once unreachable: execute understood `patches`
+        // while the schema declared only file_path/diff with
+        // additionalProperties false — a conforming model could never
+        // discover the shape (the PAR-PATCH live rail caught the model
+        // retrying multi-file diffs into the single-file mode). This
+        // pin keeps the advertised surface and the dispatched surface
+        // from drifting apart again.
+        let parameters = PatchTool.parameters();
+        let properties = parameters["properties"].as_object().unwrap();
+        assert!(
+            properties.contains_key("patches"),
+            "the patches array is advertised"
+        );
+        let items = properties["patches"]["items"].as_object().unwrap();
+        let item_properties = items["properties"].as_object().unwrap();
+        assert!(item_properties.contains_key("file_path") && item_properties.contains_key("diff"));
+        assert_eq!(items["required"], serde_json::json!(["file_path", "diff"]));
+        assert_eq!(properties["patches"]["maxItems"], serde_json::json!(64));
+        assert!(
+            !parameters["additionalProperties"].as_bool().unwrap_or(true),
+            "the closed surface stays closed"
+        );
+    }
+
+    use crate::tools::types::ToolContext as PatchToolContext;
+    use crate::workspace::{
+        WorkspaceDirEntry, WorkspaceFileSystem, WorkspacePath, WorkspaceRef, WorkspaceResult,
+        WorkspaceServices, WorkspaceWriteOutcome,
+    };
+
+    /// Writes pass through; reads carry an artificial latency — a
+    /// deterministic overlap oracle for the concurrent patch staging
+    /// prefetch (the write phase stays sequential by design).
+    struct SlowReadBackend {
+        latency: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl WorkspaceFileSystem for SlowReadBackend {
+        async fn read_text(&self, _path: &WorkspacePath) -> WorkspaceResult<String> {
+            tokio::time::sleep(self.latency).await;
+            Ok("alpha-1\nalpha-2\n".to_string())
+        }
+
+        async fn write_text(
+            &self,
+            _path: &WorkspacePath,
+            _content: &str,
+        ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+            Ok(WorkspaceWriteOutcome { bytes: 0, lines: 0 })
+        }
+
+        async fn list_dir(&self, _path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Three staged reads of 60 ms must overlap: the whole batch lands
+    /// well under their 180 ms sequential sum. The 150 ms bound sits at
+    /// 2.5x the concurrent floor — wide margin, sleeps only, no spawns.
+    #[tokio::test]
+    async fn patch_staging_prefetch_overlaps_per_file_latency() {
+        let backend = std::sync::Arc::new(SlowReadBackend {
+            latency: std::time::Duration::from_millis(60),
+        });
+        let fs: std::sync::Arc<dyn WorkspaceFileSystem> = backend;
+        let services =
+            WorkspaceServices::builder(WorkspaceRef::new("slow", "slow://ws"), fs).build();
+        let ctx = PatchToolContext::new(std::env::temp_dir())
+            .with_workspace_services(services)
+            .with_session_id("patch-overlap");
+        let diff = "@@ -1,2 +1,2 @@\n alpha-1\n-alpha-2\n+alpha-two";
+
+        let started = std::time::Instant::now();
+        let result = PatchTool
+            .execute(
+                &serde_json::json!({
+                    "patches": [
+                        {"file_path": "a.txt", "diff": diff},
+                        {"file_path": "b.txt", "diff": diff},
+                        {"file_path": "c.txt", "diff": diff}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(result.success, "the batch must succeed: {}", result.content);
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "three 60ms staged reads took {elapsed:?} — the prefetch is not overlapping"
+        );
+    }
 
     #[test]
     fn test_parse_hunk_header() {
@@ -686,9 +1086,168 @@ mod tests {
         let tool = PatchTool;
         let params = tool.parameters();
         assert_eq!(params["additionalProperties"], false);
-        assert_eq!(params["required"], serde_json::json!(["file_path", "diff"]));
+        // Two modes, either/or: single-file (file_path+diff) or the
+        // multi-file patches array — so the top level carries NO
+        // required list; each patches ITEM requires its own pair.
+        assert!(params.get("required").is_none());
         let examples = params["examples"].as_array().unwrap();
         assert_eq!(examples[0]["file_path"], "src/lib.rs");
         assert!(examples[0].get("path").is_none());
+        assert!(
+            examples[1]["patches"].is_array(),
+            "the multi-file example is present"
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_file_patch_is_all_or_nothing_on_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "alpha-1\nalpha-2\n").unwrap();
+        std::fs::write(temp.path().join("b.txt"), "beta-1\nbeta-2\n").unwrap();
+
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-multi");
+
+        // The second entry's hunk does not match — nothing may change.
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "patches": [
+                        {"file_path": "a.txt", "diff": "@@ -1,2 +1,2 @@\n alpha-1\n-alpha-2\n+alpha-two"},
+                        {"file_path": "b.txt", "diff": "@@ -1,2 +1,2 @@\n beta-1\n-no-such-line\n+beta-two"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.success, "the mismatched entry must fail the batch");
+        assert!(
+            result.content.contains("nothing written"),
+            "the failure must name atomicity: {}",
+            result.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "alpha-1\nalpha-2\n",
+            "the GOOD entry must not be written when another fails validation"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("b.txt")).unwrap(),
+            "beta-1\nbeta-2\n"
+        );
+        crate::external_observation::release_session("patch-multi");
+    }
+
+    #[tokio::test]
+    async fn patch_batch_refuses_more_than_the_entry_cap() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "alpha-1\nalpha-2\n").unwrap();
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-cap");
+        let diff = "@@ -1,2 +1,2 @@\n alpha-1\n-alpha-2\n+alpha-two";
+        let entries: Vec<_> = (0..=MAX_PATCH_ENTRIES)
+            .map(|_| serde_json::json!({"file_path": "a.txt", "diff": diff}))
+            .collect();
+
+        let result = tool
+            .execute(&serde_json::json!({ "patches": entries }), &ctx)
+            .await
+            .unwrap();
+        assert!(!result.success, "the entry cap must refuse the batch");
+        assert!(
+            result.content.contains("at most")
+                && result.content.contains(&MAX_PATCH_ENTRIES.to_string()),
+            "the refusal names the bound: {}",
+            result.content
+        );
+        // The cap fires before any staging: the file is untouched.
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "alpha-1\nalpha-2\n"
+        );
+        crate::external_observation::release_session("patch-cap");
+    }
+
+    #[tokio::test]
+    async fn patch_batch_refuses_past_the_staged_byte_bound() {
+        let temp = tempfile::tempdir().unwrap();
+        // Two ~14 MiB files: each alone fits the per-file read bound, but
+        // the second entry pushes the batch's staged before-side past the
+        // 16 MiB bound mid-staging — the refusal must land before any
+        // write, keeping the batch atomic.
+        let filler = "filler\n".repeat(2 * 1024 * 1024); // ~14 MiB
+        let body = format!("alpha-1\nalpha-2\n{filler}");
+        std::fs::write(temp.path().join("big-a.txt"), &body).unwrap();
+        std::fs::write(temp.path().join("big-b.txt"), &body).unwrap();
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-bytes");
+        let diff = "@@ -1,2 +1,2 @@\n alpha-1\n-alpha-2\n+alpha-two";
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "patches": [
+                        {"file_path": "big-a.txt", "diff": diff},
+                        {"file_path": "big-b.txt", "diff": diff}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !result.success,
+            "the staged-byte bound must refuse the batch"
+        );
+        assert!(
+            result.content.contains("nothing written")
+                && result.content.contains(&MAX_PATCH_BATCH_BYTES.to_string()),
+            "the refusal names the bound and atomicity: {}",
+            result.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("big-a.txt")).unwrap(),
+            body,
+            "the staged-but-refused entry must not be written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("big-b.txt")).unwrap(),
+            body
+        );
+        crate::external_observation::release_session("patch-bytes");
+    }
+
+    #[tokio::test]
+    async fn multi_file_patch_applies_every_file() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "alpha-1\nalpha-2\n").unwrap();
+        std::fs::write(temp.path().join("b.txt"), "beta-1\nbeta-2\n").unwrap();
+
+        let tool = PatchTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("patch-multi-ok");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "patches": [
+                        {"file_path": "a.txt", "diff": "@@ -1,2 +1,2 @@\n alpha-1\n-alpha-2\n+alpha-two"},
+                        {"file_path": "b.txt", "diff": "@@ -1,2 +1,2 @@\n beta-1\n-beta-2\n+beta-two"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "output: {}", result.content);
+        assert!(std::fs::read_to_string(temp.path().join("a.txt"))
+            .unwrap()
+            .contains("alpha-two"));
+        assert!(std::fs::read_to_string(temp.path().join("b.txt"))
+            .unwrap()
+            .contains("beta-two"));
+        let metadata = result.metadata.expect("multi-file metadata");
+        assert_eq!(metadata["files"].as_array().unwrap().len(), 2);
+        crate::external_observation::release_session("patch-multi-ok");
     }
 }

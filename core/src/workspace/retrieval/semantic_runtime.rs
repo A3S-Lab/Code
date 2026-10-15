@@ -34,6 +34,7 @@ pub struct WorkspaceRetrievalRuntime {
     shutdown_timeout: std::time::Duration,
     pub(super) rerank_options: super::WorkspaceRerankOptions,
     pub(super) semantic_readiness_timeout: std::time::Duration,
+    pub(super) semantic_min_score: f32,
 }
 
 impl std::fmt::Debug for WorkspaceRetrievalRuntime {
@@ -52,9 +53,11 @@ impl WorkspaceRetrievalRuntime {
         parent_lifetime: CancellationToken,
     ) -> WorkspaceRetrievalResult<Arc<Self>> {
         options.validate_semantic_readiness_timeout()?;
+        options.validate_semantic_min_score()?;
         let limits = options.index_limits.validate()?;
         let rerank_options = options.rerank.validate()?;
         let semantic_readiness_timeout = options.semantic_readiness_timeout;
+        let semantic_min_score = options.semantic_min_score;
         let executor = EmbeddingExecutor::new(options.provider, options.embedding)?;
         let descriptor = VectorIndexDescriptor::new(executor.descriptor().dimension)
             .with_max_records(limits.max_records)
@@ -75,6 +78,7 @@ impl WorkspaceRetrievalRuntime {
             shutdown_timeout: limits.shutdown_timeout,
             rerank_options,
             semantic_readiness_timeout,
+            semantic_min_score,
         });
         let task = tokio::spawn(run_semantic_updates(
             catalog, index, executor, status, lifetime,

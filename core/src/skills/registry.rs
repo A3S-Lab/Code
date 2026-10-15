@@ -19,6 +19,21 @@ pub(crate) enum SkillRegistrySnapshotError {
     Validation { name: String, message: String },
 }
 
+/// Skill map locks are held only by registry methods, and those methods do
+/// not panic before the guard drops. A poisoned lock means a previous holder
+/// already panicked. Recovering the guard avoids a second panic on the exec
+/// path, which would kill every colocated workload.
+fn lock_read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+type DiscoveredSkillFiles = HashMap<String, (PathBuf, Arc<Skill>)>;
+
 /// Skill registry for managing available skills
 ///
 /// Provides skill registration, loading from directories, and lookup by name.
@@ -27,6 +42,25 @@ pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Arc<Skill>>>>,
     builtin_names: Arc<RwLock<HashSet<String>>>,
     validator: Arc<RwLock<Option<Arc<dyn SkillValidator>>>>,
+    /// Directory each loaded skill came from, so a directory refresh can
+    /// evict exactly that directory's skills and reload it.
+    origins: Arc<RwLock<HashMap<String, PathBuf>>>,
+    /// Directories this registry watches for changes, with the modification
+    /// stamp last seen. A directory that did not exist at load time is still
+    /// watched: `a3s code skills add` creates it later.
+    watched: Arc<std::sync::Mutex<Vec<WatchedDir>>>,
+    discovered_files: Arc<RwLock<DiscoveredSkillFiles>>,
+    excluded_files: Arc<RwLock<HashSet<PathBuf>>>,
+    /// Names left out of this run. The value is the fixed public sentence.
+    /// A directory file and an admitted generation that differ are both unused.
+    withheld: Arc<RwLock<HashMap<String, String>>>,
+}
+
+/// One watched skills directory and the stamp last observed for it.
+#[derive(Clone)]
+struct WatchedDir {
+    path: PathBuf,
+    stamp: Option<std::time::SystemTime>,
 }
 
 impl SkillRegistry {
@@ -36,6 +70,11 @@ impl SkillRegistry {
             skills: Arc::new(RwLock::new(HashMap::new())),
             builtin_names: Arc::new(RwLock::new(HashSet::new())),
             validator: Arc::new(RwLock::new(None)),
+            origins: Default::default(),
+            watched: Default::default(),
+            discovered_files: Default::default(),
+            excluded_files: Default::default(),
+            withheld: Default::default(),
         }
     }
 
@@ -58,13 +97,33 @@ impl SkillRegistry {
     /// do not affect the source registry. The validator is preserved so
     /// that session and delegated-agent registries keep the same safety policy.
     pub fn fork(&self) -> Self {
-        let skills = self.skills.read().unwrap().clone();
-        let builtin_names = self.builtin_names.read().unwrap().clone();
+        let skills = lock_read(&self.skills).clone();
+        let builtin_names = lock_read(&self.builtin_names).clone();
+        let origins = lock_read(&self.origins).clone();
+        let watched = self
+            .watched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         Self {
             skills: Arc::new(RwLock::new(skills)),
             builtin_names: Arc::new(RwLock::new(builtin_names)),
-            validator: Arc::new(RwLock::new(self.validator.read().unwrap().clone())),
+            validator: Arc::new(RwLock::new(lock_read(&self.validator).clone())),
+            origins: Arc::new(RwLock::new(origins)),
+            watched: Arc::new(std::sync::Mutex::new(watched)),
+            discovered_files: Arc::new(RwLock::new(lock_read(&self.discovered_files).clone())),
+            excluded_files: Arc::new(RwLock::new(lock_read(&self.excluded_files).clone())),
+            withheld: Arc::new(RwLock::new(lock_read(&self.withheld).clone())),
         }
+    }
+
+    /// Public sentence for a skill left out of a run.
+    ///
+    /// The discovered file and the admitted generation both stay unused.
+    pub(crate) fn withhold_sentence(name: &str) -> String {
+        format!(
+            "skill '{name}' is withheld because the discovered file and the admitted generation differ"
+        )
     }
 
     /// Freeze the compatibility registry and add one external generation.
@@ -74,9 +133,9 @@ impl SkillRegistry {
         &self,
         external: impl IntoIterator<Item = Arc<Skill>>,
     ) -> Result<Self, SkillRegistrySnapshotError> {
-        let mut skills = self.skills.read().unwrap().clone();
-        let builtin_names = self.builtin_names.read().unwrap().clone();
-        let validator = self.validator.read().unwrap().clone();
+        let mut skills = lock_read(&self.skills).clone();
+        let builtin_names = lock_read(&self.builtin_names).clone();
+        let validator = lock_read(&self.validator).clone();
         for skill in external {
             let name = skill.name.clone();
             if skills.contains_key(&name) {
@@ -96,12 +155,73 @@ impl SkillRegistry {
             skills: Arc::new(RwLock::new(skills)),
             builtin_names: Arc::new(RwLock::new(builtin_names)),
             validator: Arc::new(RwLock::new(validator)),
+            origins: Default::default(),
+            watched: Default::default(),
+            discovered_files: Default::default(),
+            excluded_files: Default::default(),
+            withheld: Default::default(),
         })
+    }
+
+    /// Drop a directory-discovered skill that still owns its name.
+    ///
+    /// A host-protected name stays, so a later projection still conflicts.
+    /// A live registration that replaced the discovered value also stays:
+    /// only the pointer still held by the discovery table is removed.
+    pub(crate) fn take_discovered(&self, name: &str) -> Option<PathBuf> {
+        if self.protects(name) {
+            return None;
+        }
+        let mut discovered = lock_write(&self.discovered_files);
+        let (path, discovered_skill) = discovered.get(name)?;
+        let path = path.clone();
+        let discovered_skill = Arc::clone(discovered_skill);
+        let mut skills = lock_write(&self.skills);
+        let still_discovered = skills
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, &discovered_skill));
+        if !still_discovered {
+            return None;
+        }
+        skills.remove(name);
+        discovered.remove(name);
+        drop(skills);
+        drop(discovered);
+        lock_write(&self.origins).remove(name);
+        Some(path)
+    }
+
+    /// Record why a name has no body in this run.
+    pub(crate) fn remember_withheld(&self, name: &str, reason: String) {
+        lock_write(&self.withheld).insert(name.to_string(), reason);
+    }
+
+    /// The fixed sentence when this run left the name unused.
+    pub(crate) fn withheld_reason(&self, name: &str) -> Option<String> {
+        lock_read(&self.withheld).get(name).cloned()
+    }
+
+    /// Exclude exact canonical files owned by an external capability projection.
+    /// Existing host registrations and unrelated same-name files remain intact.
+    pub(crate) fn exclude_discovered_files(&self, files: &[PathBuf]) {
+        let mut excluded = lock_write(&self.excluded_files);
+        excluded.extend(files.iter().cloned());
+        let discovered = lock_read(&self.discovered_files);
+        let mut skills = lock_write(&self.skills);
+        for (name, (path, skill)) in discovered.iter() {
+            if excluded.contains(path)
+                && skills
+                    .get(name)
+                    .is_some_and(|current| Arc::ptr_eq(current, skill))
+            {
+                skills.remove(name);
+            }
+        }
     }
 
     /// Set the skill validator (safety gate)
     pub fn set_validator(&self, validator: Arc<dyn SkillValidator>) {
-        *self.validator.write().unwrap() = Some(validator);
+        *lock_write(&self.validator) = Some(validator);
     }
 
     /// Register a skill with validation
@@ -113,7 +233,7 @@ impl SkillRegistry {
         skill: Arc<Skill>,
     ) -> Result<(), super::validator::SkillValidationError> {
         // Run validator if set
-        if let Some(ref validator) = *self.validator.read().unwrap() {
+        if let Some(ref validator) = *lock_read(&self.validator) {
             validator.validate(&skill)?;
         }
         self.register_unchecked(skill);
@@ -125,8 +245,8 @@ impl SkillRegistry {
     /// If a future embedded skill set contains the same name, this replacement
     /// is treated as external for global tool-restriction purposes.
     pub fn register_unchecked(&self, skill: Arc<Skill>) {
-        let mut skills = self.skills.write().unwrap();
-        self.builtin_names.write().unwrap().remove(&skill.name);
+        let mut skills = lock_write(&self.skills);
+        lock_write(&self.builtin_names).remove(&skill.name);
         skills.insert(skill.name.clone(), skill);
     }
 
@@ -140,13 +260,13 @@ impl SkillRegistry {
         &self,
         skill: Arc<Skill>,
     ) -> Result<(bool, Option<Arc<Skill>>), super::validator::SkillValidationError> {
-        if let Some(ref validator) = *self.validator.read().unwrap() {
+        if let Some(ref validator) = *lock_read(&self.validator) {
             validator.validate(&skill)?;
         }
 
         let name = skill.name.clone();
-        let mut skills = self.skills.write().unwrap();
-        let builtin_names = self.builtin_names.read().unwrap();
+        let mut skills = lock_write(&self.skills);
+        let builtin_names = lock_read(&self.builtin_names);
         if builtin_names.contains(&name) {
             tracing::warn!(
                 skill = %name,
@@ -168,7 +288,7 @@ impl SkillRegistry {
         expected: &Arc<Skill>,
         replacement: Option<Arc<Skill>>,
     ) -> bool {
-        let mut skills = self.skills.write().unwrap();
+        let mut skills = lock_write(&self.skills);
         let Some(current) = skills.get(name) else {
             return false;
         };
@@ -189,8 +309,8 @@ impl SkillRegistry {
 
     fn register_builtin(&self, skill: Arc<Skill>) {
         let name = skill.name.clone();
-        self.skills.write().unwrap().insert(name.clone(), skill);
-        self.builtin_names.write().unwrap().insert(name);
+        lock_write(&self.skills).insert(name.clone(), skill);
+        lock_write(&self.builtin_names).insert(name);
     }
 
     /// Register a host-owned skill and protect the name from later replacement.
@@ -198,15 +318,20 @@ impl SkillRegistry {
         self.register_builtin(skill);
     }
 
+    /// A host-owned name is not replaced by a projected Use skill.
+    pub fn protects(&self, name: &str) -> bool {
+        lock_read(&self.builtin_names).contains(name)
+    }
+
     /// Get a skill by name
     pub fn get(&self, name: &str) -> Option<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         skills.get(name).cloned()
     }
 
     /// List all registered skill names
     pub fn list(&self) -> Vec<String> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         let mut names = skills.keys().cloned().collect::<Vec<_>>();
         names.sort();
         names
@@ -214,7 +339,7 @@ impl SkillRegistry {
 
     /// Get all registered skills
     pub fn all(&self) -> Vec<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         let mut values = skills.values().cloned().collect::<Vec<_>>();
         values.sort_by(|a, b| a.name.cmp(&b.name));
         values
@@ -225,17 +350,27 @@ impl SkillRegistry {
     /// Recursively scans the directory for skill files and attempts to parse them.
     ///
     /// Supported layouts:
-    /// - `path/to/skill.md`
-    /// - `path/to/skill/SKILL.md`
+    /// - `path/to/skill.md` at the scan root
+    /// - `path/to/skill/SKILL.md` at any nested directory
+    ///
+    /// Other Markdown files under a skill package (`README.md`,
+    /// `examples/*.md`, `references/*.md`) are not skill candidates.
     ///
     /// Candidate files are processed in deterministic sorted order. A symlink
-    /// whose resolved path leaves this directory is not loaded. Files that
-    /// fail to parse are skipped with debug logging; validation failures are
-    /// logged as warnings.
+    /// whose resolved path leaves the directory being scanned is not loaded.
+    /// A direct child that is itself a directory symlink is a published skill
+    /// package: that package is loaded, and a link inside it that leaves the
+    /// package is not. A missing directory is logged at error and loads
+    /// nothing. A candidate that fails to parse is logged at error with its
+    /// path. Validation failures are logged as warnings.
     pub fn load_from_dir(&self, dir: impl AsRef<Path>) -> anyhow::Result<usize> {
         let dir = dir.as_ref();
 
         if !dir.exists() {
+            tracing::error!(
+                path = %dir.display(),
+                "skill directory does not exist; no skills were loaded from it"
+            );
             return Ok(0);
         }
 
@@ -243,16 +378,22 @@ impl SkillRegistry {
             anyhow::bail!("Path is not a directory: {}", dir.display());
         }
 
+        self.note_watched(dir);
         let mut loaded = 0;
         for candidate in Self::collect_skill_candidates(dir)? {
+            let canonical = std::fs::canonicalize(&candidate)?;
+            if lock_read(&self.excluded_files).contains(&canonical) {
+                continue;
+            }
             match Skill::from_file(&candidate) {
                 Ok(skill) => {
                     let name = skill.name.clone();
-                    if skill.allowed_tools.is_none() {
+                    if skill.kind == crate::skills::SkillKind::Tool && skill.allowed_tools.is_none()
+                    {
                         tracing::warn!(
                             skill = %name,
                             path = %candidate.display(),
-                            "Skill omits allowed-tools; Skill invocation is fail-secure and will deny tool use until allowed-tools is declared"
+                            "Tool skill omits allowed-tools; invocation denies tools until allowed-tools is declared"
                         );
                     } else if skill.uses_legacy_allowed_tools_syntax() {
                         tracing::warn!(
@@ -269,8 +410,12 @@ impl SkillRegistry {
                             "Duplicate skill name encountered during directory load — overriding previous definition"
                         );
                     }
-                    match self.register(skill) {
-                        Ok(()) => loaded += 1,
+                    lock_write(&self.origins).insert(name.clone(), dir.to_path_buf());
+                    match self.register(Arc::clone(&skill)) {
+                        Ok(()) => {
+                            lock_write(&self.discovered_files).insert(name, (canonical, skill));
+                            loaded += 1;
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 "Skill validation failed for {}: {}",
@@ -281,12 +426,85 @@ impl SkillRegistry {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!("Skipped {}: {}", candidate.display(), e);
+                    tracing::error!(
+                        path = %candidate.display(),
+                        error = %e,
+                        "skill candidate was not loaded"
+                    );
                 }
             }
         }
 
         Ok(loaded)
+    }
+
+    /// Watch a skill directory for changes without loading it now. A
+    /// directory that does not exist yet is still watched: an install creates
+    /// it later and the next refresh picks the package up.
+    pub fn watch_dir(&self, dir: impl AsRef<Path>) {
+        self.note_watched(dir.as_ref());
+    }
+
+    fn note_watched(&self, dir: &Path) {
+        let stamp = dir_stamp(dir);
+        let mut watched = self
+            .watched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match watched.iter_mut().find(|entry| entry.path == dir) {
+            Some(entry) => entry.stamp = stamp,
+            None => watched.push(WatchedDir {
+                path: dir.to_path_buf(),
+                stamp,
+            }),
+        }
+    }
+
+    /// Re-scan watched directories whose modification stamp changed and drop
+    /// skills that disappeared from them. Returns how many directories were
+    /// reloaded. This is what makes the skills directory live for a running
+    /// session: `a3s code skills add` (or any file change) shows up on the
+    /// next context query without rebuilding the session.
+    pub fn refresh_watched_dirs(&self) -> usize {
+        let watched = self
+            .watched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let mut reloaded = 0;
+        for WatchedDir {
+            path: ref dir,
+            stamp: last,
+        } in watched
+        {
+            let stamp = dir_stamp(dir);
+            if stamp == last {
+                continue;
+            }
+            // Evict exactly this directory's skills, then reload it.
+            {
+                let mut origins = lock_write(&self.origins);
+                let mut skills = lock_write(&self.skills);
+                let stale: Vec<String> = origins
+                    .iter()
+                    .filter(|(_, origin)| *origin == dir)
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                for name in stale {
+                    origins.remove(&name);
+                    skills.remove(&name);
+                }
+            }
+            if let Err(error) = self.load_from_dir(dir) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    %error,
+                    "skill directory refresh failed"
+                );
+            }
+            reloaded += 1;
+        }
+        reloaded
     }
 
     fn collect_skill_candidates(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -302,12 +520,23 @@ impl SkillRegistry {
                 .unwrap_or(false)
         }
 
+        /// A directory symlink that is a direct child of the scan root. Hosts
+        /// publish a skill by linking `~/.agents/skills/<name>` at the package.
+        /// The link target is that package's containment root.
+        fn is_published_package(path: &Path) -> bool {
+            std::fs::symlink_metadata(path)
+                .map(|meta| meta.file_type().is_symlink())
+                .unwrap_or(false)
+                && path.is_dir()
+        }
+
         fn visit(
             dir: &Path,
             root: &Path,
             out: &mut Vec<PathBuf>,
             seen: &mut HashSet<PathBuf>,
             depth: usize,
+            admit_packages: bool,
         ) -> anyhow::Result<()> {
             if depth > MAX_DEPTH {
                 tracing::debug!(
@@ -334,6 +563,12 @@ impl SkillRegistry {
 
             for entry in entries {
                 let path = entry.path();
+                if admit_packages && depth == 0 && is_published_package(&path) {
+                    if let Ok(package_root) = std::fs::canonicalize(&path) {
+                        visit(&path, &package_root, out, seen, 0, false)?;
+                    }
+                    continue;
+                }
                 if !stays_in_root(root, &path) {
                     continue;
                 }
@@ -390,8 +625,6 @@ impl SkillRegistry {
                         out.push(skill_md);
                     }
                     visit_children(&path, root, out, seen, depth + 1)?;
-                } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                    out.push(path);
                 }
             }
             Ok(())
@@ -401,7 +634,7 @@ impl SkillRegistry {
             .with_context(|| format!("Failed to resolve skill directory: {}", dir.display()))?;
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        visit(dir, &root, &mut out, &mut seen, 0)?;
+        visit(dir, &root, &mut out, &mut seen, 0, true)?;
         out.sort();
         out.dedup();
         Ok(out)
@@ -418,19 +651,19 @@ impl SkillRegistry {
 
     /// Remove a skill by name
     pub fn remove(&self, name: &str) -> Option<Arc<Skill>> {
-        let mut skills = self.skills.write().unwrap();
+        let mut skills = lock_write(&self.skills);
         skills.remove(name)
     }
 
     /// Clear all skills
     pub fn clear(&self) {
-        let mut skills = self.skills.write().unwrap();
+        let mut skills = lock_write(&self.skills);
         skills.clear();
     }
 
     /// Get the number of registered skills
     pub fn len(&self) -> usize {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         skills.len()
     }
 
@@ -441,7 +674,7 @@ impl SkillRegistry {
 
     /// Get all skills of a specific kind
     pub fn by_kind(&self, kind: super::SkillKind) -> Vec<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         let mut values = skills
             .values()
             .filter(|s| s.kind == kind)
@@ -457,8 +690,8 @@ impl SkillRegistry {
     /// `Skill` invocation, but those allowlists must not make the default
     /// registry globally read-only. User-registered skills remain external.
     pub fn global_tool_restricting_skills(&self) -> Vec<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
-        let builtin_names = self.builtin_names.read().unwrap();
+        let skills = lock_read(&self.skills);
+        let builtin_names = lock_read(&self.builtin_names);
         let mut values = skills
             .values()
             .filter(|skill| {
@@ -474,7 +707,7 @@ impl SkillRegistry {
 
     /// Get all skills with a specific tag
     pub fn by_tag(&self, tag: &str) -> Vec<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         let mut values = skills
             .values()
             .filter(|s| s.tags.iter().any(|t| t == tag))
@@ -494,7 +727,7 @@ impl SkillRegistry {
 
     /// Search discoverable instruction/tool skills by name, tag, description, or content.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<Skill>> {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
         let query_lower = query.to_lowercase();
         let query_tokens: Vec<&str> = query_lower
             .split_whitespace()
@@ -581,7 +814,7 @@ impl SkillRegistry {
     /// `match_skills` remains a helper for hosts that want keyword injection,
     /// but the default agent loop does not call it.
     pub fn to_system_prompt(&self) -> String {
-        let skills = self.skills.read().unwrap();
+        let skills = lock_read(&self.skills);
 
         let has_discoverable_skill = skills.values().any(|s| Self::is_discoverable_skill(s));
 
@@ -621,3 +854,33 @@ impl Default for SkillRegistry {
 #[cfg(test)]
 #[path = "registry/tests.rs"]
 mod tests;
+
+/// Modification stamp for a watched directory: the directory mtime plus the
+/// mtimes of its immediate children, so a package added or removed one level
+/// down is detected even on filesystems whose directory mtime does not
+/// change for nested writes.
+fn dir_stamp(dir: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::symlink_metadata(dir).ok()?;
+    let mut stamp = meta.modified().ok()?;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            // A published package is a symlink. Its own mtime must count even
+            // when the target directory is older than this scan root.
+            let path = entry.path();
+            for child in [
+                std::fs::symlink_metadata(&path).ok(),
+                std::fs::metadata(&path).ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Ok(modified) = child.modified() {
+                    if modified > stamp {
+                        stamp = modified;
+                    }
+                }
+            }
+        }
+    }
+    Some(stamp)
+}

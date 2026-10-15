@@ -3,6 +3,7 @@
 //! The product configuration is the A3S ACL file. An `XAI_API_KEY` in the
 //! environment is not consulted.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use a3s_code_core::config::ProviderConfig;
@@ -67,8 +68,25 @@ pub struct MergedLaunch {
 /// Merge the CLI layer stack and return the model the TUI will call.
 pub fn merge_launch_layers(layers: &LaunchLayers) -> Result<MergedLaunch, String> {
     let sources = layer_sources(layers)?;
-    let mut config = CodeConfig::from_acl(&sources.join("\n"))
+    let layer_acls = sources
+        .iter()
+        .map(|layer| layer.acl.as_str())
+        .collect::<Vec<_>>();
+    let mut config = CodeConfig::from_acl_layers(&layer_acls)
         .map_err(|error| format!("failed to parse merged A3S ACL: {error}"))?;
+    // Host-authoritative blocks, including continuation policy, stay with the
+    // trusted layers — the same choke point the ACP launch path applies
+    // (ratified 2026-10-09). The thin scaffold has no tracing; the
+    // withheld signal rides stderr.
+    let withheld =
+        a3s_code_core::config::withhold_untrusted_host_authoritative_blocks(&mut config, &sources);
+    if !withheld.is_empty() {
+        eprintln!(
+            "workspace configuration layer sets host-authoritative block(s) {withheld:?}; \
+             host-authoritative settings stay with the host layer \
+             (~/.a3s/config.acl or --config)"
+        );
+    }
     normalize_providers(&mut config.providers);
     apply_default_model_env(&mut config)?;
     let model_id = config
@@ -105,9 +123,9 @@ pub fn merge_launch_layers(layers: &LaunchLayers) -> Result<MergedLaunch, String
     })
 }
 
-fn layer_sources(layers: &LaunchLayers) -> Result<Vec<String>, String> {
+fn layer_sources(layers: &LaunchLayers) -> Result<Vec<a3s_code_core::config::LayerAcl>, String> {
     if let Some(path) = layers.explicit_config.as_deref() {
-        return Ok(vec![read_layer(path)?]);
+        return Ok(vec![trusted_layer(read_layer(path)?)]);
     }
     let mut sources = Vec::new();
     let user = layers
@@ -116,14 +134,20 @@ fn layer_sources(layers: &LaunchLayers) -> Result<Vec<String>, String> {
         .map(|home| home.join(".a3s/config.acl"))
         .filter(|path| path.is_file());
     if let Some(path) = user.as_deref() {
-        sources.push(read_layer(path)?);
+        sources.push(trusted_layer(read_layer(path)?));
     }
     if let Some(path) = workspace_config_path(&layers.workspace) {
         if user
             .as_deref()
             .is_none_or(|user_path| !same_file(user_path, &path))
         {
-            sources.push(read_layer(&path)?);
+            // An automatically discovered workspace layer is untrusted
+            // repository content: it may configure the agent, never the
+            // host-authoritative blocks.
+            sources.push(a3s_code_core::config::LayerAcl {
+                trusted: false,
+                acl: read_layer(&path)?,
+            });
         }
     }
     if sources.is_empty() {
@@ -135,9 +159,31 @@ fn layer_sources(layers: &LaunchLayers) -> Result<Vec<String>, String> {
     Ok(sources)
 }
 
+fn trusted_layer(acl: String) -> a3s_code_core::config::LayerAcl {
+    a3s_code_core::config::LayerAcl { trusted: true, acl }
+}
+
+/// Size-bounded, symlink-refusing layer read (core's `bounded_io` is
+/// `pub(crate)`, so the thin scaffold keeps a local twin — the same split
+/// the ACP layer and the CLI made).
 fn read_layer(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path)
-        .map_err(|error| format!("could not read A3S ACL {}: {error}", path.display()))
+    const MAX_ACL_LAYER_BYTES: u64 = 1024 * 1024;
+    let read = || -> std::io::Result<String> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.is_symlink() {
+            return Err(std::io::Error::other("layer must be a regular file"));
+        }
+        if metadata.len() > MAX_ACL_LAYER_BYTES {
+            return Err(std::io::Error::other("layer exceeds the 1 MiB bound"));
+        }
+        let file = std::fs::File::open(path)?;
+        // take() bounds the read even when the file grows between stat
+        // and read.
+        let mut acl = String::new();
+        std::io::Read::read_to_string(&mut file.take(MAX_ACL_LAYER_BYTES + 1), &mut acl)?;
+        Ok(acl)
+    };
+    read().map_err(|error| format!("could not read A3S ACL {}: {error}", path.display()))
 }
 
 fn workspace_config_path(workspace: &Path) -> Option<PathBuf> {
@@ -170,10 +216,11 @@ fn apply_default_model_env(config: &mut CodeConfig) -> Result<(), String> {
     let Some((provider, id)) = model.split_once('/') else {
         return Err("A3S_DEFAULT_MODEL must use the provider/model format".to_string());
     };
-    if provider.is_empty() || id.is_empty() || id.contains('/') {
-        return Err(
-            "A3S_DEFAULT_MODEL must use one non-empty provider/model identifier".to_string(),
-        );
+    // Model ids may themselves contain `/` (e.g. boyue/bailian/...); the
+    // core resolver splits on the first slash, so both parts only need to
+    // be non-empty. (The ACP path already accepts these ids.)
+    if provider.is_empty() || id.is_empty() {
+        return Err("A3S_DEFAULT_MODEL must use a non-empty provider/model identifier".to_string());
     }
     config.default_model = Some(model);
     Ok(())

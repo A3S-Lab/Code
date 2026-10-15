@@ -427,7 +427,7 @@ close is a typed Run failure rather than a warning-only condition.
 The official
 [CLI adapter](https://github.com/A3S-Lab/CLI/commit/df2e081aff168bb0d5d7db895962583559979ad6)
 and
-[Desktop adapter](https://github.com/A3S-Lab/Desktop/commit/23f00e2bc8b555b406f6bcfe2df92b7c8c17a163)
+[Work adapter](https://github.com/A3S-Lab/Work/commit/23f00e2bc8b555b406f6bcfe2df92b7c8c17a163)
 complete the first host cut over Core
 [`d1f70d5`](https://github.com/A3S-Lab/Code/commit/d1f70d57bcdbb3459d3205b647d61ebc0a00a940).
 The resident CLI watcher builds one complete verified managed MCP, Skill,
@@ -445,7 +445,7 @@ its Registry watcher has been cancelled and joined and the Session catalog is
 proven equal to its pre-setup stamp. Any visible catalog change or incomplete
 shutdown fails closed.
 
-A3S Desktop requires the reserved `scoped-v1` process contract. Discovery
+A3S Work requires the reserved `scoped-v1` process contract. Discovery
 probes the exact side-effect-free help route rather than trusting SemVer alone,
 and every launch passes the mode as shell-free arguments. Required setup may
 perform policy-authorized first-use installation, but offline and
@@ -454,7 +454,7 @@ Code waits for the atomic receipt, stops discovery, and verifies that the final
 Session stamp still matches it. A successful result returns
 `a3s.code.scoped-capability-runtime.v1` with the positive Code generation and
 digest plus the complete `a3s.use.capability-snapshot-cursor.v1` cursor.
-Desktop rejects absent or malformed evidence as
+Work rejects absent or malformed evidence as
 `protocol.capability-runtime-invalid`.
 
 Cancellation during setup remains `operation.cancelled`. Stream creation,
@@ -761,7 +761,7 @@ exact per-connection launcher selected for that generation. Code never scans a
 package directory, chooses a provider, derives a command or URL from package
 metadata, computes Grants, or reconnects by mutable name after failure.
 
-The official one-shot CLI/Desktop host implements that boundary with a typed
+The official one-shot CLI/Work host implements that boundary with a typed
 lazy resolver. It reads only trusted user or explicit ACL authority and starts
 the configured Runtime/private Gateway only when an admitted Streamable HTTP
 surface requests its opaque provider/reference/path evidence. The resolved URL
@@ -1054,7 +1054,7 @@ concerns and produce typed contributions.
 | `CAP-COMP1` | Delivered | Real Agent execution composes orchestration/provider/Tool Turns, recursive Skill/Task Subtasks, Turn-supervised bridges/effects, and Run-supervised background work under one downward-only cancellation tree | Runtime tests prove orchestration and Tool Turns, stream/effect settlement, `Run -> Turn -> Subtask -> Turn` recursion, fail-closed stale promotion, and Run-owned Task/memory settlement before lease release |
 | `CAP-PROJ1` | Delivered | Closed typed runtime values, immutable projected catalogs, typestate contribution transactions, generation/digest CAS publication, and final-lease retirement | Failed prepare, validation, cancellation, dropped transaction, and commit-race paths leave the current generation unchanged and retain every prepared effect for reverse cleanup |
 | `CAP-DEP1` | Delivered | Bounded surface readiness DAG | Only published surface edges are ordered; Code does not resolve packages or become general DI |
-| `HOST-CAP1` | Delivered | Core exposes one atomic projection contract; the resident CLI publishes one exact Use managed MCP/Skill/reviewed Runtime Tool/Knowledge Surface/dependency-closed Flow/UI generation, while CLI/Desktop one-shot execution publishes its bounded managed-MCP/Skill/UI cut | Old Runs and host handles retain N and its exact Use lease, new admissions see N+1, every new Run/checkpoint records its catalog and ceiling identity, recovery rejects N/N+1 drift or bootstraps one exact historical batch on a fresh Session, failed preparation never advances the generation, immutable OKF readiness remains distinct from singular cognitive Knowledge, one-shot watchers stop before Run admission, scoped HTTP Runtime/Gateway composition is lazy and Session-owned, and Desktop requires exact Code/Use evidence |
+| `HOST-CAP1` | Delivered | Core exposes one atomic projection contract; the resident CLI publishes one exact Use managed MCP/Skill/reviewed Runtime Tool/Knowledge Surface/dependency-closed Flow/UI generation, while CLI/Work one-shot execution publishes its bounded managed-MCP/Skill/UI cut | Old Runs and host handles retain N and its exact Use lease, new admissions see N+1, every new Run/checkpoint records its catalog and ceiling identity, recovery rejects N/N+1 drift or bootstraps one exact historical batch on a fresh Session, failed preparation never advances the generation, immutable OKF readiness remains distinct from singular cognitive Knowledge, one-shot watchers stop before Run admission, scoped HTTP Runtime/Gateway composition is lazy and Session-owned, and Work requires exact Code/Use evidence |
 | `CAP-PROFILE1` | Delivered | Run-frozen typed Tool presentation over the same pinned executor values | Permission filtering precedes Profile projection; name/schema identity and deterministic order are preserved, code mode rephrases only the existing `program` definition, child runs cannot broaden, and exact Session resume plus Rust/Node.js/Python/Go parity pass |
 | `HOST-AGENT1` | Delivered | Core projects Agent definitions into one Run-frozen registry shared by automatic and Tool-driven delegation | Canonical alias conflicts fail before publication, compatibility registration cannot shadow a published Agent, N Runs delegate through N after an N+1 cutover, and the exact N Use lease remains held through foreground child completion |
 | `HOST-COMMAND1` | Delivered | Core dispatches blocking and streaming slash Commands through one Run-frozen registry | Built-in and compatibility conflicts fail before publication, legacy registration cannot shadow a published Command, N execution remains on N after an N+1 cutover, and the exact N Use lease remains held through Command execution |
@@ -1071,7 +1071,7 @@ concerns and produce typed contributions.
 identity and scope kernels. `CAP-DEP1` now orders only their published surface
 edges through a bounded generation-bound readiness plan. Delivered
 `HOST-CAP1` hosts the typed capability projection atomically in Core, the
-resident CLI, one-shot Code Exec, and Desktop. `HOST-AGENT1` adds Core Agent projection
+resident CLI, one-shot Code Exec, and Work. `HOST-AGENT1` adds Core Agent projection
 and delegation to that same transaction and Run lease. `HOST-COMMAND1` adds
 blocking and streaming slash-command dispatch to that admission boundary.
 `HOST-HOOK1` adds generation-exact Hook bindings, composed policy, and

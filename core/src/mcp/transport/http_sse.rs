@@ -10,6 +10,7 @@
 //! - **Notifications (inbound)**: Received via SSE stream from the server
 //! - **Reconnection**: Automatic reconnect with exponential backoff on SSE disconnect
 
+use super::notifications::{NotificationReceiver, NotificationSender};
 use super::McpTransport;
 use crate::llm::http::build_reqwest_client;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
@@ -20,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 /// Default request timeout
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -41,7 +42,7 @@ pub struct HttpSseTransport {
     #[allow(dead_code)]
     headers: HashMap<String, String>,
     /// Notification receiver (from SSE stream)
-    notification_rx: RwLock<Option<mpsc::Receiver<McpNotification>>>,
+    notification_rx: NotificationReceiver,
     /// Connected flag (shared with SSE listener)
     connected: Arc<AtomicBool>,
     /// Request timeout
@@ -101,7 +102,7 @@ impl HttpSseTransport {
         }
 
         // Create notification channel
-        let (notification_tx, notification_rx) = mpsc::channel::<McpNotification>(256);
+        let (notification_tx, notification_rx) = NotificationReceiver::channel(256);
 
         // Spawn SSE listener
         let sse_url = format!("{}/sse", base_url);
@@ -117,7 +118,7 @@ impl HttpSseTransport {
             base_url,
             client,
             headers,
-            notification_rx: RwLock::new(Some(notification_rx)),
+            notification_rx,
             connected,
             request_timeout: Duration::from_secs(request_timeout_secs),
             sse_abort: Mutex::new(Some(sse_handle.abort_handle())),
@@ -128,7 +129,7 @@ impl HttpSseTransport {
     async fn sse_listener(
         client: Client,
         url: String,
-        tx: mpsc::Sender<McpNotification>,
+        tx: NotificationSender,
         connected: Arc<AtomicBool>,
     ) {
         let mut reconnect_delay = DEFAULT_RECONNECT_BASE_MS;
@@ -164,16 +165,9 @@ impl HttpSseTransport {
                             Ok(bytes) => {
                                 buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-                                // Process complete SSE events (double newline separated)
-                                while let Some(pos) = buffer.find("\n\n") {
-                                    let event_text = buffer[..pos].to_string();
-                                    buffer = buffer[pos + 2..].to_string();
-
+                                for event_text in crate::sse::take_sse_events(&mut buffer, false) {
                                     if let Some(notification) = Self::parse_sse_event(&event_text) {
-                                        if tx.send(notification).await.is_err() {
-                                            tracing::debug!("SSE notification channel closed");
-                                            return;
-                                        }
+                                        tx.send(notification).await;
                                     }
                                 }
                             }
@@ -181,6 +175,12 @@ impl HttpSseTransport {
                                 tracing::warn!(error = %e, "SSE stream error");
                                 break;
                             }
+                        }
+                    }
+
+                    for event_text in crate::sse::take_sse_events(&mut buffer, true) {
+                        if let Some(notification) = Self::parse_sse_event(&event_text) {
+                            tx.send(notification).await;
                         }
                     }
 
@@ -296,11 +296,11 @@ impl McpTransport for HttpSseTransport {
     }
 
     fn notifications(&self) -> mpsc::Receiver<McpNotification> {
-        let mut rx_guard = self.notification_rx.blocking_write();
-        rx_guard.take().unwrap_or_else(|| {
-            let (_, rx) = mpsc::channel(1);
-            rx
-        })
+        self.notification_rx.take()
+    }
+
+    fn tool_list_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.notification_rx.tool_list_changes())
     }
 
     async fn close(&self) -> Result<()> {

@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 ///        TurnResultMetadata for per-component token attribution.
 /// v1.18: Added `shell_version`: the a3s-shell agent binary version, distinct
 ///        from `client_version` (the UI client's version). They coincide for the
-///        TUI but differ for embedding clients like a3s-desktop.
+///        TUI but differ for embedding clients like a3s-work.
 /// v1.19: Added `workspace_type`: classifies the working directory as "git",
 ///        "project" (non-git project dir), or "non_project" (system/temp/home).
 /// v1.20: Added `sandbox`: resolved OS sandbox profile and whether enforcement is active.
@@ -122,7 +122,7 @@ pub struct PromptMetadata {
     /// (`a3s_code_version::VERSION`). Self-reported by the agent, so it reflects
     /// the binary actually running. Distinct from `client_version`, which is the
     /// UI client's version — for the TUI these coincide, but for embedding clients
-    /// like a3s-desktop the bundled shell differs from the app version.
+    /// like a3s-work the bundled shell differs from the app version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_version: Option<String>,
     /// Resolved OS sandbox profile and whether enforcement is active.

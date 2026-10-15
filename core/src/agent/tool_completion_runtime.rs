@@ -5,6 +5,16 @@ use crate::llm::ToolCall;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+fn admit_surface_form(
+    session_id: Option<&str>,
+    tool_id: &str,
+    prompt: &str,
+) -> Option<crate::ask_user::UserQuestionV1> {
+    let run_id = session_id.unwrap_or("run");
+    let question_id = format!("surface-{run_id}-{tool_id}");
+    crate::ask_user::begin(run_id, &question_id, prompt, &[], true).ok()
+}
+
 pub(super) struct ToolCompletionInput<'a> {
     pub(super) tool_call: &'a ToolCall,
     pub(super) event_tx: &'a Option<mpsc::Sender<AgentEvent>>,
@@ -28,6 +38,10 @@ impl AgentLoop {
         } = input;
         let tool_duration = tool_start.elapsed();
         crate::telemetry::record_tool_result(normalized.exit_code, tool_duration);
+        normalize_mutation_metadata_path(
+            &self.tool_context.workspace,
+            normalized.metadata.as_mut(),
+        );
         state.mutations.observe_tool(
             &tool_call.name,
             normalized.exit_code,
@@ -55,10 +69,15 @@ impl AgentLoop {
         }
         self.attach_mutation_observation(tool_call, &mut normalized)
             .await;
-        Self::collect_verification_report(&mut state.verification_reports, &normalized.metadata);
-        self.bind_or_synthesize_mutation_path_verification(state, tool_call, &normalized);
+        self.record_current_call_verification(
+            tool_call,
+            &mut normalized,
+            &mut state.mutations,
+            &mut state.verification_reports,
+        );
 
         let output = normalized.output.clone();
+        let mut model_output = output.clone();
 
         state.remember_tool_signature(&tool_call.name, &tool_call.args, normalized.is_error);
 
@@ -91,10 +110,78 @@ impl AgentLoop {
             .ok();
         }
 
+        if normalized.exit_code == 0 {
+            if let Some(decision) = crate::surface_decision::decide_tool_surface(
+                &output,
+                self.llm_client.gateway_decision_auth(),
+            )
+            .await
+            {
+                if let Some(tx) = event_tx {
+                    let id = format!("apofasi-{}", tool_call.id);
+                    tx.send(AgentEvent::ToolExecutionStart {
+                        id: id.clone(),
+                        name: "apofasi".to_owned(),
+                        args: decision.args.clone(),
+                    })
+                    .await
+                    .ok();
+                    tx.send(AgentEvent::ToolEnd {
+                        id,
+                        name: "apofasi".to_owned(),
+                        args: Some(decision.args),
+                        output: decision.output,
+                        exit_code: decision.exit_code,
+                        metadata: None,
+                        error_kind: None,
+                    })
+                    .await
+                    .ok();
+                }
+                if let Some(form) = decision.form {
+                    if let Some(tx) = event_tx {
+                        let mut parked = false;
+                        if form.interactive {
+                            if let Some(question) =
+                                admit_surface_form(session_id, &tool_call.id, &form.prompt)
+                            {
+                                parked = tx
+                                    .send(AgentEvent::UserQuestion {
+                                        question_id: question.question_id,
+                                        question: question.question,
+                                        options: question.options,
+                                        allow_free_text: question.allow_free_text,
+                                        form: Some(form.openui.clone()),
+                                    })
+                                    .await
+                                    .is_ok();
+                            }
+                        }
+                        if !parked {
+                            parked = tx
+                                .send(AgentEvent::TextDelta {
+                                    text: format!("\n```openui\n{}\n```\n", form.openui),
+                                })
+                                .await
+                                .is_ok();
+                        }
+                        if parked {
+                            model_output = form.model_note;
+                            if form.interactive {
+                                state.surface_form_parked = true;
+                            }
+                        }
+                    }
+                } else if let Some(note) = decision.model_note {
+                    model_output = note;
+                }
+            }
+        }
+
         push_tool_result_message(
             state,
             &tool_call.id,
-            &output,
+            &model_output,
             normalized.is_error,
             normalized.images,
             normalized.trust,
@@ -118,7 +205,32 @@ impl AgentLoop {
         ledger: &mut crate::harness_loop::MutationLedger,
         reports: &mut Vec<crate::verification::VerificationReport>,
     ) {
+        normalize_mutation_metadata_path(&self.tool_context.workspace, metadata.as_mut());
         ledger.observe_tool(name, exit_code, metadata.as_ref());
+        let tool_call = crate::llm::ToolCall {
+            id: String::new(),
+            name: name.to_string(),
+            args: args.clone(),
+        };
+        self.record_prepared_tool_verification(
+            &tool_call, exit_code, output, metadata, ledger, reports,
+        )
+        .await;
+    }
+
+    /// Bind only this executed call's verification after its typed receipt
+    /// has projected the current file identities. Do not add a legacy
+    /// mutation row: that would replace the digest the receipt established.
+    pub(crate) async fn record_prepared_tool_verification(
+        &self,
+        tool_call: &crate::llm::ToolCall,
+        exit_code: i32,
+        output: &mut String,
+        metadata: &mut Option<serde_json::Value>,
+        ledger: &mut crate::harness_loop::MutationLedger,
+        reports: &mut Vec<crate::verification::VerificationReport>,
+    ) {
+        normalize_mutation_metadata_path(&self.tool_context.workspace, metadata.as_mut());
         let mut normalized = NormalizedToolResult {
             output: output.clone(),
             exit_code,
@@ -129,22 +241,62 @@ impl AgentLoop {
             trust: crate::llm::ToolResultTrustV1::Trusted,
             redaction_reviewed: true,
         };
-        let tool_call = crate::llm::ToolCall {
-            id: String::new(),
-            name: name.to_string(),
-            args: args.clone(),
-        };
-        self.attach_mutation_observation(&tool_call, &mut normalized)
+        self.attach_mutation_observation(tool_call, &mut normalized)
             .await;
-        Self::collect_verification_report(reports, &normalized.metadata);
-        let mut state = ExecutionLoopState::new_seeded(&[], None);
-        state.mutations = ledger.clone();
-        state.verification_reports = std::mem::take(reports);
-        self.bind_or_synthesize_mutation_path_verification(&mut state, &tool_call, &normalized);
-        *reports = state.verification_reports;
-        *ledger = state.mutations;
+        self.record_current_call_verification(tool_call, &mut normalized, ledger, reports);
         *output = normalized.output;
         *metadata = normalized.metadata;
+    }
+
+    /// The existing metadata contract has one report slot per invocation.
+    /// Bind only that invocation's accepted report, or synthesize one when the
+    /// slot is absent. The same final report must reach live and replay readers.
+    fn record_current_call_verification(
+        &self,
+        tool_call: &ToolCall,
+        normalized: &mut NormalizedToolResult,
+        ledger: &mut crate::harness_loop::MutationLedger,
+        reports: &mut Vec<crate::verification::VerificationReport>,
+    ) {
+        if normalized.metadata.as_ref().is_some_and(|metadata| {
+            !metadata.is_object()
+                || metadata
+                    .get("verification_author")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("editor")
+        }) {
+            // A malformed envelope or an editor's report is not a host proof.
+            return;
+        }
+        let occupied = normalized
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.get("verification_report").is_some());
+        let mut state = ExecutionLoopState::new_seeded(&[], None);
+        state.mutations = ledger.clone();
+        Self::collect_verification_report(&mut state.verification_reports, &normalized.metadata);
+        self.bind_or_synthesize_mutation_path_verification(
+            &mut state, tool_call, normalized, !occupied,
+        );
+        let report = match state.verification_reports.as_slice() {
+            [] => return,
+            [report] => report,
+            _ => {
+                // Future producers must not silently create a live-only second
+                // report outside the frozen single-report metadata contract.
+                tracing::error!("Refusing multiple verification reports for one tool result");
+                return;
+            }
+        };
+        let metadata = normalized
+            .metadata
+            .get_or_insert_with(|| serde_json::json!({}));
+        let Some(object) = metadata.as_object_mut() else {
+            return;
+        };
+        object.insert("verification_report".to_string(), report.to_value());
+        *ledger = state.mutations;
+        reports.extend(state.verification_reports);
     }
 
     fn bind_or_synthesize_mutation_path_verification(
@@ -152,8 +304,9 @@ impl AgentLoop {
         state: &mut ExecutionLoopState,
         tool_call: &ToolCall,
         normalized: &NormalizedToolResult,
+        allow_synthesis: bool,
     ) {
-        if state.mutations.is_empty() {
+        if normalized.exit_code != 0 || state.mutations.is_empty() {
             return;
         }
         let mutation_paths: Vec<String> = state.mutations.paths().map(str::to_string).collect();
@@ -179,6 +332,16 @@ impl AgentLoop {
         };
         let checks = crate::verification::existence_checks(command);
         if checks.is_empty() {
+            // No path-referencing segment: the only remaining binder is a
+            // host-declared suite contract (`node test.mjs` runs the suite).
+            self.bind_verification_contract(
+                state,
+                tool_call,
+                normalized.exit_code,
+                command,
+                &digest,
+                allow_synthesis,
+            );
             return;
         }
         let mut existence_only = None;
@@ -216,7 +379,7 @@ impl AgentLoop {
                 &digest,
                 Some(pair),
             );
-            if !tool_call.name.eq_ignore_ascii_case("bash") {
+            if !tool_call.name.eq_ignore_ascii_case("bash") || !allow_synthesis {
                 return;
             }
             if state
@@ -249,6 +412,67 @@ impl AgentLoop {
                 &digest,
                 None,
             );
+        } else {
+            // The existence segments did not bind: a declared suite contract
+            // is the last remaining binder for this digest.
+            self.bind_verification_contract(
+                state,
+                tool_call,
+                normalized.exit_code,
+                command,
+                &digest,
+                allow_synthesis,
+            );
+        }
+    }
+
+    /// Bind a Host Passed report when the executed bash command runs a
+    /// host-declared verification contract (the project's suite) with exit 0
+    /// and every mutated path is covered by the contract's manifest.
+    ///
+    /// The contract list is host-authored at session build and never
+    /// model-grantable; the exit code is the real host-bash execution result;
+    /// the report binds the live ledger digest, so any later mutation
+    /// invalidates it before the gate re-checks. A digest-bound report from
+    /// this invocation is left alone; reports from prior calls never enter
+    /// this invocation's binder.
+    fn bind_verification_contract(
+        &self,
+        state: &mut ExecutionLoopState,
+        tool_call: &ToolCall,
+        exit_code: i32,
+        command: &str,
+        digest: &str,
+        allow_synthesis: bool,
+    ) {
+        if !allow_synthesis || self.config.verification_contracts.is_empty() {
+            return;
+        }
+        // Only the host bash tool's own execution result counts. A wrapper's
+        // command text is not the suite running.
+        if !tool_call.name.eq_ignore_ascii_case("bash") {
+            return;
+        }
+        if state
+            .verification_reports
+            .iter()
+            .any(|report| report.effect_digest.as_deref() == Some(digest))
+        {
+            return;
+        }
+        let mutation_paths: Vec<String> = state.mutations.paths().map(str::to_string).collect();
+        for contract in &self.config.verification_contracts {
+            let Some(report) = crate::verification::host_report_for_verification_contract(
+                contract,
+                command,
+                exit_code,
+                &mutation_paths,
+                digest,
+            ) else {
+                continue;
+            };
+            state.verification_reports.push(report);
+            return;
         }
     }
 
@@ -325,6 +549,31 @@ impl AgentLoop {
 }
 
 /// Paths a mutation result actually identified. Command text is ignored.
+/// Normalize a mutating tool's `file_path` metadata to workspace-relative
+/// form so the mutation ledger, contract covers, and existence matching
+/// agree regardless of how the model spelled the path. See
+/// [`crate::harness_loop::workspace_relative_path`].
+fn normalize_mutation_metadata_path(
+    workspace: &std::path::Path,
+    metadata: Option<&mut serde_json::Value>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let Some(path) = metadata.get("file_path").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let normalized = crate::harness_loop::workspace_relative_path(workspace, path);
+    if normalized != path {
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert(
+                "file_path".to_string(),
+                serde_json::Value::String(normalized),
+            );
+        }
+    }
+}
+
 fn mutation_observation_paths(
     tool_name: &str,
     metadata: Option<&serde_json::Value>,
@@ -368,6 +617,9 @@ fn on_disk_content_digest(workspace: &std::path::Path, relative: &str) -> Option
     let bytes = std::fs::read(&path).ok()?;
     Some(sha256::digest(bytes))
 }
+
+#[cfg(test)]
+mod verification_metadata_tests;
 
 #[cfg(test)]
 mod tests {
@@ -751,8 +1003,10 @@ mod tests {
         let executor = Arc::new(ToolExecutor::new(
             workspace.path().to_string_lossy().into_owned(),
         ));
-        let mut config = crate::agent::AgentConfig::default();
-        config.external_observations = vec![observation];
+        let config = crate::agent::AgentConfig {
+            external_observations: vec![observation],
+            ..Default::default()
+        };
         let agent = AgentLoop::new(
             Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
             executor,
@@ -780,5 +1034,194 @@ mod tests {
         let text = next_model_text(&agent).await;
         assert!(!text.contains("previous revision"));
         assert!(text.contains("stale"));
+    }
+
+    fn leave_card_result() -> NormalizedToolResult {
+        NormalizedToolResult {
+            output: "已生成\n```json\n{\"root\":\"leave_card\",\"state\":{\"form\":{\"cm_content\":\"去医院\",\"cm_type\":\"病假\",\"days\":2}}}\n```\n".into(),
+            exit_code: 0,
+            is_error: false,
+            metadata: None,
+            images: Vec::new(),
+            error_kind: None,
+            trust: ToolResultTrustV1::WorkspaceData,
+            redaction_reviewed: true,
+        }
+    }
+
+    async fn finish_leave(session_id: &str) -> (ExecutionLoopState, Vec<AgentEvent>) {
+        let agent = loop_with(KnownDiagnostic {
+            message: "unused".into(),
+            stale: false,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut state = ExecutionLoopState::new(&[]);
+        agent
+            .complete_tool_call(
+                &mut state,
+                ToolCompletionInput {
+                    tool_call: &ToolCall {
+                        id: "leave-1".into(),
+                        name: "mcp_a3s-maas__leave_apply".into(),
+                        args: serde_json::json!({"text": "明天请假"}),
+                    },
+                    event_tx: &Some(tx),
+                    session_id: Some(session_id),
+                    tool_start: Instant::now(),
+                    normalized: leave_card_result(),
+                },
+            )
+            .await;
+        drop(agent);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        (state, events)
+    }
+
+    fn model_tool_text(state: &ExecutionLoopState) -> String {
+        state
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                crate::llm::ContentBlock::ToolResult {
+                    content: crate::llm::ToolResultContentField::Text(text),
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_declared_leave_card_parks_a_form_and_hides_the_json_from_the_model() {
+        let (state, events) = finish_leave("leave-surface-park").await;
+        assert!(state.surface_form_parked);
+        let shown = model_tool_text(&state);
+        assert!(shown.contains("Do not repeat"));
+        assert!(!shown.contains("leave_card"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::UserQuestion { form: Some(form), .. } if form.contains("Input(")
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text.contains("```openui")
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_declared_surface_that_cannot_be_projected_is_hidden_from_the_model() {
+        let agent = loop_with(KnownDiagnostic {
+            message: "unused".into(),
+            stale: false,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut state = ExecutionLoopState::new(&[]);
+        agent
+            .complete_tool_call(
+                &mut state,
+                ToolCompletionInput {
+                    tool_call: &ToolCall {
+                        id: "chart-form".into(),
+                        name: "week_chart".into(),
+                        args: serde_json::json!({}),
+                    },
+                    event_tx: &Some(tx),
+                    session_id: Some("chart-form-session"),
+                    tool_start: Instant::now(),
+                    normalized: NormalizedToolResult {
+                        output: "{\"root\":\"week\",\"state\":{\"form\":{\"labels\":[\"一\",\"二\"],\"values\":[1,2]}}}".into(),
+                        exit_code: 0,
+                        is_error: false,
+                        metadata: None,
+                        images: Vec::new(),
+                        error_kind: None,
+                        trust: ToolResultTrustV1::WorkspaceData,
+                        redaction_reviewed: true,
+                    },
+                },
+            )
+            .await;
+        drop(agent);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        let shown = model_tool_text(&state);
+        assert!(shown.contains(crate::surface_decision::DECLARED_SURFACE_REFUSAL));
+        assert!(!shown.contains("labels"));
+        assert!(!state.surface_form_parked);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text.contains("```openui")
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_declared_view_stays_in_the_turn() {
+        let agent = loop_with(KnownDiagnostic {
+            message: "unused".into(),
+            stale: false,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut state = ExecutionLoopState::new(&[]);
+        agent
+            .complete_tool_call(
+                &mut state,
+                ToolCompletionInput {
+                    tool_call: &ToolCall {
+                        id: "week-view".into(),
+                        name: "week_chart".into(),
+                        args: serde_json::json!({}),
+                    },
+                    event_tx: &Some(tx),
+                    session_id: Some("week-view-session"),
+                    tool_start: Instant::now(),
+                    normalized: NormalizedToolResult {
+                        output: "{\"root\":\"week\",\"title\":\"本周\",\"state\":{\"view\":{\"labels\":[\"一\",\"二\"],\"values\":[1,2],\"note\":\"已汇总完成\"}}}".into(),
+                        exit_code: 0,
+                        is_error: false,
+                        metadata: None,
+                        images: Vec::new(),
+                        error_kind: None,
+                        trust: ToolResultTrustV1::WorkspaceData,
+                        redaction_reviewed: true,
+                    },
+                },
+            )
+            .await;
+        drop(agent);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(!state.surface_form_parked);
+        let shown = model_tool_text(&state);
+        assert!(shown.contains("Do not repeat"));
+        assert!(!shown.contains("已汇总完成"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text.contains("```openui") && text.contains("BarChart")
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_declared_leave_card_paints_openui_when_the_question_cap_is_full() {
+        let session = "leave-surface-capped";
+        for index in 0..3 {
+            crate::ask_user::begin(session, &format!("prior-{index}"), "已有问题", &[], true)
+                .expect("prior question");
+        }
+        let (state, events) = finish_leave(session).await;
+        assert!(state.surface_form_parked);
+        assert!(!model_tool_text(&state).contains("leave_card"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text.contains("```openui") && text.contains("去医院")
+        )));
     }
 }

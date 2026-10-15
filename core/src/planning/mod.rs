@@ -49,19 +49,36 @@ impl fmt::Display for TaskStatus {
     }
 }
 
+/// Parse error for [`TaskStatus`]; names the closed set it refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStatusParseError(pub String);
+
+impl std::fmt::Display for TaskStatusParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown task status {:?}; the closed set is pending, in_progress, \
+             completed, failed, skipped, cancelled",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for TaskStatusParseError {}
+
 impl FromStr for TaskStatus {
-    type Err = std::convert::Infallible;
+    type Err = TaskStatusParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.to_lowercase().as_str() {
-            "pending" => TaskStatus::Pending,
-            "in_progress" | "inprogress" => TaskStatus::InProgress,
-            "completed" | "done" => TaskStatus::Completed,
-            "failed" => TaskStatus::Failed,
-            "skipped" => TaskStatus::Skipped,
-            "cancelled" | "canceled" => TaskStatus::Cancelled,
-            _ => TaskStatus::Pending,
-        })
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(TaskStatus::Pending),
+            "in_progress" | "inprogress" => Ok(TaskStatus::InProgress),
+            "completed" | "done" => Ok(TaskStatus::Completed),
+            "failed" => Ok(TaskStatus::Failed),
+            "skipped" => Ok(TaskStatus::Skipped),
+            "cancelled" | "canceled" => Ok(TaskStatus::Cancelled),
+            other => Err(TaskStatusParseError(other.to_string())),
+        }
     }
 }
 
@@ -99,16 +116,32 @@ impl fmt::Display for TaskPriority {
     }
 }
 
+/// Parse error for [`TaskPriority`]; names the closed set it refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPriorityParseError(pub String);
+
+impl std::fmt::Display for TaskPriorityParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown task priority {:?}; the closed set is high, medium, low",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for TaskPriorityParseError {}
+
 impl FromStr for TaskPriority {
-    type Err = std::convert::Infallible;
+    type Err = TaskPriorityParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.to_lowercase().as_str() {
-            "high" | "h" | "1" => TaskPriority::High,
-            "medium" | "med" | "m" | "2" => TaskPriority::Medium,
-            "low" | "l" | "3" => TaskPriority::Low,
-            _ => TaskPriority::Medium,
-        })
+        match s.to_lowercase().as_str() {
+            "high" | "h" | "1" => Ok(TaskPriority::High),
+            "medium" | "med" | "m" | "2" => Ok(TaskPriority::Medium),
+            "low" | "l" | "3" => Ok(TaskPriority::Low),
+            other => Err(TaskPriorityParseError(other.to_string())),
+        }
     }
 }
 
@@ -515,10 +548,9 @@ mod tests {
             TaskStatus::from_str("canceled").unwrap(),
             TaskStatus::Cancelled
         );
-        assert_eq!(
-            TaskStatus::from_str("unknown").unwrap(),
-            TaskStatus::Pending
-        );
+        let refused = TaskStatus::from_str("unknown").unwrap_err();
+        assert_eq!(refused, TaskStatusParseError("unknown".to_string()));
+        assert!(refused.to_string().contains("closed set"));
     }
 
     #[test]
@@ -565,10 +597,9 @@ mod tests {
         assert_eq!(TaskPriority::from_str("med").unwrap(), TaskPriority::Medium);
         assert_eq!(TaskPriority::from_str("low").unwrap(), TaskPriority::Low);
         assert_eq!(TaskPriority::from_str("l").unwrap(), TaskPriority::Low);
-        assert_eq!(
-            TaskPriority::from_str("unknown").unwrap(),
-            TaskPriority::Medium
-        );
+        let refused = TaskPriority::from_str("unknown").unwrap_err();
+        assert_eq!(refused, TaskPriorityParseError("unknown".to_string()));
+        assert!(refused.to_string().contains("closed set"));
     }
 
     // ========================================================================

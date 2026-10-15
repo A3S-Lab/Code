@@ -146,6 +146,16 @@ impl LlmPlanner {
         goal: &AgentGoal,
         current_state: &str,
     ) -> Result<AchievementResult> {
+        Self::check_achievement_with_usage(llm, goal, current_state)
+            .await
+            .map(|(result, _)| result)
+    }
+
+    pub(crate) async fn check_achievement_with_usage(
+        llm: &Arc<dyn LlmClient>,
+        goal: &AgentGoal,
+        current_state: &str,
+    ) -> Result<(AchievementResult, crate::llm::TokenUsage)> {
         let prompt = format!(
             "Goal: {}\nSuccess Criteria: {}\nCurrent State: {}",
             goal.description,
@@ -168,7 +178,7 @@ impl LlmPlanner {
         let result = generate_blocking(&**llm, &req)
             .await
             .context("LLM achievement structured generation failed")?;
-        Self::achievement_from_value(result.object)
+        Ok((Self::achievement_from_value(result.object)?, result.usage))
     }
 
     /// Create a minimal fallback plan when explicit planning cannot use the LLM.

@@ -1230,6 +1230,175 @@ pub fn host_report_for_verified_mutation_path_with_content(
     )
 }
 
+/// Host-declared verification contract: one shell command that counts as the
+/// workspace's project-suite verification, plus the paths a passing run
+/// covers.
+///
+/// "Run the project's test suite" is the most natural verification a coding
+/// agent performs, but a suite run names no path, so the mutation gate cannot
+/// bind it by itself. The host closes that gap at session build: it declares
+/// which command IS the suite and which paths the suite exercises. The
+/// contract is never model-grantable — the model cannot add one, and the
+/// report only binds when the declared command actually ran through the host
+/// bash tool with exit 0 and every mutated path is covered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationContractV1 {
+    /// Workspace-stable id used in report subjects (`shell:contract:<id>`).
+    pub id: String,
+    /// The shell command that counts as running this verification
+    /// (`node test.mjs`, `npm test`, ...). The executed command must equal
+    /// this stored command after trimming outer whitespace. Extra arguments
+    /// and model-added shell composition can change which checks ran or
+    /// mask their exit status, so they never inherit this declaration.
+    pub command: String,
+    /// Workspace paths a passing run verifies: exact workspace-relative
+    /// paths or `dir/**` directory coverage (see [`contract_covers_path`]).
+    #[serde(default)]
+    pub covers: Vec<String>,
+}
+
+impl VerificationContractV1 {
+    /// Admit a contract. Fails closed: an empty id, an empty command, or no
+    /// covered paths would either never bind or bind nothing, and both are
+    /// host configuration mistakes to surface at session build, not at gate
+    /// time.
+    pub fn new(
+        id: impl Into<String>,
+        command: impl Into<String>,
+        covers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let covers = covers
+            .into_iter()
+            .map(Into::into)
+            .map(|pattern| pattern.trim().trim_start_matches("./").to_string())
+            .collect::<Vec<_>>();
+        let contract = Self {
+            id: id.into(),
+            command: command.into(),
+            covers,
+        };
+        contract.validate()?;
+        Ok(contract)
+    }
+
+    /// Host-manifest shape check. Refuses the empty id/command and the
+    /// covers-nothing contract at session build.
+    pub fn validate(&self) -> Result<()> {
+        if self.id.trim().is_empty() {
+            anyhow::bail!("verification contract id must not be empty");
+        }
+        if self.command.trim().is_empty() {
+            anyhow::bail!("verification contract command must not be empty");
+        }
+        if self.covers.is_empty() {
+            anyhow::bail!(
+                "verification contract {} covers no paths; a contract that verifies \
+                 nothing must not be admitted",
+                self.id
+            );
+        }
+        if self.command.contains('\0') || self.id.contains('\0') {
+            anyhow::bail!("verification contract id and command must not contain NUL");
+        }
+        for pattern in &self.covers {
+            let path = pattern.strip_suffix("/**").unwrap_or(pattern);
+            if path.is_empty()
+                || !std::path::Path::new(path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+                || path.contains('\0')
+            {
+                anyhow::bail!("verification contract covers requires workspace-relative paths without traversal");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// True when a contract pattern covers a mutated workspace path.
+///
+/// Contracts are a host manifest, so matching is strict: an exact
+/// workspace-relative path, or a `dir/**` directory-coverage pattern. The
+/// path-boundary suffix leniency of
+/// [`mutation_path_matches`](crate::verification::mutation_path_matches)
+/// deliberately does NOT apply — a suite that covers `impl.mjs` must not be
+/// read as covering `test-fixtures/impl.mjs`.
+pub(crate) fn contract_covers_path(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim().trim_start_matches("./");
+    let path = path.trim().trim_start_matches("./");
+    if pattern.is_empty() || path.is_empty() {
+        return false;
+    }
+    if !std::path::Path::new(path)
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    if path == pattern {
+        return true;
+    }
+    match pattern.strip_suffix("/**") {
+        Some(prefix) => {
+            let prefix = prefix.trim_end_matches('/');
+            path.starts_with(&format!("{prefix}/"))
+        }
+        None => false,
+    }
+}
+
+/// Synthesize a Host Passed report when a declared suite command ran
+/// successfully through the host bash tool and **every** mutated path is
+/// covered by the contract. A contract that covers only some mutations never
+/// binds — a partial suite is not verification of the rest.
+pub fn host_report_for_verification_contract(
+    contract: &VerificationContractV1,
+    command: &str,
+    exit_code: i32,
+    mutation_paths: &[String],
+    effect_digest: &str,
+) -> Option<VerificationReport> {
+    if contract.validate().is_err()
+        || exit_code != 0
+        || effect_digest.trim().is_empty()
+        || mutation_paths.is_empty()
+    {
+        return None;
+    }
+    if command.trim() != contract.command.trim() {
+        return None;
+    }
+    let uncovered = mutation_paths
+        .iter()
+        .filter(|path| {
+            !contract
+                .covers
+                .iter()
+                .any(|pattern| contract_covers_path(pattern, path))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !uncovered.is_empty() {
+        return None;
+    }
+    Some(
+        VerificationReport::new(
+            format!("shell:contract:{}", contract.id),
+            vec![VerificationCheck::required(
+                format!("contract_verify:{}", contract.id),
+                "contract_verify",
+                format!(
+                    "Host contract `{}` (the declared suite) ran with exit 0 and covers \
+                     every mutated path",
+                    contract.command
+                ),
+            )
+            .with_status(VerificationStatus::Passed)],
+        )
+        .with_effect_digest(effect_digest),
+    )
+}
+
 /// Combine an LLM achievement judgment with structured verification evidence.
 pub fn goal_achieved_after_evidence_gate(
     llm_achieved: bool,

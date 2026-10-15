@@ -18,6 +18,7 @@ const GLM_BASE_URL: &str = "https://open.bigmodel.cn";
 const GLM_CHAT_PATH: &str = "/api/paas/v4/chat/completions";
 
 /// Zhipu AI (GLM) client
+#[derive(Clone)]
 pub struct ZhipuClient(OpenAiClient);
 
 impl ZhipuClient {
@@ -37,6 +38,11 @@ impl ZhipuClient {
 
     pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
         self.0 = self.0.with_max_tokens(max_tokens);
+        self
+    }
+
+    pub fn with_text_only_input(mut self, text_only: bool) -> Self {
+        self.0 = self.0.with_text_only_input(text_only);
         self
     }
 
@@ -73,6 +79,17 @@ impl ZhipuClient {
 
 #[async_trait]
 impl LlmClient for ZhipuClient {
+    fn with_output_cap(&self, max_tokens: u32) -> Option<std::sync::Arc<dyn LlmClient>> {
+        // The generation-enforced cap for sampling bridges (SEC-SAMPLE1).
+        Some(std::sync::Arc::new(
+            self.clone().with_max_tokens(max_tokens as usize),
+        ))
+    }
+
+    fn gateway_decision_auth(&self) -> Option<crate::llm::GatewayDecisionAuth> {
+        self.0.gateway_decision_auth()
+    }
+
     fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
         self.0.model_generation_pool()
     }

@@ -462,6 +462,14 @@ pub(crate) struct PendingRunControl {
     pub(crate) receipt: RunControlReceipt,
 }
 
+/// Decisions already committed under the original inbox's admission gate.
+/// Observers run only after both inbox locks have been released.
+pub(crate) struct PersistedRunControls {
+    pub(crate) decisions: Vec<PendingRunControl>,
+    pub(crate) failure: Option<a3s_effect::ActorError>,
+    pub(crate) pending: OriginalPendingObservation,
+}
+
 #[derive(Debug)]
 struct SeenRequest {
     fingerprint: String,
@@ -491,6 +499,24 @@ struct InboxState {
     seen_order: VecDeque<String>,
     last_sequence: u64,
     interrupt_requested: bool,
+}
+
+/// Accepted controls still owned by the original inbox at a sealed boundary.
+///
+/// The three counts overlap: queued/in-flight controls also normally have a
+/// retained receipt. They deliberately include in-flight requests whose seen
+/// receipt has been evicted. This is not a durable-input or release proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OriginalPendingObservation {
+    queued_accepted: usize,
+    in_flight_accepted: usize,
+    retained_accepted: usize,
+}
+
+impl OriginalPendingObservation {
+    pub(crate) fn has_accepted(self) -> bool {
+        self.queued_accepted != 0 || self.in_flight_accepted != 0 || self.retained_accepted != 0
+    }
 }
 
 /// Internal per-run inbox. It is shared by the public session facade and the
@@ -662,7 +688,7 @@ impl RunControlInbox {
                 actual_revision: state.turn_revision,
             });
         }
-        if state.queue.len() >= RUN_CONTROL_MAX_QUEUE {
+        if accepted_controls(&state).len() >= RUN_CONTROL_MAX_QUEUE {
             return Err(RunControlError::QueueFull);
         }
 
@@ -684,6 +710,11 @@ impl RunControlInbox {
         let cancel = matches!(request.command, RunControlCommand::Interrupt { .. });
         if cancel {
             state.interrupt_requested = true;
+            // Seal the same inbox before exposing the accepted interrupt or
+            // firing its token. Existing Accepted controls and retries stay
+            // owned; terminal persistence remains the original worker's job.
+            state.active = false;
+            state.closed = true;
         }
         state.queue.push_back(PendingRunControl {
             request: request.clone(),
@@ -698,12 +729,106 @@ impl RunControlInbox {
             },
         );
         state.seen_order.push_back(receipt.request_id.clone());
-        while state.seen_order.len() > RUN_CONTROL_MAX_SEEN_REQUESTS {
-            if let Some(expired) = state.seen_order.pop_front() {
-                state.seen.remove(&expired);
-            }
-        }
+        trim_terminal_receipts(&mut state);
         Ok((receipt, cancel))
+    }
+
+    /// The only fact-runtime persist-and-ack boundary. `append` is synchronous
+    /// and must neither re-enter this inbox nor dispatch execution/observers.
+    /// Cancellation can suspend lock acquisition, never append -> receipt.
+    pub(crate) async fn persist_pending(
+        &self,
+        terminal: bool,
+        now_ms: u64,
+        mut append: impl FnMut(&PendingRunControl) -> Result<(), a3s_effect::ActorError>,
+    ) -> PersistedRunControls {
+        let admission = self.admission.lock().await;
+        let mut state = self.state.lock().await;
+        if terminal {
+            state.active = false;
+            state.closed = true;
+        }
+        // Immutable terminal receipts also retire stale legacy pending copies.
+        // They must not be appended again or count as Accepted at release.
+        let terminal_ids: std::collections::HashSet<_> = state
+            .seen
+            .iter()
+            .filter(|(_, seen)| seen.receipt.state != RunControlReceiptState::Accepted)
+            .map(|(id, _)| id.clone())
+            .collect();
+        state
+            .queue
+            .retain(|item| !terminal_ids.contains(&item.receipt.request_id));
+        state.in_flight.retain(|id, _| !terminal_ids.contains(id));
+        let pending = accepted_controls(&state);
+        let mut decisions = Vec::with_capacity(pending.len());
+        let mut failure = None;
+        for mut item in pending {
+            // Reconstruct an evicted legacy in-flight receipt before any IO.
+            // New admissions retain every still-owned Accepted receipt.
+            let fingerprint = request_fingerprint(&item.request)
+                .map_err(|error| a3s_effect::ActorError::Schema(error.to_string()));
+            if let Err(error) = &fingerprint {
+                failure.get_or_insert_with(|| error.clone());
+            }
+            let steer = matches!(item.request.command, RunControlCommand::Steer { .. });
+            if steer && failure.is_none() {
+                if let Err(error) = append(&item) {
+                    failure = Some(error);
+                }
+            }
+            item.receipt.turn_id = state.turn_id.clone();
+            item.receipt.turn_revision = state.turn_revision;
+            item.receipt.applied_at_ms = Some(now_ms);
+            if steer && failure.is_some() {
+                item.receipt.state = RunControlReceiptState::Settled;
+                item.receipt.error = Some(RunControlErrorInfo {
+                    code: "STEER_PERSISTENCE_FAILED".into(),
+                    message: "input retention failed; this input was not acknowledged as persisted"
+                        .into(),
+                });
+            } else {
+                // Interrupt already fired its original cancellation on admission.
+                // It is never relabelled as a persisted conversation input.
+                item.receipt.state = RunControlReceiptState::Applied;
+                item.receipt.error = None;
+            }
+            let id = item.receipt.request_id.clone();
+            if let Some(seen) = state.seen.get_mut(&id) {
+                seen.receipt = item.receipt.clone();
+            } else if let Ok(fingerprint) = fingerprint {
+                state.seen_order.push_back(id.clone());
+                state.seen.insert(
+                    id.clone(),
+                    SeenRequest {
+                        fingerprint,
+                        request: item.request.clone(),
+                        receipt: item.receipt.clone(),
+                    },
+                );
+            }
+            state.queue.retain(|queued| queued.receipt.request_id != id);
+            state.in_flight.remove(&id);
+            decisions.push(item);
+        }
+        trim_terminal_receipts(&mut state);
+        let pending = pending_observation(&state);
+        drop(state);
+        drop(admission);
+        self.notify.notify_waiters();
+        PersistedRunControls {
+            decisions,
+            failure,
+            pending,
+        }
+    }
+
+    /// Observation is separate from the decided append/receipt transaction.
+    /// The joined guardian drops its optional host sender before this await.
+    pub(crate) async fn observe_decisions(&self, decisions: &[PendingRunControl]) {
+        for item in decisions {
+            self.record_receipt(&item.request, &item.receipt).await;
+        }
     }
 
     pub(crate) async fn drain(&self) -> Vec<PendingRunControl> {
@@ -751,6 +876,36 @@ impl RunControlInbox {
             self.record_receipt(&pending.request, &receipt).await;
         }
         receipt
+    }
+
+    /// Host-request fence only: stop new acceptance without waiting for a
+    /// policy/receipt observer that may itself await this Run's cancellation.
+    /// No pending observation, acknowledgement or release proof is minted.
+    pub(crate) async fn seal_new_requests(&self) {
+        let mut state = self.state.lock().await;
+        state.active = false;
+        state.closed = true;
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    /// Stop new acceptance without consuming or settling an original control.
+    ///
+    /// An existing exact retry can still return its retained receipt; existing
+    /// actor application remains separate. In particular an empty queue is
+    /// insufficient: drained requests and evicted in-flight receipts may
+    /// remain Accepted. No hook, terminal receipt, append or acknowledgement
+    /// is performed here.
+    pub(crate) async fn seal_and_observe_pending(&self) -> OriginalPendingObservation {
+        let admission = self.admission.lock().await;
+        let mut state = self.state.lock().await;
+        state.active = false;
+        state.closed = true;
+        let observation = pending_observation(&state);
+        drop(state);
+        drop(admission);
+        self.notify.notify_waiters();
+        observation
     }
 
     /// Mark accepted-but-unconsumed controls as settled when a run exits.
@@ -825,11 +980,14 @@ impl RunControlInbox {
         }
 
         let (receipt, cancel) = self.submit_locked(request.clone(), now_ms).await?;
-        self.record_receipt(&request, &receipt).await;
-        drop(_admission);
         if cancel {
+            // The same inbox is already sealed and the Interrupt is accepted.
+            // Fire before an observer that may await this token. Admission
+            // remains held, preserving Accepted-before-Applied observations.
             self.cancellation.cancel();
         }
+        self.record_receipt(&request, &receipt).await;
+        drop(_admission);
         self.notify.notify_waiters();
         Ok(receipt)
     }
@@ -854,6 +1012,53 @@ impl RunControlInbox {
     async fn record_receipt(&self, request: &RunControlRequest, receipt: &RunControlReceipt) {
         if let Some(executor) = &self.hook_executor {
             executor.record_run_control(request, receipt).await;
+        }
+    }
+}
+
+fn accepted_controls(state: &InboxState) -> Vec<PendingRunControl> {
+    let mut pending = HashMap::new();
+    for item in state.queue.iter().chain(state.in_flight.values()) {
+        if item.receipt.state == RunControlReceiptState::Accepted {
+            pending.insert(item.receipt.request_id.clone(), item.clone());
+        }
+    }
+    // Retained terminal receipts win over stale queue/in-flight copies.
+    for (id, seen) in &state.seen {
+        if seen.receipt.state == RunControlReceiptState::Accepted {
+            pending.insert(
+                id.clone(),
+                PendingRunControl {
+                    request: seen.request.clone(),
+                    receipt: seen.receipt.clone(),
+                },
+            );
+        } else {
+            pending.remove(id);
+        }
+    }
+    let mut pending: Vec<_> = pending.into_values().collect();
+    pending.sort_by(|left, right| {
+        left.receipt
+            .sequence
+            .cmp(&right.receipt.sequence)
+            .then_with(|| left.receipt.request_id.cmp(&right.receipt.request_id))
+    });
+    pending
+}
+
+fn trim_terminal_receipts(state: &mut InboxState) {
+    while state.seen.len() > RUN_CONTROL_MAX_SEEN_REQUESTS {
+        let Some(index) = state.seen_order.iter().position(|id| {
+            state
+                .seen
+                .get(id)
+                .is_none_or(|seen| seen.receipt.state != RunControlReceiptState::Accepted)
+        }) else {
+            break;
+        };
+        if let Some(expired) = state.seen_order.remove(index) {
+            state.seen.remove(&expired);
         }
     }
 }
@@ -923,6 +1128,32 @@ fn snapshot(state: &InboxState) -> RunControlSnapshot {
         last_sequence: state.last_sequence,
     }
 }
+
+fn pending_observation(state: &InboxState) -> OriginalPendingObservation {
+    OriginalPendingObservation {
+        queued_accepted: state
+            .queue
+            .iter()
+            .filter(|pending| pending.receipt.state == RunControlReceiptState::Accepted)
+            .count(),
+        in_flight_accepted: state
+            .in_flight
+            .values()
+            .filter(|pending| pending.receipt.state == RunControlReceiptState::Accepted)
+            .count(),
+        retained_accepted: state
+            .seen
+            .values()
+            .filter(|seen| seen.receipt.state == RunControlReceiptState::Accepted)
+            .count(),
+    }
+}
+
+#[cfg(test)]
+mod owner_seal_tests;
+
+#[cfg(test)]
+mod terminal_settlement_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1341,6 +1572,6 @@ mod tests {
         let protocol = interrupt.into_protocol("session-1", "active-run");
         assert_eq!(protocol.run_id, "run-8");
         assert_eq!(protocol.command.operation(), RunControlOperation::Interrupt);
-        assert_eq!(InterruptRequest::default().force, false);
+        assert!(!InterruptRequest::default().force);
     }
 }

@@ -592,7 +592,7 @@ pub(crate) const A3S_CODE_EFFECTIVE_COMMANDS: &[&str] = &[
     "copy",
     "find",
     "theme",
-    "always-approve",
+    "yolo",
     "vim-mode",
     "multiline",
     "compact-mode",
@@ -1019,13 +1019,13 @@ pub struct AppView {
     /// Resolved at startup from env / `[auto_mode] enabled` / remote settings, default OFF.
     /// When `false`, the Shift+Tab cycle skips Auto.
     pub auto_mode_gate: bool,
-    /// Managed-policy pin (set at startup); gates every runtime always-approve enable.
+    /// Managed-policy pin (set at startup); gates every runtime yolo enable.
     pub yolo_policy_block: Option<&'static str>,
     /// One-shot notice that a launch `--yolo` was pinned off; shown on the first agent view.
     pub yolo_launch_block_notice: Option<&'static str>,
     /// One-shot switch-back toast after a screen-mode re-exec.
     pub screen_mode_switch_hint: Option<&'static str>,
-    /// Require explicit plan approval via the plan viewer UI even in always-approve (YOLO) mode.
+    /// Require explicit plan approval via the plan viewer UI even in yolo (YOLO) mode.
     /// Loaded from `[ui] require_plan_approval` in config.toml at startup.
     pub require_plan_approval: bool,
     /// Enable plan mode for new sessions (`--plan`).
@@ -1820,7 +1820,7 @@ impl AppView {
         }
     }
     /// Sync the auto permission-mode feature gate into every slash surface.
-    /// `/auto` is hard-hidden when `self.auto_mode_gate` is off; otherwise both `/always-approve` and `/auto` stay offered as true toggles.
+    /// `/auto` is hard-hidden when `self.auto_mode_gate` is off; otherwise both `/yolo` and `/auto` stay offered as true toggles.
     /// Call after gate flips, startup, reconnect, and session create/switch (so new agents inherit the gate).
     pub fn sync_permission_mode_slash_gate(&mut self) {
         let available = self.auto_mode_gate;
@@ -1900,7 +1900,7 @@ impl AppView {
         self.sharing_enabled = false;
         // Voice STT / dictation has no a3s-code-acp backing — hide `/voice` and settings rows.
         self.apply_voice_mode_enabled(false);
-        // Auto permission mode is shell LLM-classifier only — keep ask / always-approve.
+        // Auto permission mode is shell LLM-classifier only — keep ask / yolo.
         self.auto_mode_gate = false;
         self.sync_permission_mode_slash_gate();
         // Rebuild open settings so coding-data / Grok-only rows drop.
@@ -4670,7 +4670,7 @@ impl AppView {
                                 }
                                 Some((false, true, _)) => {
                                     flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                        text: "always-approve",
+                                        text: "yolo",
                                         color: None,
                                         bold: false,
                                     });
@@ -4684,7 +4684,7 @@ impl AppView {
                                 }
                                 None if welcome_default_yolo => {
                                     flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                        text: "always-approve",
+                                        text: "yolo",
                                         color: None,
                                         bold: false,
                                     });
@@ -6042,9 +6042,20 @@ impl AppView {
             } else {
                 (None, None, None, false, None, false)
             };
-        let any_agent_has_perms = self.agents.values().any(|a| !a.permission_queue.is_empty());
-        if !any_agent_has_perms {
+        // Per-agent bell reset: an agent whose queue drained re-arms its
+        // notification; an agent still parked keeps its mark so the bell
+        // does not repeat for the SAME waiting prompt.
+        let agents_with_perms: Vec<crate::app::agent::AgentId> = self
+            .agents
+            .iter()
+            .filter(|(_, agent)| !agent.permission_queue.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        if agents_with_perms.is_empty() {
             self.notification_service.clear_permission_notification();
+        } else {
+            self.notification_service
+                .retain_permission_notified(&agents_with_perms);
         }
         let cwd_str = self.cwd.to_string_lossy();
         let title_state = crate::notifications::TitleState {

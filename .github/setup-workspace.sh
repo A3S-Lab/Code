@@ -60,14 +60,14 @@ echo "Path dependencies replaced. Ready to build."
 python3 - <<'PY'
 from pathlib import Path
 
-path = Path("Cargo.toml")
-text = path.read_text()
-marker = "\n[patch."
-start = text.find(marker)
-if start == -1:
-    raise SystemExit("expected monorepo [patch] tables in Cargo.toml")
-path.write_text(text[:start].rstrip() + "\n")
-print("removed monorepo path patches from Cargo.toml")
+for path in (Path("Cargo.toml"), Path("sdk/node/Cargo.toml"), Path("sdk/python/Cargo.toml")):
+    text = path.read_text()
+    marker = "\n[patch."
+    start = text.find(marker)
+    if start == -1:
+        raise SystemExit(f"expected monorepo [patch] tables in {path}")
+    path.write_text(text[:start].rstrip() + "\n")
+    print(f"removed monorepo path patches from {path}")
 PY
 
 if grep -nE 'path = "\.\./' Cargo.toml; then

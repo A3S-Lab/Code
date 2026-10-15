@@ -2,6 +2,7 @@
 //!
 //! Implements MCP transport over standard input/output for local process communication.
 
+use super::notifications::NotificationReceiver;
 use super::McpTransport;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
 use crate::tools::process::{configure_process_group, spawn_tokio_child, ProcessGroupGuard};
@@ -11,11 +12,11 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, Command};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
@@ -25,22 +26,35 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
 const PROCESS_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_MCP_STDIO_LINE_BYTES: usize = 8 * 1024 * 1024;
 
+type ProcessSettlement = Option<std::result::Result<(), String>>;
+
 /// Stdio transport for MCP servers
+/// Server-initiated sampling (MCP spec `sampling/createMessage`). The
+/// handler is the host's decision point: installing one declares the
+/// capability and answers sampling with the host's model; not installing
+/// keeps the honest -32601 refusal.
+#[async_trait]
+pub trait SamplingHandler: Send + Sync {
+    async fn create_message(&self, params: serde_json::Value) -> Result<serde_json::Value>;
+}
+
 pub struct StdioTransport {
     /// Process group owned by the child. The synchronous guard is also the
     /// drop-time backstop when an async close cannot run.
     process_group: Arc<StdMutex<ProcessGroupGuard>>,
     /// Monitor that owns and reaps the direct child.
     process_task: StdMutex<Option<JoinHandle<std::io::Result<()>>>>,
+    process_settlement: watch::Receiver<ProcessSettlement>,
     /// Stdin/stdout/stderr workers. Async close awaits them so notification
     /// EOF and pending-request settlement happen before close returns.
     io_tasks: StdMutex<Vec<JoinHandle<()>>>,
     /// Stdin writer
     stdin_tx: mpsc::Sender<String>,
+    sampling_handler: Arc<StdRwLock<Option<Arc<dyn SamplingHandler>>>>,
     /// Pending requests (id -> response sender)
     pending: Arc<RwLock<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     /// Notification receiver
-    notification_rx: RwLock<Option<mpsc::Receiver<McpNotification>>>,
+    notification_rx: NotificationReceiver,
     /// Connected flag
     connected: Arc<AtomicBool>,
     /// Stops the stdin/stdout/stderr tasks during close and drop.
@@ -66,6 +80,18 @@ impl StdioTransport {
         env: &HashMap<String, String>,
         request_timeout_secs: u64,
     ) -> Result<Self> {
+        Self::spawn_with_timeout_and_retention(command, args, env, request_timeout_secs, None, None)
+            .await
+    }
+
+    pub(crate) async fn spawn_with_timeout_and_retention(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        request_timeout_secs: u64,
+        retention: Option<Arc<dyn crate::capability::RetainedUseGeneration>>,
+        working_directory: Option<&std::path::Path>,
+    ) -> Result<Self> {
         // Spawn the process
         let mut cmd = Command::new(command);
         cmd.args(args)
@@ -74,6 +100,9 @@ impl StdioTransport {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         configure_process_group(&mut cmd);
+        if let Some(directory) = working_directory {
+            cmd.current_dir(directory);
+        }
 
         // Add environment variables
         for (key, value) in env {
@@ -90,17 +119,24 @@ impl StdioTransport {
 
         // Create channels
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(100);
-        let (notification_tx, notification_rx) = mpsc::channel::<McpNotification>(100);
+        let (notification_tx, notification_rx) = NotificationReceiver::channel(100);
         let pending: Arc<RwLock<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let connected = Arc::new(AtomicBool::new(true));
         let shutdown = CancellationToken::new();
         let process_group = Arc::new(StdMutex::new(process_group));
-        let process_task = tokio::spawn(monitor_child(
-            child,
-            Arc::clone(&process_group),
-            shutdown.clone(),
-        ));
+        let monitored_group = Arc::clone(&process_group);
+        let monitored_shutdown = shutdown.clone();
+        let retained = retention.is_some();
+        let (settlement_tx, process_settlement) = watch::channel(None);
+        let process_task = tokio::spawn(async move {
+            let result = monitor_child(child, monitored_group, monitored_shutdown, retained).await;
+            drop(retention);
+            let _ = settlement_tx.send(Some(
+                result.as_ref().map(|_| ()).map_err(ToString::to_string),
+            ));
+            result
+        });
 
         // Spawn stdin writer task
         let mut stdin_writer = stdin;
@@ -135,9 +171,13 @@ impl StdioTransport {
         });
 
         // Spawn stdout reader task
+        let sampling_handler: Arc<StdRwLock<Option<Arc<dyn SamplingHandler>>>> =
+            Arc::new(StdRwLock::new(None));
+        let handler_clone = Arc::clone(&sampling_handler);
         let pending_clone = pending.clone();
         let reader_connected = Arc::clone(&connected);
         let reader_shutdown = shutdown.clone();
+        let reply_tx = stdin_tx.clone();
         let reader_task = tokio::spawn(async move {
             let mut reader = FramedRead::new(
                 stdout,
@@ -154,38 +194,116 @@ impl StdioTransport {
                         break;
                     }
                     Some(Ok(line)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
+                        // LinesCodec already dropped a trailing CR. Classification
+                        // trims and parses that same line; an empty line is ignored.
+                        let Some(inbound) = classify_stdio_line(&line) else {
                             continue;
-                        }
-
-                        // Try to parse as response. Notifications have no `id`
-                        // but still deserialize as JsonRpcResponse (unknown
-                        // `method`/`params` ignored). Only treat frames with an
-                        // id as responses; fall through otherwise.
-                        if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                            if let Some(id) = response.id {
-                                let mut pending = pending_clone.write().await;
-                                if let Some(tx) = pending.remove(&id) {
-                                    let _ = tx.send(response);
+                        };
+                        match inbound {
+                            StdioInbound::ServerRequest(value) => {
+                                // Server-initiated REQUESTS (id + method) must be
+                                // answered, never silently dropped: a ping with no
+                                // reply makes spec-conformant servers treat the client
+                                // as dead, and an unanswered sampling/roots request
+                                // hangs the server. Ping gets an empty result; an
+                                // undeclared-capability request gets -32601 so the
+                                // server fails fast instead of waiting.
+                                let id =
+                                    value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                                let method = value
+                                    .get("method")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                if method == "sampling/createMessage" {
+                                    let handler = handler_clone
+                                        .read()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .clone();
+                                    match handler {
+                                        Some(handler) => {
+                                            let params = value
+                                                .get("params")
+                                                .cloned()
+                                                .unwrap_or(serde_json::Value::Null);
+                                            let reply = match handler.create_message(params).await {
+                                                Ok(result) => serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id,
+                                                    "result": result,
+                                                }),
+                                                Err(error) => serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id,
+                                                    "error": {
+                                                        "code": -32603,
+                                                        "message": format!("sampling failed: {error}"),
+                                                    },
+                                                }),
+                                            };
+                                            let frame = format!(
+                                                "{}\n",
+                                                serde_json::to_string(&reply).unwrap_or_default()
+                                            );
+                                            tokio::select! {
+                                                _ = reader_shutdown.cancelled() => break,
+                                                _ = reply_tx.send(frame) => {}
+                                            }
+                                            continue;
+                                        }
+                                        None => {
+                                            // No handler installed: fall through to the
+                                            // -32601 refusal below.
+                                        }
+                                    }
                                 }
-                                continue;
+                                let reply = if method == "ping" {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": {},
+                                    })
+                                } else {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "error": {
+                                            "code": -32601,
+                                            "message": format!(
+                                                "a3s-code MCP client does not implement \
+                                                 {method} (capability not declared)"
+                                            ),
+                                        },
+                                    })
+                                };
+                                let frame = format!(
+                                    "{}\n",
+                                    serde_json::to_string(&reply).unwrap_or_default()
+                                );
+                                tokio::select! {
+                                    _ = reader_shutdown.cancelled() => break,
+                                    _ = reply_tx.send(frame) => {}
+                                }
+                            }
+                            StdioInbound::Response(response) => {
+                                if let Some(id) = response.id {
+                                    let mut pending = pending_clone.write().await;
+                                    if let Some(tx) = pending.remove(&id) {
+                                        let _ = tx.send(response);
+                                    }
+                                }
+                            }
+                            StdioInbound::Notification(notification) => {
+                                let mcp_notif = McpNotification::from_json_rpc(&notification);
+                                tokio::select! {
+                                    _ = reader_shutdown.cancelled() => break,
+                                    _ = notification_tx.send(mcp_notif) => {}
+                                }
+                            }
+                            StdioInbound::Unknown(trimmed) => {
+                                tracing::warn!("Unknown MCP message: {}", trimmed);
                             }
                         }
-
-                        // Try to parse as notification
-                        if let Ok(notification) =
-                            serde_json::from_str::<JsonRpcNotification>(trimmed)
-                        {
-                            let mcp_notif = McpNotification::from_json_rpc(&notification);
-                            tokio::select! {
-                                _ = reader_shutdown.cancelled() => break,
-                                _ = notification_tx.send(mcp_notif) => {}
-                            }
-                            continue;
-                        }
-
-                        tracing::warn!("Unknown MCP message: {}", trimmed);
                     }
                     Some(Err(e)) => {
                         tracing::error!("Failed to read MCP stdout: {}", e);
@@ -201,11 +319,13 @@ impl StdioTransport {
 
         Ok(Self {
             process_group,
+            sampling_handler,
             process_task: StdMutex::new(Some(process_task)),
+            process_settlement,
             io_tasks: StdMutex::new(vec![writer_task, reader_task, stderr_task]),
             stdin_tx,
             pending,
-            notification_rx: RwLock::new(Some(notification_rx)),
+            notification_rx,
             connected,
             shutdown,
             request_timeout_secs,
@@ -231,8 +351,29 @@ impl Drop for StdioTransport {
     }
 }
 
+impl StdioTransport {
+    /// Install the sampling handler: declares the capability and answers
+    /// `sampling/createMessage` with the host's model. Not installing keeps
+    /// the -32601 refusal.
+    pub fn set_sampling_handler_concrete(&self, handler: Arc<dyn SamplingHandler>) {
+        *self
+            .sampling_handler
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(handler);
+    }
+}
+
 #[async_trait]
 impl McpTransport for StdioTransport {
+    fn set_sampling_handler(&self, handler: Arc<dyn SamplingHandler>) {
+        StdioTransport::set_sampling_handler_concrete(self, handler)
+    }
+
+    fn start_close(&self) {
+        self.connected.store(false, Ordering::SeqCst);
+        self.shutdown.cancel();
+        self.kill_process_group();
+    }
     async fn request(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(anyhow!("Transport not connected"));
@@ -300,40 +441,41 @@ impl McpTransport for StdioTransport {
     }
 
     fn notifications(&self) -> mpsc::Receiver<McpNotification> {
-        // This is a bit awkward - we need to take ownership of the receiver
-        // In practice, this should only be called once
-        let mut rx_guard = self.notification_rx.blocking_write();
-        rx_guard.take().unwrap_or_else(|| {
-            let (_, rx) = mpsc::channel(1);
-            rx
-        })
+        self.notification_rx.take()
+    }
+
+    fn tool_list_changes(&self) -> Option<watch::Receiver<()>> {
+        Some(self.notification_rx.tool_list_changes())
     }
 
     async fn close(&self) -> Result<()> {
-        self.connected.store(false, Ordering::SeqCst);
-        self.shutdown.cancel();
+        self.start_close();
         self.pending.write().await.clear();
-        self.kill_process_group();
 
-        let process_task = self
-            .process_task
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let process_result = if let Some(process_task) = process_task {
-            match tokio::time::timeout(PROCESS_SETTLEMENT_TIMEOUT * 2, process_task).await {
-                Ok(Ok(Ok(()))) => Ok(()),
-                Ok(Ok(Err(error))) => {
-                    Err(error).context("Failed to reap MCP server after termination")
+        let mut settlement = self.process_settlement.clone();
+        let observe = async {
+            loop {
+                if let Some(result) = settlement.borrow().clone() {
+                    return result.map_err(anyhow::Error::msg);
                 }
-                Ok(Err(error)) => Err(anyhow!("MCP server monitor task failed: {error}")),
+                settlement.changed().await.map_err(|_| {
+                    anyhow!("MCP server monitor ended without a settlement acknowledgement")
+                })?;
+            }
+        };
+        let process_result =
+            match tokio::time::timeout(PROCESS_SETTLEMENT_TIMEOUT * 2, observe).await {
+                Ok(result) => {
+                    self.process_task
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    result
+                }
                 Err(_) => Err(anyhow!(
                     "MCP server monitor did not settle after termination"
                 )),
-            }
-        } else {
-            Ok(())
-        };
+            };
         let io_tasks = self
             .io_tasks
             .lock()
@@ -374,8 +516,9 @@ async fn monitor_child(
     mut child: Child,
     process_group: Arc<StdMutex<ProcessGroupGuard>>,
     shutdown: CancellationToken,
+    retained: bool,
 ) -> std::io::Result<()> {
-    let result = tokio::select! {
+    let mut result = tokio::select! {
         result = child.wait() => result,
         _ = shutdown.cancelled() => {
             process_group
@@ -386,14 +529,21 @@ async fn monitor_child(
             match tokio::time::timeout(PROCESS_SETTLEMENT_TIMEOUT, child.wait()).await {
                 Ok(result) => result,
                 Err(_) => {
-                    return Err(std::io::Error::new(
+                    Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "MCP server did not exit after process-group termination",
-                    ));
+                    ))
                 }
             }
         }
     };
+    while retained && result.is_err() {
+        tracing::error!(
+            "Retained MCP process has not acknowledged reaping; package retention stays active"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        result = child.wait().await;
+    }
     // A server may leave helpers alive even after its direct process exits.
     process_group
         .lock()
@@ -424,6 +574,43 @@ async fn drain_stderr(mut stderr: ChildStderr, shutdown: CancellationToken) {
         }
     }
 }
+
+enum StdioInbound {
+    ServerRequest(serde_json::Value),
+    Response(JsonRpcResponse),
+    Notification(JsonRpcNotification),
+    Unknown(String),
+}
+
+/// Trim and classify one stdout line the way the reader task does.
+///
+/// `None` is an empty line. A `tools/list` result is [`StdioInbound::Response`].
+fn classify_stdio_line(line: &str) -> Option<StdioInbound> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if value.get("method").is_some() && value.get("id").is_some() {
+            return Some(StdioInbound::ServerRequest(value));
+        }
+    }
+    // Notifications have no `id` but still deserialize as JsonRpcResponse
+    // (unknown `method`/`params` ignored). Only frames with an id are responses.
+    if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
+        if response.id.is_some() {
+            return Some(StdioInbound::Response(response));
+        }
+    }
+    if let Ok(notification) = serde_json::from_str::<JsonRpcNotification>(trimmed) {
+        return Some(StdioInbound::Notification(notification));
+    }
+    Some(StdioInbound::Unknown(trimmed.to_string()))
+}
+
+#[cfg(test)]
+#[path = "stdio_retention_tests.rs"]
+mod retention_tests;
 
 #[cfg(test)]
 mod tests {
@@ -871,14 +1058,42 @@ printf '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n'
         );
     }
 
+    #[test]
+    fn crlf_stdio_tools_list_line_decodes_tool_name() {
+        use tokio_util::codec::Decoder;
+
+        let payload = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"lookup","inputSchema":{"type":"object"}}]}}"#;
+        let frame = format!("{payload}\r\n");
+        let mut codec = LinesCodec::new_with_max_length(MAX_MCP_STDIO_LINE_BYTES);
+        let mut buf = bytes::BytesMut::from(frame.as_bytes());
+        let line = codec
+            .decode(&mut buf)
+            .expect("lines codec accepts the frame")
+            .expect("one tools/list line");
+        assert!(buf.is_empty(), "the CRLF terminator is one line");
+        assert!(!line.contains('\r'));
+
+        let inbound = classify_stdio_line(&line).expect("the tools/list line is not empty");
+        let StdioInbound::Response(response) = inbound else {
+            panic!("tools/list result must parse as a JSON-RPC response");
+        };
+        let listed: crate::mcp::protocol::ListToolsResult =
+            serde_json::from_value(response.result.expect("result")).expect("tools");
+        assert_eq!(listed.tools.len(), 1);
+        assert_eq!(listed.tools[0].name, "lookup");
+        assert!(!listed.tools[0].name.contains('\r'));
+    }
+
     fn disconnected_stdin_transport(stdin_tx: mpsc::Sender<String>) -> StdioTransport {
         StdioTransport {
             process_group: Arc::new(StdMutex::new(ProcessGroupGuard::for_process_id(None))),
             process_task: StdMutex::new(None),
+            process_settlement: watch::channel(Some(Ok(()))).1,
             io_tasks: StdMutex::new(Vec::new()),
             stdin_tx,
+            sampling_handler: Arc::new(StdRwLock::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
-            notification_rx: RwLock::new(None),
+            notification_rx: NotificationReceiver::channel(1).1,
             connected: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
             request_timeout_secs: 1,
@@ -965,5 +1180,169 @@ printf '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n'
             .unwrap();
         tokio::time::sleep(Duration::from_millis(250)).await;
         transport.close().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stdio_answers_server_requests_instead_of_dropping_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = directory.path().join("request_server.py");
+        // The server sends a ping and a sampling request, then reports on
+        // stdout (as a tool result) whether BOTH got replies and what the
+        // sampling reply's error code was.
+        std::fs::write(
+            &server,
+            r#"
+import json, sys
+ping_replied = False
+sampling_error_code = None
+def send(obj):
+    print(json.dumps(obj), flush=True)
+for raw in sys.stdin:
+    msg = json.loads(raw)
+    method = msg.get("method")
+    ident = msg.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":ident,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"probe","version":"1"}}})
+    elif method == "notifications/initialized":
+        send({"jsonrpc":"2.0","id":9001,"method":"ping"})
+        send({"jsonrpc":"2.0","id":9002,"method":"sampling/createMessage","params":{}})
+    elif method == "ping" and ident == 9001:
+        # Impossible echo path; ping replies come to our stdin, handled below.
+        continue
+    elif ident == 9001 or ident == 9002:
+        if ident == 9001 and "result" in msg:
+            globals()["ping_replied"] = True
+        if ident == 9002 and "error" in msg:
+            globals()["sampling_error_code"] = msg["error"].get("code")
+    elif method == "tools/list":
+        send({"jsonrpc":"2.0","id":ident,"result":{"tools":[{"name":"t","description":"p","inputSchema":{"type":"object"}}]}})
+    elif method == "tools/call":
+        text = json.dumps({"ping_replied": ping_replied, "sampling_error_code": sampling_error_code})
+        send({"jsonrpc":"2.0","id":ident,"result":{"content":[{"type":"text","text":text}]}})
+"#,
+        )
+        .unwrap();
+
+        let transport = Arc::new(
+            StdioTransport::spawn_with_timeout(
+                "python3",
+                &[server.to_string_lossy().into_owned()],
+                &HashMap::new(),
+                5,
+            )
+            .await
+            .expect("spawn request-probe MCP server"),
+        );
+        let client = crate::mcp::client::McpClient::new("probe".into(), transport);
+        client.initialize().await.expect("initialize");
+        // Give the server time to receive our replies before the tool call.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        client.list_tools().await.expect("list tools");
+        let call = client
+            .call_tool("t", Some(serde_json::json!({})))
+            .await
+            .expect("call tool");
+        let text = match call.content.first() {
+            Some(crate::mcp::protocol::ToolContent::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
+        let observed: serde_json::Value = serde_json::from_str(&text).expect("probe report json");
+        assert_eq!(
+            observed["ping_replied"], true,
+            "a server ping must receive a reply: {observed}"
+        );
+        assert_eq!(
+            observed["sampling_error_code"], -32601,
+            "an undeclared-capability request must fail fast with method-not-found: {observed}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn installed_sampling_handler_declares_and_serves() {
+        struct CannedSampling;
+        #[async_trait]
+        impl SamplingHandler for CannedSampling {
+            async fn create_message(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+                let asked = params
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .and_then(|m| m.first())
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.get("text"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(serde_json::json!({
+                    "role": "assistant",
+                    "content": {"type": "text", "text": format!("sampled:{asked}")},
+                    "model": "canned",
+                }))
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let server = directory.path().join("sampling_server.py");
+        std::fs::write(
+            &server,
+            r#"
+import json, sys
+saw_capability = False
+sampling_text = None
+def send(obj):
+    print(json.dumps(obj), flush=True)
+for raw in sys.stdin:
+    msg = json.loads(raw)
+    method = msg.get("method")
+    ident = msg.get("id")
+    if method == "initialize":
+        caps = msg.get("params", {}).get("capabilities", {})
+        globals()["saw_capability"] = "sampling" in caps
+        send({"jsonrpc":"2.0","id":ident,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"probe","version":"1"}}})
+    elif method == "notifications/initialized":
+        send({"jsonrpc":"2.0","id":7001,"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"hello bridge"}}],"maxTokens":64}})
+    elif ident == 7001:
+        globals()["sampling_text"] = msg.get("result", {}).get("content", {}).get("text")
+    elif method == "tools/list":
+        send({"jsonrpc":"2.0","id":ident,"result":{"tools":[{"name":"t","description":"p","inputSchema":{"type":"object"}}]}})
+    elif method == "tools/call":
+        text = json.dumps({"saw_capability": saw_capability, "sampling_text": sampling_text})
+        send({"jsonrpc":"2.0","id":ident,"result":{"content":[{"type":"text","text":text}]}})
+"#,
+        )
+        .unwrap();
+
+        let transport = Arc::new(
+            StdioTransport::spawn_with_timeout(
+                "python3",
+                &[server.to_string_lossy().into_owned()],
+                &HashMap::new(),
+                5,
+            )
+            .await
+            .expect("spawn sampling probe"),
+        );
+        let client = crate::mcp::client::McpClient::new("probe".into(), transport);
+        // The client-level install is the declaration point: it routes to
+        // the transport and turns on the handshake capability.
+        client.install_sampling_handler(Arc::new(CannedSampling));
+        client.initialize().await.expect("initialize");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        client.list_tools().await.expect("list tools");
+        let call = client.call_tool("t", None).await.expect("call tool");
+        let text = match call.content.first() {
+            Some(crate::mcp::protocol::ToolContent::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
+        let observed: serde_json::Value = serde_json::from_str(&text).expect("probe report json");
+        assert_eq!(
+            observed["saw_capability"], true,
+            "installing the handler declares sampling in the handshake: {observed}"
+        );
+        assert_eq!(
+            observed["sampling_text"], "sampled:hello bridge",
+            "the server-initiated sampling round-trips through the handler: {observed}"
+        );
     }
 }

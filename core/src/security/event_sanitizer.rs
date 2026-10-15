@@ -523,6 +523,8 @@ mod tests {
                 verification_summary: Box::new(
                     crate::verification::VerificationSummary::from_reports(&[]),
                 ),
+                completion_terminal: Default::default(),
+                forced_stop: None,
                 meta: None,
             },
         ] {
@@ -724,6 +726,8 @@ mod tests {
             verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(
                 &[],
             )),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         }));
 

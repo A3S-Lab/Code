@@ -19,16 +19,16 @@ const REJECT_ONCE_LABEL: &str = "No, and tell A3S Code what to do differently";
 /// Session-only and never persisted; exposed so the pager does not record it as a sticky cursor target.
 pub const ALLOW_EDITS_SESSION_OPTION_ID: &str = "allow-edits-session";
 
-/// Stable id for the "enable always-approve mode" option prepended for TUI / Pager / Desktop clients.
+/// Stable id for the "enable yolo mode" option prepended for TUI / Pager / Desktop clients.
 /// Shell maps it to [`PromptOutcome::AllowOnce`] and persists nothing; the pager separately fires `set_yolo_mode(true)`.
 /// Keeps the wire plain ACP. An unrecognized client still gets `AllowOnce`; worst case the current call is granted but the toggle does not flip.
 pub const ENABLE_ALWAYS_APPROVE_OPTION_ID: &str = "enable-always-approve";
 
 /// Defined once so the label is identical across every permission prompt (edit, bash, MCP, web_fetch, fallback).
 const ENABLE_ALWAYS_APPROVE_LABEL: &str =
-    "Yes, and don't ask again for anything (always-approve mode)";
+    "Yes, and don't ask again for anything (yolo mode)";
 
-/// Build the "enable always-approve mode" option prepended to every TUI/Pager/Desktop prompt; see [`ENABLE_ALWAYS_APPROVE_OPTION_ID`].
+/// Build the "enable yolo mode" option prepended to every TUI/Pager/Desktop prompt; see [`ENABLE_ALWAYS_APPROVE_OPTION_ID`].
 /// `kind` is `AllowOnce` so the pager's YOLO auto-approve drain, which answers with the first `AllowOnce`, picks this option.
 /// That is safe: the drain bypasses `dispatch_permission_select`, so picking it does not re-fire `set_yolo_mode(true)`.
 fn enable_always_approve_option() -> acp::PermissionOption {
@@ -39,7 +39,7 @@ fn enable_always_approve_option() -> acp::PermissionOption {
     )
 }
 
-/// Canonical check for the "enable always-approve mode" option; match on this, not the label or position 0.
+/// Canonical check for the "enable yolo mode" option; match on this, not the label or position 0.
 pub fn is_enable_always_approve_option(opt: &acp::PermissionOption) -> bool {
     opt.option_id.0.as_ref() == ENABLE_ALWAYS_APPROVE_OPTION_ID
 }
@@ -52,7 +52,7 @@ fn client_supports_enable_always_approve(client_type: ClientType) -> bool {
     )
 }
 
-/// Prepend the "enable always-approve mode" option at position 0 for client types that can act on it.
+/// Prepend the "enable yolo mode" option at position 0 for client types that can act on it.
 /// [`AcpPrompter::build_options`] calls this at the tail of every branch so the option lands first regardless of the base map.
 fn prepend_enable_always_approve(
     client_type: ClientType,
@@ -514,7 +514,7 @@ impl AcpPrompter {
                 base.shift_remove(&acp::PermissionOptionId::new(*id));
             }
         }
-        // Prepend the "enable always-approve mode" option at position 0 for client types that wire the id through to their YOLO toggle
+        // Prepend the "enable yolo mode" option at position 0 for client types that wire the id through to their YOLO toggle
         // See `ENABLE_ALWAYS_APPROVE_OPTION_ID` for the full client/shell split
         prepend_enable_always_approve(self.client_type, base)
     }
@@ -556,7 +556,7 @@ impl AcpPrompter {
         (!meta.is_empty()).then_some(meta)
     }
 
-    /// Build the per-access-kind option map WITHOUT the "enable always-approve mode" prepend.
+    /// Build the per-access-kind option map WITHOUT the "enable yolo mode" prepend.
     /// A separate inner fn lets `build_options` wrap the result with one prepend call rather than threading it through every match arm.
     fn build_options_inner(
         &self,
@@ -911,7 +911,7 @@ fn map_selected_outcome(
         .map(|option| match option.kind {
             acp::PermissionOptionKind::AllowOnce => PromptOutcome::AllowOnce,
             acp::PermissionOptionKind::AllowAlways => {
-                // Defensive guard: the "enable always-approve mode" option is built with kind `AllowOnce`
+                // Defensive guard: the "enable yolo mode" option is built with kind `AllowOnce`
                 // This branch is dead code in current builds, kept for older or third-party clients that might echo the id back under `AllowAlways`
                 // The shell still treats it as a single allow, never a per-tool whitelist; the session-wide YOLO flip is the client's job
                 if option_id.0.as_ref() == ENABLE_ALWAYS_APPROVE_OPTION_ID {
@@ -1233,7 +1233,7 @@ mod tests {
         assert!(has_option(&opts, "reject-once"), "No must remain");
         assert!(
             has_option(&opts, ENABLE_ALWAYS_APPROVE_OPTION_ID),
-            "global always-approve must remain"
+            "global yolo must remain"
         );
     }
 
@@ -1841,7 +1841,7 @@ mod tests {
         assert_eq!(mcp_titleize_segment(""), "");
     }
 
-    // "Enable always-approve mode" option (prepended for TUI/Pager/Desktop)
+    // "Enable yolo mode" option (prepended for TUI/Pager/Desktop)
 
     fn enable_always_approve_id() -> acp::PermissionOptionId {
         acp::PermissionOptionId::new(ENABLE_ALWAYS_APPROVE_OPTION_ID)
@@ -1899,7 +1899,7 @@ mod tests {
     }
 
     /// non-TUI clients (Generic / web / Extension / …) do NOT recognise the option id, so the prompter must NOT show it to them.
-    /// If shown, selecting it would allow the current call without flipping any always-approve state.
+    /// If shown, selecting it would allow the current call without flipping any yolo state.
     #[test]
     fn enable_always_approve_omitted_for_non_tui_clients() {
         for ct in [

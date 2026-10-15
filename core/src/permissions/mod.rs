@@ -10,12 +10,16 @@
 mod interactive;
 mod manager;
 mod policy;
+mod read_batch;
 mod risk;
 mod rule;
 mod style_specialty;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod batch_read_tests;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -15,7 +15,7 @@ fn init_logging() {
         .try_init();
 }
 
-use a3s_code_acp::{load_launch_config, A3sCodeAgent, LaunchConfig};
+use a3s_code_acp::{load_launch_config, A3sCodeAgent};
 use agent_client_protocol as acp;
 
 #[tokio::test(flavor = "multi_thread")]

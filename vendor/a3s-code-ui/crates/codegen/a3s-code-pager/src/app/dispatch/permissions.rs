@@ -107,7 +107,7 @@ pub(super) fn build_selection_meta(
 
 /// Handle permission option selection (AllowOnce, AllowAlways, RejectAlways).
 /// when the user picks the prepended "Yes, and don't ask again for anything" option, this dispatcher (a) sends the standard `Selected` response so the in-flight request is allowed once (the shell's `map_selected_outcome`
-/// resolves the id to `PromptOutcome::AllowOnce`), then (b) reuses the existing `set_yolo_mode(true)` flow to flip the local YOLO state, drain any remaining queued permissions, persist `[ui] permission_mode = "always-approve"` to `~/.a3s/config.toml`, and fire the `x.ai/yolo_mode_changed` ACP notification.
+/// resolves the id to `PromptOutcome::AllowOnce`), then (b) reuses the existing `set_yolo_mode(true)` flow to flip the local YOLO state, drain any remaining queued permissions, persist `[ui] permission_mode = "yolo"` to `~/.a3s/config.toml`, and fire the `x.ai/yolo_mode_changed` ACP notification.
 pub(super) fn dispatch_permission_select(
     app: &mut AppView,
     option_id: acp::PermissionOptionId,
@@ -124,7 +124,7 @@ pub(super) fn dispatch_permission_select(
 
     let edited_pattern = take_edited_pattern(agent, &perm);
 
-    // Detect the "enable always-approve mode" id BEFORE moving option_id into the response
+    // Detect the "enable yolo mode" id BEFORE moving option_id into the response
     // Cheap str compare on the `Arc<str>` interior
     let enable_always_approve =
         option_id.0.as_ref() == a3s_code_workspace::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID;
@@ -163,7 +163,7 @@ pub(super) fn dispatch_permission_select(
     // Queue transition: restore prompt if queue is now empty, clear if next-front.
     resolve_permission_queue_transition(agent);
 
-    // "Enable always-approve" side effect: flip YOLO, persist, and notify
+    // "Enable yolo" side effect: flip YOLO, persist, and notify
     // So the user couldn't have selected this option
     // The `is_yolo()` guard is defensive; a redundant call would re-emit the toast and a duplicate `PersistPermissionMode` effect, but is safe
     if enable_always_approve {

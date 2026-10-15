@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [9.1.3] - Unreleased
+
+### Fixed
+
+- Non-interactive pager output is admitted before terminal or session startup.
+  Unsupported and incomplete local slash commands return explicit feedback.
+- Session inventory and recovery admission read bounded, exact-identity
+  records. Missing, foreign and corrupt sessions refuse load before activation.
+- The candidate's Effect fact store retains directory/file handles, rejects
+  links and non-regular files, bounds reads and writes, and validates fact
+  sequences and batch identities before persistence.
+- Model cancellation, usage binding, tool-history compaction and required
+  context selection retain their original governed fact-log authority.
+- Join the original model child before cancellation releases admission. Return
+  `RUN_CANCELLED` with the original Run ID from blocking SDK calls and omit
+  successful End on cancelled streams. Pending protocol cancellation returns
+  no terminal receipt until the original Run publishes its terminal state.
+- Preserve MCP progress delivery while automatic tools-list refresh uses an
+  independent change signal. Keep the bounded host FIFO and stop idle refresh
+  when its client closes or drops.
+- Let the original worker finish when its cancelled host event FIFO is full;
+  retain interactive results on the exact Run before live projection. Normal
+  delivery keeps backpressure. A cancelled stream may retain only its queued
+  prefix; callers observe terminal state through the exact Run snapshot.
+- Sort projected object fields before applying the field cap, preserve array
+  order, and retain typed admission causes when cleanup remains unproved.
+- Preserve v9.1.2's exhaustive Core/Host error enums and const `code()` APIs.
+  Add `runtime_code()` and `cancelled_run_id()` queries for typed cancellation;
+  all three native SDK adapters retain the `RUN_CANCELLED` contract.
+
+### Added
+
+- Node, Python and Go Agent bindings expose global MCP definitions and explicit
+  host sampling callbacks. Sampling remains refused until the host opts in;
+  callback failure and timeout refuse a request.
+- SDKs expose the original admitted Run handle, bounded evaluation evidence,
+  next-Run policy updates and seven previously missing value-typed options.
+  A completed Run's handle cannot cancel a later Run. Go host callback panics,
+  including custom JSON marshaling and error formatting, refuse safely.
+- Research evidence can bind a validated source snapshot through its existing
+  digest-bound metadata without changing the wire schema.
+- Release version checks cover the actual shipped pager, ACP, thin TUI and
+  SDKs. Registry preflight rejects path dependencies without a publishable
+  version. npm publishing uses the prepared Trusted Publisher workflow.
+
+### Notes
+
+- This is an unpublished candidate. Dependency source parity, the independent
+  public build, complete platform CI and external npm publisher registration
+  remain release gates. Successful ACP recovery, picker/fork/dashboard
+  activation and replacement of the private Search cascade are not claimed.
+- Retained local qualification is linked from the Code ROADMAP. The latest
+  qualification and remaining failures are tracked in
+  [the candidate disposition](manual/RELEASE_9.1.3.md). Selected real-model
+  passes do not certify complete Core, Layer C or every shipped platform.
+
 ## [9.1.2] - 2026-10-03
 
 ### Changed
@@ -24,9 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - L7 disposition for this channel cut: the `DM-PROD1` host pack on `3b2f72aa` does not cover the standing-context admission. `TB-QUAL1` / Terminal-Bench 4.0 is deferred by product decision (2026-10-03); this cut has no Harbor verifier receipt. `CAR-01`, `CAR-03`, `CAR-04`, and `CAR-05` stay out of scope because A3S Cloud was retired by product decision (2026-09-26).
 - Earlier candidate `6ad2d6dc` records `performance.yml` run `37082677055` and `hermetic-integrations.yml` run `37082696544`, both `passed: true`, archived in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). The Check job then lowers debuginfo so `cargo test --workspace` fits on the hosted runner; that workflow change does not alter the measured code.
 - Tip `2bd6a234` records CI `37103577874` and Performance Qualification `37103577761`. All nine performance reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. That tip is an ancestor of this cut.
-- Clean checkout `5f5528f42595d0747515c79607cd0fa1e7d1cb5b` records one pinned-route completion inside each of the 38 deep cases in [DEEP_E2E_RECEIPTS.md](manual/DEEP_E2E_RECEIPTS.md). Every served model was `deepseek-v4.1-flash`.
-- Tip `9f521169` records CI `37110650044` and Performance Qualification `37112230393`. All nine performance reports and the three hermetic reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. Kernel sources are unchanged between that tip and the changelog fold.
-- Changelog fold `439cc740f2520806bb06f6d6391100c236be8d1f` records CI `37117714232` and Performance Qualification `37117721745` in [PERFORMANCE_QUALIFICATION.md](manual/PERFORMANCE_QUALIFICATION.md). Attempt 1 of that CI failed the Windows library test `baseline_sees_a_mode_change_on_an_already_dirty_file` with an incomplete path delta; attempt 2 succeeded. All nine performance reports and the three hermetic reports have top-level `passed: true`. The F-table and Layer C scores stay on parent `9f521169`. Enterprise GA is not claimed. Terminal-Bench was not run.
+- Clean checkout `5f5528f42595d0747515c79607cd0fa1e7d1cb5b` records one pinned-route completion inside each of the 38 deep cases in [DEEP_E2E_RECEIPTS.md](https://github.com/A3S-Lab/Code/blob/v9.1.2/manual/DEEP_E2E_RECEIPTS.md). Every served model was `deepseek-v4.1-flash`.
+- Tip `9f521169` records CI `37110650044` and Performance Qualification `37112230393`. All nine performance reports and the three hermetic reports have top-level `passed: true`. The F-table scored 44 of 44 kernels at or above 95% line coverage. Layer C printed `LAYER_C_PASS model=boyue/bailian/deepseek-v4.1-flash`. That tip is the parent of the changelog fold. Its performance run does not bind the fold commit. The release binding is the Performance Qualification workflow whose head SHA is the fold.
 
 ## [9.1.1] - 2026-09-29
 

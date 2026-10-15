@@ -11,8 +11,8 @@ use super::{
 /// Host adapter for the exact non-clone lease returned by A3S Use.
 ///
 /// Implementations retain the real
-/// `a3s_use::capability_registry::CapabilitySnapshotLease` (or an equivalent
-/// host wrapper) as part of `self`. Code consumes the value at Run admission
+/// upstream capability snapshot or `a3s_use_reconcile::SelectionLease`
+/// as part of `self`. Code consumes the value at Run admission
 /// and drops it only after every child, task, and effect has settled.
 pub trait RetainedUseGeneration: Send + Sync + 'static {
     fn use_generation(&self) -> &UseCapabilityGeneration;

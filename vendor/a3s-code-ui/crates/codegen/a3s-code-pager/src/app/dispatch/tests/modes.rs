@@ -362,29 +362,29 @@ fn permission_mode_slash_gate_offers_toggles_subject_to_auto_feature() {
             .is_some()
     };
 
-    assert!(offered(&app, "always-approve"));
+    assert!(offered(&app, "yolo"));
     assert!(offered(&app, "auto"));
 
     // Mode changes must not hide either toggle.
     let _ = dispatch(Action::SetYoloMode(true), &mut app);
-    assert!(offered(&app, "always-approve"));
+    assert!(offered(&app, "yolo"));
     assert!(offered(&app, "auto"));
 
     let _ = dispatch(
         Action::SetPermissionMode(PermissionModeKind::Auto),
         &mut app,
     );
-    assert!(offered(&app, "always-approve"));
+    assert!(offered(&app, "yolo"));
     assert!(offered(&app, "auto"));
 
     // Gate off: only `/auto` disappears
     app.auto_mode_gate = false;
     app.sync_permission_mode_slash_gate();
-    assert!(offered(&app, "always-approve"));
+    assert!(offered(&app, "yolo"));
     assert!(!offered(&app, "auto"));
 }
 
-/// End-to-end via slash submission: `/always-approve` and `/auto` toggle off when re-run and cross-switch when the other is active.
+/// End-to-end via slash submission: `/yolo` and `/auto` toggle off when re-run and cross-switch when the other is active.
 #[test]
 fn slash_always_approve_and_auto_toggle_and_cross_switch() {
     let mut app = test_app_with_agent();
@@ -392,8 +392,8 @@ fn slash_always_approve_and_auto_toggle_and_cross_switch() {
     app.auto_mode_gate = true;
     app.sync_permission_mode_slash_gate();
 
-    // Off to always-approve
-    let _ = dispatch(Action::SendPrompt("/always-approve".into()), &mut app);
+    // Off to yolo
+    let _ = dispatch(Action::SendPrompt("/yolo".into()), &mut app);
     assert!(test_agent(&app, id).session.is_yolo());
     assert!(!test_agent(&app, id).session.is_auto());
 
@@ -411,13 +411,13 @@ fn slash_always_approve_and_auto_toggle_and_cross_switch() {
     let _ = dispatch(Action::SendPrompt("/auto".into()), &mut app);
     assert!(test_agent(&app, id).session.is_auto());
 
-    // Auto to always-approve (cross-switch)
-    let _ = dispatch(Action::SendPrompt("/always-approve".into()), &mut app);
+    // Auto to yolo (cross-switch)
+    let _ = dispatch(Action::SendPrompt("/yolo".into()), &mut app);
     assert!(test_agent(&app, id).session.is_yolo());
     assert!(!test_agent(&app, id).session.is_auto());
 
     // Always-approve to ask (toggle off)
-    let _ = dispatch(Action::SendPrompt("/always-approve".into()), &mut app);
+    let _ = dispatch(Action::SendPrompt("/yolo".into()), &mut app);
     assert!(!test_agent(&app, id).session.is_yolo());
     assert!(!test_agent(&app, id).session.is_auto());
 }
@@ -438,7 +438,7 @@ fn set_yolo_mode_off_to_on_emits_persist_with_rollback() {
     assert!(app.default_yolo, "app.default_yolo must mirror the toggle");
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
         "current_ui.permission_mode must mirror the canonical string",
     );
 
@@ -453,7 +453,7 @@ fn set_yolo_mode_off_to_on_emits_persist_with_rollback() {
             persist,
             session_id,
         } => {
-            assert_eq!(*canonical, "always-approve");
+            assert_eq!(*canonical, "yolo");
             assert_eq!(
                 *persist,
                 crate::app::actions::PermissionModePersist::WithRollback("ask"),
@@ -470,7 +470,7 @@ fn set_yolo_mode_off_to_on_emits_persist_with_rollback() {
     }
 }
 
-/// Enabling always-approve while plan mode is active must warn that the plan-mode edit gate stays binding.
+/// Enabling yolo while plan mode is active must warn that the plan-mode edit gate stays binding.
 /// The standard "all tool actions auto-run" toast would overpromise: the shell rejects non-plan-file edits in plan mode regardless of yolo.
 #[test]
 fn set_yolo_mode_on_under_plan_uses_plan_aware_toast() {
@@ -507,7 +507,7 @@ fn set_yolo_mode_on_under_plan_uses_plan_aware_toast() {
         .expect("toast must be set");
     assert_eq!(
         toast,
-        "\u{26A0} Always-approve ON: all tool actions auto-run"
+        "\u{26A0} YOLO ON: all tool actions auto-run"
     );
 }
 
@@ -557,8 +557,8 @@ fn set_yolo_mode_on_to_off_emits_persist_with_rollback() {
             assert_eq!(*canonical, "ask");
             assert_eq!(
                 *persist,
-                crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
-                "rollback must revert to the prior canonical (was 'always-approve')"
+                crate::app::actions::PermissionModePersist::WithRollback("yolo"),
+                "rollback must revert to the prior canonical (was 'yolo')"
             );
             assert!(session_id.is_some(), "session_id must be threaded");
         }
@@ -592,7 +592,7 @@ fn yolo_on_drain_clears_double_click_tracker() {
 
 /// When the user picks the "enable-always-approve" option:
 /// The tool call that asked is allowed exactly once (no per-tool whitelisting).
-/// The dispatcher returns a `PersistPermissionMode` effect with canonical `"always-approve"`.
+/// The dispatcher returns a `PersistPermissionMode` effect with canonical `"yolo"`.
 #[test]
 fn enable_always_approve_sends_response_and_flips_yolo_and_persists() {
     use std::sync::Arc;
@@ -636,8 +636,8 @@ fn enable_always_approve_sends_response_and_flips_yolo_and_persists() {
         }
     }
 
-    // (2) The dispatcher returns a PersistPermissionMode effect with canonical "always-approve". This is the bridge that writes
-    //     canonical "always-approve". This is the bridge that writes
+    // (2) The dispatcher returns a PersistPermissionMode effect with canonical "yolo". This is the bridge that writes
+    //     canonical "yolo". This is the bridge that writes
     //     ~/.a3s/config.toml AND fires x.ai/yolo_mode_changed.
     let persist = effects
         .iter()
@@ -650,8 +650,8 @@ fn enable_always_approve_sends_response_and_flips_yolo_and_persists() {
                  across sessions and the shell's permission manager learns about it",
         );
     assert_eq!(
-        persist, "always-approve",
-        "PersistPermissionMode canonical must be `always-approve` (not `ask`/`default`)",
+        persist, "yolo",
+        "PersistPermissionMode canonical must be `yolo` (not `ask`/`default`)",
     );
 
     // (3) Per-session YOLO flag is flipped; future prompts will be auto-approved in `handle_permission_request`
@@ -756,6 +756,7 @@ fn set_yolo_mode_on_with_no_allow_once_option_sends_cancelled() {
         bash_deny_selection_count: 0,
         bash_command_raw: None,
         mcp_scope: None,
+        question: None,
         title: "noallow-test".to_string(),
         description: vec![],
         args_expanded: false,
@@ -837,6 +838,7 @@ fn set_yolo_mode_on_drains_multi_item_queue() {
             bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope: None,
+            question: None,
             title: format!("multi-{i}"),
             description: vec![],
             args_expanded: false,
@@ -914,6 +916,7 @@ fn set_yolo_mode_on_duplicate_dispatch_still_drains_queue() {
             bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope: None,
+            question: None,
             title: "dup-test".to_string(),
             description: vec![],
             args_expanded: false,
@@ -970,13 +973,13 @@ fn set_yolo_mode_redispatch_same_value_still_emits_effect_and_toast() {
             session_id,
         } => {
             assert_eq!(
-                *canonical, "always-approve",
-                "Effect.canonical must be 'always-approve' on duplicate YOLO=true",
+                *canonical, "yolo",
+                "Effect.canonical must be 'yolo' on duplicate YOLO=true",
             );
             assert_eq!(
                 *persist,
-                crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
-                "redispatch from yolo='always-approve' → rollback to 'always-approve' (no-op)"
+                crate::app::actions::PermissionModePersist::WithRollback("yolo"),
+                "redispatch from yolo='yolo' → rollback to 'yolo' (no-op)"
             );
             assert!(
                 session_id.is_some(),
@@ -993,8 +996,8 @@ fn set_yolo_mode_redispatch_same_value_still_emits_effect_and_toast() {
     assert!(app.default_yolo, "app.default_yolo must remain true");
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
-        "current_ui.permission_mode must remain at always-approve",
+        Some("yolo"),
+        "current_ui.permission_mode must remain at yolo",
     );
     // Toast was cleared between dispatches, so `Some(_)` here proves the second dispatch re-fired the toast (not "carried over from the first")
     assert!(
@@ -1017,7 +1020,7 @@ fn set_yolo_mode_toast_format() {
         .expect("toast must be set");
     assert_eq!(
         toast,
-        "\u{26A0} Always-approve ON: all tool actions auto-run"
+        "\u{26A0} YOLO ON: all tool actions auto-run"
     );
 
     let _ = dispatch(Action::SetYoloMode(false), &mut app);
@@ -1026,7 +1029,7 @@ fn set_yolo_mode_toast_format() {
         .as_ref()
         .map(|(s, _)| s.clone())
         .expect("toast must be set");
-    assert_eq!(toast, "\u{2713} Always-approve: off");
+    assert_eq!(toast, "\u{2713} YOLO: off");
 }
 
 #[test]
@@ -1064,7 +1067,7 @@ fn set_yolo_mode_off_allowed_under_policy_pin() {
 
     assert!(
         !test_agent(&app, AgentId(0)).session.is_yolo(),
-        "the pin must not block flipping always-approve OFF"
+        "the pin must not block flipping yolo OFF"
     );
     assert_eq!(effects.len(), 1, "OFF persists normally");
     assert!(matches!(
@@ -1076,7 +1079,7 @@ fn set_yolo_mode_off_allowed_under_policy_pin() {
     ));
 }
 
-/// Shift+Tab cycle: Plan to Auto (always-approve is a later step).
+/// Shift+Tab cycle: Plan to Auto (yolo is a later step).
 /// Plan exit is pushed; PersistPermissionMode(auto) notifies the agent.
 #[test]
 fn cycle_mode_plan_to_auto_includes_persist_auto() {
@@ -1121,18 +1124,18 @@ fn cycle_mode_plan_to_always_approve_when_auto_gated_off() {
 
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
         "gate OFF: Plan must skip Auto and land on Always-Approve"
     );
     assert!(
         effects.iter().any(|e| matches!(
             e,
             Effect::PersistPermissionMode {
-                canonical: "always-approve",
+                canonical: "yolo",
                 ..
             }
         )),
-        "gate OFF: expected PersistPermissionMode(always-approve), got {effects:?}"
+        "gate OFF: expected PersistPermissionMode(yolo), got {effects:?}"
     );
     assert!(
         !effects.iter().any(|e| matches!(
@@ -1248,7 +1251,7 @@ fn cycle_mode_plan_plus_auto_keeps_auto_not_reset() {
 fn cycle_mode_plan_plus_always_approve_exits_plan_keeps_yolo() {
     let mut app = test_app_with_agent();
     app.default_yolo = true;
-    app.current_ui.permission_mode = Some("always-approve".into());
+    app.current_ui.permission_mode = Some("yolo".into());
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         agent.session.yolo_mode = true;
@@ -1266,7 +1269,7 @@ fn cycle_mode_plan_plus_always_approve_exits_plan_keeps_yolo() {
     assert!(app.default_yolo);
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve")
+        Some("yolo")
     );
     assert!(
         matches!(
@@ -1282,7 +1285,7 @@ fn cycle_mode_plan_plus_always_approve_under_pin_still_resets() {
     let mut app = test_app_with_agent();
     app.yolo_policy_block = Some(POLICY_WARNING);
     app.default_yolo = true;
-    app.current_ui.permission_mode = Some("always-approve".into());
+    app.current_ui.permission_mode = Some("yolo".into());
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         agent.session.yolo_mode = true;
@@ -1320,7 +1323,7 @@ fn cycle_mode_plan_plus_always_approve_under_pin_still_resets() {
 fn turning_always_approve_off_restages_ask() {
     let mut app = test_app_with_agent();
     app.default_yolo = true;
-    app.current_ui.permission_mode = Some("always-approve".into());
+    app.current_ui.permission_mode = Some("yolo".into());
     {
         let agent = app
             .agents
@@ -1328,7 +1331,7 @@ fn turning_always_approve_off_restages_ask() {
             .expect("the test agent exists");
         agent.session.session_id = None;
         agent.session.yolo_mode = true;
-        agent.deferred_permission_mode = Some("always-approve");
+        agent.deferred_permission_mode = Some("yolo");
     }
 
     dispatch(Action::ToggleYolo, &mut app);
@@ -1342,7 +1345,7 @@ fn turning_always_approve_off_restages_ask() {
 fn cycle_mode_pre_session_plan_plus_yolo_unstages_plan_keeps_yolo() {
     let mut app = test_app_with_agent();
     app.default_yolo = true;
-    app.current_ui.permission_mode = Some("always-approve".into());
+    app.current_ui.permission_mode = Some("yolo".into());
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         agent.session.session_id = None;
@@ -1369,7 +1372,7 @@ fn cycle_mode_pre_session_plan_plus_yolo_unstages_plan_keeps_yolo() {
     );
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve")
+        Some("yolo")
     );
     assert!(
         effects.is_empty(),
@@ -1419,12 +1422,12 @@ fn permission_setters_never_touch_plan_state() {
 }
 
 /// Security regression (0.2.89).
-/// Launch with `permission_mode = "always-approve"`, Shift+Tab on the welcome screen (no session yet) to Normal, then start the session.
+/// Launch with `permission_mode = "yolo"`, Shift+Tab on the welcome screen (no session yet) to Normal, then start the session.
 /// The cycle must persist "ask" to disk or the stale config re-enables yolo on the next launch while the footer shows Normal.
 #[test]
 fn cycle_mode_pre_session_always_approve_to_normal_persists_ask() {
     let mut app = test_app_with_agent();
-    // Launch-seeded always-approve: the global default (read by SessionFlags at CreateSession) and the per-agent flag the cycle arm matches on
+    // Launch-seeded yolo: the global default (read by SessionFlags at CreateSession) and the per-agent flag the cycle arm matches on
     app.default_yolo = true;
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -1524,7 +1527,7 @@ fn set_yolo_mode_refreshes_open_modal_snapshots() {
     );
     assert_eq!(
         state.ui_snapshot.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
         "ui_snapshot.permission_mode must also refresh",
     );
 
@@ -1537,7 +1540,7 @@ fn set_yolo_mode_refreshes_open_modal_snapshots() {
     .expect("permission_mode must resolve");
     assert_eq!(
         cur_value,
-        crate::settings::SettingValue::Enum("always-approve"),
+        crate::settings::SettingValue::Enum("yolo"),
         "current_value_for must read the refreshed snapshot",
     );
 }
@@ -1630,7 +1633,7 @@ fn set_permission_mode_always_approve_from_default_captures_prev_canonical() {
     assert!(test_agent(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
     );
 
     // **Headline rollback-preservation contract.**
@@ -1643,7 +1646,7 @@ fn set_permission_mode_always_approve_from_default_captures_prev_canonical() {
         Effect::PersistPermissionMode {
             canonical, persist, ..
         } => {
-            assert_eq!(*canonical, "always-approve");
+            assert_eq!(*canonical, "yolo");
             assert_eq!(
                 *persist,
                 crate::app::actions::PermissionModePersist::WithRollback("default"),
@@ -1662,7 +1665,7 @@ fn set_permission_mode_always_approve_from_default_captures_prev_canonical() {
         .map(|(s, _)| s.clone())
         .expect("toast must be set");
     assert_eq!(
-        toast, "\u{26A0} Always-approve ON: all tool actions auto-run",
+        toast, "\u{26A0} YOLO ON: all tool actions auto-run",
         "AlwaysApprove arm preserves the destructive yolo_toast(true) — the warning \
              weight is correct for the YOLO transition",
     );
@@ -1679,7 +1682,7 @@ fn set_yolo_mode_with_live_yolo_and_default_ui_mirror_rolls_back_to_default() {
     app.default_yolo = true;
     app.current_ui.permission_mode = Some("default".into());
 
-    // Without the LIVE branch fix, the rollback canonical would derive from the bool `prev` as "always-approve", losing the "default" preference
+    // Without the LIVE branch fix, the rollback canonical would derive from the bool `prev` as "yolo", losing the "default" preference
     // The key invariant: the rollback target matches what the modal would have shown via `current_value_for` at dispatch time
     // Since LIVE yolo wins in `current_value_for`, it must also win here
     let effects = dispatch(Action::SetYoloMode(false), &mut app);
@@ -1690,7 +1693,7 @@ fn set_yolo_mode_with_live_yolo_and_default_ui_mirror_rolls_back_to_default() {
         Effect::PersistPermissionMode { persist, .. } => {
             assert_eq!(
                 *persist,
-                crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
+                crate::app::actions::PermissionModePersist::WithRollback("yolo"),
                 "LIVE yolo=true must dominate the mirror's 'default' for the rollback \
                      canonical — matches current_value_for's precedence rule",
             );
@@ -1715,7 +1718,7 @@ fn permission_mode_toast_returns_brand_consistent_strings() {
     // AlwaysApprove still goes through `yolo_toast(true)`, the destructive variant
     assert_eq!(
         permission_mode_toast(PermissionModeKind::AlwaysApprove),
-        "\u{26A0} Always-approve ON: all tool actions auto-run",
+        "\u{26A0} YOLO ON: all tool actions auto-run",
     );
 }
 
@@ -1837,7 +1840,7 @@ fn dispatch_cycle_mode_plan_to_always_approve_delegates_through_inner() {
     assert!(app.default_yolo, "default_yolo must flip in lock-step");
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
         "current_ui.permission_mode must be updated by the inner",
     );
 
@@ -1846,11 +1849,11 @@ fn dispatch_cycle_mode_plan_to_always_approve_delegates_through_inner() {
             e,
             Effect::PersistPermissionMode {
                 persist: crate::app::actions::PermissionModePersist::BestEffort,
-                canonical: "always-approve",
+                canonical: "yolo",
                 ..
             }
         )),
-        "expected PersistPermissionMode(always-approve, BestEffort), got {effects:?}"
+        "expected PersistPermissionMode(yolo, BestEffort), got {effects:?}"
     );
 }
 
@@ -1862,7 +1865,7 @@ fn dispatch_cycle_mode_plan_to_always_approve_drains_queue_via_inner() {
     use std::sync::Arc;
 
     let mut app = test_app_with_agent();
-    // Start in Auto so one CycleMode enables always-approve and drains. The cycle reads the per-session `is_auto()` flag, not the global mirror.
+    // Start in Auto so one CycleMode enables yolo and drains. The cycle reads the per-session `is_auto()` flag, not the global mirror.
     app.current_ui.permission_mode = Some("auto".into());
     app.agents.get_mut(&AgentId(0)).unwrap().session.auto_mode = true;
 
@@ -1899,6 +1902,7 @@ fn dispatch_cycle_mode_plan_to_always_approve_drains_queue_via_inner() {
             bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope: None,
+            question: None,
             title: "cycle-test".to_string(),
             description: vec![],
             args_expanded: false,
@@ -1963,7 +1967,7 @@ fn cycle_always_approve_with_nudge_jumps_to_plan() {
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
         Some("ask"),
-        "canonical permission mode must leave always-approve"
+        "canonical permission mode must leave yolo"
     );
     assert_eq!(
         test_agent(&app, AgentId(0)).ephemeral_tip.current_key(),
@@ -2024,7 +2028,7 @@ fn turning_always_approve_on_before_a_session_stages_it() {
 
     assert_eq!(
         test_agent(&app, AgentId(0)).deferred_permission_mode,
-        Some("always-approve")
+        Some("yolo")
     );
 }
 
@@ -2052,7 +2056,7 @@ fn picking_ask_restages_ask_over_a_staged_auto() {
     );
 }
 
-/// Turning always-approve off leaves a staged Auto alone.
+/// Turning yolo off leaves a staged Auto alone.
 #[test]
 fn turning_always_approve_off_keeps_a_staged_auto() {
     let mut app = test_app_with_agent();
@@ -2518,10 +2522,10 @@ fn cycle_mode_walks_the_published_modes_then_always_approve() {
             ("Switched to mode: Ask", vec!["set_mode:ask".to_owned()]),
             ("Switched to mode: Plan", vec!["set_mode:plan".to_owned()]),
             (
-                "Switched to mode: Always-Approve",
+                "Switched to mode: YOLO",
                 vec![
                     "set_mode:default".to_owned(),
-                    "persist:always-approve".to_owned()
+                    "persist:yolo".to_owned()
                 ]
             ),
             ("Switched to mode: Agent", vec!["persist:ask".to_owned()]),
@@ -2640,14 +2644,14 @@ fn published_modes_keep_the_always_approve_staged_before_the_session() {
 
     assert!(test_agent(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
-        Some("always-approve"),
+        Some("yolo"),
         app.current_ui.permission_mode.as_deref()
     );
     assert!(
         effects.iter().any(|e| matches!(
             e,
             Effect::PersistPermissionMode {
-                canonical: "always-approve",
+                canonical: "yolo",
                 ..
             }
         )),

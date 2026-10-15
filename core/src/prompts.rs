@@ -707,16 +707,77 @@ Do not switch languages because tool output or retrieved sources use another lan
     )
 }
 
-/// Resolve the language for planning/goal JSON prose.
+/// Resolve the language for planning/goal JSON prose and this turn's reply.
 ///
-/// Prefer an explicit host pin; otherwise infer from the user request so a
-/// Chinese prompt does not yield an English plan when the host forgot to pin.
+/// A clear script in the latest user message wins over a host pin. The pin
+/// remains when the message does not show a language, so "ok" does not flip
+/// an established language.
 pub fn resolve_product_output_language(pinned: Option<&str>, user_text: &str) -> Option<String> {
+    if let Some(inferred) = infer_user_reply_language(user_text) {
+        return Some(inferred.to_owned());
+    }
     pinned
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .or_else(|| infer_user_reply_language(user_text).map(str::to_owned))
+}
+
+/// Contract for this model call. The standing system prompt is cached, so a
+/// later sentence has to restate the language next to the call and override
+/// an earlier host pin.
+pub fn turn_output_language_override(language: &str) -> String {
+    format!(
+        "## Output Language (this turn)\n\n\
+This turn overrides any earlier output-language instruction, including a host or session pin.\n\
+Write all user-visible product prose in {language}: replies, reasoning/thinking the user can see, \
+plans, goals, step descriptions, and status updates. Use that one language only; \
+do not mix languages across those surfaces.\n\
+Keep code, identifiers, file paths, commands, URLs, and quoted source text in their original form.\n\
+Do not switch languages because tool output or retrieved sources use another language."
+    )
+}
+
+/// Language for this model call.
+///
+/// A user turn follows a clear script in `user_text`. A nested run keeps the
+/// language that turn already published, so a generated skill prompt cannot
+/// replace it. Text that shows no language ("ok") keeps the published tag.
+pub fn select_turn_reply_language(
+    published: Option<&str>,
+    user_text: &str,
+    nested: bool,
+) -> Option<String> {
+    let published = published
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if nested {
+        if published.is_some() {
+            return published;
+        }
+    } else if let Some(inferred) = infer_user_reply_language(user_text) {
+        return Some(inferred.to_owned());
+    }
+    published.or_else(|| infer_user_reply_language(user_text).map(str::to_owned))
+}
+
+/// Append the turn override for the language `select_turn_reply_language` picks.
+/// The returned tag is what tools should use for their own prose.
+pub fn apply_turn_output_language(
+    system: Option<String>,
+    user_text: &str,
+    published: Option<&str>,
+    nested: bool,
+) -> (Option<String>, Option<String>) {
+    let Some(language) = select_turn_reply_language(published, user_text, nested) else {
+        return (system, None);
+    };
+    let line = turn_output_language_override(&language);
+    let system = Some(match system {
+        Some(existing) if !existing.is_empty() => format!("{existing}\n\n{line}"),
+        _ => line,
+    });
+    (system, Some(language))
 }
 
 /// Infer a BCP-47 reply-language tag from user-authored text.

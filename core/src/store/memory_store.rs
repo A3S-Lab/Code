@@ -37,6 +37,7 @@ struct MemorySessionEntry {
     run_records: Vec<RunRecord>,
     verification_reports: Vec<VerificationReport>,
     subagent_tasks: Vec<SubagentTaskSnapshot>,
+    session_review: Option<crate::session_review::SessionReviewStoreV1>,
 }
 
 impl MemorySessionEntry {
@@ -49,13 +50,14 @@ impl MemorySessionEntry {
             run_records: snapshot.run_records.clone(),
             verification_reports: snapshot.verification_reports.clone(),
             subagent_tasks: snapshot.subagent_tasks.clone(),
+            session_review: snapshot.session_review.clone(),
         }
     }
 
     fn snapshot(&self) -> Option<SessionSnapshotV1> {
         let session = self.session.clone()?;
         Some(SessionSnapshotV1 {
-            schema_version: super::SESSION_SNAPSHOT_SCHEMA_VERSION,
+            schema_version: SessionSnapshotV1::schema_for(&session),
             session,
             artifacts: self.artifacts.clone(),
             retained_artifact_uris: self.retained_artifact_uris.clone(),
@@ -63,7 +65,7 @@ impl MemorySessionEntry {
             run_records: self.run_records.clone(),
             verification_reports: self.verification_reports.clone(),
             subagent_tasks: self.subagent_tasks.clone(),
-            session_review: None,
+            session_review: self.session_review.clone(),
         })
     }
 }
@@ -105,6 +107,14 @@ impl Default for MemorySessionStore {
 impl SessionStore for MemorySessionStore {
     async fn save(&self, session: &SessionData) -> Result<()> {
         let mut sessions = self.sessions.write().await;
+        if session.durable_source.is_some()
+            || sessions
+                .get(&session.id)
+                .and_then(|entry| entry.session.as_ref())
+                .is_some_and(|data| data.durable_source.is_some())
+        {
+            anyhow::bail!("durable session data requires the versioned snapshot API");
+        }
         sessions.entry(session.id.clone()).or_default().session = Some(session.clone());
         Ok(())
     }

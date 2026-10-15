@@ -1,6 +1,10 @@
-use std::path::Path;
+// Each integration-test target includes this module separately; not every
+// helper is used by every target.
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 pub use a3s_code_core::llm::CodexLoginClient;
+use std::path::Path;
 
 pub fn default_codex_model() -> String {
     std::env::var("A3S_CODEX_MODEL")

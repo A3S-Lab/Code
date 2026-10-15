@@ -150,6 +150,7 @@ impl SessionStore for ReturningSnapshotStore {
 
 fn persisted_data(model_name: Option<&str>, llm: Option<(&str, &str)>) -> SessionData {
     SessionData {
+        durable_source: None,
         id: "session-1".to_string(),
         config: SessionConfig::default(),
         state: SessionState::Active,
@@ -777,6 +778,7 @@ async fn session_save_uses_exactly_one_aggregate_store_call() {
     let concrete_store = Arc::new(SnapshotOnlyStore::default());
     let session_store: Arc<dyn SessionStore> = concrete_store.clone();
     let context = SessionPersistenceContext {
+        fact_log: Arc::new(std::sync::Mutex::new(None)),
         session_store: Some(session_store),
         session_id: "aggregate-save-test".to_string(),
         workspace: PathBuf::from("/tmp/aggregate-save-test"),
@@ -857,6 +859,7 @@ async fn repeated_saves_preserve_restored_metadata_usage_cost_and_tasks() {
         cache_write_tokens: Some(3),
     });
     let context = SessionPersistenceContext {
+        fact_log: Arc::new(std::sync::Mutex::new(None)),
         session_store: Some(session_store.clone()),
         session_id: "lossless-save".to_string(),
         workspace: PathBuf::from("/tmp/lossless-save"),

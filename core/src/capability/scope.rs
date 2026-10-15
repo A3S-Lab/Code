@@ -138,6 +138,7 @@ struct ParentRegistration {
 }
 
 pub(super) struct ScopeInner {
+    instance_id: uuid::Uuid,
     id: CapabilityScopeId,
     kind: CapabilityScopeKind,
     parent_id: Option<CapabilityScopeId>,
@@ -362,6 +363,7 @@ impl CapabilityScope<Session> {
         let use_generation = set.use_capability_generation().cloned();
         Ok(Self {
             inner: Arc::new(ScopeInner {
+                instance_id: uuid::Uuid::new_v4(),
                 id,
                 kind: CapabilityScopeKind::Session,
                 parent_id: None,
@@ -409,6 +411,7 @@ impl CapabilityScope<Session> {
                 revision_mismatch: expected.revision() != actual.revision(),
                 registry_revision_mismatch: expected.registry_revision()
                     != actual.registry_revision(),
+                origin_mismatch: !expected.origin_matches(actual),
             });
         }
         self.create_child(
@@ -552,6 +555,41 @@ impl CapabilityScopeHandle<Subtask> {
 }
 
 impl<K: ScopeKind> CapabilityScopeHandle<K> {
+    pub(crate) fn projected_identity(
+        &self,
+        kind: super::CapabilityKind,
+        name: &str,
+    ) -> Result<Option<(super::CapabilityId, Sha256Digest)>, CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        let identity = inner
+            .set
+            .iter()
+            .find(|(_, descriptor)| {
+                descriptor.id().kind() == kind
+                    && descriptor.public_name() == name
+                    && inner.ceiling.allows(descriptor.id())
+            })
+            .map(|(id, _)| (id.clone(), inner.set.digest().clone()));
+        Ok(identity)
+    }
+
+    pub(crate) fn authorizes_projection(
+        &self,
+        id: &super::CapabilityId,
+        digest: &Sha256Digest,
+    ) -> Result<bool, CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        Ok(inner.set.digest() == digest && inner.set.contains(id) && inner.ceiling.allows(id))
+    }
+
+    pub(crate) fn instance_id(&self) -> Result<uuid::Uuid, CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        Ok(inner.instance_id)
+    }
+
     pub fn id(&self) -> &CapabilityScopeId {
         &self.id
     }
@@ -570,6 +608,26 @@ impl<K: ScopeKind> CapabilityScopeHandle<K> {
         let inner = self.upgrade()?;
         inner.ensure_active()?;
         Ok(inner.supervisor.cancellation())
+    }
+
+    pub(crate) fn workspace_operation_authority(
+        &self,
+        operation: super::WorkspaceOperation,
+    ) -> Result<(super::WorkspaceOperationBinding, CancellationToken), CapabilityScopeError> {
+        let inner = self.upgrade()?;
+        inner.ensure_active()?;
+        if !operation.allowed_by(inner.ceiling.workspace()) {
+            return Err(CapabilityScopeError::WorkspaceOperationUnavailable);
+        }
+        Ok((
+            super::WorkspaceOperationBinding {
+                scope_id: inner.id.clone(),
+                catalog_generation: inner.set.generation(),
+                catalog_digest: inner.set.digest().clone(),
+                use_generation: inner.use_generation.clone(),
+            },
+            inner.supervisor.cancellation(),
+        ))
     }
 
     pub fn register_effect<E>(&self, effect: E) -> Result<(), CapabilityScopeError>
@@ -755,6 +813,7 @@ fn create_child_scope<C: ScopeKind>(
         supervisor.register_generation_lease(lease)?;
     }
     let child = Arc::new(ScopeInner {
+        instance_id: uuid::Uuid::new_v4(),
         id,
         kind: C::KIND,
         parent_id: Some(parent.id.clone()),

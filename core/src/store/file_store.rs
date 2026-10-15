@@ -106,10 +106,13 @@ impl FileSessionStore {
     ) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
 
-        // Create directory if it doesn't exist
+        // Create directory if it doesn't exist, then enforce that the store
+        // (conversation snapshots) is never group- or other-accessible.
         fs::create_dir_all(&dir)
             .await
             .with_context(|| format!("Failed to create session directory: {}", dir.display()))?;
+        crate::secure_state::restrict_state_dir(&dir)
+            .with_context(|| format!("Failed to restrict session directory: {}", dir.display()))?;
 
         let (commit_watch, _) = super::watch::commit_watch_channel();
         let store = Self {
@@ -141,6 +144,12 @@ impl FileSessionStore {
             fs::create_dir_all(parent).await.with_context(|| {
                 format!(
                     "Failed to create session store WAL lock directory: {}",
+                    parent.display()
+                )
+            })?;
+            crate::secure_state::restrict_state_dir(parent).with_context(|| {
+                format!(
+                    "Failed to restrict WAL lock directory: {}",
                     parent.display()
                 )
             })?;
@@ -401,6 +410,12 @@ impl FileSessionStore {
                     parent.display()
                 )
             })?;
+            crate::secure_state::restrict_state_dir(parent).with_context(|| {
+                format!(
+                    "Failed to restrict writer lease directory: {}",
+                    parent.display()
+                )
+            })?;
         }
         self.write_json_atomic_unlocked(&path, &lease, "writer lease")
             .await?;
@@ -595,8 +610,11 @@ impl FileSessionStore {
             return Ok(StoredSessionFile::Snapshot(snapshot));
         }
 
-        let session = serde_json::from_value(value)
+        let session: SessionData = serde_json::from_value(value)
             .with_context(|| format!("Failed to parse legacy session file: {}", path.display()))?;
+        if session.durable_source.is_some() {
+            anyhow::bail!("durable session data requires the versioned snapshot envelope");
+        }
         Ok(StoredSessionFile::Legacy(session))
     }
 
@@ -791,6 +809,8 @@ async fn write_json_atomic<T: serde::Serialize + ?Sized>(
         fs::create_dir_all(parent)
             .await
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        crate::secure_state::restrict_state_dir(parent)
+            .with_context(|| format!("Failed to restrict directory: {}", parent.display()))?;
     }
     let json = serde_json::to_vec_pretty(value)
         .with_context(|| format!("Failed to serialize {description}"))?;
@@ -818,6 +838,8 @@ async fn write_json_atomic<T: serde::Serialize + ?Sized>(
         let mut file = fs::File::create(&temp_path)
             .await
             .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
+        crate::secure_state::restrict_state_file(&temp_path)
+            .with_context(|| format!("Failed to restrict temp file: {}", temp_path.display()))?;
         file.write_all(&payload)
             .await
             .with_context(|| format!("Failed to write {description}"))?;
@@ -871,6 +893,9 @@ async fn remove_dir_if_exists(path: &Path, description: &str) -> Result<()> {
 #[async_trait::async_trait]
 impl SessionStore for FileSessionStore {
     async fn save(&self, session: &SessionData) -> Result<()> {
+        if session.durable_source.is_some() {
+            anyhow::bail!("durable session data requires the versioned snapshot API");
+        }
         let path = self.session_path(&session.id);
 
         // Preserve aggregate components when a legacy caller updates only the

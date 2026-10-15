@@ -492,13 +492,13 @@ fn follow_up_chip_does_not_execute_slash_command() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     assert!(!agent_ref(&app, id).session.is_yolo());
-    let effects = dispatch(Action::SubmitFollowUp("/always-approve".into()), &mut app);
+    let effects = dispatch(Action::SubmitFollowUp("/yolo".into()), &mut app);
     assert!(
         !agent_ref(&app, id).session.is_yolo(),
-        "a /always-approve chip must NOT flip YOLO mode"
+        "a /yolo chip must NOT flip YOLO mode"
     );
     assert!(
-        matches!(effects.as_slice(), [Effect::SendPrompt { text, .. }] if text == "/always-approve"),
+        matches!(effects.as_slice(), [Effect::SendPrompt { text, .. }] if text == "/yolo"),
         "chip text must be submitted literally, got {effects:?}"
     );
 }
@@ -2140,7 +2140,7 @@ fn pager_registry_default_matches_agent_view_new_initializer() {
     }
 }
 /// Picking the regular "Yes, proceed" option (NOT enable-always-approve) must behave as before: no PersistPermissionMode effect, no YOLO flip.
-/// Pins that the always-approve code path is gated strictly on the id check.
+/// Pins that the yolo code path is gated strictly on the id check.
 #[test]
 fn regular_allow_once_does_not_trigger_always_approve_persist() {
     use std::sync::Arc;
@@ -2155,7 +2155,7 @@ fn regular_allow_once_does_not_trigger_always_approve_persist() {
             .iter()
             .any(|e| matches!(e, Effect::PersistPermissionMode { .. })),
         "picking the regular AllowOnce option must NOT emit PersistPermissionMode — \
-             the always-approve mode is opt-in via the dedicated option only",
+             the yolo mode is opt-in via the dedicated option only",
     );
     assert!(
         !agent_ref(&app, AgentId(0)).session.is_yolo(),

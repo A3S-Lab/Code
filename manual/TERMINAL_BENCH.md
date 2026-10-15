@@ -67,6 +67,75 @@ harbor run -d terminal-bench/terminal-bench@4.0.0 \
   -n 100 -k 5 -y
 ```
 
+## ACP lane (`TB-ACP1`)
+
+`a3s-code-acp --unattended` runs the host admission loop of
+`terminal_bench_runner`, behind Harbor's stock ACP runner, with every A3S Code
+capability on (`TB-ACP2`): `a3s-vec` lexical FTS search, Code Intelligence
+(rust-analyzer, typescript-language-server, basedpyright or pyright, clangd),
+file memory, skills, web tools, and automatic plus manual delegation. Every tool
+call is approved without approval learning, a model question gets a fixed
+"nobody is available" reply, harness state goes to a private temporary root
+instead of the graded workspace, and `--result-file` writes the same
+`a3s.code.terminal-bench-result.v1` record. Without `--unattended` the agent is
+unchanged.
+
+```bash
+CARGO_TARGET_DIR=$HOME/a3s-tb-target cargo zigbuild --locked \
+  --target x86_64-unknown-linux-musl --release -p a3s-code-acp --bin a3s-code-acp
+../../scripts/harbor/run_acp_tb.sh   # A3S_TB_INCLUDE_TASK=<task> for one task
+```
+
+`a3s_code_acp_agent:A3SCodeAcpAgent` uploads the local binary and ACL instead
+of fetching an archive, keeps provider credentials out of the launcher script,
+and reaches the verifier on the same rule as the native adapter. Harbor's ACP
+runner installs Python and `agent-client-protocol` in the task image (`apt-get`
+plus `pip`, 225 s to over 360 s on a slow network). A runner bundle built once
+replaces that step on glibc images:
+
+```bash
+../../scripts/harbor/prepare_runner_bundle.sh   # ~/.cache/a3s/acp-runner-linux-x86_64.tar.gz, 35 MB
+```
+
+`run_acp_tb.sh` passes it as `A3S_CODE_RUNNER_BUNDLE`; the adapter unpacks it at
+`/opt/harbor-acp-venv` and skips Harbor's install when that Python imports
+`acp` (agent setup then takes about 6 s). Elsewhere Harbor's install runs as
+before. The model is selected through the `model` session config option
+(Python ACP 0.12 has no `models` field). The native runner stays the baseline
+until an A/B on the same tasks shows parity.
+
+Derived indexes (`a3s-vec` FTS, grep trigram stamp) and file memory live in the
+private state root, so the graded workspace holds only what the agent wrote.
+Language servers come from a bundle built once on the host:
+
+```bash
+../../scripts/harbor/prepare_lsp_bundle.sh   # ~/.cache/a3s/lsp-linux-x86_64.tar.gz, 208 MB
+```
+
+`run_acp_tb.sh` passes it as `A3S_CODE_LSP_BUNDLE` on linux-x86_64; each trial
+uploads and unpacks it into `/opt/a3s-lsp` with no network (about 3 s) and
+links basedpyright, typescript-language-server, clangd and rust-analyzer into
+`/usr/local/bin` unless the image already has them. The bundle needs glibc
+(Node 24: glibc 2.28+); on Alpine the servers do not start.
+
+Without a bundle the adapter falls back to installing missing language
+servers best effort under one deadline inside Harbor's 360 s agent-setup
+limit: basedpyright and
+typescript-language-server through `npm` into `/opt/a3s-lsp`, else basedpyright
+through a private Python venv, and clangd through `apt-get` (download bounded,
+install from cache) or `apk`. A server that does not arrive leaves that language
+unavailable; the trial continues.
+
+| Variable | Effect |
+| --- | --- |
+| `A3S_CODE_ACP_LANGUAGE_SERVERS=0` | skip the language-server install |
+| `A3S_CODE_LSP_BUNDLE` | prepared bundle to upload; a set but missing file refuses the install |
+| `A3S_CODE_ACP_LANGUAGE_SERVER_BUDGET_SEC` | install deadline, default 150 |
+| `A3S_CODE_ACP_REASONING_EFFORT` | `--reasoning-effort` for the agent: `low`, `medium`, `high`, `xhigh` or `max` (default `max`) |
+| `A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS` | forwarded to the agent; a provider stream silent this long is retried. `run_acp_tb.sh` sets 120000 (core default 300000) |
+| `A3S_CODE_RUNNER_BUNDLE` | prepared runner Python to unpack at `/opt/harbor-acp-venv`; a set but missing file refuses the install |
+| `A3S_CODE_SKILLS_DIR` | local skills directory uploaded to `/run/a3s/skills`; list that path in the evaluation ACL's `skill_dirs` |
+
 ## TB-QUAL1 qualification gate (`HARNESS-CONV7`)
 
 See also the wrap-up index and evidence templates in

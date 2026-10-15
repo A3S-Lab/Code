@@ -32,8 +32,8 @@ const JSON_OUTPUT_RESERVE_BYTES: usize = 4 * 1024;
 const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT_RESERVE_BYTES;
 
 #[cfg(feature = "headless-search")]
-const WEB_SEARCH_DESCRIPTION: &str =
-    "Search the web through a structurally gated cascade: the bundled Moli headless browser (Google, Baidu, Bing, and Brave) first, HTTP/RSS engines \
+const WEB_SEARCH_DESCRIPTION: &str = "When saved notes are available, this tool searches them before the network. A matching note is returned and the web is not queried. Call web_search again with the same query if those passages do not answer. \
+     Search the web through a structurally gated cascade: the bundled Moli headless browser (Google, Baidu, Bing, and Brave) first, HTTP/RSS engines \
      only when needed, and native APIs only when earlier tiers remain insufficient. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
@@ -41,8 +41,8 @@ const WEB_SEARCH_DESCRIPTION: &str =
      Supports proxy configuration for conventional and headless search transports.";
 
 #[cfg(not(feature = "headless-search"))]
-const WEB_SEARCH_DESCRIPTION: &str =
-    "Search the web through a structurally gated cascade of HTTP/RSS engines and native APIs. \
+const WEB_SEARCH_DESCRIPTION: &str = "When saved notes are available, this tool searches them before the network. A matching note is returned and the web is not queried. Call web_search again with the same query if those passages do not answer. \
+     Search the web through a structurally gated cascade of HTTP/RSS engines and native APIs. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
      Supports proxy configuration for conventional search transports.";
@@ -54,7 +54,7 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
      or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
      wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
-     and opt-in billed providers tinyfish, bocha, aliyun, tencent, and firecrawl (named only; \
+     and opt-in billed providers tinyfish, bocha, aliyun, tencent, firecrawl, and a3s (named only; \
      they are not in the default cascade), \
      g / google (Google, headless), baidu (Baidu, headless), bing_browser (Bing, headless), \
      brave_browser (Brave, headless). The default headless backend is Moli; Chrome and \
@@ -67,7 +67,7 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      defaults. Available: anysearch (anonymous or authenticated native provider), tavily (keyless \
      or authenticated native provider), ddg (DuckDuckGo), brave (Brave Search), bing (Bing RSS), \
      wiki (Wikipedia), sogou (Sogou), 360 / so360 (360 Search), bing_cn (Bing China RSS), \
-     and opt-in billed providers tinyfish, bocha, aliyun, tencent, and firecrawl (named only; \
+     and opt-in billed providers tinyfish, bocha, aliyun, tencent, firecrawl, and a3s (named only; \
      they are not in the default cascade).";
 
 #[cfg(feature = "headless-search")]
@@ -675,6 +675,80 @@ async fn execute_moli_stage(
     results
 }
 
+fn web_escalations() -> &'static std::sync::Mutex<std::collections::VecDeque<(String, String)>> {
+    static ESCALATIONS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::VecDeque<(String, String)>>,
+    > = std::sync::OnceLock::new();
+    ESCALATIONS.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::new()))
+}
+
+const WEB_ESCALATION_LIMIT: usize = 32;
+
+fn claim_web_escalation(session: &str, query: &str) -> bool {
+    let mut queue = web_escalations()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let Some(index) = queue
+        .iter()
+        .position(|(saved_session, saved_query)| saved_session == session && saved_query == query)
+    else {
+        return false;
+    };
+    queue.remove(index);
+    true
+}
+
+fn remember_web_escalation(session: &str, query: &str) {
+    let mut queue = web_escalations()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    queue.retain(|(saved_session, saved_query)| saved_session != session || saved_query != query);
+    queue.push_back((session.to_string(), query.to_string()));
+    while queue.len() > WEB_ESCALATION_LIMIT {
+        queue.pop_front();
+    }
+}
+
+#[derive(Debug)]
+enum LocalFirst {
+    SearchWeb,
+    Answer(String),
+    Stop(String),
+}
+
+fn local_first_outcome(output: &str, is_error: bool) -> LocalFirst {
+    let text = output.trim();
+    if !is_error && (text.is_empty() || text == "no-match" || text == "not-ready") {
+        return LocalFirst::SearchWeb;
+    }
+    if is_error && text == "denied" {
+        return LocalFirst::SearchWeb;
+    }
+    if is_error {
+        return LocalFirst::Stop(text.to_string());
+    }
+    LocalFirst::Answer(text.to_string())
+}
+
+async fn saved_notes(
+    ctx: &crate::tools::ToolContext,
+    query: &str,
+) -> Option<crate::tools::ToolResult> {
+    let invoker = ctx.tool_invoker()?;
+    if !invoker
+        .available_tools()
+        .iter()
+        .any(|name| name == "search_wiki")
+    {
+        return None;
+    }
+    let invocation = crate::tools::ToolInvocation::runtime_internal(
+        "search_wiki",
+        serde_json::json!({ "query": query, "scope": "local" }),
+    );
+    Some(invoker.invoke(invocation, ctx).await)
+}
+
 #[async_trait]
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
@@ -785,6 +859,24 @@ impl Tool for WebSearchTool {
             return Ok(ToolOutput::error(
                 "query must not be empty after URL sanitization",
             ));
+        }
+        let query_str = query_str.trim();
+        let session = ctx.session_id.clone().unwrap_or_default();
+        if !claim_web_escalation(&session, query_str) {
+            if let Some(found) = saved_notes(ctx, query_str).await {
+                match local_first_outcome(&found.output, found.exit_code != 0) {
+                    LocalFirst::SearchWeb => {}
+                    LocalFirst::Answer(passages) => {
+                        remember_web_escalation(&session, query_str);
+                        return Ok(ToolOutput::success(format!(
+                            "{passages}\n\nlocal-knowledge: saved notes matched this query, so the web was not searched. Call web_search again with the same query if these passages do not answer."
+                        )));
+                    }
+                    LocalFirst::Stop(message) => {
+                        return Ok(ToolOutput::error(format!("local-knowledge: {message}")));
+                    }
+                }
+            }
         }
 
         // Get configuration from context or use defaults
@@ -914,11 +1006,11 @@ impl Tool for WebSearchTool {
         let search_deadline = Instant::now() + total_timeout;
 
         let retrieval_requirements = RetrievalRequirements::for_limit(limit);
-        let mut cascade = SearchCascade::new(SearchQuery::new(&query_str), retrieval_requirements);
+        let mut cascade = SearchCascade::new(SearchQuery::new(query_str), retrieval_requirements);
         #[cfg_attr(not(feature = "headless-search"), allow(unused_mut))]
         let mut stage_context = SearchStageContext {
             tool_context: ctx,
-            query: &query_str,
+            query: query_str,
             proxy_url: proxy_url.as_deref(),
             metrics: &search_metrics,
             deadline: search_deadline,

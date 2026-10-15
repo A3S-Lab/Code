@@ -374,12 +374,19 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# CI checks (fmt + lint + test)
+# Landing-discipline ratchet (constitution II + standards §10): every code
+# commit carries its evidence OUTCOME.md, a ROADMAP gate-row touch, and the
+# "Explicitly not claimed" section. Run from the repository root.
+check-landing base="origin/main":
+    python3 scripts/check_landing.py {{base}}
+
+# CI checks (fmt + lint + test + landing discipline)
 ci:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
     cargo test --workspace --all-features --lib
+    python3 scripts/check_landing.py origin/main
 
 # ============================================================================
 # Utilities
@@ -566,107 +573,35 @@ harness-convergence-check:
     cargo test -p a3s-code-core --lib candidate_write_stays_inactive -- --nocapture
     node scripts/sdk_api_alignment_check.mjs
 
-# Full Layer C live E2E against monorepo `.a3s/config.acl` (serial; quota + network).
-# Evidence dir: set A3S_LAYER_C_EVIDENCE or defaults to /tmp/a3s-layer-c-live.
-# Pins A3S_TEST_MODEL to boyue/deepseek-v4-flash unless already set.
-layer-c-live-e2e:
+# Deep-case legacy lineage: deep38 real-model scenarios (superseded
+# structurally by the ci-all deep_e2e_live 45-case harness) plus the
+# sdk_capabilities() op-coverage assertions. Serial; quota + network.
+deep-live-legacy:
     #!/usr/bin/env bash
     set -euo pipefail
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-    # Prefer monorepo root config when invoked from crates/code submodule.
-    if [[ -f "${ROOT}/../../.a3s/config.acl" ]]; then
-      CONFIG="$(cd "${ROOT}/../.." && pwd)/.a3s/config.acl"
-    elif [[ -f "${ROOT}/.a3s/config.acl" ]]; then
+    # Prefer the repo root config: the old ../../ escape hatch resolves to
+    # $HOME from the standard in-repo invocation path and picks up a private
+    # config with no provider routes.
+    if [[ -f "${ROOT}/.a3s/config.acl" ]]; then
       CONFIG="${ROOT}/.a3s/config.acl"
+    elif [[ -f "${ROOT}/../../.a3s/config.acl" ]]; then
+      CONFIG="$(cd "${ROOT}/../.." && pwd)/.a3s/config.acl"
     else
-      CONFIG="${A3S_CONFIG_FILE:?set A3S_CONFIG_FILE to an ACL with boyue Flash}"
+      CONFIG="${A3S_CONFIG_FILE:?set A3S_CONFIG_FILE to an ACL with the flash pin}"
     fi
-    EVIDENCE="${A3S_LAYER_C_EVIDENCE:-/tmp/a3s-layer-c-live}"
-    mkdir -p "${EVIDENCE}"
-    : >"${EVIDENCE}/summary.txt"
     export A3S_CONFIG_FILE="${CONFIG}"
     export A3S_TEST_MODEL="${A3S_TEST_MODEL:-boyue/deepseek-v4-flash}"
-    # Linux native sandbox masks $HOME; nvm/fnm toolchains must be re-allowed
-    # via NVM_DIR/FNM_DIR (see a3s-sandbox readable_tool_paths) or `node` is
-    # invisible inside bwrap and long-horizon bash verification stays exit 1.
-    if [[ -z "${NVM_DIR:-}" && -d "${HOME}/.nvm" ]]; then
-      export NVM_DIR="${HOME}/.nvm"
-    fi
-    if [[ -n "${NVM_DIR:-}" && -d "${NVM_DIR}/versions/node" ]]; then
-      node_bin="$(ls -d "${NVM_DIR}"/versions/node/*/bin 2>/dev/null | sort -V | tail -n1 || true)"
-      if [[ -n "${node_bin}" ]]; then
-        export PATH="${node_bin}:${PATH}"
-      fi
-    fi
-    echo "A3S_CONFIG_FILE=${A3S_CONFIG_FILE}" | tee "${EVIDENCE}/env.txt"
-    echo "A3S_TEST_MODEL=${A3S_TEST_MODEL}" | tee -a "${EVIDENCE}/env.txt"
-    echo "NVM_DIR=${NVM_DIR:-}" | tee -a "${EVIDENCE}/env.txt"
-    rg -n '^default_model' "${A3S_CONFIG_FILE}" | tee -a "${EVIDENCE}/env.txt"
-    rg -n 'deepseek-v4-flash' "${A3S_CONFIG_FILE}" | head -5 | tee -a "${EVIDENCE}/env.txt"
-    suites=(
-      test_native_sandbox_live_e2e
-      test_issue_fix_live_e2e
-      test_agent_protocol_live_e2e
-      test_harness_loop_live_e2e
-      test_fact_log_real_llm
-      test_complex_capability_live_e2e
-      test_harness_capabilities_live_e2e
-      test_meta_harness_compose_live_e2e
-      test_deepseek_adversarial_e2e
-      test_update_plan_live_e2e
-      test_prompt_capability_real_llm
-      test_orchestration_real_llm
-      test_long_horizon_real_llm
-      test_structured_json_real_llm
-      test_run_control_real_llm
-      test_workspace_search_real_llm
-      test_workspace_retrieval_real_llm
-      test_context_tools_real_llm
-      test_workflow_facade_real_llm
-      test_auto_delegation_real_parallel
-      test_ultracode_discretion_real_llm
-      test_real_config_env_integration
-      test_real_llm_cluster_features
-      test_memory_store_real_llm
-    )
-    fail=0
-    run_suite() {
-      local suite="$1" features="$2"
-      local feature_flags=()
-      if [[ -n "${features}" ]]; then
-        feature_flags=(--features "${features}")
-      fi
-      echo "=== ${suite} ===" | tee -a "${EVIDENCE}/summary.txt"
-      if cargo test -p a3s-code-core ${feature_flags[@]+"${feature_flags[@]}"} --test "${suite}" -- --ignored --test-threads=1 --nocapture \
-          >"${EVIDENCE}/${suite}.log" 2>&1; then
-        echo "PASS ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-        return 0
-      fi
-      echo "FAIL ${suite}" | tee -a "${EVIDENCE}/summary.txt"
-      # One bounded retry: a single live-model turn may answer outside the
-      # shape a suite pins (temperature 0 does not fix model variance). A
-      # suite that fails twice is a real regression, not variance.
-      echo "RETRY ${suite} (attempt 2 of 2)" | tee -a "${EVIDENCE}/summary.txt"
-      if cargo test -p a3s-code-core ${feature_flags[@]+"${feature_flags[@]}"} --test "${suite}" -- --ignored --test-threads=1 --nocapture \
-          >>"${EVIDENCE}/${suite}.log" 2>&1; then
-        echo "PASS ${suite} (rerun)" | tee -a "${EVIDENCE}/summary.txt"
-        return 0
-      fi
-      echo "FAIL ${suite} (rerun)" | tee -a "${EVIDENCE}/summary.txt"
-      return 1
-    }
-    for suite in "${suites[@]}"; do
-      run_suite "${suite}" "" || fail=1
-      rg -n 'test result:|using default_model=|pinning default_model|RETRY ' "${EVIDENCE}/${suite}.log" | tail -8 | tee -a "${EVIDENCE}/summary.txt" || true
-    done
-    # Feature-gated live suites (optional when features compile).
-    if cargo test -p a3s-code-core --features advanced-harness --test test_extensibility_real_llm -- --list >/dev/null 2>&1; then
-      run_suite test_extensibility_real_llm advanced-harness || fail=1
-      rg -n 'test result:|using default_model=|RETRY ' "${EVIDENCE}/test_extensibility_real_llm.log" | tail -8 | tee -a "${EVIDENCE}/summary.txt" || true
-    fi
-    if [[ "${fail}" -eq 0 ]]; then
-      echo "LAYER_C_PASS model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
-    else
-      echo "LAYER_C_FAIL model=${A3S_TEST_MODEL}" | tee "${EVIDENCE}/FINAL.txt"
-    fi
-    exit "${fail}"
+    cargo +1.97.1 test -p a3s-code-core --features deep-live --lib deep38_live -- --test-threads=1 --nocapture
+    cargo +1.97.1 test -p a3s-code-core --features deep-live --lib op_coverage -- --test-threads=1 --nocapture
+
+# Full Layer C live E2E. The ACL contract is parsed with a3s-acl; every
+# mandatory/measurement suite gets a receipt, including build and zero-test
+# failures. Each run retains separate first-attempt/retry logs under the
+# A3S_LAYER_C_EVIDENCE directory (default /tmp/a3s-layer-c-live).
+layer-c-live-e2e:
+    python3 scripts/layer_c_live_e2e.py
+
+# Hermetic cargo fault matrix for the live-certification runner (no LLM calls).
+layer-c-runner-test:
+    python3 scripts/layer_c_runner_tests.py

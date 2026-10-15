@@ -22,6 +22,43 @@ const ESTIMATED_DOCUMENT_OVERHEAD: usize = 64;
 /// Bound how many hot read-only collections stay open across partitions.
 const MAX_OPEN_COLLECTIONS: usize = 4;
 
+/// A collection-build failure classified by whether retrying the same
+/// snapshot can plausibly succeed.
+///
+/// `Retryable` covers environmental failures (io, engine open) where a
+/// later attempt may succeed; `Fatal` covers deterministic rejections
+/// (document validation, schema construction, engine insert rejections)
+/// that no retry of the same input can fix. The coordinator's retry
+/// policy keys off this classification instead of matching message
+/// prefixes.
+#[derive(Debug)]
+pub(crate) enum A3sVecBuildError {
+    Retryable(String),
+    Fatal(String),
+}
+
+impl std::fmt::Display for A3sVecBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Retryable(message) | Self::Fatal(message) => f.write_str(message),
+        }
+    }
+}
+
+impl A3sVecBuildError {
+    pub(crate) fn retryable(&self) -> bool {
+        matches!(self, Self::Retryable(_))
+    }
+}
+
+fn retryable_error(error: impl std::fmt::Display) -> A3sVecBuildError {
+    A3sVecBuildError::Retryable(error.to_string())
+}
+
+fn fatal_error(error: impl std::fmt::Display) -> A3sVecBuildError {
+    A3sVecBuildError::Fatal(error.to_string())
+}
+
 fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
     // Keep this logic host-OS-agnostic so `--no-cfg-coverage` does not leave a
     // dead `#[cfg(windows)]` region diluting line coverage on Unix CI hosts.
@@ -93,8 +130,8 @@ pub(crate) struct A3sVecLexicalIndex {
 }
 
 impl A3sVecLexicalIndex {
-    pub(crate) fn build(documents: Vec<(String, String)>) -> Result<Self, String> {
-        let temp_dir = tempfile::tempdir().map_err(display_error)?;
+    pub(crate) fn build(documents: Vec<(String, String)>) -> Result<Self, A3sVecBuildError> {
+        let temp_dir = tempfile::tempdir().map_err(retryable_error)?;
         let collection_path = temp_dir.path().join("collection");
         let mut index = Self::build_at_path(&collection_path, documents)?;
         index._temp_dir = Some(temp_dir);
@@ -108,31 +145,30 @@ impl A3sVecLexicalIndex {
     pub(crate) fn build_at_path(
         collection_root: &std::path::Path,
         documents: Vec<(String, String)>,
-    ) -> Result<Self, String> {
-        let documents = validate_owned_documents(documents)?;
-        let prepared = prepare_documents(&documents)?;
+    ) -> Result<Self, A3sVecBuildError> {
+        let documents = validate_owned_documents(documents).map_err(fatal_error)?;
+        let prepared = prepare_documents(&documents).map_err(fatal_error)?;
         let terms = collect_terms(&prepared);
 
-        ensure_initialized()?;
+        ensure_initialized().map_err(retryable_error)?;
 
-        let mut body =
-            FieldSchema::new("body", DataType::String, false, 0).map_err(display_error)?;
-        let fts = IndexParams::fts(Some("whitespace"), None, None).map_err(display_error)?;
-        body.set_index_params(&fts).map_err(display_error)?;
+        let mut body = FieldSchema::new("body", DataType::String, false, 0).map_err(fatal_error)?;
+        let fts = IndexParams::fts(Some("whitespace"), None, None).map_err(fatal_error)?;
+        body.set_index_params(&fts).map_err(fatal_error)?;
         let schema = CollectionSchema::builder("workspace_lexical")
             .add_field(body)
             .build()
-            .map_err(display_error)?;
+            .map_err(fatal_error)?;
 
         if let Some(parent) = collection_root.parent() {
-            fs::create_dir_all(parent).map_err(display_error)?;
+            fs::create_dir_all(parent).map_err(retryable_error)?;
         }
         let collection_path = strip_windows_verbatim_prefix(collection_root.to_path_buf())
             .to_str()
-            .ok_or_else(|| "a3s-vec lexical path is not UTF-8".to_owned())?
+            .ok_or_else(|| A3sVecBuildError::Fatal("a3s-vec lexical path is not UTF-8".to_owned()))?
             .to_owned();
-        let collection =
-            Collection::create_and_open(&collection_path, &schema, None).map_err(display_error)?;
+        let collection = Collection::create_and_open(&collection_path, &schema, None)
+            .map_err(retryable_error)?;
 
         let mut native_ordinals = HashMap::with_capacity(prepared.len());
         let mut next_ordinal = 0usize;
@@ -143,29 +179,28 @@ impl A3sVecLexicalIndex {
                 next_ordinal = next_ordinal.saturating_add(1);
                 let native_key = String::from("d") + &ordinal.to_string();
                 native_ordinals.insert(native_key.clone(), ordinal);
-                let mut native_document = Doc::new().map_err(display_error)?;
+                let mut native_document = Doc::new().map_err(fatal_error)?;
                 native_document.set_pk(&native_key);
                 native_document
                     .add_string("body", &prepared_document.normalized)
-                    .map_err(display_error)?;
+                    .map_err(fatal_error)?;
                 docs.push(native_document);
             }
             let references = docs.iter().collect::<Vec<_>>();
-            let result = collection.insert(&references).map_err(display_error)?;
-            map_insert_write_result(&result)?;
+            let result = collection.insert(&references).map_err(retryable_error)?;
+            map_insert_write_result(&result).map_err(fatal_error)?;
         }
 
-        collection.flush().map_err(display_error)?;
-        collection.close().map_err(display_error)?;
+        collection.flush().map_err(retryable_error)?;
+        collection.close().map_err(retryable_error)?;
 
-        let estimated_bytes = directory_size(collection_root)?.max(prepared.iter().fold(
-            0usize,
-            |total, document| {
+        let estimated_bytes = directory_size(collection_root)
+            .map_err(retryable_error)?
+            .max(prepared.iter().fold(0usize, |total, document| {
                 total
                     .saturating_add(document.normalized.len())
                     .saturating_add(ESTIMATED_DOCUMENT_OVERHEAD)
-            },
-        ));
+            }));
 
         Ok(Self {
             collection: Mutex::new(None),
@@ -173,6 +208,110 @@ impl A3sVecLexicalIndex {
             _temp_dir: None,
             terms,
             document_count: prepared.len(),
+            native_ordinals,
+            estimated_bytes,
+        })
+    }
+
+    /// Build the next generation incrementally from a previous collection.
+    ///
+    /// The previous generation's collection directory is copied to
+    /// `collection_root` (a fresh staging destination), the removed primary
+    /// keys are deleted, and the appended documents are upserted with fresh
+    /// ordinals. Kept documents retain their previous engine primary keys, so
+    /// `native_ordinals` maps old keys onto the new dense positions. The
+    /// caller owns generation atomicity: it publishes the containing
+    /// directory only after this returns.
+    pub(crate) fn apply_delta_at_path(
+        collection_root: &std::path::Path,
+        source_collection: &std::path::Path,
+        kept: Vec<(String, String)>,
+        removed_pks: &[String],
+        appended: Vec<(String, String)>,
+        next_ordinal: usize,
+    ) -> Result<Self, A3sVecBuildError> {
+        let kept = validate_pk_documents(kept)?;
+        let appended = validate_pk_documents(appended)?;
+        if !source_collection.is_dir() {
+            return Err(A3sVecBuildError::Retryable(
+                "a3s-vec delta source collection is missing: ".to_owned()
+                    + &source_collection.display().to_string(),
+            ));
+        }
+        copy_dir_tree(source_collection, collection_root).map_err(retryable_error)?;
+        ensure_initialized().map_err(retryable_error)?;
+
+        let collection_path = strip_windows_verbatim_prefix(collection_root.to_path_buf())
+            .to_str()
+            .ok_or_else(|| A3sVecBuildError::Fatal("a3s-vec lexical path is not UTF-8".to_owned()))?
+            .to_owned();
+        let collection = Collection::open(&collection_path, None).map_err(retryable_error)?;
+
+        if !removed_pks.is_empty() {
+            let references = removed_pks.iter().map(String::as_str).collect::<Vec<_>>();
+            let result = collection.delete(&references).map_err(retryable_error)?;
+            map_insert_write_result(&result).map_err(fatal_error)?;
+        }
+
+        let prepared_appended = prepare_documents(&appended).map_err(fatal_error)?;
+        let mut appended_pks = Vec::with_capacity(prepared_appended.len());
+        for (batch_index, batch) in prepared_appended.chunks(INSERT_BATCH_SIZE).enumerate() {
+            let base = next_ordinal + batch_index * INSERT_BATCH_SIZE;
+            let mut docs = Vec::with_capacity(batch.len());
+            for (offset, prepared_document) in batch.iter().enumerate() {
+                let ordinal = base + offset;
+                let native_key = String::from("d") + &ordinal.to_string();
+                appended_pks.push(native_key.clone());
+                let mut native_document = Doc::new().map_err(fatal_error)?;
+                native_document.set_pk(&native_key);
+                native_document
+                    .add_string("body", &prepared_document.normalized)
+                    .map_err(fatal_error)?;
+                docs.push(native_document);
+            }
+            let references = docs.iter().collect::<Vec<_>>();
+            let result = collection.upsert(&references).map_err(retryable_error)?;
+            map_insert_write_result(&result).map_err(fatal_error)?;
+        }
+
+        collection.flush().map_err(retryable_error)?;
+        collection.close().map_err(retryable_error)?;
+
+        // Kept documents keep their previous engine key; appended documents
+        // take fresh ordinals. Both map onto the new dense positions.
+        let mut native_ordinals = HashMap::with_capacity(kept.len() + appended_pks.len());
+        let mut terms = HashSet::new();
+        for (position, (key, text)) in kept.iter().enumerate() {
+            let previous = native_ordinals.insert(key.clone(), position);
+            if previous.is_some() {
+                return Err(A3sVecBuildError::Fatal(
+                    "a3s-vec delta received a duplicate kept primary key".to_owned(),
+                ));
+            }
+            terms.extend(super::lexical::tokenize(text));
+        }
+        for (position, key) in appended_pks.iter().enumerate() {
+            let previous = native_ordinals.insert(key.clone(), kept.len() + position);
+            if previous.is_some() {
+                return Err(A3sVecBuildError::Fatal(
+                    "a3s-vec delta produced a duplicate appended primary key".to_owned(),
+                ));
+            }
+        }
+        for (_, text) in &appended {
+            terms.extend(super::lexical::tokenize(text));
+        }
+        let document_count = kept.len() + appended_pks.len();
+        let estimated_bytes = directory_size(collection_root)
+            .map_err(retryable_error)?
+            .max(document_count.saturating_mul(ESTIMATED_DOCUMENT_OVERHEAD));
+
+        Ok(Self {
+            collection: Mutex::new(None),
+            collection_path: PathBuf::from(collection_path),
+            _temp_dir: None,
+            terms,
+            document_count,
             native_ordinals,
             estimated_bytes,
         })
@@ -342,6 +481,47 @@ fn validate_owned_documents(
         owned.push((key, text));
     }
     Ok(owned)
+}
+
+/// Validate the kept (engine primary key, text) pairs of a delta build.
+/// Keys follow the same shape rules as document keys; a duplicate would
+/// corrupt the ordinal mapping, so it fails as a deterministic rejection.
+fn validate_pk_documents(
+    documents: Vec<(String, String)>,
+) -> Result<Vec<(String, String)>, A3sVecBuildError> {
+    validate_owned_documents(documents).map_err(fatal_error)
+}
+
+/// Copy one collection directory tree. Symlinks are never followed — a
+/// linked path inside a collection is another surface and fails closed.
+fn copy_dir_tree(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), std::io::Error> {
+    fn visit(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+        let metadata = std::fs::symlink_metadata(source)?;
+        if metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "a3s-vec delta copy refused a symlink: {}",
+                source.display()
+            )));
+        }
+        if metadata.is_file() {
+            std::fs::copy(source, destination)?;
+            return Ok(());
+        }
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            visit(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        Ok(())
+    }
+
+    visit(source, destination)
 }
 
 fn prepare_documents(

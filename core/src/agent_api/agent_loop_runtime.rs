@@ -26,14 +26,23 @@ pub(super) struct PinnedRuntimeProjection {
     command_registry: Arc<CommandRegistry>,
     hook_engine: Arc<HookEngine>,
     tool_executor: Arc<ToolExecutor>,
+    // Only accepted, generation-bound projected Tools may enter delegated Tasks.
+    task_tools: Vec<Arc<dyn crate::tools::Tool>>,
     mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
+    projected_mcp_authoritative: bool,
     knowledge: Option<Arc<crate::cognitive_context::CognitiveContextSession>>,
+    projected_knowledge_authoritative: bool,
     context_providers: Vec<Arc<dyn crate::context::ContextProvider>>,
 }
 
 impl PinnedRuntimeProjection {
     pub(super) fn command_registry(&self) -> &CommandRegistry {
         &self.command_registry
+    }
+
+    #[cfg(test)]
+    pub(super) fn skill_registry(&self) -> Arc<SkillRegistry> {
+        Arc::clone(&self.skill_registry)
     }
 
     #[allow(dead_code)]
@@ -80,17 +89,44 @@ pub(super) async fn build_pinned_agent_loop(
             .into());
         }
     };
+    let inputs = LoopAssemblyInputs::from_session(session, live_config(session));
+    let agent_loop =
+        assemble_pinned_agent_loop(inputs, runtime_projection, run_hook_executor, || {
+            session.parent_run_context()
+        });
+    let capability_runtime =
+        crate::capability::AgentCapabilityRuntime::from_run(capability_run.run_scope());
+    Ok((
+        agent_loop
+            .with_checkpoint_capability_binding(checkpoint_capability_binding)
+            .with_capability_runtime(capability_runtime),
+        capability_run,
+    ))
+}
+
+// This supplier is consumed synchronously on this stack. It preserves the
+// legacy getter's exact lazy position; owned callers supply an already captured
+// value. It is not stored, spawned, or used as a job/future execution port.
+fn assemble_pinned_agent_loop(
+    inputs: LoopAssemblyInputs,
+    runtime_projection: PinnedRuntimeProjection,
+    run_hook_executor: Arc<dyn HookExecutor>,
+    parent_context: impl FnOnce() -> crate::child_run::ChildRunContext,
+) -> AgentLoop {
     let PinnedRuntimeProjection {
         skill_registry,
         agent_registry,
         command_registry: _,
         hook_engine: _,
         tool_executor,
+        task_tools,
         mcp_bindings,
+        projected_mcp_authoritative,
         knowledge,
+        projected_knowledge_authoritative,
         context_providers,
     } = runtime_projection;
-    let mut config = live_config(session);
+    let mut config = inputs.config;
     config.hook_engine = Some(run_hook_executor);
     config.skill_registry = Some(Arc::clone(&skill_registry));
     config.agent_registry = Some(Arc::clone(&agent_registry));
@@ -102,6 +138,11 @@ pub(super) async fn build_pinned_agent_loop(
         .push(Arc::new(SkillCatalogContextProvider::new(Arc::clone(
             &skill_registry,
         ))));
+    if projected_knowledge_authoritative {
+        config
+            .context_providers
+            .retain(|provider| provider.cognitive_package_binding().is_none());
+    }
     if let Some(knowledge) = knowledge {
         // A projected Knowledge value is the exact cognitive authority for
         // this Run. The Session-static provider is a durable compatibility or
@@ -119,7 +160,7 @@ pub(super) async fn build_pinned_agent_loop(
     // resolve through the mutable Session-latest compatibility registries.
     crate::tools::register_skill(
         tool_executor.registry(),
-        Arc::clone(&session.llm_client),
+        Arc::clone(&inputs.client),
         Arc::clone(&skill_registry),
         Arc::clone(&tool_executor),
         config.clone(),
@@ -129,32 +170,343 @@ pub(super) async fn build_pinned_agent_loop(
     // Rebind them to this Run-owned snapshot so a later Session registration
     // or projected generation cannot change child-Agent selection in flight.
     if config.auto_delegation.allow_manual_delegation {
-        let mut parent_context = session.parent_run_context();
+        let mut parent_context = parent_context();
         parent_context.skill_registry = Some(skill_registry);
         crate::tools::register_task_with_mcp_sources_and_scheduler(
             tool_executor.registry(),
-            Arc::clone(&session.llm_client),
+            Arc::clone(&inputs.client),
             agent_registry,
-            session.workspace.display().to_string(),
-            session.mcp_managers.clone(),
+            inputs.workspace.display().to_string(),
+            if projected_mcp_authoritative {
+                Vec::new()
+            } else {
+                inputs.mcp_managers
+            },
             mcp_bindings,
+            task_tools,
             Some(parent_context),
-            Some(Arc::clone(&session.subagent_tasks)),
-            Arc::clone(&session.task_scheduler),
+            Some(Arc::clone(&inputs.subagent_tasks)),
+            Arc::clone(&inputs.task_scheduler),
         );
     }
     config.tools = tool_executor.definitions();
 
-    let capability_runtime =
-        crate::capability::AgentCapabilityRuntime::from_run(capability_run.run_scope());
-    Ok((
-        finish_agent_loop(session, tool_executor, config)
-            .with_checkpoint_capability_binding(checkpoint_capability_binding)
-            .with_capability_runtime(capability_runtime),
-        capability_run,
-    ))
+    finish_agent_loop_from_inputs(
+        inputs.client,
+        tool_executor,
+        inputs.tool_context,
+        config,
+        inputs.model_admission,
+        inputs.middleware,
+        inputs.queue,
+    )
 }
 
+/// Inputs for the one synchronous assembly implementation. None owns a Session
+/// borrow, a checkpoint sender, or a new admission authority.
+struct LoopAssemblyInputs {
+    config: crate::agent::AgentConfig,
+    client: Arc<dyn crate::llm::LlmClient>,
+    tool_context: crate::tools::ToolContext,
+    model_admission: crate::llm::ModelGenerationAdmission,
+    middleware: Arc<crate::agent::ModelMiddlewareObs>,
+    queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
+    external_hooks: Option<Arc<dyn HookExecutor>>,
+    mcp_managers: Vec<Arc<crate::mcp::McpManager>>,
+    subagent_tasks: Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>,
+    task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
+    workspace: std::path::PathBuf,
+}
+
+impl LoopAssemblyInputs {
+    fn from_session(session: &AgentSession, config: crate::agent::AgentConfig) -> Self {
+        Self {
+            config,
+            client: Arc::clone(&session.llm_client),
+            tool_context: session.tool_context.clone(),
+            model_admission: session.model_generation_admission.clone(),
+            middleware: Arc::clone(&session.middleware_obs),
+            queue: session.command_queue.clone(),
+            external_hooks: session.hook_executor.clone(),
+            mcp_managers: session.mcp_managers.clone(),
+            subagent_tasks: Arc::clone(&session.subagent_tasks),
+            task_scheduler: Arc::clone(&session.task_scheduler),
+            workspace: session.workspace.clone(),
+        }
+    }
+}
+
+pub(super) struct CapturedRuntimeProjection {
+    projection: crate::capability::CapabilityProjectionLease,
+    ceiling: crate::capability::CapabilityCeiling,
+    runtime: PinnedRuntimeProjection,
+    binding: crate::capability::RunCapabilityBindingV1,
+}
+
+pub(super) struct OwnedLoopConstruction {
+    inputs: LoopAssemblyInputs,
+    parent: crate::child_run::ChildRunContext,
+}
+
+pub(super) struct OwnedCheckpointInputs {
+    pub(super) store: Option<Arc<dyn crate::store::SessionStore>>,
+    pub(super) export: Option<Arc<dyn crate::session_checkpoint::SessionCheckpointExportSink>>,
+    pub(super) persistence: super::session_persistence::SessionPersistenceContext,
+}
+
+/// Nonactivated construction values; T004 must supply the original worker
+/// handoff before any asynchronous admission. This value is never a guardian
+/// registration, capability-close witness, or no-effects proof.
+pub(super) struct OwnedPreparationCapture {
+    pub(super) fact: CapturedRuntimeProjection,
+    pub(super) command: Option<CapturedRuntimeProjection>,
+    pub(super) construction: OwnedLoopConstruction,
+    pub(super) checkpoint: OwnedCheckpointInputs,
+    pub(super) permission: crate::permissions::PermissionPolicy,
+    pub(super) cognitive_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
+    pub(super) cancellation: tokio_util::sync::CancellationToken,
+    pub(super) session_id: String,
+    pub(super) workspace: std::path::PathBuf,
+    pub(super) boundary: super::session_close::SessionAdmissionBoundary,
+}
+
+/// Every failure here follows an attempted original admission. A missing
+/// returned guard is always unproved, never NotAttempted. Private fields and
+/// constructors retain the original error independently of the close outcome.
+type OriginalPreparationClose = (
+    SessionCapabilityRun,
+    Result<crate::capability::ScopeCloseReport, CapabilityRuntimeError>,
+);
+
+#[derive(Debug)]
+pub(super) struct OwnedPreparationFailure {
+    primary: crate::error::CodeError,
+    acquired: Option<OriginalPreparationClose>,
+}
+
+impl OwnedPreparationFailure {
+    fn admission_unproved(primary: crate::error::CodeError) -> Self {
+        Self {
+            primary,
+            acquired: None,
+        }
+    }
+
+    async fn close_acquired(primary: crate::error::CodeError, guard: SessionCapabilityRun) -> Self {
+        let actual = guard.close().await;
+        Self {
+            primary,
+            acquired: Some((guard, actual)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn primary_error(&self) -> &crate::error::CodeError {
+        &self.primary
+    }
+
+    /// None means admission was attempted without a returned guard. It does
+    /// not authorize release. Some retains the same guard and actual result.
+    pub(super) fn into_original_observation(
+        self,
+    ) -> (crate::error::CodeError, Option<OriginalPreparationClose>) {
+        (self.primary, self.acquired)
+    }
+}
+
+pub(super) fn capture_owned_preparation(
+    session: &AgentSession,
+    cancellation: tokio_util::sync::CancellationToken,
+    command_capable: bool,
+) -> crate::error::Result<OwnedPreparationCapture> {
+    let _admission = session
+        .close_handle
+        .immediate_extension_mutation
+        .lock()
+        .map_err(|_| CapabilityRuntimeError::SessionClosed)?;
+    // Do not call closed_under_original_boundary while already holding this
+    // exact non-reentrant mutex.
+    if session.is_closed() {
+        return Err(CapabilityRuntimeError::SessionClosed.into());
+    }
+    // Direct compatibility registry guards bypass the outer mutation mutex.
+    // Hold this ONE original guard over both real pins and both snapshots.
+    let commands = session.command_registry.lock().map_err(|_| {
+        CapabilityRuntimeError::RuntimeValueInvalid {
+            kind: CapabilityKind::Command,
+            public_name: "command-registry".to_owned(),
+            message: "Original command registry lock is poisoned".to_owned(),
+        }
+    })?;
+    let parent = session.parent_run_context();
+    let mut config = session.config.clone();
+    config.durable_source = session.saved_durable_source();
+    config.hook_engine = Some(match &session.hook_executor {
+        Some(executor) => Arc::clone(executor),
+        None => Arc::clone(&session.hook_engine) as Arc<dyn HookExecutor>,
+    });
+    config.budget_guard = parent.budget_guard.clone();
+    apply_non_budget_runtime_overrides(session, &mut config);
+
+    let capture_projection = || -> crate::error::Result<CapturedRuntimeProjection> {
+        let projection = session.capability_catalog.pin();
+        let ceiling = session.capability_run_ceiling_from_captured_budget(
+            projection.projection().set(),
+            projection.allowed_capabilities(),
+            parent.budget_guard.as_ref(),
+        )?;
+        let binding = crate::capability::RunCapabilityBindingV1::from_set_and_ceiling(
+            projection.projection().set(),
+            &ceiling,
+        )
+        .map_err(|error| crate::error::CodeError::Internal(anyhow::anyhow!(error)))?;
+        let runtime = pin_runtime_projection_with_command_registry(
+            session,
+            projection.projection(),
+            &commands,
+            Some(&ceiling),
+        )?;
+        Ok(CapturedRuntimeProjection {
+            projection,
+            ceiling,
+            runtime,
+            binding,
+        })
+    };
+    let command = if command_capable {
+        Some(capture_projection()?)
+    } else {
+        None
+    };
+    let fact = capture_projection()?;
+    let cognitive_binding = cognitive_binding_for_projection(session, fact.projection.projection());
+    let checkpoint = OwnedCheckpointInputs {
+        store: session.session_store.clone(),
+        export: session
+            .runtime_session_checkpoint_export_sink
+            .lock()
+            .map_err(|_| {
+                crate::error::CodeError::Session(
+                    "Original checkpoint export sink lock is poisoned".to_owned(),
+                )
+            })?
+            .clone(),
+        persistence: super::session_persistence::SessionPersistenceContext::from_session(session),
+    };
+    let permission = session
+        .runtime_permission_policy()
+        .or_else(|| session.config.permission_policy.clone())
+        .unwrap_or_default();
+    let inputs = LoopAssemblyInputs::from_session(session, config);
+    let workspace = inputs.workspace.clone();
+    Ok(OwnedPreparationCapture {
+        fact,
+        command,
+        construction: OwnedLoopConstruction { inputs, parent },
+        checkpoint,
+        permission,
+        cognitive_binding,
+        cancellation,
+        session_id: session.session_id.clone(),
+        workspace,
+        boundary: session.close_handle.execution_admission_boundary(),
+    })
+}
+
+pub(super) async fn admit_captured_runtime_projection(
+    capture: CapturedRuntimeProjection,
+    original_boundary: &super::session_close::SessionAdmissionBoundary,
+    cancellation: tokio_util::sync::CancellationToken,
+    workspace: &std::path::Path,
+) -> Result<
+    (
+        PinnedRuntimeProjection,
+        SessionCapabilityRun,
+        crate::capability::RunCapabilityBindingV1,
+    ),
+    OwnedPreparationFailure,
+> {
+    let CapturedRuntimeProjection {
+        projection,
+        ceiling,
+        runtime,
+        binding,
+    } = capture;
+    // The eventual original worker must record possible entry before calling
+    // this helper; cancellation of this future cannot publish a return value.
+    let guard = SessionCapabilityRun::admit(
+        projection,
+        "active",
+        "active",
+        ceiling,
+        cancellation,
+        workspace,
+    )
+    .await
+    .map_err(|error| OwnedPreparationFailure::admission_unproved(error.into()))?;
+    if original_boundary.closed_under_original_boundary() {
+        return Err(OwnedPreparationFailure::close_acquired(
+            CapabilityRuntimeError::SessionClosed.into(),
+            guard,
+        )
+        .await);
+    }
+    Ok((runtime, guard, binding))
+}
+
+pub(super) async fn build_owned_pinned_agent_loop(
+    capture: CapturedRuntimeProjection,
+    construction: OwnedLoopConstruction,
+    original_boundary: super::session_close::SessionAdmissionBoundary,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> Result<(AgentLoop, SessionCapabilityRun), OwnedPreparationFailure> {
+    let OwnedLoopConstruction { inputs, parent } = construction;
+    let (runtime, guard, binding) = admit_captured_runtime_projection(
+        capture,
+        &original_boundary,
+        cancellation,
+        &inputs.workspace,
+    )
+    .await?;
+    assemble_owned_admitted_agent_loop(runtime, guard, binding, inputs, parent).await
+}
+
+async fn assemble_owned_admitted_agent_loop(
+    runtime: PinnedRuntimeProjection,
+    guard: SessionCapabilityRun,
+    binding: crate::capability::RunCapabilityBindingV1,
+    inputs: LoopAssemblyInputs,
+    parent: crate::child_run::ChildRunContext,
+) -> Result<(AgentLoop, SessionCapabilityRun), OwnedPreparationFailure> {
+    let hooks = match super::run_hook_executor::RunHookExecutor::new(
+        inputs.external_hooks.clone(),
+        Arc::clone(&runtime.hook_engine),
+        guard.task_spawner(),
+    ) {
+        Ok(hooks) => hooks as Arc<dyn HookExecutor>,
+        Err(message) => {
+            return Err(OwnedPreparationFailure::close_acquired(
+                CapabilityRuntimeError::RuntimeValueInvalid {
+                    kind: CapabilityKind::Hook,
+                    public_name: "hook-registry".to_owned(),
+                    message: message.to_owned(),
+                }
+                .into(),
+                guard,
+            )
+            .await)
+        }
+    };
+    // No Session reference or legacy lazy getter is captured by this supplier.
+    let agent_loop = assemble_pinned_agent_loop(inputs, runtime, hooks, move || parent)
+        .with_checkpoint_capability_binding(binding)
+        .with_capability_runtime(crate::capability::AgentCapabilityRuntime::from_run(
+            guard.run_scope(),
+        ));
+    Ok((agent_loop, guard))
+}
+
+#[cfg(test)]
 pub(super) async fn pin_and_admit_runtime_projection(
     session: &AgentSession,
 ) -> crate::error::Result<(PinnedRuntimeProjection, SessionCapabilityRun)> {
@@ -188,14 +540,18 @@ async fn pin_and_admit_runtime_projection_with_cancellation(
             return Err(CapabilityRuntimeError::SessionClosed.into());
         }
         let projection = session.capability_catalog.pin();
-        let ceiling = session.capability_run_ceiling(projection.projection().set())?;
+        let ceiling = session.capability_run_ceiling(
+            projection.projection().set(),
+            projection.allowed_capabilities(),
+        )?;
         let checkpoint_capability_binding =
             crate::capability::RunCapabilityBindingV1::from_set_and_ceiling(
                 projection.projection().set(),
                 &ceiling,
             )
             .map_err(|error| crate::error::CodeError::Internal(anyhow::anyhow!(error)))?;
-        let runtime_projection = pin_runtime_projection(session, projection.projection())?;
+        let runtime_projection =
+            pin_runtime_projection(session, projection.projection(), &ceiling)?;
         (
             projection,
             ceiling,
@@ -204,8 +560,15 @@ async fn pin_and_admit_runtime_projection_with_cancellation(
         )
     };
 
-    let capability_run =
-        SessionCapabilityRun::admit(projection, "active", "active", ceiling, cancellation).await?;
+    let capability_run = SessionCapabilityRun::admit(
+        projection,
+        "active",
+        "active",
+        ceiling,
+        cancellation,
+        &session.workspace,
+    )
+    .await?;
     let closed_during_admission = {
         let _admission = session
             .close_handle
@@ -232,7 +595,8 @@ pub(super) fn validate_capability_projection_runtime(
     projection: &CapabilityProjection,
     command_registry: &CommandRegistry,
 ) -> Result<(), CapabilityRuntimeError> {
-    pin_runtime_projection_with_command_registry(session, projection, command_registry).map(|_| ())
+    pin_runtime_projection_with_command_registry(session, projection, command_registry, None)
+        .map(|_| ())
 }
 
 /// Compare a persisted Run binding with the complete catalog and authority
@@ -249,7 +613,10 @@ pub(super) fn validate_run_capability_binding(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let projection = session.capability_catalog.pin();
     let ceiling = session
-        .capability_run_ceiling(projection.projection().set())
+        .capability_run_ceiling(
+            projection.projection().set(),
+            projection.allowed_capabilities(),
+        )
         .map_err(|error| {
             crate::capability::RunCapabilityBindingError::Encoding(error.to_string())
         })?;
@@ -306,18 +673,25 @@ pub(super) fn cognitive_binding_for_projection(
 fn pin_runtime_projection(
     session: &AgentSession,
     projection: &CapabilityProjection,
+    ceiling: &crate::capability::CapabilityCeiling,
 ) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
     let command_registry = session
         .command_registry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    pin_runtime_projection_with_command_registry(session, projection, &command_registry)
+    pin_runtime_projection_with_command_registry(
+        session,
+        projection,
+        &command_registry,
+        Some(ceiling),
+    )
 }
 
-fn pin_runtime_projection_with_command_registry(
+pub(super) fn pin_runtime_projection_with_command_registry(
     session: &AgentSession,
     projection: &CapabilityProjection,
     compatibility_commands: &CommandRegistry,
+    ceiling: Option<&crate::capability::CapabilityCeiling>,
 ) -> Result<PinnedRuntimeProjection, CapabilityRuntimeError> {
     let mut projected_tools = Vec::new();
     let mut projected_skills = Vec::new();
@@ -325,11 +699,26 @@ fn pin_runtime_projection_with_command_registry(
     let mut projected_commands = Vec::new();
     let mut projected_hooks = Vec::new();
     let mut projected_mcp = Vec::new();
+    let mut projected_mcp_tools = Vec::new();
+    let projected_mcp_authoritative = projection
+        .iter()
+        .any(|(_, value)| matches!(value, CapabilityValue::Mcp(_)));
     let mut projected_knowledge = None;
     let mut projected_context = Vec::new();
-    for (_, value) in projection.iter() {
+    for (id, value) in projection.iter() {
+        if ceiling.is_some_and(|ceiling| !ceiling.allows(id)) {
+            continue;
+        }
         match value {
-            CapabilityValue::Tool(tool) => projected_tools.push(Arc::clone(tool)),
+            CapabilityValue::Tool(tool) => projected_tools.push(if ceiling.is_some() {
+                crate::capability::ScopedProjectedTool::bind(
+                    Arc::clone(tool),
+                    id.clone(),
+                    projection.set().digest().clone(),
+                )
+            } else {
+                Arc::clone(tool)
+            }),
             CapabilityValue::Skill(skill) => projected_skills.push(Arc::clone(skill)),
             CapabilityValue::Agent(agent) => projected_agents.push(Arc::clone(agent)),
             CapabilityValue::Command(command) => projected_commands.push(Arc::clone(command)),
@@ -364,6 +753,17 @@ fn pin_runtime_projection_with_command_registry(
                     return Err(CapabilityRuntimeError::RuntimeNameConflict {
                         kind: CapabilityKind::Mcp,
                         public_name: binding.server_name().to_owned(),
+                    });
+                }
+                for tool in binding.projected_tools() {
+                    projected_mcp_tools.push(if ceiling.is_some() {
+                        crate::capability::ScopedProjectedTool::bind(
+                            tool,
+                            id.clone(),
+                            projection.set().digest().clone(),
+                        )
+                    } else {
+                        tool
                     });
                 }
                 projected_mcp.push(Arc::clone(binding));
@@ -454,27 +854,55 @@ fn pin_runtime_projection_with_command_registry(
         });
     }
 
-    let skill_registry = Arc::new(
-        session
-            .close_handle
-            .skill_registry
-            .snapshot_with_external_skills(projected_skills)
-            .map_err(|error| match error {
-                SkillRegistrySnapshotError::NameConflict { name } => {
-                    CapabilityRuntimeError::RuntimeNameConflict {
-                        kind: CapabilityKind::Skill,
-                        public_name: name,
-                    }
+    // Directory discovery is optional. Classify on a fork so a later tool or
+    // MCP conflict still leaves the live compatibility registry unchanged.
+    // A host-protected name stays in the admit list and still fails the session.
+    // A discovered file that still owns the name is withheld: neither body is
+    // admitted. A live registration that replaced that file still conflicts.
+    let admission = session.close_handle.skill_registry.fork();
+    let mut admitted_skills = Vec::with_capacity(projected_skills.len());
+    let mut withheld_skills = Vec::new();
+    for skill in projected_skills {
+        let name = skill.name.clone();
+        if admission.protects(&name) {
+            admitted_skills.push(skill);
+            continue;
+        }
+        if let Some(discovered) = admission.take_discovered(&name) {
+            let sentence = SkillRegistry::withhold_sentence(&name);
+            tracing::error!(
+                skill = %name,
+                discovered = %discovered.display(),
+                projected = "admitted generation",
+                sentence = %sentence,
+                "discovered skill withheld"
+            );
+            withheld_skills.push((name, sentence));
+            continue;
+        }
+        admitted_skills.push(skill);
+    }
+    let skill_registry = admission
+        .snapshot_with_external_skills(admitted_skills)
+        .map_err(|error| match error {
+            SkillRegistrySnapshotError::NameConflict { name } => {
+                CapabilityRuntimeError::RuntimeNameConflict {
+                    kind: CapabilityKind::Skill,
+                    public_name: name,
                 }
-                SkillRegistrySnapshotError::Validation { name, message } => {
-                    CapabilityRuntimeError::RuntimeValueInvalid {
-                        kind: CapabilityKind::Skill,
-                        public_name: name,
-                        message: truncate_utf8(message, MAX_RUNTIME_VALIDATION_MESSAGE_BYTES),
-                    }
+            }
+            SkillRegistrySnapshotError::Validation { name, message } => {
+                CapabilityRuntimeError::RuntimeValueInvalid {
+                    kind: CapabilityKind::Skill,
+                    public_name: name,
+                    message: truncate_utf8(message, MAX_RUNTIME_VALIDATION_MESSAGE_BYTES),
                 }
-            })?,
-    );
+            }
+        })?;
+    for (name, sentence) in withheld_skills {
+        skill_registry.remember_withheld(&name, sentence);
+    }
+    let skill_registry = Arc::new(skill_registry);
     let agent_registry = Arc::new(
         session
             .agent_registry
@@ -507,6 +935,8 @@ fn pin_runtime_projection_with_command_registry(
                 }
             })?,
     );
+    // Reuse the accepted wrappers, never rebuild children from the live Session.
+    let task_tools = projected_tools.clone();
     let tool_executor = session
         .tool_executor
         .snapshot_with_external_tools(projected_tools)
@@ -514,10 +944,6 @@ fn pin_runtime_projection_with_command_registry(
             kind: CapabilityKind::Tool,
             public_name: error.name().to_owned(),
         })?;
-    let projected_mcp_tools = projected_mcp
-        .iter()
-        .flat_map(|binding| binding.projected_tools())
-        .collect::<Vec<_>>();
     let tool_executor = Arc::new(
         tool_executor
             .snapshot_with_external_tools(projected_mcp_tools)
@@ -532,8 +958,13 @@ fn pin_runtime_projection_with_command_registry(
         command_registry,
         hook_engine,
         tool_executor,
+        task_tools,
         mcp_bindings: projected_mcp,
+        projected_mcp_authoritative,
         knowledge: projected_knowledge,
+        projected_knowledge_authoritative: projection
+            .iter()
+            .any(|(_, value)| matches!(value, CapabilityValue::Knowledge(_))),
         context_providers: projected_context,
     })
 }
@@ -561,6 +992,7 @@ fn truncate_utf8(mut value: String, max: usize) -> String {
 
 fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     let mut config = session.config.clone();
+    config.durable_source = session.saved_durable_source();
     config.hook_engine = Some(match &session.hook_executor {
         Some(executor) => executor.clone(),
         None => Arc::clone(&session.hook_engine) as Arc<dyn crate::hooks::HookExecutor>,
@@ -573,6 +1005,14 @@ fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     if let Some(runtime_guard) = session.budget_guard() {
         config.budget_guard = Some(runtime_guard);
     }
+    apply_non_budget_runtime_overrides(session, &mut config);
+    config
+}
+
+fn apply_non_budget_runtime_overrides(
+    session: &AgentSession,
+    config: &mut crate::agent::AgentConfig,
+) {
     if let Some(ledger) = session.outcome_ledger_override() {
         config.outcome_ledger = ledger;
     }
@@ -585,7 +1025,6 @@ fn live_config(session: &AgentSession) -> crate::agent::AgentConfig {
     if let Some(language) = session.runtime_output_language_override() {
         config.prompt_slots.output_language = language;
     }
-    config
 }
 
 fn finish_agent_loop(
@@ -593,16 +1032,34 @@ fn finish_agent_loop(
     tool_executor: Arc<crate::tools::ToolExecutor>,
     config: crate::agent::AgentConfig,
 ) -> AgentLoop {
-    let mut agent_loop = AgentLoop::new(
-        session.llm_client.clone(),
+    finish_agent_loop_from_inputs(
+        Arc::clone(&session.llm_client),
         tool_executor,
         session.tool_context.clone(),
         config,
+        session.model_generation_admission.clone(),
+        Arc::clone(&session.middleware_obs),
+        session.command_queue.clone(),
     )
-    .with_model_generation_admission(session.model_generation_admission.clone())
-    .with_model_middleware_obs(Arc::clone(&session.middleware_obs));
-    if let Some(queue) = &session.command_queue {
-        agent_loop = agent_loop.with_queue(Arc::clone(queue));
+}
+
+fn finish_agent_loop_from_inputs(
+    client: Arc<dyn crate::llm::LlmClient>,
+    tool_executor: Arc<ToolExecutor>,
+    tool_context: crate::tools::ToolContext,
+    config: crate::agent::AgentConfig,
+    model_admission: crate::llm::ModelGenerationAdmission,
+    middleware: Arc<crate::agent::ModelMiddlewareObs>,
+    queue: Option<Arc<crate::session_lane_queue::SessionLaneQueue>>,
+) -> AgentLoop {
+    let mut agent_loop = AgentLoop::new(client, tool_executor, tool_context, config)
+        .with_model_generation_admission(model_admission)
+        .with_model_middleware_obs(middleware);
+    if let Some(queue) = queue {
+        agent_loop = agent_loop.with_queue(queue);
     }
     agent_loop
 }
+
+#[cfg(test)]
+mod owned_preparation_tests;

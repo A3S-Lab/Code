@@ -3884,7 +3884,7 @@ fn dashboard_dispatch_always_approve_blocked_warns_on_dashboard() {
     let new_id = *app.agents.keys().next().unwrap();
     assert!(
         !test_agent(&app, new_id).session.is_yolo(),
-        "pinned always-approve must spawn the agent in Normal"
+        "pinned yolo must spawn the agent in Normal"
     );
     assert_eq!(
         app.dashboard.as_ref().unwrap().error_toast.as_deref(),

@@ -6,7 +6,7 @@ use a3s_code_telemetry::region::Parent;
 use a3s_code_telemetry::session_end::{self, Phase, SharedSessionEndTimer};
 /// The `YoloToggled` event to emit after `set_yolo_mode(requested)`: `Some(actual)` only on a real change.
 /// Callers MUST pass the post-call state read back via `is_yolo_mode()`, never the request.
-/// Under the always-approve pin the manager clamps a requested ON to OFF, so reporting the request would announce a turn-on that never happened.
+/// Under the yolo pin the manager clamps a requested ON to OFF, so reporting the request would announce a turn-on that never happened.
 pub(super) fn yolo_toggle_report(was: bool, actual: bool) -> Option<bool> {
     (was != actual).then_some(actual)
 }
@@ -1265,7 +1265,7 @@ pub(super) async fn run_session(
                             tracing::info!("Session received SetYoloMode: {}", enabled);
                             session.permissions.set_yolo_mode(enabled);
                             // Report the ACTUAL state, not the request
-                            // Under the always-approve pin the manager clamps a requested ON to OFF
+                            // Under the yolo pin the manager clamps a requested ON to OFF
                             // Emitting `enabled` would then announce a turn-on that never happened
                             let actual = session.permissions.is_yolo_mode();
                             if let Some(enabled) = yolo_toggle_report(was, actual) {

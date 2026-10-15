@@ -49,6 +49,8 @@ type callbackRuntime interface {
 type EventStream struct {
 	Events <-chan Event
 	Done   <-chan error
+	// Set by StreamWithRun runtimes before their first event.
+	Admission <-chan StreamAdmission
 }
 
 type LocalRuntimeOption interface {
@@ -100,9 +102,17 @@ func WithShutdownTimeout(timeout time.Duration) LocalRuntimeOption {
 }
 
 type pendingCall struct {
-	response chan bridge.Envelope
-	failure  chan error
-	stream   *eventQueue
+	response      chan bridge.Envelope
+	failure       chan error
+	stream        *eventQueue
+	admission     chan StreamAdmission
+	admissionOnce sync.Once
+}
+
+func (call *pendingCall) admit(value StreamAdmission) {
+	if call.admission != nil {
+		call.admissionOnce.Do(func() { call.admission <- value })
+	}
 }
 
 // LocalRuntime multiplexes requests and stream events over one JSONL process.
@@ -239,6 +249,9 @@ func (runtime *LocalRuntime) Stream(
 	id := runtime.nextID.Add(1)
 	queue := newEventQueue()
 	call := &pendingCall{stream: queue}
+	if operation == "session_stream_with_run" || operation == "session_stream_goal_tick" {
+		call.admission = make(chan StreamAdmission, 1)
+	}
 	if err := runtime.register(id, call); err != nil {
 		return nil, err
 	}
@@ -258,7 +271,7 @@ func (runtime *LocalRuntime) Stream(
 		case <-queue.finished:
 		}
 	}()
-	return &EventStream{Events: queue.output, Done: queue.done}, nil
+	return &EventStream{Events: queue.output, Done: queue.done, Admission: call.admission}, nil
 }
 
 func (runtime *LocalRuntime) Close() error {
@@ -415,6 +428,17 @@ func (runtime *LocalRuntime) readLoop(stdout io.Reader) {
 		}
 
 		switch envelope.Kind {
+		case "admission":
+			if call.stream == nil || call.admission == nil {
+				runtime.terminate(sdkError("bridge_read", CodeProtocol, "unexpected stream admission", nil))
+				return
+			}
+			var admission StreamAdmission
+			if err := json.Unmarshal(envelope.Result, &admission); err != nil {
+				runtime.terminate(sdkError("bridge_read", CodeProtocol, "invalid stream admission", err))
+				return
+			}
+			call.admit(admission)
 		case "event":
 			if call.stream == nil {
 				runtime.terminate(sdkError(
@@ -447,7 +471,13 @@ func (runtime *LocalRuntime) readLoop(stdout io.Reader) {
 			call.stream.push(event)
 		case "response":
 			if call.stream != nil {
-				call.stream.finish(decodeResponse("session_stream", envelope, nil))
+				err := decodeResponse("session_stream", envelope, nil)
+				admissionErr := err
+				if admissionErr == nil {
+					admissionErr = sdkError("session_stream_with_run", CodeProtocol, "bridge omitted stream admission", nil)
+				}
+				call.admit(StreamAdmission{Err: admissionErr})
+				call.stream.finish(err)
 			} else {
 				call.response <- envelope
 			}
@@ -530,7 +560,7 @@ func (runtime *LocalRuntime) invokeCallback(
 	if handler == nil {
 		callbackErr = fmt.Errorf("callback handler %q is not registered", callback.HandlerID)
 	} else {
-		result, callbackErr = handler(ctx, callback.Method, callback.Payload)
+		result, callbackErr = invokeHostCallback(ctx, callback.Method, callback.Payload, handler)
 	}
 	params := map[string]any{"callback_id": callback.CallbackID}
 	if callbackErr != nil {
@@ -542,6 +572,28 @@ func (runtime *LocalRuntime) invokeCallback(
 	responseCtx, responseCancel := context.WithTimeout(context.Background(), timeout)
 	defer responseCancel()
 	_ = runtime.Request(responseCtx, "callback_response", params, nil)
+}
+
+// Host callbacks and their custom JSON marshalers are outside the SDK's trust
+// boundary. Refuse a panicking callback without crashing unrelated sessions or
+// disclosing a panic value that may contain host credentials.
+func invokeHostCallback(ctx context.Context, method string, payload json.RawMessage, handler callbackHandler) (result json.RawMessage, err error) {
+	defer func() {
+		if recover() != nil {
+			result = nil
+			err = errors.New("host callback panicked")
+		}
+	}()
+	value, callbackErr := handler(ctx, method, payload)
+	if callbackErr == nil {
+		result, callbackErr = json.Marshal(value)
+	}
+	if callbackErr != nil {
+		// Error() may itself be supplied by the host. Evaluate it inside the
+		// same recovery boundary, then return an SDK-owned error value.
+		return nil, errors.New(callbackErr.Error())
+	}
+	return result, nil
 }
 
 func (runtime *LocalRuntime) cancelCallback(callbackID uint64) {
@@ -587,6 +639,7 @@ func (runtime *LocalRuntime) failAll(err error) {
 	}
 	for _, call := range pending {
 		if call.stream != nil {
+			call.admit(StreamAdmission{Err: err})
 			call.stream.finish(err)
 			continue
 		}

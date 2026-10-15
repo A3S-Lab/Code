@@ -1,0 +1,10 @@
+{
+  "source_icon_sha256": "3b443c5adf6014615b2d42ddf866d84df3e420512ef8813f61b7561e4d9525a3",
+  "source_copy_identical": true,
+  "encoded_logo_mean_absolute_rgb_error": 2.015048868312757,
+  "end_hold_mean_absolute_rgb_error": 0.002151170267489712,
+  "end_hold_times_s": [
+    56.3,
+    59.6
+  ]
+}

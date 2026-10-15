@@ -154,6 +154,7 @@ fn parent_context(
     confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
 ) -> ChildRunContext {
     ChildRunContext {
+        work_policy: None,
         security_provider: None,
         hook_engine: None,
         skill_registry: None,

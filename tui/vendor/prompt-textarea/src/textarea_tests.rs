@@ -1703,7 +1703,7 @@ fn wrapping_uses_element_display_width() {
         "Expected wrapping to produce at least 2 lines, got {} lines. \
          Line ranges: {:?}",
         lines.len(),
-        &*lines,
+        lines,
     );
 }
 
@@ -1727,7 +1727,7 @@ fn wrapping_element_fits_on_next_line() {
         2,
         "Expected 2 wrapped lines, got {}. Ranges: {:?}",
         lines.len(),
-        &*lines,
+        lines,
     );
 }
 
@@ -1765,7 +1765,7 @@ fn wrapping_element_display_renders_on_correct_lines() {
             lines.len(),
             2,
             "Should wrap into 2 lines, got {:?}",
-            &*lines
+            lines
         );
     }
 
@@ -1807,7 +1807,7 @@ fn wrapping_element_with_newlines_stays_single_line() {
         "Element with internal \\n should NOT create extra visual lines. \
          Got {} lines: {:?}",
         lines.len(),
-        &*lines,
+        lines,
     );
 }
 

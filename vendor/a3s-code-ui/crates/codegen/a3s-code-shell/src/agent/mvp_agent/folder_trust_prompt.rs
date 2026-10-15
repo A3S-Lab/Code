@@ -1,4 +1,4 @@
-//! The interactive folder-trust prompt, an ACP round-trip (`x.ai/folder_trust/request`) from the agent to a GUI client (a3s-desktop).
+//! The interactive folder-trust prompt, an ACP round-trip (`x.ai/folder_trust/request`) from the agent to a GUI client (a3s-work).
 //! It asks the client to decide trust for an untrusted workspace that has repo configs.
 //! On a grant it reloads the now-trusted project servers without a restart.
 //!

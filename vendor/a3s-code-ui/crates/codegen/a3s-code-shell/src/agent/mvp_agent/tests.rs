@@ -8848,7 +8848,7 @@ mod soft_default_settings_emit {
                 let gateway = GatewaySender::new(tx);
                 let cfg = AgentConfig {
                     remote_settings: Some(crate::util::config::RemoteSettings {
-                        permission_mode: Some("always-approve".into()),
+                        permission_mode: Some("yolo".into()),
                         slash_command_tags: Some(
                             [("workflows".to_string(), "new".to_string())]
                                 .into_iter()
@@ -8871,7 +8871,7 @@ mod soft_default_settings_emit {
                     serde_json::from_str(args.request.params.get()).expect("parse params");
                 assert_eq!(
                     params.get("permission_mode").and_then(|v| v.as_str()),
-                    Some("always-approve"),
+                    Some("yolo"),
                     "post-auth emit must carry remote permission_mode for first session"
                 );
                 assert_eq!(

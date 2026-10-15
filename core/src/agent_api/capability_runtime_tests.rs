@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 use crate::capability::{
@@ -19,16 +21,20 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+mod access_projection;
 mod agent_projection;
 mod command_projection;
 mod context_projection;
+mod delegated_tool_projection;
 #[cfg(feature = "dynamic-workflow")]
 mod flow_projection;
 mod hook_projection;
 mod knowledge_projection;
 mod knowledge_surface_projection;
 mod mcp_projection;
+mod run_resource_settlement;
 mod ui_projection;
+mod workspace_access;
 
 fn digest(byte: char) -> Sha256Digest {
     Sha256Digest::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
@@ -1439,7 +1445,7 @@ async fn compatibility_mutation_cannot_shadow_a_published_projection() {
 }
 
 #[tokio::test]
-async fn exact_run_admission_failure_settles_the_reserved_run() {
+async fn exact_run_admission_failure_preserves_typed_cause_and_retains_unproved_owner() {
     let session = test_session("capability-exact-run-admission-failure").await;
     let executions = Arc::new(Mutex::new(Vec::new()));
     let upstream = use_generation(1, 'a');
@@ -1454,7 +1460,7 @@ async fn exact_run_admission_failure_settles_the_reserved_run() {
             CapabilityValue::Tool(Arc::new(VersionedTool {
                 name: "projected".to_string(),
                 version: "never-executed",
-                executions,
+                executions: executions.clone(),
             })),
         )
         .unwrap();
@@ -1470,10 +1476,13 @@ async fn exact_run_admission_failure_settles_the_reserved_run() {
         Ok(_) => panic!("exact Run unexpectedly started"),
         Err(error) => error,
     };
-    assert!(matches!(
-        error,
-        crate::error::CodeError::Capability(CapabilityRuntimeError::UseLeaseAcquisition { .. })
-    ));
+    assert!(
+        matches!(
+            error,
+            crate::error::CodeError::Capability(CapabilityRuntimeError::UseLeaseAcquisition { .. })
+        ),
+        "actual admission failure: {error:?}"
+    );
     let snapshot = session
         .run_snapshot("exact-capability-failure")
         .await
@@ -1481,6 +1490,16 @@ async fn exact_run_admission_failure_settles_the_reserved_run() {
     assert_eq!(snapshot.status, crate::run::RunStatus::Failed);
     assert!(snapshot.error.unwrap().contains("Use generation lease"));
     assert!(session.current_run().await.is_none());
+    assert!(executions.lock().unwrap().is_empty());
+    // No returned capability guard proves that the attempted admission had
+    // no effects. A Failed Run snapshot does not qualify lease release.
+    assert_eq!(session.task_scheduler.health().await.unwrap().active, 1);
+    assert!(matches!(
+        session
+            .spawn_run_with_id("after-unproved-admission", "must remain refused")
+            .await,
+        Err(crate::error::CodeError::SessionBusy { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1653,4 +1672,177 @@ async fn apply_sdk_capability_batch_advances_host_skill_generation() {
             }
         ))
     ));
+}
+
+fn write_discovered_skill(dir: &std::path::Path, name: &str, description: &str, body: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn withheld_skill_does_not_stop_the_session() {
+    let root = tempfile::TempDir::new().unwrap();
+    let session = test_session("withheld-discovered-skill").await;
+    write_discovered_skill(
+        &root.path().join("first"),
+        "shared-skill",
+        "discovered-first",
+        "DISCOVERED_FIRST",
+    );
+    write_discovered_skill(
+        &root.path().join("second"),
+        "shared-skill",
+        "discovered-second",
+        "DISCOVERED_SECOND",
+    );
+    session
+        .close_handle
+        .skill_registry
+        .load_from_dir(root.path().join("first"))
+        .unwrap();
+    session
+        .close_handle
+        .skill_registry
+        .load_from_dir(root.path().join("second"))
+        .unwrap();
+    let before = session.capability_catalog_stamp();
+    let upstream = use_generation(1, 'a');
+    let (set, ids) = use_skill_set(
+        1,
+        upstream.clone(),
+        &[("shared-skill", 'b'), ("kept-skill", 'c')],
+    );
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &acquired, &dropped))
+            .unwrap();
+    batch
+        .stage_value(
+            ids["shared-skill"].clone(),
+            CapabilityValue::Skill(skill("shared-skill", "admitted-generation")),
+        )
+        .unwrap();
+    batch
+        .stage_value(
+            ids["kept-skill"].clone(),
+            CapabilityValue::Skill(skill("kept-skill", "kept-generation")),
+        )
+        .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_ne!(session.capability_catalog_stamp(), before);
+
+    let live = session
+        .close_handle
+        .skill_registry
+        .get("shared-skill")
+        .unwrap();
+    assert_eq!(live.description, "discovered-second");
+    assert!(live.content.contains("DISCOVERED_SECOND"));
+
+    let lease = session.capability_catalog.pin();
+    let pinned = {
+        let commands = session
+            .command_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::agent_loop_runtime::pin_runtime_projection_with_command_registry(
+            &session,
+            lease.projection(),
+            &commands,
+            None,
+        )
+        .unwrap()
+    };
+    let run_registry = pinned.skill_registry();
+    assert!(run_registry.get("shared-skill").is_none());
+    assert_eq!(
+        run_registry.get("kept-skill").unwrap().description.as_str(),
+        "kept-generation"
+    );
+    let sentence =
+        "skill 'shared-skill' is withheld because the discovered file and the admitted generation differ";
+    assert_eq!(
+        run_registry.withheld_reason("shared-skill").as_deref(),
+        Some(sentence)
+    );
+
+    let tool = crate::tools::skill::SkillTool::new(
+        Arc::clone(&run_registry),
+        Arc::clone(&session.llm_client),
+        Arc::clone(&session.tool_executor),
+        session.config.clone(),
+    );
+    let error = tool
+        .execute(
+            &serde_json::json!({ "skill_name": "shared-skill" }),
+            &ToolContext::new(session.workspace.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), sentence);
+
+    let host_root = tempfile::TempDir::new().unwrap();
+    let host_session = test_session("host-protected-skill-still-conflicts").await;
+    write_discovered_skill(
+        host_root.path(),
+        "protected-skill",
+        "discovered-host",
+        "DISCOVERED_HOST",
+    );
+    host_session
+        .close_handle
+        .skill_registry
+        .load_from_dir(host_root.path())
+        .unwrap();
+    host_session
+        .close_handle
+        .skill_registry
+        .register_host(Arc::new(
+            Skill::parse("---\nname: protected-skill\ndescription: host-owned\n---\nHost.")
+                .unwrap(),
+        ));
+    let host_before = host_session.capability_catalog_stamp();
+    let host_upstream = use_generation(1, 'd');
+    let (host_set, host_ids) = use_skill_set(1, host_upstream.clone(), &[("protected-skill", 'e')]);
+    let host_acquired = Arc::new(AtomicUsize::new(0));
+    let host_dropped = Arc::new(AtomicUsize::new(0));
+    let mut host_batch = SessionCapabilityBatch::from_use_projection(
+        host_set,
+        provider(host_upstream, &host_acquired, &host_dropped),
+    )
+    .unwrap();
+    host_batch
+        .stage_value(
+            host_ids["protected-skill"].clone(),
+            CapabilityValue::Skill(skill("protected-skill", "projected-over-host")),
+        )
+        .unwrap();
+    match host_session
+        .apply_capability_batch(host_batch, CancellationToken::new())
+        .await
+    {
+        Err(CapabilityRuntimeError::RuntimeNameConflict {
+            kind: CapabilityKind::Skill,
+            public_name,
+        }) => assert_eq!(public_name, "protected-skill"),
+        other => panic!("expected a skill name conflict, got {other:?}"),
+    }
+    assert_eq!(host_session.capability_catalog_stamp(), host_before);
+    assert_eq!(
+        host_session
+            .close_handle
+            .skill_registry
+            .get("protected-skill")
+            .unwrap()
+            .description,
+        "host-owned"
+    );
 }

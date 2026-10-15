@@ -1,6 +1,6 @@
 [package]
 name = "a3s-code-pager"
-version = "9.1.2"
+version = "9.1.3"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["A3S Lab"]
@@ -47,7 +47,7 @@ indexmap = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-a3s-acl = { path = "../../../../../../acl" }
+a3s-acl = { path = "../../../../../../../crates/acl" }
 strum = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true, features = ["serde"] }

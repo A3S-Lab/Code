@@ -18,6 +18,12 @@ pub(super) enum AsyncSessionOperation {
         current: Arc<RustAgentSession>,
         options: RustSessionOptions,
     },
+    Fork {
+        agent: Arc<RustAgent>,
+        snapshot: Box<a3s_code_core::store::SessionSnapshotV1>,
+        workspace: String,
+        options: RustSessionOptions,
+    },
 }
 
 /// One-shot callable executed by asyncio's default executor.
@@ -120,6 +126,14 @@ impl AsyncSessionCall {
                     current,
                     options,
                 } => get_runtime().block_on(agent.replace_session_async(&current, options)),
+                AsyncSessionOperation::Fork {
+                    agent,
+                    snapshot,
+                    workspace,
+                    options,
+                } => {
+                    get_runtime().block_on(agent.fork_session_async(*snapshot, workspace, options))
+                }
             })
             .map_err(py_code_error)?;
         Ok(Py::new(

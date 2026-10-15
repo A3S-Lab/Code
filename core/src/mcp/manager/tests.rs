@@ -1,5 +1,9 @@
+#![cfg(test)]
+
 use super::*;
 use crate::mcp::protocol::ToolContent;
+
+mod notification_delivery;
 
 #[test]
 fn test_parse_tool_name() {

@@ -310,7 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, Harness, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
+const { StateGraphRuntime, strictReplay, EventStream, S3WorkspaceBackend, FileMemoryStore, FileSessionStore, MemorySessionStore, DefaultSecurityProvider, LocalWorkspaceBackend, Harness, ToolPresentationMode, BrowserBackend, Session, LineWorkspaceChunkingStrategy, FixedWindowWorkspaceChunkingStrategy, RecursiveWorkspaceChunkingStrategy, WorkspaceLexicalEngineOption, WorkspaceRetrievalOptions, CallbackEmbeddingProvider, DeterministicWorkspaceReranker, ImmutableContentAdapterOptions, RunHandle, Agent, formatVerificationSummary, agentEventTypesV1, eventEnvelopeV1Version, sdkCapabilities, sdkCapabilitiesSchema, builtinSkills } = nativeBinding
 
 module.exports.StateGraphRuntime = StateGraphRuntime
 module.exports.strictReplay = strictReplay
@@ -333,6 +333,7 @@ module.exports.WorkspaceRetrievalOptions = WorkspaceRetrievalOptions
 module.exports.CallbackEmbeddingProvider = CallbackEmbeddingProvider
 module.exports.DeterministicWorkspaceReranker = DeterministicWorkspaceReranker
 module.exports.ImmutableContentAdapterOptions = ImmutableContentAdapterOptions
+module.exports.RunHandle = RunHandle
 module.exports.Agent = Agent
 
 // a3s-code: bundled Moli runtime bridge

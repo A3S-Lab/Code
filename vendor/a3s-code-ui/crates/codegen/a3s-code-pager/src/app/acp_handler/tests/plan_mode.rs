@@ -283,7 +283,7 @@
         let agent = app.agents.get(&AgentId(0)).unwrap();
         assert!(
             agent.plan_approval_view.is_some(),
-            "plan_approval_view must be set even in always-approve mode"
+            "plan_approval_view must be set even in yolo mode"
         );
         assert!(
             rx.try_recv().is_err(),

@@ -216,19 +216,17 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
     let opts = SessionOptions::new()
         .with_confirmation_manager(manager.clone())
         .with_permission_policy(crate::permissions::PermissionPolicy::new());
+    let client = Arc::new(ScriptedStreamingClient::new(vec![
+        scripted_tool_call_response(
+            "tool-close-stream",
+            "bash",
+            serde_json::json!({"command": "echo must-not-run"}),
+        ),
+        scripted_text_response("must not continue"),
+    ]));
+    let responses = client.responses.clone();
     let session = agent
-        .build_session(
-            "/tmp/test-close-stream-confirmation".into(),
-            Arc::new(ScriptedStreamingClient::new(vec![
-                scripted_tool_call_response(
-                    "tool-close-stream",
-                    "bash",
-                    serde_json::json!({"command": "echo must-not-run"}),
-                ),
-                scripted_text_response("must not continue"),
-            ])),
-            &opts,
-        )
+        .build_session("/tmp/test-close-stream-confirmation".into(), client, &opts)
         .unwrap();
 
     let (mut rx, handle) = session.stream("run a command", None).await.unwrap();
@@ -240,12 +238,16 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
     .await
     .expect("the tool confirmation must become pending");
     let run_id = session.current_run().await.unwrap().id().to_string();
-
     session.close().await;
     tokio::time::timeout(std::time::Duration::from_secs(1), handle)
         .await
         .expect("close must settle the stream lifecycle")
         .expect("stream lifecycle must not panic");
+    assert_eq!(
+        rx.len(),
+        rx.max_capacity(),
+        "the original worker must retire while its unconsumed host FIFO remains full"
+    );
 
     let mut events = Vec::new();
     while let Some(event) = rx.recv().await {
@@ -259,8 +261,11 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
             ..
         } if tool_id == "tool-close-stream" && tool_name == "bash"
     )));
-    assert!(events.iter().any(|event| matches!(
-        event,
+    // A cancelled full host FIFO preserves its queued prefix. The exact
+    // confirmation result remains observable through this original Run.
+    let retained = session.run_events(&run_id).await;
+    assert!(retained.iter().any(|frame| matches!(
+        &frame.event,
         AgentEvent::ConfirmationReceived {
             tool_id,
             approved: false,
@@ -272,7 +277,17 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
         event,
         AgentEvent::ToolExecutionStart { id, .. } if id == "tool-close-stream"
     )));
+    assert!(!retained.iter().any(|frame| matches!(
+        &frame.event,
+        AgentEvent::ToolExecutionStart { id, .. } if id == "tool-close-stream"
+    )));
     assert_eq!(manager.pending_count().await, 0);
+    assert_eq!(
+        responses.lock().unwrap().len(),
+        1,
+        "close must not enter the next provider response"
+    );
+    assert_eq!(session.task_scheduler.health().await.unwrap().active, 0);
     assert!(session.current_run().await.is_none());
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,

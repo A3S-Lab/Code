@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 use crate::cognitive_context::{
@@ -11,6 +13,81 @@ use sha2::{Digest, Sha256};
 
 const CANONICAL_DIGEST_PREFIX: &[u8] = b"agentic-ontology-canonical-v1\0";
 const CAPABILITY_SNAPSHOT_DIGEST_DOMAIN: &str = "a3s.use.capability-snapshot.v1";
+
+struct NoKnowledgeClient;
+
+#[async_trait]
+impl LlmClient for NoKnowledgeClient {
+    async fn complete(
+        &self,
+        _: &[Message],
+        system: Option<&str>,
+        _: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        anyhow::ensure!(
+            !system.unwrap_or_default().contains("DENIED_KNOWLEDGE"),
+            "denied Knowledge reappeared through a static provider"
+        );
+        Ok(CutoverClient::final_text("no denied knowledge"))
+    }
+    async fn complete_streaming(
+        &self,
+        _: &[Message],
+        _: Option<&str>,
+        _: &[ToolDefinition],
+        _: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is outside this contract")
+    }
+}
+
+#[tokio::test]
+async fn denied_projected_knowledge_does_not_reveal_the_static_resume_seed() {
+    let binding = knowledge_binding(1, 'a');
+    let static_provider = Arc::new(VersionedKnowledgeProvider {
+        name: "projected-knowledge".to_owned(),
+        marker: "DENIED_KNOWLEDGE",
+        requests: Mutex::new(Vec::new()),
+    });
+    let static_context =
+        CognitiveContextSession::new(binding.clone(), static_provider.clone()).unwrap();
+    let workspace = "/tmp/capability-access-knowledge";
+    crate::fact_control::reset_session_fact_log(workspace);
+    let agent = Agent::from_config(super::super::tests::test_config())
+        .await
+        .unwrap();
+    let session = agent
+        .build_session(
+            workspace.to_owned(),
+            Arc::new(NoKnowledgeClient),
+            &SessionOptions::new()
+                .with_session_id("capability-access-knowledge")
+                .with_planning_mode(crate::prompts::PlanningMode::Disabled)
+                .with_cognitive_context(static_context),
+        )
+        .unwrap();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let batch = knowledge_batch(
+        1,
+        'a',
+        'b',
+        projected_knowledge("projected-knowledge", binding, "DENIED_KNOWLEDGE"),
+        &counter,
+        &counter,
+    )
+    .with_allowed_capabilities([])
+    .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    let result = session
+        .send("Answer without Knowledge.", None)
+        .await
+        .unwrap();
+    assert_eq!(result.text, "no denied knowledge");
+    assert!(static_provider.requests.lock().unwrap().is_empty());
+}
 
 struct VersionedKnowledgeProvider {
     name: String,

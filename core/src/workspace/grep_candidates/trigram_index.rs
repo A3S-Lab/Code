@@ -64,9 +64,10 @@ pub struct TrigramGrepCandidateIndex {
 }
 
 impl TrigramGrepCandidateIndex {
-    /// Default on-disk stamp location under a workspace root.
+    /// Default on-disk stamp location: `<root>/.a3s-code/grep-trigram`, or
+    /// under the process state root when a host set one.
     pub fn default_index_dir(root: &Path) -> PathBuf {
-        root.join(GREP_TRIGRAM_INDEX_RELATIVE_DIR)
+        crate::state_root::workspace_index_dir(root).join("grep-trigram")
     }
 
     /// Build an index for `files` under `root` and write a stamp under `index_dir`.

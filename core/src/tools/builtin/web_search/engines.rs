@@ -6,15 +6,17 @@ use a3s_search::engines::{
     BingChina, BingParser, BraveParser, DuckDuckGoParser, So360Parser, SogouParser, Wikipedia,
 };
 use a3s_search::providers::{
-    AliyunConfig, AliyunProvider, AnySearchConfig, AnySearchProvider, BochaConfig, BochaProvider,
-    BuiltinProvider, CredentialSource, FirecrawlConfig, FirecrawlProvider, ProviderEngine,
-    TavilyConfig, TavilyProvider, TencentConfig, TencentProvider, TinyFishConfig, TinyFishProvider,
+    A3sConfig, A3sProvider, AliyunConfig, AliyunProvider, AnySearchConfig, AnySearchProvider,
+    BochaConfig, BochaProvider, BuiltinProvider, CredentialSource, FirecrawlConfig,
+    FirecrawlProvider, ProviderEngine, TavilyConfig, TavilyProvider, TencentConfig,
+    TencentProvider, TinyFishConfig, TinyFishProvider,
 };
 #[cfg(feature = "headless-search")]
 use a3s_search::{
     a3s_use_browser::PageRenderer,
     engines::{Baidu, BingBrowser, BraveBrowser, Google},
-    BrowserFetcher, RetryBudget, WaitStrategy,
+    retry::RetryBudget,
+    BrowserFetcher, WaitStrategy,
 };
 use a3s_search::{EngineFailure, HtmlEngine, HttpFetcher, Search, SearchError};
 use std::sync::Arc;
@@ -241,6 +243,17 @@ fn create_api_engine(
                 FirecrawlConfig::new()?,
                 api_key,
                 FirecrawlConfig::with_api_key,
+            ))?))
+        }
+        BuiltinProvider::A3s => {
+            let mut provider_config = A3sConfig::new()?;
+            if let Some(endpoint) = endpoint {
+                provider_config = provider_config.with_endpoint(endpoint)?;
+            }
+            Ok(ProviderEngine::new(A3sProvider::new(with_api_key(
+                provider_config,
+                api_key,
+                A3sConfig::with_api_key,
             ))?))
         }
         // BuiltinProvider is non_exhaustive; refuse unknown future providers fail-closed.

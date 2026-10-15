@@ -136,7 +136,7 @@ def unreleased_notes(text):
     notes = []
     in_unreleased = False
     for line in text.splitlines():
-        if line.startswith("## Unreleased"):
+        if line.startswith("## Unreleased") or line.startswith("## [Unreleased]"):
             in_unreleased = True
             continue
         if in_unreleased and line.startswith("## "):
@@ -166,12 +166,19 @@ if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', expected):
     fail(f"release version must be semver-like, found {expected!r}")
 
 check_manifest_version("core/Cargo.toml")
+check_manifest_version("acp/Cargo.toml")
+check_manifest_version("tui/Cargo.toml")
+check_manifest_version("vendor/a3s-code-ui/crates/codegen/a3s-code-pager/Cargo.toml")
+check_manifest_version("vendor/a3s-code-ui/crates/codegen/a3s-code-pager-bin/Cargo.toml")
+check_manifest_version("vendor/a3s-code-ui/crates/codegen/a3s-code-version/Cargo.toml")
 check_manifest_version("sdk/node/Cargo.toml")
 check_manifest_version("sdk/python/Cargo.toml")
 check_manifest_version("sdk/go/bridge/Cargo.toml")
 check_core_dependency("sdk/node/Cargo.toml")
 check_core_dependency("sdk/python/Cargo.toml")
 check_core_dependency("sdk/go/bridge/Cargo.toml")
+check_core_dependency("acp/Cargo.toml")
+check_core_dependency("tui/Cargo.toml")
 check_package_json("sdk/node/package.json")
 check_pyproject("sdk/python/pyproject.toml")
 check_pyproject("sdk/python-bootstrap/pyproject.toml")
@@ -181,6 +188,11 @@ check_changelog("CHANGELOG.md")
 check_changelog("sdk/python/CHANGELOG.md")
 check_cargo_lock("Cargo.lock")
 check_cargo_lock_package("Cargo.lock", "a3s-code-go-bridge")
+check_cargo_lock_package("Cargo.lock", "a3s-code-acp")
+check_cargo_lock_package("Cargo.lock", "a3s-code-tui")
+check_cargo_lock_package("vendor/a3s-code-ui/Cargo.lock", "a3s-code-pager")
+check_cargo_lock_package("vendor/a3s-code-ui/Cargo.lock", "a3s-code-pager-bin")
+check_cargo_lock_package("vendor/a3s-code-ui/Cargo.lock", "a3s-code-version")
 check_cargo_lock("sdk/node/Cargo.lock")
 check_cargo_lock_package("sdk/node/Cargo.lock", "a3s-code-node")
 check_cargo_lock("sdk/python/Cargo.lock")

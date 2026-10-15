@@ -52,7 +52,8 @@ pub enum ReviewTriggerPolicy {
 }
 
 /// Draft finding produced by a scenario before Core assigns session identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReviewFindingDraft {
     pub finding_id: String,
     pub severity: SessionReviewSeverityV1,
@@ -60,7 +61,9 @@ pub struct ReviewFindingDraft {
     pub claim: String,
     pub evidence: String,
     pub subject: ReviewSubjectV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
 }
 

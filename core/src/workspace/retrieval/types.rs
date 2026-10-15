@@ -180,6 +180,14 @@ pub enum WorkspaceIndexError {
     ConcurrentUpdate { expected: u64, actual: u64 },
     #[error("workspace retrieval query is invalid: {0}")]
     InvalidQuery(String),
+    #[error("persistent a3s-vec index failed: {message}")]
+    IndexBuildFailed {
+        /// Whether retrying the same snapshot can plausibly succeed
+        /// (environmental failures) as opposed to deterministic
+        /// rejections that every retry will reproduce.
+        retryable: bool,
+        message: String,
+    },
     #[error("failed to read workspace path '{path}': {message}")]
     ReadFailed { path: String, message: String },
 }

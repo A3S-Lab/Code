@@ -1534,7 +1534,7 @@ fn disable_bypass_permissions_mode_locks_when_true() {
     let p = Path::new("test-requirements.toml");
     let locked = layer("[ui]\ndisable_bypass_permissions_mode = true\n");
     let unlocked = layer("[ui]\ndisable_bypass_permissions_mode = false\n");
-    let absent = layer("[ui]\npermission_mode = \"always-approve\"\n");
+    let absent = layer("[ui]\npermission_mode = \"yolo\"\n");
 
     assert_eq!(
         resolve_yolo_policy_block([(p, &locked)].into_iter()).map(|l| l.reason),
@@ -1543,7 +1543,7 @@ fn disable_bypass_permissions_mode_locks_when_true() {
     // Pin the exact admin-facing message so a typo can't ship silently.
     assert_eq!(
         YoloPinReason::DisableBypassPermissionsMode.message(),
-        "always-approve disabled by managed policy ([ui] disable_bypass_permissions_mode = true in requirements.toml)"
+        "yolo disabled by managed policy ([ui] disable_bypass_permissions_mode = true in requirements.toml)"
     );
     // Explicit false (the default) does not lock.
     assert_eq!(
@@ -1567,7 +1567,7 @@ fn legacy_yolo_false_still_locks() {
     // Pin the exact admin-facing message so a typo can't ship silently.
     assert_eq!(
         YoloPinReason::LegacyYoloFalse.message(),
-        "always-approve disabled by managed policy ([ui] yolo = false in requirements.toml)"
+        "yolo disabled by managed policy ([ui] yolo = false in requirements.toml)"
     );
     let on = layer("[ui]\nyolo = true\n");
     assert_eq!(resolve_yolo_policy_block([(p, &on)].into_iter()), None);

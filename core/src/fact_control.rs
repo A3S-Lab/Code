@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use a3s_effect::{
-    answer_fact, confirm_fact, ingest_coding, message_fact, resume_coding, ActorError, CodingPhase,
-    CodingServices, CodingView, Compactor, Completion, CompletionRequest, Exit, FileLog,
-    HarnessConfig, HarnessGraph, LogStore, ModelDecision, NewFact, ToolCall, ToolRunner, ToolSpec,
+    answer_fact, confirm_fact, ingest_coding_with_cancel, message_fact, resume_coding_with_cancel,
+    ActorError, CodingPhase, CodingServices, CodingView, Compactor, Completion, CompletionRequest,
+    Exit, FileLog, HarnessConfig, HarnessGraph, LogStore, ModelDecision, NewFact, ToolCall,
+    ToolRunner, ToolSpec,
 };
 use anyhow::Result;
 
@@ -22,6 +23,14 @@ use crate::queue::SessionLane;
 use crate::tools::ToolExecutor;
 
 const THREAD: &str = "thread-1";
+
+mod checkpoints;
+mod goal_evidence;
+pub(crate) use goal_evidence::{
+    assess_goal_step, commit_goal_step, evidence_for_goal_step, settle_goal_slice,
+};
+mod receipts;
+mod recovery_unproved;
 
 /// Thread id for one session. Valid ids are kept so two sessions in one
 /// workspace fold two logs.
@@ -53,6 +62,12 @@ pub fn confirmation_required(policy: &PermissionPolicy, tool_name: &str) -> bool
 
 pub struct FactRun {
     dir: PathBuf,
+    /// The Run's shared fact-log writer. Constructed here as a default and
+    /// replaced by the session constructors with the instance the run's
+    /// tool contexts already hold, so actor appends and Run-owned background
+    /// readers serialize through one instance mutex (a second `FileLog`
+    /// handle over the same directory races duplicate seqs).
+    log: Arc<FileLog>,
     thread: String,
     actor: a3s_effect::Actor<CodingServices, CodingView>,
     services: Arc<CodingServices>,
@@ -65,6 +80,9 @@ pub struct FactRun {
     admitted_permission: PermissionPolicy,
     /// Digest admitted for this run. Legacy opens leave this empty.
     standing_digest: Option<String>,
+    current_goal: Option<crate::goal_control::DurableGoalDefinitionV1>,
+    /// Host cancel for this run. Interactive sessions share [`SessionSurface::cancel`].
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 /// Optional host mounts for Meta Harness admission.
@@ -85,11 +103,12 @@ impl Completion for CappedCompletion {
     fn complete(
         &self,
         request: CompletionRequest,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
         let inner = Arc::clone(&self.inner);
         let run_id = self.run_id.clone();
         Box::pin(async move {
-            let decision = inner.complete(request).await?;
+            let decision = inner.complete(request, cancel).await?;
             if let ModelDecision::Question { .. } = &decision {
                 if let Err(error) = ask_user::begin(&run_id, "q", "cap-check", &[], false) {
                     if matches!(error, AskUserError::CapExceeded) {
@@ -106,6 +125,12 @@ impl Completion for CappedCompletion {
     }
 }
 
+/// One turn's recall telemetry: the recall query and the recalled items.
+pub(crate) struct MemoryTelemetryBatch {
+    pub(crate) query: String,
+    pub(crate) items: Vec<(String, String, f32)>,
+}
+
 /// Pinned coding runtime used while the fact log chooses transitions.
 ///
 /// Hooks, context, and delegation planning come from the admitted run. They
@@ -114,20 +139,37 @@ impl Completion for CappedCompletion {
 pub(crate) struct SessionSurface {
     pub(crate) agent: crate::agent::AgentLoop,
     pub(crate) session_id: String,
+    pub(crate) fact_log: Arc<Mutex<Option<Arc<FileLog>>>>,
     pub(crate) checkpoint: Option<CheckpointEmit>,
     pub(crate) events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    /// Recall telemetry (memory id, content, relevance) collected by the
+    /// actor's model-context assembly; the stream worker drains and emits it
+    /// before `End`. The actor never sends into `events` directly.
+    pub(crate) pending_memory_telemetry:
+        std::sync::Arc<std::sync::Mutex<Vec<MemoryTelemetryBatch>>>,
     /// Set when this surface already streamed text deltas to the host, so the
     /// settled replay must not re-send the full assistant text.
     pub(crate) streamed_text: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the harness forced this run to stop short (read-only
+    /// evidence ceiling; the budget twin is read off the fact log at settle)
+    /// so the settled End event can say why the turn ended.
+    pub(crate) forced_stop: Arc<Mutex<Option<crate::harness_loop::ForcedStop>>>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) transcript: Arc<Mutex<Vec<Message>>>,
     pub(crate) usage: Arc<Mutex<crate::llm::TokenUsage>>,
     pub(crate) confirmation: Option<Arc<dyn crate::hitl::ConfirmationProvider>>,
     pub(crate) run_store: Option<Arc<crate::run::InMemoryRunStore>>,
     pub(crate) run_id: Option<String>,
+    /// Automatic tick origin for this exact Run; absent for ordinary Runs.
+    pub(crate) goal_tick: Option<Box<crate::agent_api::GoalTickOrigin>>,
     pub(crate) ledger: Arc<Mutex<crate::harness_loop::MutationLedger>>,
     pub(crate) reports: Arc<Mutex<Vec<crate::verification::VerificationReport>>>,
     pub(crate) run_control: Option<Arc<crate::run_control::RunControlInbox>>,
+    /// Paths targeted by this run's tool calls (bounded, newest last).
+    /// Path-scoped instruction fragments inject into the next model input
+    /// from these — the fact-path twin of the legacy loop's
+    /// `inject_turn_scoped_evidence`.
+    pub(crate) targeted_paths: Arc<Mutex<Vec<String>>>,
     pub(crate) harness: Option<crate::meta_harness::HarnessComposeOptions>,
     pub(crate) host_harness_registry:
         Option<std::sync::Arc<dyn crate::meta_harness::HostHarnessRegistry>>,
@@ -159,6 +201,10 @@ pub struct LiveCompletion {
     cached_prompt: Arc<Mutex<Option<String>>>,
     prompt_tokens: Arc<AtomicU64>,
     standing_system: Option<String>,
+    goal_context: Option<String>,
+    checkpoint: Option<CheckpointState>,
+    checkpoint_attempted_seq: Arc<AtomicU64>,
+    original_model: Option<crate::agent_api::OriginalModelCallPort>,
 }
 
 impl LiveCompletion {
@@ -182,6 +228,10 @@ impl LiveCompletion {
                 cached_prompt: Arc::new(Mutex::new(None)),
                 prompt_tokens: Arc::new(AtomicU64::new(0)),
                 standing_system: None,
+                goal_context: None,
+                checkpoint: None,
+                checkpoint_attempted_seq: Arc::new(AtomicU64::new(0)),
+                original_model: None,
             },
             calls,
         )
@@ -189,6 +239,19 @@ impl LiveCompletion {
 
     pub(crate) fn with_standing(mut self, projection: String) -> Self {
         self.standing_system = Some(projection);
+        self
+    }
+
+    fn with_original_model(
+        mut self,
+        original: Option<crate::agent_api::OriginalModelCallPort>,
+    ) -> Self {
+        self.original_model = original;
+        self
+    }
+
+    fn with_checkpoint(mut self, checkpoint: Option<CheckpointState>) -> Self {
+        self.checkpoint = checkpoint;
         self
     }
 
@@ -221,21 +284,42 @@ async fn complete_detached(
     messages: &[Message],
     system: Option<&str>,
     tools: &[ToolDefinition],
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<crate::llm::LlmResponse, ActorError> {
-    let cancel = tokio_util::sync::CancellationToken::new();
+    if cancel.is_cancelled() {
+        return Ok(interrupted_response());
+    }
+    let attempt = cancel.child_token();
     match client
-        .complete_streaming(messages, system, tools, cancel)
+        .complete_streaming(messages, system, tools, attempt.clone())
         .await
     {
         Ok(mut events) => {
             let mut done = None;
-            while let Some(event) = events.recv().await {
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Ok(interrupted_response()),
+                    _ = attempt.cancelled() => {
+                        return Err(ActorError::Handler {
+                            key: "infer".into(),
+                            message: "LLM call timed out".into(),
+                        });
+                    }
+                    event = events.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                };
                 if let crate::llm::StreamEvent::Done(response) = event {
                     done = Some(response);
                 }
             }
             if let Some(response) = done {
                 return Ok(response);
+            }
+            if cancel.is_cancelled() {
+                return Ok(interrupted_response());
             }
             client
                 .complete(messages, system, tools)
@@ -249,7 +333,14 @@ async fn complete_detached(
     }
 }
 
-fn model_error(error: anyhow::Error) -> ActorError {
+pub(crate) fn model_error(error: anyhow::Error) -> ActorError {
+    // Host admission refusal is terminal for this attempt. Preserve the
+    // existing fold policy: only the typed denial uses its non-retryable lane.
+    if let Some(denial @ crate::error::CodeError::BudgetExhausted { .. }) =
+        error.downcast_ref::<crate::error::CodeError>()
+    {
+        return ActorError::Defect(denial.to_string());
+    }
     if let Some(message) = crate::llm::non_retryable_llm_error_message(&error) {
         return ActorError::Defect(message.to_string());
     }
@@ -259,15 +350,39 @@ fn model_error(error: anyhow::Error) -> ActorError {
     }
 }
 
+fn llm_idle_timeout_error(idle: std::time::Duration) -> ActorError {
+    ActorError::Handler {
+        key: "infer".into(),
+        message: format!("LLM call timed out after {} ms", idle.as_millis()),
+    }
+}
+
+/// Sleep for one quiet gap. `None` never completes, so the caller's other
+/// branches stay the only way out.
+async fn model_idle_sleep(limit: Option<std::time::Duration>) {
+    match limit {
+        Some(limit) => tokio::time::sleep(limit).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 async fn model_response(
     client: Arc<dyn LlmClient>,
     messages: Vec<Message>,
     system: Option<String>,
     tools: Vec<ToolDefinition>,
     surface: Option<SessionSurface>,
+    host_cancel: tokio_util::sync::CancellationToken,
+    original_model: Option<crate::agent_api::OriginalModelCallPort>,
 ) -> Result<crate::llm::LlmResponse, ActorError> {
+    if let Some(original) = original_model {
+        let surface = surface.as_ref().ok_or_else(|| {
+            ActorError::Defect("original model requires its original parent surface".into())
+        })?;
+        return governed_model_response(client, messages, system, tools, surface, original).await;
+    }
     let Some(surface) = surface else {
-        return complete_detached(client, &messages, system.as_deref(), &tools).await;
+        return complete_detached(client, &messages, system.as_deref(), &tools, host_cancel).await;
     };
     surface
         .agent
@@ -281,11 +396,17 @@ async fn model_response(
     // pin the deadline to that worker: aborting the task is what lets the
     // fold retry the attempt. Host cancellation aborts that task immediately
     // and is not a retryable provider failure.
-    let timeout = surface.agent.llm_api_timeout();
+    //
+    // The configured API timeout is the quiet gap, not a wall clock around a
+    // live stream. Each stream event starts that gap over. Silence, including
+    // a non-streaming read that never returns, still aborts the worker.
+    let idle = surface.agent.llm_api_timeout();
     let cancel = surface.cancel.clone();
     let attempt = surface.cancel.child_token();
     let attempt_for_task = attempt.clone();
-    let mut handle = tokio::spawn(async move {
+    let activity = Arc::new(tokio::sync::Notify::new());
+    let activity_for_task = Arc::clone(&activity);
+    let handle = tokio::spawn(async move {
         read_model_response(
             client.as_ref(),
             &messages,
@@ -293,31 +414,248 @@ async fn model_response(
             &tools,
             &surface,
             &attempt_for_task,
+            activity_for_task.as_ref(),
         )
         .await
     });
-    let Some(timeout) = timeout else {
-        return await_model_task(handle, &cancel).await;
-    };
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {
-            handle.abort();
-            let _ = handle.await;
-            Ok(interrupted_response())
+    await_model_task_with_idle(handle, &cancel, &attempt, activity.as_ref(), idle).await
+}
+
+async fn governed_model_response(
+    client: Arc<dyn LlmClient>,
+    messages: Vec<Message>,
+    system: Option<String>,
+    tools: Vec<ToolDefinition>,
+    surface: &SessionSurface,
+    original: crate::agent_api::OriginalModelCallPort,
+) -> Result<LlmResponse, ActorError> {
+    // This parent marker belongs to this response, including Done-only replies.
+    surface.streamed_text.store(false, Ordering::Relaxed);
+    // All fallible preparation, actual runtime lookup and owner checks occur
+    // before the existing child is spawned. No fallback owner is constructed.
+    let prepared = surface
+        .agent
+        .prepare_fact_model_call(&surface.session_id, client, messages, system, tools)
+        .map_err(model_error)?;
+    let runtime = tokio::runtime::Handle::try_current()
+        .map_err(|error| ActorError::Defect(error.to_string()))?;
+    let reservation = original
+        .reserve_same_original_call(&surface.session_id)
+        .await
+        .map_err(|error| ActorError::Defect(error.to_string()))?;
+    let attempt = surface.cancel.child_token();
+    let _request_on_drop = attempt.clone().drop_guard();
+    let accounting = Arc::new(crate::agent::FactModelAccountingObservation::default());
+    let child_accounting = Arc::clone(&accounting);
+    let child_attempt = attempt.clone();
+    let (sender, mut frames) = tokio::sync::mpsc::channel(64);
+    let (start, started) = tokio::sync::oneshot::channel();
+    let actual = runtime.spawn(async move {
+        if started.await.is_err() {
+            return Err(ActorError::Defect(
+                "original model start channel closed".into(),
+            ));
         }
-        joined = tokio::time::timeout(timeout, &mut handle) => match joined {
-            Ok(joined) => flatten_model_task(joined),
-            Err(_) => {
-                handle.abort();
-                attempt.cancel();
-                Err(ActorError::Handler {
-                    key: "infer".into(),
-                    message: format!("LLM call timed out after {} ms", timeout.as_millis()),
-                })
+        prepared.run(sender, child_attempt, child_accounting).await
+    });
+    // No await between actual spawn, infallible install and original start.
+    reservation.install_and_start(actual, attempt.clone(), Arc::clone(&accounting), start);
+
+    let idle_limit = surface.agent.llm_api_timeout();
+    let joined = original.wait_same_original_call();
+    tokio::pin!(joined);
+    let mut settled = None;
+    let mut response = None;
+    let mut closed = false;
+    // The configured API timeout is the quiet gap between frames. A live
+    // original call keeps its gap open. Dropping this parent receiver still
+    // requests the same attempt; it does not abort the child.
+    loop {
+        if surface.cancel.is_cancelled() {
+            return Ok(interrupted_response());
+        }
+        if closed && settled.is_some() {
+            let result = settled
+                .take()
+                .ok_or_else(|| ActorError::Defect("missing actual model result".into()))?;
+            result?;
+            return response.ok_or_else(|| ActorError::Handler {
+                key: "infer".into(),
+                message: "stream ended before a response".into(),
+            });
+        }
+        tokio::select! {
+            biased;
+            _ = surface.cancel.cancelled() => return Ok(interrupted_response()),
+            frame = frames.recv(), if !closed => match frame {
+                Some(frame) => {
+                    if let Some(done) = project_model_frame(surface, frame, &accounting).await? {
+                        response = Some(done);
+                    }
+                }
+                None => closed = true,
+            },
+            result = &mut joined, if settled.is_none() => settled = Some(result),
+            _ = model_idle_sleep(idle_limit) => {
+                let Some(idle_limit) = idle_limit else {
+                    continue;
+                };
+                return Err(llm_idle_timeout_error(idle_limit));
             }
-        },
+        }
     }
+}
+
+async fn project_model_frame(
+    surface: &SessionSurface,
+    frame: crate::agent::FactModelFrame,
+    accounting: &crate::agent::FactModelAccountingObservation,
+) -> Result<Option<LlmResponse>, ActorError> {
+    use crate::agent::{AgentEvent, FactModelFrame};
+    let mut capability_digest = None;
+    let mut usage = false;
+    let event = match frame {
+        FactModelFrame::RawStream(crate::llm::StreamEvent::Done(response)) => {
+            record_usage(surface, &response);
+            return Ok(Some(response));
+        }
+        FactModelFrame::RawStream(crate::llm::StreamEvent::TextDelta(text)) => {
+            surface.streamed_text.store(true, Ordering::Relaxed);
+            AgentEvent::TextDelta { text }
+        }
+        FactModelFrame::RawStream(crate::llm::StreamEvent::ReasoningDelta(text))
+            if !text.is_empty() =>
+        {
+            AgentEvent::ReasoningDelta { text }
+        }
+        FactModelFrame::RawStream(_) => return Ok(None),
+        FactModelFrame::Capability {
+            call_sequence,
+            snapshot,
+        } => {
+            if surface
+                .agent
+                .fact_capability_is_current(&snapshot.snapshot_digest)
+                .await
+            {
+                return Ok(None);
+            }
+            capability_digest = Some(snapshot.snapshot_digest.clone());
+            AgentEvent::RunCapabilityBound {
+                call_sequence,
+                snapshot,
+            }
+        }
+        FactModelFrame::Presentation(snapshot) => AgentEvent::ModelPresentationBound { snapshot },
+        FactModelFrame::Input(snapshot) => AgentEvent::ModelInputBound { snapshot },
+        FactModelFrame::Usage(snapshot) => {
+            usage = true;
+            AgentEvent::ModelUsageBound { snapshot }
+        }
+        FactModelFrame::Threshold(crate::budget::BudgetDecision::SoftLimit {
+            resource,
+            consumed,
+            limit,
+            message,
+        }) => AgentEvent::BudgetThresholdHit {
+            resource,
+            kind: "soft".into(),
+            consumed,
+            limit,
+            message,
+        },
+        FactModelFrame::Threshold(crate::budget::BudgetDecision::Deny { resource, reason }) => {
+            AgentEvent::BudgetThresholdHit {
+                resource,
+                kind: "hard".into(),
+                consumed: 0.0,
+                limit: 0.0,
+                message: Some(reason),
+            }
+        }
+        FactModelFrame::Threshold(crate::budget::BudgetDecision::Allow) => return Ok(None),
+    };
+    let observed = if usage {
+        &accounting.usage_projection
+    } else {
+        &accounting.last_projection
+    };
+    {
+        let mut state = observed
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?;
+        *state = crate::agent::FactProjectionObservation {
+            _queued: true,
+            ..Default::default()
+        };
+    }
+    record_run_event_observed(surface, event, observed).await?;
+    {
+        let state = observed
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?;
+        if !matches!(
+            &state.store,
+            crate::agent::FactStoreObservation::Returned(Some(_))
+        ) {
+            return Err(ActorError::Defect(
+                "original model RunStore projection did not return Some".into(),
+            ));
+        }
+        if matches!(
+            &state.output,
+            crate::agent::FactOutputObservation::Returned(Err(_))
+        ) {
+            return Err(ActorError::Defect(
+                "original model public observation receiver closed".into(),
+            ));
+        }
+    }
+    if let Some(digest) = capability_digest {
+        surface.agent.fact_capability_projected(digest).await;
+    }
+    Ok(None)
+}
+
+async fn record_run_event_observed(
+    surface: &SessionSurface,
+    event: crate::agent::AgentEvent,
+    observation: &Mutex<crate::agent::FactProjectionObservation>,
+) -> Result<(), ActorError> {
+    use crate::agent::{FactOutputObservation, FactStoreObservation};
+    if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .store = FactStoreObservation::Entered;
+        let returned = store.record_event(run_id, event.clone()).await;
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .store = FactStoreObservation::Returned(returned.map(Box::new));
+    } else {
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .store = FactStoreObservation::NotConfigured;
+    }
+    if let Some(sender) = &surface.events {
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .output = FactOutputObservation::Entered;
+        let returned = sender.send(event).await;
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .output = FactOutputObservation::Returned(returned.map_err(Box::new));
+    } else {
+        observation
+            .lock()
+            .map_err(|_| ActorError::Defect("poisoned model projection observation".into()))?
+            .output = FactOutputObservation::NotConfigured;
+    }
+    Ok(())
 }
 
 async fn await_model_task(
@@ -332,6 +670,43 @@ async fn await_model_task(
             Ok(interrupted_response())
         }
         joined = &mut handle => flatten_model_task(joined),
+    }
+}
+
+/// Wait for the model task. `idle` is the quiet gap: each `activity` notice
+/// starts it over. A gap with no notice aborts the worker and cancels the
+/// provider attempt. Host cancellation is not that failure.
+async fn await_model_task_with_idle(
+    mut handle: tokio::task::JoinHandle<Result<crate::llm::LlmResponse, ActorError>>,
+    cancel: &tokio_util::sync::CancellationToken,
+    attempt: &tokio_util::sync::CancellationToken,
+    activity: &tokio::sync::Notify,
+    idle: Option<std::time::Duration>,
+) -> Result<crate::llm::LlmResponse, ActorError> {
+    let Some(idle) = idle else {
+        return await_model_task(handle, cancel).await;
+    };
+    let sleep = tokio::time::sleep(idle);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                handle.abort();
+                let _ = handle.await;
+                return Ok(interrupted_response());
+            }
+            joined = &mut handle => return flatten_model_task(joined),
+            _ = activity.notified() => {
+                sleep.as_mut().reset(tokio::time::Instant::now() + idle);
+            }
+            _ = &mut sleep => {
+                attempt.cancel();
+                handle.abort();
+                let _ = handle.await;
+                return Err(llm_idle_timeout_error(idle));
+            }
+        }
     }
 }
 
@@ -355,6 +730,7 @@ async fn read_model_response(
     tools: &[ToolDefinition],
     surface: &SessionSurface,
     attempt: &tokio_util::sync::CancellationToken,
+    activity: &tokio::sync::Notify,
 ) -> Result<crate::llm::LlmResponse, ActorError> {
     let (evidence_events, usage_binding) = surface
         .agent
@@ -368,6 +744,16 @@ async fn read_model_response(
         .await
     {
         Ok(mut events) => {
+            // Per-response, not per-turn: each model response streams on its
+            // own. A final response that produced no deltas (non-streaming
+            // fallback, an empty finish) must be re-sent at settle even when
+            // an earlier response in the same turn streamed — the old
+            // turn-level flag suppressed the re-send here while the host's
+            // turn-level de-dup guard dropped the End text, losing the final
+            // answer on both rails at once.
+            surface
+                .streamed_text
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             let mut done = None;
             loop {
                 let event = tokio::select! {
@@ -386,6 +772,9 @@ async fn read_model_response(
                 let Some(event) = event else {
                     break;
                 };
+                // Any frame, including an empty reasoning heartbeat, is proof
+                // the provider is still sending. The outer quiet gap starts over.
+                activity.notify_one();
                 match event {
                     crate::llm::StreamEvent::TextDelta(text) => {
                         // This is the streaming path to the host: forward each
@@ -450,12 +839,9 @@ async fn read_model_response(
 }
 
 async fn record_run_event(surface: &SessionSurface, event: crate::agent::AgentEvent) {
-    if let (Some(store), Some(run_id)) = (&surface.run_store, &surface.run_id) {
-        store.record_event(run_id, event.clone()).await;
-    }
-    if let Some(sender) = &surface.events {
-        let _ = sender.send(event).await;
-    }
+    // Preserve old unit callers through the one actual store/public writer.
+    let observation = Mutex::new(crate::agent::FactProjectionObservation::default());
+    let _ = record_run_event_observed(surface, event, &observation).await;
 }
 
 async fn record_model_usage_event(
@@ -503,54 +889,491 @@ async fn model_context(
     let work = surface
         .agent
         .fact_model_context(prompt, &surface.session_id, message_count);
-    let Some(limit) = surface.agent.llm_api_timeout() else {
-        return work
+    let assembled = match surface.agent.llm_api_timeout() {
+        None => work
             .await
-            .map_err(|error| ActorError::Defect(error.to_string()));
+            .map_err(|error| ActorError::Defect(error.to_string()))?,
+        Some(timeout) => {
+            let limit = timeout.min(std::time::Duration::from_secs(20));
+            match tokio::time::timeout(limit, work).await {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => return Err(ActorError::Defect(error.to_string())),
+                Err(_) => {
+                    return Ok((prompt.to_string(), None));
+                }
+            }
+        }
     };
-    let limit = limit.min(std::time::Duration::from_secs(20));
-    match tokio::time::timeout(limit, work).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(ActorError::Defect(error.to_string())),
-        Err(_) => Ok((prompt.to_string(), None)),
+    // Park the recall telemetry where the stream worker can emit it before
+    // End — the actor itself never sends into the host channel.
+    if !assembled.recalled_memories.is_empty() {
+        surface
+            .pending_memory_telemetry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(MemoryTelemetryBatch {
+                query: prompt.to_string(),
+                items: assembled.recalled_memories,
+            });
+    }
+    append_context_sections_fact(surface, &assembled.section_digests);
+    Ok((assembled.effective_prompt, assembled.augmented_system))
+}
+
+/// The fact appended when a run's completion gate Allows. Mutating tool
+/// results after the last marker belong to runs that never settled
+/// accountable — an interrupted or gate-refused run — and the next send's
+/// gate inherits them (see [`replay_unsettled_mutations`]).
+pub const TURN_COMPLETE_FACT_KIND: &str = "turn.complete";
+
+fn surface_fact_log(surface: &SessionSurface) -> Result<Arc<FileLog>, ActorError> {
+    let mut shared = surface
+        .fact_log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(log) = shared.as_ref() {
+        return Ok(Arc::clone(log));
+    }
+    let workspace = &surface.agent.tool_context_handle().workspace;
+    let log = Arc::new(FileLog::open(crate::session_folder::effect_log_dir(
+        workspace,
+        &surface.session_id,
+    ))?);
+    *shared = Some(Arc::clone(&log));
+    Ok(log)
+}
+
+/// Mark exactly which committed receipts an accountable settlement covers.
+/// Failure to retain this boundary refuses success rather than inventing it.
+pub(crate) fn append_turn_complete_fact(
+    surface: &SessionSurface,
+    terminal: &crate::harness_loop::CompletionTerminal,
+) -> Result<(), ActorError> {
+    let log = surface_fact_log(surface)?;
+    let facts = log.read(&thread_for_session(&surface.session_id))?;
+    let debt = receipts::fold_debt(&facts);
+    if !debt.unresolved.is_empty() {
+        return Err(ActorError::Schema(
+            "tool_effect_unresolved: settlement cannot cover unknown invocations".into(),
+        ));
+    }
+    let receipt_keys = debt
+        .results
+        .iter()
+        .map(|(_, result)| result.identity.key())
+        .collect::<Result<Vec<_>, _>>()?;
+    let (label, digest) = match terminal {
+        crate::harness_loop::CompletionTerminal::Narrative => ("narrative", None),
+        crate::harness_loop::CompletionTerminal::Waived { effect_digest } => {
+            ("waived", Some(effect_digest.clone()))
+        }
+        crate::harness_loop::CompletionTerminal::Verified { effect_digest } => {
+            ("verified", Some(effect_digest.clone()))
+        }
+        // Step closures did not share one effect digest; the run still
+        // closed with every step bound, so the bookkeeping is settled.
+        crate::harness_loop::CompletionTerminal::Distinct => ("distinct", None),
+    };
+    let cut = a3s_effect::cut_log(&facts);
+    let payload = serde_json::json!({
+        "terminal": label,
+        "effect_digest": digest,
+        "receipt_keys": receipt_keys,
+        "background_receipt_keys": facts.iter().filter(|fact| fact.kind == "background.output" && fact.payload["event"] == "exited")
+            .map(|fact| fact.key.clone()).collect::<Vec<_>>(),
+        "log_cut": { "seq": cut.seq, "digest": cut.digest },
+    });
+    log.append(
+        &thread_for_session(&surface.session_id),
+        &[NewFact {
+            kind: TURN_COMPLETE_FACT_KIND.into(),
+            key: format!("turn-complete:{}:{}", cut.seq, cut.digest),
+            payload,
+        }],
+        None,
+    )?;
+    Ok(())
+}
+
+/// Restore workspace changes and uncertain invocations from the actor log.
+/// Explicit receipt identities bound verified changes; a marker or checkpoint
+/// cannot forgive missing terminals, incomplete observation or external debt.
+/// Legacy unsettled evidence remains unknown rather than gaining invented
+/// byte identities from the current filesystem.
+pub(crate) fn unsettled_mutation_paths(facts: &[a3s_effect::Fact]) -> Vec<String> {
+    receipts::fold_debt(facts).paths
+}
+
+pub(crate) fn has_unsettled_effects(facts: &[a3s_effect::Fact]) -> bool {
+    let debt = receipts::fold_debt(facts);
+    !debt.paths.is_empty() || !debt.unresolved.is_empty()
+}
+
+/// A portable checkpoint only contributes conservative state unless its
+/// positive evidence is covered by one coherent, validated original prefix.
+/// Coverage and recovery use this one read; this does not append facts or
+/// grant any tool execution authority.
+/// The returned verdict must be committed through the original actor input
+/// path by recovery orchestration before any resumed model/tool dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckpointMutationCacheCoverage {
+    Covered,
+    Unproved,
+}
+
+pub(crate) fn restore_checkpoint_mutation_cache(
+    surface: &SessionSurface,
+    checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
+) -> CheckpointMutationCacheCoverage {
+    let workspace = surface.agent.tool_context_handle().workspace.clone();
+    let thread = thread_for_session(&surface.session_id);
+    let facts = read_workspace_facts(&workspace, &thread);
+    let covered = facts.as_ref().is_ok_and(|facts| {
+        checkpoint_mutation_cache_covered(facts, checkpoint, &thread, &surface.session_id)
+    });
+    let needs_negative_input = facts.is_err()
+        || (!covered
+            && (checkpoint.convergence.mutations.has_checkpoint_evidence()
+                || !checkpoint.verification_reports.is_empty()));
+    {
+        let mut ledger = surface
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.restore_checkpoint_cache(&checkpoint.convergence.mutations, covered);
+        if !covered && !checkpoint.verification_reports.is_empty() {
+            // A reports-only cache must not manufacture positive evidence
+            // when its original receipt projection is absent either.
+            ledger.restore_unresolved_tool_effects(
+                std::collections::BTreeSet::from(
+                    ["tool_effect_cache_evidence_missing".to_string()],
+                ),
+                &std::collections::BTreeSet::new(),
+            );
+        }
+    }
+    match facts {
+        Ok(facts) => replay_unsettled_mutations_from_facts(surface, &facts),
+        Err(error) => {
+            surface
+                .ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .restore_unresolved_tool_effects(
+                    std::collections::BTreeSet::from([format!(
+                        "tool_effect_log_unreadable:{error}"
+                    )]),
+                    &std::collections::BTreeSet::new(),
+                );
+        }
+    }
+    if needs_negative_input {
+        CheckpointMutationCacheCoverage::Unproved
+    } else {
+        CheckpointMutationCacheCoverage::Covered
     }
 }
 
-async fn apply_run_controls(surface: &SessionSurface, messages: &mut Vec<Message>) {
-    let Some(control) = &surface.run_control else {
+fn checkpoint_mutation_cache_covered(
+    facts: &[a3s_effect::Fact],
+    checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
+    thread: &str,
+    session_id: &str,
+) -> bool {
+    if checkpoint.session_id != session_id {
+        return false;
+    }
+    let expected_binding = match checkpoint.capability_binding.as_ref() {
+        Some(binding) => {
+            if binding.validate().is_err() {
+                return false;
+            }
+            match crate::content_digest::digest_json("a3s.code.tool-admission-binding.v1", binding)
+            {
+                Ok(digest) => Some(digest),
+                Err(_) => return false,
+            }
+        }
+        None => None,
+    };
+    // Reuse preparation/terminal/background validation, including receipts
+    // covered by old markers. A partial log cannot supply a missing pair.
+    let debt = receipts::fold_cache_evidence(facts);
+    if debt.integrity_invalid {
+        return false;
+    }
+    let mut frozen_bindings = std::collections::BTreeMap::new();
+    for (_, result) in &debt.results {
+        let Some(admission) = result.identity.admission.as_ref() else {
+            return false;
+        };
+        if admission.thread_id != thread
+            || (admission.run_id == checkpoint.run_id
+                && expected_binding.as_deref()
+                    != Some(admission.capability_binding_digest.as_str()))
+        {
+            return false;
+        }
+        if frozen_bindings
+            .insert(
+                admission.run_id.as_str(),
+                admission.capability_binding_digest.as_str(),
+            )
+            .is_some_and(|earlier| earlier != admission.capability_binding_digest.as_str())
+        {
+            return false;
+        }
+    }
+    let (tool_keys, background_keys) = checkpoint.convergence.mutations.checkpoint_receipt_keys();
+    let mut missing_tools = tool_keys.clone();
+    let mut missing_background = background_keys.clone();
+    let mut missing_reports = checkpoint
+        .verification_reports
+        .iter()
+        .filter(|report| report.status == crate::verification::VerificationStatus::Passed)
+        .collect::<Vec<_>>();
+    if tool_keys.is_empty() && background_keys.is_empty() && !missing_reports.is_empty() {
+        return false;
+    }
+    // The cached projection may precede a later known write. Project the
+    // validated original events once in fact order. The first boundary that
+    // covers every claimed key and positive report is the cache candidate;
+    // compare its indexed states once, rather than folding every prefix or
+    // repeatedly scanning a growing ledger.
+    let mut original = crate::harness_loop::MutationLedger::default();
+    let mut proof = debt.cache_proof_cursor(
+        checkpoint
+            .convergence
+            .mutations
+            .checkpoint_uncertainty_keys(),
+        background_keys,
+    );
+    for projection in &debt.projection_order {
+        let proof_ready = proof.advance_to(projection);
+        match projection {
+            receipts::ReceiptProjection::Tool(index) => {
+                if let Some((tool, result)) = debt.results.get(*index) {
+                    original.observe_tool_receipt(tool, result);
+                    if let Ok(key) = result.identity.key() {
+                        missing_tools.remove(&key);
+                    }
+                    if let Some(envelope) = result.output.as_str().and_then(decode_fact_tool_result)
+                    {
+                        let mut recorded = Vec::new();
+                        crate::agent::AgentLoop::collect_verification_report(
+                            &mut recorded,
+                            &envelope.metadata,
+                        );
+                        recorded.retain(|report| {
+                            report.effect_digest.as_deref()
+                                == Some(checkpoint.convergence.mutations.digest())
+                        });
+                        missing_reports.retain(|cached| !recorded.contains(cached));
+                    }
+                }
+            }
+            receipts::ReceiptProjection::Background(index) => {
+                if let Some((key, effects)) = debt.background_results.get(*index) {
+                    original.observe_background_receipt(key, effects);
+                    missing_background.remove(key);
+                }
+            }
+        }
+        if missing_tools.is_empty()
+            && missing_background.is_empty()
+            && missing_reports.is_empty()
+            && proof_ready
+        {
+            let uncertainty = proof.into_proven_uncertainty();
+            let negative_cache_covered = checkpoint
+                .convergence
+                .mutations
+                .checkpoint_negative_cache_covered_by(&uncertainty);
+            original
+                .restore_unresolved_tool_effects(uncertainty, &std::collections::BTreeSet::new());
+            return negative_cache_covered
+                || checkpoint
+                    .convergence
+                    .mutations
+                    .checkpoint_cache_covered_by(&original);
+        }
+    }
+    // A final preparation or negative input may follow the last receipt.
+    // Only this actual end-of-log boundary may include those later claims.
+    if missing_tools.is_empty()
+        && missing_background.is_empty()
+        && missing_reports.is_empty()
+        && proof.finish()
+    {
+        let uncertainty = proof.into_proven_uncertainty();
+        let negative_cache_covered = checkpoint
+            .convergence
+            .mutations
+            .checkpoint_negative_cache_covered_by(&uncertainty);
+        original.restore_unresolved_tool_effects(uncertainty, &std::collections::BTreeSet::new());
+        negative_cache_covered
+            || checkpoint
+                .convergence
+                .mutations
+                .checkpoint_cache_covered_by(&original)
+    } else {
+        false
+    }
+}
+
+pub(crate) fn replay_unsettled_mutations(surface: &SessionSurface) {
+    let workspace = surface.agent.tool_context_handle().workspace.clone();
+    let facts = match read_workspace_facts(&workspace, &thread_for_session(&surface.session_id)) {
+        Ok(facts) => facts,
+        Err(error) => {
+            let mut unresolved = std::collections::BTreeSet::new();
+            unresolved.insert(format!("tool_effect_log_unreadable:{error}"));
+            surface
+                .ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .restore_unresolved_tool_effects(unresolved, &std::collections::BTreeSet::new());
+            return;
+        }
+    };
+    replay_unsettled_mutations_from_facts(surface, &facts);
+}
+
+fn replay_unsettled_mutations_from_facts(surface: &SessionSurface, facts: &[a3s_effect::Fact]) {
+    let workspace = surface.agent.tool_context_handle().workspace.clone();
+    let debt = receipts::fold_debt(facts);
+    let receipt_paths = debt
+        .results
+        .iter()
+        .flat_map(|(_, result)| result.effects.changes.iter())
+        .chain(
+            debt.background_results
+                .iter()
+                .flat_map(|(_, effects)| effects.changes.iter()),
+        )
+        .map(|change| change.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let paths = debt
+        .paths
+        .iter()
+        .filter(|path| !receipt_paths.contains(path.as_str()))
+        .map(|path| crate::harness_loop::workspace_relative_path(&workspace, path))
+        .collect::<Vec<_>>();
+    let mut ledger = surface
+        .ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Re-project committed facts in order even if a later live foreground
+    // callback arrived before an earlier background terminal was observed.
+    ledger.begin_receipt_replay();
+    ledger.observe_unseen_paths(&paths);
+    for projection in debt.projection_order {
+        match projection {
+            receipts::ReceiptProjection::Tool(index) => {
+                if let Some((tool, result)) = debt.results.get(index) {
+                    ledger.observe_tool_receipt(tool, result);
+                }
+            }
+            receipts::ReceiptProjection::Background(index) => {
+                if let Some((key, effects)) = debt.background_results.get(index) {
+                    ledger.observe_background_receipt(key, effects);
+                }
+            }
+        }
+    }
+    ledger.restore_unresolved_tool_effects(debt.unresolved, &debt.settled_workspace_children);
+}
+
+/// Record the `(provider, digest)` identity of every context section this
+/// model call saw, so a replay of the fact log can verify which section
+/// content each turn actually consumed (identical pairs across turns are
+/// prompt byte-stability at the section level). Best-effort like the steer
+/// record: a failed append never blocks the model call. Durable-memory
+/// recall sections are excluded — their evidence lane is the
+/// `MemoryRecalled` telemetry, not the provider contract.
+fn append_context_sections_fact(surface: &SessionSurface, sections: &[(String, String)]) {
+    let Ok(log) = surface_fact_log(surface) else {
         return;
     };
-    let snapshot = control.snapshot().await;
-    let pending = control.drain().await;
-    if pending.is_empty() {
-        return;
-    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let payload = serde_json::json!({
+        "sections": sections
+            .iter()
+            .map(|(provider, digest)| serde_json::json!({
+                "provider": provider,
+                "digest": digest,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    // The key carries a payload digest so two model calls inside one
+    // millisecond (fast tool cycles, instant mock clients) cannot collide
+    // into a DuplicateFact rejection — identical payloads in the same
+    // millisecond dedupe to one record, which is their identity anyway.
+    let payload_fingerprint = crate::content_digest::digest_bytes(
+        "a3s.code.context.sections-key.v1",
+        payload.to_string().as_bytes(),
+    );
+    let _ = log.append(
+        &thread_for_session(&surface.session_id),
+        &[NewFact {
+            kind: "context.sections".into(),
+            key: format!("context:{now_ms}:{payload_fingerprint}"),
+            payload,
+        }],
+        None,
+    );
+}
+
+async fn apply_run_controls(
+    surface: &SessionSurface,
+    messages: &mut Vec<Message>,
+) -> Result<(), ActorError> {
+    persist_run_controls(surface, false, Some(messages)).await
+}
+
+/// Retain late accepted input without opening another actor/model turn.
+/// All terminal outcomes use the same original inbox and pinned append seam.
+pub(crate) async fn settle_terminal_run_controls(
+    surface: &SessionSurface,
+) -> Result<(), ActorError> {
+    persist_run_controls(surface, true, None).await
+}
+
+async fn persist_run_controls(
+    surface: &SessionSurface,
+    terminal: bool,
+    mut messages: Option<&mut Vec<Message>>,
+) -> Result<(), ActorError> {
+    let Some(control) = &surface.run_control else {
+        return Ok(());
+    };
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
-    for item in pending {
+    let decided = control
+        .persist_pending(terminal, now_ms, |item| append_steer_fact(surface, item))
+        .await;
+    control.observe_decisions(&decided.decisions).await;
+    for item in decided.decisions {
+        if item.receipt.state != crate::run_control::RunControlReceiptState::Applied {
+            continue;
+        }
         let (input, reason) = match &item.request.command {
-            crate::run_control::RunControlCommand::Steer { input } => (Some(input.clone()), None),
+            crate::run_control::RunControlCommand::Steer { input } => {
+                if let Some(messages) = messages.as_deref_mut() {
+                    messages.push(Message::user(input));
+                }
+                ((!terminal).then(|| input.clone()), None)
+            }
             crate::run_control::RunControlCommand::Interrupt { reason, .. } => {
                 (None, reason.clone())
             }
         };
-        if let Some(text) = &input {
-            append_steer_fact(surface, &item.receipt.request_id, text);
-            messages.push(Message::user(text));
-        }
-        let receipt = control
-            .mark_applied(
-                &item,
-                snapshot.turn_id.clone(),
-                snapshot.turn_revision,
-                now_ms,
-            )
-            .await;
-        if receipt.state != crate::run_control::RunControlReceiptState::Applied {
-            continue;
-        }
+        let receipt = item.receipt;
         record_run_event(
             surface,
             crate::agent::AgentEvent::RunControlApplied {
@@ -564,18 +1387,55 @@ async fn apply_run_controls(surface: &SessionSurface, messages: &mut Vec<Message
         )
         .await;
     }
+    match decided.failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
-fn append_steer_fact(surface: &SessionSurface, request_id: &str, text: &str) {
-    let workspace = &surface.agent.tool_context_handle().workspace;
-    let Ok(log) = FileLog::open(log_dir(workspace)) else {
-        return;
+fn append_steer_fact(
+    surface: &SessionSurface,
+    item: &crate::run_control::PendingRunControl,
+) -> Result<(), ActorError> {
+    if item.receipt.session_id != surface.session_id
+        || surface.run_id.as_deref() != Some(item.receipt.run_id.as_str())
+    {
+        return Err(ActorError::Schema(
+            "Steer does not belong to the original fact Run".into(),
+        ));
+    }
+    let log = surface_fact_log(surface)?;
+    append_steer_input(
+        log.as_ref(),
+        &item.receipt.session_id,
+        &item.receipt.run_id,
+        &item.receipt.request_id,
+        &item.request.command,
+    )
+}
+
+fn append_steer_input(
+    log: &dyn LogStore,
+    session_id: &str,
+    run_id: &str,
+    request_id: &str,
+    command: &crate::run_control::RunControlCommand,
+) -> Result<(), ActorError> {
+    let crate::run_control::RunControlCommand::Steer { input } = command else {
+        return Ok(());
     };
-    let _ = log.append(
-        &thread_for_session(&surface.session_id),
-        &[message_fact(format!("steer:{request_id}"), text)],
-        None,
-    );
+    // A distinct prefix is outside the entire historical steer:{raw_id} set.
+    // Fixed-array encoding distinguishes colons, Unicode and empty components.
+    let digest = crate::content_digest::digest_json(
+        "a3s.code.steer-input.identity.v1",
+        &[session_id, run_id, request_id],
+    )
+    .map_err(|error| ActorError::Schema(error.to_string()))?;
+    a3s_effect::append_input(
+        log,
+        &thread_for_session(session_id),
+        message_fact(format!("run-steer-v1:{digest}"), input),
+    )
 }
 
 const FACT_TOOL_RESULT_KIND: &str = "a3s.fact_tool_result";
@@ -587,6 +1447,16 @@ struct FactToolResultEnvelope {
     is_error: bool,
     #[serde(default)]
     images: Vec<FactToolImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<a3s_effect::ToolExecutionOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_child: Option<String>,
+    #[serde(default)]
+    observation_incomplete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -595,7 +1465,10 @@ struct FactToolImage {
     data: String,
 }
 
-fn exposed_tool_specs(catalog: &[ToolDefinition], expose: impl Fn(&str) -> bool) -> Vec<ToolSpec> {
+pub(crate) fn exposed_tool_specs(
+    catalog: &[ToolDefinition],
+    expose: impl Fn(&str) -> bool,
+) -> Vec<ToolSpec> {
     catalog
         .iter()
         .filter(|tool| expose(&tool.name))
@@ -628,6 +1501,11 @@ fn fact_tool_runner_value(
                 ),
             })
             .collect(),
+        exit_code: None,
+        outcome: None,
+        workspace_child: None,
+        observation_incomplete: false,
+        metadata: None,
     };
     match serde_json::to_string(&envelope) {
         Ok(encoded) => serde_json::Value::String(encoded),
@@ -690,10 +1568,106 @@ fn definitions_for(catalog: &[ToolDefinition], specs: &[ToolSpec]) -> Vec<ToolDe
         .collect()
 }
 
+/// Eight tool results since the latest `user\n` line, with an empty ledger,
+/// end evidence gathering for that request. A later user line starts a new
+/// count, so one finished read-only turn does not disarm the next command.
+/// A recorded mutation or an open workspace child keeps tools available.
+/// The fact log counts results, which is its tool-round unit. Name-blind:
+/// every tool result counts, including `update_plan`.
+#[cfg(test)]
+fn read_only_evidence_exhausted(
+    ledger: &crate::harness_loop::MutationLedger,
+    messages: &[String],
+) -> bool {
+    if !ledger.is_empty() || ledger.has_open_children() {
+        return false;
+    }
+    // Only the `user\n` prefix is a new human request.
+    let results = messages
+        .iter()
+        .rev()
+        .take_while(|line| !line.starts_with("user\n"))
+        .filter(|line| {
+            let (role, _) = split_folded_message(line);
+            role == "tool" || role == "tool-error"
+        })
+        .count();
+    results >= usize::try_from(crate::agent::READ_ONLY_EVIDENCE_LIMIT).unwrap_or(usize::MAX)
+}
+
+/// Name-aware variant used by the fact-path completion. Plan management
+/// (`update_plan`) is not evidence gathering: a long-horizon choreography
+/// that plans first and reads many files before its first edit is
+/// legitimate work, not an aimless loop, so its results do not count toward
+/// the ceiling. The positional pairing mirrors the wire-to-message
+/// conversion above.
+fn read_only_evidence_exhausted_with_calls(
+    ledger: &crate::harness_loop::MutationLedger,
+    messages: &[String],
+    recorded: &mut std::vec::IntoIter<RecordedCall>,
+) -> bool {
+    if !ledger.is_empty() || ledger.has_open_children() {
+        return false;
+    }
+    // Only the `user\n` prefix is a new human request.
+    let tail_start = messages
+        .iter()
+        .rposition(|line| line.starts_with("user\n"))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let mut results = 0usize;
+    let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for (index, line) in messages.iter().enumerate() {
+        let (role, _) = split_folded_message(line);
+        if role != "tool" && role != "tool-error" {
+            continue;
+        }
+        // Consume in wire order so the positional pairing matches the
+        // conversion; only results in the current request's tail count.
+        let call = recorded.next();
+        let name = call
+            .as_ref()
+            .map(|call| call.name.clone())
+            .unwrap_or_default();
+        if index < tail_start || name == "update_plan" {
+            continue;
+        }
+        // "No further effect" is per DISTINCT evidence: a repeated call
+        // (same tool, same arguments) re-reads bytes the log already
+        // holds, so it must not consume the ceiling. Churn terminates on
+        // the distinct count; genuine multi-hop exploration gets the
+        // room its hop count needs.
+        total += 1;
+        let fingerprint = match &call {
+            Some(call) => crate::content_digest::digest_bytes(
+                "a3s.code.read-only-evidence.v1",
+                format!("{}\n{}", call.name, call.args).as_bytes(),
+            ),
+            None => String::new(),
+        };
+        if !seen.insert(fingerprint) {
+            continue;
+        }
+        results += 1;
+    }
+    let limit = usize::try_from(crate::agent::READ_ONLY_EVIDENCE_LIMIT).unwrap_or(usize::MAX);
+    // Distinct evidence consumes the ceiling; total churn bounds the
+    // pathological alternator (two alternating distinct calls would
+    // otherwise never trip the distinct limit).
+    results >= limit || total >= limit * 2
+}
+
 /// Once the latest folded message is a verified tool result, that completion
 /// does not need another provider call. A later `user.message` still does.
 /// A narrative allow still calls the model so the answer can use the tool output.
 fn verified_turn_text(surface: &SessionSurface, messages: &[String]) -> Option<String> {
+    if surface.agent.requires_assistant_final_response() {
+        // Verification authorizes completion of effects, not delivery of
+        // the user's requested answer. The final model response still goes
+        // through the same identity/effect/completion gates below.
+        return None;
+    }
     let last_is_tool = messages
         .last()
         .is_some_and(|line| split_folded_message(line).0 == "tool");
@@ -719,6 +1693,17 @@ fn verified_turn_text(surface: &SessionSurface, messages: &[String]) -> Option<S
     }
 }
 
+fn latest_user_text(messages: &[String]) -> String {
+    // Only `user\n` lines are the human turn. Assistant and tool lines share
+    // the log, and treating them as user text would switch the reply language
+    // to whatever language the model just wrote.
+    messages
+        .iter()
+        .rev()
+        .find_map(|text| text.strip_prefix("user\n").map(str::to_owned))
+        .unwrap_or_default()
+}
+
 fn split_folded_message(text: &str) -> (&str, String) {
     if let Some(body) = text.strip_prefix("user\n") {
         ("user", body.to_string())
@@ -726,6 +1711,8 @@ fn split_folded_message(text: &str) -> (&str, String) {
         ("tool-error", body.to_string())
     } else if let Some(body) = text.strip_prefix("tool\n") {
         ("tool", body.to_string())
+    } else if let Some(body) = text.strip_prefix("assistant\n") {
+        ("assistant", body.to_string())
     } else {
         ("user", text.to_string())
     }
@@ -786,8 +1773,9 @@ pub fn admit_tool_call<T>(
 /// Allow, deny, or ask for one tool call.
 ///
 /// A policy deny is final. A policy allow, including a YOLO lane, runs the
-/// tool. When the policy asks, the session permission checker decides, so a
-/// plan-mode guardrail denies a write the substituted default policy would ask.
+/// tool. When the policy asks, the checker may still deny (a plan-mode
+/// guardrail over a default policy) or quiet a read. It must not quiet a
+/// command or file change: 逐次确认 and 智能授权 stay on Ask for those.
 fn execution_permission(
     policy: &PermissionPolicy,
     checker: Option<&dyn crate::permissions::PermissionChecker>,
@@ -804,7 +1792,31 @@ fn execution_permission(
     if policy_decision == PermissionDecision::Allow {
         return PermissionDecision::Allow;
     }
-    checker.check(name, args)
+    match checker.check(name, args) {
+        PermissionDecision::Deny => PermissionDecision::Deny,
+        PermissionDecision::Allow if !side_effect_tool(name) => PermissionDecision::Allow,
+        PermissionDecision::Allow | PermissionDecision::Ask => PermissionDecision::Ask,
+    }
+}
+
+/// Commands and file changes. A guardrail that allows "routine" calls must
+/// not skip the confirmation the posture already asked for.
+fn side_effect_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "bash"
+            | "shell"
+            | "execute"
+            | "write"
+            | "edit"
+            | "multiedit"
+            | "delete"
+            | "move"
+            | "download"
+            | "apply_patch"
+            | "task"
+            | "parallel_task"
+    )
 }
 
 fn skill_denial(agent: &crate::agent::AgentLoop, name: &str) -> Option<(String, String)> {
@@ -908,6 +1920,21 @@ async fn decision_from_response(
         let also = tools.into_iter().skip(1).collect();
         return ModelDecision::Tool { call, also };
     }
+    // A length-limited final response is a truncated answer, not a finished
+    // one: flag it so the settled End names the cut. Exact members of the
+    // closed wire set only ("length", "max_tokens") — no substring tuning.
+    if let Some(surface) = surface.filter(|_| {
+        matches!(
+            response.stop_reason.as_deref(),
+            Some("length") | Some("max_tokens")
+        )
+    }) {
+        *surface
+            .forced_stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::harness_loop::ForcedStop::ResponseTruncated);
+    }
     ModelDecision::Text {
         text: response.text(),
     }
@@ -917,6 +1944,7 @@ impl Completion for LiveCompletion {
     fn complete(
         &self,
         request: CompletionRequest,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let client = Arc::clone(&self.client);
@@ -930,9 +1958,21 @@ impl Completion for LiveCompletion {
         let prompt_slot = Arc::clone(&self.cached_prompt);
         let prompt_tokens = Arc::clone(&self.prompt_tokens);
         let standing_system = self.standing_system.clone();
+        let goal_context = self.goal_context.clone();
+        let checkpoint = self.checkpoint.clone();
+        let checkpoint_attempted_seq = Arc::clone(&self.checkpoint_attempted_seq);
+        let original_model = self.original_model.clone();
         Box::pin(async move {
             prompt_tokens.store(0, Ordering::SeqCst);
-            if request.messages.len() == 1 {
+            if let Some(surface) = &surface {
+                if let Some(checkpoint) = &checkpoint {
+                    checkpoints::save_committed(surface, checkpoint, &checkpoint_attempted_seq)
+                        .await?;
+                } else {
+                    replay_unsettled_mutations(surface);
+                }
+            }
+            if request.messages.len() == 1 && request.messages[0].starts_with("user\n") {
                 if let Some(surface) = &surface {
                     if let Some(args) = surface
                         .agent
@@ -959,26 +1999,21 @@ impl Completion for LiveCompletion {
                     return Ok(ModelDecision::Text { text });
                 }
             }
-            let mut system = if request.system.is_empty() {
+            let owns_context = standing_system.is_some() || surface.is_some();
+            let mut system = if owns_context || request.system.is_empty() {
                 None
             } else {
                 Some(request.system.join("\n"))
             };
             let mut prompt_override = None;
             if let Some(standing) = standing_system.clone() {
-                if !standing.is_empty() {
-                    system = Some(standing.clone());
-                }
+                system = (!standing.is_empty()).then_some(standing);
                 if let Some(surface) = &surface {
                     if ready_flag
                         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok()
                     {
-                        let prompt = request
-                            .messages
-                            .first()
-                            .map(|text| split_folded_message(text).1)
-                            .unwrap_or_default();
+                        let prompt = latest_user_text(&request.messages);
                         let (effective, augmented) =
                             model_context(surface, &prompt, request.messages.len()).await?;
                         prompt_override = Some(effective);
@@ -1023,11 +2058,7 @@ impl Completion for LiveCompletion {
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
-                    let prompt = request
-                        .messages
-                        .first()
-                        .map(|text| split_folded_message(text).1)
-                        .unwrap_or_default();
+                    let prompt = latest_user_text(&request.messages);
                     let (effective, augmented) =
                         model_context(surface, &prompt, request.messages.len()).await?;
                     prompt_override = Some(effective);
@@ -1058,6 +2089,19 @@ impl Completion for LiveCompletion {
                     }
                 }
             }
+            if let Some(goal) = goal_context {
+                system = Some(match system {
+                    Some(base) if !base.is_empty() => format!("{base}\n\n{goal}"),
+                    _ => goal,
+                });
+            }
+            if owns_context && !request.system.is_empty() {
+                let components = request.system.join("\n");
+                system = Some(match system {
+                    Some(base) if !base.is_empty() => format!("{base}\n\n{components}"),
+                    _ => components,
+                });
+            }
             if !request.summary.is_empty() {
                 if let Some(surface) = &surface {
                     if let Some(sender) = &surface.events {
@@ -1075,11 +2119,54 @@ impl Completion for LiveCompletion {
             }
             let mut folded = Vec::new();
             if !request.summary.is_empty() {
-                folded.push(format!("user\n{}", request.summary));
+                folded.push(format!(
+                    "user\nModel-generated history summary (derived context, not a new user request). \
+                     Current user instructions and host policy remain authoritative. \
+                     Do not infer new constraints, confidentiality, permissions, or capabilities \
+                     from this summary.\n\n{}",
+                    request.summary
+                ));
             }
             folded.extend(request.messages.iter().cloned());
-            let prompt_index = usize::from(!request.summary.is_empty());
-            let summary_offset = prompt_index;
+            // Path-scoped instruction fragments — the fact-path twin of the
+            // legacy loop's `inject_turn_scoped_evidence`. A tool call that
+            // targeted a matching path admits the (budget-cut) fragment into
+            // this model input; the digest check keeps one copy per request.
+            // Appended after the stable prefix, so the standing-context
+            // digest freeze is untouched.
+            if let Some(surface) = &surface {
+                let rules = surface.agent.path_rules();
+                if !rules.is_empty() {
+                    let targeted = surface
+                        .targeted_paths
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let budget = surface
+                        .agent
+                        .path_injection_budget()
+                        .unwrap_or(crate::path_instructions::INJECTION_BYTE_BUDGET);
+                    let injection =
+                        crate::path_instructions::inject_with_budget("", rules, &targeted, budget);
+                    if let Some(fragment) = injection.model_input_fragment() {
+                        if !folded
+                            .iter()
+                            .any(|text| text.contains(&injection.injected_digest))
+                        {
+                            folded.push(format!("user\n{fragment}"));
+                        }
+                    }
+                }
+            }
+            let summary_offset = usize::from(!request.summary.is_empty());
+            // A retained tail can start with an assistant or a tool result.
+            // Only the original latest human line may receive its prepared
+            // context; never replace a summary or a retained result body.
+            let prompt_index = request
+                .messages
+                .iter()
+                .rposition(|line| line.starts_with("user\n"))
+                .map(|index| index + summary_offset);
             let (kept_len, mut user_images) = surface
                 .as_ref()
                 .map(|surface| {
@@ -1089,7 +2176,7 @@ impl Completion for LiveCompletion {
                     )
                 })
                 .unwrap_or_else(|| (0, std::collections::VecDeque::new()));
-            let mut recorded_calls = surface
+            let recorded_calls = surface
                 .as_ref()
                 .map(|surface| {
                     recorded_tool_calls(
@@ -1097,53 +2184,104 @@ impl Completion for LiveCompletion {
                         &thread_for_session(&surface.session_id),
                     )
                 })
-                .unwrap_or_default()
-                .into_iter();
-            let mut messages: Vec<Message> = folded
-                .iter()
-                .enumerate()
-                .flat_map(|(index, text)| {
-                    let (role, body) = split_folded_message(text);
-                    let body = if index == prompt_index {
-                        prompt_override.clone().unwrap_or(body)
+                .transpose()?
+                .unwrap_or_default();
+            let mut recorded = recorded_calls.clone().into_iter();
+            let tool_records = scheduler_tool_record_indexes(&folded);
+            let mut messages = Vec::new();
+            for (index, text) in folded.iter().enumerate() {
+                // The result line below restores this call as a structured
+                // tool_use. Sending the scheduler record as prose makes the
+                // model echo `tool <name>` and end the turn.
+                if tool_records.contains(&index) {
+                    continue;
+                }
+                let (role, body) = split_folded_message(text);
+                let body = if Some(index) == prompt_index {
+                    prompt_override.clone().unwrap_or(body)
+                } else {
+                    body
+                };
+                if role == "tool" || role == "tool-error" {
+                    messages.extend(recorded_tool_messages(
+                        &mut recorded,
+                        &body,
+                        role == "tool-error",
+                    )?);
+                } else {
+                    let images = if text.starts_with("user\n") {
+                        images_for_user_line(index, summary_offset, kept_len, &mut user_images)
                     } else {
-                        body
+                        Vec::new()
                     };
-                    if role == "tool" || role == "tool-error" {
-                        let call = recorded_calls.next().unwrap_or_else(|| RecordedCall {
-                            id: format!("fact-tool-{index}"),
-                            name: "tool".into(),
-                            args: serde_json::json!({}),
-                            text: String::new(),
-                            reasoning: None,
-                        });
-                        let id = call.id.clone();
-                        vec![
-                            assistant_tool_call(&call),
-                            message_from_folded_tool(&id, &body, role == "tool-error"),
-                        ]
-                    } else {
-                        let images = if text.starts_with("user\n") {
-                            images_for_user_line(index, summary_offset, kept_len, &mut user_images)
-                        } else {
-                            Vec::new()
-                        };
-                        vec![user_message_with_images(&body, images)]
-                    }
-                })
-                .collect();
+                    messages.push(folded_message_with_images(role, &body, images));
+                }
+            }
+            if recorded.next().is_some() {
+                return Err(ActorError::Schema(
+                    "tool history has calls absent from the folded transcript".into(),
+                ));
+            }
             if let Some(surface) = &surface {
-                apply_run_controls(surface, &mut messages).await;
+                apply_run_controls(surface, &mut messages).await?;
                 if surface.cancel.is_cancelled() {
                     return Ok(ModelDecision::Text {
                         text: "(Response interrupted by the user.)".into(),
                     });
                 }
             }
-            let tools = definitions_for(&catalog, &request.tools)
-                .into_iter()
-                .filter(|tool| visibility.expose_to_model(&tool.name))
-                .collect();
+            let read_only_final = surface.as_ref().is_some_and(|surface| {
+                let ledger = surface
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // A second iterator pairs tool lines with recorded call
+                // names in the same wire order the conversion above uses.
+                let mut recorded = recorded_calls.into_iter();
+                read_only_evidence_exhausted_with_calls(&ledger, &request.messages, &mut recorded)
+            });
+            if read_only_final {
+                if let Some(surface) = surface.as_ref() {
+                    *surface
+                        .forced_stop
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(crate::harness_loop::ForcedStop::ReadOnlyEvidence);
+                }
+                let line = crate::agent::READ_ONLY_EVIDENCE_FINALIZATION;
+                system = Some(match system.take() {
+                    Some(existing) if !existing.is_empty() => format!("{existing}\n\n{line}"),
+                    _ => line.to_string(),
+                });
+            }
+            // The standing system prompt is cached on the first call. Restate
+            // the latest user script on every call, and do not write it back
+            // into the cache.
+            let user_text = latest_user_text(&request.messages);
+            let published = surface
+                .as_ref()
+                .and_then(|surface| surface.agent.tool_context_handle().reply_language());
+            let (next_system, turn_language) = crate::prompts::apply_turn_output_language(
+                system.take(),
+                &user_text,
+                published.as_deref(),
+                false,
+            );
+            system = next_system;
+            if let (Some(language), Some(surface)) = (&turn_language, surface.as_ref()) {
+                surface
+                    .agent
+                    .tool_context_handle()
+                    .set_reply_language(Some(language));
+            }
+            let tools = if read_only_final {
+                Vec::new()
+            } else {
+                definitions_for(&catalog, &request.tools)
+                    .into_iter()
+                    .filter(|tool| visibility.expose_to_model(&tool.name))
+                    .collect()
+            };
             let turn = model_turns.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             if let Some(surface) = &surface {
                 record_run_event(surface, crate::agent::AgentEvent::TurnStart { turn }).await;
@@ -1154,6 +2292,8 @@ impl Completion for LiveCompletion {
                 system.clone(),
                 tools,
                 surface.clone(),
+                cancel.clone(),
+                original_model.clone(),
             )
             .await
             {
@@ -1186,7 +2326,7 @@ impl Completion for LiveCompletion {
             };
             if let Some(surface) = &surface {
                 if surface.cancel.is_cancelled() {
-                    apply_run_controls(surface, &mut messages).await;
+                    apply_run_controls(surface, &mut messages).await?;
                     let text = "(Response interrupted by the user.)";
                     messages.push(Message::assistant(text));
                     *surface
@@ -1228,7 +2368,28 @@ impl Completion for LiveCompletion {
                 }
             }
             prompt_tokens.store(response.usage.prompt_tokens as u64, Ordering::SeqCst);
-            Ok(decision_from_response(&response, &policy, surface.as_ref()).await)
+            let decision = decision_from_response(&response, &policy, surface.as_ref()).await;
+            // An empty tool list is advisory. A provider that still returns a
+            // call must not open another evidence round.
+            if read_only_final {
+                if let Some(surface) = surface.as_ref() {
+                    *surface
+                        .forced_stop
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(crate::harness_loop::ForcedStop::ReadOnlyEvidence);
+                }
+                if let ModelDecision::Tool { call, .. } = decision {
+                    let text = call
+                        .text
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            crate::agent::READ_ONLY_EVIDENCE_FINALIZATION.to_string()
+                        });
+                    return Ok(ModelDecision::Text { text });
+                }
+            }
+            Ok(decision)
         })
     }
 
@@ -1238,8 +2399,10 @@ impl Completion for LiveCompletion {
     }
 }
 
+#[derive(Clone)]
 struct ExecutorTools {
     executor: Arc<ToolExecutor>,
+    capability_operation: Option<Arc<crate::capability::AgentCapabilityOperation>>,
     calls: Arc<AtomicUsize>,
     checkpoint: Option<CheckpointState>,
     events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
@@ -1251,6 +2414,10 @@ struct ExecutorTools {
     run_id: Option<String>,
     ledger: Option<Arc<Mutex<crate::harness_loop::MutationLedger>>>,
     reports: Option<Arc<Mutex<Vec<crate::verification::VerificationReport>>>>,
+    /// Session-shared targeted-path log feeding path instruction injection.
+    targeted_paths: Option<Arc<Mutex<Vec<String>>>>,
+    /// Set only by the preparation adapter after resolving input hooks once.
+    pre_tool_hook_resolved: bool,
 }
 
 #[derive(Clone)]
@@ -1260,6 +2427,7 @@ struct CheckpointState {
     session_id: String,
     capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
     standing_context_digest: Option<String>,
+    durable_source: Option<crate::store::SessionFactSourceV1>,
     turns: Arc<AtomicUsize>,
 }
 
@@ -1296,23 +2464,52 @@ impl ExecutorTools {
         output: &str,
         is_error: bool,
         images: &[crate::llm::Attachment],
-    ) {
+    ) -> Result<(), ActorError> {
+        // The prepared route exports from committed receipts before the next
+        // inference. Exporting here would precede byte observation and the
+        // actor's terminal append. Keep this adapter only for legacy callers.
+        if self.pre_tool_hook_resolved {
+            return Ok(());
+        }
+        if let Some(operation) = &self.capability_operation {
+            operation
+                .close()
+                .await
+                .map_err(|error| ActorError::Defect(error.to_string()))?;
+        }
         let Some(checkpoint) = &self.checkpoint else {
-            return;
+            return Ok(());
         };
         let turn = checkpoint.turns.fetch_add(1, Ordering::SeqCst) + 1;
         let checkpoint_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or(0);
+        // The durable boundary carries the mutation state settled so far.
+        // A resumed surface starts fresh; without this the resumed run's
+        // completion gate is blind to the mutations the interrupted run
+        // already landed.
+        let mutations = self
+            .ledger
+            .as_ref()
+            .and_then(|ledger| ledger.lock().ok().map(|guard| guard.clone()))
+            .unwrap_or_default();
+        let reports = self
+            .reports
+            .as_ref()
+            .and_then(|reports| reports.lock().ok().map(|guard| guard.clone()))
+            .unwrap_or_default();
         checkpoint
             .sink
             .save_checkpoint(&crate::loop_checkpoint::LoopCheckpoint {
-                schema_version: crate::loop_checkpoint::LOOP_CHECKPOINT_SCHEMA_VERSION,
+                schema_version: crate::loop_checkpoint::LoopCheckpoint::schema_for(
+                    checkpoint.durable_source.as_ref(),
+                ),
                 run_id: checkpoint.run_id.clone(),
                 session_id: checkpoint.session_id.clone(),
                 capability_binding: checkpoint.capability_binding.clone(),
                 standing_context_digest: checkpoint.standing_context_digest.clone(),
+                durable_source: checkpoint.durable_source.clone(),
                 turn,
                 messages: vec![
                     Message {
@@ -1334,11 +2531,33 @@ impl ExecutorTools {
                 ],
                 total_usage: crate::llm::TokenUsage::default(),
                 tool_calls_count: turn,
-                verification_reports: Vec::new(),
-                convergence: crate::loop_checkpoint::LoopConvergenceState::default(),
+                verification_reports: reports,
+                convergence: crate::loop_checkpoint::LoopConvergenceState {
+                    mutations,
+                    ..Default::default()
+                },
                 checkpoint_ms,
             })
             .await;
+        Ok(())
+    }
+}
+
+/// Wait for the next host-bridged event; never resolves without a receiver.
+async fn next_host_event(
+    bridged: &mut Option<tokio::sync::broadcast::Receiver<crate::agent::AgentEvent>>,
+) -> crate::agent::AgentEvent {
+    let Some(receiver) = bridged.as_mut() else {
+        return std::future::pending().await;
+    };
+    loop {
+        match receiver.recv().await {
+            Ok(event) if host_bridge_event(&event) => return event,
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return std::future::pending().await;
+            }
+        }
     }
 }
 
@@ -1356,12 +2575,47 @@ fn host_bridge_event(event: &crate::agent::AgentEvent) -> bool {
     )
 }
 
+/// Record a tool call's file target for path instruction injection.
+/// Mirrors the legacy loop's `targeted_paths` collection (`file_path` /
+/// `path` argument keys); bounded to the most recent 32 targets.
+fn record_targeted_path(args: &serde_json::Value, targeted: Option<&Arc<Mutex<Vec<String>>>>) {
+    let Some(targeted) = targeted else { return };
+    let Some(path) = args
+        .get("file_path")
+        .or_else(|| args.get("path"))
+        .and_then(|value| value.as_str())
+    else {
+        return;
+    };
+    let mut paths = targeted
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if paths.iter().any(|existing| existing == path) {
+        return;
+    }
+    paths.push(path.to_string());
+    let overflow = paths.len().saturating_sub(32);
+    if overflow > 0 {
+        paths.drain(0..overflow);
+    }
+}
+
 impl ToolRunner for ExecutorTools {
+    fn prepare(
+        self: Arc<Self>,
+        request: a3s_effect::ToolPreparationRequest,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> a3s_effect::coding::BoxFuture<Result<a3s_effect::PreparedToolExecution, ActorError>> {
+        Box::pin(receipts::prepare_tools(self, request, cancel))
+    }
+
     fn run(
         &self,
         call: ToolCall,
+        host_cancel: tokio_util::sync::CancellationToken,
     ) -> a3s_effect::coding::BoxFuture<Result<serde_json::Value, ActorError>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let logical_turn = self.calls.fetch_add(1, Ordering::SeqCst);
+        record_targeted_path(&call.args, self.targeted_paths.as_ref());
         let executor = Arc::clone(&self.executor);
         let context = self.context.clone();
         let events = self.events.clone();
@@ -1373,8 +2627,28 @@ impl ToolRunner for ExecutorTools {
         let run_id = self.run_id.clone();
         let ledger = self.ledger.clone();
         let reports = self.reports.clone();
+        let targeted_paths = self.targeted_paths.clone();
+        let pre_tool_hook_resolved = self.pre_tool_hook_resolved;
         Box::pin(async move {
+            let operation = agent
+                .as_ref()
+                .map(|agent| {
+                    agent.begin_capability_operation(
+                        logical_turn,
+                        &host_cancel,
+                        "fact Tool invocation",
+                    )
+                })
+                .transpose()
+                .map_err(|error| ActorError::Defect(error.to_string()))?
+                .map(Arc::new);
+            let context = match &operation {
+                Some(operation) => operation.bind_tool_context(context),
+                None => context,
+            };
+            let result = async {
             let tools = ExecutorTools {
+                capability_operation: operation.clone(),
                 executor,
                 calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint,
@@ -1387,6 +2661,8 @@ impl ToolRunner for ExecutorTools {
                 run_id,
                 ledger,
                 reports,
+                targeted_paths,
+                pre_tool_hook_resolved,
             };
             emit_tool_request_bound(&tools, &call).await;
             if let Some(agent) = &tools.agent {
@@ -1399,7 +2675,7 @@ impl ToolRunner for ExecutorTools {
                             reason,
                         })
                         .await;
-                    tools.save_checkpoint(&call, &output, true, &[]).await;
+                    tools.save_checkpoint(&call, &output, true, &[]).await?;
                     return Ok(serde_json::Value::String(output));
                 }
             }
@@ -1422,7 +2698,7 @@ impl ToolRunner for ExecutorTools {
                         reason: "Blocked by deny rule in permission policy".into(),
                     })
                     .await;
-                tools.save_checkpoint(&call, &output, true, &[]).await;
+                tools.save_checkpoint(&call, &output, true, &[]).await?;
                 return Ok(serde_json::Value::String(output));
             }
             tools
@@ -1432,7 +2708,7 @@ impl ToolRunner for ExecutorTools {
                 })
                 .await;
             let mut args = call.args.clone();
-            if let Some(agent) = &tools.agent {
+            if let Some(agent) = tools.agent.as_ref().filter(|_| !tools.pre_tool_hook_resolved) {
                 let session_id = tools.context.session_id.clone().unwrap_or_default();
                 let decision = agent
                     .fire_pre_tool_use(&session_id, &call.name, &args, Vec::new())
@@ -1544,7 +2820,7 @@ impl ToolRunner for ExecutorTools {
                             reason: output.clone(),
                         })
                         .await;
-                    tools.save_checkpoint(&call, &output, true, &[]).await;
+                    tools.save_checkpoint(&call, &output, true, &[]).await?;
                     return Ok(serde_json::Value::String(output));
                 }
             }
@@ -1561,27 +2837,58 @@ impl ToolRunner for ExecutorTools {
                 .as_ref()
                 .map(|sender| sender.subscribe());
             let cancel = tools.context.cancellation_token();
+            let host_cancel = host_cancel.clone();
             let started = std::time::Instant::now();
-            let executed = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    let message = "cancelled".to_string();
-                    tools
-                        .emit(crate::agent::AgentEvent::ToolEnd {
-                            id: call.id.clone(),
-                            name: call.name.clone(),
-                            args: Some(args.clone()),
-                            output: message.clone(),
-                            exit_code: 1,
-                            metadata: None,
-                            error_kind: None,
-                        })
-                        .await;
-                    return Ok(serde_json::Value::String(message));
+            let execution = tools
+                .executor
+                .execute_with_context(&call.name, &args, &tools.context);
+            tokio::pin!(execution);
+            // Forward host events while the tool runs: a tool that waits on the
+            // host (ask_user_form) needs its question delivered before it returns.
+            let executed = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut execution => break result,
+                    _ = cancel.cancelled() => {
+                        let message = "cancelled".to_string();
+                        tools
+                            .emit(crate::agent::AgentEvent::ToolEnd {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                args: Some(args.clone()),
+                                output: message.clone(),
+                                exit_code: 1,
+                                metadata: None,
+                                error_kind: None,
+                            })
+                            .await;
+                        return Ok(if tools.pre_tool_hook_resolved {
+                            receipts::runner_interrupted_value(&message)
+                        } else {
+                            serde_json::Value::String(message)
+                        });
+                    }
+                    _ = host_cancel.cancelled() => {
+                        let message = "cancelled".to_string();
+                        tools
+                            .emit(crate::agent::AgentEvent::ToolEnd {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                args: Some(args.clone()),
+                                output: message.clone(),
+                                exit_code: 1,
+                                metadata: None,
+                                error_kind: None,
+                            })
+                            .await;
+                        return Ok(if tools.pre_tool_hook_resolved {
+                            receipts::runner_interrupted_value(&message)
+                        } else {
+                            serde_json::Value::String(message)
+                        });
+                    }
+                    event = next_host_event(&mut bridged) => tools.emit(event).await,
                 }
-                result = tools
-                    .executor
-                    .execute_with_context(&call.name, &args, &tools.context) => result,
             };
             tools.forward_host_events(&mut bridged).await;
             let result = match executed {
@@ -1599,7 +2906,7 @@ impl ToolRunner for ExecutorTools {
                             error_kind: None,
                         })
                         .await;
-                    if workspace_boundary_error(&message) {
+                    if !tools.pre_tool_hook_resolved && workspace_boundary_error(&message) {
                         return Ok(serde_json::Value::String(message));
                     }
                     return Err(ActorError::Handler {
@@ -1623,7 +2930,11 @@ impl ToolRunner for ExecutorTools {
                     .await;
             }
             let mut metadata = result.metadata;
-            if let Some(agent) = &tools.agent {
+            if tools.pre_tool_hook_resolved {
+                if let Some(ledger) = &tools.ledger {
+                    receipts::observe_live_child(ledger, metadata.as_ref());
+                }
+            } else if let Some(agent) = &tools.agent {
                 let mut bound = tools
                     .reports
                     .as_ref()
@@ -1655,9 +2966,14 @@ impl ToolRunner for ExecutorTools {
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = ledger_value;
                 }
                 if let Some(reports) = &tools.reports {
-                    *reports
+                    let mut current = reports
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for report in bound {
+                        if !current.contains(&report) {
+                            current.push(report);
+                        }
+                    }
                 }
             } else if let Some(ledger) = &tools.ledger {
                 ledger
@@ -1678,16 +2994,36 @@ impl ToolRunner for ExecutorTools {
                 .await;
             tools
                 .save_checkpoint(&call, &output, result.exit_code != 0, &result.images)
-                .await;
-            Ok(fact_tool_runner_value(
+                .await?;
+            Ok(receipts::runner_result_value(
                 &output,
                 result.exit_code != 0,
                 &result.images,
+                result.exit_code,
+                metadata.as_ref(),
             ))
+            }.await;
+            if let Some(operation) = operation {
+                operation
+                    .close()
+                    .await
+                    .map_err(|error| ActorError::Defect(error.to_string()))?;
+            }
+            result
         })
     }
 
     fn can_parallelize(&self, calls: &[ToolCall]) -> bool {
+        // Hooks may redirect two disjoint write targets to the same path.
+        // Read-only batches remain parallel; transformed writes keep order.
+        if self
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.hook_executor().is_some())
+            && !calls.iter().all(|call| is_parallel_safe_read(&call.name))
+        {
+            return false;
+        }
         batch_can_run_in_parallel(calls)
     }
 }
@@ -1702,27 +3038,39 @@ fn batch_can_run_in_parallel(calls: &[ToolCall]) -> bool {
     if !calls.iter().all(|call| is_parallel_safe_write(&call.name)) {
         return false;
     }
+    // Write-class tools key their target on `file_path` (the registered
+    // schema); a call without it stays sequential rather than guessing.
     let mut paths = std::collections::HashSet::new();
     calls.iter().all(|call| {
         call.args
-            .get("path")
+            .get("file_path")
+            .or_else(|| call.args.get("path"))
             .and_then(serde_json::Value::as_str)
             .is_some_and(|path| paths.insert(path.to_string()))
     })
 }
 
+/// Parallel-safe tool names use the REGISTERED tool names (`read`, `ls`,
+/// `write`, …), not the file-operation verbs a checklist might expect. A
+/// name that drifts from the registry silently turns every batch sequential.
 fn is_parallel_safe_read(name: &str) -> bool {
     matches!(
         name,
-        "read_file" | "grep" | "glob" | "list_dir" | "search" | "web_search" | "web_fetch"
+        "read"
+            | "ls"
+            | "grep"
+            | "glob"
+            | "search"
+            | "hybrid"
+            | "semantic"
+            | "bm25"
+            | "web_search"
+            | "web_fetch"
     )
 }
 
 fn is_parallel_safe_write(name: &str) -> bool {
-    matches!(
-        name,
-        "write_file" | "edit_file" | "create_file" | "append_to_file" | "replace_in_file"
-    )
+    matches!(name, "write" | "edit")
 }
 
 struct NoopCompact;
@@ -1746,11 +3094,12 @@ impl Completion for UsageStamp {
     fn complete(
         &self,
         request: CompletionRequest,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
         let inner = Arc::clone(&self.inner);
         let prompt_tokens = Arc::clone(&self.prompt_tokens);
         Box::pin(async move {
-            let decision = inner.complete(request).await?;
+            let decision = inner.complete(request, cancel).await?;
             let reported = inner.reported_prompt_tokens().unwrap_or(0);
             prompt_tokens.store(reported, Ordering::SeqCst);
             Ok(decision)
@@ -1764,6 +3113,7 @@ impl Completion for UsageStamp {
 
 struct SessionCompact {
     client: Arc<dyn LlmClient>,
+    source: Option<crate::store::SessionFactSourceV1>,
     events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
     window_tokens: u64,
     prompt_tokens: Arc<AtomicU64>,
@@ -1775,6 +3125,7 @@ impl Compactor for SessionCompact {
         messages: &[String],
     ) -> a3s_effect::coding::BoxFuture<Result<String, ActorError>> {
         let client = Arc::clone(&self.client);
+        let source = self.source.clone();
         let events = self.events.clone();
         let window = self.window_tokens;
         let used = self.prompt_tokens.load(Ordering::SeqCst);
@@ -1790,7 +3141,8 @@ impl Compactor for SessionCompact {
                     })
                     .await;
             }
-            let summary = compact_handoff(client.as_ref(), &messages, window).await;
+            let summary =
+                compact_handoff(client.as_ref(), &messages, window, source.as_ref()).await;
             let tokens_after = (summary.len() as u64).div_ceil(4).max(1);
             if let Some(events) = &events {
                 let _ = events
@@ -1813,12 +3165,20 @@ async fn compact_handoff(
     client: &dyn LlmClient,
     messages: &[String],
     window_tokens: u64,
+    source: Option<&crate::store::SessionFactSourceV1>,
 ) -> String {
-    match crate::compaction::summarize_folded_prefix(client, messages, window_tokens as usize).await
+    match crate::compaction::summarize_folded_prefix(
+        client,
+        messages,
+        window_tokens as usize,
+        source,
+    )
+    .await
     {
         Ok(summary) => summary,
         Err(_) => {
             let mut carried = crate::compaction_carry::obligations_from_folded(messages);
+            carried.durable_source = source.cloned();
             crate::compaction_carry::cap_fallback_goals(&mut carried);
             crate::compaction_carry::seal_summary(&bounded_summary(messages), &carried)
         }
@@ -1857,6 +3217,7 @@ fn char_boundary_before(text: &str, index: usize) -> usize {
         .unwrap_or(0)
 }
 
+#[derive(Clone)]
 struct RecordedCall {
     id: String,
     name: String,
@@ -1928,6 +3289,70 @@ fn seeded_tool(message: &Message) -> Option<SeededTool> {
         });
     }
     None
+}
+
+/// Seed the original transcript without admitting or running an infer.
+pub(crate) fn seed_history(log: &FileLog, thread: &str, history: &[Message]) -> Result<()> {
+    let existing = log.read(thread).map_err(|error| anyhow::anyhow!(error))?;
+    if existing.iter().any(|fact| {
+        fact.kind != crate::standing_context::STANDING_CONTEXT_FACT_KIND
+            && fact.kind != crate::work_policy::POLICY_KIND
+    }) {
+        return Ok(());
+    }
+    let mut turn = 0u64;
+    let mut cycle = 0u64;
+    for message in history {
+        match message.role.as_str() {
+            "user" => {
+                turn += 1;
+                cycle = 0;
+                if let Some(seeded) = seeded_tool(message) {
+                    // The tool turn consumes `infer:{turn}:0`. The new
+                    // prompt is the next user message and gets its own infer.
+                    log.append(
+                        thread,
+                        &[message_fact(
+                            format!("m-hist-{turn}"),
+                            seeded_user_text(message),
+                        )],
+                        None,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                    append_seeded_tool(log, thread, turn, &seeded)?;
+                } else {
+                    log.append(
+                        thread,
+                        &[message_fact(
+                            format!("m-hist-{turn}"),
+                            seeded_user_text(message),
+                        )],
+                        None,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                }
+            }
+            "assistant" => {
+                let payload = serde_json::to_value(ModelDecision::Text {
+                    text: message.text(),
+                })
+                .map_err(|error| anyhow::anyhow!(error))?;
+                log.append(
+                    thread,
+                    &[NewFact {
+                        kind: "model.turn".into(),
+                        key: format!("model:{turn}:{cycle}"),
+                        payload,
+                    }],
+                    Some(&format!("infer:{turn}:{cycle}")),
+                )
+                .map_err(|error| anyhow::anyhow!(error))?;
+                cycle += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn append_seeded_tool(log: &FileLog, thread: &str, turn: u64, seeded: &SeededTool) -> Result<()> {
@@ -2109,6 +3534,51 @@ fn images_for_user_line(
     queue.pop_front().unwrap_or_default()
 }
 
+/// Indexes of `assistant\ntool <name>\n<json>` lines that belong to a closed
+/// scheduler batch: one or more of those records, then the same number of
+/// `tool` or `tool-error` results. The writer in the effect fold is the
+/// source of that shape. An unmatched record stays in the transcript.
+fn scheduler_tool_record_indexes(lines: &[String]) -> std::collections::HashSet<usize> {
+    const RECORD_PREFIX: &str = "assistant\ntool ";
+    let mut indexes = std::collections::HashSet::new();
+    let mut cursor = 0;
+    while cursor < lines.len() {
+        if !lines[cursor].starts_with(RECORD_PREFIX) {
+            cursor += 1;
+            continue;
+        }
+        let start = cursor;
+        while cursor < lines.len() && lines[cursor].starts_with(RECORD_PREFIX) {
+            cursor += 1;
+        }
+        let records = cursor - start;
+        let mut results = 0;
+        while cursor + results < lines.len()
+            && (lines[cursor + results].starts_with("tool\n")
+                || lines[cursor + results].starts_with("tool-error\n"))
+        {
+            results += 1;
+        }
+        if results == records {
+            for index in start..cursor {
+                indexes.insert(index);
+            }
+            cursor += results;
+        } else {
+            cursor = start + 1;
+        }
+    }
+    indexes
+}
+
+fn folded_message_with_images(role: &str, body: &str, images: Vec<Attachment>) -> Message {
+    if role == "assistant" {
+        Message::assistant(body)
+    } else {
+        user_message_with_images(body, images)
+    }
+}
+
 fn user_message_with_images(body: &str, images: Vec<Attachment>) -> Message {
     if images.is_empty() {
         Message::user(body)
@@ -2117,42 +3587,128 @@ fn user_message_with_images(body: &str, images: Vec<Attachment>) -> Message {
     }
 }
 
-/// Tool calls that already have a result, in log order.
-///
-/// The folded transcript only keeps `tool\n{output}`. The provider still needs
-/// the real name, id, and arguments before that result. Compaction drops those
-/// lines from the view, so calls before the latest `compaction.done` are not
-/// paired with the messages that remain.
-fn recorded_tool_calls(workspace: &Path, thread: &str) -> Vec<RecordedCall> {
-    let Ok(facts) = read_workspace_facts(workspace, thread) else {
-        return Vec::new();
-    };
-    let start = facts
-        .iter()
-        .rposition(|fact| fact.kind == "compaction.done")
-        .map(|index| index + 1)
-        .unwrap_or(0);
+/// Reattach original call metadata to completed results in the folded view.
+/// `split_compact_tail` keeps an ordered suffix, including tool results. Keep
+/// the corresponding suffix of original calls and verify its result bytes;
+/// never fabricate an identity when the original facts cannot be read/paired.
+fn recorded_tool_calls(workspace: &Path, thread: &str) -> Result<Vec<RecordedCall>, ActorError> {
+    let facts = read_workspace_facts(workspace, thread).map_err(|error| ActorError::Handler {
+        key: "model-input-tool-history".into(),
+        message: format!("cannot read original tool-call facts: {error}"),
+    })?;
     let mut pending = std::collections::VecDeque::new();
-    let mut calls = Vec::new();
-    for fact in facts.into_iter().skip(start) {
+    let mut completed: Vec<(RecordedCall, String)> = Vec::new();
+    for fact in facts {
         if fact.kind == "model.turn"
             && fact.payload.get("kind").and_then(|kind| kind.as_str()) == Some("tool")
         {
-            if let Some(call) = fact.payload.get("call") {
-                pending.push_back(recorded_call_from(call));
-            }
-            if let Some(also) = fact.payload.get("also").and_then(|value| value.as_array()) {
-                for call in also {
-                    pending.push_back(recorded_call_from(call));
+            let ModelDecision::Tool { call, also } =
+                serde_json::from_value::<ModelDecision>(fact.payload).map_err(|error| {
+                    ActorError::Schema(format!("invalid original tool-call metadata: {error}"))
+                })?
+            else {
+                return Err(ActorError::Schema("invalid original tool decision".into()));
+            };
+            pending.clear();
+            let mut ids = std::collections::HashSet::new();
+            for call in std::iter::once(call).chain(also) {
+                if !ids.insert(call.id.clone()) {
+                    return Err(ActorError::Schema(
+                        "duplicate original tool-call identity in batch".into(),
+                    ));
                 }
+                pending.push_back(RecordedCall {
+                    id: call.id,
+                    name: call.name,
+                    args: call.args,
+                    text: call.text.unwrap_or_default(),
+                    reasoning: call.reasoning.filter(|text| !text.is_empty()),
+                });
             }
         } else if fact.kind == "tool.result" {
-            if let Some(call) = pending.pop_front() {
-                calls.push(call);
+            let receipt = fact
+                .payload
+                .get("receipt")
+                .map(|receipt| {
+                    serde_json::from_value::<a3s_effect::ToolExecutionResultV1>(receipt.clone())
+                        .map_err(|error| {
+                            ActorError::Schema(format!("invalid original tool receipt: {error}"))
+                        })
+                })
+                .transpose()?;
+            if let Some(receipt) = &receipt {
+                receipt.validate()?;
             }
+            #[derive(serde::Deserialize)]
+            struct ResultPayload {
+                #[serde(default, rename = "toolCallId")]
+                tool_call_id: Option<String>,
+                ok: bool,
+                output: String,
+            }
+            let payload: ResultPayload = serde_json::from_value(fact.payload).map_err(|error| {
+                ActorError::Schema(format!("invalid original tool-result metadata: {error}"))
+            })?;
+            let call = pending.pop_front().ok_or_else(|| {
+                ActorError::Schema("tool result has no original pending call".into())
+            })?;
+            // Legacy results may omit the id. Explicit ids must agree with
+            // the scheduler's serial batch order, just as the Moore fold checks.
+            if payload.tool_call_id.is_some_and(|id| id != call.id)
+                || receipt.is_some_and(|receipt| receipt.identity.tool_call_id != call.id)
+            {
+                return Err(ActorError::Schema(
+                    "tool-result identity disagrees with the original pending call".into(),
+                ));
+            }
+            let role = if payload.ok { "tool" } else { "tool-error" };
+            completed.push((call, format!("{role}\n{}", payload.output)));
+        } else if fact.kind == "compaction.done" {
+            #[derive(serde::Deserialize)]
+            struct CompactionPayload {
+                #[serde(default)]
+                kept: Vec<String>,
+            }
+            let payload: CompactionPayload =
+                serde_json::from_value(fact.payload).map_err(|error| {
+                    ActorError::Schema(format!("invalid retained tool history: {error}"))
+                })?;
+            let retained: Vec<_> = payload
+                .kept
+                .iter()
+                .filter(|line| line.starts_with("tool\n") || line.starts_with("tool-error\n"))
+                .collect();
+            let start = completed.len().checked_sub(retained.len()).ok_or_else(|| {
+                ActorError::Schema("retained tool results have no original calls".into())
+            })?;
+            if completed[start..]
+                .iter()
+                .zip(retained)
+                .any(|((_, original), kept)| original != kept)
+            {
+                return Err(ActorError::Schema(
+                    "retained tool results disagree with the original suffix".into(),
+                ));
+            }
+            completed.drain(..start);
+            pending.clear();
         }
     }
-    calls
+    Ok(completed.into_iter().map(|(call, _)| call).collect())
+}
+
+fn recorded_tool_messages(
+    recorded: &mut std::vec::IntoIter<RecordedCall>,
+    body: &str,
+    is_error: bool,
+) -> Result<[Message; 2], ActorError> {
+    let call = recorded.next().ok_or_else(|| {
+        ActorError::Schema("folded tool result has no original call metadata".into())
+    })?;
+    Ok([
+        assistant_tool_call(&call),
+        message_from_folded_tool(&call.id, body, is_error),
+    ])
 }
 
 fn recorded_call_from(call: &serde_json::Value) -> RecordedCall {
@@ -2216,8 +3772,9 @@ async fn emit_tool_request_bound(tools: &ExecutorTools, call: &a3s_effect::ToolC
         .await;
 }
 
+#[cfg(test)]
 fn log_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".a3s").join("effect-log")
+    crate::session_folder::legacy_effect_log_dir(workspace)
 }
 
 /// Tool budget for one fact-log turn.
@@ -2227,6 +3784,26 @@ fn log_dir(workspace: &Path) -> PathBuf {
 /// fixed budget of 8 ended the turn while tools were still offered. The step
 /// limit covers an infer and a tool result for every round, plus the prompt,
 /// compaction, and a closing answer.
+pub(crate) fn lease_generation_specs(
+    mut specs: Vec<ToolSpec>,
+    executor: &ToolExecutor,
+) -> Vec<ToolSpec> {
+    let Some(generation) = executor.use_generation() else {
+        return specs;
+    };
+    specs.retain(|spec| generation.allows_catalog_tool(&spec.name));
+    for name in generation.skills().iter().chain(generation.runtime_tasks()) {
+        if specs.iter().any(|spec| spec.name == *name) {
+            continue;
+        }
+        specs.push(ToolSpec {
+            name: name.clone(),
+            description: "Projected from the leased Use generation.".into(),
+        });
+    }
+    specs
+}
+
 fn session_harness_config(
     max_tool_rounds: usize,
     compact_after_chars: usize,
@@ -2235,7 +3812,7 @@ fn session_harness_config(
     session_harness_config_with(max_tool_rounds, compact_after_chars, specs, None, None)
 }
 
-fn session_harness_config_with(
+pub(crate) fn session_harness_config_with(
     max_tool_rounds: usize,
     compact_after_chars: usize,
     specs: Vec<ToolSpec>,
@@ -2310,20 +3887,24 @@ impl FactRun {
         hosts: FactRunHostMounts<'_>,
     ) -> Result<Self> {
         let step_limit = config.step_limit();
-        let graph = if let Some(assembler) = hosts.assembler {
+        let graph = Self::admit_graph(config, &hosts)?;
+        let compactor = hosts.compactor.clone();
+        Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph, compactor)
+    }
+
+    fn admit_graph(config: HarnessConfig, hosts: &FactRunHostMounts<'_>) -> Result<HarnessGraph> {
+        if let Some(assembler) = hosts.assembler {
             let graph = assembler.assemble(config)?;
             let _kernel = crate::meta_harness::KernelPolicy::default().admit();
-            graph
+            Ok(graph)
         } else {
             let (graph, _kernel) = crate::meta_harness::admit_from_compose_with_registry(
                 hosts.compose,
                 hosts.registry,
                 config,
             )?;
-            graph
-        };
-        let compactor = hosts.compactor.clone();
-        Self::open_with_graph(dir, completion, tools, step_limit, run_id, graph, compactor)
+            Ok(graph)
+        }
     }
 
     /// Admit an explicit Meta Harness graph. Kernel policy (permissions +
@@ -2339,6 +3920,7 @@ impl FactRun {
     ) -> Result<Self> {
         let kernel = crate::meta_harness::KernelPolicy::default().admit();
         let dir = dir.into();
+        let log = Arc::new(FileLog::open(&dir).map_err(|error| anyhow::anyhow!(error))?);
         let capped = Arc::new(CappedCompletion {
             inner: completion,
             run_id: run_id.into(),
@@ -2351,6 +3933,7 @@ impl FactRun {
         });
         Ok(Self {
             dir,
+            log,
             thread: THREAD.to_string(),
             actor: graph.into_actor(),
             services,
@@ -2359,6 +3942,8 @@ impl FactRun {
             completion_gate: kernel.completion_gate,
             admitted_permission: PermissionPolicy::default(),
             standing_digest: None,
+            current_goal: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
         })
     }
 
@@ -2373,13 +3958,33 @@ impl FactRun {
     ) -> Result<Self> {
         let catalog = executor.definitions();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
-        let specs = exposed_tool_specs(&catalog, |name| permission.expose_to_model(name));
+        let specs = lease_generation_specs(
+            exposed_tool_specs(&catalog, |name| permission.expose_to_model(name)),
+            executor.as_ref(),
+        );
         let admitted_tools: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
         let (completion, _) = LiveCompletion::new(client, permission.clone(), catalog);
         let config = session_harness_config(max_tool_rounds, 1_000_000, specs)?;
+        let effect_dir = crate::session_folder::effect_log_dir(workspace, session_id);
+        let thread = thread_for_session(session_id);
+        // Standing admission, actor and background readers share the Run's handle.
+        let shared_log =
+            Arc::new(FileLog::open(&effect_dir).map_err(|error| anyhow::anyhow!(error))?);
+        let facts = shared_log
+            .read(&thread)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        crate::goal_control::refuse_unbound_goal_execution(&facts)?;
+        if crate::work_policy::prepare_policy(&facts, &thread, None)?
+            .policy
+            .is_some()
+        {
+            anyhow::bail!("work_policy.invalid: bound policy requires the original session owner");
+        }
         let admission = crate::standing_context::admit(
-            &log_dir(workspace),
-            &thread_for_session(session_id),
+            shared_log.as_ref(),
+            &facts,
+            workspace,
+            &thread,
             None,
             &[],
             &admitted_tools,
@@ -2393,10 +3998,12 @@ impl FactRun {
             None => completion,
         };
         let context = executor.registry().context();
+        let context = context.with_fact_log(Arc::clone(&shared_log));
         let mut run = Self::open(
-            log_dir(workspace),
+            effect_dir,
             Arc::new(completion),
             Arc::new(ExecutorTools {
+                capability_operation: None,
                 executor,
                 calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint: None,
@@ -2409,11 +4016,14 @@ impl FactRun {
                 run_id: None,
                 ledger: None,
                 reports: None,
+                targeted_paths: None,
+                pre_tool_hook_resolved: false,
             }),
             config,
             session_id,
         )?;
-        run.thread = thread_for_session(session_id);
+        run.log = shared_log;
+        run.thread = thread;
         run.admitted_tools = admitted_tools;
         run.admitted_permission = permission;
         run.standing_digest = standing_digest;
@@ -2445,6 +4055,14 @@ impl FactRun {
         self.standing_digest.as_deref()
     }
 
+    /// Bind the host token tests cancel. [`Self::open_projected`] copies the session token.
+    #[cfg(test)]
+    pub(crate) fn with_host_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_projected(
         workspace: &Path,
@@ -2456,15 +4074,109 @@ impl FactRun {
         max_tool_rounds: usize,
         surface: SessionSurface,
     ) -> Result<Self> {
+        Self::open_projected_with_original_model(
+            workspace,
+            session_id,
+            client,
+            executor,
+            (permission, yolo_lanes, max_tool_rounds),
+            surface,
+            None,
+        )
+    }
+
+    pub(crate) fn open_projected_with_original_model(
+        workspace: &Path,
+        session_id: &str,
+        client: Arc<dyn LlmClient>,
+        executor: Arc<ToolExecutor>,
+        execution_policy: (PermissionPolicy, &[SessionLane], usize),
+        surface: SessionSurface,
+        original_model: Option<crate::agent_api::OriginalModelCallPort>,
+    ) -> Result<Self> {
+        let (permission, yolo_lanes, max_tool_rounds) = execution_policy;
+        let mut surface = surface;
         let catalog = executor.definitions();
         let permission = permission.allow_yolo_lanes(yolo_lanes.iter().copied());
         let checker = surface.agent.permission_checker();
-        let specs = exposed_tool_specs(&catalog, |name| match &checker {
-            Some(checker) => checker.expose_to_model(name),
-            None => permission.expose_to_model(name),
-        });
+        let specs = lease_generation_specs(
+            exposed_tool_specs(&catalog, |name| match &checker {
+                Some(checker) => checker.expose_to_model(name),
+                None => permission.expose_to_model(name),
+            }),
+            executor.as_ref(),
+        );
         let admitted_tools: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
         let admitted_permission = permission.clone();
+        let shared_log = surface_fact_log(&surface).map_err(|error| anyhow::anyhow!(error))?;
+        let writer = shared_log
+            .try_writer_fence()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let thread = thread_for_session(session_id);
+        let facts = shared_log
+            .read(&thread)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        surface.agent.validate_durable_source(session_id, &facts)?;
+        let policy =
+            crate::work_policy::prepare_policy(&facts, &thread, surface.agent.work_policy())?;
+        let policy_digest = policy
+            .policy
+            .as_ref()
+            .map(crate::WorkPolicyV1::digest)
+            .transpose()?;
+        let tool_context = executor.registry().context();
+        let workspace_ref = tool_context.workspace_services.workspace_ref();
+        let continuation = match surface.goal_tick.as_deref() {
+            Some((command, source)) => {
+                // Re-validate the tick under this writer; a preview is never authority.
+                let decision = crate::goal_control::preview_tick(
+                    &facts,
+                    session_id,
+                    workspace_ref,
+                    policy_digest.as_deref(),
+                    command,
+                    false,
+                    Some(source),
+                )?;
+                if decision != crate::goal_control::GoalTickDecisionV1::Advance
+                    || surface.run_id.as_deref() != Some(command.operation_id.as_str())
+                {
+                    anyhow::bail!(
+                        "goal.conflict: automatic tick no longer advances ({})",
+                        decision.as_str()
+                    );
+                }
+                Some(source)
+            }
+            None => None,
+        };
+        let mut goal = crate::goal_control::prepare_run(
+            &facts,
+            session_id,
+            workspace_ref,
+            policy_digest.as_deref(),
+            surface.run_id.as_deref(),
+            continuation,
+        )?;
+        if goal.is_some()
+            && !surface.run_id.as_deref().is_some_and(|run_id| {
+                original_model.as_ref().is_some_and(|original| {
+                    original.admits_original_run(&shared_log, session_id, run_id)
+                })
+            })
+        {
+            anyhow::bail!("goal.host_driver_conflict: goal execution requires the actual original Run and log");
+        }
+        if policy.policy.is_some()
+            && !original_model
+                .as_ref()
+                .is_some_and(|original| original.admits_original_log(&shared_log, session_id))
+        {
+            anyhow::bail!(
+                "work_policy.invalid: bound policy requires the original admitted worker and log"
+            );
+        }
+        surface.agent = surface.agent.with_work_policy(policy.policy.clone());
         let (completion, _) = LiveCompletion::new(Arc::clone(&client), permission.clone(), catalog);
         let completion = match &checker {
             Some(checker) => completion.with_visibility(Arc::clone(checker)),
@@ -2480,7 +4192,9 @@ impl FactRun {
             .agent
             .tool_context_handle()
             .with_cancellation(surface.cancel.clone());
-        let completion = completion.with_surface(surface.clone());
+        let completion = completion
+            .with_surface(surface.clone())
+            .with_original_model(original_model);
         let limits = surface.harness.as_ref();
         let mut config = session_harness_config_with(
             max_tool_rounds,
@@ -2493,27 +4207,72 @@ impl FactRun {
             config = config.with_token_compact(after_tokens, agent.fact_compact_keep_tokens());
         }
         config = config.with_duplicate_threshold(agent.duplicate_tool_threshold());
-        let agent_system = agent.admitted_system_prompt();
-        let harness_system = surface
-            .harness
-            .as_ref()
-            .map(|options| options.system.clone())
-            .unwrap_or_default();
-        let admission = crate::standing_context::admit(
-            &log_dir(workspace),
-            &thread_for_session(session_id),
-            Some(agent_system.as_str()),
-            &harness_system,
-            &admitted_tools,
-            config.budget(),
-            config.step_limit(),
-            config.model_attempts(),
+        let budget = config.budget();
+        let step_limit = config.step_limit();
+        let model_attempts = config.model_attempts();
+        let graph = Self::admit_graph(
+            config,
+            &FactRunHostMounts {
+                compose: surface.harness.as_ref(),
+                registry: surface.host_harness_registry.as_deref(),
+                assembler: surface.host_harness_assembler.as_deref(),
+                compactor: None,
+            },
         )?;
+        let agent_system = agent.admitted_system_prompt();
+        let effect_dir = crate::session_folder::effect_log_dir(workspace, session_id);
+        // One shared writer for the actor and any Run-owned background
+        // readers this run admits (WC-BG1); see `FactRun::log`.
+        let context = context.with_fact_log(Arc::clone(&shared_log));
+        let admission = crate::standing_context::admit(
+            shared_log.as_ref(),
+            &facts,
+            workspace,
+            &thread,
+            Some(agent_system.as_str()),
+            &[],
+            &admitted_tools,
+            budget,
+            step_limit,
+            model_attempts,
+        )?;
+        crate::work_policy::commit_policy(&shared_log, &writer, &thread, &policy)?;
+        if let Some(prepared) = &mut goal {
+            if let Some(pending) = prepared.pending.take() {
+                let written = shared_log.append(&thread, &[pending], None)?;
+                prepared.definition.goal_sequence = written
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("original Goal Run binding was not retained"))?
+                    .seq;
+            }
+        }
+        let current_goal = goal.map(|prepared| prepared.definition);
         let standing_digest = admission.as_ref().map(|item| item.digest.clone());
-        let completion = match admission {
+        let mut completion = match admission {
             Some(admitted) => completion.with_standing(admitted.projection),
             None => completion,
         };
+        completion.goal_context = current_goal
+            .as_ref()
+            .map(|goal| {
+                let run_id = run_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("original Goal Run identity is absent"))?;
+                crate::goal_control::render_run_context(goal, run_id).map_err(anyhow::Error::from)
+            })
+            .transpose()?;
+        let durable_source =
+            crate::store::SessionFactSourceV1::from_facts(session_id, &shared_log.read(&thread)?)?;
+        let checkpoint = surface.checkpoint.map(|checkpoint| CheckpointState {
+            sink: checkpoint.sink,
+            run_id: checkpoint.run_id,
+            session_id: checkpoint.session_id,
+            capability_binding: checkpoint.capability_binding,
+            standing_context_digest: standing_digest.clone(),
+            durable_source: durable_source.clone(),
+            turns: Arc::new(AtomicUsize::new(0)),
+        });
+        let completion = completion.with_checkpoint(checkpoint.clone());
         let prompt_tokens = Arc::new(AtomicU64::new(0));
         let completion = Arc::new(UsageStamp {
             inner: Arc::new(completion),
@@ -2521,25 +4280,16 @@ impl FactRun {
         });
         let compactor = Arc::new(SessionCompact {
             client: Arc::clone(&client),
+            source: durable_source,
             events: surface.events.clone(),
             window_tokens: agent.context_window_tokens() as u64,
             prompt_tokens,
         });
-        let harness = surface.harness.clone();
-        let host_registry = surface.host_harness_registry.clone();
-        let host_assembler = surface.host_harness_assembler.clone();
-        let checkpoint = surface.checkpoint.map(|checkpoint| CheckpointState {
-            sink: checkpoint.sink,
-            run_id: checkpoint.run_id,
-            session_id: checkpoint.session_id,
-            capability_binding: checkpoint.capability_binding,
-            standing_context_digest: standing_digest.clone(),
-            turns: Arc::new(AtomicUsize::new(0)),
-        });
-        let mut run = Self::open_composed_with_hosts(
-            log_dir(workspace),
+        let mut run = Self::open_with_graph(
+            effect_dir,
             completion,
             Arc::new(ExecutorTools {
+                capability_operation: None,
                 executor,
                 calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint,
@@ -2552,25 +4302,48 @@ impl FactRun {
                 run_id,
                 ledger,
                 reports,
+                targeted_paths: Some(Arc::clone(&surface.targeted_paths)),
+                pre_tool_hook_resolved: false,
             }),
-            config,
+            step_limit,
             session_id,
-            FactRunHostMounts {
-                compose: harness.as_ref(),
-                registry: host_registry.as_deref(),
-                assembler: host_assembler.as_deref(),
-                compactor: Some(compactor),
-            },
+            graph,
+            Some(compactor),
         )?;
-        run.thread = thread_for_session(session_id);
+        run.thread = thread;
         run.admitted_tools = admitted_tools;
         run.admitted_permission = admitted_permission;
         run.standing_digest = standing_digest;
+        run.current_goal = current_goal;
+        run.cancel = surface.cancel.clone();
+        run.log = shared_log;
         Ok(run)
     }
 
-    fn open_log(&self) -> Result<FileLog> {
-        FileLog::open(&self.dir).map_err(|error| anyhow::anyhow!(error))
+    pub(crate) fn current_goal(&self) -> Option<&crate::goal_control::DurableGoalDefinitionV1> {
+        self.current_goal.as_ref()
+    }
+
+    fn open_log(&self) -> Result<Arc<FileLog>> {
+        Ok(Arc::clone(&self.log))
+    }
+
+    /// Commit a host recovery assertion through the original actor input
+    /// writer. This does not resume the actor or acquire a tool effect.
+    pub(crate) fn append_recovery_unproved(
+        &self,
+        checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
+        session_id: &str,
+    ) -> Result<()> {
+        let input = recovery_unproved::RecoveryUnprovedV1::from_checkpoint(
+            checkpoint,
+            session_id,
+            &self.thread,
+        )?;
+        let fact = input.into_fact()?;
+        a3s_effect::append_input(self.log.as_ref(), &self.thread, fact).map_err(|error| {
+            anyhow::anyhow!("tool_effect_recovery_unproved_append_failed: {error}")
+        })
     }
 
     pub fn read_facts(&self) -> Result<Vec<a3s_effect::Fact>> {
@@ -2579,11 +4352,47 @@ impl FactRun {
             .map_err(|error| anyhow::anyhow!(error))
     }
 
-    /// Drop this thread's log so a checkpoint resume is not a leftover session.
+    /// An authoritative thread is immutable. Legacy callers may check an
+    /// empty thread, but cannot erase preparation or settlement evidence.
     pub fn reset_thread_log(&self) -> Result<()> {
-        let path = self.dir.join(format!("{}.jsonl", self.thread));
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|error| anyhow::anyhow!(error))?;
+        if !self.read_facts()?.is_empty() {
+            anyhow::bail!(
+                "tool_effect_log_immutable: cannot reset thread '{}' in {}",
+                self.thread,
+                self.dir.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Import conversation only when no authoritative conversation exists.
+    /// An unverified terminal narrative may request verification again. A
+    /// prepared invocation without its terminal is resumed at its original
+    /// position so the actor records Unknown instead of losing that debt.
+    pub(crate) fn seed_recovery_history(&self, history: &[Message], prompt: &str) -> Result<()> {
+        self.seed_history(history)?;
+        let facts = self.read_facts()?;
+        let debt = receipts::fold_debt(&facts);
+        if !debt.unresolved.is_empty() || debt.paths.is_empty() {
+            return Ok(());
+        }
+        let terminal_narrative = facts
+            .iter()
+            .rev()
+            .find(|fact| fact.kind == "model.turn")
+            .is_some_and(|fact| fact.payload["kind"] == "text");
+        if terminal_narrative {
+            let text = format!("{prompt}\n\n[recovery] Verify the already recorded workspace changes: {}. Do not repeat completed mutations.", debt.paths.join(", "));
+            self.log
+                .append(
+                    &self.thread,
+                    &[message_fact(
+                        format!("recovery-input:{}", facts.len()),
+                        text,
+                    )],
+                    None,
+                )
+                .map_err(|error| anyhow::anyhow!(error))?;
         }
         Ok(())
     }
@@ -2592,71 +4401,9 @@ impl FactRun {
     ///
     /// Each assistant text is a `model.turn` whose cause is `infer:{turn}:{cycle}`.
     /// An existing conversation log is already the control source and is left
-    /// unchanged. A standing-context digest alone is not that conversation.
+    /// unchanged. Standing-context and policy metadata are not that conversation.
     pub fn seed_history(&self, history: &[Message]) -> Result<()> {
-        let log = self.open_log()?;
-        let existing = log
-            .read(&self.thread)
-            .map_err(|error| anyhow::anyhow!(error))?;
-        if existing
-            .iter()
-            .any(|fact| fact.kind != crate::standing_context::STANDING_CONTEXT_FACT_KIND)
-        {
-            return Ok(());
-        }
-        let mut turn = 0u64;
-        let mut cycle = 0u64;
-        for message in history {
-            match message.role.as_str() {
-                "user" => {
-                    turn += 1;
-                    cycle = 0;
-                    if let Some(seeded) = seeded_tool(message) {
-                        // The tool turn consumes `infer:{turn}:0`. The new
-                        // prompt is the next user message and gets its own infer.
-                        log.append(
-                            &self.thread,
-                            &[message_fact(
-                                format!("m-hist-{turn}"),
-                                seeded_user_text(message),
-                            )],
-                            None,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error))?;
-                        append_seeded_tool(&log, &self.thread, turn, &seeded)?;
-                    } else {
-                        log.append(
-                            &self.thread,
-                            &[message_fact(
-                                format!("m-hist-{turn}"),
-                                seeded_user_text(message),
-                            )],
-                            None,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error))?;
-                    }
-                }
-                "assistant" => {
-                    let payload = serde_json::to_value(ModelDecision::Text {
-                        text: message.text(),
-                    })
-                    .map_err(|error| anyhow::anyhow!(error))?;
-                    log.append(
-                        &self.thread,
-                        &[NewFact {
-                            kind: "model.turn".into(),
-                            key: format!("model:{turn}:{cycle}"),
-                            payload,
-                        }],
-                        Some(&format!("infer:{turn}:{cycle}")),
-                    )
-                    .map_err(|error| anyhow::anyhow!(error))?;
-                    cycle += 1;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        seed_history(self.open_log()?.as_ref(), &self.thread, history)
     }
 
     pub async fn user_text(&self, text: &str) -> Result<a3s_effect::Settlement<CodingView>> {
@@ -2675,13 +4422,14 @@ impl FactRun {
     ) -> Result<a3s_effect::Settlement<CodingView>> {
         let log = self.open_log()?;
         let key = format!("m-{}", log.read(&self.thread).unwrap_or_default().len());
-        ingest_coding(
+        ingest_coding_with_cancel(
             &self.actor,
-            &log,
+            log.as_ref(),
             Arc::clone(&self.services),
             &self.thread,
             user_message_fact(key, text, attachments),
             self.limit,
+            &self.cancel,
         )
         .await
         .map_err(exit_to_error)
@@ -2693,12 +4441,13 @@ impl FactRun {
 
     pub async fn resume_limit(&self, limit: u32) -> Result<a3s_effect::Settlement<CodingView>> {
         let log = self.open_log()?;
-        resume_coding(
+        resume_coding_with_cancel(
             &self.actor,
-            &log,
+            log.as_ref(),
             Arc::clone(&self.services),
             &self.thread,
             limit,
+            &self.cancel,
         )
         .await
         .map_err(exit_to_error)
@@ -2711,13 +4460,14 @@ impl FactRun {
     ) -> Result<a3s_effect::Settlement<CodingView>> {
         let log = self.open_log()?;
         let key = format!("c-{}", log.read(&self.thread).unwrap_or_default().len());
-        ingest_coding(
+        ingest_coding_with_cancel(
             &self.actor,
-            &log,
+            log.as_ref(),
             Arc::clone(&self.services),
             &self.thread,
             confirm_fact(key, tool_call_id, approved),
             self.limit,
+            &self.cancel,
         )
         .await
         .map_err(exit_to_error)
@@ -2754,13 +4504,14 @@ impl FactRun {
     pub async fn answer(&self, text: &str) -> Result<a3s_effect::Settlement<CodingView>> {
         let log = self.open_log()?;
         let key = format!("a-{}", log.read(&self.thread).unwrap_or_default().len());
-        ingest_coding(
+        ingest_coding_with_cancel(
             &self.actor,
-            &log,
+            log.as_ref(),
             Arc::clone(&self.services),
             &self.thread,
             answer_fact(key, text),
             self.limit,
+            &self.cancel,
         )
         .await
         .map_err(exit_to_error)
@@ -2783,7 +4534,8 @@ impl FactRun {
 }
 
 pub fn read_workspace_facts(workspace: &Path, thread: &str) -> Result<Vec<a3s_effect::Fact>> {
-    let log = FileLog::open(log_dir(workspace)).map_err(|error| anyhow::anyhow!(error))?;
+    let log = FileLog::open(crate::session_folder::effect_log_dir(workspace, thread))
+        .map_err(|error| anyhow::anyhow!(error))?;
     log.read(thread).map_err(|error| anyhow::anyhow!(error))
 }
 
@@ -2791,6 +4543,22 @@ pub fn read_workspace_facts(workspace: &Path, thread: &str) -> Result<Vec<a3s_ef
 /// live fold does not replay. A prior `compaction.done` summary is the prefix.
 pub(crate) fn compaction_transcript(workspace: &Path, session_id: &str) -> Result<Vec<Message>> {
     let facts = read_workspace_facts(workspace, &thread_for_session(session_id))?;
+    Ok(compaction_transcript_from_facts(&facts))
+}
+
+/// Project the latest transcript from the original pinned log, also on Err.
+pub(crate) fn retained_transcript(surface: &SessionSurface) -> Result<Vec<Message>, ActorError> {
+    let log = surface_fact_log(surface)?;
+    let facts = log.read(&thread_for_session(&surface.session_id))?;
+    let messages = checkpoints::checkpoint_messages_from_facts(&facts);
+    *surface
+        .transcript
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = messages.clone();
+    Ok(messages)
+}
+
+pub(crate) fn compaction_transcript_from_facts(facts: &[a3s_effect::Fact]) -> Vec<Message> {
     let start = facts
         .iter()
         .rposition(|fact| fact.kind == "compaction.done")
@@ -2819,7 +4587,7 @@ pub(crate) fn compaction_transcript(workspace: &Path, session_id: &str) -> Resul
             messages.push(message);
         }
     }
-    Ok(messages)
+    messages
 }
 
 /// Record a host summary without resuming the actor.
@@ -2828,13 +4596,20 @@ pub(crate) fn compaction_transcript(workspace: &Path, session_id: &str) -> Resul
 /// summary instead of the older transcript. Leaving the log idle here does
 /// not start an inference.
 pub(crate) fn append_compaction_done(
-    workspace: &Path,
+    log: &FileLog,
+    writer: &a3s_effect::FileLogWriterFence,
     session_id: &str,
     summary: &str,
+    source: Option<&crate::store::SessionFactSourceV1>,
 ) -> Result<()> {
     let thread = thread_for_session(session_id);
-    let log = FileLog::open(log_dir(workspace)).map_err(|error| anyhow::anyhow!(error))?;
+    if !writer.is_for(log)? {
+        anyhow::bail!("compaction requires the original log writer");
+    }
     let existing = log.read(&thread).map_err(|error| anyhow::anyhow!(error))?;
+    if crate::store::SessionFactSourceV1::from_facts(session_id, &existing)?.as_ref() != source {
+        anyhow::bail!("compaction durable source changed before append");
+    }
     let fact = NewFact {
         kind: "compaction.done".into(),
         key: format!("compaction:{}", existing.len()),
@@ -2921,1891 +4696,66 @@ pub fn project_needs_confirmation(policy: &PermissionPolicy, tool_name: &str) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
+#[path = "fact_control_tests.rs"]
+mod tests;
 
-    struct ScriptModel {
-        decisions: Mutex<Vec<Result<ModelDecision, ActorError>>>,
-        calls: Arc<AtomicUsize>,
-        tool_counts: Mutex<Vec<usize>>,
-        messages: Mutex<Vec<Vec<String>>>,
-    }
+#[cfg(test)]
+mod unsettled_debt_tests {
+    use super::unsettled_mutation_paths;
+    use a3s_effect::Fact;
 
-    impl Completion for ScriptModel {
-        fn complete(
-            &self,
-            request: CompletionRequest,
-        ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.tool_counts.lock().unwrap().push(request.tools.len());
-            self.messages.lock().unwrap().push(request.messages.clone());
-            let decision =
-                self.decisions
-                    .lock()
-                    .unwrap()
-                    .pop()
-                    .unwrap_or(Ok(ModelDecision::Text {
-                        text: "empty".into(),
-                    }));
-            Box::pin(async move { decision })
+    fn fact(kind: &str, payload: serde_json::Value) -> Fact {
+        Fact {
+            seq: 0,
+            kind: kind.to_string(),
+            key: String::new(),
+            cause: None,
+            payload,
         }
-    }
-
-    struct ReportingModel {
-        inner: ScriptModel,
-        reports: Mutex<Vec<Option<u64>>>,
-        last: AtomicU64,
-    }
-
-    impl Completion for ReportingModel {
-        fn complete(
-            &self,
-            request: CompletionRequest,
-        ) -> a3s_effect::coding::BoxFuture<Result<ModelDecision, ActorError>> {
-            let reported = self.reports.lock().unwrap().pop().flatten().unwrap_or(0);
-            self.last.store(reported, Ordering::SeqCst);
-            self.inner.complete(request)
-        }
-
-        fn reported_prompt_tokens(&self) -> Option<u64> {
-            let tokens = self.last.load(Ordering::SeqCst);
-            (tokens > 0).then_some(tokens)
-        }
-    }
-
-    struct ScriptTools {
-        calls: Arc<AtomicUsize>,
-        fail_first: AtomicUsize,
-    }
-
-    struct IdTools;
-
-    impl ToolRunner for IdTools {
-        fn run(
-            &self,
-            call: ToolCall,
-        ) -> a3s_effect::coding::BoxFuture<Result<serde_json::Value, ActorError>> {
-            let id = call.id;
-            Box::pin(async move { Ok(serde_json::json!(format!("output-{id}"))) })
-        }
-    }
-
-    impl ToolRunner for ScriptTools {
-        fn run(
-            &self,
-            call: ToolCall,
-        ) -> a3s_effect::coding::BoxFuture<Result<serde_json::Value, ActorError>> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            let fail = self.fail_first.load(Ordering::SeqCst) > 0 && n == 0;
-            let name = call.name;
-            Box::pin(async move {
-                if fail {
-                    Err(ActorError::Handler {
-                        key: name,
-                        message: "down".into(),
-                    })
-                } else {
-                    Ok(serde_json::json!(format!("ran {name}")))
-                }
-            })
-        }
-    }
-
-    fn config(cap: Option<u32>, budget: u32) -> HarnessConfig {
-        let config = HarnessConfig::new(
-            budget,
-            1_000_000,
-            16,
-            2,
-            vec!["system".into()],
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap();
-        match cap {
-            Some(cap) => config.with_tool_round_cap(cap),
-            None => config,
-        }
-    }
-
-    fn run_with(
-        decisions: Vec<Result<ModelDecision, ActorError>>,
-        cap: Option<u32>,
-        budget: u32,
-        fail_first: bool,
-    ) -> (
-        tempfile::TempDir,
-        FactRun,
-        Arc<AtomicUsize>,
-        Arc<AtomicUsize>,
-        Arc<ScriptModel>,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let tool_calls = Arc::new(AtomicUsize::new(0));
-        let model = Arc::new(ScriptModel {
-            decisions: Mutex::new(decisions.into_iter().rev().collect()),
-            calls: Arc::clone(&calls),
-            tool_counts: Mutex::new(Vec::new()),
-            messages: Mutex::new(Vec::new()),
-        });
-        let fact = FactRun::open(
-            dir.path(),
-            model.clone(),
-            Arc::new(ScriptTools {
-                calls: Arc::clone(&tool_calls),
-                fail_first: AtomicUsize::new(usize::from(fail_first)),
-            }),
-            config(cap, budget),
-            {
-                static FACT_RUNS: AtomicUsize = AtomicUsize::new(0);
-                format!("run-{}", FACT_RUNS.fetch_add(1, Ordering::Relaxed))
-            },
-        )
-        .unwrap();
-        (dir, fact, calls, tool_calls, model)
-    }
-
-    #[tokio::test]
-    async fn fact_log_second_resume_does_not_call_the_model() {
-        let (_dir, fact, calls, tools, _) = run_with(
-            vec![Ok(ModelDecision::Text { text: "hi".into() })],
-            None,
-            4,
-            false,
-        );
-        let settled = fact.user_text("hello").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Done);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let again = fact.resume_limit(8).await.unwrap();
-        assert_eq!(again.steps, 0);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-        let facts = fact.read_facts().unwrap();
-        assert!(facts.iter().any(|fact| fact.kind == "model.turn"));
-    }
-
-    #[tokio::test]
-    async fn fact_log_non_decision_sets_schema_error_without_a_tool_or_parse_retry() {
-        let (_dir, fact, calls, tools, _) = run_with(vec![], None, 4, false);
-        fact.append_model_turn(serde_json::json!({"kind": "nope"}))
-            .await
-            .unwrap();
-        let settled = fact.resume_limit(8).await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Done);
-        assert!(settled.view.schema_error.is_some());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn fact_log_denial_does_not_run_the_tool() {
-        let (_dir, fact, _, tools, _) = run_with(
-            vec![Ok(ModelDecision::Tool {
-                call: ToolCall {
-                    id: "t1".into(),
-                    name: "read".into(),
-                    args: serde_json::json!({}),
-                    needs_confirmation: true,
-                    text: None,
-                    reasoning: None,
-                },
-
-                also: Vec::new(),
-            })],
-            None,
-            4,
-            false,
-        );
-        let parked = fact.user_text("read it").await.unwrap();
-        assert_eq!(parked.view.phase, CodingPhase::Confirm);
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-        let denied = fact.confirm("t1", false).await.unwrap();
-        assert_eq!(denied.view.assistant.as_deref(), Some("denied"));
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn fact_log_question_options_and_allow_free_text_survive_reopen() {
-        let (dir, fact, calls, tools, _) = run_with(
-            vec![Ok(ModelDecision::Question {
-                question_id: "q1".into(),
-                question: "Which?".into(),
-                allow_free_text: true,
-                options: vec!["left".into(), "right".into()],
-            })],
-            None,
-            4,
-            false,
-        );
-        let parked = fact.user_text("ask").await.unwrap();
-        assert_eq!(parked.view.phase, CodingPhase::Question);
-        drop(parked);
-        let reopened = FactRun::open(
-            dir.path(),
-            Arc::new(ScriptModel {
-                decisions: Mutex::new(vec![]),
-                calls: Arc::clone(&calls),
-                tool_counts: Mutex::new(Vec::new()),
-                messages: Mutex::new(Vec::new()),
-            }),
-            Arc::new(ScriptTools {
-                calls: Arc::new(AtomicUsize::new(0)),
-                fail_first: AtomicUsize::new(0),
-            }),
-            config(None, 4),
-            "run-fact-2",
-        )
-        .unwrap();
-        let still = reopened.resume_limit(8).await.unwrap();
-        assert_eq!(still.steps, 0);
-        let question = still.view.pending_question.expect("question");
-        assert!(question.allow_free_text);
-        assert_eq!(
-            question.options,
-            vec!["left".to_string(), "right".to_string()]
-        );
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn fact_log_question_stays_parked_until_the_answer_fact() {
-        let (_dir, fact, calls, _, _) = run_with(
-            vec![
-                Ok(ModelDecision::Question {
-                    question_id: "q1".into(),
-                    question: "Which?".into(),
-                    allow_free_text: true,
-                    options: vec!["left".into(), "right".into()],
-                }),
-                Ok(ModelDecision::Text {
-                    text: "left".into(),
-                }),
-            ],
-            None,
-            4,
-            false,
-        );
-        let parked = fact.user_text("ask").await.unwrap();
-        assert_eq!(parked.view.phase, CodingPhase::Question);
-        let calls_while_parked = calls.load(Ordering::SeqCst);
-        let resumed = fact.resume_limit(4).await.unwrap();
-        assert_eq!(resumed.steps, 0);
-        assert_eq!(resumed.view.phase, CodingPhase::Question);
-        assert_eq!(calls.load(Ordering::SeqCst), calls_while_parked);
-        assert!(resumed
-            .log
-            .iter()
-            .all(|fact| fact.kind != "question.answered"));
-        let answered = fact.answer("left").await.unwrap();
-        assert!(answered
-            .log
-            .iter()
-            .any(|fact| fact.kind == "question.answered"));
-        assert_eq!(answered.view.phase, CodingPhase::Done);
-        assert!(calls.load(Ordering::SeqCst) > calls_while_parked);
-    }
-
-    #[tokio::test]
-    async fn fact_log_missing_tool_result_runs_once_and_does_not_ask_the_model_again() {
-        let (_dir, fact, calls, tools, _) = run_with(
-            vec![Ok(ModelDecision::Tool {
-                call: ToolCall {
-                    id: "t1".into(),
-                    name: "read".into(),
-                    args: serde_json::json!({}),
-                    needs_confirmation: false,
-                    text: None,
-                    reasoning: None,
-                },
-
-                also: Vec::new(),
-            })],
-            None,
-            4,
-            true,
-        );
-        let failed = fact.user_text("go").await;
-        assert!(failed.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(tools.load(Ordering::SeqCst), 1);
-        let again = fact.resume_limit(1).await;
-        assert!(again.is_err(), "the step limit stops the following infer");
-        assert_eq!(tools.load(Ordering::SeqCst), 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn fact_log_step_limit_does_not_start_a_pending_transition() {
-        let (_dir, fact, calls, _, _) = run_with(vec![], None, 4, false);
-        let log = fact.open_log().unwrap();
-        log.append(THREAD, &[message_fact("m1", "hello")], None)
-            .unwrap();
-        drop(log);
-        let error = match fact.resume_limit(0).await {
-            Ok(_) => panic!("a pending transition at limit 0 must not run"),
-            Err(error) => error,
-        };
-        let rendered = format!("{error:#}");
-        assert!(rendered.contains("StepLimit"), "{rendered}");
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn fact_log_budget_does_not_call_the_tool_body() {
-        let (_dir, fact, _, tools, _) = run_with(
-            vec![
-                Ok(ModelDecision::Tool {
-                    call: ToolCall {
-                        id: "t1".into(),
-                        name: "read".into(),
-                        args: serde_json::json!({}),
-                        needs_confirmation: false,
-                        text: None,
-                        reasoning: None,
-                    },
-
-                    also: Vec::new(),
-                }),
-                Ok(ModelDecision::Tool {
-                    call: ToolCall {
-                        id: "t2".into(),
-                        name: "read".into(),
-                        args: serde_json::json!({}),
-                        needs_confirmation: false,
-                        text: None,
-                        reasoning: None,
-                    },
-
-                    also: Vec::new(),
-                }),
-            ],
-            None,
-            1,
-            false,
-        );
-        let settled = fact.user_text("two tools").await.unwrap();
-        assert_eq!(tools.load(Ordering::SeqCst), 1);
-        assert!(settled.log.iter().any(|fact| fact.kind == "budget.denied"));
     }
 
     #[test]
-    fn effort_tool_rounds_are_the_fact_budget() {
-        let config = session_harness_config(1_200, 1_000_000, Vec::new()).expect("config");
-        assert_eq!(config.budget(), 1_200);
-        assert_eq!(config.tool_round_cap(), Some(1_200));
-        assert_eq!(config.model_attempts(), 2);
-        assert!(config.step_limit() >= 4_800);
-
-        let overridden =
-            session_harness_config_with(5, 1_000, Vec::new(), Some(11), Some(4)).expect("limits");
-        assert_eq!(overridden.budget(), 5);
-        assert_eq!(overridden.tool_round_cap(), Some(5));
-        assert_eq!(overridden.step_limit(), 11);
-        assert_eq!(overridden.model_attempts(), 4);
-        assert!(session_harness_config_with(5, 1_000, Vec::new(), None, Some(0)).is_err());
-        assert!(session_harness_config_with(5, 1_000, Vec::new(), Some(0), None).is_err());
-    }
-
-    #[tokio::test]
-    async fn effort_tool_budget_runs_every_round_before_deny() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool_calls = Arc::new(AtomicUsize::new(0));
-        let model = Arc::new(ScriptModel {
-            decisions: Mutex::new(
-                (1..=4)
-                    .rev()
-                    .map(|index| {
-                        Ok(ModelDecision::Tool {
-                            call: ToolCall {
-                                id: format!("t{index}"),
-                                name: "read".into(),
-                                args: serde_json::json!({}),
-                                needs_confirmation: false,
-                                text: None,
-                                reasoning: None,
-                            },
-
-                            also: Vec::new(),
-                        })
-                    })
-                    .collect(),
-            ),
-            calls: Arc::new(AtomicUsize::new(0)),
-            tool_counts: Mutex::new(Vec::new()),
-            messages: Mutex::new(Vec::new()),
-        });
-        let config = session_harness_config(
-            3,
-            1_000_000,
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap();
-        let fact = FactRun::open(
-            dir.path(),
-            model,
-            Arc::new(ScriptTools {
-                calls: Arc::clone(&tool_calls),
-                fail_first: AtomicUsize::new(0),
-            }),
-            config,
-            "effort-budget",
-        )
-        .unwrap();
-        let settled = fact.user_text("four tools").await.unwrap();
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 3);
-        assert!(settled.log.iter().any(|fact| fact.kind == "budget.denied"));
-    }
-
-    #[tokio::test]
-    async fn effort_ceiling_asks_for_a_final_answer_before_denying() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool_calls = Arc::new(AtomicUsize::new(0));
-        let model = Arc::new(ScriptModel {
-            decisions: Mutex::new(vec![
-                Ok(ModelDecision::Text {
-                    text: "done".into(),
-                }),
-                Ok(ModelDecision::Tool {
-                    call: ToolCall {
-                        id: "t2".into(),
-                        name: "read".into(),
-                        args: serde_json::json!({}),
-                        needs_confirmation: false,
-                        text: None,
-                        reasoning: None,
-                    },
-
-                    also: Vec::new(),
-                }),
-                Ok(ModelDecision::Tool {
-                    call: ToolCall {
-                        id: "t1".into(),
-                        name: "read".into(),
-                        args: serde_json::json!({}),
-                        needs_confirmation: false,
-                        text: None,
-                        reasoning: None,
-                    },
-
-                    also: Vec::new(),
-                }),
-            ]),
-            calls: Arc::new(AtomicUsize::new(0)),
-            tool_counts: Mutex::new(Vec::new()),
-            messages: Mutex::new(Vec::new()),
-        });
-        let config = session_harness_config(
-            2,
-            1_000_000,
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap();
-        let fact = FactRun::open(
-            dir.path(),
-            model.clone(),
-            Arc::new(ScriptTools {
-                calls: Arc::clone(&tool_calls),
-                fail_first: AtomicUsize::new(0),
-            }),
-            config,
-            "effort-wrap-up",
-        )
-        .unwrap();
-        let settled = fact.user_text("finish").await.unwrap();
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
-        assert!(settled.log.iter().all(|fact| fact.kind != "budget.denied"));
-        assert_eq!(model.tool_counts.lock().unwrap().last().copied(), Some(0));
-    }
-
-    #[tokio::test]
-    async fn auto_compact_keeps_the_latest_tool_pair_and_continues() {
-        let user = "user\nhi";
-        let call = format!("assistant\ntool read\n{}", serde_json::json!({}));
-        let first = "tool\noutput-t1";
-        let after_first = user.len() + call.len() + first.len();
-        let dir = tempfile::tempdir().unwrap();
-        let model = Arc::new(ScriptModel {
-            decisions: Mutex::new(
-                vec![
-                    Ok(ModelDecision::Tool {
-                        call: ToolCall {
-                            id: "t1".into(),
-                            name: "read".into(),
-                            args: serde_json::json!({}),
-                            needs_confirmation: false,
-                            text: None,
-                            reasoning: None,
-                        },
-
-                        also: Vec::new(),
-                    }),
-                    Ok(ModelDecision::Tool {
-                        call: ToolCall {
-                            id: "t2".into(),
-                            name: "read".into(),
-                            args: serde_json::json!({}),
-                            needs_confirmation: false,
-                            text: None,
-                            reasoning: None,
-                        },
-
-                        also: Vec::new(),
-                    }),
-                    Ok(ModelDecision::Text {
-                        text: "done".into(),
-                    }),
-                ]
-                .into_iter()
-                .rev()
-                .collect(),
-            ),
-            calls: Arc::new(AtomicUsize::new(0)),
-            tool_counts: Mutex::new(Vec::new()),
-            messages: Mutex::new(Vec::new()),
-        });
-        let config = session_harness_config(
-            8,
-            after_first + 1,
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap();
-        let fact = FactRun::open(
-            dir.path(),
-            model.clone(),
-            Arc::new(IdTools),
-            config,
-            "auto-compact",
-        )
-        .unwrap();
-        let settled = fact.user_text("hi").await.unwrap();
-        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
-        assert!(settled.view.phase != CodingPhase::Compact);
-        let summary = settled
-            .log
-            .iter()
-            .rev()
-            .find(|fact| fact.kind == "compaction.done")
-            .and_then(|fact| fact.payload.get("summary"))
-            .and_then(|value| value.as_str())
-            .expect("summary");
-        assert!(summary.contains("output-t1"));
-        assert!(!summary.contains("output-t2"));
-        let last = model
-            .messages
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("final infer");
-        assert!(last.iter().any(|line| line.contains("output-t2")));
-        assert!(last.iter().all(|line| !line.contains("output-t1")));
-        assert!(last.iter().any(|line| line.starts_with("assistant\ntool ")));
-    }
-
-    #[tokio::test]
-    async fn auto_compact_triggers_on_provider_tokens_and_keeps_a_recent_tail() {
-        let dir = tempfile::tempdir().unwrap();
-        let model = Arc::new(ReportingModel {
-            inner: ScriptModel {
-                decisions: Mutex::new(
-                    vec![
-                        Ok(ModelDecision::Tool {
-                            call: ToolCall {
-                                id: "t1".into(),
-                                name: "read".into(),
-                                args: serde_json::json!({}),
-                                needs_confirmation: false,
-                                text: None,
-                                reasoning: None,
-                            },
-
-                            also: Vec::new(),
-                        }),
-                        Ok(ModelDecision::Tool {
-                            call: ToolCall {
-                                id: "t2".into(),
-                                name: "read".into(),
-                                args: serde_json::json!({ "n": 2 }),
-                                needs_confirmation: false,
-                                text: None,
-                                reasoning: None,
-                            },
-
-                            also: Vec::new(),
-                        }),
-                        Ok(ModelDecision::Tool {
-                            call: ToolCall {
-                                id: "t3".into(),
-                                name: "read".into(),
-                                args: serde_json::json!({ "n": 3 }),
-                                needs_confirmation: false,
-                                text: None,
-                                reasoning: None,
-                            },
-
-                            also: Vec::new(),
-                        }),
-                        Ok(ModelDecision::Text {
-                            text: "done".into(),
-                        }),
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                ),
-                calls: Arc::new(AtomicUsize::new(0)),
-                tool_counts: Mutex::new(Vec::new()),
-                messages: Mutex::new(Vec::new()),
-            },
-            reports: Mutex::new(
-                vec![Some(10), Some(10), Some(100), Some(100)]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-            ),
-            last: AtomicU64::new(0),
-        });
-        let call = format!("assistant\ntool read\n{}", serde_json::json!({"n": 2}));
-        let second = "tool\noutput-t2";
-        let third_call = format!("assistant\ntool read\n{}", serde_json::json!({"n": 3}));
-        let third = "tool\noutput-t3";
-        let keep = call.len().div_ceil(4)
-            + second.len().div_ceil(4)
-            + third_call.len().div_ceil(4)
-            + third.len().div_ceil(4)
-            + 8;
-        let config = session_harness_config(
-            8,
-            1_000_000,
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap()
-        .with_token_compact(100, keep);
-        let fact = FactRun::open(
-            dir.path(),
-            model.clone(),
-            Arc::new(IdTools),
-            config,
-            "token-compact",
-        )
-        .unwrap();
-        let settled = fact.user_text("hi").await.unwrap();
-        assert_eq!(settled.view.assistant.as_deref(), Some("done"));
-        let summary = settled
-            .log
-            .iter()
-            .rev()
-            .find(|fact| fact.kind == "compaction.done")
-            .and_then(|fact| fact.payload.get("summary"))
-            .and_then(|value| value.as_str())
-            .expect("summary");
-        assert!(summary.contains("output-t1"));
-        assert!(!summary.contains("output-t3"));
-        let last = model
-            .inner
-            .messages
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("final infer");
-        assert!(last.iter().any(|line| line.contains("output-t2")));
-        assert!(last.iter().any(|line| line.contains("output-t3")));
-        assert!(last.iter().all(|line| !line.contains("output-t1")));
-    }
-
-    #[tokio::test]
-    async fn repeated_tool_call_is_a_nudge_and_the_turn_continues() {
-        let dir = tempfile::tempdir().unwrap();
-        let args = serde_json::json!({});
-        let model = Arc::new(ScriptModel {
-            decisions: Mutex::new(
-                vec![
-                    Ok(ModelDecision::Tool {
-                        call: ToolCall {
-                            id: "t1".into(),
-                            name: "read".into(),
-                            args: args.clone(),
-                            needs_confirmation: false,
-                            text: None,
-                            reasoning: None,
-                        },
-
-                        also: Vec::new(),
-                    }),
-                    Ok(ModelDecision::Tool {
-                        call: ToolCall {
-                            id: "t2".into(),
-                            name: "read".into(),
-                            args: args.clone(),
-                            needs_confirmation: false,
-                            text: None,
-                            reasoning: None,
-                        },
-
-                        also: Vec::new(),
-                    }),
-                    Ok(ModelDecision::Tool {
-                        call: ToolCall {
-                            id: "t3".into(),
-                            name: "read".into(),
-                            args: args,
-                            needs_confirmation: false,
-                            text: None,
-                            reasoning: None,
-                        },
-
-                        also: Vec::new(),
-                    }),
-                    Ok(ModelDecision::Text {
-                        text: "changed".into(),
-                    }),
-                ]
-                .into_iter()
-                .rev()
-                .collect(),
-            ),
-            calls: Arc::new(AtomicUsize::new(0)),
-            tool_counts: Mutex::new(Vec::new()),
-            messages: Mutex::new(Vec::new()),
-        });
-        let calls = Arc::new(AtomicUsize::new(0));
-        let config = session_harness_config(
-            8,
-            1_000_000,
-            vec![ToolSpec {
-                name: "read".into(),
-                description: "Read".into(),
-            }],
-        )
-        .unwrap()
-        .with_duplicate_threshold(2);
-        let fact = FactRun::open(
-            dir.path(),
-            model.clone(),
-            Arc::new(ScriptTools {
-                calls: Arc::clone(&calls),
-                fail_first: AtomicUsize::new(0),
-            }),
-            config,
-            "duplicate-nudge",
-        )
-        .unwrap();
-        let settled = fact.user_text("hi").await.unwrap();
-        assert_eq!(settled.view.assistant.as_deref(), Some("changed"));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        let last = model
-            .messages
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("final");
-        assert!(last.iter().any(|line| {
-            line.starts_with("tool-error\n") && line.contains("Change your approach")
-        }));
-        let nudge = settled
-            .log
-            .iter()
-            .find(|fact| {
-                fact.kind == "tool.result"
-                    && fact
-                        .payload
-                        .get("output")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|output| output.contains("Change your approach"))
-            })
-            .expect("nudge result");
-        assert_eq!(
-            nudge.payload.get("ok").and_then(|value| value.as_bool()),
-            Some(false)
+    fn unsettled_mutation_paths_reads_only_past_the_last_settlement() {
+        let settled = fact("turn.complete", serde_json::json!({"terminal": "verified"}));
+        let mut mutation_turn = fact(
+            "model.turn",
+            serde_json::json!({"kind": "tool", "call": {"id":"edit-one", "name": "edit", "args": {"file_path": "src/lib.rs"}}}),
         );
-        assert_eq!(
-            nudge
-                .payload
-                .get("countRun")
-                .and_then(|value| value.as_bool()),
-            Some(true)
-        );
-    }
-
-    fn tool_response(calls: Vec<(&str, &str, serde_json::Value)>) -> LlmResponse {
-        LlmResponse {
-            message: Message {
-                role: "assistant".into(),
-                content: calls
-                    .into_iter()
-                    .map(|(id, name, args)| crate::llm::ContentBlock::ToolUse {
-                        id: id.into(),
-                        name: name.into(),
-                        input: args,
-                    })
-                    .collect(),
-                reasoning_content: None,
-                transcript_text: None,
-                transcript_visibility: crate::llm::TranscriptVisibility::Wire,
-            },
-            usage: crate::llm::TokenUsage::default(),
-            stop_reason: Some("tool_calls".into()),
-            token_logprobs: Vec::new(),
-            meta: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn one_response_keeps_every_non_question_tool_call() {
-        let policy = PermissionPolicy::default();
-        let both = decision_from_response(
-            &tool_response(vec![
-                ("a", "read_file", serde_json::json!({"path": "a.rs"})),
-                ("b", "grep", serde_json::json!({"pattern": "fn"})),
-            ]),
-            &policy,
-            None,
-        )
-        .await;
-        match both {
-            ModelDecision::Tool { call, also } => {
-                assert_eq!(call.id, "a");
-                assert_eq!(also.len(), 1);
-                assert_eq!(also[0].id, "b");
-            }
-            other => panic!("expected both calls, got {other:?}"),
-        }
-        let mixed = decision_from_response(
-            &tool_response(vec![
-                ("q", "ask_user", serde_json::json!({"question": "which?"})),
-                ("g", "grep", serde_json::json!({"pattern": "fn"})),
-            ]),
-            &policy,
-            None,
-        )
-        .await;
-        match mixed {
-            ModelDecision::Tool { call, also } => {
-                assert_eq!(call.name, "grep");
-                assert!(also.is_empty());
-            }
-            other => panic!("expected the non-question call, got {other:?}"),
-        }
-        let only_question = decision_from_response(
-            &tool_response(vec![(
-                "q",
-                "ask_user",
-                serde_json::json!({"question": "which?"}),
-            )]),
-            &policy,
-            None,
-        )
-        .await;
-        assert!(matches!(only_question, ModelDecision::Question { .. }));
-    }
-
-    #[test]
-    fn parallel_batches_are_reads_or_distinct_writes() {
-        let read = |id: &str, path: &str| ToolCall {
-            id: id.into(),
-            name: "read_file".into(),
-            args: serde_json::json!({ "path": path }),
-            needs_confirmation: false,
-            text: None,
-            reasoning: None,
-        };
-        let write = |id: &str, path: &str| ToolCall {
-            id: id.into(),
-            name: "write_file".into(),
-            args: serde_json::json!({ "path": path }),
-            needs_confirmation: false,
-            text: None,
-            reasoning: None,
-        };
-        assert!(!batch_can_run_in_parallel(&[read("a", "a.rs")]));
-        assert!(batch_can_run_in_parallel(&[
-            read("a", "a.rs"),
-            read("b", "b.rs")
-        ]));
-        assert!(batch_can_run_in_parallel(&[
-            write("a", "a.rs"),
-            write("b", "b.rs")
-        ]));
-        assert!(!batch_can_run_in_parallel(&[
-            write("a", "a.rs"),
-            write("b", "a.rs")
-        ]));
-        assert!(!batch_can_run_in_parallel(&[
-            read("a", "a.rs"),
-            write("b", "b.rs")
-        ]));
-        let bash = ToolCall {
-            id: "sh".into(),
-            name: "bash".into(),
-            args: serde_json::json!({}),
-            needs_confirmation: false,
-            text: None,
-            reasoning: None,
-        };
-        assert!(!batch_can_run_in_parallel(&[bash.clone(), bash]));
-    }
-
-    struct FailingSummaryClient;
-
-    #[async_trait::async_trait]
-    impl LlmClient for FailingSummaryClient {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> Result<LlmResponse> {
-            anyhow::bail!("summary down")
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
-            anyhow::bail!("unused")
-        }
-    }
-
-    #[tokio::test]
-    async fn a_failed_model_summary_still_shrinks_the_prefix() {
-        let client = Arc::new(FailingSummaryClient);
-        let huge = "y".repeat(40_000);
-        let summary = compact_handoff(
-            client.as_ref(),
-            &[format!("user\n{huge}"), "user\nkeep".into()],
-            128_000,
-        )
-        .await;
-        assert!(summary.contains("[earlier transcript compacted]"));
-        assert!(!summary.contains(&huge));
-    }
-
-    #[tokio::test]
-    async fn fact_log_tool_round_cap_uses_an_empty_tool_list() {
-        let (_dir, fact, calls, _, model) = run_with(
-            vec![Ok(ModelDecision::Text { text: "ok".into() })],
-            Some(0),
-            4,
-            false,
-        );
-        fact.user_text("hello").await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(model.tool_counts.lock().unwrap().as_slice(), &[0]);
-        assert!(model
-            .messages
-            .lock()
-            .unwrap()
-            .iter()
-            .flatten()
-            .all(|line| !line.contains("TOOL_BUDGET_FINALIZATION")));
-    }
-
-    #[tokio::test]
-    async fn fact_log_steer_is_a_user_message_fact() {
-        let (_dir, fact, calls, _, _) = run_with(
-            vec![
-                Ok(ModelDecision::Text {
-                    text: "first".into(),
-                }),
-                Ok(ModelDecision::Text {
-                    text: "steered".into(),
-                }),
-            ],
-            None,
-            4,
-            false,
-        );
-        fact.user_text("hello").await.unwrap();
-        let steered = fact.steer("turn left").await.unwrap();
-        assert_eq!(steered.view.assistant.as_deref(), Some("steered"));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        let facts = fact.read_facts().unwrap();
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|fact| fact.kind == "user.message")
-                .count(),
-            2
-        );
-    }
-
-    struct HangClient;
-
-    #[async_trait::async_trait]
-    impl LlmClient for HangClient {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-        ) -> Result<crate::llm::LlmResponse> {
-            std::future::pending().await
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
-            let (sender, receiver) = tokio::sync::mpsc::channel(1);
-            tokio::spawn(async move {
-                std::future::pending::<()>().await;
-                drop(sender);
-            });
-            Ok(receiver)
-        }
-    }
-
-    #[tokio::test]
-    async fn fact_log_model_stream_timeout_stops_at_the_provider_deadline() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let executor = Arc::new(crate::tools::ToolExecutor::new(
-            workspace.path().to_string_lossy().into_owned(),
-        ));
-        let mut config = crate::agent::AgentConfig::default();
-        config.llm_api_timeout_ms = Some(80);
-        config.planning_mode = crate::prompts::PlanningMode::Disabled;
-        let agent = crate::agent::AgentLoop::new(
-            Arc::new(HangClient),
-            Arc::clone(&executor),
-            crate::tools::ToolContext::new(workspace.path().to_path_buf()),
-            config,
-        );
-        let surface = SessionSurface {
-            agent,
-            session_id: "timeout-session".into(),
-            checkpoint: None,
-            events: None,
-            streamed_text: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            transcript: Arc::new(Mutex::new(Vec::new())),
-            usage: Arc::new(Mutex::new(crate::llm::TokenUsage::default())),
-            confirmation: None,
-            run_store: None,
-            run_id: None,
-            ledger: Arc::new(Mutex::new(crate::harness_loop::MutationLedger::default())),
-            reports: Arc::new(Mutex::new(Vec::new())),
-            run_control: None,
-            harness: None,
-            host_harness_registry: None,
-            host_harness_assembler: None,
-        };
-        let run = FactRun::open_projected(
-            workspace.path(),
-            "timeout-session",
-            Arc::new(HangClient),
-            executor,
-            PermissionPolicy::new().allow("*"),
-            &[],
-            4,
-            surface,
-        )
-        .expect("fact run");
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(3), run.user_text("hello"))
-                .await
-                .expect("provider deadline did not stop the model call");
-        let Err(error) = result else {
-            panic!("a hanging model must not settle");
-        };
-        let rendered = format!("{error:#}");
-        assert!(
-            rendered.contains("timed out"),
-            "expected the provider deadline, got {rendered}"
-        );
-    }
-
-    #[test]
-    fn fact_log_plan_guardrail_denies_a_write_the_default_policy_would_ask() {
-        let policy = PermissionPolicy::new();
-        let checker = crate::permissions::InteractiveToolGuardrail::for_mode("plan");
-        let write_args = serde_json::json!({
-            "file_path": "hello.txt",
-            "content": "hello"
-        });
-        assert_eq!(
-            execution_permission(&policy, Some(&checker), "write", &write_args),
-            PermissionDecision::Deny
-        );
-        assert_eq!(
-            execution_permission(
-                &policy,
-                Some(&checker),
-                "read",
-                &serde_json::json!({ "file_path": "hello.txt" })
-            ),
-            PermissionDecision::Allow
-        );
-        let yolo = PermissionPolicy::new().allow_yolo_lanes([SessionLane::Execute]);
-        let asking = PermissionPolicy::new();
-        assert_eq!(
-            execution_permission(&yolo, Some(&asking), "bash", &serde_json::json!({})),
-            PermissionDecision::Allow
-        );
-        let denied = PermissionPolicy::new().deny("write(*)");
-        let allowing = PermissionPolicy::new().allow("write(*)");
-        assert_eq!(
-            execution_permission(&denied, Some(&allowing), "write", &write_args),
-            PermissionDecision::Deny
-        );
-    }
-
-    #[test]
-    fn fact_log_yolo_lane_is_allow_not_a_second_policy() {
-        let policy = PermissionPolicy::new().allow_yolo_lanes([SessionLane::Execute]);
-        assert!(!project_needs_confirmation(&policy, "bash"));
-        assert!(!project_needs_confirmation(&policy, "write"));
-        assert!(!project_needs_confirmation(&policy, "unknown_tool"));
-        assert!(project_needs_confirmation(&policy, "read"));
-        assert!(project_needs_confirmation(&policy, "search"));
-        let only_read = PermissionPolicy::new().allow("read(*)");
-        assert!(project_needs_confirmation(&only_read, "bash"));
-        let denied = PermissionPolicy::new()
-            .deny("bash(*)")
-            .allow_yolo_lanes([SessionLane::Execute]);
-        assert_eq!(
-            denied.check("bash", &serde_json::json!({})),
-            PermissionDecision::Deny
-        );
-        assert_eq!(
-            denied.check("write", &serde_json::json!({})),
-            PermissionDecision::Allow
-        );
-        assert!(!crate::hitl::ConfirmationPolicy::enabled()
-            .with_yolo_lanes([SessionLane::Execute])
-            .is_yolo("bash"));
-    }
-
-    #[test]
-    fn seam_admission_mutation_still_needs_digest_gate() {
-        let allowed = crate::permissions::policy_for_posture("always-approve");
-        assert_eq!(
-            allowed.check("write", &serde_json::json!({})),
-            PermissionDecision::Allow
-        );
-        let kernel = crate::meta_harness::KernelPolicy {
-            permission_overlay: false,
-            completion_gate: false,
-        }
-        .admit();
-        assert!(kernel.completion_gate);
-        let mut ledger = crate::harness_loop::MutationLedger::default();
-        ledger.observe_tool(
-            "write",
-            0,
-            Some(&serde_json::json!({"file_path": "out.txt", "after": "changed"})),
-        );
-        let gate = crate::harness_loop::decide_with_observations(&ledger, &[], &[], false, &[]);
-        assert!(matches!(
-            gate,
-            crate::harness_loop::CompletionGate::Incomplete { .. }
-        ));
-
-        let denied = crate::permissions::policy_for_posture("always-approve").deny("bash(*)");
-        let mut executed = false;
-        let decision = admit_tool_call(
-            &denied,
-            "bash",
-            &serde_json::json!({"command": "echo hi"}),
-            || {
-                executed = true;
-            },
-        );
-        assert_eq!(decision, Err(PermissionDecision::Deny));
-        assert!(!executed);
-    }
-
-    #[tokio::test]
-    async fn seam_admission_denied_write_under_always_approve_does_not_run() {
-        let workspace = tempfile::tempdir().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let client = Arc::new(SeqClient {
-            calls: Arc::clone(&calls),
-            tools: Mutex::new(Vec::new()),
-            seen: Mutex::new(Vec::new()),
-            responses: Mutex::new(vec![
-                Message::assistant("done"),
-                tool_use(
-                    "write",
-                    "w1",
-                    serde_json::json!({"file_path": "secret.txt", "content": "leaked"}),
-                ),
-            ]),
-        });
-        let executor = Arc::new(ToolExecutor::new(
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let fact = FactRun::open_session(
-            workspace.path(),
-            "deny-write",
-            client,
-            executor,
-            crate::permissions::policy_for_posture("always-approve").deny("write(*)"),
-            &[],
-            4,
-        )
-        .unwrap();
-        let _ = fact.user_text("write the file").await;
-        assert!(!workspace.path().join("secret.txt").exists());
-        assert_ne!(fact.thread, "tui-session");
-    }
-
-    #[tokio::test]
-    async fn fact_log_question_cap_rejects_before_a_fourth_fact() {
-        let questions = (1..=4)
-            .map(|index| {
-                Ok(ModelDecision::Question {
-                    question_id: format!("q{index}"),
-                    question: format!("q{index}?"),
-                    allow_free_text: false,
-                    options: vec!["a".into()],
-                })
-            })
-            .collect();
-        let (_dir, fact, _, _, _) = run_with(questions, None, 4, false);
-        fact.user_text("one").await.unwrap();
-        fact.answer("a").await.unwrap();
-        fact.answer("b").await.unwrap();
-        let rejected = match fact.answer("c").await {
-            Ok(_) => panic!("fourth question must fail before a model turn"),
-            Err(error) => error,
-        };
-        let rendered = format!("{rejected:#}");
-        assert!(
-            rendered.contains("ask_user question cap exceeded"),
-            "{rendered}"
-        );
-        let facts = fact.read_facts().unwrap();
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|fact| fact.kind == "model.turn")
-                .count(),
-            3
-        );
-    }
-
-    #[tokio::test]
-    async fn fact_log_confirm_is_true_only_for_the_pending_tool() {
-        let (_dir, fact, _, tools, _) = run_with(
-            vec![Ok(ModelDecision::Tool {
-                call: ToolCall {
-                    id: "t1".into(),
-                    name: "read".into(),
-                    args: serde_json::json!({}),
-                    needs_confirmation: true,
-                    text: None,
-                    reasoning: None,
-                },
-
-                also: Vec::new(),
-            })],
-            None,
-            4,
-            false,
-        );
-        fact.user_text("read it").await.unwrap();
-        assert!(!fact.confirm_if_pending("other", true).await.unwrap());
-        assert!(fact
-            .read_facts()
-            .unwrap()
-            .iter()
-            .all(|fact| fact.kind != "confirmation.answered"));
-        assert!(fact.confirm_if_pending("t1", false).await.unwrap());
-        assert_eq!(tools.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            fact.read_facts()
-                .unwrap()
-                .iter()
-                .filter(|fact| fact.kind == "confirmation.answered")
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn fact_log_history_seeds_a_caused_model_turn_and_one_new_call() {
-        let (_dir, fact, calls, _, _) = run_with(
-            vec![Ok(ModelDecision::Text {
-                text: "next".into(),
-            })],
-            None,
-            4,
-            false,
-        );
-        fact.seed_history(&[Message::user("old"), Message::assistant("stored")])
-            .unwrap();
-        let settled = fact.user_text("new").await.unwrap();
-        assert_eq!(settled.view.assistant.as_deref(), Some("next"));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let facts = fact.read_facts().unwrap();
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|fact| fact.kind == "user.message")
-                .count(),
-            2
-        );
-        let stored = facts
-            .iter()
-            .find(|fact| fact.cause.as_deref() == Some("infer:1:0"))
-            .expect("caused history turn");
-        assert_eq!(stored.payload["text"], "stored");
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|fact| fact.kind == "model.turn")
-                .count(),
-            2
-        );
-    }
-
-    fn tool_use(name: &str, id: &str, args: serde_json::Value) -> Message {
-        Message {
-            role: "assistant".into(),
-            content: vec![crate::llm::ContentBlock::ToolUse {
-                id: id.into(),
-                name: name.into(),
-                input: args,
-            }],
-            reasoning_content: None,
-            transcript_text: None,
-            transcript_visibility: crate::llm::TranscriptVisibility::Product,
-        }
-    }
-
-    struct SeqClient {
-        calls: Arc<AtomicUsize>,
-        tools: Mutex<Vec<Vec<String>>>,
-        seen: Mutex<Vec<Vec<Message>>>,
-        responses: Mutex<Vec<Message>>,
-    }
-
-    #[async_trait::async_trait]
-    impl LlmClient for SeqClient {
-        async fn complete(
-            &self,
-            messages: &[Message],
-            _system: Option<&str>,
-            tools: &[crate::llm::ToolDefinition],
-        ) -> Result<crate::llm::LlmResponse> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.seen.lock().unwrap().push(messages.to_vec());
-            self.tools
-                .lock()
-                .unwrap()
-                .push(tools.iter().map(|tool| tool.name.clone()).collect());
-            let message = self
-                .responses
-                .lock()
-                .unwrap()
-                .pop()
-                .unwrap_or_else(|| Message::assistant("done"));
-            Ok(crate::llm::LlmResponse {
-                message,
-                usage: Default::default(),
-                stop_reason: None,
-                token_logprobs: Vec::new(),
-                meta: None,
-            })
-        }
-
-        async fn complete_streaming(
-            &self,
-            _messages: &[Message],
-            _system: Option<&str>,
-            _tools: &[crate::llm::ToolDefinition],
-            _cancel_token: tokio_util::sync::CancellationToken,
-        ) -> Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
-            anyhow::bail!("unused")
-        }
-    }
-
-    fn open_live(
-        responses: Vec<Message>,
-        policy: PermissionPolicy,
-        tool_name: &str,
-    ) -> (tempfile::TempDir, FactRun, Arc<AtomicUsize>, Arc<SeqClient>) {
-        let dir = tempfile::tempdir().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let client = Arc::new(SeqClient {
-            calls: Arc::clone(&calls),
-            tools: Mutex::new(Vec::new()),
-            seen: Mutex::new(Vec::new()),
-            responses: Mutex::new(responses.into_iter().rev().collect()),
-        });
-        let (completion, _) = LiveCompletion::new(client.clone(), policy, Vec::new());
-        let config = HarnessConfig::new(
-            4,
-            1_000_000,
-            16,
-            1,
-            Vec::new(),
-            vec![ToolSpec {
-                name: tool_name.into(),
-                description: "tool".into(),
-            }],
-        )
-        .unwrap();
-        let fact = FactRun::open(
-            dir.path(),
-            Arc::new(completion),
-            Arc::new(ScriptTools {
-                calls: Arc::new(AtomicUsize::new(0)),
-                fail_first: AtomicUsize::new(0),
-            }),
-            config,
-            format!("live-{}", calls.as_ptr() as usize),
-        )
-        .unwrap();
-        (dir, fact, calls, client)
-    }
-
-    #[tokio::test]
-    async fn fact_log_live_completion_stores_a_tool_call_and_passes_tools() {
-        let (_dir, fact, calls, client) = open_live(
-            vec![tool_use(
-                "bash",
-                "call-1",
-                serde_json::json!({"command": "ls"}),
-            )],
-            PermissionPolicy::new(),
-            "bash",
-        );
-        let settled = fact.user_text("list").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Confirm);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(client.tools.lock().unwrap().as_slice(), &[vec!["bash"]]);
-        let turn = fact
-            .read_facts()
-            .unwrap()
-            .into_iter()
-            .find(|fact| fact.kind == "model.turn")
-            .expect("model turn");
-        assert_eq!(turn.payload["kind"], "tool");
-        assert_eq!(turn.payload["call"]["needs_confirmation"], true);
-    }
-
-    #[tokio::test]
-    async fn fact_log_live_completion_yolo_lane_runs_the_tool() {
-        let (_dir, fact, _, client) = open_live(
-            vec![
-                tool_use("bash", "call-1", serde_json::json!({})),
-                Message::assistant("done"),
-            ],
-            PermissionPolicy::new().allow_yolo_lanes([SessionLane::Execute]),
-            "bash",
-        );
-        let settled = fact.user_text("list").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Done);
-        assert!(settled.log.iter().any(|fact| fact.kind == "tool.result"));
-        assert!(!settled
-            .log
-            .iter()
-            .any(|fact| fact.kind == "confirmation.answered"));
-        assert!(client
-            .tools
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|tools| !tools.is_empty()));
-    }
-
-    #[tokio::test]
-    async fn fact_log_live_completion_ask_user_parks_with_options() {
-        let (_dir, fact, _, _) = open_live(
-            vec![tool_use(
-                "ask_user",
-                "q-live",
-                serde_json::json!({
-                    "question": "Which?",
-                    "options": ["left", "right"],
-                    "allow_free_text": true
-                }),
-            )],
-            PermissionPolicy::new(),
-            "ask_user",
-        );
-        let settled = fact.user_text("ask").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Question);
-        let question = settled.view.pending_question.expect("question");
-        assert!(question.allow_free_text);
-        assert_eq!(
-            question.options,
-            vec!["left".to_string(), "right".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn fact_log_sessions_do_not_share_a_thread() {
-        let workspace = tempfile::tempdir().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let client = Arc::new(SeqClient {
-            calls: Arc::clone(&calls),
-            tools: Mutex::new(Vec::new()),
-            seen: Mutex::new(Vec::new()),
-            responses: Mutex::new(vec![Message::assistant("bee"), Message::assistant("aye")]),
-        });
-        let executor = Arc::new(ToolExecutor::new(
-            workspace.path().to_string_lossy().to_string(),
-        ));
-        let first = FactRun::open_session(
-            workspace.path(),
-            "session-a",
-            client.clone(),
-            Arc::clone(&executor),
-            PermissionPolicy::new(),
-            &[],
-            4,
-        )
-        .unwrap();
-        let second = FactRun::open_session(
-            workspace.path(),
-            "session-b",
-            client,
-            executor,
-            PermissionPolicy::new(),
-            &[],
-            4,
-        )
-        .unwrap();
-        first.user_text("from-a").await.unwrap();
-        second.user_text("from-b").await.unwrap();
-        let facts_a = read_workspace_facts(workspace.path(), "session-a").unwrap();
-        let facts_b = read_workspace_facts(workspace.path(), "session-b").unwrap();
-        assert!(facts_a.iter().any(|fact| fact.payload["text"] == "from-a"));
-        assert!(facts_b.iter().any(|fact| fact.payload["text"] == "from-b"));
-        assert!(facts_a.iter().all(|fact| fact.payload["text"] != "from-b"));
-        assert!(facts_b.iter().all(|fact| fact.payload["text"] != "from-a"));
-    }
-
-    fn dsml_bash(command: &str) -> String {
-        let ns = "\u{FF5C}DSML\u{FF5C}";
-        format!(
-            "<{ns}invoke name=\"bash\"><{ns}parameter name=\"command\" string=\"true\">{command}</{ns}parameter></{ns}invoke>"
-        )
-    }
-
-    #[tokio::test]
-    async fn fact_log_leaked_dsml_text_is_a_tool_decision() {
-        let (_dir, fact, _, _) = open_live(
-            vec![Message::assistant(&dsml_bash("pwd"))],
-            PermissionPolicy::new(),
-            "bash",
-        );
-        let settled = fact.user_text("list").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Confirm);
-        let turn = settled
-            .log
-            .iter()
-            .find(|fact| fact.kind == "model.turn")
-            .expect("model turn");
-        assert_eq!(turn.payload["kind"], "tool");
-        assert_eq!(turn.payload["call"]["name"], "bash");
-        assert_eq!(turn.payload["call"]["args"]["command"], "pwd");
-    }
-
-    #[tokio::test]
-    async fn fact_log_leaked_dsml_reasoning_is_a_tool_decision() {
-        let markup = dsml_bash("pwd");
-        let (_dir, fact, _, _) = open_live(
-            vec![Message {
-                role: "assistant".into(),
-                content: Vec::new(),
-                reasoning_content: Some(markup),
-                transcript_text: None,
-                transcript_visibility: crate::llm::TranscriptVisibility::Wire,
-            }],
-            PermissionPolicy::new(),
-            "bash",
-        );
-        let settled = fact.user_text("list").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Confirm);
-        let turn = settled
-            .log
-            .iter()
-            .find(|fact| fact.kind == "model.turn")
-            .expect("model turn");
-        assert_eq!(turn.payload["call"]["name"], "bash");
-        assert_eq!(turn.payload["call"]["args"]["command"], "pwd");
-    }
-
-    #[tokio::test]
-    async fn fact_log_follow_up_sends_the_recorded_tool_call() {
-        let workspace = tempfile::tempdir().unwrap();
-        let log = log_dir(workspace.path());
-        std::fs::create_dir_all(&log).unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let client = Arc::new(SeqClient {
-            calls: Arc::clone(&calls),
-            tools: Mutex::new(Vec::new()),
-            seen: Mutex::new(Vec::new()),
-            responses: Mutex::new(vec![Message::assistant("done"), {
-                let mut planned = tool_use(
-                    "read",
-                    "call-read",
-                    serde_json::json!({"file_path": "note.txt"}),
-                );
-                planned.content.insert(
-                    0,
-                    crate::llm::ContentBlock::Text {
-                        text: "Next, rerun the test.".into(),
-                    },
-                );
-                planned.reasoning_content = Some("the stats file is still wrong".into());
-                planned
-            }]),
-        });
-        let executor = Arc::new(crate::tools::ToolExecutor::new(
-            workspace.path().to_string_lossy().into_owned(),
-        ));
-        let mut config = crate::agent::AgentConfig::default();
-        config.planning_mode = crate::prompts::PlanningMode::Disabled;
-        let agent = crate::agent::AgentLoop::new(
-            Arc::new(SeqClient {
-                calls: Arc::new(AtomicUsize::new(0)),
-                tools: Mutex::new(Vec::new()),
-                seen: Mutex::new(Vec::new()),
-                responses: Mutex::new(Vec::new()),
-            }),
-            executor,
-            crate::tools::ToolContext::new(workspace.path().to_path_buf()),
-            config,
-        );
-        let surface = SessionSurface {
-            agent,
-            session_id: THREAD.into(),
-            checkpoint: None,
-            events: None,
-            streamed_text: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            transcript: Arc::new(Mutex::new(Vec::new())),
-            usage: Arc::new(Mutex::new(crate::llm::TokenUsage::default())),
-            confirmation: None,
-            run_store: None,
-            run_id: None,
-            ledger: Arc::new(Mutex::new(crate::harness_loop::MutationLedger::default())),
-            reports: Arc::new(Mutex::new(Vec::new())),
-            run_control: None,
-            harness: None,
-            host_harness_registry: None,
-            host_harness_assembler: None,
-        };
-        let (completion, _) = LiveCompletion::new(
-            client.clone(),
-            PermissionPolicy::new().allow("*"),
-            Vec::new(),
-        );
-        let completion = completion.with_surface(surface);
-        let fact = FactRun::open(
-            log,
-            Arc::new(completion),
-            Arc::new(ScriptTools {
-                calls: Arc::new(AtomicUsize::new(0)),
-                fail_first: AtomicUsize::new(0),
-            }),
-            HarnessConfig::new(
-                4,
-                1_000_000,
-                16,
-                1,
-                Vec::new(),
-                vec![ToolSpec {
-                    name: "read".into(),
-                    description: "Read".into(),
-                }],
-            )
-            .unwrap(),
-            "recorded-tool",
-        )
-        .unwrap();
-        let settled = fact.user_text("read the note").await.unwrap();
-        assert_eq!(settled.view.phase, CodingPhase::Done);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        let seen = client.seen.lock().unwrap();
-        let follow = seen.last().expect("follow-up completion");
-        let recorded = follow
-            .iter()
-            .find_map(|message| {
-                let calls = message.tool_calls();
-                if calls.is_empty() {
-                    None
-                } else {
-                    Some(calls)
-                }
-            })
-            .expect("recorded tool call");
-        assert_eq!(recorded[0].id, "call-read");
-        assert_eq!(recorded[0].name, "read");
-        assert_eq!(recorded[0].args["file_path"], "note.txt");
-        let replay = follow
-            .iter()
-            .find(|message| !message.tool_calls().is_empty())
-            .expect("assistant tool message");
-        assert!(replay.text().contains("Next, rerun the test."));
-        assert_eq!(
-            replay.reasoning_content.as_deref(),
-            Some("the stats file is still wrong")
-        );
-        assert!(follow.iter().any(|message| {
-            message.content.iter().any(|block| {
-                matches!(
-                    block,
-                    crate::llm::ContentBlock::ToolResult { tool_use_id, .. }
-                        if tool_use_id == "call-read"
-                )
-            })
-        }));
-    }
-
-    #[test]
-    fn fact_log_recorded_tool_calls_start_after_the_latest_compaction() {
-        use a3s_effect::LogStore;
-        let workspace = tempfile::tempdir().unwrap();
-        let dir = log_dir(workspace.path());
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = a3s_effect::FileLog::open(&dir).unwrap();
-        let tool = |id: &str, name: &str| {
-            serde_json::json!({
-                "kind": "tool",
-                "call": {
-                    "id": id,
-                    "name": name,
-                    "args": {"file_path": name},
-                    "needs_confirmation": false
-                }
-            })
-        };
-        let append = |key: &str, kind: &str, payload: serde_json::Value| {
-            log.append(
-                THREAD,
-                &[a3s_effect::NewFact {
-                    kind: kind.into(),
-                    key: key.into(),
-                    payload,
-                }],
-                None,
-            )
-            .unwrap();
-        };
-        append("m1", "model.turn", tool("old", "edit"));
-        append(
-            "t1",
+        mutation_turn.key = "model:1:0".into();
+        let mut mutation_result = fact(
             "tool.result",
-            serde_json::json!({"toolCallId": "old", "ok": true, "output": "old"}),
+            serde_json::json!({"ok": true,"toolCallId":"edit-one"}),
         );
-        append(
-            "c1",
-            "compaction.done",
-            serde_json::json!({"summary": "earlier edit"}),
+        mutation_result.key = "tool-result:1:0:edit-one".into();
+        let read_turn = fact(
+            "model.turn",
+            serde_json::json!({"kind": "tool", "call": {"name": "read", "args": {"file_path": "x.rs"}}}),
         );
-        append("m2", "model.turn", tool("new", "write"));
-        append(
-            "t2",
-            "tool.result",
-            serde_json::json!({"toolCallId": "new", "ok": true, "output": "new"}),
-        );
-        let calls = recorded_tool_calls(workspace.path(), THREAD);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "new");
-        assert_eq!(calls[0].name, "write");
-    }
-
-    #[test]
-    fn user_attachment_plan_restores_png_bytes_after_compaction() {
-        use a3s_effect::LogStore;
-        let workspace = tempfile::tempdir().unwrap();
-        let dir = log_dir(workspace.path());
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = a3s_effect::FileLog::open(&dir).unwrap();
-        let png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        let append = |key: &str, kind: &str, payload: serde_json::Value| {
-            log.append(
-                THREAD,
-                &[a3s_effect::NewFact {
-                    kind: kind.into(),
-                    key: key.into(),
-                    payload,
-                }],
-                None,
-            )
-            .unwrap();
-        };
-        append(
-            "old",
-            "user.message",
-            user_message_fact("old".into(), "earlier", &[Attachment::png(png.clone())]).payload,
-        );
-        append(
-            "c1",
-            "compaction.done",
-            serde_json::json!({
-                "summary": "earlier image",
-                "kept": ["user\nearlier", "assistant\nstored"]
-            }),
-        );
-        append(
-            "answered",
-            "question.answered",
-            serde_json::json!({"text": "continue"}),
-        );
-        append(
-            "new",
-            "user.message",
-            user_message_fact(
-                "new".into(),
-                "describe the image",
-                &[Attachment::png(png.clone())],
-            )
-            .payload,
-        );
-        let (kept_len, mut images) = user_attachment_plan(workspace.path(), THREAD);
-        assert_eq!(kept_len, 2);
-        assert!(images_for_user_line(0, 1, kept_len, &mut images).is_empty());
-        assert!(images_for_user_line(1, 1, kept_len, &mut images).is_empty());
-        assert!(images_for_user_line(2, 1, kept_len, &mut images).is_empty());
-        let answered = images_for_user_line(3, 1, kept_len, &mut images);
-        assert!(answered.is_empty());
-        let message = user_message_with_images(
-            "describe the image",
-            images_for_user_line(4, 1, kept_len, &mut images),
-        );
-        assert_eq!(message.text(), "describe the image");
-        match &message.content[0] {
-            crate::llm::ContentBlock::Image { source } => {
-                let bytes = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    source.data.as_bytes(),
-                )
-                .unwrap();
-                assert_eq!(bytes, png);
-                assert_eq!(source.media_type, "image/png");
-            }
-            other => panic!("expected image block, got {other:?}"),
-        }
+        // Debt before a settlement is owed; after the last settlement it
+        // is not (the marker alone bounds the replay).
+        let owed = unsettled_mutation_paths(&[
+            mutation_turn.clone(),
+            mutation_result.clone(),
+            settled.clone(),
+            read_turn,
+        ]);
+        assert!(owed.is_empty(), "settled mutations are not owed: {owed:?}");
+        let owed = unsettled_mutation_paths(&[settled, mutation_turn, mutation_result]);
+        assert_eq!(owed, vec!["src/lib.rs".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod model_governance_tests;
+
+#[cfg(test)]
+mod model_error_tests;
+
+#[cfg(test)]
+mod steer_terminal_tests;
+
+#[cfg(test)]
+mod conversation_history_tests;
+
+#[cfg(test)]
+mod tool_history_tests;

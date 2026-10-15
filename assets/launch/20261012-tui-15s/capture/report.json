@@ -1,0 +1,285 @@
+{
+  "run_id": "a3s-test-74328-1",
+  "suite": "a3s-code-launch-reference",
+  "status": "passed",
+  "scenarios": [
+    {
+      "id": "real-pager-reference",
+      "name": "real-pager-reference",
+      "surface": "tui",
+      "status": "passed",
+      "duration_ms": 7822,
+      "steps": [
+        {
+          "id": "composer-ready",
+          "status": "passed",
+          "duration_ms": 226,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 7549,
+                "total_bytes": 7549,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 6,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n   main ~/c/a/a/c/a/l/20261012-tui-15s/workspace                                                             \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n              ╭────────────────────────────────────────────────────────────────────────────────╮              \n              │                                                                                │              \n              │    ⠀⠀⢀⣠⣶⣶⣶⣶⣶⣶⣶⣾⣄⡀⠀⠀    A3S Code  9.1.3                                         │              \n              │    ⢀⣿⣿⣿⠋⠁⢠⣶⣶⡄⠈⠙⣿⣿⣿⡀    Thanks for trying A3S Code, give feedback with /feedback│              \n              │    ⢸⣿⠃⠀⠀⢰⣿⣿⣿⣿⡆⠀⠀⠘⣿⡇                                                            │              \n              │    ⢸⣿⠀⠀⣴⣿⣿⡇⢸⣿⣿⣦⠀⠀⣿⡇    New worktree                                    ctrl+w  │              \n              │    ⢸⣿⣧⣿⣿⣿⣿⣿⣿⣽⣿⣿⣧⣼⣿⡇    Resume session                                  ctrl+r  │              \n              │    ⠈⠻⣿⣿⣥⣀⠀⠉⠉⠿⣿⣿⣿⣿⠟⠁    Changelog                                               │              \n              │    ⠀⠀⠀⠙⠻⠿⠿⠿⠿⠿⠿⠟⠋⠀⠀⠀    Quit                                            ctrl+q  │              \n              │                                                                                │              \n              ╰────────────────────────────────────────────────────────────────────────────────╯              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                                      │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n                                                                                                              \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "ready",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal recording captured",
+            "data": {
+              "bytes": 7549
+            },
+            "evidence": [
+              {
+                "name": "terminal/01-ready.vt",
+                "path": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-15s/.a3s-test/runs/a3s-test-74328-1/real-pager-reference/terminal/01-ready.vt",
+                "media_type": "application/vnd.a3s.terminal-vt"
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "id": "task-draft",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "text pasted into terminal",
+            "data": {
+              "bracketed": true,
+              "bytes": 80,
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "task-visible",
+          "status": "passed",
+          "duration_ms": 12,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 9250,
+                "total_bytes": 9250,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 63,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-15s/workspace                                                               \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n    ⠋ Starting session… 0.0s                                                                                  \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯ 读取 title.rs，用三条要点说明空输入逻辑，每条不超过20字。                                            │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n  Enter:send  │  Opt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts                                    \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "draft",
+          "status": "passed",
+          "duration_ms": 2,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal recording captured",
+            "data": {
+              "bytes": 9250
+            },
+            "evidence": [
+              {
+                "name": "terminal/03-draft.vt",
+                "path": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-15s/.a3s-test/runs/a3s-test-74328-1/real-pager-reference/terminal/03-draft.vt",
+                "media_type": "application/vnd.a3s.terminal-vt"
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "id": "send-task",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal key pressed",
+            "data": {
+              "key": "Enter",
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "task-finished",
+          "status": "passed",
+          "duration_ms": 7524,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 26352,
+                "total_bytes": 26352,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 6,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-15s/workspace                                                   15K / 128K  \n                                                                                                              \n                                                                                                              \n     ❯ 读取 title.rs，用三条要点说明空输入逻辑，每条不超过20字。                                   1:40 PM    \n                                                                                                              \n                                                                                                              \n     ◈ Searched 1 pattern, Read 1 file                                                                        \n                                                                                                              \n     title.rs 的空输入逻辑：                                                                       1:40 PM    \n                                                                                                              \n     1. 先对输入做 trim 去空白                                                                                \n     2. 结果为空则返回 \"Untitled\"                                                                             \n     3. 非空则返回修剪后的值                                                                                  \n                                                                                                              \n     Worked for 7.5s                                                                                          \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                                      │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n  Shift+Tab:mode  │  Ctrl+x:shortcuts                                                                         \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "response",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal recording captured",
+            "data": {
+              "bytes": 26352
+            },
+            "evidence": [
+              {
+                "name": "terminal/04-response.vt",
+                "path": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-15s/.a3s-test/runs/a3s-test-74328-1/real-pager-reference/terminal/04-response.vt",
+                "media_type": "application/vnd.a3s.terminal-vt"
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "id": "browse-commands",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "text pasted into terminal",
+            "data": {
+              "bracketed": true,
+              "bytes": 1,
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "palette-open",
+          "status": "passed",
+          "duration_ms": 14,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 29657,
+                "total_bytes": 29657,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 7,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-15s/workspace                                                   15K / 128K  \n                                                                                                              \n                                                                                                              \n     ❯ 读取 title.rs，用三条要点说明空输入逻辑，每条不超过20字。                                   1:40 PM    \n                                                                                                              \n                                                                                                              \n     ◈ Searched 1 pattern, Read 1 file                                                                        \n                                                                                                              \n     title.rs 的空输入逻辑：                                                                       1:40 PM    \n                                                                                                              \n     1. 先对输入做 trim 去空白                                                                                \n     2. 结果为空则返回 \"Untitled\"                                                                             \n     3. 非空则返回修剪后的值                                                                                  \n                                                                                                              \n     Worked for 7.5s                                                                                          \n                                                                                                              \n                                                                                                              \n                                                                                                              \n  ───────────────────────────────────────────────────────────────────────────────────────────────────────28─  \n    ❯ /settings     Open the settings modal                                                                █  \n      /config       Add and configure providers and models                                                 █  \n      /new          Start a new session                                                                    █  \n      /effort       Set reasoning effort for the current model                                                \n      /model        Switch the active model                                                                   \n      /context      View context usage                                                                        \n      /compact      Compact conversation history                                                              \n      /jump         Jump to a turn in the conversation                                                        \n  ──────────────────────────────────────────────────────────────────────────────────────────────────────────  \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯ /                                                                                                    │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n  Enter:send  │  Opt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts                                    \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "palette",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal recording captured",
+            "data": {
+              "bytes": 29657
+            },
+            "evidence": [
+              {
+                "name": "terminal/05-palette.vt",
+                "path": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-15s/.a3s-test/runs/a3s-test-74328-1/real-pager-reference/terminal/05-palette.vt",
+                "media_type": "application/vnd.a3s.terminal-vt"
+              }
+            ]
+          },
+          "error": null
+        }
+      ],
+      "error": null,
+      "cleanup_error": null
+    }
+  ]
+}

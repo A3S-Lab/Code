@@ -159,7 +159,7 @@ pub(crate) struct ResolvedDecisionTelemetry {
 
 /// The shell's pre-await snapshot is used only when the manager returned no event.
 /// Yolo derives from the frozen event mode, not the post-await handle state.
-/// A mode or always-approve change around an open prompt thus cannot retroactively rewrite the source.
+/// A mode or yolo change around an open prompt thus cannot retroactively rewrite the source.
 pub(crate) fn resolved_decision_telemetry(
     manager_event: Option<&PermissionEvent>,
     decision: &Decision,
@@ -171,7 +171,7 @@ pub(crate) fn resolved_decision_telemetry(
     let permission_mode = event_mode
         .map(crate::util::config::parse_permission_mode_canonical)
         .unwrap_or(shell_permission_mode);
-    let is_yolo = event_mode.map_or(shell_is_yolo, |m| m == "always-approve");
+    let is_yolo = event_mode.map_or(shell_is_yolo, |m| m == "yolo");
     let wait_ms = manager_event
         .and_then(|e| e.wait_ms)
         .unwrap_or(shell_wait_ms);
@@ -663,9 +663,9 @@ mod permission_analytics_tests {
 
     #[test]
     fn resolved_snapshot_uses_frozen_event_mode_and_wait() {
-        // Manager event froze always-approve; the shell's post-await snapshot says non-yolo Ask
+        // Manager event froze yolo; the shell's post-await snapshot says non-yolo Ask
         let mut ev = denial_limit_event("allow", "allow_once", "yolo", "unavailable");
-        ev.permission_mode = Some("always-approve".into());
+        ev.permission_mode = Some("yolo".into());
         ev.wait_ms = Some(4321);
         let r = resolved_decision_telemetry(
             Some(&ev),

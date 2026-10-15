@@ -534,6 +534,8 @@ mod tests {
                 cache_write_tokens: None,
             },
             verification_summary: Box::new(VerificationSummary::from_reports(&[])),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         })
         .expect("agent end");

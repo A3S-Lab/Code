@@ -1,11 +1,23 @@
-//! Live E2E: a3s-code drives bash through **a3s-sandbox 0.1.3** (native OS fence).
+#![cfg(test)]
+
+//! Native admission and live E2E for Code's resolved a3s-sandbox dependency.
+//! The current manifest pins 0.2.2@7e948a36 and the workspace patches it to
+//! the local Sandbox tree. Neither a version label nor a Git declaration
+//! proves execution qualification or public-source parity; retain the actual
+//! resolved package, source and test-binary identities with each campaign.
 //!
 //! First principles:
 //! - Integration means the default local session path uses `NativeBashSandbox`
 //!   (Seatbelt / namespaces / AppContainer), not process-host fallback.
-//! - Passes require kernel effects: probe, sandboxed tool metadata, on-disk
-//!   side effects, and a real outside-workspace deny. Assistant wording is
-//!   never a pass criterion.
+//! - macOS native execution is refused before spawn while descendant lifetime
+//!   is unqualified. Its provider-free refusal test does not qualify native
+//!   execution, isolation, containment, or the live leg.
+//! - On other platforms the existing supported-execution assertions remain:
+//!   probe, sandboxed tool metadata, on-disk effects, and outside-workspace
+//!   denial. This slice supplies no new platform qualification.
+//! - The mandatory ignored live test remains discoverable on macOS and fails
+//!   its lifetime preflight before configuration/provider calls. Refusal is
+//!   never substituted for a live support pass. Assistant wording is no oracle.
 //! - Model pin comes from monorepo `.a3s/config.acl` Layer C Flash
 //!   (`boyue/deepseek-v4-flash`; alternate route
 //!   `boyue/bailian/deepseek-v4.1-flash` remains for model-switch E2E).
@@ -18,7 +30,6 @@
 
 mod support;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +41,15 @@ use support::layer_c_model::{assert_pinned_layer_c_flash, load_pinned_layer_c_co
 
 const MODEL_TIMEOUT: Duration = Duration::from_secs(420);
 const NATIVE_TOKEN: &str = "native-sandbox-live-token-0a3s";
+#[cfg(target_os = "macos")]
+const NATIVE_LIFETIME_UNQUALIFIED: &str = "native_process_lifetime_unqualified";
+
+fn assert_live_native_lifetime_supported() {
+    #[cfg(target_os = "macos")]
+    panic!(
+        "unsupported: {NATIVE_LIFETIME_UNQUALIFIED}; macOS native foreground/background lifetime is unqualified; mandatory live support remains blocked before config/provider initialization"
+    );
+}
 
 async fn configured_agent() -> Agent {
     let config = load_pinned_layer_c_config();
@@ -46,7 +66,7 @@ fn policy(allows: &[&str]) -> PermissionPolicy {
     }
     .allow("read(**)");
     for rule in allows {
-        policy = policy.allow(*rule);
+        policy = policy.allow(rule);
     }
     policy
 }
@@ -104,21 +124,83 @@ async fn observe(session: &a3s_code_core::AgentSession, prompt: &str) -> Observe
     observed
 }
 
-/// Direct fence check: a3s-sandbox must refuse writing outside the workspace.
+/// Actual native refusal, not a supported execution or containment proof.
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a3s_sandbox_0_1_3_denies_outside_workspace_write_on_this_host() {
+async fn native_macos_refuses_before_workspace_or_outside_writes() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let sandbox = NativeBashSandbox::new(workspace.path()).expect(
-        "a3s-sandbox 0.1.3 NativeBashSandbox must initialize on this host (Seatbelt/bwrap/AppContainer)",
+    let outside_root = tempfile::tempdir().expect("owned outside-workspace sentinel root");
+    let outside = outside_root.path().join("native-refusal-outside.txt");
+    let nonce = format!("native-refusal-{}", uuid::Uuid::new_v4());
+    let sandbox = NativeBashSandbox::new(workspace.path())
+        .expect("resolved a3s-sandbox native adapter must construct");
+    assert_eq!(sandbox.backend(), NATIVE_SANDBOX_BACKEND);
+
+    // Do not call the trusted backend probe: user execution must refuse even
+    // without a successful process probe, with no alternate runner.
+    let legacy_command = format!(
+        "printf %s {} > legacy-refusal.txt",
+        shell_words::quote(&nonce)
     );
+    let legacy_error = sandbox
+        .exec_command(&legacy_command, "/workspace")
+        .await
+        .err()
+        .expect("legacy native execution must refuse before spawn");
+    assert!(
+        legacy_error
+            .to_string()
+            .contains(NATIVE_LIFETIME_UNQUALIFIED),
+        "unexpected legacy refusal: {legacy_error:#}"
+    );
+
+    let command = format!(
+        "printf %s {} > exec-refusal.txt; printf %s {} > {}",
+        shell_words::quote(&nonce),
+        shell_words::quote(&nonce),
+        shell_words::quote(&outside.to_string_lossy())
+    );
+    let execution_error = sandbox
+        .exec(SandboxCommandRequest {
+            command,
+            guest_workspace: "/workspace".into(),
+            timeout_ms: 15_000,
+            output_observer: None,
+            env: None,
+        })
+        .await
+        .err()
+        .expect("native execution must refuse before spawn");
+    assert!(
+        execution_error
+            .to_string()
+            .contains(NATIVE_LIFETIME_UNQUALIFIED),
+        "unexpected execution refusal: {execution_error:#}"
+    );
+    assert!(!workspace.path().join("legacy-refusal.txt").exists());
+    assert!(!workspace.path().join("exec-refusal.txt").exists());
+    assert!(!outside.exists());
+    assert!(!sandbox.supports_background_execution());
+    eprintln!(
+        "native_lifetime=refused_unqualified; both command APIs refused before sentinel writes; supported_execution=not_qualified; containment=not_qualified; live_support=blocked"
+    );
+}
+
+/// Existing real fence assertion on platforms whose posture is unchanged.
+#[cfg(not(target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn resolved_native_sandbox_denies_outside_workspace_write_on_this_host() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let sandbox = NativeBashSandbox::new(workspace.path())
+        .expect("resolved a3s-sandbox NativeBashSandbox must initialize on this host");
     assert_eq!(sandbox.backend(), NATIVE_SANDBOX_BACKEND);
     sandbox
         .probe()
         .await
         .expect("native sandbox probe must succeed before claiming integration");
 
-    let outside = PathBuf::from(std::env::temp_dir())
-        .join(format!("a3s-sandbox-escape-{}.txt", std::process::id()));
+    let outside =
+        std::env::temp_dir().join(format!("a3s-sandbox-escape-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&outside);
     let command = format!(
         "printf 'escaped\\n' > '{}'",
@@ -157,13 +239,16 @@ async fn a3s_sandbox_0_1_3_denies_outside_workspace_write_on_this_host() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_flash_bash_through_a3s_sandbox_writes_workspace_token() {
-    let agent = configured_agent().await;
+    // Keep this test registered and failing explicitly on unsupported macOS.
+    // This must precede config loading and every potentially billable call.
+    assert_live_native_lifetime_supported();
     let workspace = tempfile::tempdir().expect("workspace");
     let sandbox = Arc::new(
-        NativeBashSandbox::new(workspace.path()).expect("native a3s-sandbox 0.1.3 must init"),
+        NativeBashSandbox::new(workspace.path()).expect("resolved native a3s-sandbox must init"),
     );
     assert_eq!(sandbox.backend(), NATIVE_SANDBOX_BACKEND);
     sandbox.probe().await.expect("probe");
+    let agent = configured_agent().await;
 
     let session = agent
         .session_async(

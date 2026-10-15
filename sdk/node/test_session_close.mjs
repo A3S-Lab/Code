@@ -24,6 +24,7 @@ providers "anthropic" {
     name = "Claude Sonnet 4"
   }
 }
+memory { prune = "off" }
 `.trim()
 
 const agent = await mod.Agent.create(inlineConfig)
@@ -42,7 +43,7 @@ assert.equal(sessionA.isClosed(), false, 'fresh session should not be closed')
 assert.deepEqual(
   sessionA.memoryMaintenanceHealth(),
   { phase: 'disabled', jobs: [] },
-  'an unconfigured session must report disabled maintenance',
+  'explicitly disabled maintenance must have no jobs',
 )
 
 const listedBefore = await agent.listSessions()

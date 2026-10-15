@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use super::{
-    CapabilitySetError, CapabilitySourceId, Sha256Digest, UseCapabilityGeneration,
-    UsePackageGeneration,
+    CapabilitySetError, CapabilitySourceId, ReconciledPackageGeneration, Sha256Digest,
+    UseCapabilityGeneration, UsePackageGeneration,
 };
 
 /// Trusted precedence class assigned by the host adapter, never by package
@@ -31,6 +31,10 @@ enum CapabilitySourceEvidence {
     UsePackage {
         capability: UseCapabilityGeneration,
         package: UsePackageGeneration,
+    },
+    UseReconcile {
+        capability: UseCapabilityGeneration,
+        publication: ReconciledPackageGeneration,
     },
     Session {
         revision: Sha256Digest,
@@ -87,6 +91,12 @@ impl CapabilitySource {
         capability: UseCapabilityGeneration,
         package: UsePackageGeneration,
     ) -> Result<Self, CapabilitySetError> {
+        if capability.selection_id().is_some() {
+            return Err(CapabilitySetError::InvalidIdentifier {
+                field: "use_source",
+                reason: "a selection requires reconcile publication evidence",
+            });
+        }
         if capability.generation() == 0 {
             return Err(CapabilitySetError::InvalidGeneration {
                 field: "use_capability_generation",
@@ -107,6 +117,26 @@ impl CapabilitySource {
         &self.id
     }
 
+    pub fn use_reconcile(
+        capability: UseCapabilityGeneration,
+        publication: ReconciledPackageGeneration,
+    ) -> Result<Self, CapabilitySetError> {
+        if capability.selection_id().is_none() {
+            return Err(CapabilitySetError::InvalidIdentifier {
+                field: "use_source",
+                reason: "reconcile publication requires a selection cursor",
+            });
+        }
+        Ok(Self {
+            id: CapabilitySourceId::scoped("use", publication.package_id())?,
+            class: CapabilitySourceClass::UsePackage,
+            evidence: CapabilitySourceEvidence::UseReconcile {
+                capability,
+                publication,
+            },
+        })
+    }
+
     pub const fn class(&self) -> CapabilitySourceClass {
         self.class
     }
@@ -116,13 +146,15 @@ impl CapabilitySource {
             CapabilitySourceEvidence::BuiltIn { revision }
             | CapabilitySourceEvidence::Host { revision }
             | CapabilitySourceEvidence::Session { revision } => Some(revision),
-            CapabilitySourceEvidence::UsePackage { .. } => None,
+            CapabilitySourceEvidence::UsePackage { .. }
+            | CapabilitySourceEvidence::UseReconcile { .. } => None,
         }
     }
 
     pub fn use_capability_generation(&self) -> Option<&UseCapabilityGeneration> {
         match &self.evidence {
-            CapabilitySourceEvidence::UsePackage { capability, .. } => Some(capability),
+            CapabilitySourceEvidence::UsePackage { capability, .. }
+            | CapabilitySourceEvidence::UseReconcile { capability, .. } => Some(capability),
             _ => None,
         }
     }
@@ -130,6 +162,13 @@ impl CapabilitySource {
     pub fn use_package_generation(&self) -> Option<&UsePackageGeneration> {
         match &self.evidence {
             CapabilitySourceEvidence::UsePackage { package, .. } => Some(package),
+            _ => None,
+        }
+    }
+
+    pub fn reconciled_package_generation(&self) -> Option<&ReconciledPackageGeneration> {
+        match &self.evidence {
+            CapabilitySourceEvidence::UseReconcile { publication, .. } => Some(publication),
             _ => None,
         }
     }

@@ -6,7 +6,6 @@ use a3s_code_core::{
     ImmutableContentWriteRequestV1, SdkImmutableContentWriteRequestV1,
 };
 use async_trait::async_trait;
-use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
 use napi::{Env, JsFunction};
 use std::collections::HashMap;

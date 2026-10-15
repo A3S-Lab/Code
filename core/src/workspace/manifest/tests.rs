@@ -738,3 +738,32 @@ fn scan_includes_files_inside_nested_git_workspaces() {
         .iter()
         .any(|file| file.path == "vendor/child/src/lib.rs"));
 }
+
+#[tokio::test]
+async fn navigation_snapshot_shares_original_generation_and_filters_deleted_recent_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = LocalWorkspaceManifest::start_deferred(root.path());
+    update_state(
+        &manifest.state,
+        vec![test_file("old/main.rs"), test_file("keep/lib.rs")],
+    );
+    manifest.touch_file("old/main.rs");
+    manifest.touch_file("keep/lib.rs");
+    let (before, recent) = manifest.navigation_snapshot(12).unwrap();
+    let (same, _) = manifest.navigation_snapshot(12).unwrap();
+    assert!(Arc::ptr_eq(&before, &same), "no full-tree snapshot clone");
+    assert_eq!(recent.len(), 2);
+    update_state(&manifest.state, vec![test_file("keep/lib.rs")]);
+    let (after, recent) = manifest.navigation_snapshot(12).unwrap();
+    assert!(after.version > before.version);
+    assert_eq!(
+        before.files.len(),
+        2,
+        "previous immutable generation remains valid"
+    );
+    assert_eq!(after.files.len(), 1);
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].path, "keep/lib.rs");
+    assert_eq!(manifest.recent_file_paths(12), vec!["keep/lib.rs"]);
+    assert!(!manifest.is_active());
+}

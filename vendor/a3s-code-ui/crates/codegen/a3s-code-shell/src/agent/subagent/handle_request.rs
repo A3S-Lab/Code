@@ -1291,7 +1291,7 @@ pub(crate) async fn run_shell_child(
         } else {
             tracing::warn!(
                 agent = %definition.name,
-                "ignoring subagent permissionMode=bypassPermissions: always-approve disabled by managed policy"
+                "ignoring subagent permissionMode=bypassPermissions: yolo disabled by managed policy"
             );
         }
     }

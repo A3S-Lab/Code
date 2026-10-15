@@ -37,7 +37,12 @@ pub(crate) struct LanguageServerLaunch {
 enum LaunchResolution {
     Static,
     WorkspaceTypeScript,
+    /// Prefer basedpyright; fall back to stock pyright when only it is installed.
+    PyrightFamily,
 }
+
+const BASEDPYRIGHT: &str = "basedpyright-langserver";
+const PYRIGHT: &str = "pyright-langserver";
 
 impl LanguageServerCommand {
     fn new(
@@ -86,11 +91,39 @@ impl LanguageServerProfile {
         }
     }
 
+    pub(crate) fn python(program: impl Into<PathBuf>) -> Self {
+        Self {
+            id: ProjectLanguageProfile::Python,
+            topology: ServerTopology::MultiFolder,
+            command: LanguageServerCommand::new(program, ["--stdio"]),
+            launch_resolution: LaunchResolution::Static,
+            initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
+            navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
+        }
+    }
+
+    /// clangd's background index writes `.cache/clangd` into the project, so
+    /// it stays off; queries index the opened translation units instead.
+    pub(crate) fn c_cpp(program: impl Into<PathBuf>) -> Self {
+        Self {
+            id: ProjectLanguageProfile::CCpp,
+            topology: ServerTopology::MultiFolder,
+            command: LanguageServerCommand::new(program, ["--background-index=false"]),
+            launch_resolution: LaunchResolution::Static,
+            initialization_settle_delay: DEFAULT_INITIALIZATION_SETTLE_DELAY,
+            navigation_settle_delay: DEFAULT_NAVIGATION_SETTLE_DELAY,
+        }
+    }
+
     pub(crate) fn built_in_defaults() -> Vec<Self> {
+        let mut python = Self::python(BASEDPYRIGHT);
+        python.launch_resolution = LaunchResolution::PyrightFamily;
         vec![
             Self::rust("rust-analyzer"),
             Self::typescript_javascript("typescript-language-server")
                 .with_workspace_typescript_resolution(),
+            python,
+            Self::c_cpp("clangd"),
         ]
     }
 
@@ -129,6 +162,15 @@ impl LanguageServerProfile {
                 return launch;
             }
         }
+        if self.launch_resolution == LaunchResolution::PyrightFamily
+            && !on_path(BASEDPYRIGHT)
+            && on_path(PYRIGHT)
+        {
+            return LanguageServerLaunch {
+                command: LanguageServerCommand::new(PYRIGHT, ["--stdio"]),
+                initialization_options: Value::Null,
+            };
+        }
 
         LanguageServerLaunch {
             command: self.command.clone(),
@@ -164,6 +206,8 @@ impl LanguageServerProfile {
                 "typescript",
                 "typescript-react",
             ],
+            ProjectLanguageProfile::Python => &["python"],
+            ProjectLanguageProfile::CCpp => &["c", "cpp"],
         }
     }
 
@@ -199,7 +243,9 @@ impl LanguageServerProfile {
     ) -> Value {
         match self.id {
             ProjectLanguageProfile::Rust => self.rust_configuration(canonical_root, layout),
-            ProjectLanguageProfile::TypeScriptJavaScript => Value::Null,
+            ProjectLanguageProfile::TypeScriptJavaScript
+            | ProjectLanguageProfile::Python
+            | ProjectLanguageProfile::CCpp => Value::Null,
         }
     }
 
@@ -214,7 +260,9 @@ impl LanguageServerProfile {
                 "rust-analyzer".to_string(),
                 self.rust_configuration(canonical_root, layout),
             )]),
-            ProjectLanguageProfile::TypeScriptJavaScript => BTreeMap::new(),
+            ProjectLanguageProfile::TypeScriptJavaScript
+            | ProjectLanguageProfile::Python
+            | ProjectLanguageProfile::CCpp => BTreeMap::new(),
         }
     }
 
@@ -354,6 +402,12 @@ fn push_unique_path(target: &mut Vec<PathBuf>, seen: &mut BTreeSet<PathBuf>, pat
     }
 }
 
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join(program).is_file())
+    })
+}
+
 async fn is_file(path: &Path) -> bool {
     tokio::fs::metadata(path)
         .await
@@ -381,7 +435,7 @@ fn protocol_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{protocol_path, LanguageServerProfile, ServerTopology};
-    use crate::code_intelligence::project_layout::ProjectLayoutResolver;
+    use crate::code_intelligence::project_layout::{ProjectLanguageProfile, ProjectLayoutResolver};
     use crate::workspace::{
         LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifestSnapshot,
     };
@@ -410,11 +464,54 @@ mod tests {
         })
     }
 
+    fn typescript_default() -> LanguageServerProfile {
+        LanguageServerProfile::built_in_defaults()
+            .into_iter()
+            .find(|profile| profile.id() == ProjectLanguageProfile::TypeScriptJavaScript)
+            .expect("TypeScript profile")
+    }
+
     #[test]
     fn built_in_commands_and_languages_are_explicit() {
         let profiles = LanguageServerProfile::built_in_defaults();
-        let rust = &profiles[0];
-        let web = &profiles[1];
+        let [rust, web, python, native] = &profiles[..] else {
+            panic!("four built-in profiles");
+        };
+
+        assert_eq!(
+            python.command().program,
+            PathBuf::from("basedpyright-langserver")
+        );
+        assert_eq!(python.command().args, ["--stdio"]);
+        assert!(python.supports_path(Path::new("pkg/mod.py")));
+        assert!(!python.supports_path(Path::new("src/lib.rs")));
+
+        assert_eq!(native.command().program, PathBuf::from("clangd"));
+        assert_eq!(native.command().args, ["--background-index=false"]);
+        for path in [
+            "src/main.c",
+            "include/api.h",
+            "src/main.cpp",
+            "src/a.cc",
+            "inc/a.hpp",
+        ] {
+            assert!(native.supports_path(Path::new(path)), "{path}");
+        }
+        assert!(!native.supports_path(Path::new("pkg/mod.py")));
+        for profile in [python, native] {
+            let layout = layout(&["Cargo.toml"]);
+            assert_eq!(
+                profile.project_roots(&layout),
+                [crate::workspace::WorkspacePath::root()]
+            );
+            assert_eq!(
+                profile.initialization_options(Path::new("/w"), &layout),
+                Value::Null
+            );
+            assert!(profile
+                .workspace_settings(Path::new("/w"), &layout)
+                .is_empty());
+        }
 
         assert_eq!(rust.command().program, PathBuf::from("rust-analyzer"));
         assert!(rust.command().args.is_empty());
@@ -449,9 +546,7 @@ mod tests {
         tokio::fs::write(package.join("package.json"), r#"{"version":"5.9.3"}"#)
             .await
             .expect("write TypeScript package");
-        let profile = LanguageServerProfile::built_in_defaults()
-            .pop()
-            .expect("TypeScript profile");
+        let profile = typescript_default();
 
         let launch = profile
             .launch(
@@ -493,9 +588,7 @@ mod tests {
         tokio::fs::write(package.join("package.json"), r#"{"version":"7.0.2"}"#)
             .await
             .expect("write TypeScript package");
-        let profile = LanguageServerProfile::built_in_defaults()
-            .pop()
-            .expect("TypeScript profile");
+        let profile = typescript_default();
 
         let launch = profile
             .launch(
@@ -537,9 +630,7 @@ mod tests {
                 .await
                 .expect("write TypeScript package");
         }
-        let profile = LanguageServerProfile::built_in_defaults()
-            .pop()
-            .expect("TypeScript profile");
+        let profile = typescript_default();
 
         let launch = profile
             .launch(

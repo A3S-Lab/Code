@@ -1186,3 +1186,207 @@ fn test_document_parser_config_normalizes_values() {
     assert!(cache.enabled);
     assert_eq!(cache.directory, Some(PathBuf::from("/tmp/cache")));
 }
+
+#[test]
+fn sandbox_block_parses_the_closed_set_and_validates_origins_at_parse_time() {
+    // Absent block: fail-closed default.
+    let config = CodeConfig::from_acl("default_model = \"a/b\"").unwrap();
+    assert_eq!(
+        config.sandbox_network,
+        crate::sandbox::SandboxNetworkMode::Deny
+    );
+    assert!(config.sandbox_network_allow.is_empty());
+
+    // Mediated with an allowlist round-trips.
+    let config = CodeConfig::from_acl(
+        "sandbox {\n  network = \"mediated\"\n  network_allow = [\"registry.example\", \"packages.internal:8443\"]\n}",
+    )
+    .unwrap();
+    assert_eq!(
+        config.sandbox_network,
+        crate::sandbox::SandboxNetworkMode::Mediated
+    );
+    assert_eq!(
+        config.sandbox_network_allow,
+        vec![
+            "registry.example".to_string(),
+            "packages.internal:8443".to_string()
+        ]
+    );
+
+    // A non-closed-set mode names the set.
+    let error = CodeConfig::from_acl("sandbox {\n  network = \"open\"\n}").unwrap_err();
+    assert!(format!("{error}").contains("closed set"), "got: {error}");
+
+    // Mediated with an empty allowlist refuses at parse time.
+    let error = CodeConfig::from_acl("sandbox {\n  network = \"mediated\"\n}").unwrap_err();
+    assert!(format!("{error}").contains("network_allow"), "got: {error}");
+
+    // A malformed origin refuses at parse time — a typo must not wait
+    // for the first sandboxed command.
+    let error =
+        CodeConfig::from_acl("sandbox {\n  network = \"mediated\"\n  network_allow = [\"::1\"]\n}")
+            .unwrap_err();
+    assert!(
+        format!("{error}").contains("IPv6") || format!("{error}").contains("host"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn memory_prune_defaults_on_and_the_acl_off_hatch_is_a_closed_set() {
+    // Default ON with the approved posture (product decision 2026-10-08).
+    let config = CodeConfig::from_acl("memory {}").unwrap().memory.unwrap();
+    let policy = config.prune_policy.expect("prune defaults on");
+    assert_eq!(policy.max_items, 10_000);
+    assert_eq!(policy.max_age_days, 180);
+    assert!((policy.min_importance_to_keep - 0.3).abs() < f32::EPSILON);
+
+    // The explicit off hatch.
+    let config = CodeConfig::from_acl("memory {\n  prune = \"off\"\n}")
+        .unwrap()
+        .memory
+        .unwrap();
+    assert!(config.prune_policy.is_none());
+
+    // A garbage string refuses to parse — an object tunes the policy.
+    let error = CodeConfig::from_acl("memory {\n  prune = \"sometimes\"\n}").unwrap_err();
+    assert!(format!("{error}").contains("closed set"), "got: {error}");
+
+    // An object still tunes on top of the default.
+    let config = CodeConfig::from_acl("memory {\n  prune = { max_items = 5 }\n}")
+        .unwrap()
+        .memory
+        .unwrap();
+    let policy = config.prune_policy.expect("object form keeps pruning on");
+    assert_eq!(policy.max_items, 5);
+    assert_eq!(
+        policy.max_age_days, 180,
+        "unspecified fields keep the default"
+    );
+}
+
+#[test]
+fn workspace_retrieval_block_parses_and_refuses_malformed_shapes() {
+    use super::WorkspaceRetrievalConfig;
+    // The documented shape parses whole.
+    let config =
+        CodeConfig::from_acl("workspace_retrieval {\n  enabled = true\n  local_cpu {}\n}").unwrap();
+    assert_eq!(
+        config.workspace_retrieval,
+        Some(WorkspaceRetrievalConfig {
+            enabled: true,
+            local_cpu: true,
+        })
+    );
+    // Absent block = the field stays None (sessions unchanged).
+    let config = CodeConfig::from_acl("default_model = \"p/m\"").unwrap();
+    assert_eq!(config.workspace_retrieval, None);
+    // enabled is required and must be a bool; unknown attrs and blocks
+    // refuse naming their closed sets.
+    let error = CodeConfig::from_acl("workspace_retrieval {}").unwrap_err();
+    assert!(format!("{error}").contains("requires enabled"));
+    let error = CodeConfig::from_acl("workspace_retrieval { enabled = \"yes\" }").unwrap_err();
+    assert!(format!("{error}").contains("must be a bool"));
+    let error = CodeConfig::from_acl("workspace_retrieval { enabled = true, vector_db = \"x\" }")
+        .unwrap_err();
+    assert!(format!("{error}").contains("not in the closed set enabled"));
+    let error =
+        CodeConfig::from_acl("workspace_retrieval { enabled = true\n  gpu { count = 2 }\n}")
+            .unwrap_err();
+    assert!(format!("{error}").contains("not in the closed set local_cpu"));
+}
+
+#[test]
+fn notifications_block_parses_with_closed_sets_and_defaults() {
+    use super::{NotificationsConfig, RunCompletionSignal};
+    let config =
+        CodeConfig::from_acl("notifications {\n  run_completion = \"bell\"\n  min_seconds = 30\n}")
+            .unwrap();
+    assert_eq!(
+        config.notifications,
+        Some(NotificationsConfig {
+            run_completion: RunCompletionSignal::Bell,
+            min_seconds: 30,
+        })
+    );
+    // min_seconds defaults to the one-minute floor; absent block = None
+    // (the quiet default posture).
+    let config = CodeConfig::from_acl("notifications { run_completion = \"off\" }").unwrap();
+    assert_eq!(
+        config.notifications,
+        Some(NotificationsConfig {
+            run_completion: RunCompletionSignal::Off,
+            min_seconds: 60,
+        })
+    );
+    let config = CodeConfig::from_acl("default_model = \"p/m\"").unwrap();
+    assert_eq!(config.notifications, None);
+    // Closed sets refuse, naming the set; the value is required.
+    let error = CodeConfig::from_acl("notifications { run_completion = \"push\" }").unwrap_err();
+    assert!(format!("{error}").contains("[bell, off]"));
+    let error = CodeConfig::from_acl("notifications {}").unwrap_err();
+    assert!(format!("{error}").contains("requires run_completion"));
+    let error = CodeConfig::from_acl("notifications { run_completion = \"bell\", osnotify = 1 }")
+        .unwrap_err();
+    assert!(format!("{error}").contains("closed set run_completion, min_seconds"));
+    let error =
+        CodeConfig::from_acl("notifications { run_completion = \"bell\", min_seconds = 0 }")
+            .unwrap_err();
+    assert!(format!("{error}").contains("between 1 and 86400"));
+}
+
+#[test]
+fn unknown_block_error_names_the_real_dispatch_set() {
+    // The refusal message once drifted (a stale hand-written set that
+    // omitted real arms). It is now formatted from KNOWN_CONFIG_BLOCKS;
+    // this pin holds it to the arms the dispatch actually carries.
+    let error = CodeConfig::from_acl("definitely_not_a_block {}").unwrap_err();
+    let message = format!("{error}");
+    for block in ["sandbox", "workspace_retrieval", "providers", "mcp_servers"] {
+        assert!(
+            message.contains(block),
+            "the closed-set message must name `{block}`: {message}"
+        );
+    }
+    assert!(
+        message.contains("definitely_not_a_block"),
+        "the refusal names the refused block: {message}"
+    );
+}
+
+#[test]
+fn host_authoritative_block_detection_is_structural() {
+    use super::host_authoritative_block;
+
+    // A top-level declaration is detected regardless of the attributes
+    // inside (the caller withholds on the block, not on a spelling).
+    assert_eq!(
+        host_authoritative_block("sandbox { network = \"deny\" }"),
+        Some("sandbox")
+    );
+    // An attribute named like the block inside another block is not a
+    // top-level declaration, and neither is prose in a comment.
+    // `providers` is itself host-authoritative now (ratified 2026-10-09),
+    // so the attribute-shaped case rides a non-authoritative block.
+    assert_eq!(
+        host_authoritative_block("memory {\n  sandbox = \"x\"\n}"),
+        None
+    );
+    assert_eq!(
+        host_authoritative_block("providers \"p\" { api_key = \"k\" }"),
+        Some("providers")
+    );
+    assert_eq!(
+        host_authoritative_block("# sandbox { network = \"mediated\" }"),
+        None
+    );
+    // The ACL parser tolerates an unclosed block at EOF, so a truncated
+    // document still declares its block — and withholding on it is the
+    // safe side: an attribute-less `sandbox {` carries no posture, and a
+    // truncated trusted layer falls back to the deny default in from_acl.
+    assert_eq!(host_authoritative_block("sandbox {"), Some("sandbox"));
+    // Genuinely unparseable input declares nothing — the caller keeps the
+    // fail-closed default rather than guessing.
+    assert_eq!(host_authoritative_block("}}}}"), None);
+}

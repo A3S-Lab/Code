@@ -24,6 +24,7 @@ const MIN_THINKING_BUDGET: usize = 1024;
 const THINKING_ANSWER_RESERVE: usize = 1024;
 
 /// Anthropic Claude client
+#[derive(Clone)]
 pub struct AnthropicClient {
     pub(crate) provider_name: String,
     pub(crate) api_key: SecretString,
@@ -146,6 +147,33 @@ impl AnthropicClient {
             }
 
             request["tools"] = serde_json::json!(tool_defs);
+        }
+
+        // Conversation-prefix breakpoint: mark the final message's
+        // content so the whole conversation through this turn caches; the
+        // next request's breakpoint moves forward and hits this entry as
+        // its prefix (the standard incremental pattern). With system and
+        // tools that is three of the four allowed breakpoints.
+        if let Some(messages_value) = request["messages"].as_array_mut() {
+            if let Some(last) = messages_value.last_mut() {
+                match &last["content"] {
+                    serde_json::Value::String(text) => {
+                        last["content"] = serde_json::json!([{
+                            "type": "text",
+                            "text": text,
+                            "cache_control": { "type": "ephemeral" }
+                        }]);
+                    }
+                    serde_json::Value::Array(blocks) => {
+                        let mut blocks = blocks.clone();
+                        if let Some(block) = blocks.last_mut() {
+                            block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                        }
+                        last["content"] = serde_json::Value::Array(blocks);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         // Apply optional sampling parameters
@@ -363,6 +391,14 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
+    fn with_output_cap(&self, max_tokens: u32) -> Option<std::sync::Arc<dyn LlmClient>> {
+        // The generation-enforced cap for sampling bridges (SEC-SAMPLE1);
+        // Anthropic's request body carries max_tokens natively.
+        Some(std::sync::Arc::new(
+            self.clone().with_max_tokens(max_tokens as usize),
+        ))
+    }
+
     fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
         ModelGenerationPool::for_endpoint(
             &self.provider_name,
@@ -557,10 +593,9 @@ impl AnthropicClient {
                         break;
                     }
 
-                    while let Some(event_end) = buffer.find("\n\n") {
-                        let event_data: String = buffer.drain(..event_end).collect();
-                        buffer.drain(..2);
-
+                    // A trailing CR stays in the buffer. The next chunk may
+                    // finish a CRLF blank line, and a partial frame is not an event.
+                    for event_data in crate::sse::take_sse_events(&mut buffer, false) {
                         for line in event_data.lines() {
                             if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
@@ -1125,5 +1160,64 @@ mod tests {
             make_client().native_structured_support(),
             structured::NativeStructuredSupport::ForcedTool
         );
+    }
+
+    #[test]
+    fn build_request_marks_the_final_message_as_the_conversation_breakpoint() {
+        let client = AnthropicClient::new("test-key".to_string(), "claude-sonnet-4".to_string());
+        let messages = vec![
+            Message::user("first turn"),
+            Message::assistant("first reply"),
+            Message::user("second turn"),
+        ];
+        let request = client.build_request(
+            &messages,
+            Some("system"),
+            &[ToolDefinition {
+                name: "bash".to_string(),
+                description: "run".to_string(),
+                parameters: serde_json::json!({}),
+            }],
+        );
+        let wire_messages = request["messages"].as_array().unwrap();
+        assert_eq!(wire_messages.len(), 3);
+        // Earlier messages keep their plain block content, unmarked.
+        let earlier = wire_messages[0]["content"].as_array().unwrap();
+        assert_eq!(earlier[0]["text"], "first turn");
+        assert!(earlier[0].get("cache_control").is_none());
+        // The final message becomes a cache-marked block.
+        let last = wire_messages.last().unwrap();
+        let blocks = last["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "second turn");
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+
+        // Exactly three breakpoints: system, tools, final message.
+        let serialized = serde_json::to_string(&request).unwrap();
+        let breakpoint_count = serialized.matches("cache_control").count();
+        assert_eq!(breakpoint_count, 3, "breakpoint budget: {serialized}");
+    }
+
+    #[test]
+    fn build_request_marks_block_content_on_its_last_block() {
+        let client = AnthropicClient::new("test-key".to_string(), "claude-sonnet-4".to_string());
+        let mut final_message = Message::assistant("done");
+        final_message
+            .content
+            .push(crate::llm::ContentBlock::ToolUse {
+                id: "tu-1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+            });
+        let request = client.build_request(&[final_message], None, &[]);
+        let last = request["messages"].as_array().unwrap().last().unwrap();
+        let blocks = last["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(
+            blocks[0].get("cache_control").is_none(),
+            "only the last block carries the breakpoint"
+        );
+        assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
     }
 }

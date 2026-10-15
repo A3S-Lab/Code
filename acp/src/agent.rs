@@ -1,7 +1,7 @@
 //! `acp::Agent` backed by a3s-code-core fact-log sessions.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -9,30 +9,296 @@ use std::sync::Arc;
 use a3s_code_core::{Agent, AgentEvent, AgentSession, SessionOptions};
 use agent_client_protocol as acp;
 use agent_client_protocol::Client;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::task::JoinHandle;
 
 use crate::config::LaunchConfig;
+
+mod resume;
+mod session_catalog;
+mod unattended_turn;
+mod workspace_scope;
+
+/// Prompts that may wait behind the active turn before the newest one is
+/// rejected. Half the run-control inbox cap (64): each queued entry is a
+/// full user turn, and a client this far ahead is malfunctioning.
+const MAX_QUEUED_PROMPTS: usize = 32;
+const MODEL_CONFIG_ID: &str = "model";
+
+/// A reserved spot in a [`TurnQueue`]'s waiting count. Dropping it (turn
+/// granted, future cancelled, or task panicked) gives the slot back — a
+/// dropped prompt future must not permanently shrink the queue.
+struct WaitingSlot<'a> {
+    waiting: &'a std::sync::atomic::AtomicUsize,
+}
+
+impl Drop for WaitingSlot<'_> {
+    fn drop(&mut self) {
+        self.waiting
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Serializes turns: a prompt arriving mid-turn queues here instead of
+/// failing with "already has an active operation" (the pager's send-now
+/// and queue reissue both rely on the agent accepting and serializing).
+/// The wait is bounded — without a cap, a client that piles prompts
+/// without waiting grows queued turns (and their held prompt state)
+/// without end.
+#[derive(Default)]
+struct TurnQueue {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+impl TurnQueue {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reserve a waiting slot, rejecting the prompt once MAX_QUEUED_PROMPTS
+    /// are already queued behind the active turn.
+    fn reserve(&self) -> Option<WaitingSlot<'_>> {
+        use std::sync::atomic::Ordering;
+        let now = self.waiting.fetch_add(1, Ordering::AcqRel) + 1;
+        if now > MAX_QUEUED_PROMPTS {
+            self.waiting.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(WaitingSlot {
+            waiting: &self.waiting,
+        })
+    }
+
+    /// Queue for the turn lock. The slot is held while waiting (so a
+    /// cancelled future returns it) and released the moment the permit is
+    /// granted — the running turn is not a waiter.
+    async fn acquire_owned(self: &Arc<Self>) -> Option<OwnedMutexGuard<()>> {
+        let slot = self.reserve()?;
+        let permit = Arc::clone(&self.lock).lock_owned().await;
+        drop(slot);
+        Some(permit)
+    }
+}
 
 struct LiveSession {
     session: Arc<AgentSession>,
     workspace: PathBuf,
     model_id: String,
+    /// Named next-run posture. Deny rules on this session still win.
+    posture: String,
+    denies: Vec<String>,
+    /// Same deny list `open_local_asset` reads while a turn is in flight.
+    asset_denies: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Standing Studio instructions admitted into the system prompt at build.
+    host: crate::host_context::StudioHost,
+    /// Plugin executables from `_meta.a3sTools`, reapplied when the session is replaced.
+    plugin_tools: Vec<serde_json::Value>,
+    /// Admitted assemble list for this process. A later list starts a new session.
+    components: Vec<String>,
+    /// When the in-flight turn started (WC-NOTIFY1: the completion bell
+    /// fires only for runs past the configured floor).
+    turn_started: std::sync::Mutex<Option<std::time::Instant>>,
     /// Serializes turns: a prompt arriving mid-turn queues here instead of
     /// failing with "already has an active operation" (the pager's send-now
     /// and queue reissue both rely on the agent accepting and serializing).
-    turn_lock: Arc<tokio::sync::Mutex<()>>,
+    turn_queue: Arc<TurnQueue>,
+    /// Session-scoped MCP servers (the `mcp_servers` this session was opened
+    /// with). The agent-global manager serves the UNION of all live
+    /// sessions' sets, so one session's sync can never delete another's.
+    mcp_servers: Vec<a3s_code_core::mcp::McpServerConfig>,
     /// The client's prompt id for the in-flight turn, echoed on every
     /// session notification per the ACP prompt-ack contract.
     active_prompt_id: std::sync::Mutex<Option<String>>,
 }
 
+/// Inputs shared by session creation and in-place replacement. Keeping one
+/// typed value prevents model changes from dropping a workspace, host or MCP
+/// contribution while rebuilding the session.
+struct SessionSetup<'a> {
+    workspace: PathBuf,
+    model_id: &'a str,
+    effort: Option<EffortLimits>,
+    host: crate::host_context::StudioHost,
+    components: &'a [String],
+    mcp_servers: Vec<a3s_code_core::mcp::McpServerConfig>,
+}
+
+/// Skill roots the interactive session scans. Existing directories only.
+/// Configured ACL paths join the workspace when they are relative. The user
+/// directory `~/.a3s/skills` is included so `a3s code skills add` is visible
+/// without editing `skill_dirs`.
+fn interactive_skill_dirs(workspace: &std::path::Path, configured: &[PathBuf]) -> Vec<PathBuf> {
+    let (dirs, missing) = interactive_skill_dirs_from(workspace, configured);
+    for path in missing {
+        tracing::error!(
+            path = %path.display(),
+            "configured skill directory is missing; skills from this path are not loaded"
+        );
+    }
+    dirs
+}
+
+/// Directories a session should WATCH for later installs even though they do
+/// not exist yet. The project skills root, `~/.a3s/skills`, and the Agent
+/// Skills homes (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`)
+/// are included. The first install creates one of these; the next catalog
+/// refresh or Skill lookup then loads the package.
+fn watched_skill_dirs(workspace: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        workspace.join("skills"),
+        workspace.join(".a3s").join("skills"),
+    ];
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = std::path::PathBuf::from(home);
+        dirs.push(home.join(".a3s").join("skills"));
+        for root in [".agents", ".claude", ".codex"] {
+            dirs.push(home.join(root).join("skills"));
+        }
+    }
+    dirs
+}
+
+fn interactive_skill_dirs_from(
+    workspace: &std::path::Path,
+    configured: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut dirs = Vec::new();
+    let mut missing = Vec::new();
+    let project = workspace.join(".a3s").join("skills");
+    if project.is_dir() {
+        dirs.push(project);
+    }
+    for dir in configured {
+        let path = if dir.is_absolute() {
+            dir.clone()
+        } else {
+            workspace.join(dir)
+        };
+        if path.is_dir() {
+            dirs.push(path);
+        } else {
+            missing.push(path);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        let home = PathBuf::from(home);
+        let user = home.join(".a3s").join("skills");
+        if user.is_dir() {
+            dirs.push(user);
+        }
+        for root in [".agents", ".claude", ".codex"] {
+            let personal = home.join(root).join("skills");
+            if personal.is_dir() {
+                dirs.push(personal);
+            }
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    missing.sort();
+    missing.dedup();
+    (dirs, missing)
+}
+
+/// Snapshot directory for one interactive core session.
+///
+/// ACL `sessions_dir` wins. Otherwise the store sits beside the pager tree
+/// at `<product home>/session-store`.
+fn interactive_session_store_dir_from(
+    configured: Option<&std::path::Path>,
+    a3s_home: Option<&std::ffi::OsStr>,
+    os_home: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if let Some(dir) = configured {
+        return dir.to_path_buf();
+    }
+    if let Some(home) = a3s_home.filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join("session-store");
+    }
+    if let Some(home) = os_home.filter(|value| !value.is_empty()) {
+        return PathBuf::from(home).join(".a3s").join("session-store");
+    }
+    PathBuf::from(".a3s").join("session-store")
+}
+
+fn canonical_posture(mode: &str) -> Option<&'static str> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "default" => Some("default"),
+        "plan" => Some("plan"),
+        "auto" => Some("auto"),
+        "yolo" => Some("yolo"),
+        _ => None,
+    }
+}
+
+/// WC-NOTIFY1: whether a completed run owes the configured completion
+/// signal. Pure so the floor and the closed set stay pinnable without
+/// a terminal.
+fn completion_bell_due(
+    notifications: &a3s_code_core::config::NotificationsConfig,
+    elapsed: std::time::Duration,
+) -> bool {
+    matches!(
+        notifications.run_completion,
+        a3s_code_core::config::RunCompletionSignal::Bell
+    ) && elapsed.as_secs() >= notifications.min_seconds
+}
+
+fn posture_policy(
+    posture: &str,
+    denies: &[String],
+) -> a3s_code_core::permissions::PermissionPolicy {
+    let mut policy = a3s_code_core::permissions::policy_for_posture(posture);
+    for rule in denies {
+        policy = policy.deny(rule);
+    }
+    // Published catalog reads only. Deny rules above still win. Other tools stay
+    // on the posture; this does not switch the session to yolo.
+    policy.allow("open_local_asset").allow("search_wiki")
+}
+
+fn remember_denies(live: &mut LiveSession) {
+    let mut gate = live
+        .asset_denies
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *gate = live.denies.clone();
+}
+
+/// Restores the session posture if a research turn returns early.
+struct ResearchGate<'a> {
+    session: &'a AgentSession,
+    posture: &'a str,
+    denies: &'a [String],
+    armed: bool,
+}
+
+impl Drop for ResearchGate<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = self
+            .session
+            .set_permission_policy(posture_policy(self.posture, self.denies));
+    }
+}
+
 /// ACP agent that owns live [`AgentSession`] values keyed by ACP session id.
 pub struct A3sCodeAgent {
     launch: LaunchConfig,
-    /// Set once the stdio `AgentSideConnection` is built (chicken/egg with ACP ctor).
-    client: RefCell<Option<Rc<acp::AgentSideConnection>>>,
+    /// Set once the stdio `AgentSideConnection` is built (chicken/egg with
+    /// ACP ctor). `Rc`-shared so the sampling consent consumer (spawned on
+    /// the same LocalSet) reads the live connection.
+    client: Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>,
     core_agent: Mutex<Option<Agent>>,
-    sessions: Mutex<HashMap<String, LiveSession>>,
+    /// One bounded filesystem inventory at a time; the blocking worker owns
+    /// the permit even if its ACP request future is dropped.
+    catalog_queries: Arc<tokio::sync::Semaphore>,
+    /// `Arc`-shared with the sampling consent consumer, which resolves a
+    /// server's owning session before asking a question.
+    sessions: Arc<Mutex<HashMap<String, LiveSession>>>,
     model_id: Mutex<String>,
     /// Last `/effort` selection. Applied on every core session open.
     effort: Mutex<Option<EffortLimits>>,
@@ -43,23 +309,190 @@ pub struct A3sCodeAgent {
     turn_generation: Mutex<HashMap<String, u64>>,
     /// Generation `cancel` observed for each session.
     cancelled_generation: Mutex<HashMap<String, u64>>,
+    /// Wakes `stream_turn` after `cancel` records the generation.
+    /// `notify_waiters` does not store a permit, so the turn also reads the map.
+    turn_cancel: std::sync::Arc<tokio::sync::Notify>,
+    /// MCP servers loaded from the launch config, captured before a session
+    /// list is applied. Session servers replace same-named entries; an empty
+    /// session list leaves this baseline in place.
+    config_mcp: Mutex<Option<Vec<a3s_code_core::mcp::McpServerConfig>>>,
+    plugin_selection: Option<crate::PluginSelectionHost>,
+    /// Present after a launcher asks in `session/new` `_meta.a3sStudioDocuments`,
+    /// or after the legacy `--studio-documents` process flag.
+    documents: RefCell<Option<Arc<crate::document_read::DocumentBridge>>>,
+    /// The consent channel the sampling factory's bridge parks asks on;
+    /// built at construction, consumed by the task spawned at
+    /// `set_client` (a LocalSet context, per the document-read worker
+    /// precedent). Without a client the receiver is never polled and
+    /// every ask times out refused — fail closed.
+    consent_tx:
+        RefCell<Option<tokio::sync::mpsc::Sender<crate::sampling_consent::SamplingConsentAsk>>>,
+    consent_rx:
+        RefCell<Option<tokio::sync::mpsc::Receiver<crate::sampling_consent::SamplingConsentAsk>>>,
+    /// `--unattended` only. `None` for every interactive host.
+    unattended: Option<crate::unattended::Unattended>,
+}
+
+fn model_picker_label(provider_name: &str, display_name: &str) -> String {
+    if provider_name == "cc-switch" || provider_name.starts_with("cc-switch-") {
+        format!("cc-switch · {display_name}")
+    } else if provider_name == "grok" {
+        format!("grok · {display_name}")
+    } else if provider_name == "cursor" {
+        format!("cursor · {display_name}")
+    } else {
+        format!("{provider_name}/{display_name}")
+    }
+}
+
+fn model_picker_description(provider_name: &str) -> String {
+    if provider_name == "cc-switch" || provider_name.starts_with("cc-switch-") {
+        "Imported from local CC Switch".to_string()
+    } else if provider_name == "grok" {
+        "Logged-in Grok account".to_string()
+    } else if provider_name == "cursor" {
+        "Logged-in Cursor account".to_string()
+    } else {
+        format!("From A3S ACL provider {provider_name}")
+    }
 }
 
 impl A3sCodeAgent {
     pub fn new(launch: LaunchConfig) -> Self {
         let model_id = launch.model_id.clone();
+        let (consent_tx, consent_rx) = tokio::sync::mpsc::channel(16);
         Self {
             launch,
-            client: RefCell::new(None),
+            client: Rc::new(RefCell::new(None)),
             core_agent: Mutex::new(None),
-            sessions: Mutex::new(HashMap::new()),
+            catalog_queries: Arc::new(tokio::sync::Semaphore::new(1)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             model_id: Mutex::new(model_id),
             // a3s-code TUI default is BudgetProfile index 2 (`high`).
             effort: Mutex::new(effort_limits("high")),
             goals: Mutex::new(HashMap::new()),
             turn_generation: Mutex::new(HashMap::new()),
             cancelled_generation: Mutex::new(HashMap::new()),
+            turn_cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
+            config_mcp: Mutex::new(None),
+            plugin_selection: None,
+            documents: RefCell::new(None),
+            consent_tx: RefCell::new(Some(consent_tx)),
+            consent_rx: RefCell::new(Some(consent_rx)),
+            unattended: None,
         }
+    }
+
+    /// Run every prompt unattended. Only the `--unattended` launch calls this.
+    pub fn with_unattended(mut self, unattended: crate::unattended::Unattended) -> Self {
+        self.unattended = Some(unattended);
+        self
+    }
+
+    pub fn with_plugin_selection(mut self, selection: crate::PluginSelectionHost) -> Self {
+        self.plugin_selection = Some(selection);
+        self
+    }
+
+    /// Enable reads through the launcher-owned Studio document host.
+    pub fn with_studio_documents(self) -> Self {
+        *self.documents.borrow_mut() = Some(crate::document_read::DocumentBridge::new());
+        self
+    }
+
+    /// `_meta.a3sStudioDocuments: true` opts this process into the document host.
+    /// Any other value leaves the bridge unset. A later session on the same
+    /// process keeps the bridge the first request created.
+    fn admit_studio_documents(&self, meta: Option<&serde_json::Map<String, serde_json::Value>>) {
+        let requested = meta
+            .and_then(|meta| meta.get("a3sStudioDocuments"))
+            .and_then(|value| value.as_bool())
+            == Some(true);
+        if !requested || self.documents.borrow().is_some() {
+            return;
+        }
+        let bridge = crate::document_read::DocumentBridge::new();
+        if let Some(client) = self.client.borrow().as_ref().cloned() {
+            bridge.connect(client);
+        }
+        *self.documents.borrow_mut() = Some(bridge);
+    }
+
+    fn document_bridge(&self) -> Option<Arc<crate::document_read::DocumentBridge>> {
+        self.documents.borrow().clone()
+    }
+
+    /// Stop host RPCs when the owned ACP transport terminates.
+    pub fn stop_document_bridge(&self) {
+        if let Some(documents) = self.document_bridge() {
+            documents.stop();
+        }
+        self.client.borrow_mut().take();
+    }
+
+    fn validate_plugin_selection(
+        &self,
+        meta: Option<&serde_json::Map<String, serde_json::Value>>,
+        servers: &[acp::McpServer],
+    ) -> acp::Result<()> {
+        let requested = meta.and_then(|meta| meta.get("a3sPluginSelection"));
+        match (&self.plugin_selection, requested) {
+            (None, None) => Ok(()),
+            (Some(host), Some(value)) => {
+                let cursor: a3s_use_reconcile::SelectionCursor =
+                    serde_json::from_value(value.clone())
+                        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+                if &cursor != host.cursor()
+                    || !crate::plugin_tools::entries_from_meta(meta).is_empty()
+                    || servers
+                        .iter()
+                        .filter_map(acp_mcp_to_config)
+                        .any(|config| host.contains_mcp_server(&config.name))
+                {
+                    return Err(acp::Error::invalid_params()
+                        .data("plugin selection mismatch or unbound Tool/MCP entries"));
+                }
+                Ok(())
+            }
+            _ => Err(acp::Error::invalid_params()
+                .data("plugin selection requires a matching native launcher binding")),
+        }
+    }
+
+    /// Sync the agent-global MCP manager to the UNION of the config baseline
+    /// and every live session's server set. Previously the last session's
+    /// desired set won alone, so opening a second session with different
+    /// `mcp_servers` silently deleted the first session's servers.
+    async fn sync_session_mcp_servers(
+        &self,
+        for_session: Option<&str>,
+        servers: &[acp::McpServer],
+    ) -> acp::Result<()> {
+        self.ensure_core_agent().await?;
+        let guard = self.core_agent.lock().await;
+        let agent = guard
+            .as_ref()
+            .ok_or_else(|| acp::Error::internal_error().data("core agent missing"))?;
+        let baseline = {
+            let mut cached = self.config_mcp.lock().await;
+            if cached.is_none() {
+                *cached = Some(agent.global_mcp_configs().await);
+            }
+            cached.clone().unwrap_or_default()
+        };
+        let live: Vec<(String, Vec<a3s_code_core::mcp::McpServerConfig>)> = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .map(|(key, live)| (key.clone(), live.mcp_servers.clone()))
+                .collect()
+        };
+        let desired = union_mcp_desired(baseline, &live, for_session, servers)
+            .map_err(|conflict| acp::Error::invalid_params().data(conflict))?;
+        agent
+            .sync_global_mcp_servers(desired)
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))
     }
 
     /// The in-flight prompt id for this notification's session.
@@ -80,6 +513,19 @@ impl A3sCodeAgent {
     }
 
     pub fn set_client(&self, conn: Rc<acp::AgentSideConnection>) {
+        if let Some(documents) = self.document_bridge() {
+            documents.connect(conn.clone());
+        }
+        // The sampling consent consumer rides the same LocalSet this
+        // connection setup runs on (the document-read worker
+        // precedent). Once only; a second connection reuses it.
+        if let Some(rx) = self.consent_rx.borrow_mut().take() {
+            tokio::task::spawn_local(serve_sampling_consent(
+                rx,
+                Rc::clone(&self.client),
+                Arc::clone(&self.sessions),
+            ));
+        }
         *self.client.borrow_mut() = Some(conn);
     }
 
@@ -92,16 +538,8 @@ impl A3sCodeAgent {
             } else {
                 model.name.clone()
             };
-            let name = match provider.name.as_str() {
-                "cc-switch" => format!("cc-switch · {display_name}"),
-                "grok" => format!("grok · {display_name}"),
-                other => format!("{other}/{display_name}"),
-            };
-            let description = match provider.name.as_str() {
-                "cc-switch" => Some("Imported from local CC Switch".to_string()),
-                "grok" => Some("Logged-in Grok account".to_string()),
-                _ => Some(format!("From A3S ACL provider {}", provider.name)),
-            };
+            let name = model_picker_label(&provider.name, &display_name);
+            let description = Some(model_picker_description(&provider.name));
             let mut info = acp::ModelInfo::new(acp::ModelId::new(id.clone()), name);
             if let Some(description) = description {
                 info = info.description(description);
@@ -151,6 +589,25 @@ impl A3sCodeAgent {
         acp::SessionModelState::new(acp::ModelId::new(current_id), available)
     }
 
+    /// The model picker as a session config option: clients on ACP schemas
+    /// without `SessionModelState` (Harbor's Python SDK) select through it.
+    fn model_config_options(models: &acp::SessionModelState) -> Vec<acp::SessionConfigOption> {
+        let options: Vec<acp::SessionConfigSelectOption> = models
+            .available_models
+            .iter()
+            .map(|info| {
+                acp::SessionConfigSelectOption::new(info.model_id.0.to_string(), info.name.clone())
+            })
+            .collect();
+        vec![acp::SessionConfigOption::select(
+            MODEL_CONFIG_ID,
+            "Model",
+            models.current_model_id.0.to_string(),
+            options,
+        )
+        .category(acp::SessionConfigOptionCategory::Model)]
+    }
+
     fn known_model(&self, model_id: &str) -> bool {
         self.launch
             .config
@@ -168,7 +625,50 @@ impl A3sCodeAgent {
         let agent = Agent::from_config(self.launch.config.clone())
             .await
             .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        // SEC-SAMPLE1 wiring: arm per-server sampling behind all three
+        // preconditions (consent bridge, per-server ceiling,
+        // generation-enforced cap). Runs once, with the agent.
+        if let Err(error) = self.arm_sampling_consent(&agent).await {
+            tracing::warn!(error = %error, "sampling stays refused: arming failed");
+        }
         *guard = Some(agent);
+        Ok(())
+    }
+
+    /// Build the consent channel (once) and arm the manager's sampling
+    /// factory with the composition `Bounded(ApprovalGated(Llm))` — the
+    /// consent bridge INSIDE the per-server ceiling, per both types'
+    /// docs. The sampling voice is the launch default model. Any arming
+    /// failure leaves sampling refused (fail closed); this never fails
+    /// the agent itself.
+    async fn arm_sampling_consent(&self, agent: &Agent) -> acp::Result<()> {
+        let Some(tx) = self.consent_tx.borrow().clone() else {
+            // The channel is built at construction; unreachable, but a
+            // missing surface refuses rather than arms.
+            return Ok(());
+        };
+        let model_ref = self
+            .launch
+            .config
+            .default_model
+            .as_deref()
+            .unwrap_or_default()
+            .to_string();
+        let Some((provider_id, model_id)) = model_ref.split_once('/') else {
+            // No default model voice: sampling stays refused.
+            return Ok(());
+        };
+        let Some(llm) = self.launch.config.llm_config(provider_id, model_id) else {
+            // No usable client for the default voice: refused.
+            return Ok(());
+        };
+        let llm = a3s_code_core::llm::create_client_with_config(llm);
+        let factory: a3s_code_core::mcp::SamplingHandlerFactory =
+            std::sync::Arc::new(move |server| sampling_handler_for(server, &llm, &model_ref, &tx));
+        agent
+            .set_sampling_handler_factory(factory)
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
         Ok(())
     }
 
@@ -178,10 +678,12 @@ impl A3sCodeAgent {
         effort: Option<EffortLimits>,
     ) -> SessionOptions {
         let mut options = SessionOptions::new()
+            .with_assistant_final_response(true)
             .with_session_id(session_id.to_string())
             .with_model(model_id.to_string())
             .with_auto_compact(true)
             .with_auto_compact_threshold(a3s_code_core::store::DEFAULT_AUTO_COMPACT_THRESHOLD);
+        let mut guideline = String::new();
         if let Some(limits) = effort {
             options = options
                 .with_reasoning_effort(limits.token)
@@ -196,10 +698,10 @@ impl A3sCodeAgent {
                     .with_auto_parallel_delegation(true)
                     .with_manual_delegation_enabled(true);
             }
-            // The numbers are part of the completion the model receives, including
-            // native-effort models whose provider parameter does not carry a token count.
-            let mut guideline = format!(
-                "Session budget: thinking_budget={} tool_rounds={}.",
+            // The numbers are a safety ceiling. Native-effort models still
+            // receive them because the provider parameter does not carry a count.
+            guideline = format!(
+                "These limits are a maximum, not a quota. thinking_budget={} tool_rounds={}. Stop when the user's outcome is done.",
                 limits.thinking_budget, limits.max_tool_rounds
             );
             if !a3s_code_core::llm::model_sends_native_effort(model_id) {
@@ -208,56 +710,196 @@ impl A3sCodeAgent {
                     guideline.push_str(extra);
                 }
             }
-            options = options.with_prompt_slots(
-                a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
-            );
         }
+        if !guideline.is_empty() {
+            guideline.push('\n');
+        }
+        guideline.push_str(SESSION_OUTCOME_BOUNDARY);
+        options = options.with_prompt_slots(
+            a3s_code_core::SystemPromptSlots::default().with_guidelines(guideline),
+        );
         options
     }
 
-    /// The terminal host asks before a mutation and lets known-safe reads run.
+    /// Snapshot directory for the interactive core session.
     ///
-    /// `InteractiveToolGuardrail` is the shared classifier. An enabled
-    /// confirmation policy is what turns its Ask into a parked
-    /// `ConfirmationRequired` the pager answers through `request_permission`.
-    /// A session with neither runs every tool, including writes.
+    /// ACL `sessions_dir` wins. Otherwise the store sits beside the pager tree
+    /// at `<product home>/session-store`, not inside `<product home>/sessions`.
+    /// The pager scans every child of `sessions` as a workspace bucket, and the
+    /// file store's `v1` directory would be one of those buckets.
+    fn interactive_session_store_dir(configured: Option<&std::path::Path>) -> PathBuf {
+        interactive_session_store_dir_from(
+            configured,
+            std::env::var_os("A3S_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )
+    }
+
     fn host_session_options(
         session_id: &str,
-        model_id: &str,
-        effort: Option<EffortLimits>,
-        workspace: &std::path::Path,
-    ) -> SessionOptions {
+        setup: &SessionSetup<'_>,
+        config: &a3s_code_core::CodeConfig,
+        session_store_dir: &std::path::Path,
+    ) -> acp::Result<SessionOptions> {
+        let contracts = config
+            .verification_contracts_for_workspace(&setup.workspace)
+            .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
         let guardrail = a3s_code_core::permissions::InteractiveToolGuardrail::default()
-            .with_workspace(workspace);
-        Self::core_session_options(session_id, model_id, effort)
+            .with_workspace(&setup.workspace);
+        let options = Self::core_session_options(session_id, setup.model_id, setup.effort);
+        let slots = crate::host_context::merge_studio_host(
+            options.prompt_slots.clone().unwrap_or_default(),
+            &setup.host,
+        );
+        let mut options = options
+            .with_prompt_slots(slots)
+            .with_verification_contracts(contracts)
             .with_permission_checker(Arc::new(guardrail))
             .with_confirmation_policy(a3s_code_core::hitl::ConfirmationPolicy::enabled())
+            .with_sandbox_network_mode(config.sandbox_network)
+            .with_sandbox_network_allow(config.sandbox_network_allow.clone())
+            .with_code_intelligence();
+        if let Some(policy) = &setup.host.work_policy {
+            options = options.with_work_policy(policy.clone());
+        }
+        let skill_dirs = interactive_skill_dirs(&setup.workspace, &config.skill_dirs);
+        if !skill_dirs.is_empty() {
+            options = options.with_skill_dirs(skill_dirs);
+        }
+        options = options.with_watch_skill_dirs(watched_skill_dirs(&setup.workspace));
+        Ok(options.with_file_session_store(session_store_dir))
+    }
+
+    fn session_options_for(
+        &self,
+        session_id: &str,
+        setup: &SessionSetup<'_>,
+        session_store_dir: &std::path::Path,
+    ) -> acp::Result<SessionOptions> {
+        match &self.unattended {
+            Some(unattended) => unattended
+                .session_options(
+                    session_id,
+                    setup.model_id,
+                    interactive_skill_dirs(&setup.workspace, &self.launch.config.skill_dirs),
+                )
+                .map_err(|error| acp::Error::internal_error().data(error)),
+            None => Self::host_session_options(
+                session_id,
+                setup,
+                &self.launch.config,
+                session_store_dir,
+            ),
+        }
     }
 
     async fn open_core_session(
         &self,
         session_id: &str,
-        workspace: PathBuf,
-        model_id: &str,
-        effort: Option<EffortLimits>,
+        setup: SessionSetup<'_>,
+        restore: bool,
     ) -> acp::Result<LiveSession> {
         self.ensure_core_agent().await?;
         let agent_guard = self.core_agent.lock().await;
         let agent = agent_guard
             .as_ref()
             .ok_or_else(|| acp::Error::internal_error().data("core agent missing"))?;
-        let options = Self::host_session_options(session_id, model_id, effort, &workspace);
-        let session = agent
-            .session_async(workspace.to_string_lossy().to_string(), Some(options))
-            .await
-            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let store_dir =
+            Self::interactive_session_store_dir(self.launch.config.sessions_dir.as_deref());
+        let options = self.session_options_for(session_id, &setup, &store_dir)?;
+        let options = match &self.plugin_selection {
+            Some(selection) => selection.session_options(options),
+            None => options,
+        };
+        let options = crate::harness_assemble::apply(options, setup.components)
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        let engineering = options.work_policy.is_some();
+        let stored = if restore {
+            Self::resume_snapshot_store(&store_dir, session_id, &setup.workspace).await?
+        } else {
+            None
+        };
+        let session = match stored {
+            Some(store) => {
+                agent
+                    .resume_session_async(session_id, options.with_session_store(store))
+                    .await
+            }
+            None => {
+                agent
+                    .session_async(setup.workspace.to_string_lossy().to_string(), Some(options))
+                    .await
+            }
+        }
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        if engineering {
+            crate::engineering::register_scenarios(&session)
+                .map_err(|error| acp::Error::internal_error().data(error))?;
+        }
+        let asset_denies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        if Self::attach_local_assets(&session, &setup.host, &asset_denies, self.document_bridge())?
+        {
+            session
+                .set_permission_policy(posture_policy("default", &[]))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
         Ok(LiveSession {
+            turn_started: std::sync::Mutex::new(None),
             session: Arc::new(session),
-            workspace,
-            model_id: model_id.to_string(),
-            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            workspace: setup.workspace,
+            model_id: setup.model_id.to_string(),
+            posture: "default".to_string(),
+            denies: Vec::new(),
+            asset_denies,
+            host: setup.host,
+            plugin_tools: Vec::new(),
+            components: setup.components.to_vec(),
+            turn_queue: Arc::new(TurnQueue::new()),
+            mcp_servers: setup.mcp_servers,
             active_prompt_id: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Register each installed plugin executable on the live session.
+    fn admit_plugin_tools(
+        session: &AgentSession,
+        entries: &[serde_json::Value],
+    ) -> acp::Result<()> {
+        for tool in crate::plugin_tools::from_entries(entries) {
+            session
+                .register_dynamic_tool(tool)
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn finish_plugin_tools(
+        &self,
+        mut live: LiveSession,
+        entries: Vec<serde_json::Value>,
+    ) -> acp::Result<LiveSession> {
+        let result = if let Some(host) = &self.plugin_selection {
+            host.apply(&live.session)
+                .await
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))
+        } else {
+            Self::admit_plugin_tools(&live.session, &entries)
+        };
+        if let Err(error) = result {
+            live.session.close().await;
+            return Err(error);
+        }
+        if let Some(documents) = self.document_bridge() {
+            let result = documents
+                .tool(&live.workspace, live.session.session_id())
+                .and_then(|tool| live.session.register_dynamic_tool(tool).map_err(Into::into));
+            if let Err(error) = result {
+                live.session.close().await;
+                return Err(acp::Error::internal_error().data(error.to_string()));
+            }
+        }
+        live.plugin_tools = entries;
+        Ok(live)
     }
 
     /// Rebuild a session that is already registered. `session_async` rejects a
@@ -266,17 +908,21 @@ impl A3sCodeAgent {
     async fn replace_core_session(
         &self,
         current: &AgentSession,
-        workspace: PathBuf,
-        model_id: &str,
-        effort: Option<EffortLimits>,
+        setup: SessionSetup<'_>,
     ) -> acp::Result<LiveSession> {
         self.ensure_core_agent().await?;
         let agent_guard = self.core_agent.lock().await;
         let agent = agent_guard
             .as_ref()
             .ok_or_else(|| acp::Error::internal_error().data("core agent missing"))?;
-        let mut options =
-            Self::host_session_options(current.session_id(), model_id, effort, &workspace);
+        let store_dir =
+            Self::interactive_session_store_dir(self.launch.config.sessions_dir.as_deref());
+        let mut options = self.session_options_for(current.session_id(), &setup, &store_dir)?;
+        if let Some(selection) = &self.plugin_selection {
+            options = selection.session_options(options);
+        }
+        options = crate::harness_assemble::apply(options, setup.components)
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
         let session = if let Some(store) = current.session_store() {
             options = options.with_session_store(store);
             agent
@@ -287,17 +933,87 @@ impl A3sCodeAgent {
             // Nothing was persisted, so closing frees the id for a fresh session.
             current.close().await;
             agent
-                .session_async(workspace.to_string_lossy().to_string(), Some(options))
+                .session_async(setup.workspace.to_string_lossy().to_string(), Some(options))
                 .await
                 .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
         };
+        let asset_denies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        if Self::attach_local_assets(&session, &setup.host, &asset_denies, self.document_bridge())?
+        {
+            session
+                .set_permission_policy(posture_policy("default", &[]))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
         Ok(LiveSession {
+            turn_started: std::sync::Mutex::new(None),
             session: Arc::new(session),
-            workspace,
-            model_id: model_id.to_string(),
-            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            workspace: setup.workspace,
+            model_id: setup.model_id.to_string(),
+            posture: "default".to_string(),
+            denies: Vec::new(),
+            asset_denies,
+            host: setup.host,
+            plugin_tools: Vec::new(),
+            components: setup.components.to_vec(),
+            turn_queue: Arc::new(TurnQueue::new()),
+            mcp_servers: setup.mcp_servers,
             active_prompt_id: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Register `open_local_asset` when the tenant catalog is non-empty.
+    fn attach_local_assets(
+        session: &AgentSession,
+        host: &crate::host_context::StudioHost,
+        denies: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        bridge: Option<std::sync::Arc<crate::document_read::DocumentBridge>>,
+    ) -> acp::Result<bool> {
+        let Some(roots) = host.assets.clone() else {
+            if bridge.is_none() {
+                return Ok(false);
+            }
+            session
+                .register_dynamic_tool(std::sync::Arc::new(
+                    crate::wiki_search::SearchWikiTool::new(
+                        None,
+                        bridge,
+                        std::sync::Arc::clone(denies),
+                    ),
+                ))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+            return Ok(true);
+        };
+        let catalog_empty = crate::local_assets::load_catalog(&roots).is_empty();
+        let wiki = roots.wiki.as_ref().and_then(|path| {
+            match a3s_code_core::workspace::WikiIndex::start(path.clone()) {
+                Ok(index) => Some(index),
+                Err(error) => {
+                    tracing::warn!(%error, "wiki index did not start");
+                    None
+                }
+            }
+        });
+        if catalog_empty && wiki.is_none() && bridge.is_none() {
+            return Ok(false);
+        }
+        if !catalog_empty {
+            session
+                .register_dynamic_tool(Arc::new(crate::local_assets::OpenLocalAssetTool::new(
+                    roots,
+                    std::sync::Arc::clone(denies),
+                )))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+        if wiki.is_some() || bridge.is_some() {
+            session
+                .register_dynamic_tool(Arc::new(crate::wiki_search::SearchWikiTool::new(
+                    wiki.map(std::sync::Arc::new),
+                    bridge,
+                    std::sync::Arc::clone(denies),
+                )))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+        Ok(true)
     }
 
     async fn emit(&self, notification: acp::SessionNotification) {
@@ -317,6 +1033,39 @@ impl A3sCodeAgent {
             }
             let _ = client.session_notification(notification).await;
         }
+    }
+
+    async fn emit_run_observation(&self, observation: Option<crate::run_observation::Observation>) {
+        let Some(observation) = observation else {
+            return;
+        };
+        let Some(client) = self.client.borrow().clone() else {
+            return;
+        };
+        let params = match serde_json::value::to_raw_value(&observation) {
+            Ok(params) => params,
+            Err(error) => {
+                tracing::warn!(%error, "Run observation serialization refused");
+                return;
+            }
+        };
+        if let Err(error) = client
+            .ext_notification(acp::ExtNotification::new(
+                crate::run_observation::METHOD,
+                params.into(),
+            ))
+            .await
+        {
+            tracing::warn!(%error, "Run observation transport unavailable");
+        }
+    }
+
+    async fn close_run_observation(&self, state: &mut TurnState) {
+        let observation = match state.observer.as_mut() {
+            Some(observer) => observer.closed().await,
+            None => None,
+        };
+        self.emit_run_observation(observation).await;
     }
 
     async fn emit_text(&self, session_id: &acp::SessionId, text: &str) {
@@ -500,6 +1249,26 @@ impl A3sCodeAgent {
             .await;
     }
 
+    /// Notify the client how the run closed at the completion gate, on a
+    /// dedicated method so it needs no ACP enum variant. Emitted before the
+    /// prompt response resolves (same FIFO wire ⇒ it precedes the marker).
+    async fn emit_turn_outcome(&self, session_id: &acp::SessionId, outcome: serde_json::Value) {
+        let payload = serde_json::json!({
+            "sessionId": session_id.0.as_ref(),
+            "outcome": outcome,
+        });
+        let Ok(raw) = serde_json::value::to_raw_value(&payload) else {
+            return;
+        };
+        let client = self.client.borrow().clone();
+        let Some(client) = client else {
+            return;
+        };
+        let _ = client
+            .ext_notification(acp::ExtNotification::new("x.ai/turn/outcome", raw.into()))
+            .await;
+    }
+
     async fn emit_subagent_start(
         &self,
         session_id: &acp::SessionId,
@@ -523,6 +1292,7 @@ impl A3sCodeAgent {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)] // event surface arity is the ACP wire shape
     async fn emit_subagent_progress(
         &self,
         session_id: &acp::SessionId,
@@ -562,6 +1332,7 @@ impl A3sCodeAgent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // event surface arity is the ACP wire shape
     async fn emit_subagent_end(
         &self,
         session_id: &acp::SessionId,
@@ -593,14 +1364,59 @@ impl A3sCodeAgent {
         tool_id: &str,
         tool_name: &str,
         args: &serde_json::Value,
+        workspace: &std::path::Path,
     ) -> bool {
+        // The unattended launch is the operator's standing approval. It must
+        // not learn a prefix into the graded workspace either.
+        if self.unattended.is_some() {
+            return true;
+        }
+        // Approval learning: a prefix the user approved in an earlier
+        // session of this workspace skips the round-trip entirely. The
+        // learned set is conservative (plain executable names only, a
+        // never-learn floor, bounded) — see approval_learning.
+        if crate::approval_learning::is_previously_approved(workspace, tool_name, args) {
+            tracing::debug!(tool = tool_name, "tool call approved by a learned prefix");
+            return true;
+        }
         let request = tool_permission_request(session_id, tool_id, tool_name, args);
         let client = self.client.borrow().clone();
         let Some(client) = client else {
             return false;
         };
-        match client.request_permission(request).await {
-            Ok(response) => permission_response_approved(&response),
+        let ask = client.request_permission(request);
+        let response = match tokio::time::timeout(ask_deadline(), ask).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                // Fail closed: an unanswered ask denies the call instead of
+                // parking the turn forever. The bell rang; nobody came.
+                tracing::warn!(
+                    session = %session_id.0,
+                    tool = tool_name,
+                    "permission ask timed out unanswered; denying"
+                );
+                return false;
+            }
+        };
+        match response {
+            Ok(response) => {
+                let approved = permission_response_approved(&response);
+                if approved && tool_name == "bash" {
+                    let command = args
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    if let Some(prefix) =
+                        crate::approval_learning::record_approved_bash(workspace, command)
+                    {
+                        tracing::info!(
+                            prefix = %prefix,
+                            "learned an approved bash prefix for this workspace"
+                        );
+                    }
+                }
+                approved
+            }
             Err(_) => false,
         }
     }
@@ -615,15 +1431,37 @@ impl A3sCodeAgent {
         question_id: &str,
         question: &str,
         options: &[String],
-        _allow_free_text: bool,
+        allow_free_text: bool,
     ) -> Option<String> {
-        let Some(request) = question_permission_request(session_id, question_id, question, options)
-        else {
-            return None;
-        };
+        let request = question_permission_request(
+            session_id,
+            question_id,
+            question,
+            options,
+            allow_free_text,
+        )?;
         let client = self.client.borrow().clone();
         let client = client?;
-        let response = client.request_permission(request).await.ok()?;
+        let ask = client.request_permission(request);
+        let response = match tokio::time::timeout(ask_deadline(), ask).await {
+            Ok(result) => result.ok()?,
+            Err(_elapsed) => {
+                // Unanswered: the run keeps its existing unanswered-question
+                // behavior instead of parking on the wire forever.
+                tracing::warn!(
+                    session = %session_id.0,
+                    question_id = %question_id,
+                    "question ask timed out unanswered"
+                );
+                return None;
+            }
+        };
+        // A typed free-text answer rides the followup meta and outranks the
+        // choice-row mapping: the selected row only names how the dialog was
+        // dismissed, not what the user answered.
+        if let Some(text) = followup_message(&response) {
+            return Some(text.to_string());
+        }
         answer_from_permission_outcome(&response.outcome, options)
     }
 
@@ -645,6 +1483,11 @@ impl A3sCodeAgent {
         state: &mut TurnState,
         event: AgentEvent,
     ) {
+        let observation = state
+            .observer
+            .as_mut()
+            .and_then(|observer| observer.event(&event));
+        self.emit_run_observation(observation).await;
         match event {
             AgentEvent::TextDelta { text } => {
                 if !text.is_empty() {
@@ -656,17 +1499,26 @@ impl A3sCodeAgent {
             AgentEvent::ReasoningDelta { text } => {
                 self.emit_thought(session_id, &text).await;
             }
-            AgentEvent::ToolStart { id, name } => {
-                self.emit_tool_call(session_id, &id, &name, None).await;
+            AgentEvent::ToolStart { .. } => {
+                // Streaming and the fact runner both announce a call before its
+                // arguments exist. Painting that announcement opens a second
+                // Run row for one execution, and it also paints a twin that
+                // the same-response collapse never runs.
             }
             AgentEvent::ToolExecutionStart {
                 id,
                 name,
                 args: tool_args,
-            } => {
-                self.emit_tool_call_started(session_id, &id, &name, &tool_args)
-                    .await;
-            }
+            } => match note_tool_row(&mut state.painted_tools, &id) {
+                ToolRowPaint::Open => {
+                    self.emit_tool_call(session_id, &id, &name, Some(&tool_args))
+                        .await;
+                }
+                ToolRowPaint::Update => {
+                    self.emit_tool_call_started(session_id, &id, &name, &tool_args)
+                        .await;
+                }
+            },
             AgentEvent::ToolOutputDelta { id, name, delta } => {
                 self.emit_tool_call_output_delta(session_id, &id, &name, &delta)
                     .await;
@@ -677,17 +1529,29 @@ impl A3sCodeAgent {
                 args: tool_args,
                 output,
                 exit_code,
+                metadata,
                 ..
             } => {
-                self.emit_tool_call_completed(
-                    session_id,
-                    &id,
-                    &name,
-                    tool_args.as_ref(),
-                    &output,
-                    exit_code,
-                )
-                .await;
+                let same_response_duplicate = metadata
+                    .as_ref()
+                    .and_then(|value| value.get("guard"))
+                    .and_then(|value| value.as_str())
+                    == Some("same_response_duplicate");
+                if state.painted_tools.contains(&id) || !same_response_duplicate {
+                    if state.painted_tools.insert(id.clone()) {
+                        self.emit_tool_call(session_id, &id, &name, tool_args.as_ref())
+                            .await;
+                    }
+                    self.emit_tool_call_completed(
+                        session_id,
+                        &id,
+                        &name,
+                        tool_args.as_ref(),
+                        &output,
+                        exit_code,
+                    )
+                    .await;
+                }
             }
             AgentEvent::ConfirmationRequired {
                 tool_id,
@@ -695,10 +1559,27 @@ impl A3sCodeAgent {
                 args: tool_args,
                 ..
             } => {
-                self.emit_tool_call(session_id, &tool_id, &tool_name, Some(&tool_args))
-                    .await;
+                // Yolo still parks bash, then auto-approves. That announcement
+                // is the same id as ToolExecutionStart. Record it here or the
+                // pager opens a second Run row for one fact.
+                match note_tool_row(&mut state.painted_tools, &tool_id) {
+                    ToolRowPaint::Open => {
+                        self.emit_tool_call(session_id, &tool_id, &tool_name, Some(&tool_args))
+                            .await;
+                    }
+                    ToolRowPaint::Update => {
+                        self.emit_tool_call_started(session_id, &tool_id, &tool_name, &tool_args)
+                            .await;
+                    }
+                }
                 let approved = self
-                    .request_tool_permission(session_id, &tool_id, &tool_name, &tool_args)
+                    .request_tool_permission(
+                        session_id,
+                        &tool_id,
+                        &tool_name,
+                        &tool_args,
+                        session.workspace(),
+                    )
                     .await;
                 let reason = if approved {
                     Some("approved via ACP request_permission".into())
@@ -790,8 +1671,19 @@ impl A3sCodeAgent {
                 )
                 .await;
             }
-            AgentEvent::End { text, .. } => {
+            AgentEvent::End {
+                text,
+                verification_summary,
+                completion_terminal,
+                forced_stop,
+                ..
+            } => {
                 state.end_text = Some(text.clone());
+                state.end_outcome = Some(turn_outcome_payload(
+                    &completion_terminal,
+                    &verification_summary,
+                    forced_stop.as_ref(),
+                ));
                 if should_emit_end_text(state.saw_text, &text) {
                     self.emit_text(session_id, &text).await;
                 }
@@ -857,8 +1749,37 @@ impl A3sCodeAgent {
                 question,
                 options,
                 allow_free_text,
+                form,
             } => {
                 if !claim_question_prompt(&mut state.prompted_questions, &question_id) {
+                    return;
+                }
+                if self.unattended.is_some() {
+                    let answer = match form {
+                        Some(_) => serde_json::Value::Null.to_string(),
+                        None => crate::unattended::QUESTION_ANSWER.to_string(),
+                    };
+                    let _ = a3s_code_core::ask_user::answer(&question_id, &answer);
+                    return;
+                }
+                if let Some(form) = form.as_deref() {
+                    // Closed-catalog form: the client renders it and answers
+                    // with the submitted values JSON.
+                    let client = self.client.borrow().clone();
+                    let values = match client {
+                        Some(client) => {
+                            crate::form_request::request_form(
+                                &client,
+                                &question_id,
+                                &question,
+                                form,
+                            )
+                            .await
+                        }
+                        None => None,
+                    };
+                    let answer = values.unwrap_or(serde_json::Value::Null);
+                    let _ = a3s_code_core::ask_user::answer(&question_id, &answer.to_string());
                     return;
                 }
                 if !question_has_choices(&options) {
@@ -881,6 +1802,13 @@ impl A3sCodeAgent {
                     let _ = a3s_code_core::ask_user::answer(&question_id, &text);
                 }
             }
+            AgentEvent::GoalAchieved {
+                goal,
+                total_steps,
+                duration_ms,
+            } => {
+                state.achieved_goal = Some((goal, total_steps, duration_ms));
+            }
             _ => {}
         }
     }
@@ -892,19 +1820,35 @@ impl A3sCodeAgent {
             .lock()
             .await
             .get(session_key)
-            .is_some_and(|goal| !goal.paused);
-        if !active {
+            .map(|goal| !goal.paused);
+        let Some(active) = active else {
             return;
-        }
+        };
         let session = self
             .sessions
             .lock()
             .await
             .get(session_key)
             .map(|live| Arc::clone(&live.session));
-        if let Some(session) = session {
-            let _ = session.set_planning_mode(a3s_code_core::PlanningMode::Enabled);
+        let Some(session) = session else {
+            return;
+        };
+        match session.goal_definition() {
+            Ok(None) => {}
+            source => {
+                self.goals.lock().await.remove(session_key);
+                if let Err(error) = source {
+                    tracing::error!(%error, "Goal source unavailable; legacy projection disabled");
+                }
+                return;
+            }
         }
+        let mode = if active {
+            a3s_code_core::PlanningMode::Enabled
+        } else {
+            a3s_code_core::PlanningMode::Disabled
+        };
+        let _ = session.set_planning_mode(mode);
     }
 
     async fn handle_goal(
@@ -912,47 +1856,99 @@ impl A3sCodeAgent {
         session_id: &acp::SessionId,
         session: &AgentSession,
         op: crate::goal::GoalOp,
+        generation: u64,
+        turn_permit: OwnedMutexGuard<()>,
+        observation: Option<&crate::run_observation::Binding>,
     ) -> acp::Result<acp::PromptResponse> {
         let key = session_id.0.to_string();
-        let current = self.goals.lock().await.get(&key).cloned();
-        let applied = crate::goal::apply_goal(current, op);
-        if let Some(mode) = applied.plan.mode() {
-            session
-                .set_planning_mode(mode)
-                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
-        } else if applied.plan.clears_override() {
-            session
-                .clear_planning_mode_override()
-                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let invalid = |error: anyhow::Error| acp::Error::invalid_params().data(error.to_string());
+        if let Some(bound) = crate::goal::apply_bound_goal(session, &op)
+            .await
+            .map_err(invalid)?
+        {
+            self.goals.lock().await.remove(&key);
+            self.emit_text(session_id, &bound.reply).await;
+            let command = match crate::goal::bound_tick_command(session).map_err(invalid)? {
+                Some(command) if bound.tick => command,
+                _ => {
+                    drop(turn_permit);
+                    return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                }
+            };
+            let (head, run_id, response) = match session
+                .stream_goal_tick(&command)
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
+            {
+                a3s_code_core::GoalTickStream::Decided(decision) => {
+                    drop(turn_permit);
+                    let head = format!("Durable goal tick: {}", decision.as_str());
+                    (
+                        Some(head),
+                        None,
+                        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+                    )
+                }
+                a3s_code_core::GoalTickStream::Replayed(snapshot) => {
+                    drop(turn_permit);
+                    let ok = Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                    (None, Some(snapshot.id), ok)
+                }
+                a3s_code_core::GoalTickStream::Started(stream) => {
+                    self.emit_text(session_id, "\n\n").await;
+                    let run_id = stream.run.as_ref().map(|run| run.id().to_string());
+                    let response = self
+                        .drain_turn(
+                            session_id,
+                            session,
+                            stream,
+                            None,
+                            generation,
+                            turn_permit,
+                            observation,
+                        )
+                        .await;
+                    (None, run_id, response)
+                }
+            };
+            let report = crate::goal::bound_slice_report(session, run_id.as_deref())
+                .await
+                .map_err(invalid)?;
+            let text = head
+                .into_iter()
+                .chain([report])
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            self.emit_text(session_id, &format!("\n\n{text}")).await;
+            return response;
         }
-        let stored = applied.next.clone();
+        let applied = crate::goal::apply_session_goal(session, op)
+            .await
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
         {
             let mut goals = self.goals.lock().await;
-            if let Some(goal) = applied.next {
+            if let Some(goal) = applied.next.clone() {
                 goals.insert(key.clone(), goal);
             } else {
                 goals.remove(&key);
-            }
-        }
-        if let Some(workspace) = self
-            .sessions
-            .lock()
-            .await
-            .get(&key)
-            .map(|live| live.workspace.clone())
-        {
-            if applied.plan.clears_override() {
-                let _ = crate::goal::clear_stored_goal(&workspace);
-            } else if let Some(goal) = stored {
-                let _ = crate::goal::store_goal(&workspace, &goal);
             }
         }
         if let Some(reply) = applied.reply {
             self.emit_text(session_id, &reply).await;
         }
         if let Some(model_prompt) = applied.model_prompt {
-            return self.stream_turn(session_id, session, &model_prompt).await;
+            return self
+                .stream_turn(
+                    session_id,
+                    session,
+                    &model_prompt,
+                    generation,
+                    turn_permit,
+                    observation,
+                )
+                .await;
         }
+        drop(turn_permit);
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
@@ -961,25 +1957,97 @@ impl A3sCodeAgent {
         session_id: &acp::SessionId,
         session: &AgentSession,
         prompt: &str,
+        generation: u64,
+        turn_permit: OwnedMutexGuard<()>,
+        observation: Option<&crate::run_observation::Binding>,
     ) -> acp::Result<acp::PromptResponse> {
-        let (mut rx, join) = session
-            .stream(prompt, None)
-            .await
-            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let governing_goal = self.goals.lock().await.get(session_id.0.as_ref()).cloned();
+        let stream = match session.stream_with_run(prompt, None).await {
+            Ok(parts) => parts,
+            Err(error) => {
+                drop(turn_permit);
+                return Err(acp::Error::internal_error().data(error.to_string()));
+            }
+        };
+        self.drain_turn(
+            session_id,
+            session,
+            stream,
+            governing_goal,
+            generation,
+            turn_permit,
+            observation,
+        )
+        .await
+    }
+
+    /// Render one admitted Run's events, answer its confirmations and honour
+    /// `cancel`, exactly as for a prompt turn.
+    #[allow(clippy::too_many_arguments)]
+    async fn drain_turn(
+        &self,
+        session_id: &acp::SessionId,
+        session: &AgentSession,
+        stream: a3s_code_core::AgentRunStream,
+        governing_goal: Option<crate::goal::DurableGoal>,
+        generation: u64,
+        turn_permit: OwnedMutexGuard<()>,
+        observation: Option<&crate::run_observation::Binding>,
+    ) -> acp::Result<acp::PromptResponse> {
+        let mut observer = stream.run.and_then(|run| {
+            observation.map(|binding| {
+                crate::run_observation::Observer::new(run, session_id.0.to_string(), binding)
+            })
+        });
+        self.emit_run_observation(observer.as_mut().and_then(|observer| observer.opened()))
+            .await;
+        let mut rx = stream.events;
+        let join = stream.worker;
 
         let mut state = TurnState {
+            observer,
             turn_failure: None,
             saw_text: false,
             delta_text: String::new(),
             end_text: None,
+            end_outcome: None,
+            achieved_goal: None,
             subagent_started_ms: HashMap::new(),
             child_progress: HashMap::new(),
-            prompted_questions: std::collections::HashSet::new(),
+            prompted_questions: HashSet::new(),
+            painted_tools: HashSet::new(),
         };
+        let session_key = session_id.0.to_string();
+        let mut turn_permit = Some(turn_permit);
         let drain_started = std::time::Instant::now();
-        while let Some(event) = rx.recv().await {
-            self.handle_event(session_id, session, &mut state, event)
-                .await;
+        loop {
+            // Register before the map read. `notify_waiters` stores no permit.
+            let notified = self.turn_cancel.notified();
+            if self.turn_was_cancelled(&session_key, generation).await {
+                return self
+                    .leave_cancelled_turn(
+                        session_id,
+                        session,
+                        &mut state,
+                        &mut rx,
+                        join,
+                        turn_permit.take().expect("turn permit"),
+                    )
+                    .await;
+            }
+            tokio::select! {
+                biased;
+                _ = notified => continue,
+                event = rx.recv() => {
+                    match event {
+                        Some(event) => {
+                            self.handle_event(session_id, session, &mut state, event)
+                                .await;
+                        }
+                        None => break,
+                    }
+                }
+            }
         }
         let events_drained = drain_started.elapsed();
         tracing::info!(
@@ -989,7 +2057,48 @@ impl A3sCodeAgent {
             end_preview = %state.end_text.as_deref().unwrap_or("").chars().take(120).collect::<String>(),
             "turn_text_assembly"
         );
-        let _ = join.await;
+        // A worker that died without emitting a terminal event closed the
+        // channel above; the join result is the only remaining evidence.
+        // Swallowing it reported a panicked or aborted worker as a clean
+        // EndTurn — indistinguishable from real completion.
+        let join_failure = match join.await {
+            Ok(()) => None,
+            Err(join_error) => Some(worker_join_failure(join_error)),
+        };
+        if let (Some(message), None) = (&join_failure, &state.turn_failure) {
+            tracing::error!(
+                session = %session_id.0,
+                detail = %message,
+                "turn worker died without a terminal event"
+            );
+            state.turn_failure = Some(message.clone());
+        }
+        if state.turn_failure.is_none()
+            && !self
+                .turn_was_cancelled(session_id.0.as_ref(), generation)
+                .await
+        {
+            if let Some((goal, total_steps, duration_ms)) = state.achieved_goal.take() {
+                match crate::goal::retire_achieved_durable_goal(session, governing_goal.as_ref())
+                    .await
+                {
+                    Ok(true) => {
+                        self.goals.lock().await.remove(session_id.0.as_ref());
+                        self.emit_text(session_id, &format!("\ngoal achieved and cleared ({total_steps} steps, {duration_ms} ms): {goal}\n")).await;
+                    }
+                    Ok(false) => {}
+                    Err(error) => state.turn_failure = Some(error.to_string()),
+                }
+            }
+        }
+        // Emit the outcome BEFORE the response resolves: the client reads
+        // the same FIFO wire, so the terminal marker it builds on the
+        // response can carry this outcome.
+        if let Some(outcome) = state.end_outcome.take() {
+            self.emit_turn_outcome(session_id, outcome).await;
+        }
+        self.close_run_observation(&mut state).await;
+        drop(turn_permit);
         tracing::info!(
             target: "perf_probe",
             events_drained_ms = events_drained.as_millis() as u64,
@@ -1000,6 +2109,79 @@ impl A3sCodeAgent {
             return Err(agent_failure_error(&message));
         }
         Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+    }
+
+    async fn turn_was_cancelled(&self, session_key: &str, generation: u64) -> bool {
+        let recorded = self
+            .cancelled_generation
+            .lock()
+            .await
+            .get(session_key)
+            .copied();
+        crate::turn_cancel::generation_was_cancelled(recorded, generation)
+    }
+
+    /// Return `Cancelled` without awaiting a stuck public join.
+    ///
+    /// A short drain lets a tool that is already waiting append `cancelled`.
+    /// `cancel_and_settle` then aborts the inner fact worker. The public join
+    /// is only a waiter; the turn lock stays with it until that waiter ends.
+    async fn leave_cancelled_turn(
+        &self,
+        session_id: &acp::SessionId,
+        session: &AgentSession,
+        state: &mut TurnState,
+        rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
+        join: JoinHandle<()>,
+        turn_permit: OwnedMutexGuard<()>,
+    ) -> acp::Result<acp::PromptResponse> {
+        let deadline = tokio::time::Instant::now() + crate::turn_cancel::CANCEL_EVENT_DRAIN;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep(remaining) => break,
+                event = rx.recv() => {
+                    match event {
+                        Some(event) => {
+                            self.handle_event(session_id, session, state, event).await;
+                        }
+                        None => {
+                            self.settle_public_join(join, turn_permit).await;
+                            self.close_run_observation(state).await;
+                            tracing::info!(target: "perf_probe", "turn_cancel_return");
+                            return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
+                        }
+                    }
+                }
+            }
+        }
+        let _idle = session
+            .cancel_and_settle(
+                crate::turn_cancel::CANCEL_SETTLE_GRACE,
+                crate::turn_cancel::CANCEL_ABORT_GRACE,
+            )
+            .await;
+        self.settle_public_join(join, turn_permit).await;
+        self.close_run_observation(state).await;
+        tracing::info!(target: "perf_probe", "turn_cancel_return");
+        Ok(acp::PromptResponse::new(acp::StopReason::Cancelled))
+    }
+
+    async fn settle_public_join(&self, mut join: JoinHandle<()>, turn_permit: OwnedMutexGuard<()>) {
+        tokio::select! {
+            biased;
+            result = &mut join => {
+                let _ = result;
+                drop(turn_permit);
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                crate::turn_cancel::detach_turn_permit(turn_permit, join);
+            }
+        }
     }
 
     /// A cancel for this generation wins over both a normal end and a stream error.
@@ -1028,6 +2210,28 @@ impl A3sCodeAgent {
             == Some(generation);
         if cancelled {
             return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
+        }
+        // WC-NOTIFY1: the completion signal the agent itself can emit —
+        // a terminal bell on stderr when the configured floor elapsed.
+        // Focus detection and OS-level notifications stay with the
+        // terminal host; the payload never carries content.
+        let elapsed = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(session_key).and_then(|live| {
+                live.turn_started
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .map(|started| started.elapsed())
+            })
+        };
+        if let Some(elapsed) = elapsed {
+            if let Some(notifications) = &self.launch.config.notifications {
+                if completion_bell_due(notifications, elapsed) {
+                    eprint!("\x07");
+                    tracing::info!(seconds = elapsed.as_secs_f32(), "run completion bell");
+                }
+            }
         }
         response
     }
@@ -1086,6 +2290,120 @@ impl A3sCodeAgent {
         Ok(acp::ExtResponse::new(body.into()))
     }
 
+    /// `a3s/review/target` pins current target bytes; `a3s/review/admit` admits
+    /// bound drafts; `a3s/review/settle` moves an admitted Finding under its
+    /// admitted scope. All wait behind the session's turn queue like goal import.
+    async fn handle_review(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        let invalid = |error: String| acp::Error::invalid_params().data(error);
+        let request =
+            crate::engineering::ReviewRequest::parse(args.method.as_ref(), args.params.get())
+                .map_err(invalid)?;
+        let (session, turn_queue) = self
+            .sessions
+            .lock()
+            .await
+            .get(request.session_id())
+            .map(|live| (Arc::clone(&live.session), Arc::clone(&live.turn_queue)))
+            .ok_or_else(|| acp::Error::resource_not_found(None))?;
+        if session.is_closed() {
+            return Err(acp::Error::resource_not_found(None));
+        }
+        let _turn_permit = turn_queue
+            .acquire_owned()
+            .await
+            .ok_or_else(|| invalid("review queue is full".into()))?;
+        let body = request.answer(&session).await.map_err(invalid)?;
+        let raw = serde_json::value::to_raw_value(&body)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(raw.into()))
+    }
+
+    /// Typed goal commands are the Core DTOs; writes wait behind the turn queue.
+    /// No method here ticks: a slice starts only from the user's `/goal resume`.
+    async fn handle_goal_command(&self, args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        use a3s_code_core::goal_control as goal;
+        enum Command {
+            Definition(goal::GoalDefinitionCommandV1),
+            Plan(goal::GoalPlanCommandV1),
+            Control(goal::GoalControlCommandV1),
+            Wait(goal::GoalWaitCommandV1),
+            State,
+        }
+        fn parse<T: serde::de::DeserializeOwned>(params: &str) -> acp::Result<T> {
+            serde_json::from_str(params)
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))
+        }
+        let params = args.params.get();
+        let (session_id, command) = match args.method.as_ref() {
+            "a3s/goal/definition" => {
+                let command: goal::GoalDefinitionCommandV1 = parse(params)?;
+                (command.session_id.clone(), Command::Definition(command))
+            }
+            "a3s/goal/plan" => {
+                let command: goal::GoalPlanCommandV1 = parse(params)?;
+                (command.session_id.clone(), Command::Plan(command))
+            }
+            "a3s/goal/control" => {
+                let command: goal::GoalControlCommandV1 = parse(params)?;
+                (command.session_id.clone(), Command::Control(command))
+            }
+            "a3s/goal/wait" => {
+                let command: goal::GoalWaitCommandV1 = parse(params)?;
+                (command.session_id.clone(), Command::Wait(command))
+            }
+            _ => {
+                let request: crate::goal::GoalStateRequest = parse(params)?;
+                (request.session_id, Command::State)
+            }
+        };
+        let (session, turn_queue) = self
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .map(|live| (Arc::clone(&live.session), Arc::clone(&live.turn_queue)))
+            .ok_or_else(|| acp::Error::resource_not_found(None))?;
+        if session.is_closed() {
+            return Err(acp::Error::resource_not_found(None));
+        }
+        fn reply<T: serde::Serialize>(
+            result: a3s_code_core::error::Result<T>,
+        ) -> acp::Result<Box<serde_json::value::RawValue>> {
+            let value =
+                result.map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+            serde_json::value::to_raw_value(&value)
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))
+        }
+        let writes = !matches!(command, Command::State);
+        let _turn_permit = if writes {
+            Some(
+                turn_queue
+                    .acquire_owned()
+                    .await
+                    .ok_or_else(|| acp::Error::invalid_params().data("goal queue is full"))?,
+            )
+        } else {
+            None
+        };
+        let raw = match command {
+            Command::Definition(command) => reply(session.apply_goal_definition(command)),
+            Command::Plan(command) => reply(session.apply_goal_plan(command)),
+            Command::Control(command) => reply(session.apply_goal_control(command)),
+            Command::Wait(command) => reply(session.apply_goal_wait(command)),
+            // A policy session's create command needs the digest its Run admitted.
+            Command::State => reply(session.goal_definition().and_then(|definition| {
+                Ok(serde_json::json!({
+                    "definition": definition,
+                    "work_policy_digest": session.work_policy_digest()?,
+                }))
+            })),
+        }?;
+        if writes {
+            self.goals.lock().await.remove(&session_id);
+        }
+        Ok(acp::ExtResponse::new(raw.into()))
+    }
+
     /// `x.ai/session/info` is the pager's `/session-info` and `/context` source.
     /// The pager decodes `ExtMethodResult<SessionInfoResponse>` and treats any
     /// other body, including JSON null, as an invalid response.
@@ -1118,6 +2436,7 @@ impl A3sCodeAgent {
                 (
                     live.workspace.display().to_string(),
                     live.model_id.clone(),
+                    live.posture.clone(),
                     turns,
                     used,
                     total,
@@ -1125,12 +2444,13 @@ impl A3sCodeAgent {
             })
         };
         let body = match live {
-            Some((cwd, model_id, turns, used, total)) => {
+            Some((cwd, model_id, posture, turns, used, total)) => {
                 let usage_pct = usage_percent(used, total);
                 serde_json::json!({
                     "result": {
                         "sessionId": session_id,
                         "cwd": cwd,
+                        "permissionPosture": posture,
                         "model": &model_id,
                         "resolvedModelId": &model_id,
                         "modelFingerprint": null,
@@ -1186,6 +2506,90 @@ impl A3sCodeAgent {
         }
     }
 
+    /// `x.ai/permission_posture` admits a named next-run posture.
+    ///
+    /// Optional `deny` rules are stored on that policy. This method does not
+    /// execute a tool or write a caller-supplied path. A later prompt is what
+    /// the real tool executor admits or denies.
+    async fn handle_permission_posture(
+        &self,
+        args: &acp::ExtRequest,
+    ) -> acp::Result<acp::ExtResponse> {
+        let request: serde_json::Value =
+            serde_json::from_str(args.params.get()).map_err(|error| {
+                acp::Error::invalid_params().data(format!("permission posture request: {error}"))
+            })?;
+        let session_id = request
+            .get("sessionId")
+            .or_else(|| request.get("session_id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                acp::Error::invalid_params().data("permission posture request: sessionId")
+            })?;
+        let requested = request
+            .get("posture")
+            .and_then(|value| value.as_str())
+            .unwrap_or("default");
+        let posture = canonical_posture(requested).ok_or_else(|| {
+            acp::Error::invalid_params().data(format!("unknown posture: {requested}"))
+        })?;
+        let mut extra = Vec::new();
+        match request.get("deny") {
+            Some(value) if value.is_string() => {
+                if let Some(rule) = value.as_str().filter(|rule| !rule.is_empty()) {
+                    extra.push(rule.to_string());
+                }
+            }
+            Some(value) => {
+                if let Some(rules) = value.as_array() {
+                    for rule in rules {
+                        if let Some(rule) = rule.as_str().filter(|rule| !rule.is_empty()) {
+                            extra.push(rule.to_string());
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+        let (session, posture_name, denies) = {
+            let mut sessions = self.sessions.lock().await;
+            let live = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+            live.posture = posture.to_string();
+            live.denies.extend(extra);
+            remember_denies(live);
+            (
+                Arc::clone(&live.session),
+                live.posture.clone(),
+                live.denies.clone(),
+            )
+        };
+        let policy = posture_policy(&posture_name, &denies);
+        session
+            .set_permission_policy(policy)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let planning = if posture_name == "plan" {
+            a3s_code_core::PlanningMode::Enabled
+        } else {
+            a3s_code_core::PlanningMode::Disabled
+        };
+        session
+            .set_planning_mode(planning)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+
+        let body = serde_json::json!({
+            "result": {
+                "sessionId": session_id,
+                "permissionPosture": posture_name
+            }
+        });
+        let raw = serde_json::value::to_raw_value(&body)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        Ok(acp::ExtResponse::new(raw.into()))
+    }
+
     /// `x.ai/session/delete` is the pager's `/delete` confirmation.
     ///
     /// The pager removes its live view only after this returns without an
@@ -1212,16 +2616,37 @@ impl A3sCodeAgent {
             let mut sessions = self.sessions.lock().await;
             sessions.remove(session_id).map(|live| live.workspace)
         };
+        // A deleted session's servers leave the global union: resync so the
+        // remaining sessions' sets are exactly served (no stale superset).
+        if workspace.is_some() {
+            if let Err(error) = self.sync_session_mcp_servers(None, &[]).await {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "failed to resync the MCP union after session delete"
+                );
+            }
+        }
         self.goals.lock().await.remove(session_id);
         self.turn_generation.lock().await.remove(session_id);
         self.cancelled_generation.lock().await.remove(session_id);
+        let mut failures = Vec::new();
         if let Some(workspace) = workspace.as_deref() {
-            remove_fact_log(workspace, session_id);
+            if let Err(error) = remove_fact_log(workspace, session_id) {
+                failures.push(error);
+            }
         }
         if let Some(cwd) = cwd.as_deref() {
-            remove_fact_log(std::path::Path::new(cwd), session_id);
+            if let Err(error) = remove_fact_log(std::path::Path::new(cwd), session_id) {
+                failures.push(error);
+            }
         }
-        remove_recorded_session(session_id);
+        if let Err(error) = remove_recorded_session(session_id) {
+            failures.push(error);
+        }
+        if !failures.is_empty() {
+            return Err(acp::Error::internal_error().data(failures.join("; ")));
+        }
         let body = serde_json::json!({ "success": true });
         let raw = serde_json::value::to_raw_value(&body)
             .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
@@ -1240,39 +2665,113 @@ fn product_prompt_turns(workspace: &std::path::Path, session_id: &str) -> u64 {
         .count() as u64
 }
 
-fn remove_fact_log(workspace: &std::path::Path, session_id: &str) {
-    let path = workspace
-        .join(".a3s")
-        .join("effect-log")
-        .join(format!("{session_id}.jsonl"));
+fn remove_fact_log(workspace: &std::path::Path, session_id: &str) -> Result<(), String> {
+    let thread = a3s_code_core::fact_control::thread_for_session(session_id);
+    let path = a3s_code_core::session_folder::legacy_effect_log_dir(workspace)
+        .join(format!("{thread}.jsonl"));
     if path.is_file() {
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("remove fact log {}: {error}", path.display()))?;
     }
+    match a3s_code_core::session_folder::find_session_dir(workspace, session_id) {
+        Ok(Some(dir)) => {
+            let date_dir = dir.parent().map(std::path::Path::to_path_buf);
+            std::fs::remove_dir_all(&dir)
+                .map_err(|error| format!("remove session folder {}: {error}", dir.display()))?;
+            if let Some(date_dir) = date_dir {
+                match std::fs::remove_dir(&date_dir) {
+                    Ok(()) => {}
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            || error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "remove session date folder {}: {error}",
+                            date_dir.display()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(())
 }
 
 /// Remove `{a3s-home}/sessions/{cwd}/{session_id}` for every recorded cwd.
 ///
 /// The directory name is the url-encoded cwd. Matching the session id keeps
 /// the delete on that session's own record.
-fn remove_recorded_session(session_id: &str) {
+fn recorded_session_homes(
+    a3s_home: Option<&std::ffi::OsStr>,
+    grok_home: Option<&std::ffi::OsStr>,
+    os_home: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
     let mut homes = Vec::new();
-    if let Some(env) = std::env::var_os("GROK_HOME").filter(|value| !value.is_empty()) {
+    if let Some(env) = a3s_home.filter(|value| !value.is_empty()) {
         homes.push(PathBuf::from(env));
     }
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        homes.push(PathBuf::from(home).join(".grok"));
+    if let Some(env) = grok_home.filter(|value| !value.is_empty()) {
+        homes.push(PathBuf::from(env));
     }
+    if let Some(home) = os_home.filter(|value| !value.is_empty()) {
+        let home = PathBuf::from(home);
+        homes.push(home.join(".a3s"));
+        homes.push(home.join(".grok"));
+    }
+    homes.sort();
+    homes.dedup();
+    homes
+}
+
+fn remove_recorded_session_under(
+    session_id: &str,
+    homes: &[std::path::PathBuf],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
     for home in homes {
-        let Ok(entries) = std::fs::read_dir(home.join("sessions")) else {
+        let sessions = home.join("sessions");
+        if !sessions.exists() {
             continue;
+        }
+        let entries = match std::fs::read_dir(&sessions) {
+            Ok(entries) => entries,
+            Err(error) => {
+                failures.push(format!("read {}: {error}", sessions.display()));
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    failures.push(format!("read {}: {error}", sessions.display()));
+                    continue;
+                }
+            };
             let dir = entry.path().join(session_id);
             if dir.is_dir() {
-                let _ = std::fs::remove_dir_all(dir);
+                if let Err(error) = std::fs::remove_dir_all(&dir) {
+                    failures.push(format!("remove {}: {error}", dir.display()));
+                }
             }
         }
     }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn remove_recorded_session(session_id: &str) -> Result<(), String> {
+    let homes = recorded_session_homes(
+        std::env::var_os("A3S_HOME").as_deref(),
+        std::env::var_os("GROK_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    );
+    remove_recorded_session_under(session_id, &homes)
 }
 
 fn usage_percent(used: u64, total: u64) -> u8 {
@@ -1284,14 +2783,39 @@ fn usage_percent(used: u64, total: u64) -> u8 {
         .clamp(0.0, 100.0) as u8
 }
 
+enum ToolRowPaint {
+    Open,
+    Update,
+}
+
+/// The first announcement of an id opens one pager row. Confirmation and
+/// execution both announce that id; the later one updates the same row.
+fn note_tool_row(painted: &mut HashSet<String>, id: &str) -> ToolRowPaint {
+    if painted.insert(id.to_string()) {
+        ToolRowPaint::Open
+    } else {
+        ToolRowPaint::Update
+    }
+}
+
+#[derive(Default)]
 struct TurnState {
+    observer: Option<crate::run_observation::Observer>,
     turn_failure: Option<String>,
     saw_text: bool,
     delta_text: String,
     end_text: Option<String>,
+    /// The completion-gate terminal from the run's End event, forwarded to
+    /// the client as an `x.ai/turn/outcome` notification just before the
+    /// prompt response resolves (so it precedes the terminal marker).
+    end_outcome: Option<serde_json::Value>,
+    achieved_goal: Option<(String, usize, i64)>,
     subagent_started_ms: HashMap<String, u64>,
     child_progress: HashMap<String, ChildProgress>,
-    prompted_questions: std::collections::HashSet<String>,
+    prompted_questions: HashSet<String>,
+    /// Tool calls already given a pager row. A later start for the same id
+    /// updates that row instead of opening another Run card.
+    painted_tools: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -1301,6 +2825,165 @@ struct ChildProgress {
     tools_used: Vec<String>,
     error_count: u32,
     tokens_used: u64,
+}
+
+/// The desired global set: baseline ∪ every live session's servers,
+/// skipping the session being re-modeled (its new set merges in via
+/// `add` instead). With no skip and no additions this is exactly the
+/// session-close resync: baseline ∪ the remaining sessions.
+///
+/// Same-name merges follow the ORIGIN: within one origin (the baseline
+/// or one session) later-wins is the update rule, and two origins
+/// holding the SAME definition dedupe to one entry — but a name held by
+/// one origin under a DIFFERENT definition than another origin's is a
+/// cross-session takeover of that name and is REFUSED, naming both
+/// origins. The `mcp__<server>__<tool>` prefix routes by name, so
+/// silently re-pointing it would redirect another live session's tool
+/// source.
+fn union_mcp_desired(
+    baseline: Vec<a3s_code_core::mcp::McpServerConfig>,
+    live: &[(String, Vec<a3s_code_core::mcp::McpServerConfig>)],
+    skip: Option<&str>,
+    add: &[acp::McpServer],
+) -> Result<Vec<a3s_code_core::mcp::McpServerConfig>, String> {
+    let mut desired: Vec<(a3s_code_core::mcp::McpServerConfig, &str)> = baseline
+        .into_iter()
+        .map(|server| (server, "the configuration baseline"))
+        .collect();
+    for (key, servers) in live {
+        if skip == Some(key.as_str()) {
+            continue;
+        }
+        for server in servers {
+            merge_with_origin(&mut desired, server.clone(), key)?;
+        }
+    }
+    let add_origin = skip.unwrap_or("the new session");
+    for server in session_mcp_configs(add) {
+        merge_with_origin(&mut desired, server, add_origin)?;
+    }
+    Ok(desired.into_iter().map(|(server, _)| server).collect())
+}
+
+/// Merge one server into the desired set by name, tracking which origin
+/// holds the name: a same-origin collision is that origin updating
+/// itself (later wins), a same-definition collision across origins
+/// dedupes, and a different-definition collision across origins refuses.
+fn merge_with_origin<'a>(
+    desired: &mut Vec<(a3s_code_core::mcp::McpServerConfig, &'a str)>,
+    server: a3s_code_core::mcp::McpServerConfig,
+    origin: &'a str,
+) -> Result<(), String> {
+    match desired
+        .iter()
+        .position(|(entry, _)| entry.name == server.name)
+    {
+        Some(index) => {
+            let (existing, held_by) = &desired[index];
+            if held_by == &origin || same_server_definition(existing, &server) {
+                desired[index] = (server, origin);
+                Ok(())
+            } else {
+                Err(format!(
+                    "mcp server name `{}` is already held by {held_by:?} with a different \
+                     definition; {origin:?} must use another name (the mcp__{0}__ tool \
+                     prefix routes by name)",
+                    server.name,
+                ))
+            }
+        }
+        None => {
+            desired.push((server, origin));
+            Ok(())
+        }
+    }
+}
+
+/// Canonical-definition equality: `McpServerConfig` carries a custom
+/// `Deserialize` and no `PartialEq`, so definitions compare through
+/// their serialization (serde_json maps are ordered — deterministic for
+/// this plain-data type).
+fn same_server_definition(
+    left: &a3s_code_core::mcp::McpServerConfig,
+    right: &a3s_code_core::mcp::McpServerConfig,
+) -> bool {
+    match (serde_json::to_value(left), serde_json::to_value(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        // Serialize cannot fail for this type; treat a failure as
+        // inequality rather than silently merging unknowns.
+        _ => false,
+    }
+}
+
+fn session_mcp_configs(servers: &[acp::McpServer]) -> Vec<a3s_code_core::mcp::McpServerConfig> {
+    servers.iter().filter_map(acp_mcp_to_config).collect()
+}
+
+fn acp_mcp_to_config(server: &acp::McpServer) -> Option<a3s_code_core::mcp::McpServerConfig> {
+    use a3s_code_core::mcp::{McpServerConfig, McpTransportConfig};
+
+    let hosted = |name: &str,
+                  url: &str,
+                  headers: &[acp::HttpHeader],
+                  sse: bool|
+     -> Option<a3s_code_core::mcp::McpServerConfig> {
+        if name.is_empty() || url.is_empty() {
+            return None;
+        }
+        let headers = headers
+            .iter()
+            .filter(|header| !header.name.is_empty())
+            .map(|header| (header.name.clone(), header.value.clone()))
+            .collect();
+        let transport = if sse {
+            McpTransportConfig::Http {
+                url: url.to_string(),
+                headers,
+            }
+        } else {
+            McpTransportConfig::StreamableHttp {
+                url: url.to_string(),
+                headers,
+            }
+        };
+        Some(McpServerConfig {
+            name: name.to_string(),
+            transport,
+            enabled: true,
+            env: HashMap::new(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        })
+    };
+
+    match server {
+        acp::McpServer::Stdio(stdio) => {
+            let command = stdio.command.to_string_lossy();
+            if stdio.name.is_empty() || command.is_empty() {
+                return None;
+            }
+            let env = stdio
+                .env
+                .iter()
+                .filter(|variable| !variable.name.is_empty())
+                .map(|variable| (variable.name.clone(), variable.value.clone()))
+                .collect();
+            Some(McpServerConfig {
+                name: stdio.name.clone(),
+                transport: McpTransportConfig::Stdio {
+                    command: command.into_owned(),
+                    args: stdio.args.clone(),
+                },
+                enabled: true,
+                env,
+                oauth: None,
+                tool_timeout_secs: 60,
+            })
+        }
+        acp::McpServer::Http(http) => hosted(&http.name, &http.url, &http.headers, false),
+        acp::McpServer::Sse(sse) => hosted(&sse.name, &sse.url, &sse.headers, true),
+        _ => None,
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -1354,59 +3037,152 @@ impl acp::Agent for A3sCodeAgent {
         &self,
         args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
+        let host = crate::host_context::studio_host_from_meta(args.meta.as_ref())
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        self.validate_plugin_selection(args.meta.as_ref(), &args.mcp_servers)?;
+        self.admit_studio_documents(args.meta.as_ref());
         let session_id = uuid::Uuid::new_v4().to_string();
         let workspace = if args.cwd.as_os_str().is_empty() {
             self.launch.workspace.clone()
         } else {
             args.cwd.clone()
         };
-        let model_id = self.model_id.lock().await.clone();
-        let effort = self.effort.lock().await.clone();
-        let live = self
-            .open_core_session(&session_id, workspace.clone(), &model_id, effort)
+        if let Some(host) = &self.plugin_selection {
+            host.validate_workspace(&self.launch.workspace)
+                .and_then(|_| host.validate_workspace(&workspace))
+                .map_err(|_| {
+                    acp::Error::invalid_params().data("native plugin workspace is not admitted")
+                })?;
+        }
+        a3s_code_core::session_folder::prepare_session_home(&workspace, &session_id)
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        let session_mcp = session_mcp_configs(&args.mcp_servers);
+        self.sync_session_mcp_servers(Some(session_id.as_ref()), &args.mcp_servers)
             .await?;
+        let model_id = self.model_id.lock().await.clone();
+        let effort = *self.effort.lock().await;
+        let plugin_tools = crate::plugin_tools::entries_from_meta(args.meta.as_ref());
+        let components = crate::harness_assemble::components_from_meta(args.meta.as_ref())
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        let live = self
+            .open_core_session(
+                &session_id,
+                SessionSetup {
+                    workspace: workspace.clone(),
+                    model_id: &model_id,
+                    effort,
+                    host,
+                    components: &components,
+                    mcp_servers: session_mcp,
+                },
+                false,
+            )
+            .await?;
+        let live = self.finish_plugin_tools(live, plugin_tools).await?;
         let effort_token = self.effort.lock().await.map(|limits| limits.token);
         let models = self.model_state_with(&live.model_id, effort_token);
+        let goal = match live.session.goal_definition() {
+            Ok(Some(_)) => Ok(None),
+            Ok(None) => crate::goal::load_goal(&workspace, &session_id)
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string())),
+            Err(error) => Err(acp::Error::invalid_params().data(error.to_string())),
+        };
+        let goal = match goal {
+            Ok(goal) => goal,
+            Err(error) => {
+                live.session.close().await;
+                return Err(error);
+            }
+        };
         self.sessions.lock().await.insert(session_id.clone(), live);
-        if let Some(goal) = crate::goal::load_goal(&workspace) {
+        if let Some(goal) = goal {
             self.goals.lock().await.insert(session_id.clone(), goal);
+        } else {
+            self.goals.lock().await.remove(&session_id);
         }
         self.reapply_active_goal(&session_id).await;
 
-        Ok(acp::NewSessionResponse::new(acp::SessionId::new(session_id)).models(models))
+        let config_options = Self::model_config_options(&models);
+        Ok(
+            acp::NewSessionResponse::new(acp::SessionId::new(session_id))
+                .models(models)
+                .config_options(config_options),
+        )
     }
 
     async fn load_session(
         &self,
         args: acp::LoadSessionRequest,
     ) -> acp::Result<acp::LoadSessionResponse> {
+        let host = crate::host_context::studio_host_from_meta(args.meta.as_ref())
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        self.validate_plugin_selection(args.meta.as_ref(), &args.mcp_servers)?;
         let session_id = args.session_id.0.to_string();
-        if session_id.is_empty() {
-            return Err(acp::Error::invalid_params().data("session id is empty"));
+        let workspace = self.admit_resume(&session_id, &args.cwd).await?;
+        if let Some(host) = &self.plugin_selection {
+            host.validate_workspace(&self.launch.workspace)
+                .and_then(|_| host.validate_workspace(&workspace))
+                .map_err(|_| {
+                    acp::Error::invalid_params().data("native plugin workspace is not admitted")
+                })?;
         }
-        let workspace = if args.cwd.as_os_str().is_empty() {
-            self.launch.workspace.clone()
-        } else {
-            args.cwd.clone()
-        };
-        let model_id = self.model_id.lock().await.clone();
-        let effort = self.effort.lock().await.clone();
-        let live = self
-            .open_core_session(&session_id, workspace.clone(), &model_id, effort)
+        let components = crate::harness_assemble::components_from_meta(args.meta.as_ref())
+            .map_err(|error| acp::Error::invalid_params().data(error))?;
+        self.admit_studio_documents(args.meta.as_ref());
+        let session_mcp = session_mcp_configs(&args.mcp_servers);
+        self.sync_session_mcp_servers(Some(session_id.as_ref()), &args.mcp_servers)
             .await?;
+        let model_id = self.model_id.lock().await.clone();
+        let effort = *self.effort.lock().await;
+        let plugin_tools = crate::plugin_tools::entries_from_meta(args.meta.as_ref());
+        let live = self
+            .open_core_session(
+                &session_id,
+                SessionSetup {
+                    workspace: workspace.clone(),
+                    model_id: &model_id,
+                    effort,
+                    host,
+                    components: &components,
+                    mcp_servers: session_mcp,
+                },
+                true,
+            )
+            .await?;
+        let live = self.finish_plugin_tools(live, plugin_tools).await?;
         let effort_token = self.effort.lock().await.map(|limits| limits.token);
         let models = self.model_state_with(&live.model_id, effort_token);
         let transcript = Arc::clone(&live.session);
+        let goal = match live.session.goal_definition() {
+            Ok(Some(_)) => Ok(None),
+            Ok(None) => crate::goal::load_goal(&workspace, &session_id)
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string())),
+            Err(error) => Err(acp::Error::invalid_params().data(error.to_string())),
+        };
+        let goal = match goal {
+            Ok(goal) => goal,
+            Err(error) => {
+                live.session.close().await;
+                return Err(error);
+            }
+        };
         self.sessions.lock().await.insert(session_id.clone(), live);
-        if let Some(goal) = crate::goal::load_goal(&workspace) {
+        if let Some(goal) = goal {
             self.goals.lock().await.insert(session_id.clone(), goal);
+        } else {
+            self.goals.lock().await.remove(&session_id);
         }
         self.reapply_active_goal(&session_id).await;
         // The pager keeps `isReplay` updates only while this load is in flight
         // (and for a short grace after). Emit before the response returns.
         self.replay_loaded_transcript(&args.session_id, &transcript)
             .await;
-        Ok(acp::LoadSessionResponse::new().models(models))
+        let config_options = Self::model_config_options(&models);
+        Ok(acp::LoadSessionResponse::new()
+            .models(models)
+            .config_options(config_options))
     }
 
     /// ACP session modes: the A3S permission/mode surface. `plan` enables
@@ -1418,13 +3194,26 @@ impl acp::Agent for A3sCodeAgent {
     ) -> acp::Result<acp::SetSessionModeResponse> {
         let session_key = args.session_id.0.to_string();
         let mode_id = args.mode_id.0.to_string();
-        let session = {
-            let sessions = self.sessions.lock().await;
-            sessions
-                .get(&session_key)
-                .map(|live| Arc::clone(&live.session))
-                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?
+        let named = canonical_posture(&mode_id);
+        let (session, posture, denies) = {
+            let mut sessions = self.sessions.lock().await;
+            let live = sessions
+                .get_mut(&session_key)
+                .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
+            if let Some(name) = named {
+                live.posture = name.to_string();
+            }
+            (
+                Arc::clone(&live.session),
+                live.posture.clone(),
+                live.denies.clone(),
+            )
         };
+        if named.is_some() {
+            session
+                .set_permission_policy(posture_policy(&posture, &denies))
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
         let planning = if mode_id.eq_ignore_ascii_case("plan") {
             a3s_code_core::PlanningMode::Enabled
         } else {
@@ -1447,28 +3236,61 @@ impl acp::Agent for A3sCodeAgent {
 
         let effort = match args.meta.as_ref() {
             Some(meta) if meta.contains_key("reasoningEffort") => {
-                effort_limits_from_meta(Some(meta)).or(self.effort.lock().await.clone())
+                effort_limits_from_meta(Some(meta)).or(*self.effort.lock().await)
             }
-            _ => self.effort.lock().await.clone(),
+            _ => *self.effort.lock().await,
         };
 
         let session_key = args.session_id.0.to_string();
         let existing = {
             let sessions = self.sessions.lock().await;
-            sessions
-                .get(&session_key)
-                .map(|live| (Arc::clone(&live.session), live.workspace.clone()))
+            sessions.get(&session_key).map(|live| {
+                (
+                    Arc::clone(&live.session),
+                    live.workspace.clone(),
+                    live.host.clone(),
+                    live.plugin_tools.clone(),
+                    live.components.clone(),
+                    // Carried into the rebuilt session: the recorded set is
+                    // this session's contribution to the global union, and
+                    // dropping it here would let the next sync evict this
+                    // session's servers while it stays live.
+                    live.mcp_servers.clone(),
+                )
+            })
         };
 
-        let live = if let Some((current, workspace)) = existing {
-            self.replace_core_session(&current, workspace, &model_id, effort)
-                .await?
+        let live = if let Some((current, workspace, host, plugin_tools, components, mcp_servers)) =
+            existing
+        {
+            let live = self
+                .replace_core_session(
+                    &current,
+                    SessionSetup {
+                        workspace,
+                        model_id: &model_id,
+                        effort,
+                        host,
+                        components: &components,
+                        mcp_servers,
+                    },
+                )
+                .await?;
+            self.finish_plugin_tools(live, plugin_tools).await?
         } else {
+            let components = crate::harness_assemble::components_from_meta(None)
+                .map_err(|error| acp::Error::invalid_params().data(error))?;
             self.open_core_session(
                 &session_key,
-                self.launch.workspace.clone(),
-                &model_id,
-                effort,
+                SessionSetup {
+                    workspace: self.launch.workspace.clone(),
+                    model_id: &model_id,
+                    effort,
+                    host: crate::host_context::StudioHost::default(),
+                    components: &components,
+                    mcp_servers: Vec::new(),
+                },
+                false,
             )
             .await?
         };
@@ -1480,20 +3302,51 @@ impl acp::Agent for A3sCodeAgent {
         Ok(acp::SetSessionModelResponse::new())
     }
 
+    async fn set_session_config_option(
+        &self,
+        args: acp::SetSessionConfigOptionRequest,
+    ) -> acp::Result<acp::SetSessionConfigOptionResponse> {
+        if args.config_id.0.as_ref() != MODEL_CONFIG_ID {
+            return Err(acp::Error::invalid_params().data(format!(
+                "unknown config option: {} (expected {MODEL_CONFIG_ID})",
+                args.config_id.0
+            )));
+        }
+        let acp::SessionConfigOptionValue::ValueId { value } = args.value else {
+            return Err(acp::Error::invalid_params().data("model config option takes a model id"));
+        };
+        let model_id = value.0.to_string();
+        self.set_session_model(
+            acp::SetSessionModelRequest::new(args.session_id, acp::ModelId::new(model_id.clone()))
+                .meta(args.meta),
+        )
+        .await?;
+        let effort_token = self.effort.lock().await.map(|limits| limits.token);
+        let models = self.model_state_with(&model_id, effort_token);
+        Ok(acp::SetSessionConfigOptionResponse::new(
+            Self::model_config_options(&models),
+        ))
+    }
+
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         tracing::info!(target: "perf_probe", "prompt_enter");
         let session_key = args.session_id.0.to_string();
-        let (session, turn_lock, _prompt_echo) = {
+        let turn_started = std::time::Instant::now();
+        let (session, turn_queue, posture, denies) = {
             let sessions = self.sessions.lock().await;
             let live = sessions
                 .get(&session_key)
                 .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
-            let echo = live
-                .active_prompt_id
+            *live
+                .turn_started
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            (Arc::clone(&live.session), Arc::clone(&live.turn_lock), echo)
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(turn_started);
+            (
+                Arc::clone(&live.session),
+                Arc::clone(&live.turn_queue),
+                live.posture.clone(),
+                live.denies.clone(),
+            )
         };
 
         let prompt = Self::prompt_text(&args.prompt);
@@ -1502,7 +3355,16 @@ impl acp::Agent for A3sCodeAgent {
         }
         // Queue behind an active turn instead of failing: the pager's
         // send-now / queue-reissue expect the agent to accept and serialize.
-        let turn_permit = turn_lock.lock().await;
+        // Owned so a cancelled turn can move the guard into a detached join.
+        let turn_permit = match turn_queue.acquire_owned().await {
+            Some(permit) => permit,
+            None => {
+                return Err(acp::Error::invalid_params().data(format!(
+                    "prompt queue is full ({MAX_QUEUED_PROMPTS} waiting behind the active \
+                     turn); the session is still working through queued prompts"
+                )))
+            }
+        };
         let generation = {
             let mut generations = self.turn_generation.lock().await;
             let slot = generations.entry(session_key.clone()).or_insert(0);
@@ -1524,20 +3386,182 @@ impl acp::Agent for A3sCodeAgent {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()) = client_prompt_id.clone();
         }
+        if let Some(unattended) = &self.unattended {
+            // A task that starts with `/goal` is task text, not a goal command.
+            let response = self
+                .unattended_prompt(
+                    &args.session_id,
+                    &session,
+                    &prompt,
+                    generation,
+                    turn_permit,
+                    unattended,
+                )
+                .await;
+            return self.finish_prompt(&session_key, generation, response).await;
+        }
+        let turn = crate::host_context::turn_context_from_meta(args.meta.as_ref());
+        let observation = crate::run_observation::Binding::from_meta(args.meta.as_ref());
         let response = if let Some(op) = crate::goal::parse_goal_command(&prompt) {
             tracing::info!(target: "perf_probe", "goal_command_branch");
-            self.handle_goal(&args.session_id, &session, op).await
+            self.handle_goal(
+                &args.session_id,
+                &session,
+                op,
+                generation,
+                turn_permit,
+                observation.as_ref(),
+            )
+            .await
         } else {
-            let goal = self.goals.lock().await.get(&session_key).cloned();
+            let goal = if session
+                .goal_definition()
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
+                .is_some()
+            {
+                None
+            } else {
+                crate::goal::apply_session_goal(&session, crate::goal::GoalOp::Status)
+                    .await
+                    .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
+                    .next
+            };
+            {
+                let mut goals = self.goals.lock().await;
+                if let Some(goal) = &goal {
+                    goals.insert(session_key.clone(), goal.clone());
+                } else {
+                    goals.remove(&session_key);
+                }
+            }
             let prompt = crate::goal::standing_goal_prompt(goal.as_ref(), &prompt);
-            self.stream_turn(&args.session_id, &session, &prompt).await
+            let prompt = crate::host_context::apply_turn_directives(&prompt, &turn);
+            let mut gate = ResearchGate {
+                session: &session,
+                posture: &posture,
+                denies: &denies,
+                armed: false,
+            };
+            let mut response = if turn.research {
+                match session.set_permission_policy(crate::host_context::research_policy(&denies)) {
+                    Ok(()) => {
+                        gate.armed = true;
+                        self.stream_turn(
+                            &args.session_id,
+                            &session,
+                            &prompt,
+                            generation,
+                            turn_permit,
+                            observation.as_ref(),
+                        )
+                        .await
+                    }
+                    Err(error) => {
+                        drop(turn_permit);
+                        Err(acp::Error::internal_error().data(error.to_string()))
+                    }
+                }
+            } else {
+                self.stream_turn(
+                    &args.session_id,
+                    &session,
+                    &prompt,
+                    generation,
+                    turn_permit,
+                    observation.as_ref(),
+                )
+                .await
+            };
+            if gate.armed {
+                match session.set_permission_policy(posture_policy(&posture, &denies)) {
+                    Ok(()) => gate.armed = false,
+                    Err(error) if response.is_ok() => {
+                        response = Err(acp::Error::internal_error().data(error.to_string()));
+                    }
+                    Err(_) => {}
+                }
+            }
+            response
         };
         tracing::info!(target: "perf_probe", "prompt_return");
-        drop(turn_permit);
         self.finish_prompt(&session_key, generation, response).await
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+        if args.method.as_ref() == "a3s/goal/import" {
+            let command: a3s_code_core::goal_control::GoalDefinitionCommandV1 =
+                serde_json::from_str(args.params.get())
+                    .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+            let session_id = command.session_id.clone();
+            let (session, turn_queue) = self
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .map(|live| (Arc::clone(&live.session), Arc::clone(&live.turn_queue)))
+                .ok_or_else(|| acp::Error::resource_not_found(None))?;
+            // A retiring legacy turn can still remove its source after Core returns.
+            let _turn_permit = turn_queue
+                .acquire_owned()
+                .await
+                .ok_or_else(|| acp::Error::invalid_params().data("goal import queue is full"))?;
+            let imported = crate::goal::commit_import(&session, command)
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+            self.goals.lock().await.remove(&session_id);
+            let raw = serde_json::value::to_raw_value(&imported)
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+            return Ok(acp::ExtResponse::new(raw.into()));
+        }
+        if args.method.as_ref() == "a3s/goal/import/preview" {
+            let request: crate::goal::GoalImportPreviewRequest =
+                serde_json::from_str(args.params.get())
+                    .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+            let session = self
+                .sessions
+                .lock()
+                .await
+                .get(&request.session_id)
+                .map(|live| Arc::clone(&live.session))
+                .ok_or_else(|| acp::Error::resource_not_found(None))?;
+            if session.is_closed() {
+                return Err(acp::Error::resource_not_found(None));
+            }
+            if session
+                .goal_definition()
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
+                .is_some()
+            {
+                return Err(
+                    acp::Error::invalid_params().data("goal.conflict: session already bound")
+                );
+            }
+            let preview = crate::goal::preview_import(session.workspace(), &request)
+                .await
+                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+            let raw = serde_json::value::to_raw_value(&preview)
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+            return Ok(acp::ExtResponse::new(raw.into()));
+        }
+        if matches!(
+            args.method.as_ref(),
+            "a3s/goal/definition"
+                | "a3s/goal/plan"
+                | "a3s/goal/control"
+                | "a3s/goal/wait"
+                | "a3s/goal/state"
+        ) {
+            return self.handle_goal_command(&args).await;
+        }
+        if matches!(
+            args.method.as_ref(),
+            "a3s/review/target" | "a3s/review/admit" | "a3s/review/settle"
+        ) {
+            return self.handle_review(&args).await;
+        }
+        if args.method.as_ref() == "a3s/wiki/search" {
+            return answer_wiki_search(&args).await;
+        }
         if args
             .method
             .as_ref()
@@ -1551,8 +3575,14 @@ impl acp::Agent for A3sCodeAgent {
         if args.method.as_ref() == "x.ai/session/info" {
             return self.handle_session_info(&args).await;
         }
+        if args.method.as_ref() == "x.ai/session/list" {
+            return self.handle_session_list(&args).await;
+        }
         if args.method.as_ref() == "x.ai/session/delete" {
             return self.handle_session_delete(&args).await;
+        }
+        if args.method.as_ref() == "x.ai/permission_posture" {
+            return self.handle_permission_posture(&args).await;
         }
         Ok(acp::ExtResponse::new(
             serde_json::value::RawValue::NULL.to_owned().into(),
@@ -1579,8 +3609,33 @@ impl acp::Agent for A3sCodeAgent {
         if let Some(session) = session {
             let _ = session.cancel().await;
         }
+        self.turn_cancel.notify_waiters();
         Ok(())
     }
+}
+
+async fn answer_wiki_search(args: &acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
+    let request: serde_json::Value = serde_json::from_str(args.params.get()).map_err(|error| {
+        acp::Error::invalid_params().data(format!("wiki search request: {error}"))
+    })?;
+    let wiki = request
+        .get("wiki")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let query = request
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let body = tokio::task::spawn_blocking(move || {
+        crate::wiki_search::search_published_body(std::path::Path::new(&wiki), &query)
+    })
+    .await
+    .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+    let raw = serde_json::value::to_raw_value(&body)
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+    Ok(acp::ExtResponse::new(raw.into()))
 }
 
 /// Map a3s-code planning tasks onto ACP `PlanEntry` so the pager plan strip updates.
@@ -1633,7 +3688,7 @@ struct EffortLimits {
 
 /// Host budget levels offered when the provider has no native effort parameter.
 /// `ultracode` stays off the menu: it is not a `ReasoningEffort` variant.
-const HOST_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+pub(crate) const HOST_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 /// Advertise the effort values `/effort` can apply.
 ///
@@ -1802,6 +3857,13 @@ fn context_usage(window_tokens: u64, tokens_used: u64) -> (u64, u8) {
     (window_tokens, pct.min(100) as u8)
 }
 
+/// Always-on turn boundary. The skill command is an example, not a matcher.
+const SESSION_OUTCOME_BOUNDARY: &str = "\
+Finish the user's outcome in this turn. Do not read or explain the product \
+implementation unless the user asked to change that implementation. When a \
+host command already does the outcome, name that command and stop. Example: \
+the user installs a skill with `a3s code skills add <git-url>`.";
+
 /// Depth steer from a3s `BudgetProfile.guideline`. Medium has none.
 fn effort_guideline(token: &str) -> Option<&'static str> {
     match token {
@@ -1813,7 +3875,8 @@ that covers what you touched — just don't add checks or scope the task didn't 
 warrant. Don't gold-plate.",
         ),
         "high" => Some(
-            "[effort: high] Favor depth. Reason through the approach before acting. After \
+            "[effort: high] Favor depth. Reason through the approach before acting. \
+Depth applies to the user's outcome, not to rediscovering the running product. After \
 changes, verify the narrow path you touched (build / test / type-check) and \
 check the obvious edge cases, then re-read your own diff for correctness before \
 finishing.",
@@ -1832,11 +3895,11 @@ adversarial inputs. Finish with a self-critique pass that actively hunts for \
 what you may have missed or gotten wrong, and fix it before concluding.",
         ),
         "ultracode" => Some(
-            "[ultracode] Dynamic-workflow mode is available — you decide whether a turn needs \
+            "[ultracode] Scripted tool fan-out is available — you decide whether a turn needs \
 it. Match the effort to the task: answer trivial or conversational input (a \
 greeting, a single question, a one-step edit) directly, with no plan and no \
-fan-out. When a task genuinely needs a dynamic workflow, call the \
-`dynamic_workflow` tool with one sandboxed JavaScript PTC workflow script.",
+fan-out. When a task genuinely needs many coordinated tool calls, call the \
+`program` tool with one sandboxed JavaScript PTC script.",
         ),
         _ => None,
     }
@@ -1877,6 +3940,8 @@ fn effort_limits_from_meta(meta: Option<&acp::Meta>) -> Option<EffortLimits> {
 }
 
 /// Map pager `/effort` `_meta.reasoningEffort` onto the provider effort token.
+/// The pager effort surface lands with its slice; kept linked.
+#[allow(dead_code)]
 fn reasoning_effort_token(meta: Option<&acp::Meta>) -> Option<&'static str> {
     effort_limits_from_meta(meta).map(|limits| limits.token)
 }
@@ -1929,10 +3994,13 @@ fn prepared_raw_input(name: &str, args: &serde_json::Value) -> Option<serde_json
             obj.insert("variant".into(), serde_json::json!("Task"));
         }
         "search" | "semantic" | "hybrid" | "bm25" => {
-            if obj.get("pattern").is_none() {
-                if let Some(query) = obj.get("query").cloned() {
+            // A let-chain form needs Rust 2024; keep the guard pair flat.
+            #[allow(clippy::collapsible_if, clippy::single_match)]
+            match (obj.get("pattern").is_none(), obj.get("query").cloned()) {
+                (true, Some(query)) => {
                     obj.insert("pattern".into(), query);
                 }
+                _ => {}
             }
         }
         _ => {}
@@ -2047,6 +4115,26 @@ fn permission_response_approved(response: &acp::RequestPermissionResponse) -> bo
     }
 }
 
+/// Meta key marking a `request_permission` as an agent question riding the
+/// permission channel, not a permission ask; the payload carries
+/// `{"allowFreeText": bool}`. Twin of `QUESTION_META_KEY` in
+/// `vendor/a3s-code-ui/crates/codegen/a3s-code-workspace/src/permission/types.rs`
+/// (this crate does not depend on the vendored workspace crate; keep them in sync).
+const QUESTION_META_KEY: &str = "question";
+
+/// The free text a user typed into a permission dialog's followup input; the
+/// pager attaches it as `followup_message` response meta (its
+/// `dispatch_permission_followup` path). Trimmed; empty/absent yields `None`.
+fn followup_message(response: &acp::RequestPermissionResponse) -> Option<&str> {
+    response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("followup_message"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
 /// Question choices are not permission grants. `RejectOnce` keeps YOLO from
 /// selecting them via its `AllowOnce` drain.
 fn question_permission_options(options: &[String]) -> Vec<acp::PermissionOption> {
@@ -2069,6 +4157,21 @@ fn question_permission_options(options: &[String]) -> Vec<acp::PermissionOption>
 
 fn claim_question_prompt(seen: &mut std::collections::HashSet<String>, question_id: &str) -> bool {
     seen.insert(question_id.to_string())
+}
+
+/// The failure text for a turn worker that died without a terminal event:
+/// a panic names its payload, anything else is reported as an abort. This
+/// is the difference between a visible failed turn and a silent clean one.
+fn worker_join_failure(join_error: tokio::task::JoinError) -> String {
+    let detail = match join_error.try_into_panic() {
+        Ok(payload) => payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string()),
+        Err(join_error) => format!("worker aborted: {join_error}"),
+    };
+    format!("turn worker died: {detail}")
 }
 
 fn tool_permission_request(
@@ -2108,22 +4211,45 @@ fn question_permission_request(
     question_id: &str,
     question: &str,
     options: &[String],
+    allow_free_text: bool,
 ) -> Option<acp::RequestPermissionRequest> {
-    let choices = question_permission_options(options);
+    let mut choices = question_permission_options(options);
     if choices.is_empty() {
-        return None;
+        // A free-text-only ask still needs a dialog to type into: one row
+        // that carries no answer of its own (its index maps past the empty
+        // options list in `answer_from_permission_outcome`, so a bare Enter
+        // resolves the dialog without fabricating an answer).
+        if !allow_free_text {
+            return None;
+        }
+        choices = vec![acp::PermissionOption::new(
+            acp::PermissionOptionId::new("question-0"),
+            "Answer in text".to_owned(),
+            acp::PermissionOptionKind::RejectOnce,
+        )];
     }
-    Some(acp::RequestPermissionRequest::new(
-        session_id.clone(),
-        acp::ToolCallUpdate::new(
-            acp::ToolCallId::new(question_id.to_string()),
-            acp::ToolCallUpdateFields::new()
-                .title(question.to_string())
-                .kind(acp::ToolKind::Other)
-                .status(acp::ToolCallStatus::Pending),
+    Some(
+        acp::RequestPermissionRequest::new(
+            session_id.clone(),
+            acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(question_id.to_string()),
+                acp::ToolCallUpdateFields::new()
+                    .title(question.to_string())
+                    .kind(acp::ToolKind::Other)
+                    .status(acp::ToolCallStatus::Pending),
+            ),
+            choices,
+        )
+        // The marker lets a client render choices by name (they all ride the
+        // RejectOnce kind) and offer the free-text row only when allowed.
+        .meta(
+            serde_json::json!({
+                QUESTION_META_KEY: { "allowFreeText": allow_free_text },
+            })
+            .as_object()
+            .cloned(),
         ),
-        choices,
-    ))
+    )
 }
 
 /// A choice opens the permission dialog. Blank options do not.
@@ -2136,10 +4262,155 @@ fn should_emit_end_text(saw_text: bool, text: &str) -> bool {
     !saw_text && !text.is_empty()
 }
 
+/// How long an `request_permission` ask may park before the agent fails
+/// closed. Default 30 minutes (the same budget `ask_user` gives an
+/// unanswered questionnaire); `A3S_CODE_PERMISSION_ASK_TIMEOUT_SECS`
+/// overrides, `0` disables the bound entirely.
+fn ask_deadline() -> std::time::Duration {
+    const DEFAULT_SECS: u64 = 1800;
+    let configured = std::env::var("A3S_CODE_PERMISSION_ASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let secs = match configured {
+        // Explicit disable: no bound.
+        Some(0) => u64::MAX,
+        Some(secs) => secs,
+        None => DEFAULT_SECS,
+    };
+    std::time::Duration::from_secs(secs)
+}
+
+/// The `x.ai/turn/outcome` notification payload carrying how the run closed
+/// at the completion gate, so the client's terminal marker can say more than
+/// a duration. Fields are additive; clients ignore unknown keys.
+fn turn_outcome_payload(
+    terminal: &a3s_code_core::harness_loop::CompletionTerminal,
+    summary: &a3s_code_core::verification::VerificationSummary,
+    forced_stop: Option<&a3s_code_core::harness_loop::ForcedStop>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "sessionUpdate": "turn_outcome",
+        "terminal": terminal_kind(terminal),
+        "status": format!("{:?}", summary.status).to_lowercase(),
+        "requiredChecks": summary.required_check_count,
+        "failedChecks": summary.failed_check_count,
+    });
+    if let Some(forced) = forced_stop {
+        payload["forced"] =
+            serde_json::json!(a3s_code_core::harness_loop::ForcedStop::as_str(*forced));
+    }
+    payload
+}
+
+fn terminal_kind(terminal: &a3s_code_core::harness_loop::CompletionTerminal) -> &'static str {
+    match terminal {
+        a3s_code_core::harness_loop::CompletionTerminal::Narrative => "narrative",
+        a3s_code_core::harness_loop::CompletionTerminal::Verified { .. } => "verified",
+        a3s_code_core::harness_loop::CompletionTerminal::Waived { .. } => "waived",
+        a3s_code_core::harness_loop::CompletionTerminal::Distinct => "distinct",
+    }
+}
+
 /// A Core `AgentEvent::Error` is a failed turn. The pager already renders
 /// `Err` as TurnFailed; `Ok(EndTurn)` would say the turn completed.
 fn agent_failure_error(message: &str) -> acp::Error {
     acp::Error::internal_error().data(message.to_string())
+}
+
+/// Resolve which live session a sampling consent ask belongs to: the
+/// session whose declared `mcp_servers` names the server owns it; a
+/// baseline (config-declared) server belongs to whichever session is
+/// live; no live session means nobody to ask (the caller refuses).
+fn resolve_consent_session(
+    sessions: &HashMap<String, LiveSession>,
+    server: &str,
+) -> Option<acp::SessionId> {
+    sessions
+        .iter()
+        .find(|(_, live)| {
+            live.mcp_servers
+                .iter()
+                .any(|declared| declared.name == server)
+        })
+        .map(|(key, _)| acp::SessionId::new(key.clone()))
+        .or_else(|| {
+            sessions
+                .keys()
+                .next()
+                .map(|key| acp::SessionId::new(key.clone()))
+        })
+}
+
+/// The composition the wiring contract pins: consent bridge INSIDE the
+/// per-server ceiling, the model voice capped on generation.
+fn sampling_handler_for(
+    server: &str,
+    llm: &std::sync::Arc<dyn a3s_code_core::llm::LlmClient>,
+    model: &str,
+    consent: &tokio::sync::mpsc::Sender<crate::sampling_consent::SamplingConsentAsk>,
+) -> std::sync::Arc<dyn a3s_code_core::mcp::transport::SamplingHandler> {
+    use a3s_code_core::mcp::client::{
+        ApprovalGatedSampling, BoundedSamplingHandler, LlmSamplingHandler,
+    };
+    let voice = std::sync::Arc::new(LlmSamplingHandler::new(
+        std::sync::Arc::clone(llm),
+        model.to_string(),
+    ));
+    let bridge = std::sync::Arc::new(crate::sampling_consent::SamplingConsentBridge::new(
+        consent.clone(),
+    ));
+    let gated = std::sync::Arc::new(ApprovalGatedSampling::new(
+        server.to_string(),
+        voice,
+        bridge,
+    ));
+    std::sync::Arc::new(BoundedSamplingHandler::new(gated))
+}
+
+/// Serve parked sampling asks: resolve the owning session, ask through
+/// the request_permission channel (Allow once / Deny), and settle the
+/// reply. Every non-approval path refuses (the bridge also times out).
+async fn serve_sampling_consent(
+    mut asks: tokio::sync::mpsc::Receiver<crate::sampling_consent::SamplingConsentAsk>,
+    client: Rc<RefCell<Option<Rc<acp::AgentSideConnection>>>>,
+    sessions: Arc<Mutex<HashMap<String, LiveSession>>>,
+) {
+    const OPTIONS: [&str; 2] = ["Allow once", "Deny"];
+    while let Some(ask) = asks.recv().await {
+        let allowed = async {
+            let owning = {
+                let sessions = sessions.lock().await;
+                resolve_consent_session(&sessions, &ask.server)
+            };
+            // No session to ask and no live connection both refuse.
+            let session_id = owning?;
+            let conn = client.borrow().clone();
+            let conn = conn?;
+            let options: Vec<String> = OPTIONS.iter().map(|text| text.to_string()).collect();
+            let question_id = format!("mcp-sampling-{}", ask.server);
+            // Sampling consent is a closed yes/no; free text is never consent.
+            let request = question_permission_request(
+                &session_id,
+                &question_id,
+                &ask.question,
+                &options,
+                /*allow_free_text=*/ false,
+            )?;
+            let response = conn.request_permission(request).await.ok()?;
+            let answer = if followup_message(&response).is_some() {
+                // Typed text means the user answered in prose; the picked row
+                // then names nothing trustworthy, and "Allow once" on it must
+                // not grant sampling.
+                None
+            } else {
+                answer_from_permission_outcome(&response.outcome, &options)
+            };
+            answer.as_deref().map(|answer| answer == "Allow once")
+        }
+        .await
+        .unwrap_or(false);
+        let _ = ask.reply.send(allowed);
+    }
 }
 
 fn answer_from_permission_outcome(
@@ -2165,1024 +4436,38 @@ fn answer_from_permission_outcome(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "agent_tests.rs"]
+mod tests;
 
-    #[test]
-    fn effort_tokens_keep_one_tool_ceiling() {
-        let meta = |effort: &str| {
-            let mut m = acp::Meta::new();
-            m.insert(
-                "reasoningEffort".into(),
-                serde_json::Value::String(effort.into()),
-            );
-            m
-        };
-        assert_eq!(reasoning_effort_token(Some(&meta("none"))), Some("none"));
-        assert_eq!(
-            reasoning_effort_token(Some(&meta("medium"))),
-            Some("medium")
-        );
-        let low = effort_limits("low").expect("low");
-        let high = effort_limits("high").expect("high");
-        let max = effort_limits("max").expect("max");
-        assert!(low.max_tool_rounds < high.max_tool_rounds);
-        assert!(high.max_tool_rounds < max.max_tool_rounds);
-        assert!(low.thinking_budget < high.thinking_budget);
-        assert!(high.thinking_budget < max.thinking_budget);
-        assert_eq!(
-            max.max_tool_rounds,
-            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
-        );
+#[cfg(test)]
+pub(crate) use tests::test_launch;
 
-        let claude =
-            A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(high));
-        assert_eq!(claude.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(claude.thinking_budget, Some(high.thinking_budget));
-        assert_eq!(claude.max_tool_rounds, Some(high.max_tool_rounds));
-        let claude_budget = claude
-            .prompt_slots
-            .as_ref()
-            .and_then(|slots| slots.guidelines.as_deref())
-            .expect("native models still receive the budget line");
-        assert!(claude_budget.contains(&format!("thinking_budget={}", high.thinking_budget)));
-        assert!(claude_budget.contains(&format!("tool_rounds={}", high.max_tool_rounds)));
-        assert!(claude.auto_compact);
-        assert_eq!(
-            claude.auto_compact_threshold,
-            Some(a3s_code_core::store::DEFAULT_AUTO_COMPACT_THRESHOLD)
-        );
-        assert!(claude.max_context_tokens.is_none());
+#[cfg(test)]
+mod session_catalog_tests;
 
-        let local = A3sCodeAgent::core_session_options("sid", "ollama/llama3", Some(high));
-        let local_budget = local
-            .prompt_slots
-            .as_ref()
-            .and_then(|slots| slots.guidelines.as_deref())
-            .expect("host budget line");
-        assert!(local_budget.contains(&format!("thinking_budget={}", high.thinking_budget)));
-        assert!(local_budget.contains(effort_guideline("high").expect("high guideline")));
-    }
+#[cfg(test)]
+mod goal_tests;
 
-    #[test]
-    fn reasoning_meta_offers_parseable_budget_levels() {
-        let meta = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
-        assert_eq!(
-            meta.get("supportsReasoningEffort"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        let efforts = meta
-            .get("reasoningEfforts")
-            .and_then(|v| v.as_array())
-            .expect("reasoningEfforts");
-        let values: Vec<&str> = efforts
-            .iter()
-            .filter_map(|entry| entry.get("value").and_then(|v| v.as_str()))
-            .collect();
-        assert_eq!(values, ["low", "medium", "high", "xhigh", "max"]);
-        let high = efforts
-            .iter()
-            .find(|entry| entry.get("value").and_then(|v| v.as_str()) == Some("high"))
-            .expect("high");
-        assert_eq!(high.get("default"), Some(&serde_json::Value::Bool(true)));
-        assert!(effort_guideline("high").is_some());
-        assert!(effort_guideline("medium").is_none());
-        assert_eq!(effort_limits("high").expect("high").token, "high");
-    }
+#[cfg(test)]
+mod resume_tests;
 
-    #[test]
-    fn effort_limits_share_the_tool_ceiling() {
-        let medium = effort_limits("medium").expect("medium");
-        assert!(medium.max_tool_rounds < a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING);
-        assert_eq!(medium.thinking_budget, 8192);
-        assert_eq!(medium.max_tool_rounds, 48);
-        assert_eq!(medium.max_parallel_tasks, HOST_PARALLEL_TASKS);
-        assert_eq!(medium.max_continuation_turns, HOST_CONTINUATION_TURNS);
+#[cfg(test)]
+mod session_setup_tests;
 
-        let low = effort_limits("low").expect("low");
-        let max = effort_limits("max").expect("max");
-        let ultra = effort_limits("ultracode").expect("ultracode");
-        assert_eq!(low.max_parallel_tasks, max.max_parallel_tasks);
-        assert_eq!(low.max_continuation_turns, max.max_continuation_turns);
-        assert_eq!(ultra.max_parallel_tasks, max.max_parallel_tasks);
-        assert_eq!(ultra.max_continuation_turns, max.max_continuation_turns);
-        assert_eq!(
-            max.max_tool_rounds,
-            a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
-        );
-        assert_eq!(ultra.max_tool_rounds, max.max_tool_rounds);
-        assert_eq!(ultra.thinking_budget, max.thinking_budget);
-        assert!(medium.max_tool_rounds < max.max_tool_rounds);
-        let ultra_options =
-            A3sCodeAgent::core_session_options("sid", "anthropic/claude-opus-4-6", Some(ultra));
-        assert_eq!(
-            ultra_options.planning_mode,
-            a3s_code_core::PlanningMode::Auto
-        );
-        assert!(effort_limits("not-a-level").is_none());
-    }
+#[cfg(test)]
+mod engineering_tests;
 
-    fn effort_values(meta: &serde_json::Map<String, serde_json::Value>) -> Vec<&str> {
-        meta.get("reasoningEfforts")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.get("value").and_then(|value| value.as_str()))
-            .collect()
-    }
+#[cfg(test)]
+mod review_tests;
 
-    #[test]
-    fn reasoning_menu_follows_the_model() {
-        let claude = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
-        assert_eq!(
-            claude.get("supportsReasoningEffort"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert!(effort_values(&claude).contains(&"xhigh"));
+#[cfg(test)]
+#[path = "agent_plugin_process_tests.rs"]
+mod plugin_process_tests;
 
-        let glm = reasoning_effort_catalog_meta("zhipu/glm-5");
-        let glm_values = effort_values(&glm);
-        assert!(!glm_values.contains(&"medium"));
-        assert!(!glm_values.contains(&"xhigh"));
-        assert_eq!(glm_values, vec!["low", "high", "max"]);
+#[cfg(test)]
+#[path = "document_read_agent_tests.rs"]
+mod document_read_agent_tests;
 
-        let local = reasoning_effort_catalog_meta("ollama/llama3");
-        assert_eq!(
-            local.get("supportsReasoningEffort"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert_eq!(
-            effort_values(&local),
-            vec!["low", "medium", "high", "xhigh", "max"]
-        );
-    }
-
-    #[test]
-    fn subagent_progress_reports_the_resolved_window() {
-        let (window, early) = context_usage(128_000, 64_000);
-        let (_, later) = context_usage(128_000, 96_000);
-        assert_eq!(window, 128_000);
-        assert_eq!(early, 50);
-        assert!(later > early);
-        let idle = serde_json::json!({});
-        assert_eq!(progress_tokens_used(&idle), 0);
-        let growing = serde_json::json!({"prompt_tokens": 96_000});
-        let (reported, pct) = context_usage(128_000, progress_tokens_used(&growing));
-        assert_eq!(reported, 128_000);
-        assert_eq!(pct, later);
-
-        let mut progress = ChildProgress::default();
-        note_child_progress(
-            &mut progress,
-            "tool_completed",
-            &serde_json::json!({"tool": "read", "exit_code": 0}),
-        );
-        note_child_progress(
-            &mut progress,
-            "tool_completed",
-            &serde_json::json!({"tool": "bash", "exit_code": 1}),
-        );
-        note_child_progress(
-            &mut progress,
-            "turn_completed",
-            &serde_json::json!({"turn": 2}),
-        );
-        assert_eq!(progress.tool_call_count, 2);
-        assert_eq!(
-            progress.tools_used,
-            vec!["read".to_string(), "bash".to_string()]
-        );
-        assert_eq!(progress.error_count, 1);
-        assert_eq!(progress.turn_count, 2);
-        note_child_progress(
-            &mut progress,
-            "tool_completed",
-            &serde_json::json!({"tool": "read", "exit_code": 0, "prompt_tokens": 4_000}),
-        );
-        assert_eq!(progress.tokens_used, 4_000);
-        let finished = subagent_finished_update("task-1", "child-1", true, "ok", 500, &progress);
-        assert_eq!(finished["tool_calls"], 3);
-        assert_eq!(finished["turns"], 2);
-        assert_eq!(finished["tokens_used"], 4_000);
-        assert_eq!(finished["status"], "completed");
-        let parsed = parse_interject_params(
-            r#"{"sessionId":"s1","text":" look here ","interjectionId":"i1"}"#,
-        )
-        .expect("interject");
-        assert_eq!(parsed.session_id, "s1");
-        assert_eq!(parsed.text, "look here");
-        assert!(parse_interject_params(r#"{"sessionId":"s1"}"#).is_err());
-        assert_eq!(progress_duration_ms(1_000, 1_500), 500);
-        assert_eq!(progress_duration_ms(0, 1_500), 0);
-    }
-
-    #[test]
-    fn question_options_are_not_permission_grants() {
-        let options = question_permission_options(&[" left ".into(), "  ".into(), "right".into()]);
-        assert_eq!(options.len(), 2);
-        assert!(options
-            .iter()
-            .all(|option| option.kind == acp::PermissionOptionKind::RejectOnce));
-        assert!(options
-            .iter()
-            .all(|option| option.kind != acp::PermissionOptionKind::AllowOnce));
-        assert_eq!(options[0].name, "left");
-        assert_eq!(options[1].name, "right");
-    }
-
-    #[test]
-    fn choice_questions_use_the_dialog_not_a_transcript_line() {
-        assert!(question_has_choices(&["keep".into(), "  ".into()]));
-        assert!(!question_has_choices(&["  ".into(), String::new()]));
-    }
-
-    #[test]
-    fn a_core_error_is_not_a_completed_turn() {
-        let err = agent_failure_error("completion gate: workspace mutation");
-        let detail = err
-            .data
-            .as_ref()
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        assert!(
-            detail.contains("completion gate:"),
-            "pager TurnFailed reads error data, got {detail:?}"
-        );
-    }
-
-    #[test]
-    fn end_text_fills_a_turn_that_had_no_deltas() {
-        assert!(should_emit_end_text(false, "done"));
-        assert!(!should_emit_end_text(true, "done"));
-        assert!(!should_emit_end_text(false, ""));
-    }
-
-    #[test]
-    fn selected_question_option_is_the_answer_text() {
-        let options = vec!["left".to_string(), "right".to_string()];
-        let selected = acp::RequestPermissionOutcome::Selected(
-            acp::SelectedPermissionOutcome::new(acp::PermissionOptionId::new("question-1")),
-        );
-        assert_eq!(
-            answer_from_permission_outcome(&selected, &options).as_deref(),
-            Some("right")
-        );
-        assert_eq!(
-            answer_from_permission_outcome(&acp::RequestPermissionOutcome::Cancelled, &options),
-            None
-        );
-        let grant = acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-            acp::PermissionOptionId::new("allow-once"),
-        ));
-        assert_eq!(answer_from_permission_outcome(&grant, &options), None);
-    }
-
-    #[test]
-    fn a_question_id_is_prompted_once() {
-        let mut seen = std::collections::HashSet::new();
-        assert!(claim_question_prompt(&mut seen, "q1"));
-        assert!(!claim_question_prompt(&mut seen, "q1"));
-        assert!(claim_question_prompt(&mut seen, "q2"));
-    }
-
-    #[test]
-    fn tool_cards_use_pager_kind_and_raw_input() {
-        assert_eq!(tool_kind_for("bash"), acp::ToolKind::Execute);
-        assert_eq!(tool_kind_for("read"), acp::ToolKind::Read);
-        assert_eq!(tool_kind_for("edit"), acp::ToolKind::Edit);
-        assert_eq!(tool_kind_for("grep"), acp::ToolKind::Search);
-        assert_eq!(tool_kind_for("web_fetch"), acp::ToolKind::Fetch);
-        assert_eq!(tool_kind_for("web_search"), acp::ToolKind::Search);
-        assert_eq!(tool_title("update_plan"), "Updating plan");
-
-        let ls = prepared_raw_input("ls", &serde_json::json!({"path": "src"})).unwrap();
-        assert_eq!(ls["target_directory"], "src");
-
-        let search =
-            prepared_raw_input("web_search", &serde_json::json!({"query": "a3s code"})).unwrap();
-        assert_eq!(search["variant"], "WebSearch");
-
-        let bash = tool_raw_output(
-            "bash",
-            Some(&serde_json::json!({"command": "echo hi"})),
-            "hi\n",
-            0,
-        )
-        .unwrap();
-        assert_eq!(bash["type"], "Bash");
-        assert_eq!(bash["exit_code"], 0);
-        assert_eq!(bash["command"], "echo hi");
-    }
-
-    #[test]
-    fn permission_response_maps_allow_and_reject() {
-        let allow = acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Selected(
-            acp::SelectedPermissionOutcome::new(acp::PermissionOptionId::new("allow-once")),
-        ));
-        assert!(permission_response_approved(&allow));
-
-        let reject = acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Selected(
-            acp::SelectedPermissionOutcome::new(acp::PermissionOptionId::new("reject-once")),
-        ));
-        assert!(!permission_response_approved(&reject));
-
-        let cancelled =
-            acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Cancelled);
-        assert!(!permission_response_approved(&cancelled));
-    }
-
-    fn test_model(id: &str, name: &str, family: &str) -> a3s_code_core::ModelConfig {
-        a3s_code_core::ModelConfig {
-            id: id.to_string(),
-            name: name.to_string(),
-            family: family.to_string(),
-            api_key: None,
-            base_url: None,
-            headers: std::collections::HashMap::new(),
-            session_id_header: None,
-            attachment: false,
-            reasoning: false,
-            tool_call: true,
-            temperature: true,
-            release_date: None,
-            modalities: a3s_code_core::ModelModalities::default(),
-            cost: a3s_code_core::ModelCost::default(),
-            limit: a3s_code_core::ModelLimit::default(),
-        }
-    }
-
-    fn test_launch(sessions_dir: Option<std::path::PathBuf>) -> crate::config::LaunchConfig {
-        let config = a3s_code_core::CodeConfig {
-            default_model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
-            providers: vec![
-                a3s_code_core::ProviderConfig {
-                    name: "anthropic".to_string(),
-                    api_key: Some("test-key".to_string()),
-                    base_url: None,
-                    headers: std::collections::HashMap::new(),
-                    session_id_header: None,
-                    models: vec![test_model(
-                        "claude-sonnet-4-20250514",
-                        "Claude Sonnet 4",
-                        "claude-sonnet",
-                    )],
-                },
-                a3s_code_core::ProviderConfig {
-                    name: "openai".to_string(),
-                    api_key: Some("test-openai-key".to_string()),
-                    base_url: None,
-                    headers: std::collections::HashMap::new(),
-                    session_id_header: None,
-                    models: vec![test_model("gpt-4o", "GPT-4o", "gpt-4")],
-                },
-            ],
-            sessions_dir,
-            ..a3s_code_core::CodeConfig::default()
-        };
-        crate::config::LaunchConfig {
-            workspace: std::env::temp_dir(),
-            model_id: "anthropic/claude-sonnet-4-20250514".to_string(),
-            config,
-        }
-    }
-
-    #[tokio::test]
-    async fn seam_admission_acp_permission_and_goal() {
-        let root = std::env::temp_dir().join(format!("a3s-acp-seam-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("temp workspace");
-        let mut launch = test_launch(Some(root.join("sessions")));
-        launch.workspace = root.clone();
-        let agent = A3sCodeAgent::new(launch);
-        let created = acp::Agent::new_session(&agent, acp::NewSessionRequest::new(root.clone()))
-            .await
-            .expect("new session");
-        let session_id = created.session_id.0.as_ref();
-        assert_ne!(session_id, "tui-session");
-        assert!(!session_id.is_empty());
-
-        let applied = crate::goal::apply_goal(
-            None,
-            crate::goal::parse_goal_command("/goal ship the seam").expect("goal command"),
-        );
-        assert_eq!(
-            applied.plan.mode(),
-            Some(a3s_code_core::PlanningMode::Enabled)
-        );
-        assert_eq!(
-            applied.next.as_ref().map(|goal| goal.objective.as_str()),
-            Some("ship the seam")
-        );
-        let registered = agent.sessions.lock().await.contains_key(session_id);
-        drop(created);
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(registered);
-
-        let mut executed = false;
-        let decision = crate::check_admitted_tool(
-            "always-approve",
-            "bash(*)",
-            "bash",
-            &serde_json::json!({"command": "echo hi"}),
-            || {
-                executed = true;
-            },
-        );
-        assert_eq!(decision, Err("deny"));
-        assert!(!executed);
-    }
-
-    #[tokio::test]
-    async fn set_session_model_replaces_a_live_session() {
-        let root =
-            std::env::temp_dir().join(format!("a3s-acp-model-switch-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("temp workspace");
-        let sessions_dir = root.join("sessions");
-        let mut launch = test_launch(Some(sessions_dir));
-        launch.workspace = root.clone();
-        let agent = A3sCodeAgent::new(launch);
-        let switched = async {
-            let created =
-                acp::Agent::new_session(&agent, acp::NewSessionRequest::new(root.clone())).await?;
-            acp::Agent::set_session_model(
-                &agent,
-                acp::SetSessionModelRequest::new(
-                    created.session_id.clone(),
-                    acp::ModelId::new("openai/gpt-4o"),
-                ),
-            )
-            .await?;
-            let live = agent
-                .sessions
-                .lock()
-                .await
-                .get(created.session_id.0.as_ref())
-                .map(|session| (session.model_id.clone(), session.session.is_closed()));
-            Ok::<_, acp::Error>(live)
-        }
-        .await;
-        let _ = std::fs::remove_dir_all(&root);
-        let live = switched.expect("model switch must replace the live session");
-        assert_eq!(live, Some(("openai/gpt-4o".to_string(), false)));
-    }
-
-    #[test]
-    fn task_maps_to_acp_plan_entry_status_and_priority() {
-        use a3s_code_core::planning::{Task, TaskPriority, TaskStatus};
-
-        let pending = Task::new("t1", "Investigate").with_priority(TaskPriority::High);
-        let entry = task_to_plan_entry(&pending);
-        assert_eq!(entry.content, "Investigate");
-        assert_eq!(entry.priority, acp::PlanEntryPriority::High);
-        assert_eq!(entry.status, acp::PlanEntryStatus::Pending);
-        assert_eq!(
-            entry.meta.as_ref().and_then(|m| m.get("id")),
-            Some(&serde_json::Value::String("t1".into()))
-        );
-
-        let failed = Task::new("t2", "Broken")
-            .with_status(TaskStatus::Failed)
-            .with_priority(TaskPriority::Low);
-        let entry = task_to_plan_entry(&failed);
-        assert_eq!(entry.status, acp::PlanEntryStatus::Completed);
-        assert_eq!(entry.priority, acp::PlanEntryPriority::Low);
-        assert_eq!(
-            entry.meta.as_ref().and_then(|m| m.get("a3sStatus")),
-            Some(&serde_json::Value::String("failed".into()))
-        );
-    }
-
-    #[test]
-    fn tui_mappings_cover_cards_catalog_and_questions() {
-        for name in [
-            "shell",
-            "execute",
-            "git",
-            "write",
-            "patch",
-            "glob",
-            "search",
-            "semantic",
-            "hybrid",
-            "bm25",
-            "code_symbols",
-            "download",
-            "other",
-        ] {
-            let _ = tool_kind_for(name);
-        }
-        assert!(prepared_raw_input("read", &serde_json::Value::Null).is_none());
-        assert!(prepared_raw_input("read", &serde_json::json!([1])).is_some());
-        assert_eq!(
-            prepared_raw_input("write", &serde_json::json!({"path": "a"})).unwrap()["variant"],
-            "Write"
-        );
-        assert_eq!(
-            prepared_raw_input("update_plan", &serde_json::json!({})).unwrap()["variant"],
-            "TodoWrite"
-        );
-        assert_eq!(
-            prepared_raw_input("task", &serde_json::json!({})).unwrap()["variant"],
-            "Task"
-        );
-        let search = prepared_raw_input("semantic", &serde_json::json!({"query": "q"})).unwrap();
-        assert_eq!(search["pattern"], "q");
-
-        let edit = serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"});
-        assert_eq!(tool_call_content("edit", Some(&edit), "").len(), 1);
-        assert!(tool_call_content("read", None, "").is_empty());
-        let long = "x".repeat(4_001);
-        assert_eq!(tool_call_content("read", None, &long).len(), 1);
-        assert!(edit_diff("read", Some(&edit)).is_none());
-        assert!(edit_diff(
-            "write",
-            Some(&serde_json::json!({"path": "a", "content": "z"}))
-        )
-        .is_some());
-        assert!(tool_raw_output("read", None, "out", 0).is_none());
-        assert!(tool_raw_output("shell", None, "out", 1).is_some());
-
-        assert!(effort_guideline("low").is_some());
-        assert!(effort_guideline("high").is_some());
-        assert!(effort_guideline("xhigh").is_some());
-        assert!(effort_guideline("max").is_some());
-        assert!(effort_limits("ultracode").is_some());
-        assert!(effort_guideline("medium").is_none());
-        for token in [
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultracode",
-        ] {
-            let _ = effort_limits(token);
-        }
-        let ultra = effort_limits("ultracode").expect("ultracode");
-        let _ = A3sCodeAgent::core_session_options("sid", "model", Some(ultra));
-        let medium = effort_limits("medium").expect("medium");
-        let _ = A3sCodeAgent::core_session_options("sid", "model", Some(medium));
-        let _ = A3sCodeAgent::core_session_options("sid", "model", None);
-        assert!(effort_limits_from_meta(None).is_none());
-
-        let text =
-            A3sCodeAgent::prompt_text(&[acp::ContentBlock::Text(acp::TextContent::new(" hello "))]);
-        assert_eq!(text, " hello ");
-
-        let session_id = acp::SessionId::new("s");
-        let request = tool_permission_request(
-            &session_id,
-            "tool-1",
-            "bash",
-            &serde_json::json!({"command": "true"}),
-        );
-        assert_eq!(request.options.len(), 2);
-        assert!(question_permission_request(&session_id, "q", "which", &["  ".into()]).is_none());
-        let question = question_permission_request(&session_id, "q", "which", &["keep".into()])
-            .expect("choice");
-        assert_eq!(question.options[0].name, "keep");
-
-        let options = vec![" ".to_string(), "keep".to_string()];
-        assert!(answer_from_permission_outcome(
-            &acp::RequestPermissionOutcome::Cancelled,
-            &options
-        )
-        .is_none());
-        assert!(answer_from_permission_outcome(
-            &acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                acp::PermissionOptionId::new("allow-once")
-            )),
-            &options
-        )
-        .is_none());
-        assert!(answer_from_permission_outcome(
-            &acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                acp::PermissionOptionId::new("question-0")
-            )),
-            &options
-        )
-        .is_none());
-        assert_eq!(
-            answer_from_permission_outcome(
-                &acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                    acp::PermissionOptionId::new("question-1")
-                )),
-                &options
-            )
-            .as_deref(),
-            Some("keep")
-        );
-
-        let mut launch = test_launch(None);
-        launch.config.providers[0].name = "cc-switch".into();
-        launch.config.providers[0].models[0].name = "  ".into();
-        launch.config.providers[1].name = "grok".into();
-        let catalog = A3sCodeAgent::new(launch);
-        let names: Vec<_> = catalog
-            .available_model_infos()
-            .into_iter()
-            .map(|info| info.name)
-            .collect();
-        assert!(names.iter().any(|name| name.starts_with("cc-switch")));
-        assert!(names.iter().any(|name| name.starts_with("grok")));
-        let fallback = catalog.model_state_with("missing/id", Some("low"));
-        assert_ne!(fallback.current_model_id.0.as_ref(), "missing/id");
-
-        let empty = crate::config::LaunchConfig {
-            workspace: std::env::temp_dir(),
-            model_id: "fallback/model".into(),
-            config: a3s_code_core::CodeConfig {
-                default_model: Some("fallback/model".into()),
-                ..a3s_code_core::CodeConfig::default()
-            },
-        };
-        let agent = A3sCodeAgent::new(empty);
-        assert_eq!(agent.available_model_infos().len(), 1);
-        assert!(!agent.known_model("missing/model"));
-        assert!(agent.known_model("fallback/model"));
-    }
-
-    #[tokio::test]
-    async fn tui_turn_renders_every_pager_event() {
-        use a3s_code_core::planning::{Complexity, ExecutionPlan, Task, TaskStatus};
-        use a3s_code_core::verification::VerificationSummary;
-        use a3s_code_core::TokenUsage;
-
-        let root = std::env::temp_dir().join(format!("a3s-acp-events-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).expect("workspace");
-        let mut launch = test_launch(Some(root.join("sessions")));
-        launch.workspace = root.clone();
-        let agent = A3sCodeAgent::new(launch);
-        let created = acp::Agent::new_session(&agent, acp::NewSessionRequest::new(root.clone()))
-            .await
-            .expect("session");
-        let init = acp::Agent::initialize(
-            &agent,
-            acp::InitializeRequest::new(acp::ProtocolVersion::V1),
-        )
-        .await
-        .expect("initialize");
-        let meta = init.meta.expect("meta");
-        assert_eq!(meta.get("a3sCode"), Some(&serde_json::Value::Bool(true)));
-        acp::Agent::authenticate(&agent, acp::AuthenticateRequest::new("none"))
-            .await
-            .expect("authenticate");
-        let _ = acp::Agent::new_session(
-            &agent,
-            acp::NewSessionRequest::new(std::path::PathBuf::new()),
-        )
-        .await;
-
-        let empty = acp::Agent::prompt(
-            &agent,
-            acp::PromptRequest::new(
-                created.session_id.clone(),
-                vec![acp::ContentBlock::Text(acp::TextContent::new("   "))],
-            ),
-        )
-        .await
-        .expect("blank prompt");
-        assert_eq!(empty.stop_reason, acp::StopReason::EndTurn);
-        let unknown = acp::Agent::prompt(
-            &agent,
-            acp::PromptRequest::new(
-                acp::SessionId::new("missing"),
-                vec![acp::ContentBlock::Text(acp::TextContent::new("hi"))],
-            ),
-        )
-        .await;
-        assert!(unknown.is_err());
-        acp::Agent::cancel(
-            &agent,
-            acp::CancelNotification::new(created.session_id.clone()),
-        )
-        .await
-        .expect("cancel");
-        acp::Agent::cancel(
-            &agent,
-            acp::CancelNotification::new(acp::SessionId::new("missing")),
-        )
-        .await
-        .expect("cancel missing");
-
-        let session = agent
-            .sessions
-            .lock()
-            .await
-            .get(created.session_id.0.as_ref())
-            .expect("live")
-            .session
-            .clone();
-        let mut state = TurnState {
-            turn_failure: None,
-            saw_text: false,
-            delta_text: String::new(),
-            end_text: None,
-            subagent_started_ms: HashMap::new(),
-            child_progress: HashMap::new(),
-            prompted_questions: std::collections::HashSet::new(),
-        };
-        let sid = created.session_id.clone();
-        let events = vec![
-            AgentEvent::End {
-                text: "only end".into(),
-                usage: TokenUsage::default(),
-                verification_summary: Box::new(VerificationSummary::from_reports(&[])),
-                meta: None,
-            },
-            AgentEvent::TextDelta {
-                text: String::new(),
-            },
-            AgentEvent::TextDelta { text: "hi".into() },
-            AgentEvent::End {
-                text: "restated".into(),
-                usage: TokenUsage::default(),
-                verification_summary: Box::new(VerificationSummary::from_reports(&[])),
-                meta: None,
-            },
-            AgentEvent::ReasoningDelta {
-                text: String::new(),
-            },
-            AgentEvent::ReasoningDelta {
-                text: "think".into(),
-            },
-            AgentEvent::ToolStart {
-                id: "t1".into(),
-                name: "bash".into(),
-            },
-            AgentEvent::ToolExecutionStart {
-                id: "t1".into(),
-                name: "write".into(),
-                args: serde_json::json!({"path": "a.txt", "content": "z"}),
-            },
-            AgentEvent::ToolOutputDelta {
-                id: "t1".into(),
-                name: "bash".into(),
-                delta: String::new(),
-            },
-            AgentEvent::ToolOutputDelta {
-                id: "t1".into(),
-                name: "bash".into(),
-                delta: "out".into(),
-            },
-            AgentEvent::ToolEnd {
-                id: "t1".into(),
-                name: "bash".into(),
-                args: Some(serde_json::json!({"command": "echo"})),
-                output: "ok".into(),
-                exit_code: 0,
-                metadata: None,
-                error_kind: None,
-            },
-            AgentEvent::ToolEnd {
-                id: "t2".into(),
-                name: "edit".into(),
-                args: Some(
-                    serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
-                ),
-                output: String::new(),
-                exit_code: 0,
-                metadata: None,
-                error_kind: None,
-            },
-            AgentEvent::PermissionDenied {
-                tool_id: "t3".into(),
-                tool_name: "read".into(),
-                args: serde_json::json!({"file_path": "secret"}),
-                reason: "denied".into(),
-            },
-            AgentEvent::ConfirmationRequired {
-                tool_id: "t4".into(),
-                tool_name: "bash".into(),
-                args: serde_json::json!({"command": "true"}),
-                timeout_ms: 1,
-            },
-            AgentEvent::TaskUpdated {
-                session_id: "s".into(),
-                tasks: vec![],
-            },
-            AgentEvent::TaskUpdated {
-                session_id: "s".into(),
-                tasks: vec![Task::new("p1", "Plan").with_status(TaskStatus::InProgress)],
-            },
-            AgentEvent::PlanningEnd {
-                plan: {
-                    let mut plan = ExecutionPlan::new("goal", Complexity::Simple);
-                    plan.steps.push(Task::new("p2", "Step"));
-                    plan
-                },
-                estimated_steps: 1,
-            },
-            AgentEvent::SubagentStart {
-                task_id: "child".into(),
-                session_id: "child-session".into(),
-                parent_session_id: "parent".into(),
-                agent: "review".into(),
-                description: "check".into(),
-                started_ms: 10,
-            },
-            AgentEvent::SubagentProgress {
-                task_id: "child".into(),
-                session_id: "child-session".into(),
-                status: "running".into(),
-                metadata: serde_json::json!({}),
-            },
-            AgentEvent::SubagentProgress {
-                task_id: "child".into(),
-                session_id: "child-session".into(),
-                status: String::new(),
-                metadata: serde_json::json!({}),
-            },
-            AgentEvent::SubagentEnd {
-                task_id: "child".into(),
-                session_id: "child-session".into(),
-                agent: "review".into(),
-                output: "notes".into(),
-                success: false,
-                finished_ms: 40,
-            },
-            AgentEvent::SubagentEnd {
-                task_id: "missing".into(),
-                session_id: "child-session".into(),
-                agent: "review".into(),
-                output: String::new(),
-                success: true,
-                finished_ms: 5,
-            },
-            AgentEvent::SubagentEnd {
-                task_id: "empty-fail".into(),
-                session_id: "child-session".into(),
-                agent: "review".into(),
-                output: "   ".into(),
-                success: false,
-                finished_ms: 8,
-            },
-            AgentEvent::UserQuestion {
-                question_id: "q1".into(),
-                question: "free?".into(),
-                options: vec![],
-                allow_free_text: true,
-            },
-            AgentEvent::UserQuestion {
-                question_id: "q2".into(),
-                question: "which?".into(),
-                options: vec!["keep".into()],
-                allow_free_text: false,
-            },
-            AgentEvent::UserQuestion {
-                question_id: "q2".into(),
-                question: "which?".into(),
-                options: vec!["keep".into()],
-                allow_free_text: false,
-            },
-            AgentEvent::Error {
-                message: "completion gate: blocked".into(),
-            },
-            AgentEvent::Start { prompt: "x".into() },
-        ];
-        for event in events {
-            agent.handle_event(&sid, &session, &mut state, event).await;
-        }
-        assert_eq!(
-            state.turn_failure.as_deref(),
-            Some("completion gate: blocked")
-        );
-        assert!(state.saw_text);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Session functions the TUI renders. Each entry is an observed effect, not a
-    /// line of `agent.rs` that executed.
-    #[test]
-    fn tui_session_function_coverage_is_at_least_95_percent() {
-        let mut covered = Vec::new();
-        let mut missing = Vec::new();
-        let mut record = |name: &str, ok: bool| {
-            if ok {
-                covered.push(name.to_string());
-            } else {
-                missing.push(name.to_string());
-            }
-        };
-
-        record(
-            "tool-card:bash",
-            tool_kind_for("bash") == acp::ToolKind::Execute,
-        );
-        record(
-            "tool-card:read",
-            tool_kind_for("read") == acp::ToolKind::Read,
-        );
-        record(
-            "tool-card:edit",
-            tool_kind_for("edit") == acp::ToolKind::Edit,
-        );
-        record(
-            "tool-card:grep",
-            tool_kind_for("grep") == acp::ToolKind::Search,
-        );
-        record(
-            "tool-card:web-fetch",
-            tool_kind_for("web_fetch") == acp::ToolKind::Fetch,
-        );
-        record("plan-title", tool_title("update_plan") == "Updating plan");
-        let edit = serde_json::json!({"path": "a.rs", "old_string": "a", "new_string": "b"});
-        record("edit-diff", edit_diff("edit", Some(&edit)).is_some());
-        record(
-            "bash-output",
-            tool_raw_output("bash", None, "ok", 0).is_some(),
-        );
-        let session_id = acp::SessionId::new("s");
-        let permission = tool_permission_request(
-            &session_id,
-            "tool-1",
-            "bash",
-            &serde_json::json!({"command": "true"}),
-        );
-        record(
-            "permission-dialog",
-            permission.options.len() == 2
-                && permission.options[0].kind == acp::PermissionOptionKind::AllowOnce
-                && permission.options[1].kind == acp::PermissionOptionKind::RejectOnce,
-        );
-        record(
-            "question-free-text",
-            question_permission_request(&session_id, "q", "which", &["  ".into()]).is_none(),
-        );
-        let question = question_permission_request(&session_id, "q", "which", &["keep".into()]);
-        record(
-            "question-choices",
-            question.as_ref().is_some_and(|request| {
-                request.options.len() == 1
-                    && request.options[0].kind == acp::PermissionOptionKind::RejectOnce
-                    && request.options[0].name == "keep"
-            }),
-        );
-        let choices = vec!["keep".to_string()];
-        record(
-            "question-cancel",
-            answer_from_permission_outcome(&acp::RequestPermissionOutcome::Cancelled, &choices)
-                .is_none(),
-        );
-        record(
-            "question-answer",
-            answer_from_permission_outcome(
-                &acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                    acp::PermissionOptionId::new("question-0"),
-                )),
-                &choices,
-            )
-            .as_deref()
-                == Some("keep"),
-        );
-        record(
-            "end-without-deltas",
-            should_emit_end_text(false, "reply") && !should_emit_end_text(false, ""),
-        );
-        record("end-after-deltas", !should_emit_end_text(true, "reply"));
-        let failure = agent_failure_error("completion gate: blocked");
-        let detail = failure
-            .data
-            .as_ref()
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        record("turn-failed", detail.contains("completion gate:"));
-        let menu = reasoning_effort_catalog_meta("anthropic/claude-opus-4-6");
-        let values = menu
-            .get("reasoningEfforts")
-            .and_then(|value| value.as_array())
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("value").and_then(|value| value.as_str()))
-                    .collect::<Vec<_>>()
-            });
-        record(
-            "effort-menu",
-            values.as_deref() == Some(&["low", "medium", "high", "xhigh", "max"][..]),
-        );
-        record(
-            "effort-high-budget",
-            effort_limits("high").is_some_and(|limits| {
-                limits.token == "high"
-                    && limits.thinking_budget == 16_384
-                    && limits.max_tool_rounds == 128
-                    && limits.max_tool_rounds < a3s_code_core::llm::TOOL_ROUND_SAFETY_CEILING
-            }),
-        );
-        record(
-            "effort-medium-no-guideline",
-            effort_guideline("medium").is_none(),
-        );
-
-        let total = covered.len() + missing.len();
-        let percent = covered.len() * 100 / total.max(1);
-        assert!(
-            percent >= 95,
-            "TUI session function coverage is {percent}% ({}/{}). Missing: {}",
-            covered.len(),
-            total,
-            missing.join(", ")
-        );
-    }
-}
+#[cfg(test)]
+#[path = "run_observation_agent_tests.rs"]
+mod run_observation_agent_tests;

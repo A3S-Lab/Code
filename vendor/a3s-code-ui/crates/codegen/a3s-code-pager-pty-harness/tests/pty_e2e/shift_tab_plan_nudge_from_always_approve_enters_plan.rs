@@ -22,7 +22,7 @@ async fn shift_tab_plan_nudge_from_always_approve_enters_plan() {
         env_refs,
         Some(content.home()),
     )
-    .expect("spawn pager in always-approve");
+    .expect("spawn pager in yolo");
 
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)

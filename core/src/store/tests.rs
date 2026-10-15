@@ -13,7 +13,11 @@ use crate::verification::VerificationReport;
 use base64::Engine as _;
 use tempfile::tempdir;
 
-fn encoded_file_path(root: &std::path::Path, category: &str, id: &str) -> std::path::PathBuf {
+pub(super) fn encoded_file_path(
+    root: &std::path::Path,
+    category: &str,
+    id: &str,
+) -> std::path::PathBuf {
     let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.as_bytes());
     root.join("v1")
         .join(category)
@@ -22,6 +26,7 @@ fn encoded_file_path(root: &std::path::Path, category: &str, id: &str) -> std::p
 
 fn create_test_session_data() -> SessionData {
     SessionData {
+        durable_source: None,
         id: "test-session-1".to_string(),
         config: SessionConfig {
             name: "Test Session".to_string(),
@@ -165,6 +170,8 @@ pub(crate) async fn create_test_snapshot() -> SessionSnapshotV1 {
 #[tokio::test]
 async fn snapshot_fork_rebinds_every_top_level_session_owner() {
     let mut snapshot = create_test_snapshot().await;
+    snapshot.session_review =
+        Some(crate::session_review::SessionReviewStoreV1::empty("test-session-1").unwrap());
     for record in &mut snapshot.run_records {
         record.snapshot.session_id = snapshot.session.id.clone();
     }
@@ -176,6 +183,10 @@ async fn snapshot_fork_rebinds_every_top_level_session_owner() {
 
     assert_eq!(fork.session.id, "fork-session");
     assert_eq!(fork.session.config.workspace, "/tmp/fork-workspace");
+    assert_eq!(
+        fork.session_review.as_ref().unwrap().session_id,
+        "fork-session"
+    );
     assert!(fork
         .run_records
         .iter()
@@ -190,6 +201,46 @@ async fn snapshot_fork_rebinds_every_top_level_session_owner() {
 // ========================================================================
 // FileSessionStore Tests
 // ========================================================================
+
+/// Conversation snapshots are sensitive local state: the store directory is
+/// tightened to 0700 on open (even when it pre-existed permissive) and the
+/// snapshot files land 0600.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_store_state_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = tempdir().unwrap();
+    let store_dir = parent.path().join("store");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let store = FileSessionStore::new(&store_dir).await.unwrap();
+    assert_eq!(
+        std::fs::metadata(&store_dir).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "a pre-existing permissive store directory must be tightened on open"
+    );
+    let snapshot = create_test_snapshot().await;
+    store.save_snapshot(&snapshot).await.unwrap();
+    let sessions_dir = store_dir.join("v1").join("sessions");
+    let mut saw_snapshot = false;
+    for entry in std::fs::read_dir(&sessions_dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            saw_snapshot = true;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "snapshot {} must be owner-only",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        saw_snapshot,
+        "no snapshot json found under {sessions_dir:?}"
+    );
+}
 
 #[cfg(unix)]
 #[tokio::test]
@@ -278,7 +329,10 @@ async fn file_store_commits_and_loads_one_complete_snapshot_generation() {
     let persisted_path = encoded_file_path(dir.path(), "sessions", "test-session-1");
     let persisted: serde_json::Value =
         serde_json::from_slice(&tokio::fs::read(&persisted_path).await.unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], SESSION_SNAPSHOT_SCHEMA_VERSION);
+    assert_eq!(
+        persisted["schema_version"], 1,
+        "unbound snapshots preserve the legacy wire version"
+    );
     assert_eq!(persisted["session"]["id"], "test-session-1");
     assert!(!dir.path().join("artifacts").exists());
     assert!(!dir.path().join("traces").exists());
@@ -1269,6 +1323,7 @@ fn sample_checkpoint(run_id: &str) -> crate::loop_checkpoint::LoopCheckpoint {
         session_id: "s-1".to_string(),
         capability_binding: None,
         standing_context_digest: None,
+        durable_source: None,
         turn: 2,
         messages: vec![Message::user("hi")],
         total_usage: TokenUsage::default(),

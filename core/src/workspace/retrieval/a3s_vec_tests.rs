@@ -38,17 +38,47 @@ fn parallel_tokenization_preserves_document_order() {
 
 #[test]
 fn rejects_invalid_or_duplicate_document_keys_before_engine_initialization() {
+    // Validation rejections are deterministic: every retry of the same
+    // snapshot reproduces them, so they must classify as Fatal.
+    for documents in [
+        vec![("".to_owned(), "text".to_owned())],
+        vec![("bad\0key".to_owned(), "text".to_owned())],
+        vec![
+            ("same".to_owned(), "first".to_owned()),
+            ("same".to_owned(), "second".to_owned()),
+        ],
+    ] {
+        match A3sVecLexicalIndex::build(documents) {
+            Err(error) => {
+                assert!(
+                    !error.retryable(),
+                    "validation rejection must be Fatal: {error}"
+                );
+                assert!(!error.to_string().is_empty());
+            }
+            Ok(_) => panic!("invalid document keys must fail closed"),
+        }
+    }
     assert!(matches!(
-        A3sVecLexicalIndex::build(vec![("".to_owned(), "text".to_owned())]),
-        Err(error) if error.contains("non-empty")
+        A3sVecLexicalIndex::build(vec![("".to_owned(), "text".to_owned())])
+            .err()
+            .map(|error| error.to_string()),
+        Some(message) if message.contains("non-empty")
     ));
     assert!(matches!(
-        A3sVecLexicalIndex::build(vec![("bad\0key".to_owned(), "text".to_owned())]),
-        Err(error) if error.contains("NUL")
+        A3sVecLexicalIndex::build(vec![("bad\0key".to_owned(), "text".to_owned())])
+            .err()
+            .map(|error| error.to_string()),
+        Some(message) if message.contains("NUL")
     ));
     assert!(matches!(
-        A3sVecLexicalIndex::build(vec![("same".to_owned(), "first".to_owned()), ("same".to_owned(), "second".to_owned())]),
-        Err(error) if error.contains("unique")
+        A3sVecLexicalIndex::build(vec![
+            ("same".to_owned(), "first".to_owned()),
+            ("same".to_owned(), "second".to_owned()),
+        ])
+        .err()
+        .map(|error| error.to_string()),
+        Some(message) if message.contains("unique")
     ));
 }
 
@@ -273,10 +303,11 @@ fn build_at_path_fails_when_the_parent_is_a_file() {
         result.is_err(),
         "create_dir_all must fail when the parent path is a file"
     );
-    assert!(
-        !result.err().unwrap().is_empty(),
-        "io failure must surface a message"
-    );
+    let error = result.err().expect("io failure");
+    // Environmental io failure: a later attempt may succeed, so the
+    // coordinator keeps it in the bounded-retry class.
+    assert!(error.retryable(), "io failure must stay retryable: {error}");
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]

@@ -32,7 +32,7 @@ pub struct CredentialSnapshot {
 #[async_trait::async_trait]
 pub trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static {
     /// Implementations should issue a cheap disk re-read (`AuthManager::refresh`) before snapshotting.
-    /// This lets callers see updates from sibling processes (`a3s-desktop`, `a3s login`).
+    /// This lets callers see updates from sibling processes (`a3s-work`, `a3s login`).
     /// The `token` field MUST mirror the bearer that `HttpAuth::apply` would send on the wire so 401-attribution prefixes match the actual request.
     fn snapshot(&self) -> CredentialSnapshot;
 

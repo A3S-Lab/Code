@@ -1,11 +1,17 @@
+#![cfg(test)]
+
 use std::sync::{Arc, Mutex};
 
 use super::*;
+
+mod source_carry;
+mod source_guard;
 
 struct RecordingCompactClient {
     reply: String,
     summary: String,
     prompts: Mutex<Vec<String>>,
+    streams: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -33,11 +39,20 @@ impl crate::llm::LlmClient for RecordingCompactClient {
 
     async fn complete_streaming(
         &self,
-        _messages: &[Message],
-        _system: Option<&str>,
+        messages: &[Message],
+        system: Option<&str>,
         _tools: &[crate::llm::ToolDefinition],
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+        self.streams.lock().unwrap().push(format!(
+            "{}\n{}",
+            system.unwrap_or_default(),
+            messages
+                .iter()
+                .map(Message::text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         let reply = self.reply.clone();
         tokio::spawn(async move {
@@ -45,7 +60,12 @@ impl crate::llm::LlmClient for RecordingCompactClient {
             let _ = tx
                 .send(StreamEvent::Done(LlmResponse {
                     message: Message::assistant(&reply),
-                    usage: TokenUsage::default(),
+                    usage: TokenUsage {
+                        prompt_tokens: 1024,
+                        completion_tokens: 1,
+                        total_tokens: 1025,
+                        ..Default::default()
+                    },
                     stop_reason: None,
                     token_logprobs: Vec::new(),
                     meta: None,
@@ -61,7 +81,7 @@ async fn finish_stream(session: &AgentSession, prompt: &str) {
     while events.recv().await.is_some() {}
     worker.await.expect("stream worker");
 }
-
+#[allow(clippy::await_holding_lock)] // serialized critical section; blocking is the point
 #[tokio::test]
 async fn compact_conversation_writes_a_summary_fact() {
     let workspace = tempfile::tempdir().unwrap();
@@ -71,6 +91,7 @@ async fn compact_conversation_writes_a_summary_fact() {
         reply: "noted".into(),
         summary: "## Goal\nship the auth fix\n\n## Current State\nauth middleware updated".into(),
         prompts: Mutex::new(Vec::new()),
+        streams: Mutex::new(Vec::new()),
     });
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent

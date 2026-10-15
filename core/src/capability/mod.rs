@@ -25,6 +25,7 @@ mod run_binding;
 mod runtime;
 mod scope;
 mod scope_error;
+mod scoped_tool;
 mod sdk_batch;
 mod set;
 mod source;
@@ -32,6 +33,11 @@ mod supervisor;
 mod transaction;
 mod ui_binding;
 mod value;
+mod workspace_access;
+
+#[cfg(test)]
+#[path = "selection_identity_tests.rs"]
+mod selection_identity_tests;
 
 pub use crate::mcp::McpBinding;
 pub(crate) use agent_execution::{
@@ -48,9 +54,10 @@ pub use error::CapabilitySetError;
 #[cfg(feature = "dynamic-workflow")]
 pub use flow_binding::FlowBinding;
 pub use id::{
-    CapabilityId, CapabilityKind, CapabilitySourceId, CodeCatalogGeneration, Sha256Digest,
-    UseCapabilityGeneration, UsePackageGeneration, MAX_CAPABILITY_IDENTIFIER_BYTES,
-    USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
+    CapabilityId, CapabilityKind, CapabilitySourceId, CodeCatalogGeneration,
+    ReconciledPackageGeneration, Sha256Digest, UseCapabilityGeneration, UsePackageGeneration,
+    MAX_CAPABILITY_IDENTIFIER_BYTES, USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
+    USE_SELECTION_CURSOR_SCHEMA,
 };
 pub use knowledge_surface_binding::{
     KnowledgeSurfaceBinding, KnowledgeSurfaceBindingError, KnowledgeSurfaceBindingSpec,
@@ -78,6 +85,7 @@ pub use scope::{
     Session, Subtask, Turn,
 };
 pub use scope_error::CapabilityScopeError;
+pub(crate) use scoped_tool::ScopedProjectedTool;
 pub use sdk_batch::{
     SdkCapabilityBatchError, SdkCapabilityBatchV1, SdkCapabilityCommitReceiptV1,
     SdkSkillCapabilityV1, SDK_CAPABILITY_BATCH_SCHEMA,
@@ -102,3 +110,6 @@ pub use ui_binding::{
     UI_DOCUMENT_SCHEMA,
 };
 pub use value::CapabilityValue;
+pub use workspace_access::{
+    WorkspaceOperation, WorkspaceOperationAccess, WorkspaceOperationBinding,
+};

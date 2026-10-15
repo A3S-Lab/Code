@@ -1177,7 +1177,7 @@ async fn persist_permission_mode_acp_notification_fires_once_on_best_effort() {
     let counter = spawn_fake_acp_agent(rx);
     let session_id = Some(acp::SessionId::new(Arc::from("test-session")));
     let result = persist_permission_mode_and_notify(
-            "always-approve",
+            "yolo",
             session_id,
             PermissionModePersist::BestEffort,
             tx,
@@ -1210,7 +1210,7 @@ async fn persist_permission_mode_acp_notification_gated_on_disk_for_with_rollbac
     let counter = spawn_fake_acp_agent(rx);
     let session_id = Some(acp::SessionId::new(Arc::from("test-session")));
     let result = persist_permission_mode_and_notify(
-            "always-approve",
+            "yolo",
             session_id,
             PermissionModePersist::WithRollback("ask"),
             tx,
@@ -1245,7 +1245,7 @@ async fn persist_permission_mode_no_session_id_suppresses_acp() {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let counter = spawn_fake_acp_agent(rx);
     let _result = persist_permission_mode_and_notify(
-            "always-approve",
+            "yolo",
             None,
             PermissionModePersist::BestEffort,
             tx,
@@ -1267,7 +1267,7 @@ async fn persist_permission_mode_best_effort_failure_returns_dedicated_variant()
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let _counter = spawn_fake_acp_agent(rx);
     let result = persist_permission_mode_and_notify(
-            "always-approve",
+            "yolo",
             None,
             PermissionModePersist::BestEffort,
             tx,
@@ -1276,7 +1276,7 @@ async fn persist_permission_mode_best_effort_failure_returns_dedicated_variant()
     match result {
         TaskResult::SettingPersisted { key, value } => {
             assert_eq!(key, "permission_mode");
-            assert_eq!(value, crate::settings::SettingValue::Enum("always-approve"));
+            assert_eq!(value, crate::settings::SettingValue::Enum("yolo"));
         }
         TaskResult::SettingPersistFailedBestEffort { key, error: _ } => {
             assert_eq!(
@@ -1305,7 +1305,7 @@ fn should_send_yolo_acp_with_rollback_suppresses_on_err() {
     assert!(
             !should_send_yolo_acp_notification(
                 &result,
-                PermissionModePersist::WithRollback("always-approve")
+                PermissionModePersist::WithRollback("yolo")
             ),
             "WithRollback + Err MUST suppress regardless of the prior canonical",
         );
@@ -1328,7 +1328,7 @@ fn should_send_yolo_acp_with_rollback_fires_on_ok() {
     assert!(
             should_send_yolo_acp_notification(
                 &ok,
-                PermissionModePersist::WithRollback("always-approve")
+                PermissionModePersist::WithRollback("yolo")
             ),
             "WithRollback + Ok fires regardless of the prior canonical",
         );
@@ -1357,12 +1357,12 @@ fn route_permission_mode_result_ok_returns_persisted() {
     let result = route_permission_mode_result(
         Ok(()),
         PermissionModePersist::WithRollback("ask"),
-        "always-approve",
+        "yolo",
     );
     match result {
         TaskResult::SettingPersisted { key, value } => {
             assert_eq!(key, "permission_mode");
-            assert_eq!(value, crate::settings::SettingValue::Enum("always-approve"));
+            assert_eq!(value, crate::settings::SettingValue::Enum("yolo"));
         }
         other => panic!("Ok must return SettingPersisted, got {other:?}"),
     }
@@ -1372,7 +1372,7 @@ fn route_permission_mode_result_err_with_rollback_off_routes_to_failed() {
     let result = route_permission_mode_result(
         Err("simulated".to_string()),
         PermissionModePersist::WithRollback("ask"),
-        "always-approve",
+        "yolo",
     );
     match result {
         TaskResult::SettingPersistFailed { key, rollback_value, error } => {
@@ -1389,7 +1389,7 @@ fn route_permission_mode_result_err_with_rollback_off_routes_to_failed() {
 fn route_permission_mode_result_err_with_rollback_on_routes_to_failed() {
     let result = route_permission_mode_result(
         Err("simulated".to_string()),
-        PermissionModePersist::WithRollback("always-approve"),
+        PermissionModePersist::WithRollback("yolo"),
         "ask",
     );
     match result {
@@ -1397,9 +1397,9 @@ fn route_permission_mode_result_err_with_rollback_on_routes_to_failed() {
             assert_eq!(key, "permission_mode");
             assert_eq!(
                     rollback_value,
-                    crate::settings::SettingValue::Enum("always-approve"),
-                    "prev_canonical='always-approve' must route to canonical \
-                     'always-approve' for rollback",
+                    crate::settings::SettingValue::Enum("yolo"),
+                    "prev_canonical='yolo' must route to canonical \
+                     'yolo' for rollback",
                 );
             assert_eq!(error, "simulated");
         }
@@ -1414,7 +1414,7 @@ fn route_permission_mode_result_err_with_rollback_default_routes_to_failed() {
     let result = route_permission_mode_result(
         Err("simulated".to_string()),
         PermissionModePersist::WithRollback("default"),
-        "always-approve",
+        "yolo",
     );
     match result {
         TaskResult::SettingPersistFailed { key, rollback_value, error } => {
@@ -1458,7 +1458,7 @@ fn route_permission_mode_result_err_best_effort_routes_to_dedicated_variant() {
     let result = route_permission_mode_result(
         Err("simulated".to_string()),
         PermissionModePersist::BestEffort,
-        "always-approve",
+        "yolo",
     );
     match result {
         TaskResult::SettingPersistFailedBestEffort { key, error } => {

@@ -112,6 +112,13 @@ fn has_sensitive_file_name(path: &Path) -> bool {
             | "id_dsa"
             | "id_ecdsa"
             | "id_ed25519"
+    ) || matches!(
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519"
     ) || ((name.starts_with(".env")
         || name.starts_with("credentials.")
         || name.starts_with("secrets."))
@@ -136,6 +143,7 @@ mod tests {
             "target/generated.rs",
             "node_modules/pkg/index.js",
             "keys/service.pem",
+            "id_rsa.md",
             "nested/secrets.json",
             "../outside.rs",
             "/absolute.rs",

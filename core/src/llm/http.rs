@@ -47,9 +47,15 @@ impl HttpClientError {
             // chain contains the word "timeout" on every platform. Preserve
             // the stable public diagnostic while retaining the retryable
             // Transport classification.
-            Self::transport(operation, format!("timed out: {error}"))
+            Self::transport(
+                operation,
+                format!("timed out: {}", render_error_chain(&error)),
+            )
         } else {
-            Self::transport(operation, error.to_string())
+            // `Display` on reqwest 0.12 stops at "error sending request".
+            // The "connection refused" text lives on the source chain, and
+            // without it a closed port is retried as a 503.
+            Self::transport(operation, render_error_chain(&error))
         }
     }
 
@@ -66,6 +72,23 @@ impl HttpClientError {
 
 /// True when the failure is a hard connectivity problem (reset, refused, DNS),
 /// not a transient mid-stream blip or request timeout.
+/// `Display` plus each `source`, capped so a cyclic chain cannot grow forever.
+fn render_error_chain(error: &dyn std::error::Error) -> String {
+    let mut rendered = error.to_string();
+    let mut source = error.source();
+    let mut depth = 0_u8;
+    while let Some(cause) = source {
+        if depth >= 8 {
+            break;
+        }
+        depth = depth.saturating_add(1);
+        rendered.push_str(": ");
+        rendered.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    rendered
+}
+
 pub(crate) fn is_hard_connect_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("connection reset")
@@ -155,6 +178,51 @@ fn maybe_record_metrics(record: HttpMetricsRecord) {
 /// Abstraction over HTTP POST requests for LLM API calls.
 ///
 /// Enables dependency injection for testing without hitting real HTTP endpoints.
+/// A fail-closed stand-in for an HTTP client that could not be built
+/// (e.g. TLS backend initialization failed at runtime — an
+/// environment-dependent failure, never a construction invariant). Every
+/// request through it names the reason instead of panicking the process:
+/// a session-start path must degrade to erroring calls, not die (a
+/// panic in the exec path kills colocated workloads).
+pub struct UnavailableHttpClient {
+    reason: String,
+}
+
+impl UnavailableHttpClient {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    fn refusal(&self) -> anyhow::Error {
+        anyhow::anyhow!("LLM HTTP client is unavailable: {}", self.reason)
+    }
+}
+
+#[async_trait]
+impl HttpClient for UnavailableHttpClient {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel_token: CancellationToken,
+    ) -> Result<HttpResponse> {
+        Err(self.refusal())
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
+        Err(self.refusal())
+    }
+}
+
 #[async_trait]
 pub trait HttpClient: Send + Sync {
     /// Make a POST request and return status + body
@@ -175,11 +243,33 @@ pub trait HttpClient: Send + Sync {
         body: &serde_json::Value,
         cancel_token: CancellationToken,
     ) -> Result<StreamingHttpResponse>;
+
+    /// POST a raw body and return the response stream.
+    ///
+    /// The default refuses. Clients that speak a framed protocol override it.
+    /// JSON `post_streaming` stays the path for chat-completions providers.
+    async fn post_bytes_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &[u8],
+        _cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
+        Err(anyhow::anyhow!(
+            "HTTP client does not support a raw streaming body"
+        ))
+    }
 }
 
 /// Default HTTP client backed by reqwest
 pub struct ReqwestHttpClient {
     client: reqwest::Client,
+    /// Total deadline for a non-streaming response body.
+    ///
+    /// Streaming does not use this. A live generation may run longer than
+    /// the non-streaming budget while bytes are still arriving. Silence on
+    /// that stream is bounded by [`stream_idle_timeout`].
+    request_timeout: Option<Duration>,
 }
 
 /// Maximum quiet time between chunks of a streaming response.
@@ -202,16 +292,59 @@ pub(crate) fn stream_idle_timeout() -> Duration {
     })
 }
 
+/// Maximum wait for response HEADERS on a streaming request.
+///
+/// SSE headers arrive before generation starts, so unlike the body there is
+/// no legitimate reason to wait minutes for them: a provider or proxy that
+/// accepts the connection but never answers must surface as a retryable
+/// failure instead of parking the model call (and the session) forever.
+/// The non-streaming `post` deliberately has no such bound — its headers
+/// only arrive after the full generation, which may legitimately take
+/// minutes. `A3S_CODE_LLM_STREAM_HEADERS_TIMEOUT_MS` overrides the default;
+/// `0` disables the bound entirely.
+pub(crate) fn stream_headers_timeout() -> Duration {
+    const DEFAULT_HEADERS_TIMEOUT_MS: u64 = 120_000;
+    let configured = env::var("A3S_CODE_LLM_STREAM_HEADERS_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let milliseconds = configured.unwrap_or(DEFAULT_HEADERS_TIMEOUT_MS);
+    Duration::from_millis(if milliseconds == 0 {
+        u64::MAX
+    } else {
+        milliseconds
+    })
+}
+
 impl ReqwestHttpClient {
     pub fn new() -> Self {
+        // Construction-level fallback, not an expect: the default builder
+        // fails on a malformed http_proxy/https_proxy env var or a TLS
+        // backend init error, which must not panic the process at client
+        // construction. The proxy env values are the usual cause and are
+        // optional — a bare no-proxy reqwest client still serves direct
+        // connections and surfaces any remaining failure per-request
+        // instead of aborting startup.
+        let client = build_reqwest_client(None, None).unwrap_or_else(|error| {
+            tracing::warn!(
+                error = %error,
+                "default HTTP client build failed (malformed proxy env or TLS init); falling back to a no-proxy client"
+            );
+            reqwest::Client::builder().no_proxy().build().unwrap_or_default()
+        });
         Self {
-            client: build_reqwest_client(None, None).expect("failed to build default HTTP client"),
+            client,
+            request_timeout: None,
         }
     }
 
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
+        // Do not install reqwest's total timeout. It covers the response
+        // body, so a streaming generation is cancelled at the same instant
+        // as a non-streaming call. Non-streaming `post` applies this
+        // duration itself. Streaming keeps the header and idle bounds.
         Ok(Self {
-            client: build_reqwest_client(Some(timeout), None)?,
+            client: build_reqwest_client(None, None)?,
+            request_timeout: Some(timeout),
         })
     }
 }
@@ -246,44 +379,58 @@ impl HttpClient for ReqwestHttpClient {
         }
         request = request.json(body);
 
-        let response = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                return Err(anyhow::Error::new(HttpClientError::cancelled("HTTP request")));
-            }
-            result = request.send() => {
-                result.map_err(|error| {
-                    anyhow::Error::new(HttpClientError::from_reqwest("HTTP request", error))
-                })?
-            }
+        let request_timeout = self.request_timeout;
+        let send_and_read = async move {
+            let response = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    return Err(anyhow::Error::new(HttpClientError::cancelled("HTTP request")));
+                }
+                result = request.send() => {
+                    result.map_err(|error| {
+                        anyhow::Error::new(HttpClientError::from_reqwest("HTTP request", error))
+                    })?
+                }
+            };
+
+            let status = response.status().as_u16();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(String::from);
+            let response_body = response.text().await.map_err(|error| {
+                anyhow::Error::new(HttpClientError::from_reqwest("HTTP response body", error))
+            })?;
+            let response_bytes = response_body.len() as u64;
+            let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+            maybe_record_metrics(HttpMetricsRecord {
+                url: url.to_string(),
+                method: "POST".to_string(),
+                status,
+                duration_ms,
+                request_bytes,
+                response_bytes,
+                streaming: false,
+            });
+
+            Ok(HttpResponse {
+                status,
+                body: response_body,
+                retry_after,
+            })
         };
-
-        let status = response.status().as_u16();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(String::from);
-        let response_body = response.text().await.map_err(|error| {
-            anyhow::Error::new(HttpClientError::from_reqwest("HTTP response body", error))
-        })?;
-        let response_bytes = response_body.len() as u64;
-        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-
-        maybe_record_metrics(HttpMetricsRecord {
-            url: url.to_string(),
-            method: "POST".to_string(),
-            status,
-            duration_ms,
-            request_bytes,
-            response_bytes,
-            streaming: false,
-        });
-
-        Ok(HttpResponse {
-            status,
-            body: response_body,
-            retry_after,
-        })
+        if let Some(timeout) = request_timeout {
+            match tokio::time::timeout(timeout, send_and_read).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(anyhow::Error::new(HttpClientError::transport(
+                    "HTTP request",
+                    format!("timed out: no response for {}ms", timeout.as_millis()),
+                ))),
+            }
+        } else {
+            send_and_read.await
+        }
     }
 
     async fn post_streaming(
@@ -303,10 +450,25 @@ impl HttpClient for ReqwestHttpClient {
         }
         request = request.json(body);
 
+        // SSE headers precede generation: bound how long a connected-but-
+        // silent provider may hold the request before the call fails
+        // retryable. Without this, a proxy that accepts TCP and never
+        // answers hangs the model call until the user cancels.
+        let headers_timeout = stream_headers_timeout();
+        let headers_timeout_ms = headers_timeout.as_millis();
         let response = tokio::select! {
+            biased;
             _ = cancel_token.cancelled() => {
                 return Err(anyhow::Error::new(HttpClientError::cancelled(
                     "HTTP streaming request",
+                )));
+            }
+            _ = tokio::time::sleep(headers_timeout) => {
+                return Err(anyhow::Error::new(HttpClientError::transport(
+                    "HTTP streaming request",
+                    format!(
+                        "timed out: no response headers for {headers_timeout_ms}ms"
+                    ),
                 )));
             }
             result = request.send() => {
@@ -378,6 +540,102 @@ impl HttpClient for ReqwestHttpClient {
             })
         }
     }
+
+    async fn post_bytes_streaming(
+        &self,
+        url: &str,
+        headers: Vec<(&str, &str)>,
+        body: &[u8],
+        cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
+        let start = std::time::Instant::now();
+        let request_bytes = body.len() as u64;
+        tracing::debug!("HTTP POST to {} ({} bytes)", url, request_bytes);
+
+        let mut request = self.client.post(url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        request = request.body(body.to_vec());
+
+        let headers_timeout = stream_headers_timeout();
+        let headers_timeout_ms = headers_timeout.as_millis();
+        let response = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return Err(anyhow::Error::new(HttpClientError::cancelled(
+                    "HTTP streaming request",
+                )));
+            }
+            _ = tokio::time::sleep(headers_timeout) => {
+                return Err(anyhow::Error::new(HttpClientError::transport(
+                    "HTTP streaming request",
+                    format!(
+                        "timed out: no response headers for {headers_timeout_ms}ms"
+                    ),
+                )));
+            }
+            result = request.send() => {
+                result.map_err(|error| {
+                    anyhow::Error::new(HttpClientError::from_reqwest(
+                        "HTTP streaming request",
+                        error,
+                    ))
+                })?
+            }
+        };
+
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(String::from);
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        maybe_record_metrics(HttpMetricsRecord {
+            url: url.to_string(),
+            method: "POST".to_string(),
+            status,
+            duration_ms,
+            request_bytes,
+            response_bytes: 0,
+            streaming: true,
+        });
+
+        if (200..300).contains(&status) {
+            let idle_timeout = stream_idle_timeout();
+            let idle_timeout_ms = idle_timeout.as_millis();
+            let raw = response.bytes_stream().map(|result| {
+                result.map_err(|error| {
+                    anyhow::Error::new(HttpClientError::from_reqwest("HTTP response stream", error))
+                })
+            });
+            let guarded = tokio_stream::StreamExt::timeout(Box::pin(raw), idle_timeout);
+            let byte_stream = guarded.map(move |item| match item {
+                Ok(Ok(chunk)) => Ok(chunk),
+                Ok(Err(error)) => Err(error),
+                Err(_elapsed) => Err(anyhow::Error::new(HttpClientError::transport(
+                    "HTTP response stream",
+                    format!("timed out: no stream data received for {idle_timeout_ms}ms"),
+                ))),
+            });
+            Ok(StreamingHttpResponse {
+                status,
+                retry_after,
+                byte_stream: Box::pin(byte_stream),
+                error_body: String::new(),
+            })
+        } else {
+            let error_body = response.text().await.unwrap_or_default();
+            let empty: futures::stream::Empty<Result<bytes::Bytes>> = futures::stream::empty();
+            Ok(StreamingHttpResponse {
+                status,
+                retry_after,
+                byte_stream: Box::pin(empty),
+                error_body,
+            })
+        }
+    }
 }
 
 /// Create a default HTTP client
@@ -402,6 +660,11 @@ pub(crate) fn build_reqwest_client(
     default_headers: Option<reqwest::header::HeaderMap>,
 ) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder().no_proxy();
+
+    // TCP+TLS connect only — no generation is involved, so a host (or proxy)
+    // that never completes the handshake must fail instead of hanging the
+    // request phase, which otherwise has no deadline.
+    builder = builder.connect_timeout(Duration::from_secs(30));
 
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
@@ -528,6 +791,39 @@ mod tests {
 
         let cancelled = anyhow::Error::new(HttpClientError::cancelled("stream request"));
         assert!(!is_retryable_http_failure(&cancelled));
+    }
+
+    #[tokio::test]
+    async fn connection_refused_is_not_retryable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("port").port();
+        drop(listener);
+        let client = {
+            let _guard = proxy_env_lock().lock().expect("proxy env lock");
+            clear_proxy_env();
+            ReqwestHttpClient::new()
+        };
+        let error = match client
+            .post(
+                &format!("http://127.0.0.1:{port}/v1/chat/completions"),
+                Vec::new(),
+                &serde_json::json!({"model": "x"}),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(_) => panic!("closed port must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.to_ascii_lowercase().contains("connection refused"),
+            "{message}"
+        );
+        assert!(
+            !is_retryable_http_failure(&error),
+            "a refused connection must not be retried: {message}"
+        );
     }
 
     #[test]
@@ -858,7 +1154,7 @@ mod tests {
         assert!(reqwest::NoProxy::from_env().is_some());
         clear_proxy_env();
     }
-
+    #[allow(clippy::await_holding_lock)] // serialized critical section; blocking is the point
     #[tokio::test]
     #[cfg(not(windows))]
     async fn test_post_streaming_surfaces_stalled_stream_as_timeout_error() {
@@ -919,5 +1215,104 @@ mod tests {
         unsafe {
             env::remove_var("A3S_CODE_LLM_STREAM_IDLE_TIMEOUT_MS");
         }
+    }
+
+    /// A provider that accepts the connection but never returns response
+    /// headers must fail retryable within the headers deadline — the shape
+    /// that previously parked the model call until the user cancelled.
+    #[allow(clippy::await_holding_lock)] // serialized critical section; blocking is the point
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_post_streaming_surfaces_silent_headers_as_timeout_error() {
+        let _guard = proxy_env_lock().lock().unwrap();
+        clear_proxy_env();
+        unsafe {
+            env::set_var("A3S_CODE_LLM_STREAM_HEADERS_TIMEOUT_MS", "150");
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Read the request, then hold the connection open without ever
+            // sending response headers — the silent-proxy shape.
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let client = ReqwestHttpClient::new();
+        let error = match client
+            .post_streaming(
+                &format!("http://{addr}/v1/messages"),
+                Vec::new(),
+                &serde_json::json!({"model": "test"}),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            Ok(_) => panic!("a silent proxy must fail within the headers deadline"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("timed out") && message.contains("150ms"),
+            "headers timeout must render as a retryable timeout, got: {message}"
+        );
+
+        server.abort();
+        unsafe {
+            env::remove_var("A3S_CODE_LLM_STREAM_HEADERS_TIMEOUT_MS");
+        }
+    }
+
+    /// A non-streaming request budget must not cancel a streaming body that
+    /// keeps sending bytes past that budget. Silence is a separate bound.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn streaming_body_survives_a_short_non_streaming_request_timeout() {
+        let _guard = proxy_env_lock().lock().unwrap();
+        clear_proxy_env();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 2048];
+            let _ = stream.read(&mut buf).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
+                .await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = stream.write_all(b"5\r\nworld\r\n0\r\n\r\n").await;
+        });
+
+        let client = ReqwestHttpClient::with_timeout(Duration::from_millis(80)).unwrap();
+        let response = client
+            .post_streaming(
+                &format!("http://{addr}/v1/chat/completions"),
+                Vec::new(),
+                &serde_json::json!({"model": "test"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+
+        let mut stream = response.byte_stream;
+        let mut body = Vec::new();
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("a live stream must not inherit the non-streaming deadline")
+            .transpose()
+            .expect("chunks stay readable past the non-streaming budget")
+        {
+            body.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("hello"), "{text}");
+        assert!(text.contains("world"), "{text}");
+        server.abort();
     }
 }

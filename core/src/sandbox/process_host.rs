@@ -63,6 +63,35 @@ impl ProcessHostBashSandbox {
     }
 }
 
+/// The shell binary was not started. No command process exists to observe.
+#[derive(Debug)]
+struct ProcessHostSpawnRefused {
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for ProcessHostSpawnRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "spawn process-host bash: {}", self.source)
+    }
+}
+
+impl std::error::Error for ProcessHostSpawnRefused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub(crate) fn process_host_spawn_refused(source: std::io::Error) -> anyhow::Error {
+    ProcessHostSpawnRefused { source }.into()
+}
+
+pub(crate) fn is_process_host_spawn_refused(error: &anyhow::Error) -> bool {
+    error.is::<ProcessHostSpawnRefused>()
+        || error
+            .chain()
+            .any(|cause| cause.is::<ProcessHostSpawnRefused>())
+}
+
 /// Bash invocation for one process-host command.
 ///
 /// The command text is not inspected. An absolute path outside `workspace`
@@ -137,7 +166,10 @@ impl BashSandbox for ProcessHostBashSandbox {
         if let Some(env) = request.env.as_deref() {
             shell.envs(env);
         }
-        let mut child = shell.spawn().context("spawn process-host bash")?;
+        // A spawn error means no child exists. Keep the I/O error typed so the
+        // bash receipt can settle it as a known refusal. A capture failure
+        // after this point stays untyped: the process may already have run.
+        let mut child = shell.spawn().map_err(process_host_spawn_refused)?;
         let captured =
             capture_process_output(&mut child, timeout_ms, request.output_observer.as_deref())
                 .await
@@ -458,8 +490,20 @@ mod tests {
         }
 
         async fn on_output_complete(&self, summary: &crate::workspace::CommandOutputSummary) {
-            *self.completed.lock().await = Some(summary.clone());
+            *self.completed.lock().await = Some(*summary);
         }
+    }
+
+    #[test]
+    fn a_spawn_error_stays_a_typed_pre_spawn_refusal() {
+        let error =
+            process_host_spawn_refused(std::io::Error::new(std::io::ErrorKind::NotFound, "bash"));
+        assert!(is_process_host_spawn_refused(&error));
+        let wrapped = anyhow::anyhow!("Sandbox bash execution failed: {error}");
+        assert!(
+            !is_process_host_spawn_refused(&wrapped),
+            "a string wrap must not be treated as proof the process never started"
+        );
     }
 
     #[test]

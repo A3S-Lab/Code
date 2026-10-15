@@ -223,7 +223,7 @@ pub struct TaskExecutor {
     /// Agent-scoped search admission shared with delegated child runs.
     search_bulkhead: Option<a3s_search::Bulkhead>,
     /// Agent-scoped headless retry allowance shared with delegated child runs.
-    search_retry_budget: Option<a3s_search::RetryBudget>,
+    search_retry_budget: Option<a3s_search::retry::RetryBudget>,
     /// Parent-session request flights shared with delegated child runs.
     search_request_coalescer: Option<a3s_search::SearchCoalescer>,
     /// Weak capability parents captured from the invoking Tool Turn.
@@ -390,7 +390,8 @@ impl TaskExecutor {
             .map(|run_id| format!("run:{run_id}"))
             .or_else(|| ctx.session_id.as_deref().map(|id| format!("session:{id}")));
         if ctx.has_run_governance() {
-            scoped.parent_context = scoped.parent_context.take().map(|parent| {
+            scoped.parent_context = scoped.parent_context.take().map(|mut parent| {
+                parent.work_policy = ctx.run_work_policy.clone();
                 parent.with_run_governance(
                     ctx.run_permission_checker(),
                     ctx.run_confirmation_manager(),
@@ -653,16 +654,49 @@ impl TaskExecutor {
         capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
         parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
     ) -> Result<TaskResult> {
-        // Background callers receive the task id before this future starts.
-        // Register immediately so targeted cancellation also interrupts time
-        // spent waiting in the global scheduler.
-        if params.background {
+        // Register the canceller immediately for BOTH modes: an Interrupt
+        // aimed at a foreground task must reach it while it still waits on
+        // the scheduler lease and builds its child context — the same
+        // window background tasks already closed. Every early-exit error
+        // below clears the entry (a stale canceller would pin a dead task
+        // id); once the run starts, its own completion paths own it.
+        if let Some(ref tracker) = self.subagent_tracker {
+            tracker
+                .register_canceller(&task_id, cancel_token.clone())
+                .await;
+        }
+        let result = self
+            .execute_registered_task_in_scope(
+                task_id.clone(),
+                params,
+                event_tx,
+                parent_session_id,
+                emit_start,
+                cancel_token,
+                capability_runtime,
+                parallel_lifecycle,
+            )
+            .await;
+        if result.is_err() {
             if let Some(ref tracker) = self.subagent_tracker {
-                tracker
-                    .register_canceller(&task_id, cancel_token.clone())
-                    .await;
+                tracker.clear_canceller(&task_id).await;
             }
         }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_registered_task_in_scope(
+        &self,
+        task_id: String,
+        params: TaskParams,
+        event_tx: Option<broadcast::Sender<AgentEvent>>,
+        parent_session_id: Option<&str>,
+        emit_start: bool,
+        cancel_token: CancellationToken,
+        capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
+        parallel_lifecycle: Option<Arc<ParallelTaskLifecycle>>,
+    ) -> Result<TaskResult> {
         let execution_identity =
             if (params.background || self.schedule_foreground) && self.task_scheduler.is_some() {
                 let mut identity_spec = AgentStepSpec::new(
@@ -875,6 +909,18 @@ impl TaskExecutor {
                 anyhow::bail!("Operation cancelled before child execution");
             }
             for wrapper in binding.projected_tools() {
+                let wrapper = if let Some(runtime) = &capability_runtime {
+                    let Some((id, digest)) = runtime.projected_identity(
+                        crate::capability::CapabilityKind::Mcp,
+                        binding.server_name(),
+                    )?
+                    else {
+                        continue;
+                    };
+                    crate::capability::ScopedProjectedTool::bind(wrapper, id, digest)
+                } else {
+                    wrapper
+                };
                 child_executor.register_dynamic_tool(wrapper);
             }
         }
@@ -897,6 +943,20 @@ impl TaskExecutor {
             tools: child_executor.definitions(),
             ..AgentConfig::default()
         };
+        // Under a host work policy, review and audit are read-only: the read-heavy
+        // review checks narrow to the explicit allowlist (no shell, write or delegation).
+        if agent.name == "review"
+            && self
+                .parent_context
+                .as_ref()
+                .is_some_and(|parent| parent.work_policy.is_some())
+        {
+            let read_only =
+                crate::permissions::specialty_permission_policy(crate::prompts::AgentStyle::Plan)
+                    .ok_or_else(|| anyhow::anyhow!("read-only review policy is unavailable"))?;
+            child_config.permission_checker = Some(Arc::new(read_only.clone()));
+            child_config.permission_policy = Some(read_only);
+        }
         agent.apply_to(&mut child_config);
         if let Some(ref parent_ctx) = self.parent_context {
             parent_ctx.apply_to(&mut child_config);
@@ -981,21 +1041,16 @@ impl TaskExecutor {
         let child_event_tx = Some(mpsc_tx);
         let child_llm_event_tx = child_event_tx.clone();
 
-        // Register a CancellationToken with the tracker (if shared) so the
-        // parent session's `cancel_subagent_task` can interrupt this run.
-        if !params.background {
-            if let Some(ref tracker) = self.subagent_tracker {
-                tracker
-                    .register_canceller(&task_id, cancel_token.clone())
-                    .await;
-            }
-        }
-
         let structured_prompt = output_schema
             .as_ref()
             .filter(|_| !tool_free)
             .map(|schema| structured_task_prompt(&params.prompt, schema));
         let execution_prompt = structured_prompt.as_deref().unwrap_or(&params.prompt);
+        let tool_free_system = if agent_loop.work_policy().is_some() {
+            Some(agent_loop.admitted_system_prompt())
+        } else {
+            tool_free_system
+        };
 
         let mut structured = None;
         let mut child_completion = crate::harness_loop::CompletionTerminal::Narrative;
@@ -1096,6 +1151,7 @@ impl TaskExecutor {
                     let coercion = Self::coerce_to_schema(
                         &*llm_client,
                         &output,
+                        agent_loop.work_policy().and(tool_free_system.as_deref()),
                         schema.clone(),
                         operation.cancellation(),
                     )

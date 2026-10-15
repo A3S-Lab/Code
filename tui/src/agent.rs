@@ -52,17 +52,8 @@ impl PermissionMode {
         }
     }
 
-    fn posture_name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-            Self::Auto => "auto",
-            Self::Yolo => "always-approve",
-        }
-    }
-
     fn policy(self) -> PermissionPolicy {
-        a3s_code_core::permissions::policy_for_posture(self.posture_name())
+        a3s_code_core::permissions::policy_for_posture(self.as_str())
     }
 }
 
@@ -83,11 +74,25 @@ pub struct CodeAgentAdapter {
     admitted: Option<PermissionMode>,
     responder: Option<Arc<dyn LlmClient>>,
     session: Option<AgentSession>,
+    /// Fact-log / durable-transcript identity. `None` keeps the
+    /// scaffold default (`tui-turn`); `--resume <id>` sets it so the
+    /// CLI's documented resume path lands on the requested thread
+    /// (CLI issue #149: the flag was parsed by nobody).
+    session_id: Option<String>,
 }
 
 impl CodeAgentAdapter {
     /// Build from the same ACL layer stack `a3s code` merges.
     pub async fn open(layers: LaunchLayers) -> anyhow::Result<Self> {
+        Self::open_with_session(layers, None).await
+    }
+
+    /// `session_id` carries `--resume <id>`; `None` is the scaffold's
+    /// default thread.
+    pub async fn open_with_session(
+        layers: LaunchLayers,
+        session_id: Option<String>,
+    ) -> anyhow::Result<Self> {
         let merged = merge_launch_layers(&layers).map_err(anyhow::Error::msg)?;
         Ok(Self {
             layers,
@@ -96,6 +101,7 @@ impl CodeAgentAdapter {
             admitted: None,
             responder: None,
             session: None,
+            session_id,
         })
     }
 
@@ -140,6 +146,11 @@ impl CodeAgentAdapter {
                 .context("Agent::from_config")?;
             let posture = self.permission;
             let mut options = SessionOptions::new()
+                .with_session_id(
+                    self.session_id
+                        .as_deref()
+                        .unwrap_or(crate::session::DEFAULT_SESSION_ID),
+                )
                 .with_model(self.merged.model_id.clone())
                 .with_planning_mode(posture.planning_mode())
                 .with_permission_policy(posture.policy())
@@ -161,9 +172,13 @@ impl CodeAgentAdapter {
             self.session = Some(session);
         } else if self.admitted != Some(self.permission) {
             let posture = self.permission;
-            let session = self.session.as_ref().expect("session present");
+            // The first branch admits the session before any posture change.
+            let session = match self.session.as_ref() {
+                Some(session) => session,
+                None => unreachable!("session is admitted by the branch above"),
+            };
             session
-                .set_permission_posture(posture.posture_name())
+                .set_permission_posture(posture.as_str())
                 .map_err(|error| anyhow::anyhow!("{error}"))
                 .context("set_permission_posture")?;
             session

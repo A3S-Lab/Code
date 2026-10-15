@@ -4110,10 +4110,10 @@
         use crate::app::actions::PermissionLabel;
         let theme = Theme::current();
         let cases = [
-            (Some("plan"), PermissionLabel::AlwaysApprove, vec!["plan", "always-approve"]),
+            (Some("plan"), PermissionLabel::AlwaysApprove, vec!["plan", "yolo"]),
             (Some("plan"), PermissionLabel::Auto, vec!["plan", "auto"]),
             (Some("plan approval"), PermissionLabel::Ask, vec!["plan approval"]),
-            (None, PermissionLabel::AlwaysApprove, vec!["always-approve"]),
+            (None, PermissionLabel::AlwaysApprove, vec!["yolo"]),
             (None, PermissionLabel::Auto, vec!["auto"]),
             (None, PermissionLabel::Ask, vec![]),
         ];

@@ -3,6 +3,20 @@
 use super::*;
 use a3s_code_core::config::CodeConfig as RustCodeConfig;
 
+mod sampling;
+
+/// Host-selected MCP definition. The transport object follows the Core MCP
+/// wire contract; unsupported transport kinds fail during normalization.
+#[napi(object)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub transport: serde_json::Value,
+    pub enabled: Option<bool>,
+    pub env: Option<std::collections::HashMap<String, String>>,
+    pub oauth: Option<serde_json::Value>,
+    pub tool_timeout_secs: Option<f64>,
+}
+
 // ============================================================================
 // Agent
 // ============================================================================
@@ -103,6 +117,63 @@ impl Agent {
                 error: entry.error,
             })
             .collect())
+    }
+
+    /// Registered global MCP definitions, including host-supplied credentials.
+    #[napi(ts_return_type = "Promise<McpServerConfig[]>")]
+    pub async fn global_mcp_configs(&self) -> napi::Result<Vec<McpServerConfig>> {
+        self.inner
+            .global_mcp_configs()
+            .await
+            .into_iter()
+            .map(|config| {
+                if config.tool_timeout_secs > 9_007_199_254_740_991 {
+                    return Err(napi::Error::from_reason(
+                        "MCP tool timeout exceeds a JavaScript safe integer",
+                    ));
+                }
+                Ok(McpServerConfig {
+                    name: config.name,
+                    transport: serde_json::to_value(config.transport)
+                        .map_err(|error| napi::Error::from_reason(error.to_string()))?,
+                    enabled: Some(config.enabled),
+                    env: Some(config.env),
+                    oauth: config
+                        .oauth
+                        .map(serde_json::to_value)
+                        .transpose()
+                        .map_err(|error| napi::Error::from_reason(error.to_string()))?,
+                    tool_timeout_secs: Some(config.tool_timeout_secs as f64),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether the host armed sampling for subsequently connected servers.
+    #[napi]
+    pub async fn has_sampling_handler_factory(&self) -> bool {
+        self.inner.has_sampling_handler_factory().await
+    }
+
+    /// Opt into sampling on subsequently connected servers. The callback gets
+    /// the exact server name and MCP request and returns an MCP result object.
+    /// The host owns consent and model selection. Throws, rejection and timeout
+    /// refuse the request; unset factories keep Core's default refusal.
+    #[napi(
+        ts_args_type = "handler: (serverName: string, params: any) => Promise<Record<string, unknown>>, timeoutMs?: number"
+    )]
+    pub fn set_sampling_handler_factory(
+        &self,
+        env: Env,
+        handler: napi::JsFunction,
+        timeout_ms: Option<u32>,
+    ) -> napi::Result<()> {
+        let factory = sampling::factory(&env, handler, timeout_ms)?;
+        // This setter only stores a Rust closure. It never dispatches a JS
+        // callback while the JS thread waits for the short Core lock update.
+        get_runtime()
+            .block_on(self.inner.set_sampling_handler_factory(factory))?
+            .map_err(node_code_error)
     }
 
     /// Return current occupancy of the priority scheduler shared by every
@@ -210,6 +281,29 @@ impl Agent {
         let agent = Arc::clone(&self.inner);
         let session = get_runtime()
             .spawn(async move { agent.resume_session_async(&session_id, opts).await })?
+            .await
+            .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
+            .map_err(node_code_error)?;
+        Ok(Session {
+            inner: Arc::new(session),
+        })
+    }
+
+    /// Fork a saved `SessionSnapshotV1` into a new session with fresh host options.
+    /// An admitted source work policy must be supplied unchanged; source Goal facts stay at the source.
+    #[napi]
+    pub async fn fork_session_async(
+        &self,
+        snapshot: serde_json::Value,
+        workspace: String,
+        options: SessionOptions,
+    ) -> napi::Result<Session> {
+        let snapshot: a3s_code_core::store::SessionSnapshotV1 = serde_json::from_value(snapshot)
+            .map_err(|e| napi::Error::from_reason(format!("invalid session snapshot: {e}")))?;
+        let opts = js_session_options_to_rust(Some(options))?;
+        let agent = Arc::clone(&self.inner);
+        let session = get_runtime()
+            .spawn(async move { agent.fork_session_async(snapshot, workspace, opts).await })?
             .await
             .map_err(|e| napi::Error::from_reason(format!("Task join error: {e}")))?
             .map_err(node_code_error)?;

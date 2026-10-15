@@ -23,6 +23,27 @@ fn stream_interruption_retry_delay(retry_index: u32) -> Duration {
     RetryConfig::default().delay_for_attempt(retry_index)
 }
 
+/// How long one model call may block before the turn gives up.
+///
+/// Streaming has no provider wall clock: a generation that is still sending
+/// bytes is healthy, and the HTTP idle gap is what notices silence. The
+/// run's remaining budget still applies. A non-streaming call receives the
+/// whole body at once, so the provider timeout is its total deadline and
+/// the tighter of the two wins.
+pub(super) fn llm_call_wait(
+    streaming: bool,
+    provider_timeout: Option<Duration>,
+    run_remaining: Option<Duration>,
+) -> Option<Duration> {
+    let provider = if streaming { None } else { provider_timeout };
+    match (provider, run_remaining) {
+        (Some(provider), Some(run)) => Some(provider.min(run)),
+        (Some(provider), None) => Some(provider),
+        (None, Some(run)) => Some(run),
+        (None, None) => None,
+    }
+}
+
 pub(super) struct LlmTurnOutput {
     pub(super) turn: usize,
     pub(super) response: LlmResponse,
@@ -427,20 +448,21 @@ impl AgentLoop {
             let elapsed_ms = request.execution_start.elapsed().as_millis() as u64;
             Duration::from_millis(max_time_ms.saturating_sub(elapsed_ms))
         });
-        let timeout = match (provider_timeout, run_timeout) {
-            (Some(provider), Some(run)) => Some(provider.min(run)),
-            (Some(provider), None) => Some(provider),
-            (None, Some(run)) => Some(run),
-            (None, None) => None,
-        };
+        // A streaming generation stays open while the provider is still
+        // sending bytes. The HTTP idle gap bounds silence. Applying the
+        // provider API timeout as a wall clock here cancels that live
+        // stream. A non-streaming call has no bytes until the body
+        // finishes, so the same timeout remains its total deadline.
+        let timeout = llm_call_wait(request.event_tx.is_some(), provider_timeout, run_timeout);
         let Some(timeout) = timeout else {
             return call.await;
         };
         // When the effective wait is the run budget (alone or tighter than the
         // provider timeout), classify as an execution timeout even if the timer
         // fires a millisecond early (elapsed_ms < limit).
-        let bounded_by_run_deadline =
-            run_timeout.is_some_and(|run| provider_timeout.is_none_or(|provider| run <= provider));
+        let bounded_by_run_deadline = request.event_tx.is_some()
+            || run_timeout
+                .is_some_and(|run| provider_timeout.is_none_or(|provider| run <= provider));
 
         if timeout.is_zero() {
             attempt_cancel.cancel();
@@ -631,6 +653,7 @@ impl AgentLoop {
                     &compaction_client,
                     compaction_budget,
                     None,
+                    self.config.durable_source.as_ref(),
                 ),
             ) => {
                 match result {

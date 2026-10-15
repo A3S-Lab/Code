@@ -2100,6 +2100,7 @@ pub(crate) mod test_fixtures {
             bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope: None,
+            question: None,
             title: String::new(),
             description: vec![],
             args_expanded: false,

@@ -777,7 +777,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            plan.affected_step_ids_for_findings(&[finding.clone()])
+            plan.affected_step_ids_for_findings(std::slice::from_ref(&finding))
                 .unwrap(),
             vec!["analyze".to_owned(), "report".to_owned()]
         );

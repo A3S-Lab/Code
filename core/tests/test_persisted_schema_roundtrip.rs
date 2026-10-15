@@ -500,6 +500,7 @@ fn gen_loop_checkpoint(rng: &mut Rng) -> LoopCheckpoint {
         session_id: rng.string(),
         capability_binding: None,
         standing_context_digest: None,
+        durable_source: None,
         turn: rng.usize_below(1000),
         messages: (0..msg_n).map(|_| gen_message(rng)).collect(),
         total_usage: gen_token_usage(rng),
@@ -586,6 +587,7 @@ fn gen_session_data(rng: &mut Rng) -> SessionData {
         ..Default::default()
     };
     SessionData {
+        durable_source: None,
         id: rng.string(),
         config,
         state,
@@ -953,6 +955,7 @@ fn sample_checkpoint(run_id: &str, version: u32) -> LoopCheckpoint {
         session_id: "s".to_string(),
         capability_binding: None,
         standing_context_digest: None,
+        durable_source: None,
         turn: 1,
         messages: vec![Message::user("hi")],
         total_usage: TokenUsage::default(),

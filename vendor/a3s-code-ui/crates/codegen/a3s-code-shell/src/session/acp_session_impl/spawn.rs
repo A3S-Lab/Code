@@ -398,7 +398,7 @@ pub(crate) async fn spawn_session_actor(
                 tracing::warn!(
                     reason,
                     dropped = dropped_catchalls.len(),
-                    "CLI --allow catch-all ignored: always-approve disabled by managed policy"
+                    "CLI --allow catch-all ignored: yolo disabled by managed policy"
                 );
                 if startup_hints.non_interactive {
                     eprintln!("grok: --allow catch-all ignored: {reason}");

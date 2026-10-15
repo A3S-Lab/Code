@@ -1783,7 +1783,7 @@ mod tests {
             ),
             ClassifierVerdict::Allow
         );
-        // Unknown bash must not silently allow: auto mode is not an always-approve mode
+        // Unknown bash must not silently allow: auto mode is not an yolo mode
         assert_eq!(
             HeuristicPermissionClassifier::classify_sync(
                 "run_terminal_command",

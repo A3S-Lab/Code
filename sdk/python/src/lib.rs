@@ -85,7 +85,7 @@ const MEMORY_UNAVAILABLE_MESSAGE: &str =
     "Memory unavailable for this session; check session init_warning";
 
 fn py_code_error(error: a3s_code_core::CodeError) -> PyErr {
-    let code = error.code();
+    let code = error.runtime_code();
     py_error_with_code(code, error.to_string())
 }
 
@@ -435,6 +435,9 @@ mod session_queue_api;
 mod session_capabilities;
 
 mod session_host_contract;
+mod session_goal;
+mod session_options_release;
+mod session_release_contract;
 
 // ============================================================================
 // Hook Helpers

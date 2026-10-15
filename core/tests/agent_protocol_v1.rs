@@ -256,7 +256,7 @@ fn from_run_event_bounds_oversized_tool_end_instead_of_failing() {
         },
     };
 
-    assert!(
+    const _: () = assert!(
         AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES < MAX_OUTPUT_SIZE,
         "protocol payload bound must stay below tool output max so this projection path stays necessary"
     );

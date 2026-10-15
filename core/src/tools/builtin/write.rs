@@ -218,7 +218,14 @@ impl Tool for WriteTool {
             .ok();
 
         let path_for_write = workspace_path.clone();
-        let content_for_write = content.to_string();
+        // An LF body from the model must not flip an existing CRLF file to LF,
+        // and a CRLF body must not flip an LF file. Mixed endings are written
+        // unchanged. Append stays a raw byte protocol.
+        let content_for_write = match before_content.as_deref() {
+            Some(existing) => crate::text::preserve_newline_style(existing, content).into_owned(),
+            None => content.to_string(),
+        };
+        let written = content_for_write.clone();
         let newly_acquired = match begin_write_claim(ctx, file_path) {
             Ok(acquired) => acquired,
             Err(output) => return Ok(output),
@@ -226,7 +233,7 @@ impl Tool for WriteTool {
         match ctx
             .workspace_services
             .run_with_timeout("write_text", async move {
-                fs.write_text(&path_for_write, &content_for_write).await
+                fs.write_text(&path_for_write, &written).await
             })
             .await
         {
@@ -239,7 +246,10 @@ impl Tool for WriteTool {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("file_path".to_string(), serde_json::json!(file_path));
                 metadata.insert("created".to_string(), serde_json::json!(created));
-                metadata.insert("after".to_string(), serde_json::json!(content));
+                metadata.insert(
+                    "after".to_string(),
+                    serde_json::json!(content_for_write),
+                );
                 if let Some(before) = before_content {
                     metadata.insert("before".to_string(), serde_json::json!(before));
                 }
@@ -428,6 +438,53 @@ mod tests {
         );
         let content = std::fs::read_to_string(temp.path().join("existing.txt")).unwrap();
         assert_eq!(content, "new");
+    }
+
+    #[tokio::test]
+    async fn overwrite_keeps_an_existing_crlf_file_crlf() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("win.txt"), "alpha\r\nbeta\r\n").unwrap();
+        let tool = WriteTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-crlf");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "win.txt",
+                    "content": "alpha\ngamma\n"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        let content = std::fs::read_to_string(temp.path().join("win.txt")).unwrap();
+        assert_eq!(content, "alpha\r\ngamma\r\n");
+        crate::external_observation::release_session("write-crlf");
+    }
+
+    #[tokio::test]
+    async fn new_file_keeps_the_authored_line_ending() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = WriteTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf()).with_session_id("write-lf");
+
+        let result = tool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "new.txt",
+                    "content": "alpha\nbeta\n"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.content);
+        let content = std::fs::read_to_string(temp.path().join("new.txt")).unwrap();
+        assert_eq!(content, "alpha\nbeta\n");
+        crate::external_observation::release_session("write-lf");
     }
 
     #[tokio::test]

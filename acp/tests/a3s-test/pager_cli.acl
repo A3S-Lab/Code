@@ -1,0 +1,32 @@
+suite "shipped-pager-cli" {
+    version = 1
+
+    scenario "advertise-the-actual-launch-flags" {
+        surface = "tui"
+        timeout_ms = 10000
+
+        wait "help" {
+            text = "A3S Code TUI"
+        }
+
+        expect "workspace-flag" {
+            text = "--cwd"
+        }
+
+        expect "model-flag" {
+            text = "--model"
+        }
+
+        expect "resume-flag" {
+            text = "--resume"
+        }
+
+        expect "continue-flag" {
+            text = "--continue"
+        }
+
+        terminal_recording "record-help" {
+            path = "terminal/help.vt"
+        }
+    }
+}

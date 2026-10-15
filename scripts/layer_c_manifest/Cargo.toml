@@ -1,0 +1,12 @@
+[package]
+name = "a3s-code-layer-c-manifest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This build-time reader is independent of the product workspace, so a broken
+# product feature cannot prevent the runner from issuing every suite receipt.
+[workspace]
+
+[dependencies]
+a3s-acl = { path = "../../../../crates/acl" }

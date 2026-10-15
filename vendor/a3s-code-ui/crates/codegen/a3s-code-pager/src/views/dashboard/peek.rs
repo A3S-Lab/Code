@@ -95,10 +95,10 @@ pub struct PeekPanelState {
     /// Peeked agent's current model display name, painted on the box's bottom border (mirrors the dispatch box's config badge).
     /// `None` when unknown. Set by the render-time refresh from the live agent, not carried in [`PeekFields`].
     pub model_name: Option<String>,
-    /// Whether the peeked agent runs in always-approve (yolo) mode.
-    /// Shown as an `always-approve` flag next to the model on the bottom border, the same signal the dashboard row badge carried.
+    /// Whether the peeked agent runs in yolo (yolo) mode.
+    /// Shown as an `yolo` flag next to the model on the bottom border, the same signal the dashboard row badge carried.
     pub auto_approve: bool,
-    /// Whether the peeked agent is in Auto (LLM classifier) mode. Shown as an `auto` flag (mutually exclusive with `always-approve`; yolo wins).
+    /// Whether the peeked agent is in Auto (LLM classifier) mode. Shown as an `auto` flag (mutually exclusive with `yolo`; yolo wins).
     pub auto: bool,
     /// Session-mode flag on the bottom border (`plan`, `ask`). `None` in the default mode.
     pub mode_label: Option<&'static str>,
@@ -340,7 +340,7 @@ pub struct PeekRenderResult {
 }
 
 /// Paint the peeked agent's model and mode flags (plan, then permission) onto the peek box's **bottom border**.
-/// Reuses the shared prompt info-line renderer so its style and position match the dispatch box's config badge (`╰──model · plan · always-approve──╯`).
+/// Reuses the shared prompt info-line renderer so its style and position match the dispatch box's config badge (`╰──model · plan · yolo──╯`).
 /// No-op when the box is too small or there's nothing to show. The badge follows the reply input's focus dimming (`panel.focused`).
 fn paint_peek_config_badge(
     buf: &mut Buffer,
@@ -421,7 +421,7 @@ pub fn render_peek_panel(
         .border_style(Style::default().fg(border_fg).bg(theme.bg_base));
     let frame_inner = block.inner(area);
     block.render(area, buf);
-    // Bottom-right model and always-approve indicator on the box's bottom border.
+    // Bottom-right model and yolo indicator on the box's bottom border.
     paint_peek_config_badge(buf, area, theme, panel, reply, multiline);
 
     // Record badge on the top border while the mic is live
@@ -1034,7 +1034,7 @@ mod tests {
         );
     }
 
-    /// The peeked agent's model and always-approve flag render on the box's bottom border (the same config-badge slot the dispatch box uses).
+    /// The peeked agent's model and yolo flag render on the box's bottom border (the same config-badge slot the dispatch box uses).
     /// They render in both summary mode and pending-question (approval) mode.
     #[test]
     fn render_peek_shows_model_and_auto_approve_on_bottom_border() {
@@ -1063,7 +1063,7 @@ mod tests {
                 .collect()
         };
 
-        // Summary mode: model and always-approve on the bottom border
+        // Summary mode: model and yolo on the bottom border
         let mut panel =
             PeekPanelState::new(DashboardRowId::TopLevel(AgentId(0)), fields("Response"));
         panel.model_name = Some("A3S Code 4 Fast".to_string());
@@ -1074,8 +1074,8 @@ mod tests {
             "model on bottom border: {bottom:?}"
         );
         assert!(
-            bottom.contains("always-approve"),
-            "always-approve flag: {bottom:?}"
+            bottom.contains("yolo"),
+            "yolo flag: {bottom:?}"
         );
 
         // Pending-question (approval) mode: badge still painted
@@ -1094,14 +1094,14 @@ mod tests {
             "model shows in question/approval mode: {qbottom:?}",
         );
 
-        // No always-approve flag when the agent isn't in yolo mode.
+        // No yolo flag when the agent isn't in yolo mode.
         let mut plain =
             PeekPanelState::new(DashboardRowId::TopLevel(AgentId(0)), fields("Response"));
         plain.model_name = Some("A3S Code 4 Fast".to_string());
         plain.auto_approve = false;
         let plain_bottom = badge_row(&plain, 6);
         assert!(
-            !plain_bottom.contains("always-approve"),
+            !plain_bottom.contains("yolo"),
             "no flag without yolo: {plain_bottom:?}",
         );
 
@@ -1120,8 +1120,8 @@ mod tests {
         planp.auto = true;
         let plan_yolo_bottom = badge_row(&planp, 6);
         assert!(
-            plan_yolo_bottom.contains("A3S Code 4 Fast · plan · always-approve"),
-            "plan must not hide always-approve: {plan_yolo_bottom:?}",
+            plan_yolo_bottom.contains("A3S Code 4 Fast · plan · yolo"),
+            "plan must not hide yolo: {plan_yolo_bottom:?}",
         );
 
         planp.auto_approve = false;
@@ -1135,8 +1135,8 @@ mod tests {
         planp.auto_approve = true;
         let yolo_bottom = badge_row(&planp, 6);
         assert!(
-            yolo_bottom.contains("always-approve") && !yolo_bottom.contains("auto"),
-            "always-approve wins over auto: {yolo_bottom:?}",
+            yolo_bottom.contains("yolo") && !yolo_bottom.contains("auto"),
+            "yolo wins over auto: {yolo_bottom:?}",
         );
     }
 

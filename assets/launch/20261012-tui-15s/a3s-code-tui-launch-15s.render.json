@@ -1,0 +1,33 @@
+{
+ "comp": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-15s/film.html",
+ "fps": 30,
+ "scale": 1,
+ "size": [
+  1920,
+  1080
+ ],
+ "shutter": 180.0,
+ "samples": "adaptive",
+ "gap_px": 6.0,
+ "samples_per_moving_frame": {
+  "4": 153,
+  "5": 4,
+  "7": 15,
+  "8": 2,
+  "10": 1,
+  "11": 2,
+  "14": 2,
+  "15": 1,
+  "16": 1,
+  "22": 1,
+  "29": 2,
+  "48": 1
+ },
+ "workers": 8,
+ "frames": 450,
+ "still_frames": 265,
+ "cut_frames": 37,
+ "captures": 1502,
+ "seconds": 13.9,
+ "final": false
+}

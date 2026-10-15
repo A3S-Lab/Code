@@ -439,6 +439,7 @@ fn resident_bytes() -> u64 {
         let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
         let result = unsafe {
             libc::task_info(
+                #[allow(deprecated)] // libc keeps mach_task_self alive; mach2 is not in-tree
                 libc::mach_task_self(),
                 libc::MACH_TASK_BASIC_INFO,
                 info.as_mut_ptr().cast(),

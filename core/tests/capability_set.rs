@@ -195,7 +195,7 @@ fn set_order_and_digest_are_independent_of_input_order() {
             .use_capability_generation()
             .unwrap()
             .registry_revision(),
-        &digest('2')
+        Some(&digest('2'))
     );
     assert_eq!(
         forward.digest().as_str(),
@@ -363,6 +363,7 @@ fn package_contributions_cannot_mix_use_cursor_generations() {
             actual_generation: 7,
             revision_mismatch: true,
             registry_revision_mismatch: false,
+            origin_mismatch: false,
         }
     ));
 }

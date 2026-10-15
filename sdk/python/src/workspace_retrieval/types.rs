@@ -167,8 +167,3 @@ fn rerank_json(status: &a3s_code_core::WorkspaceRerankStatus) -> serde_json::Val
 pub(super) fn retrieval_error(error: a3s_code_core::WorkspaceRetrievalError) -> PyErr {
     py_error_with_code("WORKSPACE_RETRIEVAL_ERROR", error.to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}

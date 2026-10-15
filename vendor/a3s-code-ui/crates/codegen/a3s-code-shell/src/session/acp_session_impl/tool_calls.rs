@@ -3582,7 +3582,7 @@ mod plan_mode_edit_gate_tests {
             content: "x".into(),
         })
     }
-    /// A3S Code edit tools are plan-file-only while plan mode is active: the enforcement that makes plan mode read-only even under always-approve.
+    /// A3S Code edit tools are plan-file-only while plan mode is active: the enforcement that makes plan mode read-only even under yolo.
     #[test]
     fn grok_edits_outside_plan_file_rejected() {
         let t = active_tracker();

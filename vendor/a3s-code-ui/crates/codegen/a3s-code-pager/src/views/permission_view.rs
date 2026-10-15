@@ -3,8 +3,8 @@ use a3s_code_workspace::permission::bash_command_splitting::{
     soft_break_offsets_after_operators,
 };
 use a3s_code_workspace::permission::{
-    ALLOW_EDITS_SESSION_OPTION_ID, BashCommandPermission, McpToolPermission, mcp_titleize_segment,
-    mcp_tool_action, mcp_tool_display_name,
+    ALLOW_EDITS_SESSION_OPTION_ID, BashCommandPermission, McpToolPermission, QuestionPermissionMeta,
+    mcp_titleize_segment, mcp_tool_action, mcp_tool_display_name,
 };
 use agent_client_protocol as acp;
 use ratatui::buffer::Buffer;
@@ -155,6 +155,11 @@ pub struct PermissionViewState {
     pub bash_command_raw: Option<String>,
 
     pub mcp_scope: Option<McpScopeState>,
+
+    /// Present when this request is an agent question riding the permission
+    /// channel (meta key `QUESTION_META_KEY`): choice rows render by name
+    /// instead of the fixed reject-row label.
+    pub question: Option<QuestionPermissionMeta>,
 
     pub title: String,
 
@@ -602,12 +607,22 @@ pub fn render_permission_view(
 
     let mut inline_prompt_result: Option<InlinePromptArea> = None;
 
+    // The followup input row renders exactly once, at the FIRST RejectOnce
+    // option. A normal permission has exactly one such row; a question riding
+    // the permission channel has one per choice, and every row must not become
+    // an input line.
+    let first_reject_idx = state
+        .options
+        .iter()
+        .position(|o| o.kind == acp::PermissionOptionKind::RejectOnce);
+    let is_question = state.question.is_some();
+
     for (i, option) in state.options.iter().enumerate() {
         if y >= visible_bottom {
             break;
         }
 
-        if is_followup && option.kind == acp::PermissionOptionKind::RejectOnce {
+        if is_followup && first_reject_idx == Some(i) {
             // Always-focused input row. No reverse-video overlay here: it is
             // an editable line (hardware cursor + accent bar carry focus),
             // so the terminal theme simply renders it bandless.
@@ -685,6 +700,7 @@ pub fn render_permission_view(
             followup_text,
             content_width,
             theme,
+            is_question,
         );
 
         let row_rect = Rect {
@@ -1429,12 +1445,16 @@ fn build_permission_option_line<'a>(
     followup_text: &str,
     row_width: u16,
     theme: &Theme,
+    question: bool,
 ) -> Line<'a> {
     let num_style = Style::default().fg(theme.accent_user).bg(row_bg);
 
     let sc = shortcut_char(index);
 
-    if option.kind == acp::PermissionOptionKind::RejectOnce {
+    // A question's choice rows ride the RejectOnce kind (the YOLO AllowOnce
+    // drain must not answer them); their labels are the choice texts, so only
+    // a real permission's reject row renders the fixed free-text label.
+    if !question && option.kind == acp::PermissionOptionKind::RejectOnce {
         return build_reject_once_line(sc, is_cursor, row_bg, followup_text, theme);
     }
 
@@ -1715,6 +1735,7 @@ mod tests {
             bash_deny_selection_count: 0,
             bash_command_raw: Some("cargo test --all".to_string()),
             mcp_scope: None,
+            question: None,
             title: title.to_string(),
             description: vec![],
             args_expanded: false,
@@ -1831,6 +1852,7 @@ mod tests {
             bash_deny_selection_count: 0,
             bash_command_raw: None,
             mcp_scope,
+            question: None,
             title: String::new(),
             description: vec![],
             args_expanded: false,
@@ -2025,6 +2047,59 @@ mod tests {
             "args JSON not rendered:\n{text}"
         );
         assert!(text.contains("Yes"), "options row missing:\n{text}");
+    }
+
+    fn question_view_state(labels: &[&str], allow_free_text: bool) -> PermissionViewState {
+        let mut state = empty_view_state(None);
+        state.title = "Which one?".to_string();
+        state.options = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                acp::PermissionOption::new(
+                    acp::PermissionOptionId::new(Arc::from(format!("question-{i}"))),
+                    (*label).to_string(),
+                    acp::PermissionOptionKind::RejectOnce,
+                )
+            })
+            .collect();
+        state.question = Some(a3s_code_workspace::permission::QuestionPermissionMeta {
+            allow_free_text,
+        });
+        state
+    }
+
+    /// A question riding the permission channel renders each choice by name;
+    /// the fixed reject-row label must not shadow every choice.
+    #[test]
+    fn question_choices_render_their_labels_not_the_reject_row() {
+        let state = question_view_state(&["Delete staging", "Delete prod", "Cancel"], false);
+        let text = render_to_text(&state, Rect::new(0, 0, 80, 30));
+        for label in ["Delete staging", "Delete prod", "Cancel"] {
+            assert!(text.contains(label), "choice label missing:\n{text}");
+        }
+        assert!(
+            !text.contains("No, reject (type to add feedback)"),
+            "the fixed reject label must not shadow question choices:\n{text}"
+        );
+        assert!(text.contains("Which one?"), "question title missing:\n{text}");
+    }
+
+    /// In followup focus only the first RejectOnce row becomes the input row;
+    /// the other choices stay visible instead of each becoming an input line.
+    #[test]
+    fn question_followup_focus_renders_exactly_one_input_row() {
+        let mut state = question_view_state(&["left", "right", "neither"], true);
+        state.focus = PermissionFocus::FollowupInput;
+        let text = render_to_text(&state, Rect::new(0, 0, 80, 30));
+        assert_eq!(
+            text.matches(crate::glyphs::prompt_arrow()).count(),
+            1,
+            "exactly one input row:\n{text}"
+        );
+        for label in ["right", "neither"] {
+            assert!(text.contains(label), "other choices must stay visible:\n{text}");
+        }
     }
 
     fn long_args_state() -> PermissionViewState {

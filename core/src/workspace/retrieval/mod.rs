@@ -29,6 +29,8 @@ mod semantic_types;
 mod types;
 mod vector_contract;
 mod verification;
+#[cfg(feature = "a3s-vec-fts")]
+mod wiki;
 
 pub use catalog::{ChunkCatalogSnapshot, WorkspaceChunkCatalog};
 pub(crate) use chunk::digest_content;
@@ -60,6 +62,11 @@ pub use types::{
     WorkspaceLexicalEngine,
 };
 pub(crate) use verification::retain_verified;
+#[cfg(feature = "a3s-vec-fts")]
+pub use wiki::{
+    WikiIndex, WikiReconcileReport, WikiSearchHit, WikiSearchPhase, WikiSearchResult,
+    WIKI_PASSAGE_CHARS,
+};
 
 #[cfg(test)]
 mod tests;

@@ -1,11 +1,105 @@
-use super::{agent_loop_runtime::pin_and_admit_runtime_projection, AgentSession};
+#[cfg(test)]
+use super::agent_loop_runtime::pin_and_admit_runtime_projection;
+use super::{agent_loop_runtime::PinnedRuntimeProjection, AgentSession};
 use crate::agent::{AgentEvent, AgentResult};
-use crate::commands::{CommandContext, CommandRegistry};
-use crate::error::{read_or_recover, Result};
+use crate::capability::{CapabilityRuntimeError, ScopeCloseReport, SessionCapabilityRun};
+use crate::commands::CommandContext;
+#[cfg(test)]
+use crate::commands::CommandRegistry;
+use crate::error::read_or_recover;
+#[cfg(test)]
+use crate::error::Result;
 use crate::llm::Message;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
+#[cfg(test)]
 use tokio::task::JoinHandle;
 
+/// Original presentation values, captured before the canonical worker starts.
+/// This value neither admits a capability nor proves original owner binding.
+pub(super) struct OwnedCommandInputs {
+    session_id: String,
+    workspace: String,
+    model: String,
+    history: Arc<RwLock<Vec<Message>>>,
+    security_provider: Option<Arc<dyn crate::security::SecurityProvider>>,
+}
+
+impl OwnedCommandInputs {
+    pub(super) fn capture_original(session: &AgentSession) -> Self {
+        Self {
+            session_id: session.session_id.clone(),
+            workspace: session.workspace.display().to_string(),
+            model: session.model_name.clone(),
+            history: Arc::clone(&session.history),
+            security_provider: session.config.security_provider.clone(),
+        }
+    }
+
+    pub(super) fn blocking_result(&self, text: String, history: Option<&[Message]>) -> AgentResult {
+        command_result(
+            text,
+            history
+                .map(|history| history.to_vec())
+                .unwrap_or_else(|| read_or_recover(&self.history).clone()),
+            crate::llm::TokenUsage::default(),
+        )
+    }
+
+    fn sanitize_text(&self, text: &str) -> String {
+        self.security_provider
+            .as_deref()
+            .map(|provider| crate::security::sanitize_text(provider, text))
+            .unwrap_or_else(|| text.to_string())
+    }
+}
+
+/// The actual admitted guard and its actual close result remain independent
+/// of the output. An absent output is never a NotAttempted/cleanup witness.
+pub(super) struct OwnedCommandPreparation {
+    capability_run: SessionCapabilityRun,
+    actual_close: std::result::Result<ScopeCloseReport, CapabilityRuntimeError>,
+    text: Option<String>,
+}
+
+impl OwnedCommandPreparation {
+    pub(super) fn into_original_observation(
+        self,
+    ) -> (
+        SessionCapabilityRun,
+        std::result::Result<ScopeCloseReport, CapabilityRuntimeError>,
+        Option<String>,
+    ) {
+        (self.capability_run, self.actual_close, self.text)
+    }
+}
+
+/// Execute and close an already admitted original command in the calling
+/// worker. The caller probes is_command before admission and records the real
+/// attempt before awaiting admission; this helper creates neither of them.
+/// It never spawns output work or grants readiness/release authority.
+pub(super) async fn prepare_owned(
+    inputs: &OwnedCommandInputs,
+    prompt: &str,
+    runtime: &PinnedRuntimeProjection,
+    capability_run: SessionCapabilityRun,
+) -> OwnedCommandPreparation {
+    let ctx = build_command_context(inputs, runtime.tool_executor());
+    let output = runtime.command_registry().dispatch(prompt, &ctx);
+    let actual_close = capability_run.close().await;
+    let text = if actual_close.is_ok() {
+        output.map(|output| inputs.sanitize_text(&output.text))
+    } else {
+        None
+    };
+    OwnedCommandPreparation {
+        capability_run,
+        actual_close,
+        text,
+    }
+}
+
+#[cfg(test)]
 pub(super) async fn dispatch_blocking(
     session: &AgentSession,
     prompt: &str,
@@ -16,24 +110,17 @@ pub(super) async fn dispatch_blocking(
     }
 
     let (runtime, capability_run) = pin_and_admit_runtime_projection(session).await?;
-    let ctx = build_command_context(session, runtime.tool_executor());
-    let output = runtime.command_registry().dispatch(prompt, &ctx);
-    capability_run.close().await?;
-    let Some(output) = output else {
+    let inputs = OwnedCommandInputs::capture_original(session);
+    let (_capability_run, actual_close, text) =
+        prepare_owned(&inputs, prompt, &runtime, capability_run)
+            .await
+            .into_original_observation();
+    actual_close?;
+    let Some(text) = text else {
         return Ok(None);
     };
 
-    Ok(Some(command_result(
-        sanitize_text(session, &output.text),
-        command_messages(session, history),
-        crate::llm::TokenUsage::default(),
-    )))
-}
-
-fn command_messages(session: &AgentSession, history: Option<&[Message]>) -> Vec<Message> {
-    history
-        .map(|h| h.to_vec())
-        .unwrap_or_else(|| read_or_recover(&session.history).clone())
+    Ok(Some(inputs.blocking_result(text, history)))
 }
 
 fn command_result(
@@ -49,9 +136,11 @@ fn command_result(
         verification_reports: Vec::new(),
         completion: crate::harness_loop::CompletionTerminal::Narrative,
         run_admission: "ordinary".to_string(),
+        forced_stop: None,
     }
 }
 
+#[cfg(test)]
 pub(super) async fn dispatch_streaming(
     session: &AgentSession,
     prompt: &str,
@@ -61,15 +150,17 @@ pub(super) async fn dispatch_streaming(
     }
 
     let (runtime, capability_run) = pin_and_admit_runtime_projection(session).await?;
-    let ctx = build_command_context(session, runtime.tool_executor());
-    let output = runtime.command_registry().dispatch(prompt, &ctx);
-    capability_run.close().await?;
-    let Some(output) = output else {
+    let inputs = OwnedCommandInputs::capture_original(session);
+    let (_capability_run, actual_close, text) =
+        prepare_owned(&inputs, prompt, &runtime, capability_run)
+            .await
+            .into_original_observation();
+    actual_close?;
+    let Some(text) = text else {
         return Ok(None);
     };
     let (tx, rx) = mpsc::channel(256);
 
-    let text = sanitize_text(session, &output.text);
     let handle = tokio::spawn(async move {
         send_text_output(&tx, text).await;
     });
@@ -77,20 +168,11 @@ pub(super) async fn dispatch_streaming(
     Ok(Some((rx, handle)))
 }
 
-fn sanitize_text(session: &AgentSession, text: &str) -> String {
-    session
-        .config
-        .security_provider
-        .as_deref()
-        .map(|provider| crate::security::sanitize_text(provider, text))
-        .unwrap_or_else(|| text.to_string())
-}
-
 fn build_command_context(
-    session: &AgentSession,
+    inputs: &OwnedCommandInputs,
     tool_executor: &crate::tools::ToolExecutor,
 ) -> CommandContext {
-    let history = read_or_recover(&session.history);
+    let history = read_or_recover(&inputs.history);
     let tool_names: Vec<String> = tool_executor
         .definitions()
         .into_iter()
@@ -109,9 +191,9 @@ fn build_command_context(
     mcp_servers.sort_by(|a, b| a.0.cmp(&b.0));
 
     CommandContext {
-        session_id: session.session_id.clone(),
-        workspace: session.workspace.display().to_string(),
-        model: session.model_name.clone(),
+        session_id: inputs.session_id.clone(),
+        workspace: inputs.workspace.clone(),
+        model: inputs.model.clone(),
         history_len: history.len(),
         total_tokens: 0,
         total_cost: 0.0,
@@ -120,7 +202,7 @@ fn build_command_context(
     }
 }
 
-async fn send_text_output(tx: &mpsc::Sender<AgentEvent>, text: String) {
+pub(super) async fn send_text_output(tx: &mpsc::Sender<AgentEvent>, text: String) {
     let _ = tx.send(AgentEvent::TextDelta { text: text.clone() }).await;
     send_end(tx, text).await;
 }
@@ -131,6 +213,8 @@ async fn send_end(tx: &mpsc::Sender<AgentEvent>, text: String) {
             text,
             usage: crate::llm::TokenUsage::default(),
             verification_summary: empty_verification_summary(),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         })
         .await;
@@ -139,3 +223,6 @@ async fn send_end(tx: &mpsc::Sender<AgentEvent>, text: String) {
 fn empty_verification_summary() -> Box<crate::verification::VerificationSummary> {
     Box::new(crate::verification::VerificationSummary::from_reports(&[]))
 }
+
+#[cfg(test)]
+mod owned_command_tests;

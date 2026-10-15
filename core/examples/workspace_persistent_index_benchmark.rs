@@ -16,7 +16,12 @@ use std::time::{Duration, Instant};
 // constructing thousands of files through it would measure O(n²) fixture setup
 // instead of a3s-vec indexing/query performance. Production reconciliation builds
 // the initial snapshot in one pass before this layer is invoked.
-const FILE_COUNT: usize = 64;
+fn file_count() -> usize {
+    std::env::var("A3S_BENCH_FILES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(64)
+}
 const QUERY_SAMPLES: usize = 32;
 
 fn main() -> Result<()> {
@@ -28,7 +33,8 @@ fn main() -> Result<()> {
         WorkspaceLexicalEngine::A3sVec,
     )
     .context("create a3s-vec catalog")?;
-    for index in 0..FILE_COUNT {
+    let file_count = file_count();
+    for index in 0..file_count {
         let path = WorkspacePath::from_normalized(format!("src/module-{index:04}.rs"));
         catalog
             .replace_file(
@@ -83,21 +89,52 @@ fn main() -> Result<()> {
         .context("reuse persistent generation")?;
     let reuse_ms = elapsed_ms(reuse_started.elapsed());
 
+    // A single-file content change now builds the next generation
+    // incrementally (copy-forward + engine delete/upsert) when the chunk
+    // delta is bounded; this is the dominant editing-path cost.
     catalog.replace_file(
         &unchanged_path,
         Some("rust"),
         3,
-        "pub fn module_0() {\n    // changed persistent a3s-vec benchmark sentinel\n}\n",
+        "pub fn module_0() {\n    // incrementally edited persistent a3s-vec benchmark sentinel\n}\n",
     )?;
+    let incremental_started = Instant::now();
+    index
+        .sync_snapshot(&catalog.snapshot()?)
+        .context("publish incrementally edited persistent generation")?;
+    let incremental_ms = elapsed_ms(incremental_started.elapsed());
+    let incremental_hits = index
+        .search(&LexicalSearchRequest::new("incrementally edited"))
+        .context("query incrementally edited generation")?
+        .hits
+        .len();
+    anyhow::ensure!(
+        incremental_hits > 0,
+        "incremental edit is not retrievable after publication"
+    );
+
+    // The full-rebuild fallback stays measurable: churn every file so the
+    // delta exceeds its bound and the full build path runs.
+    for file in 0..file_count {
+        let path = WorkspacePath::from_normalized(format!("src/module-{file:04}.rs"));
+        catalog.replace_file(
+            &path,
+            Some("rust"),
+            4,
+            &format!(
+                "pub fn module_{file}() {{\n    // fully churned persistent a3s-vec benchmark sentinel\n}}\n"
+            ),
+        )?;
+    }
     let rebuild_started = Instant::now();
     index
         .sync_snapshot(&catalog.snapshot()?)
-        .context("publish changed persistent generation")?;
+        .context("publish fully churned persistent generation")?;
     let rebuild_ms = elapsed_ms(rebuild_started.elapsed());
 
     let status = index.status();
     println!(
-        "{{\"files\":{FILE_COUNT},\"fixtureAdmissionMs\":{fixture_ms:.3},\"indexedChunks\":{},\"buildMs\":{build_ms:.3},\"queryP50Ms\":{:.3},\"queryP95Ms\":{:.3},\"sameContentUpdateMs\":{reuse_ms:.3},\"changedContentRebuildMs\":{rebuild_ms:.3},\"generation\":\"{}\"}}",
+        "{{\"files\":{file_count},\"fixtureAdmissionMs\":{fixture_ms:.3},\"indexedChunks\":{},\"buildMs\":{build_ms:.3},\"queryP50Ms\":{:.3},\"queryP95Ms\":{:.3},\"sameContentUpdateMs\":{reuse_ms:.3},\"incrementalEditMs\":{incremental_ms:.3},\"fullChurnRebuildMs\":{rebuild_ms:.3},\"generation\":\"{}\"}}",
         status.indexed_chunks,
         percentile(&latencies, 0.50),
         percentile(&latencies, 0.95),

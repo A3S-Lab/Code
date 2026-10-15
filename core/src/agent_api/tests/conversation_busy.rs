@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 #[tokio::test]
@@ -256,14 +258,21 @@ async fn test_active_blocking_send_rejects_send_and_stream_then_releases() {
         "single-flight-blocking",
     );
 
+    let original_id = active_run.unwrap().id().to_string();
     assert!(session.cancel().await);
     let first_result = tokio::time::timeout(std::time::Duration::from_secs(1), first)
         .await
         .expect("the cancelled blocking send must finish")
-        .expect("the blocking send task must not panic")
-        .expect("cancellation preserves interrupted history");
-    assert!(first_result
-        .messages
+        .expect("the blocking send task must not panic");
+    assert!(matches!(first_result,
+        Err(ref error)
+        if error.cancelled_run_id() == Some(original_id.as_str())));
+    assert_eq!(
+        session.run_snapshot(&original_id).await.unwrap().status,
+        crate::run::RunStatus::Cancelled
+    );
+    assert!(session
+        .history()
         .last()
         .is_some_and(|message| message.text().contains("interrupted")));
 

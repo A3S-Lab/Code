@@ -166,6 +166,7 @@ void _knownResearchKind
 void ResearchWireTypeV1.RESEARCH_EVENT
 void RESEARCH_WIRE_KINDS_V1
 const _busyCode: A3sCodeErrorCode = 'SESSION_BUSY'
+const _cancelledCode: A3sCodeErrorCode = 'RUN_CANCELLED'
 
 void _session.readFile('notes.txt', _readOptions)
 void _session.readFile('notes.txt', { offset: 1, limit: 1 })
@@ -189,6 +190,17 @@ void _session.memoryMaintenanceHealth()
 void _session.workspaceRetrievalStatus()
 void _session.semanticSearch({ query: 'session cleanup', limit: 5 })
 void _session.hybridSearch({ query: 'terminate_owned_tasks', path: 'src' })
+const _workPolicyOptions: SessionOptions = {
+  workPolicy: { id: 'eng', revision: 1, instructions: 'Make the smallest complete change.' },
+  requireAssistantFinalResponse: true,
+}
+const _workPolicyDigest: string | null = _session.workPolicyDigest()
+const _reconciled: number = _session.reconcileGoalSlices()
+const _tickDecision: Promise<string> = _session.previewGoalTick({ kind: 'tick' })
+void _session.tickGoal({ kind: 'tick' })
+void _session.controlGoal({ kind: 'pause' }, 1000)
+void _session.checkGoalStepRun('goal', 1, 1, 'step', 'run')
+const _forked: Promise<Session> = _agent.forkSessionAsync({}, 'repo', _workPolicyOptions)
 void _retrievalOptions.maxRecords
 void _lexicalEngineOption
 void _lexicalEngineArgument

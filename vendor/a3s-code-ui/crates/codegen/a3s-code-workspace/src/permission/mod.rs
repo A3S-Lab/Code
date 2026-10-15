@@ -92,6 +92,7 @@ pub use shell_access::{ProtectedEditPermission, ProtectedEditReason};
 pub use state::PermissionState;
 pub use state::cleanup_stale_permission_state;
 pub use types::{
-    AccessKind, ClientType, Decision, HOOK_ASK_META_KEY, HookAsk, PermissionCommand,
-    PermissionEvent, PermissionRequest, PermissionResolution,
+    AccessKind, ClientType, Decision, HOOK_ASK_META_KEY, HookAsk, QUESTION_META_KEY,
+    PermissionCommand, PermissionEvent, PermissionRequest, PermissionResolution,
+    QuestionPermissionMeta,
 };

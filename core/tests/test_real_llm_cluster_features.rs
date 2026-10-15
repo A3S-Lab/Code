@@ -262,6 +262,7 @@ async fn real_resume_run_carries_checkpoint_metrics_forward() {
                 session_id: "real-resume".to_string(),
                 capability_binding: None,
                 standing_context_digest: None,
+                durable_source: None,
                 turn: 1,
                 messages: vec![
                     Message::user("Reply with the single word: ok"),

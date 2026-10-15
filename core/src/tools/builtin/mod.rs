@@ -4,6 +4,8 @@
 //! implementations that execute in-process. Each tool implements the `Tool` trait.
 
 pub mod ask_user;
+pub mod ask_user_form;
+pub(crate) mod background;
 pub(crate) mod bash;
 mod batch;
 mod bm25;
@@ -17,7 +19,7 @@ mod grep;
 mod hybrid_search;
 mod ls;
 mod patch;
-mod read;
+pub(crate) mod read;
 mod safe_http;
 mod search;
 mod semantic_search;
@@ -25,6 +27,8 @@ mod update_plan;
 mod web_fetch;
 mod web_search;
 mod write;
+
+pub(crate) use read::{MAX_BATCH_READ_FILES, MAX_BATCH_READ_PATH_BYTES};
 
 #[cfg(test)]
 pub(crate) use batch::{BatchTool, MAX_BATCH_INVOCATIONS};
@@ -89,6 +93,9 @@ pub fn register_builtins(
     }
     if capabilities.exec {
         registry.register_builtin(Arc::new(bash::BashTool));
+        // WC-BG1: background execution rides the same exec capability gate
+        // as bash — it spawns shell commands.
+        registry.register_builtin(Arc::new(background::BackgroundTool::default()));
     }
     let semantic_enabled = capabilities.read && workspace_services.workspace_retrieval().is_some();
     // Prefer durable FTS at call time when this workspace can host one. Do not
@@ -112,6 +119,7 @@ pub fn register_builtins(
     // Session checklist updates (no workspace capability gate).
     registry.register_builtin(Arc::new(update_plan::UpdatePlanTool));
     registry.register_builtin(Arc::new(ask_user::AskUserTool));
+    registry.register_builtin(Arc::new(ask_user_form::AskUserFormTool));
 }
 
 #[cfg(test)]
@@ -223,6 +231,7 @@ pub fn register_task_with_mcp_managers(
         workspace,
         mcp_managers,
         Vec::new(),
+        Vec::new(),
         parent_context,
         subagent_tracker,
         None,
@@ -248,14 +257,15 @@ pub(crate) fn register_task_with_mcp_managers_and_scheduler(
         workspace,
         mcp_managers,
         Vec::new(),
+        Vec::new(),
         parent_context,
         subagent_tracker,
         task_scheduler,
     );
 }
 
-/// Register Run-frozen task tools with compatibility managers and exact MCP
-/// capability bindings.
+/// Register Run-frozen task tools with compatibility managers, exact MCP
+/// bindings and accepted projected Tool wrappers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn register_task_with_mcp_sources_and_scheduler(
     registry: &Arc<ToolRegistry>,
@@ -264,6 +274,7 @@ pub(crate) fn register_task_with_mcp_sources_and_scheduler(
     workspace: String,
     mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
     mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
+    projected_tools: Vec<Arc<dyn super::Tool>>,
     parent_context: Option<crate::child_run::ChildRunContext>,
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
     task_scheduler: Arc<crate::task_scheduler::TaskScheduler>,
@@ -275,6 +286,7 @@ pub(crate) fn register_task_with_mcp_sources_and_scheduler(
         workspace,
         mcp_managers,
         mcp_bindings,
+        projected_tools,
         parent_context,
         subagent_tracker,
         Some(task_scheduler),
@@ -289,6 +301,7 @@ fn register_task_internal(
     workspace: String,
     mcp_managers: Vec<Arc<crate::mcp::manager::McpManager>>,
     mcp_bindings: Vec<Arc<crate::mcp::McpBinding>>,
+    projected_tools: Vec<Arc<dyn super::Tool>>,
     parent_context: Option<crate::child_run::ChildRunContext>,
     subagent_tracker: Option<Arc<crate::subagent_task_tracker::InMemorySubagentTaskTracker>>,
     task_scheduler: Option<Arc<crate::task_scheduler::TaskScheduler>>,
@@ -296,7 +309,8 @@ fn register_task_internal(
     use crate::tools::task::{TaskExecutor, TaskTool};
     let mut executor =
         TaskExecutor::with_mcp_managers(agent_registry, llm_client, workspace, mcp_managers)
-            .with_projected_mcp_bindings(mcp_bindings);
+            .with_projected_mcp_bindings(mcp_bindings)
+            .with_scoped_tools(projected_tools);
     if let Some(ctx) = parent_context {
         executor = executor.with_parent_context(ctx);
     }
@@ -429,6 +443,7 @@ mod tests {
             "web_search",
             "update_plan",
             "ask_user",
+            "ask_user_form",
         ] {
             assert!(registry.contains(present), "{present} must stay registered");
         }

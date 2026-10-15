@@ -88,6 +88,7 @@ pub mod code_intelligence;
 pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
+pub use compaction::{compaction_system_prompt, render_message_for_summary};
 pub(crate) mod compaction_carry;
 pub mod completion_attestor;
 pub mod config;
@@ -95,6 +96,15 @@ pub mod content_digest;
 pub mod context;
 pub mod core_event_log;
 pub mod core_identity;
+#[cfg(all(test, feature = "deep-live"))]
+mod deep38_live;
+/// Real-model deep-case lineage. `deep38_live` is superseded structurally by
+/// `deep_e2e_live` above (28 cases ⊂ 45); both it and the
+/// `sdk_capabilities()` op-coverage assertions compile only behind
+/// `--features deep-live`, so the default test run stays hermetic while no
+/// coverage claim hides in never-compiled source.
+#[cfg(all(test, feature = "deep-live"))]
+mod deep38_support;
 #[cfg(test)]
 mod deep_e2e_live;
 pub mod directory_projection;
@@ -115,6 +125,7 @@ pub mod fact_control;
 #[cfg(feature = "dynamic-workflow")]
 pub mod flow_graph;
 pub(crate) mod git;
+pub mod goal_control;
 pub mod harness_evidence;
 pub mod harness_loop;
 pub mod hitl;
@@ -128,6 +139,8 @@ pub mod memory;
 pub mod meta_harness;
 #[cfg(feature = "headless-search")]
 pub mod moli_runtime;
+#[cfg(all(test, feature = "deep-live"))]
+mod op_coverage;
 pub mod orchestration;
 pub(crate) mod ordered_parallel;
 pub mod outcome_memory;
@@ -152,8 +165,10 @@ pub mod sandbox;
 pub mod sdk_capabilities;
 #[cfg(feature = "headless-search")]
 pub mod search_runtime;
+pub mod secure_state;
 pub mod security;
 pub mod session_checkpoint;
+pub mod session_folder;
 pub(crate) mod session_lane_queue;
 pub mod session_review;
 pub mod shell_session;
@@ -162,9 +177,11 @@ pub(crate) mod sse;
 pub(crate) mod standing_context;
 #[cfg(feature = "state-graph")]
 pub mod state_graph;
+pub mod state_root;
 pub mod store;
 pub mod subagent;
 pub mod subagent_task_tracker;
+pub(crate) mod surface_decision;
 pub mod task_scheduler;
 pub mod telemetry;
 #[cfg(feature = "telemetry")]
@@ -182,17 +199,22 @@ pub mod transcript;
 #[cfg(feature = "apofasi")]
 pub mod typed_decision;
 mod typed_decision_absence;
+pub mod use_harness;
 pub mod use_runtime_tasks;
 pub mod verification;
+mod work_policy;
 pub mod workspace;
 
 // Re-export key types at crate root for ergonomic usage
-pub use agent::{AgentEvent, AgentExecutionFailure, AgentResult, ModelMiddlewareHealthSnapshot};
+pub use agent::{
+    context_window_for_model, documented_context_tokens, AgentEvent, AgentExecutionFailure,
+    AgentResult, ModelMiddlewareHealthSnapshot,
+};
 #[cfg(feature = "dynamic-workflow")]
 pub use agent_api::ProjectedFlowHandle;
 pub use agent_api::{
-    Agent, AgentRunSpawn, AgentSession, ProjectedUiHandle, ReadFileOptions, SessionBuilder,
-    SessionOptions, ToolCallResult,
+    Agent, AgentRunSpawn, AgentRunStream, AgentSession, GoalTickAdmission, GoalTickStream,
+    ProjectedUiHandle, ReadFileOptions, SessionBuilder, SessionOptions, ToolCallResult,
 };
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
@@ -473,6 +495,9 @@ pub use use_runtime_tasks::{
     MAX_USE_RUNTIME_TASK_ARGUMENTS, MAX_USE_RUNTIME_TASK_ARGUMENT_BYTES,
     MAX_USE_RUNTIME_TASK_OUTPUT_BYTES, MAX_USE_RUNTIME_TASK_TIMEOUT_MS,
     USE_RUNTIME_TASK_REQUEST_SCHEMA, USE_RUNTIME_TASK_RESULT_SCHEMA,
+};
+pub use work_policy::{
+    WorkPolicyError, WorkPolicyRefusal, WorkPolicyRefusalParseError, WorkPolicyV1,
 };
 pub use workspace::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,

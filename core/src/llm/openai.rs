@@ -10,12 +10,16 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
+
+const IMAGE_WITHHELD: &str =
+    "[image withheld: this model accepts text input only; inspect the file with tools]";
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// OpenAI client
+#[derive(Clone)]
 pub struct OpenAiClient {
     pub(crate) provider_name: String,
     pub(crate) api_key: SecretString,
@@ -31,6 +35,9 @@ pub struct OpenAiClient {
     pub(crate) http: Arc<dyn HttpClient>,
     pub(crate) retry_config: RetryConfig,
     pub(crate) native_structured_support: structured::NativeStructuredSupport,
+    /// The model declares text-only input: images become a text note instead
+    /// of an `image_url` part the provider rejects.
+    pub(crate) text_only_input: bool,
 }
 
 impl OpenAiClient {
@@ -52,6 +59,16 @@ impl OpenAiClient {
                 )
             })
         })
+    }
+
+    // A delta carries new bytes even when it repeats earlier content. Only
+    // explicit message snapshots use merge_stream_text's replay handling.
+    fn append_stream_delta(text_content: &mut String, incoming: &str) -> Option<String> {
+        if incoming.is_empty() {
+            return None;
+        }
+        text_content.push_str(incoming);
+        Some(incoming.to_string())
     }
 
     fn merge_stream_text(text_content: &mut String, incoming: &str) -> Option<String> {
@@ -102,7 +119,25 @@ impl OpenAiClient {
             http: default_http_client(),
             retry_config: RetryConfig::default(),
             native_structured_support: structured::NativeStructuredSupport::JsonSchema,
+            text_only_input: false,
         }
+    }
+
+    pub fn with_text_only_input(mut self, text_only: bool) -> Self {
+        self.text_only_input = text_only;
+        self
+    }
+
+    fn image_part(&self, source: &ImageSource) -> serde_json::Value {
+        if self.text_only_input {
+            return serde_json::json!({ "type": "text", "text": IMAGE_WITHHELD });
+        }
+        serde_json::json!({
+            "type": "image_url",
+            "image_url": {
+                "url": format!("data:{};base64,{}", source.media_type, source.data),
+            }
+        })
     }
 
     pub fn with_base_url(mut self, base_url: String) -> Self {
@@ -202,15 +237,9 @@ impl OpenAiClient {
                 let content: serde_json::Value = if msg.content.len() == 1 {
                     match &msg.content[0] {
                         ContentBlock::Text { text } => serde_json::json!(text),
-                        ContentBlock::Image { source } => serde_json::json!([{
-                            "type": "image_url",
-                            "image_url": {
-                                "url": format!(
-                                    "data:{};base64,{}",
-                                    source.media_type, source.data
-                                ),
-                            }
-                        }]),
+                        ContentBlock::Image { source } => {
+                            serde_json::json!([self.image_part(source)])
+                        }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
@@ -230,16 +259,8 @@ impl OpenAiClient {
                                                 }));
                                             }
                                             ToolResultContent::Image { source } => {
-                                                has_image = true;
-                                                parts.push(serde_json::json!({
-                                                    "type": "image_url",
-                                                    "image_url": {
-                                                        "url": format!(
-                                                            "data:{};base64,{}",
-                                                            source.media_type, source.data
-                                                        ),
-                                                    }
-                                                }));
+                                                has_image |= !self.text_only_input;
+                                                parts.push(self.image_part(source));
                                             }
                                         }
                                     }
@@ -273,15 +294,7 @@ impl OpenAiClient {
                                     "type": "text",
                                     "text": text,
                                 }),
-                                ContentBlock::Image { source } => serde_json::json!({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": format!(
-                                            "data:{};base64,{}",
-                                            source.media_type, source.data
-                                        ),
-                                    }
-                                }),
+                                ContentBlock::Image { source } => self.image_part(source),
                                 ContentBlock::ToolUse { id, name, input } => serde_json::json!({
                                     "type": "function",
                                     "id": id,
@@ -383,6 +396,9 @@ impl OpenAiClient {
         if self.provider_name == "zhipu" || super::effort::is_glm_model(&self.model) {
             return super::effort::glm_reasoning_effort(token);
         }
+        if super::effort::is_deepseek_model(&self.model) {
+            return super::effort::deepseek_reasoning_effort(token);
+        }
         if super::effort::is_openai_reasoning_model(&self.model) {
             return super::effort::openai_reasoning_effort(token);
         }
@@ -416,7 +432,22 @@ impl OpenAiClient {
         if let Some(temp) = self.temperature {
             request["temperature"] = serde_json::json!(temp);
         }
-        if let Some(level) = self.request_reasoning_effort() {
+        if super::effort::is_deepseek_model(&self.model) {
+            // DeepSeek owns the output window for each effort. Forcing the
+            // OpenAI floor here would cap a turn the provider already sizes.
+            if let Some(level) = self.request_reasoning_effort() {
+                request["reasoning_effort"] = serde_json::json!(level);
+                request["thinking"] = serde_json::json!({
+                    "type": if level == "none" { "disabled" } else { "enabled" }
+                });
+                if let Some(top_p) = super::effort::deepseek_thinking_top_p(level) {
+                    request["top_p"] = serde_json::json!(top_p);
+                }
+            }
+            if let Some(max) = self.max_tokens {
+                request["max_tokens"] = serde_json::json!(max);
+            }
+        } else if let Some(level) = self.request_reasoning_effort() {
             request["reasoning_effort"] = serde_json::json!(level);
             let floor = super::effort::output_token_floor(level);
             match self.max_tokens {
@@ -604,6 +635,25 @@ impl OpenAiClient {
 
 #[async_trait]
 impl LlmClient for OpenAiClient {
+    fn with_output_cap(&self, max_tokens: u32) -> Option<std::sync::Arc<dyn LlmClient>> {
+        // The generation-enforced cap for sampling bridges (SEC-SAMPLE1);
+        // the request body's max_tokens is set when configured.
+        Some(std::sync::Arc::new(
+            self.clone().with_max_tokens(max_tokens as usize),
+        ))
+    }
+
+    fn gateway_decision_auth(&self) -> Option<super::GatewayDecisionAuth> {
+        let api_key = self.api_key.expose().trim();
+        if api_key.is_empty() || self.base_url.trim().is_empty() {
+            return None;
+        }
+        Some(super::GatewayDecisionAuth {
+            base_url: self.base_url.clone(),
+            api_key: api_key.to_owned(),
+        })
+    }
+
     fn model_generation_pool(&self) -> Option<ModelGenerationPool> {
         ModelGenerationPool::for_endpoint(
             &self.provider_name,
@@ -820,5 +870,4 @@ pub(crate) struct OpenAiFunctionDelta {
 // ============================================================================
 
 #[cfg(test)]
-#[path = "openai/tests.rs"]
 mod tests;

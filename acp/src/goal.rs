@@ -4,16 +4,24 @@
 //! planning on or off with [`AgentSession::set_planning_mode`]. It does not
 //! start a second planner, classifier, or background workflow.
 
-use std::path::Path;
-
+use a3s_code_core::goal_control::{
+    DurableGoalDefinitionV1, GoalCommandKindV1, GoalControlCommandV1, GoalControlError,
+    GoalRefusal, GoalState,
+};
 use a3s_code_core::PlanningMode;
 
 /// One user-set objective for an ACP session.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DurableGoal {
     pub objective: String,
     pub paused: bool,
 }
+
+mod import;
+pub(crate) use import::{commit_import, preview_import, GoalImportPreviewRequest};
+mod persistence;
+pub(crate) use persistence::{apply_session_goal, load_goal, retire_achieved_durable_goal};
 
 /// What the user asked `/goal` to do.
 #[derive(Debug, PartialEq, Eq)]
@@ -182,55 +190,214 @@ pub fn apply_goal(current: Option<DurableGoal>, op: GoalOp) -> AppliedGoal {
     }
 }
 
+/// `a3s/goal/state` request: the bound definition of one live session.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GoalStateRequest {
+    pub session_id: String,
+}
+
+/// A bound `/goal` reply, and whether the user asked Core for one goal slice.
+pub(crate) struct BoundGoalReply {
+    pub reply: String,
+    pub tick: bool,
+}
+
+fn control_command(
+    current: &DurableGoalDefinitionV1,
+    kind: GoalCommandKindV1,
+    operation_id: String,
+) -> GoalControlCommandV1 {
+    GoalControlCommandV1 {
+        kind,
+        operation_id,
+        goal_id: current.binding.goal_id.clone(),
+        session_id: current.binding.session_id.clone(),
+        workspace: current.binding.workspace.clone(),
+        work_policy_digest: current.binding.work_policy_digest.clone(),
+        expected_goal_revision: current.binding.goal_revision,
+        expected_plan_revision: current.plan_revision,
+        expected_goal_sequence: current.goal_sequence,
+    }
+}
+
+/// Bound sessions use the original Core facts, never the legacy workspace file.
+/// `resume` is the only wake: it asks Core for one slice, which Core still
+/// gates on the trusted `goal_control` policy.
+pub(crate) async fn apply_bound_goal(
+    session: &a3s_code_core::AgentSession,
+    op: &GoalOp,
+) -> anyhow::Result<Option<BoundGoalReply>> {
+    let Some(mut current) = session.goal_definition()? else {
+        return Ok(None);
+    };
+    let control = |current: &DurableGoalDefinitionV1, kind: GoalCommandKindV1| {
+        let operation_id = format!("acp-{}-{}", kind.as_str(), current.goal_sequence);
+        session.apply_goal_control(control_command(current, kind, operation_id))
+    };
+    let mut tick = false;
+    match op {
+        GoalOp::Status => {}
+        GoalOp::Pause if current.state != GoalState::Paused => {
+            current = control(&current, GoalCommandKindV1::Pause)?;
+        }
+        GoalOp::Pause => {}
+        GoalOp::Resume => {
+            if current.state == GoalState::Paused {
+                current = control(&current, GoalCommandKindV1::Resume)?;
+            }
+            tick = !matches!(current.state, GoalState::Completed | GoalState::Cancelled);
+        }
+        GoalOp::Clear if current.state != GoalState::Cancelled => {
+            current = control(&current, GoalCommandKindV1::Cancel)?;
+        }
+        GoalOp::Clear => {}
+        GoalOp::Set(_) => {
+            return Err(GoalControlError::Refused {
+                refusal: GoalRefusal::ConditionUnsupported,
+                reason: "a bound Goal is revised only through a3s/goal/definition",
+            }
+            .into());
+        }
+    }
+    Ok(Some(BoundGoalReply {
+        reply: bound_status(session, &current).await?,
+        tick,
+    }))
+}
+
+/// State, accepted plan progress and the next decision Core would take.
+pub(crate) async fn bound_status(
+    session: &a3s_code_core::AgentSession,
+    current: &DurableGoalDefinitionV1,
+) -> anyhow::Result<String> {
+    let mut lines = vec![format!(
+        "Durable goal {}: {}",
+        current.state.as_str(),
+        current.goal.description
+    )];
+    match (&current.plan, current.plan_revision) {
+        (Some(plan), Some(revision)) => {
+            let done = plan
+                .steps
+                .iter()
+                .filter(|step| step.status == a3s_code_core::planning::TaskStatus::Completed)
+                .count();
+            let accepted = if current.plan_accepted {
+                "accepted"
+            } else {
+                "proposed"
+            };
+            lines.push(format!(
+                "Plan r{revision} {accepted}: {done}/{} steps done",
+                plan.steps.len()
+            ));
+        }
+        _ => lines.push("Plan: none".into()),
+    }
+    if !matches!(current.state, GoalState::Completed | GoalState::Cancelled) {
+        let preview = control_command(current, GoalCommandKindV1::Tick, "acp-status".into());
+        lines.push(format!(
+            "Next: {}",
+            session.preview_goal_tick(&preview).await?.as_str()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// The tick for one user `/goal resume`, under a fresh operation id.
+/// Bind an unattended task as a durable goal with one accepted step, then
+/// return the tick for that step. The task text is the goal, the step and its
+/// criterion; nothing is derived from it.
+pub(crate) fn bind_task_goal(
+    session: &a3s_code_core::AgentSession,
+    task: &str,
+) -> anyhow::Result<GoalControlCommandV1> {
+    use a3s_code_core::goal_control::{GoalDefinitionCommandV1, GoalPlanCommandV1};
+    use a3s_code_core::planning::{AgentGoal, Complexity, ExecutionPlan, Task};
+    let criterion = "Every requirement of the task holds in the workspace.";
+    let definition = session.apply_goal_definition(GoalDefinitionCommandV1 {
+        kind: GoalCommandKindV1::Create,
+        import_source: None,
+        operation_id: "unattended-create".into(),
+        goal_id: "unattended-task".into(),
+        session_id: session.session_id().into(),
+        workspace: a3s_code_core::workspace::WorkspaceServices::local(session.workspace())
+            .workspace_ref()
+            .clone(),
+        goal: AgentGoal::new(task).with_criteria(vec![criterion.into()]),
+        non_goals: vec![],
+        scope_fact_sequences: vec![],
+        work_policy_digest: session.work_policy_digest()?,
+        expected_goal_revision: None,
+        expected_plan_revision: None,
+        expected_goal_sequence: None,
+    })?;
+    let mut plan = ExecutionPlan::new(task, Complexity::Simple);
+    plan.upsert_step(Task::new("task", task).with_success_criteria(criterion));
+    let mut proposal = GoalPlanCommandV1 {
+        kind: GoalCommandKindV1::ProposePlan,
+        operation_id: "unattended-plan".into(),
+        goal_id: definition.binding.goal_id,
+        session_id: definition.binding.session_id,
+        workspace: definition.binding.workspace,
+        work_policy_digest: definition.binding.work_policy_digest,
+        expected_goal_revision: definition.binding.goal_revision,
+        expected_plan_revision: definition.plan_revision,
+        expected_goal_sequence: definition.goal_sequence,
+        plan: Some(plan),
+        proposal_sequence: None,
+    };
+    let proposed = session.apply_goal_plan(proposal.clone())?;
+    proposal.kind = GoalCommandKindV1::AcceptPlan;
+    proposal.operation_id = "unattended-accept".into();
+    proposal.expected_plan_revision = proposed.plan_revision;
+    proposal.expected_goal_sequence = proposed.goal_sequence;
+    proposal.plan = None;
+    proposal.proposal_sequence = proposed.plan_fact_sequence;
+    session.apply_goal_plan(proposal)?;
+    bound_tick_command(session)?
+        .ok_or_else(|| anyhow::anyhow!("goal.not_found: the bound task goal is missing"))
+}
+
+pub(crate) fn bound_tick_command(
+    session: &a3s_code_core::AgentSession,
+) -> anyhow::Result<Option<GoalControlCommandV1>> {
+    Ok(session.goal_definition()?.map(|current| {
+        let operation_id = format!("acp-tick-{}", uuid::Uuid::new_v4());
+        control_command(&current, GoalCommandKindV1::Tick, operation_id)
+    }))
+}
+
+/// The slice's Run outcome (when one ran) and the goal status after it.
+pub(crate) async fn bound_slice_report(
+    session: &a3s_code_core::AgentSession,
+    run_id: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut lines = Vec::new();
+    if let Some(run_id) = run_id {
+        let snapshot = session
+            .run_snapshot(run_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("goal slice {run_id} has no Run record"))?;
+        lines.push(format!("Goal slice {}: {:?}", snapshot.id, snapshot.status));
+    }
+    if let Some(after) = session.goal_definition()? {
+        lines.push(bound_status(session, &after).await?);
+    }
+    Ok(lines.join("\n\n"))
+}
+
 /// Later user turns carry an active objective until it is paused or cleared.
 pub fn standing_goal_prompt(goal: Option<&DurableGoal>, user: &str) -> String {
     match goal {
         Some(goal) if !goal.paused && !goal.objective.trim().is_empty() => format!(
-            "Note: a durable goal is set for this workspace: \"{}\". It stays in force until \"/goal clear\".\
+            "Note: a durable goal is set for this session: \"{}\". It stays in force until \"/goal clear\".\
 If the user's message asks to work on this goal or clearly continues it, proceed; a greeting or \
 an unrelated question needs only a normal reply — do not start executing the goal unprompted.\n\n{user}",
             goal.objective.trim()
         ),
         _ => user.to_string(),
-    }
-}
-
-fn goal_file(workspace: &Path) -> std::path::PathBuf {
-    workspace.join(".a3s").join("durable-goal.json")
-}
-
-/// Persist the objective so a new process can reload it.
-pub fn store_goal(workspace: &Path, goal: &DurableGoal) -> std::io::Result<()> {
-    let path = goal_file(workspace);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::json!({
-        "objective": goal.objective,
-        "paused": goal.paused,
-    });
-    let bytes = serde_json::to_vec_pretty(&body).map_err(std::io::Error::other)?;
-    std::fs::write(path, bytes)
-}
-
-pub fn load_goal(workspace: &Path) -> Option<DurableGoal> {
-    let raw = std::fs::read_to_string(goal_file(workspace)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let objective = value.get("objective")?.as_str()?.trim().to_string();
-    if objective.is_empty() {
-        return None;
-    }
-    let paused = value
-        .get("paused")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    Some(DurableGoal { objective, paused })
-}
-
-pub fn clear_stored_goal(workspace: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(goal_file(workspace)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
     }
 }
 
@@ -304,39 +471,6 @@ mod tests {
         assert_eq!(cleared.next, None);
         assert!(cleared.plan.clears_override());
         assert_eq!(cleared.reply.as_deref(), Some("Cleared the durable goal."));
-    }
-
-    #[test]
-    fn an_active_goal_stays_on_later_turns_and_survives_reload() {
-        let dir = std::env::temp_dir().join(format!(
-            "a3s-goal-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("temp workspace");
-        let goal = DurableGoal {
-            objective: "Ship the parser".into(),
-            paused: false,
-        };
-        store_goal(&dir, &goal).expect("store");
-        let loaded = load_goal(&dir).expect("reload");
-        assert_eq!(loaded, goal);
-        let later = standing_goal_prompt(Some(&loaded), "look at the next file");
-        assert!(later.contains("Ship the parser"));
-        assert!(later.contains("look at the next file"));
-        let paused = DurableGoal {
-            objective: goal.objective.clone(),
-            paused: true,
-        };
-        assert_eq!(
-            standing_goal_prompt(Some(&paused), "look at the next file"),
-            "look at the next file"
-        );
-        clear_stored_goal(&dir).expect("clear");
-        assert!(load_goal(&dir).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

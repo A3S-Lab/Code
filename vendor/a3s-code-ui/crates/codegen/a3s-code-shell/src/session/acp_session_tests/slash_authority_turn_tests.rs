@@ -559,7 +559,7 @@ async fn parent_compact_and_available_skill_execute_but_other_slashes_stay_inert
                 "/hooks-list",
                 "/memory",
                 "/config set unsafe=true",
-                "/always-approve off",
+                "/yolo off",
                 "/yolo off",
                 "/workflow runs",
                 "/deep-research auth",
@@ -630,7 +630,7 @@ async fn parent_compact_and_available_skill_execute_but_other_slashes_stay_inert
             );
             assert!(
                 actor.permissions.is_yolo_mode(),
-                "model-authored /always-approve off must remain inert"
+                "model-authored /yolo off must remain inert"
             );
         })
         .await;

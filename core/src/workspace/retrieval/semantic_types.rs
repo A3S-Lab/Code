@@ -79,7 +79,16 @@ pub struct WorkspaceRetrievalOptions {
     pub(crate) catalog_limits: Option<ChunkCatalogLimits>,
     pub(crate) rerank: WorkspaceRerankOptions,
     pub(crate) semantic_readiness_timeout: Duration,
+    /// Minimum cosine similarity a chunk must strictly exceed to count as
+    /// semantic evidence. The default of `0.0` keeps every positively
+    /// similar chunk and stops the vector top-k from padding results with
+    /// orthogonal (zero-similarity) documents that would reach the model as
+    /// pseudo-evidence.
+    pub(crate) semantic_min_score: f32,
 }
+
+/// Inclusive bounds for [`WorkspaceRetrievalOptions::semantic_min_score`].
+const SEMANTIC_MIN_SCORE_RANGE: (f32, f32) = (-1.0, 1.0);
 
 impl WorkspaceRetrievalOptions {
     /// Enable semantic indexing with a host-supplied embedding provider.
@@ -94,6 +103,7 @@ impl WorkspaceRetrievalOptions {
             catalog_limits: None,
             rerank: WorkspaceRerankOptions::default(),
             semantic_readiness_timeout: Duration::ZERO,
+            semantic_min_score: 0.0,
         }
     }
 
@@ -168,11 +178,35 @@ impl WorkspaceRetrievalOptions {
         self
     }
 
+    /// Set the minimum similarity a chunk must strictly exceed to be served
+    /// as semantic evidence.
+    ///
+    /// The default of `0.0` already rejects orthogonal chunks; a host with a
+    /// calibrated provider can raise the floor to trade recall for precision.
+    pub fn with_semantic_min_score(mut self, min_score: f32) -> Self {
+        self.semantic_min_score = min_score;
+        self
+    }
+
     pub(crate) fn validate_semantic_readiness_timeout(&self) -> WorkspaceRetrievalResult<()> {
         if self.semantic_readiness_timeout > MAX_SEMANTIC_READINESS_TIMEOUT {
             return Err(WorkspaceRetrievalError::InvalidConfiguration {
                 field: "semantic_readiness_timeout",
                 reason: "must not exceed thirty seconds",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_semantic_min_score(&self) -> WorkspaceRetrievalResult<()> {
+        let (minimum, maximum) = SEMANTIC_MIN_SCORE_RANGE;
+        if !self.semantic_min_score.is_finite()
+            || self.semantic_min_score < minimum
+            || self.semantic_min_score > maximum
+        {
+            return Err(WorkspaceRetrievalError::InvalidConfiguration {
+                field: "semantic_min_score",
+                reason: "must be a finite cosine similarity within [-1.0, 1.0]",
             });
         }
         Ok(())
@@ -202,6 +236,7 @@ impl fmt::Debug for WorkspaceRetrievalOptions {
                 "semantic_readiness_timeout",
                 &self.semantic_readiness_timeout,
             )
+            .field("semantic_min_score", &self.semantic_min_score)
             .finish()
     }
 }

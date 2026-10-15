@@ -24,6 +24,7 @@ pub enum SessionBuildResource {
     RlTrajectory,
     WorkspaceRetrieval,
     Workspace,
+    CodeIntelligence,
 }
 
 impl std::fmt::Display for SessionBuildResource {
@@ -38,12 +39,21 @@ impl std::fmt::Display for SessionBuildResource {
             Self::RlTrajectory => "RL trajectory recorder",
             Self::WorkspaceRetrieval => "workspace retrieval",
             Self::Workspace => "workspace isolation",
+            Self::CodeIntelligence => "Code Intelligence",
         })
     }
 }
 
 /// Crate-wide result type alias.
 pub type Result<T> = std::result::Result<T, CodeError>;
+
+// An adjacent typed source preserves CodeError's published exhaustive variant
+// set and const code() API. Runtime boundaries opt into the additive classifier.
+#[derive(Debug, Error)]
+#[error("Run '{run_id}' was cancelled")]
+struct OriginalRunCancelled {
+    run_id: String,
+}
 
 /// Categorized error type for A3S Code Core.
 ///
@@ -213,6 +223,34 @@ impl CodeError {
             Self::Internal(_) => "INTERNAL_ERROR",
         }
     }
+
+    /// Runtime machine code, including typed failures added after v9.1.2.
+    ///
+    /// [`Self::code`] retains its published const classification. SDK adapters
+    /// use this method to expose `RUN_CANCELLED` from the typed original Run
+    /// source without extending the exhaustive public enum.
+    pub fn runtime_code(&self) -> &'static str {
+        if self.cancelled_run_id().is_some() {
+            "RUN_CANCELLED"
+        } else {
+            self.code()
+        }
+    }
+
+    /// The original Run ID when this failure reports actual cancellation.
+    /// Diagnostics with similar text do not acquire cancellation semantics.
+    pub fn cancelled_run_id(&self) -> Option<&str> {
+        match self {
+            Self::Internal(source) => source
+                .downcast_ref::<OriginalRunCancelled>()
+                .map(|cancelled| cancelled.run_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn run_cancelled(run_id: String) -> Self {
+        Self::Internal(anyhow::Error::new(OriginalRunCancelled { run_id }))
+    }
 }
 
 // ============================================================================
@@ -236,6 +274,9 @@ pub(crate) fn write_or_recover<T>(
 ) -> std::sync::RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(|p| p.into_inner())
 }
+
+#[cfg(test)]
+mod compatibility_tests;
 
 #[cfg(test)]
 mod tests {

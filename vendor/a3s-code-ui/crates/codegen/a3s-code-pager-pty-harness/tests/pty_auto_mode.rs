@@ -176,8 +176,8 @@ fn pty_shift_tab_cycles_to_auto_mode_banner() {
         saw_auto || screen.contains("Auto") || screen.contains("Switched to mode: Auto"),
         "after Plan → Auto cycle, screen must show Auto (distinct mode). screen=\n{screen}"
     );
-    if screen.contains("Always-Approve") && !screen.contains("Auto") {
-        panic!("landed on Always-Approve without Auto — cycle skipped Auto mode");
+    if screen.contains("Switched to mode: YOLO") && !screen.contains("Auto") {
+        panic!("landed on yolo without Auto — cycle skipped Auto mode");
     }
 
     let _ = harness.inject_keys(b"q");
@@ -243,7 +243,7 @@ fn pty_shift_tab_skips_auto_when_gate_off() {
         if s.contains("Switched to mode: Plan") {
             saw_plan = true;
         }
-        if s.contains("Switched to mode: Always-Approve") {
+        if s.contains("Switched to mode: YOLO") {
             saw_always = true;
         }
         if s.contains("Switched to mode: Auto") {

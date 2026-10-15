@@ -63,6 +63,17 @@ pub(crate) struct AgentCapabilityOperation {
 }
 
 impl AgentCapabilityRuntime {
+    pub(crate) fn projected_identity(
+        &self,
+        kind: super::CapabilityKind,
+        name: &str,
+    ) -> Result<Option<(super::CapabilityId, super::Sha256Digest)>, CapabilityScopeError> {
+        match &self.parent {
+            AgentTurnParent::Run(parent) => parent.projected_identity(kind, name),
+            AgentTurnParent::Subtask(parent) => parent.projected_identity(kind, name),
+        }
+    }
+
     pub(crate) fn from_run(scope: &CapabilityScope<Run>) -> Self {
         let run = scope.handle();
         Self {
@@ -120,8 +131,28 @@ impl AgentCapabilityTurn {
 }
 
 impl AgentToolCapabilityContext {
+    pub(crate) fn authorizes_projection(
+        &self,
+        id: &super::CapabilityId,
+        digest: &super::Sha256Digest,
+    ) -> Result<bool, CapabilityScopeError> {
+        self.foreground.authorizes_projection(id, digest)
+    }
+
     pub(crate) fn foreground_scope_id(&self) -> &str {
         self.foreground.id().as_str()
+    }
+
+    pub(crate) fn run_instance_id(&self) -> Result<uuid::Uuid, CapabilityScopeError> {
+        self.foreground.cancellation()?;
+        self.background.instance_id()
+    }
+
+    pub(crate) fn workspace_operation(
+        &self,
+        operation: super::WorkspaceOperation,
+    ) -> Result<super::WorkspaceOperationAccess, CapabilityScopeError> {
+        super::WorkspaceOperationAccess::new(self.foreground.clone(), operation)
     }
 
     pub(crate) fn register_foreground_effect<E>(
@@ -132,6 +163,14 @@ impl AgentToolCapabilityContext {
         E: super::CapabilityEffect,
     {
         self.foreground.register_effect(effect)
+    }
+
+    pub(crate) fn register_run_effect<E>(&self, effect: E) -> Result<(), CapabilityScopeError>
+    where
+        E: super::CapabilityEffect,
+    {
+        self.foreground.cancellation()?;
+        self.background.register_effect(effect)
     }
 
     pub(crate) fn spawn_foreground_task<F>(
@@ -183,6 +222,18 @@ impl AgentCapabilitySubtask {
 }
 
 impl AgentCapabilityOperation {
+    pub(crate) fn bind_tool_context(
+        &self,
+        context: crate::tools::ToolContext,
+    ) -> crate::tools::ToolContext {
+        match &self.turn {
+            Some(turn) => context
+                .with_capability_context(turn.tool_context())
+                .with_cancellation(self.cancellation.clone()),
+            None => context,
+        }
+    }
+
     pub(crate) fn begin(
         runtime: Option<&AgentCapabilityRuntime>,
         logical_turn: usize,

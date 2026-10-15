@@ -383,7 +383,7 @@ pub(super) fn apply_soft_default_permission_mode(
     app.current_ui.permission_mode = Some(if auto {
         "auto".to_string()
     } else if app.default_yolo {
-        "always-approve".to_string()
+        "yolo".to_string()
     } else {
         a3s_code_shell::util::config::resolved_display_permission_mode(effective_ui, remote)
             .to_string()
@@ -392,7 +392,7 @@ pub(super) fn apply_soft_default_permission_mode(
 
 /// Tell live sessions to leave Auto on the mid-session kill-switch.
 /// `yolo_mode` is deliberately OMITTED: the agent skips the yolo branch when the key is absent.
-/// A sibling tab's always-approve is thus preserved; only auto is cleared.
+/// A sibling tab's yolo is thus preserved; only auto is cleared.
 pub(super) fn notify_sessions_leave_auto(app: &AppView, session_ids: &[acp::SessionId]) {
     for session_id in session_ids {
         let params = serde_json::json!({
@@ -649,12 +649,12 @@ mod presence_aware_dto_tests {
         );
 
         let some_v: Probe = serde_json::from_value(serde_json::json!({
-            "permission_mode": "always-approve",
+            "permission_mode": "yolo",
         }))
         .unwrap();
         assert_eq!(
             some_v.permission_mode,
-            Some(Some("always-approve".into())),
+            Some(Some("yolo".into())),
             "string must be Some(Some(_))"
         );
     }
@@ -715,7 +715,7 @@ mod presence_aware_dto_tests {
         let bad: PagerSettingsUpdate = serde_json::from_value(serde_json::json!({
             "slash_command_tags": ["oops"],
             "tips": ["still-applied"],
-            "permission_mode": "always-approve",
+            "permission_mode": "yolo",
         }))
         .expect("malformed slash_command_tags must not fail PagerSettingsUpdate parse");
         assert_eq!(
@@ -729,7 +729,7 @@ mod presence_aware_dto_tests {
         );
         assert_eq!(
             bad.permission_mode,
-            Some(Some("always-approve".into())),
+            Some(Some("yolo".into())),
             "sibling permission_mode must still parse"
         );
     }

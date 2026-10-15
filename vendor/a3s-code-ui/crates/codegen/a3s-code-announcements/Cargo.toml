@@ -6,7 +6,7 @@ version = "0.1.0"
 description = "Shared announcement types, persistence, and formatting for A3S Code CLI apps"
 
 [features]
-# TS bindings generation only (a3s-desktop consumes the committed output);
+# TS bindings generation only (a3s-work consumes the committed output);
 # off by default so Bazel/CI builds never compile ts-rs. See generate.sh.
 ts = ["dep:ts-rs"]
 

@@ -16,6 +16,26 @@ fn test_all_prompts_loaded() {
     assert!(!LLM_GOAL_EXTRACT_SYSTEM.is_empty());
     assert!(!LLM_GOAL_CHECK_SYSTEM.is_empty());
     assert!(!SKILLS_CATALOG_HEADER.is_empty());
+    assert!(SKILLS_CATALOG_HEADER.contains("search_skills"));
+    assert!(SKILLS_CATALOG_HEADER.contains("`Skill`"));
+    assert!(SKILLS_CATALOG_HEADER.contains("ask_user_form"));
+    assert!(SKILLS_CATALOG_HEADER.contains("`openui`"));
+    assert!(SKILLS_CATALOG_HEADER.contains("`ask-form`"));
+    let first_load = SKILLS_CATALOG_HEADER
+        .find("load the `ask-form` skill")
+        .expect("load before the form");
+    let second_load = SKILLS_CATALOG_HEADER
+        .rfind("load the `ask-form` skill")
+        .expect("load before the fence");
+    assert!(first_load < second_load);
+    assert!(first_load < SKILLS_CATALOG_HEADER.find("ask_user_form").unwrap());
+    assert!(
+        second_load
+            < SKILLS_CATALOG_HEADER
+                .find("emit one `openui` fence")
+                .unwrap()
+    );
+    assert!(!SKILLS_CATALOG_HEADER.contains("skills add"));
     assert!(!PLAN_EXECUTE_GOAL.is_empty());
     assert!(!PLAN_EXECUTE_STEP.is_empty());
 }
@@ -407,16 +427,62 @@ fn infer_user_reply_language_prefers_user_script() {
 }
 
 #[test]
-fn resolve_product_output_language_prefers_pin_then_inference() {
+fn resolve_product_output_language_prefers_clear_user_script_then_pin() {
     assert_eq!(
         resolve_product_output_language(Some("en-US"), "请修复这个问题"),
-        Some("en-US".to_owned())
+        Some("zh-CN".to_owned())
     );
     assert_eq!(
         resolve_product_output_language(None, "请修复这个问题"),
         Some("zh-CN".to_owned())
     );
+    assert_eq!(
+        resolve_product_output_language(Some("en-US"), "ok"),
+        Some("en-US".to_owned())
+    );
     assert_eq!(resolve_product_output_language(Some("  "), "ok"), None);
+    let (system, language) =
+        apply_turn_output_language(Some("standing".to_string()), "什么是智能体", None, false);
+    let system = system.expect("turn language");
+    assert_eq!(language.as_deref(), Some("zh-CN"));
+    assert!(system.contains("standing"));
+    assert!(system.contains("overrides any earlier output-language instruction"));
+    assert!(system.contains("zh-CN"));
+    let (unchanged, none) =
+        apply_turn_output_language(Some("standing".to_string()), "ok", None, false);
+    assert_eq!(unchanged.as_deref(), Some("standing"));
+    assert_eq!(none, None);
+}
+
+#[test]
+fn select_turn_reply_language_keeps_a_published_language() {
+    assert_eq!(
+        select_turn_reply_language(Some("zh-CN"), "ok", false).as_deref(),
+        Some("zh-CN")
+    );
+    assert_eq!(
+        select_turn_reply_language(Some("zh-CN"), "Execute the 'a3s-test' skill", true).as_deref(),
+        Some("zh-CN")
+    );
+    assert_eq!(
+        select_turn_reply_language(
+            Some("zh-CN"),
+            "Please explain the agent runtime in detail",
+            false
+        )
+        .as_deref(),
+        Some("en")
+    );
+    assert_eq!(
+        select_turn_reply_language(None, "什么是智能体", true).as_deref(),
+        Some("zh-CN")
+    );
+    let (system, language) =
+        apply_turn_output_language(Some("standing".to_string()), "ok", Some("zh-CN"), false);
+    let system = system.expect("established language");
+    assert_eq!(language.as_deref(), Some("zh-CN"));
+    assert!(system.contains("zh-CN"));
+    assert!(system.contains("standing"));
 }
 
 #[test]

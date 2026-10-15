@@ -29,9 +29,11 @@ use async_trait::async_trait;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "grep-trigram")]
+use std::sync::Mutex;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, OnceLock, RwLock,
+    Arc, OnceLock, RwLock,
 };
 #[cfg(test)]
 use std::time::Duration;
@@ -265,13 +267,29 @@ impl LocalWorkspaceManifest {
         if limit == 0 {
             return Vec::new();
         }
-        let Some(index) = self.state.read().ok().map(|state| Arc::clone(&state.index)) else {
-            return Vec::new();
-        };
-        self.recent
-            .read()
-            .map(|recent| recent.entries(Some(&index), limit, now_ms()))
+        self.navigation_snapshot(limit)
+            .map(|(_, entries)| entries)
             .unwrap_or_default()
+    }
+
+    /// Share one existing generation without cloning its full file list.
+    pub(crate) fn navigation_snapshot(
+        &self,
+        limit: usize,
+    ) -> Option<(
+        Arc<LocalWorkspaceManifestSnapshot>,
+        Vec<RecentWorkspaceFile>,
+    )> {
+        let (snapshot, index) = {
+            let state = self.state.read().ok()?;
+            (Arc::clone(&state.snapshot), Arc::clone(&state.index))
+        };
+        let entries = self
+            .recent
+            .read()
+            .ok()?
+            .entries(Some(&index), limit, now_ms());
+        Some((snapshot, entries))
     }
 
     /// Return recent file paths only, preserving hot-file order.
@@ -824,7 +842,7 @@ impl ManifestWorkspaceBackend {
             if let Some(index) = self.persistent_index.get() {
                 return Some(Arc::clone(index));
             }
-            let root = self.local.root.join(".a3s-code").join("index");
+            let root = crate::state_root::workspace_index_dir(&self.local.root).join("index");
             match WorkspacePersistentIndex::open(root, WorkspaceLexicalEngine::A3sVec) {
                 Ok(index) => match self.persistent_index.set(Arc::clone(&index)) {
                     Ok(()) => Some(index),

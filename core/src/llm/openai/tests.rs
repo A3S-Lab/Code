@@ -2,6 +2,8 @@ use super::*;
 use crate::llm::types::{Message, ToolDefinition};
 use futures::StreamExt;
 
+mod stream_text;
+
 fn make_client() -> OpenAiClient {
     OpenAiClient::new("test-key".to_string(), "gpt-test".to_string())
 }
@@ -13,6 +15,24 @@ fn reasoning_model_sends_reasoning_effort_and_keeps_output_room() {
     let req = client.build_chat_request(&[Message::user("fix it")], None, &[], None);
     assert_eq!(req["reasoning_effort"], "xhigh");
     assert!(req["max_tokens"].as_u64().unwrap() >= 65_536);
+}
+
+#[test]
+fn deepseek_model_sends_thinking_effort_without_an_output_floor() {
+    let client = OpenAiClient::new("k".to_string(), "deepseek-v4-flash".to_string())
+        .with_reasoning_effort("max");
+    let req = client.build_chat_request(&[Message::user("fix it")], None, &[], None);
+    assert_eq!(req["reasoning_effort"], "max");
+    assert_eq!(req["thinking"]["type"], "enabled");
+    assert_eq!(req["top_p"], 0.95);
+    assert!(req.get("max_tokens").is_none());
+
+    let disabled = OpenAiClient::new("k".to_string(), "deepseek-v4-flash".to_string())
+        .with_reasoning_effort("none");
+    let off = disabled.build_chat_request(&[Message::user("fix it")], None, &[], None);
+    assert_eq!(off["reasoning_effort"], "none");
+    assert_eq!(off["thinking"]["type"], "disabled");
+    assert!(off.get("top_p").is_none());
 }
 
 #[test]
@@ -215,6 +235,61 @@ impl crate::llm::http::HttpClient for ChunksThenPendingSseHttp {
     }
 }
 
+/// Yields scripted chunks. After each chunk is consumed, `parked` fires
+/// before the next chunk is taken, so a test can observe that a trailing CR
+/// produced no stream event.
+struct ScriptedSseHttp {
+    incoming: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Option<bytes::Bytes>>>>,
+    parked: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::http::HttpClient for ScriptedSseHttp {
+    async fn post(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::HttpResponse> {
+        anyhow::bail!("post is unused in the scripted streaming test")
+    }
+
+    async fn post_streaming(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &serde_json::Value,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<crate::llm::http::StreamingHttpResponse> {
+        let rx = self
+            .incoming
+            .lock()
+            .expect("scripted sse lock")
+            .take()
+            .expect("one scripted stream");
+        let parked = std::sync::Arc::clone(&self.parked);
+        let byte_stream =
+            futures::stream::unfold((rx, parked, false), |(mut rx, parked, seen)| async move {
+                if seen {
+                    parked.notify_one();
+                }
+                match rx.recv().await {
+                    Some(Some(bytes)) => {
+                        Some((Ok::<bytes::Bytes, anyhow::Error>(bytes), (rx, parked, true)))
+                    }
+                    _ => None,
+                }
+            });
+        Ok(crate::llm::http::StreamingHttpResponse {
+            status: 200,
+            retry_after: None,
+            byte_stream: Box::pin(byte_stream),
+            error_body: String::new(),
+        })
+    }
+}
+
 fn glm_client(chunks: Vec<String>) -> OpenAiClient {
     OpenAiClient::new("k".to_string(), "glm-test".to_string()).with_http_client(
         std::sync::Arc::new(MockSseHttp {
@@ -384,6 +459,41 @@ async fn streaming_clean_eof_after_finish_reason_can_finalize() {
     let response = drain_to_done(&client).await;
     assert_eq!(response.text(), "complete");
     assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+}
+
+/// Tool arguments arrive as an incremental JSON string; non-empty arguments
+/// that fail to parse are truncation evidence. Finalizing the buffered
+/// content as Done would make a cut-mid-call stream indistinguishable from
+/// a complete response, so the parser must close WITHOUT Done and let the
+/// caller retry.
+#[tokio::test]
+async fn streaming_truncated_tool_args_after_finish_reason_does_not_finalize() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let client = glm_client(vec![
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"comm\"}}]}}]}\n\n".to_string(),
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
+    ]);
+    let mut rx = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    let mut saw_done = false;
+    while let Some(event) = rx.recv().await {
+        if matches!(event, StreamEvent::Done(_)) {
+            saw_done = true;
+        }
+    }
+    assert!(
+        !saw_done,
+        "unparseable tool arguments must close without Done so the cut stream retries"
+    );
 }
 
 #[tokio::test]
@@ -557,6 +667,115 @@ async fn streaming_accepts_sse_data_without_space_after_colon() {
     assert_eq!(resp.usage.completion_tokens, 1);
     assert_eq!(resp.usage.total_tokens, 2);
     assert_eq!(resp.stop_reason.as_deref(), Some("stop"));
+}
+
+fn openai_hello_sse(separator: &str) -> String {
+    let delta = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
+    let done = "[DONE]";
+    format!("data: {delta}{separator}{separator}data: {done}{separator}{separator}")
+}
+
+async fn openai_text_deltas(chunks: Vec<String>) -> (Vec<String>, crate::llm::LlmResponse) {
+    use crate::llm::{LlmClient, StreamEvent};
+    let mut rx = glm_client(chunks)
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+    let mut deltas = Vec::new();
+    let mut done = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::TextDelta(delta) => deltas.push(delta),
+            StreamEvent::Done(response) => {
+                done = Some(response);
+                break;
+            }
+            _ => {}
+        }
+    }
+    (deltas, done.expect("Done"))
+}
+
+#[tokio::test]
+async fn streaming_crlf_data_frame_matches_lf_payload() {
+    let (lf_deltas, lf) = openai_text_deltas(vec![openai_hello_sse("\n")]).await;
+    let (crlf_deltas, crlf) = openai_text_deltas(vec![openai_hello_sse("\r\n")]).await;
+    assert_eq!(lf_deltas, vec!["hello".to_string()]);
+    assert_eq!(crlf_deltas, lf_deltas);
+    assert_eq!(lf.text(), "hello");
+    assert_eq!(crlf.text(), lf.text());
+    assert!(!crlf.text().contains('\r'));
+}
+
+#[tokio::test]
+async fn streaming_split_cr_does_not_emit_partial_event() {
+    use crate::llm::{LlmClient, StreamEvent};
+
+    let wire = openai_hello_sse("\r\n");
+    let blank = wire.find("\r\n\r\n").expect("crlf blank line");
+    let head = wire[..blank + 3].to_string();
+    assert!(head.ends_with('\r'), "the held suffix is a bare CR");
+    let tail = wire[blank + 3..].to_string();
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let parked = std::sync::Arc::new(tokio::sync::Notify::new());
+    let client = OpenAiClient::new("k".to_string(), "glm-test".to_string()).with_http_client(
+        std::sync::Arc::new(ScriptedSseHttp {
+            incoming: std::sync::Mutex::new(Some(rx)),
+            parked: std::sync::Arc::clone(&parked),
+        }),
+    );
+    let mut events = client
+        .complete_streaming(
+            &[Message::user("go")],
+            None,
+            &[],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("stream opened");
+
+    tx.send(Some(bytes::Bytes::from(head)))
+        .expect("reader accepts the partial frame");
+    tokio::time::timeout(std::time::Duration::from_secs(2), parked.notified())
+        .await
+        .expect("reader parked while the buffer ends on CR");
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "a buffer ending on CR must not emit a partial event"
+    );
+
+    tx.send(Some(bytes::Bytes::from(tail)))
+        .expect("reader accepts the rest of the frame");
+    tx.send(None).expect("close the scripted stream");
+    let mut deltas = Vec::new();
+    let mut done = None;
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                StreamEvent::TextDelta(delta) => deltas.push(delta),
+                StreamEvent::Done(response) => {
+                    done = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(finished.is_ok(), "the completed CRLF frame must finish");
+    assert_eq!(deltas, vec!["hello".to_string()]);
+    let response = done.expect("Done");
+    assert_eq!(response.text(), "hello");
+    assert!(!response.text().contains('\r'));
 }
 
 /// Gateways commonly re-send `"name":""` on argument-only deltas. The accumulated
@@ -824,9 +1043,7 @@ async fn streaming_tool_argument_deltas_emit_after_tool_start() {
 
 #[tokio::test]
 async fn streaming_trailing_message_chunk_without_sse_framing_finalizes() {
-    let trailing = concat!(
-        r#"{"choices":[{"message":{"content":"trailing","reasoning_content":"think","tool_calls":[{"id":"call_t","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":0,"total_characters":7}}"#
-    );
+    let trailing = r#"{"choices":[{"message":{"content":"trailing","reasoning_content":"think","tool_calls":[{"id":"call_t","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":0,"total_characters":7}}"#;
     let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
     assert_eq!(resp.text(), "trailing");
     assert_eq!(resp.message.reasoning_content.as_deref(), Some("think"));
@@ -838,9 +1055,7 @@ async fn streaming_trailing_message_chunk_without_sse_framing_finalizes() {
 async fn streaming_trailing_full_response_object_without_sse_framing_finalizes() {
     // Invalid `delta` type fails OpenAiStreamChunk deserialize; OpenAiResponse ignores
     // unknown fields, so the full-completion trailing branch runs.
-    let trailing = concat!(
-        r#"{"id":"full-1","object":"chat.completion","model":"glm-test","choices":[{"message":{"content":"full","reasoning_content":"r","tool_calls":[{"id":"call_f","function":{"name":"ping","arguments":"{}"}}]},"delta":"force-response-branch","finish_reason":"tool_calls","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":0,"total_characters":11,"prompt_tokens_details":{"cached_tokens":2}}}"#
-    );
+    let trailing = r#"{"id":"full-1","object":"chat.completion","model":"glm-test","choices":[{"message":{"content":"full","reasoning_content":"r","tool_calls":[{"id":"call_f","function":{"name":"ping","arguments":"{}"}}]},"delta":"force-response-branch","finish_reason":"tool_calls","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":0,"total_characters":11,"prompt_tokens_details":{"cached_tokens":2}}}"#;
     let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
     assert_eq!(resp.text(), "full");
     assert_eq!(resp.message.reasoning_content.as_deref(), Some("r"));
@@ -851,9 +1066,8 @@ async fn streaming_trailing_full_response_object_without_sse_framing_finalizes()
 
 #[tokio::test]
 async fn streaming_trailing_delta_path_without_sse_framing_finalizes() {
-    let trailing = concat!(
-        "{\"choices\":[{\"delta\":{\"content\":\"d\",\"reasoning_content\":\"rd\"},\"finish_reason\":\"stop\"}]}"
-    );
+    let trailing =
+        "{\"choices\":[{\"delta\":{\"content\":\"d\",\"reasoning_content\":\"rd\"},\"finish_reason\":\"stop\"}]}";
     let resp = drain_to_done(&glm_client(vec![trailing.to_string()])).await;
     assert_eq!(resp.text(), "d");
     assert_eq!(resp.message.reasoning_content.as_deref(), Some("rd"));
@@ -1160,4 +1374,42 @@ fn test_native_structured_support_can_be_overridden() {
             .native_structured_support(),
         structured::NativeStructuredSupport::None
     );
+}
+
+#[test]
+fn a_text_only_model_receives_a_note_instead_of_image_parts() {
+    let messages = [
+        Message::tool_result_with_images(
+            "call-1",
+            "[Image: image/png (4 bytes)]",
+            &[Attachment::png(vec![1, 2, 3, 4])],
+            false,
+        ),
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: "image/png".to_string(),
+                    data: "AQID".to_string(),
+                },
+            }],
+            reasoning_content: None,
+            transcript_text: None,
+            transcript_visibility: Default::default(),
+        },
+    ];
+
+    let wire = serde_json::to_string(
+        &make_client()
+            .with_text_only_input(true)
+            .convert_messages(&messages),
+    )
+    .unwrap();
+    assert!(!wire.contains("image_url"), "{wire}");
+    assert!(wire.contains(IMAGE_WITHHELD), "{wire}");
+    assert!(wire.contains("[Image: image/png (4 bytes)]"), "{wire}");
+
+    let vision = serde_json::to_string(&make_client().convert_messages(&messages)).unwrap();
+    assert!(vision.contains("image_url"), "{vision}");
 }

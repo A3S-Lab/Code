@@ -1649,7 +1649,7 @@ impl WorkspaceHandle {
         self.shared.tool_defs_last_emit.remove(session_id);
         tracing::info!(%session_id, "session_ended cleanup completed");
     }
-    /// Record a YOLO / always-approve mode toggle into the session's `events.jsonl`. The server/shell forwarding layer calls this when it observes a `SetYoloMode` command for a bound session.
+    /// Record a YOLO / yolo mode toggle into the session's `events.jsonl`. The server/shell forwarding layer calls this when it observes a `SetYoloMode` command for a bound session.
     pub fn on_yolo_toggled(&self, session_id: &str, enabled: bool) {
         self.shared
             .session_event_writer(session_id)

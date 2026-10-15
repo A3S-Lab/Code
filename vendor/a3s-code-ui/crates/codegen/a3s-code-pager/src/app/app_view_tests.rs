@@ -2150,7 +2150,7 @@ fn apply_a3s_code_slash_gate_hides_unsupported_builtins() {
     assert!(reg.get("exit").is_some());
     assert!(reg.get("effort").is_some());
     assert!(reg.get("compact").is_some());
-    assert!(reg.get("always-approve").is_some());
+    assert!(reg.get("yolo").is_some());
     // Voice gate off → settings / slash voice surface hidden.
     assert!(!app.voice_mode_enabled);
     assert!(reg.get("voice").is_none());

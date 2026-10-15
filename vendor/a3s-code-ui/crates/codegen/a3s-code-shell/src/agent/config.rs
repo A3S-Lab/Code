@@ -1300,7 +1300,7 @@ pub struct Config {
     /// Typed as `GrokComConfig` (same schema) so sub-field typos are caught.
     #[serde(default, skip_serializing)]
     pub auth: Option<GrokComConfig>,
-    /// `[desktop]` section: owned by a3s-desktop (Electron app), opaque to the CLI agent.
+    /// `[desktop]` section: owned by a3s-work (Electron app), opaque to the CLI agent.
     #[serde(default, skip_serializing)]
     pub desktop: Option<toml::Value>,
     /// Top-level `announcements` array: consumed by `resolve_announcements`.

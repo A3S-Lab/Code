@@ -238,6 +238,14 @@ fn js_harness_to_core(
     Ok(composed)
 }
 
+/// Engineering work policy `{ id, revision, instructions }`, validated by Core.
+#[napi(object)]
+pub struct WorkPolicyObject {
+    pub id: String,
+    pub revision: u32,
+    pub instructions: String,
+}
+
 /// Host-provided deterministic ID and clock configuration.
 ///
 /// Set both fields when replaying a run so session/run IDs and timestamps are
@@ -266,6 +274,16 @@ pub struct SessionOptions {
     pub builtin_skills: Option<bool>,
     /// Extra directories to scan for skill files (.md with YAML frontmatter).
     pub skill_dirs: Option<Vec<String>>,
+    /// Host-selected skill watch roots and exact projected skill files.
+    pub watch_skill_dirs: Option<Vec<String>>,
+    pub projected_skill_files: Option<Vec<String>>,
+    /// Explicit network mode: deny (default) or mediated.
+    pub sandbox_network: Option<String>,
+    pub sandbox_network_allow: Option<Vec<String>>,
+    pub code_intelligence: Option<bool>,
+    /// Path instruction byte budget; Core rejects zero and oversized values.
+    pub path_injection_budget: Option<f64>,
+    pub verification_contracts: Option<Vec<serde_json::Value>>,
     /// Whether active skill allowed-tools restrict ordinary session tool calls.
     ///
     /// Defaults to false. Set true to restore the legacy global active-skill
@@ -494,6 +512,10 @@ pub struct SessionOptions {
     pub allow_process_host_sandbox: Option<bool>,
     /// Opt-in read-only verifier. Default is off.
     pub verifier_enabled: Option<bool>,
+    /// Require actual assistant delivery after a verified tool result. Default is off.
+    pub require_assistant_final_response: Option<bool>,
+    /// Engineering work policy; the session's first Run admits it. Omit for none.
+    pub work_policy: Option<WorkPolicyObject>,
     /// Meta Harness compose recipe. Omit for the legacy `coding_actor` stock tree.
     ///
     /// ```js
@@ -818,6 +840,37 @@ pub(super) fn js_session_options_to_rust(
     };
     let mut opts = RustSessionOptions::new();
     opts = apply_host_contract_options(opts, &o)?;
+    if let Some(dirs) = o.watch_skill_dirs {
+        opts = opts.with_watch_skill_dirs(dirs.into_iter().map(std::path::PathBuf::from));
+    }
+    if let Some(files) = o.projected_skill_files {
+        opts = opts
+            .with_projected_skill_files(files.into_iter().map(std::path::PathBuf::from).collect());
+    }
+    if let Some(mode) = o.sandbox_network {
+        opts = opts.with_sandbox_network_mode(
+            a3s_code_core::sandbox::SandboxNetworkMode::parse(&mode)
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?,
+        );
+    }
+    if let Some(origins) = o.sandbox_network_allow {
+        opts = opts.with_sandbox_network_allow(origins);
+    }
+    if o.code_intelligence == Some(true) {
+        opts = opts.with_code_intelligence();
+    }
+    if let Some(budget) = o.path_injection_budget {
+        opts =
+            opts.with_injection_budget(js_optional_usize(Some(budget), "pathInjectionBudget", 0)?);
+    }
+    if let Some(contracts) = o.verification_contracts {
+        let contracts = contracts
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| napi::Error::from_reason(format!("verificationContracts: {error}")))?;
+        opts = opts.with_verification_contracts(contracts);
+    }
     if let Some(model) = o.model {
         opts = opts.with_model(model);
     }
@@ -1136,6 +1189,15 @@ pub(super) fn js_session_options_to_rust(
     // Maximum execution time configuration
     if let Some(timeout_ms) = o.max_execution_time_ms {
         opts.max_execution_time_ms = Some(timeout_ms as u64);
+    }
+    if let Some(required) = o.require_assistant_final_response {
+        opts = opts.with_assistant_final_response(required);
+    }
+    if let Some(policy) = o.work_policy {
+        let policy =
+            a3s_code_core::WorkPolicyV1::new(policy.id, policy.revision, policy.instructions)
+                .map_err(|e| napi::Error::from_reason(format!("workPolicy: {e}")))?;
+        opts = opts.with_work_policy(policy);
     }
 
     Ok(opts)

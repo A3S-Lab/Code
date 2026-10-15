@@ -237,14 +237,14 @@ async fn plan_mode_enter_and_exit_leave_permission_manager_untouched() {
                 .await;
             assert!(
                 actor.permissions.is_yolo_mode(),
-                "entering plan mode must keep always-approve"
+                "entering plan mode must keep yolo"
             );
             actor
                 .handle_session_mode(acp::SessionModeId::new("default"))
                 .await;
             assert!(
                 actor.permissions.is_yolo_mode(),
-                "leaving plan mode must keep always-approve"
+                "leaving plan mode must keep yolo"
             );
         })
         .await;

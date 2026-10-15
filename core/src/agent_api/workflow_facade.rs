@@ -165,6 +165,7 @@ impl AgentSession {
     /// weaker ambient authority.
     pub(crate) fn parent_run_context(&self) -> crate::child_run::ChildRunContext {
         crate::child_run::ChildRunContext {
+            work_policy: self.config.work_policy.clone(),
             security_provider: self.config.security_provider.clone(),
             hook_engine: Some(match &self.hook_executor {
                 Some(executor) => executor.clone(),

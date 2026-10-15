@@ -216,10 +216,9 @@ impl Session {
     pub fn register_dynamic_workflow_runtime(&self) -> napi::Result<()> {
         #[cfg(feature = "advanced-harness")]
         {
-            return self
-                .inner
+            self.inner
                 .register_dynamic_workflow_runtime()
-                .map_err(node_code_error);
+                .map_err(node_code_error)
         }
         #[cfg(not(feature = "advanced-harness"))]
         {

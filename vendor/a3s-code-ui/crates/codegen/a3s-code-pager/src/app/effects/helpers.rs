@@ -1444,7 +1444,7 @@ pub(crate) async fn notify_permission_mode(
 ) {
     let params = serde_json::json!({
         "sessionId": session_id,
-        "yolo_mode": canonical == "always-approve",
+        "yolo_mode": canonical == "yolo",
         "auto_mode": canonical == "auto",
         "permission_mode": canonical,
     });

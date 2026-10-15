@@ -9,6 +9,8 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 const TOOL_BUDGET_FINALIZATION: &str = "Tool-use budget reached. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
+const REPEATED_TOOL_FINALIZATION: &str = "Repeated identical tool calls have no new evidence. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
+pub(crate) const READ_ONLY_EVIDENCE_FINALIZATION: &str = "Read-only evidence gathering has no further effect on the task. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
 
 impl AgentLoop {
     /// Core execution loop (without planning routing).
@@ -138,6 +140,28 @@ impl AgentLoop {
         // value was used only for context lookup and telemetry while the LLM
         // still received the original user message, making prompt rewrites and
         // additionalContext observational instead of authoritative.
+        // Wire-only turn contract FIRST, product bubble LAST. A wire-only
+        // message placed after the human sentence displaces it from the
+        // compactor's keep-recent window (the language override counts as
+        // recent and the summariser folds the real user request away, so the
+        // model never receives it). Leading with the wire text keeps the
+        // human turn the most recent user message.
+        let language_source = entry_product_text
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .unwrap_or(effective_prompt);
+        let published = self.tool_context.reply_language();
+        let language_override = crate::prompts::select_turn_reply_language(
+            published.as_deref(),
+            language_source,
+            self.tool_context.has_open_invocation(),
+        );
+        if let Some(language) = &language_override {
+            self.tool_context.set_reply_language(Some(language));
+            state.messages.push(Message::user_wire(
+                &crate::prompts::turn_output_language_override(language),
+            ));
+        }
         if !msg_prompt.is_empty() {
             state.messages.push(match entry_product_text.as_deref() {
                 Some(display) => Message::user_for_model_with_transcript(effective_prompt, display),
@@ -158,14 +182,22 @@ impl AgentLoop {
 
         loop {
             // `max_tool_rounds` bounds evidence gathering, not the agent's
-            // ability to return the evidence it already collected. Reserve one
-            // provider turn with an empty tool set so bounded child runs
-            // converge instead of discarding all work at the limit.
-            let force_finalization = state.current_turn() >= self.config.max_tool_rounds;
+            // ability to return the evidence it already collected. The same
+            // reserved turn also stops repeated identical calls and a run of
+            // read-only rounds that never change the workspace.
+            let budget_hit = state.current_turn() >= self.config.max_tool_rounds;
+            let repeated_tool = state.take_duplicate_finalization();
+            let read_only_exhausted = state.read_only_evidence_exhausted();
+            let force_finalization = budget_hit || repeated_tool || read_only_exhausted;
             if force_finalization {
-                state
-                    .messages
-                    .push(Message::user_wire(TOOL_BUDGET_FINALIZATION));
+                let message = if budget_hit {
+                    TOOL_BUDGET_FINALIZATION
+                } else if repeated_tool {
+                    REPEATED_TOOL_FINALIZATION
+                } else {
+                    READ_ONLY_EVIDENCE_FINALIZATION
+                };
+                state.messages.push(Message::user_wire(message));
             }
             let turn = state.next_turn();
             if let Some(control) = &run_control {
@@ -263,10 +295,14 @@ impl AgentLoop {
             let tool_calls = llm_turn.tool_calls;
 
             if force_finalization && !tool_calls.is_empty() {
-                let error = format!(
-                    "Max tool rounds ({}) exceeded; the reserved finalization turn attempted another tool call",
-                    self.config.max_tool_rounds
-                );
+                let error = if budget_hit {
+                    format!(
+                        "Max tool rounds ({}) exceeded; the reserved finalization turn attempted another tool call",
+                        self.config.max_tool_rounds
+                    )
+                } else {
+                    "The reserved finalization turn attempted another tool call".to_string()
+                };
                 self.emit_error(&event_tx, error.clone()).await;
                 if let Err(close_error) = close_capability_turn(capability_turn.as_ref()).await {
                     tracing::warn!(
@@ -366,6 +402,11 @@ impl AgentLoop {
             if let Err(error) = close_capability_turn(capability_turn.as_ref()).await {
                 return Err(state.finish_failed(error));
             }
+            if state.surface_form_parked {
+                self.persist_loop_checkpoint(turn, &state, session_id).await;
+                return Ok(state.finish(String::new()));
+            }
+            state.note_read_only_evidence_round();
             state.next_turn_is_verifier = false;
             // Quiescent boundary: all tools and capability-owned effects have
             // settled, and `state.messages` is consistent. The runtime sink
@@ -438,12 +479,20 @@ impl AgentLoop {
         let Some(run_id) = self.checkpoint_run_id.as_ref() else {
             return;
         };
+        // A legacy loop without original admission cannot export a policy as an unbound cache.
+        if self.config.work_policy.is_some() && self.config.durable_source.is_none() {
+            tracing::warn!("Loop checkpoint requires the admitted policy source");
+            return;
+        }
         let checkpoint = crate::loop_checkpoint::LoopCheckpoint {
-            schema_version: crate::loop_checkpoint::LOOP_CHECKPOINT_SCHEMA_VERSION,
+            schema_version: crate::loop_checkpoint::LoopCheckpoint::schema_for(
+                self.config.durable_source.as_ref(),
+            ),
             run_id: run_id.clone(),
             session_id: session_id.unwrap_or("").to_string(),
             capability_binding: self.checkpoint_capability_binding.clone(),
             standing_context_digest: None,
+            durable_source: self.config.durable_source.clone(),
             turn,
             messages: state.messages.clone(),
             total_usage: state.total_usage.clone(),
@@ -455,11 +504,24 @@ impl AgentLoop {
         sink.save_checkpoint(&checkpoint).await;
     }
 
+    /// Path-scoped rules for injection (shared by both execution paths).
+    pub(crate) fn path_rules(&self) -> &[crate::path_instructions::PathRule] {
+        &self.config.path_rules
+    }
+
+    /// Explicit per-session injection budget; `None` keeps the product default.
+    pub(crate) fn path_injection_budget(&self) -> Option<usize> {
+        self.config.path_injection_budget
+    }
+
     fn inject_turn_scoped_evidence(&self, system_prompt: &str, state: &mut ExecutionLoopState) {
-        let injection = crate::path_instructions::inject(
+        let injection = crate::path_instructions::inject_with_budget(
             system_prompt,
             &self.config.path_rules,
             &state.targeted_paths,
+            self.config
+                .path_injection_budget
+                .unwrap_or(crate::path_instructions::INJECTION_BYTE_BUDGET),
         );
         if let Some(fragment) = injection.model_input_fragment() {
             if !state

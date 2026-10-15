@@ -155,6 +155,7 @@ fn atomic_ranges_are_indivisible_for_grapheme_plans() {
     assert_eq!(motion.apply_plan(&right), Ok(EditOutcome::CursorOnly));
 
     let mut replacement = EditBuffer::from_parts("aTOKENb", 3);
+    #[allow(clippy::single_range_in_vec_init)] // one fixture range
     let plan = replacement.plan_replace_byte_range(3..4, "x", &[1..6]);
     assert_eq!(plan.replaced_byte_range(), 1..6);
     assert_eq!(plan.replacement(), "x");

@@ -271,6 +271,8 @@ pub fn split_provider_tab_row(
     )
 }
 
+const PROVIDER_TAB_GAP: u16 = 2;
+
 fn paint_provider_tabs(
     buf: &mut Buffer,
     area: Rect,
@@ -279,16 +281,34 @@ fn paint_provider_tabs(
     theme: &Theme,
 ) -> Vec<Rect> {
     let mut rects = vec![Rect::default(); tabs.len()];
-    let gap = 2u16;
+    if tabs.is_empty() || area.width == 0 {
+        return rects;
+    }
+    let widths: Vec<u16> = tabs
+        .iter()
+        .map(|label| u16::try_from(label.width()).unwrap_or(u16::MAX))
+        .collect();
+    let start = first_visible_provider_tab(&widths, active, area.width);
     let mut x = area.x;
     let right = area.x.saturating_add(area.width);
-    for (index, label) in tabs.iter().enumerate() {
+    for index in start..tabs.len() {
         if x >= right {
             break;
         }
-        let room = (right - x) as usize;
-        let shown = truncate_str(label, room);
-        let width = shown.width() as u16;
+        let room = right - x;
+        let full = widths[index];
+        let (shown, width) = if full > room {
+            // A later tab that does not fit stays off-screen. Only a tab that
+            // is itself wider than the row is clipped.
+            if index != start {
+                break;
+            }
+            let shown = truncate_str(&tabs[index], room as usize);
+            let width = shown.width() as u16;
+            (shown, width)
+        } else {
+            (tabs[index].clone(), full)
+        };
         if width == 0 {
             break;
         }
@@ -309,9 +329,36 @@ fn paint_provider_tabs(
                 height: 1,
             };
         }
-        x = x.saturating_add(width).saturating_add(gap);
+        x = x.saturating_add(width).saturating_add(PROVIDER_TAB_GAP);
     }
     rects
+}
+
+/// Smallest index at or before `active` for which the tabs through `active`
+/// fit in `viewport` columns. Painting continues to the right of `active`.
+fn first_visible_provider_tab(widths: &[u16], active: usize, viewport: u16) -> usize {
+    if widths.is_empty() || viewport == 0 {
+        return 0;
+    }
+    let active = active.min(widths.len() - 1);
+    let mut start = 0usize;
+    while start < active && !provider_tabs_fit(widths, start, active, viewport) {
+        start += 1;
+    }
+    start
+}
+
+fn provider_tabs_fit(widths: &[u16], start: usize, end: usize, viewport: u16) -> bool {
+    let mut used = 0u16;
+    for index in start..=end {
+        let extra = if index == start { 0 } else { PROVIDER_TAB_GAP };
+        let next = used.saturating_add(extra).saturating_add(widths[index]);
+        if next > viewport {
+            return false;
+        }
+        used = next;
+    }
+    true
 }
 
 /// Badge geometry shared by [`flat_line_count`] and [`build_item_lines`] so height estimation cannot diverge from what is drawn.
@@ -1032,5 +1079,61 @@ mod tests {
         let desc_x = (PREFIX_W + LABEL_CAP + 1) as u16;
         assert_eq!(desc_col(0, "cache help"), desc_x, "{}", row_text(0));
         assert_eq!(desc_col(1, "long name"), desc_x, "{}", row_text(1));
+    }
+
+    /// The provider row keeps the active tab fully inside the viewport.
+    /// Tabs that do not fit stay unscrolled instead of being clipped to `…`.
+    #[test]
+    fn provider_tabs_scroll_the_active_tab_into_view() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        fn tab_row(buf: &Buffer, width: u16) -> String {
+            (0..width)
+                .map(|x| buf[(x, 0)].symbol().to_string())
+                .collect()
+        }
+
+        let theme = Theme::current();
+        let tabs = vec![
+            "anthropic".to_string(),
+            "boyue".to_string(),
+            "cc-switch".to_string(),
+            "cc-switch-zhipu-glm-01".to_string(),
+            "cursor".to_string(),
+        ];
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 2));
+        let (rects, items) = split_provider_tab_row(&mut buf, area, &tabs, 4, &theme);
+        assert_eq!(items.y, 1);
+        assert!(
+            rects[4].width > 0,
+            "the active cursor tab must be clickable"
+        );
+        assert!(rects[4].right() <= area.right());
+        assert_eq!(rects[0].width, 0, "a scrolled-off tab is not a click target");
+        let row = tab_row(&buf, 30);
+        assert!(row.contains("cursor"), "{row}");
+        assert!(
+            row.contains("cc-switch-zhipu-glm-01"),
+            "a tab that fits must keep its full label: {row}"
+        );
+        assert!(!row.contains('…'), "{row}");
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 2));
+        let (rects, _) = split_provider_tab_row(&mut buf, area, &tabs, 0, &theme);
+        assert!(rects[0].width > 0);
+        assert_eq!(rects[4].width, 0);
+        let row = tab_row(&buf, 30);
+        assert!(row.contains("anthropic"), "{row}");
+        assert!(!row.contains("cursor"), "{row}");
+        assert!(!row.contains('…'), "{row}");
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        let narrow = Rect::new(0, 0, 10, 2);
+        let (rects, _) = split_provider_tab_row(&mut buf, narrow, &tabs, 3, &theme);
+        assert!(rects[3].width > 0);
+        assert!(rects[3].right() <= narrow.right());
+        assert!(tab_row(&buf, 10).contains('…'));
     }
 }

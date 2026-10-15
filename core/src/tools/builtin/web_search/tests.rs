@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{SearchConfig, SearchEngineConfig};
 use a3s_search::RetrievalHealth;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -980,13 +981,13 @@ fn test_add_http_engine_valid() {
     assert!(add_http_engine(&mut search, "tavily", None, None).expect("engine setup"));
     assert_eq!(search.engine_count(), 7);
 
-    for provider in ["tinyfish", "bocha", "aliyun", "tencent", "firecrawl"] {
+    for provider in ["tinyfish", "bocha", "aliyun", "tencent", "firecrawl", "a3s"] {
         assert!(
             add_http_engine(&mut search, provider, None, None).expect("engine setup"),
             "{provider} must be constructible when named"
         );
     }
-    assert_eq!(search.engine_count(), 12);
+    assert_eq!(search.engine_count(), 13);
 }
 
 #[test]
@@ -1003,7 +1004,7 @@ fn test_add_headless_engine_valid() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    let retry_budget = a3s_search::RetryBudget::default();
+    let retry_budget = a3s_search::retry::RetryBudget::default();
     assert!(add_headless_engine(
         &mut search,
         "google",
@@ -1039,7 +1040,7 @@ fn test_add_headless_engine_aliases() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    let retry_budget = a3s_search::RetryBudget::default();
+    let retry_budget = a3s_search::retry::RetryBudget::default();
     assert!(add_headless_engine(
         &mut search,
         "g",
@@ -1057,7 +1058,7 @@ fn test_add_headless_engine_unknown() {
     let pool_config = BrowserPoolConfig::default();
     let pool = Arc::new(BrowserPool::new(pool_config));
 
-    let retry_budget = a3s_search::RetryBudget::default();
+    let retry_budget = a3s_search::retry::RetryBudget::default();
     assert!(!add_headless_engine(
         &mut search,
         "ddg",
@@ -1337,6 +1338,88 @@ fn search_query_urls_drop_credentials_query_and_fragment() {
 }
 
 #[test]
+fn unconfigured_search_leaves_a3s_out_of_the_default_cascade() {
+    let (engines, source) = default_engine_selection(None);
+    assert_eq!(source, "builtin_default");
+    assert!(!engines.contains(&"a3s"));
+}
+
+#[tokio::test]
+async fn configured_agent_search_posts_to_the_gateway_route() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("http://{address}/v1/search");
+    let (capture_tx, capture_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                return;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break offset + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+        let _ = capture_tx.send(headers);
+        let body = r#"{"success":true,"data":{"results":{"web":[{"url":"https://www.rust-lang.org/","title":"Rust","description":"language"}]}}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    });
+
+    let mut search = Search::new();
+    let config = SearchConfig {
+        timeout: 5,
+        cascade_order: None,
+        health: None,
+        engines: HashMap::from([(
+            "a3s".to_string(),
+            SearchEngineConfig {
+                enabled: true,
+                weight: 1.0,
+                timeout: None,
+                api_key: Some("caller-secret".to_string()),
+                project: None,
+                endpoint: Some(endpoint),
+            },
+        )]),
+        headless: None,
+    };
+    assert!(
+        add_http_engine(&mut search, "a3s", None, Some(&config)).expect("a3s setup"),
+        "named a3s must register against the gateway endpoint"
+    );
+    let results = search
+        .search(a3s_search::SearchQuery::new("rust"))
+        .await
+        .expect("a3s search");
+    assert!(
+        results.failures().is_empty(),
+        "a3s search failed: {:?}",
+        results.failures()
+    );
+    assert_eq!(results.items().len(), 1);
+    let headers = capture_rx.await.expect("gateway capture");
+    assert!(headers.contains("POST /v1/search"), "{headers}");
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer caller-secret"),
+        "{headers}"
+    );
+}
+
+#[test]
 fn configured_api_endpoint_rejects_non_loopback_http() {
     let mut search = Search::new();
     let config = SearchConfig {
@@ -1524,6 +1607,85 @@ async fn soak_web_search_loopback_fixture_stays_connection_and_byte_capped() {
         "peak open {} exceeded pool cap",
         peak.load(Ordering::SeqCst)
     );
+}
+
+struct WikiInvoker {
+    output: String,
+    exit_code: i32,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::tools::ToolInvoker for WikiInvoker {
+    async fn invoke(
+        &self,
+        _invocation: crate::tools::ToolInvocation,
+        _ctx: &ToolContext,
+    ) -> crate::tools::ToolResult {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.exit_code == 0 {
+            crate::tools::ToolResult::success("search_wiki", self.output.clone())
+        } else {
+            crate::tools::ToolResult::error("search_wiki", self.output.clone())
+        }
+    }
+
+    fn available_tools(&self) -> Vec<String> {
+        vec!["search_wiki".to_string()]
+    }
+}
+
+#[test]
+fn saved_notes_decide_whether_the_web_runs() {
+    assert!(matches!(
+        local_first_outcome("no-match", false),
+        LocalFirst::SearchWeb
+    ));
+    assert!(matches!(
+        local_first_outcome("not-ready", false),
+        LocalFirst::SearchWeb
+    ));
+    assert!(matches!(
+        local_first_outcome("denied", true),
+        LocalFirst::SearchWeb
+    ));
+    assert!(matches!(
+        local_first_outcome("index failed", true),
+        LocalFirst::Stop(_)
+    ));
+    match local_first_outcome("林夏\n百科", false) {
+        LocalFirst::Answer(text) => assert!(text.contains("林夏")),
+        other => panic!("expected a local answer, got {other:?}"),
+    }
+    let session = "local-first-unit";
+    let _ = claim_web_escalation(session, "林夏");
+    assert!(!claim_web_escalation(session, "林夏"));
+    remember_web_escalation(session, "林夏");
+    assert!(claim_web_escalation(session, "林夏"));
+    assert!(!claim_web_escalation(session, "林夏"));
+}
+
+#[tokio::test]
+async fn web_search_returns_saved_notes_without_searching_the_web() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let session = "local-first-execute";
+    let query = "谁是林夏";
+    let _ = claim_web_escalation(session, query);
+    let ctx = ToolContext::new(PathBuf::from("/tmp"))
+        .with_session_id(session)
+        .with_tool_invoker(Arc::new(WikiInvoker {
+            output: "林夏只在本地笔记".to_string(),
+            exit_code: 0,
+            calls: Arc::clone(&calls),
+        }));
+    let output = WebSearchTool::new()
+        .execute(&serde_json::json!({ "query": query }), &ctx)
+        .await
+        .expect("local knowledge answers");
+    assert!(output.success);
+    assert!(output.content.contains("林夏只在本地笔记"));
+    assert!(output.content.contains("local-knowledge"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

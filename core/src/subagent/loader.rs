@@ -52,10 +52,17 @@ fn apply_claude_style_tools_to_agent(
         let base = std::mem::take(&mut agent.permissions);
         agent.permissions = add_denied_tools(base, disallowed_tools);
     }
-    if (!tools.is_empty() || !disallowed_tools.is_empty())
-        && agent.confirmation_inheritance.is_none()
-    {
-        agent.confirmation_inheritance = Some(ConfirmationInheritance::AutoApprove);
+    // AutoApprove is justified only by an explicit allow list that already
+    // defines the access boundary (the enum's own contract). A deny-only
+    // definition keeps the base Ask policy's decisions meaningful, so it
+    // must not silently become auto-approved: deny-only gets DenyOnAsk —
+    // strictly no wider than a definition with no tool fields at all.
+    if agent.confirmation_inheritance.is_none() {
+        if !tools.is_empty() {
+            agent.confirmation_inheritance = Some(ConfirmationInheritance::AutoApprove);
+        } else if !disallowed_tools.is_empty() {
+            agent.confirmation_inheritance = Some(ConfirmationInheritance::DenyOnAsk);
+        }
     }
 }
 
@@ -174,20 +181,14 @@ fn validate_agent_name(name: &str) -> anyhow::Result<()> {
 ///
 /// The frontmatter contains agent metadata, and the body becomes the prompt.
 pub fn parse_agent_md(content: &str) -> anyhow::Result<AgentDefinition> {
-    // Parse frontmatter (YAML between --- markers)
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
-
-    if parts.len() < 3 {
-        return Err(anyhow::anyhow!(
-            "Invalid markdown format: missing YAML frontmatter"
-        ));
-    }
-
-    let frontmatter = parts[1].trim();
-    let body = parts[2].trim();
+    // Same logical-line fence split as skill markdown. LF, CRLF, CR, and a
+    // leading BOM become one YAML document; a missing closer still fails.
+    let (frontmatter, body) = crate::directory_projection::split_frontmatter(content)
+        .map_err(|_| anyhow::anyhow!("Invalid markdown format: missing YAML frontmatter"))?;
+    let body = body.trim().to_string();
 
     // Parse the frontmatter as YAML. A `kind` field selects WorkerAgentSpec.
-    let value: serde_yaml::Value = serde_yaml::from_str(frontmatter)
+    let value: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
         .map_err(|e| anyhow::anyhow!("Failed to parse agent frontmatter: {}", e))?;
 
     if yaml_value_has_key(&value, "kind") {

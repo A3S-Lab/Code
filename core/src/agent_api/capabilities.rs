@@ -47,30 +47,69 @@ struct ResolvedWorkspaceServices {
     owned_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
 }
 
-pub(super) fn build_session_capabilities(
+pub(super) async fn build_session_capabilities(
     input: SessionCapabilityInput<'_>,
     session_lifetime: tokio_util::sync::CancellationToken,
 ) -> Result<SessionCapabilities> {
-    let isolated = match crate::effect_isolation::bind_sync(
+    let isolated = session_isolation_root(&input)?;
+    let write_root = isolated.unwrap_or_else(|| input.workspace.to_path_buf());
+    let workspace = resolve_workspace_services(&input, &write_root, session_lifetime).await?;
+    assemble_session_capabilities(input, &write_root, workspace)
+}
+
+pub(super) fn build_session_capabilities_sync(
+    input: SessionCapabilityInput<'_>,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<SessionCapabilities> {
+    if sync_path_must_start_code_intelligence(&input) {
+        return Err(CodeError::AsyncSessionBuildRequired {
+            resource: SessionBuildResource::CodeIntelligence,
+        });
+    }
+    let isolated = session_isolation_root(&input)?;
+    let write_root = isolated.unwrap_or_else(|| input.workspace.to_path_buf());
+    let workspace = resolve_workspace_services_sync(&input, &write_root, session_lifetime)?;
+    assemble_session_capabilities(input, &write_root, workspace)
+}
+
+fn session_isolation_root(input: &SessionCapabilityInput<'_>) -> Result<Option<PathBuf>> {
+    match crate::effect_isolation::bind_sync(
         &input.opts.session_id_hint(),
         input.workspace,
         input.opts.effect_isolation,
         input.opts.can_write_workspace(),
     ) {
-        Ok(Some(binding)) => Some(binding.worktree_path),
-        Ok(None) => None,
-        Err(error) if input.opts.effect_isolation => {
-            return Err(CodeError::SessionInitialization {
-                resource: SessionBuildResource::Workspace,
-                message: error.to_string(),
-            });
-        }
-        Err(_) => None,
-    };
-    let write_root = isolated.as_deref().unwrap_or(input.workspace);
+        Ok(Some(binding)) => Ok(Some(binding.worktree_path)),
+        Ok(None) => Ok(None),
+        Err(error) if input.opts.effect_isolation => Err(CodeError::SessionInitialization {
+            resource: SessionBuildResource::Workspace,
+            message: error.to_string(),
+        }),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The synchronous factory never starts Code Intelligence. Host-supplied
+/// services keep the provider they already have. A fresh backend would have
+/// to await `LocalCodeIntelligence::start`, so that request uses
+/// `Agent::session_builder`.
+fn sync_path_must_start_code_intelligence(input: &SessionCapabilityInput<'_>) -> bool {
+    if !input.opts.code_intelligence {
+        return false;
+    }
+    match &input.opts.workspace_services {
+        Some(_) if !input.opts.effect_isolation => false,
+        Some(_) | None => true,
+    }
+}
+
+fn assemble_session_capabilities(
+    input: SessionCapabilityInput<'_>,
+    write_root: &Path,
+    workspace: ResolvedWorkspaceServices,
+) -> Result<SessionCapabilities> {
     let artifact_limits = input.opts.artifact_store_limits.unwrap_or_default();
     let retention_limits = input.opts.retention_limits.unwrap_or_default();
-    let workspace = resolve_workspace_services(&input, write_root, session_lifetime)?;
     let workspace_services = workspace.services;
     let tool_executor = Arc::new(
         ToolExecutor::new_with_workspace_services_artifact_limits_and_immutable_content_adapter(
@@ -161,16 +200,50 @@ pub(super) fn build_session_capabilities(
     })
 }
 
-fn resolve_workspace_services(
+/// Attach the local Code Intelligence provider to freshly built services
+/// when the session asked for it. Host-supplied services are returned as-is
+/// (their provider choice stands); a provider already present is never
+/// replaced. Failures are configuration errors surfaced to the host.
+async fn services_with_requested_intelligence(
+    services: Arc<crate::workspace::WorkspaceServices>,
+    backend: &Arc<crate::workspace::ManifestWorkspaceBackend>,
+    requested: bool,
+) -> Result<Arc<crate::workspace::WorkspaceServices>> {
+    if !requested || services.code_intelligence().is_some() {
+        return Ok(services);
+    }
+    let isolation_scope = format!(
+        "session-ci-{}",
+        backend.manifest().snapshot().root.display()
+    );
+    let provider = crate::code_intelligence::LocalCodeIntelligence::start(
+        isolation_scope,
+        backend.manifest(),
+        Arc::clone(backend) as Arc<dyn crate::workspace::WorkspaceFileSystem>,
+    )
+    .await
+    .map_err(|error| CodeError::SessionInitialization {
+        resource: SessionBuildResource::CodeIntelligence,
+        message: format!("failed to start Code Intelligence: {error}"),
+    })?;
+    Ok(services.with_code_intelligence(provider))
+}
+
+enum PreparedWorkspace {
+    Host(Arc<crate::workspace::WorkspaceServices>),
+    Fresh {
+        services: Arc<crate::workspace::WorkspaceServices>,
+        backend: Arc<crate::workspace::ManifestWorkspaceBackend>,
+    },
+}
+
+fn prepare_workspace_services(
     input: &SessionCapabilityInput<'_>,
     write_root: &Path,
-    session_lifetime: tokio_util::sync::CancellationToken,
-) -> Result<ResolvedWorkspaceServices> {
-    let retrieval_options = input.opts.workspace_retrieval.clone();
+    retrieval_options: Option<&crate::workspace::WorkspaceRetrievalOptions>,
+) -> Result<PreparedWorkspace> {
     if input.opts.workspace_services.is_some()
-        && retrieval_options
-            .as_ref()
-            .is_some_and(|options| options.has_catalog_configuration())
+        && retrieval_options.is_some_and(|options| options.has_catalog_configuration())
     {
         return Err(CodeError::SessionConfiguration {
             field: "workspace_retrieval",
@@ -178,11 +251,17 @@ fn resolve_workspace_services(
                 .to_owned(),
         });
     }
-    let (mut services, owned_workspace_backend) = match &input.opts.workspace_services {
-        Some(services) if !input.opts.effect_isolation => (Arc::clone(services), None),
-        None if retrieval_options.is_some() => {
+    // Session-bound Code Intelligence rides the same manifest backend the
+    // default services construct, so the CI tools, retrieval, and file
+    // watching share one scanner and change stream.
+    match &input.opts.workspace_services {
+        Some(services) if !input.opts.effect_isolation => {
+            Ok(PreparedWorkspace::Host(Arc::clone(services)))
+        }
+        _ => {
+            // Isolation never reuses a host backend bound to the source tree.
             let backend = crate::workspace::ManifestWorkspaceBackend::new(write_root);
-            if let Some(options) = retrieval_options.as_ref() {
+            if let Some(options) = retrieval_options {
                 if options.has_catalog_configuration() {
                     backend
                         .configure_chunk_catalog_with_engine(
@@ -197,24 +276,68 @@ fn resolve_workspace_services(
                         })?;
                 }
             }
-            (
-                crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
-                    &backend,
-                )),
-                Some(backend),
-            )
+            Ok(PreparedWorkspace::Fresh {
+                services: crate::workspace::WorkspaceServices::local_with_retrieval_backend(
+                    Arc::clone(&backend),
+                ),
+                backend,
+            })
         }
-        Some(_) | None => {
-            // Isolation never reuses a host backend bound to the source tree.
-            let backend = crate::workspace::ManifestWorkspaceBackend::new(write_root);
-            (
-                crate::workspace::WorkspaceServices::local_with_retrieval_backend(Arc::clone(
-                    &backend,
-                )),
-                Some(backend),
+    }
+}
+
+async fn resolve_workspace_services(
+    input: &SessionCapabilityInput<'_>,
+    write_root: &Path,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<ResolvedWorkspaceServices> {
+    let retrieval_options = input.opts.workspace_retrieval.clone();
+    let prepared = prepare_workspace_services(input, write_root, retrieval_options.as_ref())?;
+    let (services, owned_workspace_backend) = match prepared {
+        PreparedWorkspace::Host(services) => (services, None),
+        PreparedWorkspace::Fresh { services, backend } => {
+            let services = services_with_requested_intelligence(
+                services,
+                &backend,
+                input.opts.code_intelligence,
             )
+            .await?;
+            (services, Some(backend))
         }
     };
+    finish_workspace_services(
+        services,
+        owned_workspace_backend,
+        retrieval_options,
+        session_lifetime,
+    )
+}
+
+fn resolve_workspace_services_sync(
+    input: &SessionCapabilityInput<'_>,
+    write_root: &Path,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<ResolvedWorkspaceServices> {
+    let retrieval_options = input.opts.workspace_retrieval.clone();
+    let prepared = prepare_workspace_services(input, write_root, retrieval_options.as_ref())?;
+    let (services, owned_workspace_backend) = match prepared {
+        PreparedWorkspace::Host(services) => (services, None),
+        PreparedWorkspace::Fresh { services, backend } => (services, Some(backend)),
+    };
+    finish_workspace_services(
+        services,
+        owned_workspace_backend,
+        retrieval_options,
+        session_lifetime,
+    )
+}
+
+fn finish_workspace_services(
+    mut services: Arc<crate::workspace::WorkspaceServices>,
+    owned_workspace_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
+    retrieval_options: Option<crate::workspace::WorkspaceRetrievalOptions>,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<ResolvedWorkspaceServices> {
     if services.workspace_retrieval().is_some() {
         return Err(CodeError::SessionConfiguration {
             field: "workspace_services",
@@ -287,14 +410,19 @@ pub(super) fn build_effective_skill_registry(
         }
     }
 
+    base_registry.exclude_discovered_files(&opts.projected_skill_files);
+
     for dir in &opts.skill_dirs {
         if let Err(e) = base_registry.load_from_dir(dir) {
-            tracing::warn!(
+            tracing::error!(
                 dir = %dir.display(),
                 error = %e,
-                "Failed to load session skill dir - skipping"
+                "failed to load session skill directory; skills from this path are not loaded"
             );
         }
+    }
+    for dir in &opts.watch_skill_dirs {
+        base_registry.watch_dir(dir);
     }
 
     for skill in &opts.host_skills {
@@ -341,6 +469,7 @@ fn register_task_capability(
     }
 
     let parent_context = ChildRunContext {
+        work_policy: input.opts.work_policy.clone(),
         security_provider: input.opts.security_provider.clone(),
         hook_engine: None,
         skill_registry: Some(skill_registry),

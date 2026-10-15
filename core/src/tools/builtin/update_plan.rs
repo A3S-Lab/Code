@@ -165,7 +165,12 @@ fn parse_status(status: &str) -> Result<TaskStatus, String> {
         "failed" | "error" => Ok(TaskStatus::Failed),
         "skipped" => Ok(TaskStatus::Skipped),
         "cancelled" | "canceled" => Ok(TaskStatus::Cancelled),
-        other => Err(format!("unknown plan status: {other}")),
+        // Names the closed set, matching the canonical TaskStatus parse
+        // error (the model-facing tool must not drift from it).
+        other => Err(format!(
+            "unknown plan status {other:?}; the closed set is pending, in_progress, \
+             completed, failed, skipped, cancelled"
+        )),
     }
 }
 

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 #[cfg(unix)]
@@ -6,6 +8,188 @@ use crate::mcp::test_support::{mcp_tool, ready_binding};
 #[cfg(unix)]
 use crate::mcp::McpProjectionAdapter;
 use crate::mcp::{McpClient, McpServerConfig, McpTransportConfig};
+
+struct DeniedChildMcpClient {
+    parent_calls: AtomicUsize,
+    child_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl LlmClient for DeniedChildMcpClient {
+    async fn complete(
+        &self,
+        _: &[Message],
+        _: Option<&str>,
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<LlmResponse> {
+        anyhow::ensure!(
+            !tools.iter().any(|tool| tool.name.starts_with("mcp__")),
+            "denied MCP escaped through a mutable manager into a child"
+        );
+        if tools.iter().any(|tool| tool.name == "task") {
+            if self.parent_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                let mut response = CutoverClient::tool_call("delegate");
+                response.message.content = vec![ContentBlock::ToolUse {
+                    id: "delegate".to_owned(),
+                    name: "task".to_owned(),
+                    input: serde_json::json!({"tasks": [{"agent": "general", "description": "Inspect child capability surface", "prompt": "Return child restricted."}]}),
+                }];
+                return Ok(response);
+            }
+            anyhow::ensure!(
+                self.child_calls.load(Ordering::SeqCst) > 0,
+                "no child executed"
+            );
+            Ok(CutoverClient::final_text("parent restricted"))
+        } else {
+            self.child_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CutoverClient::final_text("child restricted"))
+        }
+    }
+    async fn complete_streaming(
+        &self,
+        _: &[Message],
+        _: Option<&str>,
+        _: &[ToolDefinition],
+        _: CancellationToken,
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+        anyhow::bail!("streaming is outside this contract")
+    }
+}
+
+#[tokio::test]
+async fn actual_task_with_all_projected_mcp_denied_never_falls_back_to_ambient_manager_tools() {
+    let llm = Arc::new(DeniedChildMcpClient {
+        parent_calls: AtomicUsize::new(0),
+        child_calls: AtomicUsize::new(0),
+    });
+    let session = test_session_with_client("capability-access-child-mcp", llm.clone()).await;
+    let (binding, transport, client) =
+        ready_binding("catalog", "denied", vec![mcp_tool("lookup", "denied")]).await;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let upstream = use_generation(1, 'a');
+    let (set, ids) = use_kind_set(
+        1,
+        upstream.clone(),
+        CapabilityKind::Mcp,
+        &[("catalog", 'b')],
+    );
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &counter, &counter))
+            .unwrap()
+            .with_allowed_capabilities([])
+            .unwrap();
+    batch
+        .stage(ids["catalog"].clone(), closing_adapter(binding, client))
+        .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    let (_, ambient, ambient_client) = ready_binding(
+        "ambient",
+        "forbidden",
+        vec![mcp_tool("lookup", "forbidden")],
+    )
+    .await;
+    session
+        .mcp_manager
+        .insert_client_for_test("ambient", ambient_client)
+        .await;
+    assert!(
+        !session.mcp_manager.get_all_tools().await.is_empty(),
+        "the manager must actually offer the poisoned fallback"
+    );
+    let result = session
+        .send("Delegate a bounded check.", None)
+        .await
+        .unwrap();
+    assert_eq!(result.text, "parent restricted");
+    assert!(llm.child_calls.load(Ordering::SeqCst) > 0);
+    assert!(transport.calls().is_empty());
+    assert!(ambient.calls().is_empty());
+    session.close().await;
+}
+
+#[tokio::test]
+async fn projected_mcp_tool_rejects_a_denied_catalog_context_before_transport_use() {
+    let session = test_session("capability-access-mcp").await;
+    let (binding, transport, client) =
+        ready_binding("catalog", "accepted", vec![mcp_tool("lookup", "accepted")]).await;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let upstream = use_generation(1, 'a');
+    let (set, ids) = use_kind_set(
+        1,
+        upstream.clone(),
+        CapabilityKind::Mcp,
+        &[("catalog", 'b')],
+    );
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &counter, &counter))
+            .unwrap();
+    batch
+        .stage(
+            ids["catalog"].clone(),
+            closing_adapter(binding.clone(), client),
+        )
+        .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    let (runtime, admitted) =
+        super::super::agent_loop_runtime::pin_and_admit_runtime_projection(&session)
+            .await
+            .unwrap();
+    let captured = runtime
+        .tool_executor()
+        .registry()
+        .get("mcp__catalog__lookup")
+        .unwrap();
+
+    let upstream = use_generation(2, 'c');
+    let (set, ids) = use_kind_set(
+        2,
+        upstream.clone(),
+        CapabilityKind::Mcp,
+        &[("catalog", 'd')],
+    );
+    let mut batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &counter, &counter))
+            .unwrap()
+            .with_allowed_capabilities([])
+            .unwrap();
+    batch
+        .stage_value(ids["catalog"].clone(), CapabilityValue::Mcp(binding))
+        .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    let (denied_runtime, denied_run) =
+        super::super::agent_loop_runtime::pin_and_admit_runtime_projection(&session)
+            .await
+            .unwrap();
+    assert!(denied_runtime
+        .tool_executor()
+        .registry()
+        .get("mcp__catalog__lookup")
+        .is_none());
+    let turn = crate::capability::AgentCapabilityRuntime::from_run(denied_run.run_scope())
+        .begin_turn(1)
+        .unwrap();
+    let context =
+        ToolContext::new(session.workspace.clone()).with_capability_context(turn.tool_context());
+    assert!(captured
+        .execute(&serde_json::json!({}), &context)
+        .await
+        .is_err());
+    assert!(transport.calls().is_empty());
+    turn.close().await.unwrap();
+    denied_run.close().await.unwrap();
+    admitted.close().await.unwrap();
+    session.close().await;
+}
 
 struct ClosingClientEffect {
     client: Arc<McpClient>,

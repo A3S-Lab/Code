@@ -1,0 +1,31 @@
+suite "a3s-code-film-reference" {
+ version = 1
+ scenario "read-and-model-menu" {
+  surface = "tui"
+  timeout_ms = 150000
+  wait "ready" { text = "A3S Code  9.1.3" }
+  terminal_paste "task" { text = "直接用 read 工具读取 title.py 和 test_title.py，不调用 bash，不执行命令。用三条要点解释空白输入处理，并列出已有测试覆盖的五种输入。" }
+  wait "draft" { text = "五种输入。" }
+  press "submit" { key = "Enter" }
+  wait "finished" { text = "Worked for" }
+  expect "coverage-visible" { text = "Untitled" }
+  terminal_recording "read-result" { path = "terminal/read-result.vt" }
+  terminal_paste "commands" { text = "/" }
+  wait "palette" { text = "Switch the active model" }
+  terminal_recording "command-palette" { path = "terminal/commands.vt" }
+  terminal_paste "model-command" { text = "model" }
+  press "open-model" { key = "Enter" }
+  wait "models" { text = "From A3S ACL provider" }
+  terminal_recording "models-evidence" { path = "terminal/models.vt" }
+ }
+ scenario "settings" {
+  surface = "tui"
+  timeout_ms = 30000
+  wait "ready" { text = "A3S Code  9.1.3" }
+  terminal_paste "settings-command" { text = "/settings" }
+  press "open-settings" { key = "Enter" }
+  wait "settings-visible" { text = "Compact mode" }
+  expect "theme-visible" { text = "A3S Code Night" }
+  terminal_recording "settings" { path = "terminal/settings.vt" }
+ }
+}

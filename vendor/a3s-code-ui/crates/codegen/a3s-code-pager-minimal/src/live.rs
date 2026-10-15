@@ -672,7 +672,7 @@ fn render_prompt_info(
         let mode_flag: Option<(&str, Color)> = if effective_plan {
             Some(("plan", theme.accent_plan))
         } else if agent.session.is_yolo() {
-            Some(("always-approve", theme.warning))
+            Some(("yolo", theme.warning))
         } else if agent.session.is_auto() {
             Some(("auto", theme.accent_system))
         } else {
@@ -1118,7 +1118,7 @@ mod tests {
         let mut a = agent();
         let text = render(&a);
         assert!(!text.contains("plan"), "normal shows no flag: {text:?}");
-        assert!(!text.contains("always-approve"), "normal: {text:?}");
+        assert!(!text.contains("yolo"), "normal: {text:?}");
         minimal_api::set_plan_mode_pending(&mut a, Some(true));
         assert!(render(&a).contains("plan"), "plan flag: {:?}", render(&a));
         minimal_api::set_plan_mode_pending(&mut a, None);
@@ -1126,7 +1126,7 @@ mod tests {
         minimal_api::set_yolo_mode_for_test(&mut a.session, true);
         minimal_api::set_auto_mode_for_test(&mut a.session, true);
         let text = render(&a);
-        assert!(text.contains("always-approve"), "yolo flag: {text:?}");
+        assert!(text.contains("yolo"), "yolo flag: {text:?}");
         minimal_api::set_yolo_mode_for_test(&mut a.session, false);
         let text = render(&a);
         assert!(text.contains("auto"), "auto flag: {text:?}");

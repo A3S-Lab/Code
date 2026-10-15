@@ -169,7 +169,7 @@ pub struct ConnectFlags {
     /// CLI permission rules from the --allow and --deny flags.
     /// Not supported in leader mode (agent config is set at leader startup).
     pub permission_rules: Vec<a3s_code_workspace::permission::types::PermissionRule>,
-    /// Seed agent sessions with always-approve (YOLO) permission mode.
+    /// Seed agent sessions with yolo (YOLO) permission mode.
     pub default_yolo_mode: bool,
     /// Seed agent sessions with auto (classifier) permission mode.
     /// Ignored when `default_yolo_mode` is true.

@@ -18,7 +18,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh
@@ -73,7 +73,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh
@@ -103,7 +103,7 @@ jobs:
           python -m pip install 'maturin>=1,<2' pytest
           python sdk/python/scripts/clean_native_artifacts.py
           maturin develop --locked --manifest-path sdk/python/Cargo.toml \
-            --features advanced-harness,server
+            --features extension-module,advanced-harness,server
           pytest -q sdk/python/tests sdk/python/test_confirmation_inheritance.py
           python sdk/python/tests/test_budget_guard.py
           python sdk/python/tests/test_parallel_budget.py

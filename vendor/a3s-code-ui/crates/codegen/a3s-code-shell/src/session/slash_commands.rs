@@ -67,10 +67,10 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         resolve: resolve_compact,
     },
     BuiltinCommand {
-        name: "always-approve",
-        description: "Toggle always-approve mode (skip all permission prompts)",
+        name: "yolo",
+        description: "Toggle yolo mode (skip all permission prompts)",
         argument_hint: Some("on|off"),
-        aliases: &["yolo"],
+        aliases: &[],
         model_authored_eligibility: ModelAuthoredEligibility::Denied,
         gate: BuiltinGate::AlwaysOn,
         workflow_projection: WorkflowProjection::None,
@@ -444,7 +444,6 @@ pub(crate) fn build_tools_meta(tool_names: &[String]) -> acp::Meta {
 pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "agents",
     "agents-dashboard",
-    "always-approve",
     "announcements",
     "auto",
     "btw",

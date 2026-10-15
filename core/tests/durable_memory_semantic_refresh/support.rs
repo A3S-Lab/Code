@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use a3s_code_core::embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingExecutorConfig, EmbeddingNormalization,
     EmbeddingProvider, EmbeddingProviderDescriptor, EmbeddingProviderError, EmbeddingVector,

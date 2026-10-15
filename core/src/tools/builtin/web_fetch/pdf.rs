@@ -40,12 +40,27 @@ fn extract_text_with_lopdf(bytes: &[u8]) -> Result<String, String> {
     let page_numbers = document.get_pages().keys().copied().collect::<Vec<_>>();
     let mut text = String::new();
     let mut extraction_errors = Vec::new();
+    // A small compressed PDF can decompress gigabytes of text (FlateDecode
+    // bombs); the download cap cannot see this. Stop accumulating at the
+    // consumer's own budget (web_fetch truncates to MAX_CONTENT_CHARS
+    // anyway) so extraction allocation stays bounded.
+    const MAX_EXTRACTION_BYTES: usize = 4 * 1024 * 1024;
     for chunk in document.extract_text_chunks(&page_numbers) {
         match chunk {
             Ok(chunk) => {
                 text.push_str(&chunk);
                 if !text.ends_with('\n') {
                     text.push('\n');
+                }
+                if text.len() >= MAX_EXTRACTION_BYTES {
+                    text.truncate(
+                        text.char_indices()
+                            .map(|(i, _)| i)
+                            .take_while(|i| *i <= MAX_EXTRACTION_BYTES)
+                            .last()
+                            .unwrap_or(0),
+                    );
+                    break;
                 }
             }
             Err(error) => extraction_errors.push(error.to_string()),

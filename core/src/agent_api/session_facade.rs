@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::CodeError;
 
 impl std::fmt::Debug for AgentSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -111,8 +112,9 @@ impl AgentSession {
     /// - Call `.cancel()` on it to abort every operation in the session
     ///   without going through `close()` (no run-store / hook side effects).
     ///
-    /// For graceful shutdown prefer [`close`](Self::close), which also marks
-    /// runs as cancelled in the store and notifies the configured hook executor.
+    /// For graceful shutdown prefer [`close`](Self::close), which requests
+    /// cancellation of the original run and drains session resources. The
+    /// original worker publishes its terminal state and hook notifications.
     pub fn session_cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.session_cancel.clone()
     }
@@ -378,6 +380,12 @@ impl AgentSession {
 
     /// Send a prompt and stream events back.
     ///
+    /// Consume events while the Run is active. Cancellation may end live
+    /// delivery after its queued prefix when the receiver is full. Observe
+    /// the exact Run through `stream_with_run`, `run_snapshot` and `run_events`
+    /// for retained terminal state and interactive confirmation results.
+    /// Stream EOF alone does not establish successful completion or cleanup.
+    ///
     /// When `history` is `None`, uses the session's internal history
     /// and updates it when the stream completes.
     /// When `Some`, uses the provided history instead.
@@ -389,6 +397,17 @@ impl AgentSession {
         prompt: &str,
         history: Option<&[Message]>,
     ) -> Result<(mpsc::Receiver<AgentEvent>, JoinHandle<()>)> {
+        let stream = self.stream_with_run(prompt, history).await?;
+        Ok((stream.events, stream.worker))
+    }
+
+    /// Stream with the Run handle captured at admission, before its worker starts.
+    /// The handle grants observation/control of that exact Run, never a later one.
+    pub async fn stream_with_run(
+        &self,
+        prompt: &str,
+        history: Option<&[Message]>,
+    ) -> Result<AgentRunStream> {
         conversation_runtime::stream(self, prompt, history).await
     }
 
@@ -404,27 +423,49 @@ impl AgentSession {
         RunControl::from_session(self).cancel_current().await
     }
 
-    /// Cancel the current operation and wait for its single-flight lease to be
-    /// released. Streaming workers first receive cooperative cancellation; a
-    /// worker that exceeds `grace` is aborted, then given `abort_grace` to run
-    /// destructors and release admission ownership.
+    /// Cancel the operation observed at entry and wait for its original worker,
+    /// accounting and cleanup to release admission. Streaming workers first
+    /// receive cooperative cancellation; a worker that exceeds `grace` is
+    /// aborted, then given `abort_grace` to finish its original lifecycle.
     ///
-    /// Returns `true` once the session is safe to reuse. A blocking `send`
-    /// future cannot be force-aborted by the session and may return `false` if
-    /// its caller does not poll it to completion.
+    /// Returns `true` when the original operation observed at entry has
+    /// actually retired, or when an exclusive admission fence proves that no
+    /// operation is executing. A later operation may start after that
+    /// observation; a closed session remains closed. A blocking `send` worker
+    /// remains cooperative and may return `false` when it cannot prove release
+    /// before the deadline. A later operation is never cancelled.
     pub async fn cancel_and_settle(
         &self,
         grace: std::time::Duration,
         abort_grace: std::time::Duration,
     ) -> bool {
-        let _ = self.cancel().await;
-        if self.run_admission.wait_until_idle(grace).await {
+        let Some(original) = self.run_admission.current_original() else {
+            return self
+                .run_admission
+                .try_acquire(&self.session_id)
+                .is_ok_and(|fence| fence.is_nonexecuting_fence_for(&self.run_admission));
+        };
+        if let Some(run) = original
+            .correlated_current_handle(&self.session_id, &self.run_admission)
+            .await
+        {
+            let _ = run.cancel().await;
+        }
+        if self
+            .run_admission
+            .wait_for_original_release(&original, grace)
+            .await
+            .is_some()
+        {
             return true;
         }
-        if !self.run_admission.abort_stream_workers() {
+        if !self.run_admission.abort_original_stream_workers(&original) {
             return false;
         }
-        self.run_admission.wait_until_idle(abort_grace).await
+        self.run_admission
+            .wait_for_original_release(&original, abort_grace)
+            .await
+            .is_some()
     }
 
     /// Return a snapshot of the session's conversation history.
@@ -439,6 +480,64 @@ impl AgentSession {
     pub fn durable_transcript(&self) -> Vec<Message> {
         crate::fact_control::compaction_transcript(&self.workspace, &self.session_id)
             .unwrap_or_default()
+    }
+
+    /// Fork the conversation at fact `seq`: every fact after `seq` is
+    /// discarded and later turns replay only the retained prefix.
+    ///
+    /// The fact spine rebuilds conversation state by replaying the log, so
+    /// truncation alone redirects the next run — the next `send`/`stream`
+    /// folds the retained facts and never sees the discarded timeline. The
+    /// in-memory history is reset to the retained transcript. This is a
+    /// destructive, irreversible cut of the session's own log; vector state
+    /// and durable memory written before the fork are not rolled back.
+    /// Admitted policy prefixes cannot be cut; Goal-bound histories are read-only.
+    /// A no-op cut preserves those bindings and remains allowed.
+    ///
+    /// Single-flight like every transcript-affecting operation: while a run
+    /// or stream holds the session this fails fast with
+    /// [`CodeError::SessionBusy`](crate::error::CodeError::SessionBusy).
+    /// Cancel or await the in-flight run first — forking under a live run
+    /// would let that run re-append the discarded facts. Returns how many
+    /// facts were removed; a cut at or beyond the last seq removes nothing.
+    pub async fn fork_session_at(&self, seq: u64) -> Result<u64> {
+        let _lease =
+            super::execution_coordinator::ExecutionCoordinator::admit(self, "fork-session").await?;
+        let persistence = super::session_persistence::SessionPersistenceContext::from_session(self);
+        let removed = {
+            let log = self
+                .run_admission
+                .fact_log_slot()
+                .lock()
+                .map_err(|_| CodeError::Session("original fact log slot is poisoned".into()))?
+                .clone()
+                .ok_or_else(|| CodeError::Session("original fact log is unavailable".into()))?;
+            let _writer = log
+                .try_writer_fence()
+                .map_err(|error| CodeError::Session(error.to_string()))?;
+            let thread = crate::fact_control::thread_for_session(&self.session_id);
+            let facts = a3s_effect::LogStore::read(log.as_ref(), &thread)
+                .map_err(|error| CodeError::Session(error.to_string()))?;
+            let source = persistence.source_from_facts(&facts)?;
+            let goal_bound = facts.iter().any(|fact| fact.kind.starts_with("a3s.goal."));
+            if source.as_ref().is_some_and(|source| seq < source.sequence)
+                || (goal_bound && facts.last().is_some_and(|fact| seq < fact.seq))
+            {
+                return Err(CodeError::Session(
+                    "durable session source and Goal history cannot be truncated; use explicit new-session admission".into(),
+                ));
+            }
+            let removed = log
+                .truncate_after(&thread, seq)
+                .map_err(|error| CodeError::Session(error.to_string()))?;
+            let retained = a3s_effect::LogStore::read(log.as_ref(), &thread)
+                .map_err(|error| CodeError::Session(error.to_string()))?;
+            *crate::error::write_or_recover(&self.history) =
+                crate::fact_control::compaction_transcript_from_facts(&retained);
+            removed
+        };
+        persistence.auto_save_if_enabled().await;
+        Ok(u64::try_from(removed).unwrap_or(u64::MAX))
     }
 
     /// Provider token totals already accumulated for this session.

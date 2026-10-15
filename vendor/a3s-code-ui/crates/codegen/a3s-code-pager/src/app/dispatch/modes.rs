@@ -187,7 +187,7 @@ fn plan_mode_toast(kind: crate::app::actions::PlanModeKind) -> String {
     save_success_toast("Plan mode", kind.to_bool())
 }
 
-/// The single gate for client paths that ENABLE always-approve: `Some(reason)` iff `enabling` and the pin (`app.yolo_policy_block`) is set.
+/// The single gate for client paths that ENABLE yolo: `Some(reason)` iff `enabling` and the pin (`app.yolo_policy_block`) is set.
 /// Every enabling path routes through here (or [`refuse_if_yolo_locked`]) so new paths stay gated by default; callers must NOT persist on a refusal.
 pub(super) fn yolo_enable_blocked(app: &AppView, enabling: bool) -> Option<&'static str> {
     if enabling {
@@ -267,7 +267,7 @@ pub(super) fn sync_active_auto_flag(app: &mut AppView) {
 /// Flips to ON are refused while the pin is set.
 pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
     if yolo_enable_blocked(app, new).is_some() {
-        tracing::warn!("always-approve enable blocked by managed policy");
+        tracing::warn!("yolo enable blocked by managed policy");
         return;
     }
     // Global mirrors update unconditionally (even if the user navigated away from the agent mid-rollback)
@@ -275,7 +275,7 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
     app.default_yolo = new;
     app.permission_mode_from_soft_default = false;
     // Write-only mirror; see fn doc-comment
-    app.current_ui.permission_mode = Some(if new { "always-approve" } else { "ask" }.to_string());
+    app.current_ui.permission_mode = Some(if new { "yolo" } else { "ask" }.to_string());
 
     let Some(id) = permission_mode_agent_id(app) else {
         return;
@@ -288,7 +288,7 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
 
     // A choice made before the session binds only reaches the agent through the staged word
     let unbound = agent.session.session_id.is_none();
-    // This toggle owns always-approve only, so a staged Auto keeps its own choice
+    // This toggle owns yolo only, so a staged Auto keeps its own choice
     let always_approve = crate::app::actions::PermissionModeKind::AlwaysApprove.as_canonical();
     if new {
         if unbound || agent.deferred_permission_mode.is_some() {
@@ -355,7 +355,7 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
 
 fn capture_prev_permission_canonical(app: &AppView, prev_yolo: bool) -> &'static str {
     if prev_yolo {
-        "always-approve"
+        "yolo"
     } else {
         match app.current_ui.permission_mode.as_deref() {
             Some("default") => "default",
@@ -369,7 +369,7 @@ fn capture_prev_permission_canonical(app: &AppView, prev_yolo: bool) -> &'static
 /// SHELL-owned, emits `Effect::PersistPermissionMode` with rollback.
 /// The drain runs unconditionally when YOLO turns ON (even duplicate dispatches) because a permission could arrive between dispatches.
 pub(super) fn set_yolo_mode(app: &mut AppView, new: bool) -> Vec<Effect> {
-    // Managed policy pins always-approve off: no state change, no persist
+    // Managed policy pins yolo off: no state change, no persist
     if let Some(blocked) = refuse_if_yolo_locked(app, new) {
         return blocked;
     }
@@ -394,7 +394,7 @@ pub(super) fn set_yolo_mode(app: &mut AppView, new: bool) -> Vec<Effect> {
 
     // Refresh modal snapshots so the indicator reflects the new value.
     refresh_open_settings_modals(app);
-    // Toggling yolo always lands on ask/always-approve (never auto); keep the per-session auto display flag in sync (clears it)
+    // Toggling yolo always lands on ask/yolo (never auto); keep the per-session auto display flag in sync (clears it)
     sync_active_auto_flag(app);
 
     // Toast on every save
@@ -406,9 +406,9 @@ pub(super) fn set_yolo_mode(app: &mut AppView, new: bool) -> Vec<Effect> {
         app.show_toast(&yolo_toast(new));
     }
 
-    // Forward write is always "ask" or "always-approve" (bool entry point)
+    // Forward write is always "ask" or "yolo" (bool entry point)
     // Rollback uses `prev_canonical` with LIVE precedence
-    let canonical: &'static str = if new { "always-approve" } else { "ask" };
+    let canonical: &'static str = if new { "yolo" } else { "ask" };
     vec![Effect::PersistPermissionMode {
         canonical,
         session_id,
@@ -432,7 +432,7 @@ pub(super) fn set_permission_mode(
         } else {
             kind
         };
-    // Managed policy pins always-approve off: keep the modal on live state
+    // Managed policy pins yolo off: keep the modal on live state
     if let Some(blocked) = refuse_if_yolo_locked(app, kind.is_always_approve()) {
         refresh_open_settings_modals(app);
         return blocked;
@@ -462,7 +462,7 @@ pub(super) fn set_permission_mode(
     // No-op for `AlwaysApprove` and `Ask`
     app.current_ui.permission_mode = Some(kind.as_canonical().to_string());
 
-    // The inner only speaks for always-approve, so a typed pick stages its own word
+    // The inner only speaks for yolo, so a typed pick stages its own word
     if let Some(agent) = app.agents.get_mut(&id)
         && (agent.session.session_id.is_none() || agent.deferred_permission_mode.is_some())
     {
@@ -506,16 +506,22 @@ pub(super) fn permission_mode_toast(kind: crate::app::actions::PermissionModeKin
 /// Always-approve turns on the permission fast path, but the shell's plan-mode gate still rejects non-plan-file edits.
 /// The standard "all tool actions auto-run" copy would overpromise.
 pub(super) const YOLO_ON_UNDER_PLAN_TOAST: &str =
-    "\u{26A0} Always-approve ON: plan mode still blocks file edits until you exit plan mode";
+    "\u{26A0} YOLO ON: plan mode still blocks file edits until you exit plan mode";
+
+/// Banner and toast word. The prompt flag and the persisted id stay `yolo`.
+fn yolo_mode_label() -> &'static str {
+    "YOLO"
+}
 
 /// Build the YOLO toast: ⚠ on ON (destructive), ✓ on OFF (safe default).
 fn yolo_toast(new: bool) -> String {
+    let label = yolo_mode_label();
     if new {
         // Warning glyph and consequence; only post-commit feedback
-        "\u{26A0} Always-approve ON: all tool actions auto-run".to_string()
+        format!("\u{26A0} {label} ON: all tool actions auto-run")
     } else {
         // OFF restores safe default: uniform ✓ glyph
-        save_success_toast("Always-approve", false)
+        save_success_toast(label, false)
     }
 }
 
@@ -722,7 +728,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
     let Some(session_id) = agent.session.session_id.clone() else {
         // No session yet (Shift+Tab forwarded from the welcome screen or a fresh tab)
         // Cycle the mode locally and stash the ACP push in `deferred_session_mode`
-        // Cycle: Normal, Plan, Auto, Always-Approve, back to Normal (Auto skipped when always-approve is the only remaining arm under a yolo pin)
+        // Cycle: Normal, Plan, Auto, Always-Approve, back to Normal (Auto skipped when yolo is the only remaining arm under a yolo pin)
         let in_plan = agent.plan_mode_pending.unwrap_or(agent.plan_mode_active);
         let in_yolo = agent.session.is_yolo();
         let persist_canonical: Option<&'static str> = match (in_plan, in_auto, in_yolo) {
@@ -758,10 +764,10 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                 } else {
                     agent.session.yolo_mode = true;
                     app.default_yolo = true;
-                    app.current_ui.permission_mode = Some("always-approve".into());
-                    agent.show_mode_switch_banner("Always-Approve");
+                    app.current_ui.permission_mode = Some("yolo".into());
+                    agent.show_mode_switch_banner(yolo_mode_label());
                     tracing::info!("Mode cycle (pre-session): Plan → Always-Approve (auto gated)");
-                    Some("always-approve")
+                    Some("yolo")
                 }
             }
             // Auto to Always-Approve (or Normal if pinned)
@@ -777,10 +783,10 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                 } else {
                     agent.session.yolo_mode = true;
                     app.default_yolo = true;
-                    app.current_ui.permission_mode = Some("always-approve".into());
-                    agent.show_mode_switch_banner("Always-Approve");
+                    app.current_ui.permission_mode = Some("yolo".into());
+                    agent.show_mode_switch_banner(yolo_mode_label());
                     tracing::info!("Mode cycle (pre-session): Auto → Always-Approve");
-                    Some("always-approve")
+                    Some("yolo")
                 }
             }
             // Always-Approve to Normal
@@ -799,7 +805,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                 agent.deferred_session_mode = None;
                 // CreateSession seeds yolo from `default_yolo`; an `ask` left by an earlier ring pass must not be replayed over it
                 agent.deferred_permission_mode = None;
-                agent.show_mode_switch_banner("Always-Approve");
+                agent.show_mode_switch_banner(yolo_mode_label());
                 tracing::info!("Mode cycle (pre-session): Plan+Always-Approve → Always-Approve");
                 None
             }
@@ -911,7 +917,7 @@ fn mode_choices(
     if choices.is_empty() {
         choices = builtin_mode_choices(auto_gate);
     }
-    choices.push((ModeChoice::AlwaysApprove, "Always-Approve".into()));
+    choices.push((ModeChoice::AlwaysApprove, yolo_mode_label().into()));
     choices
 }
 
@@ -988,7 +994,7 @@ fn apply_choice_permission(
         ModeChoice::AlwaysApprove if in_yolo => None,
         ModeChoice::AlwaysApprove => {
             set_yolo_mode_inner(app, true);
-            Some("always-approve")
+            Some("yolo")
         }
         ModeChoice::Auto => {
             set_yolo_mode_inner(app, false);

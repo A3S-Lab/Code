@@ -105,7 +105,11 @@ const MEMORY_UNAVAILABLE_MESSAGE: &str =
     "Memory unavailable for this session; check session initWarning";
 
 fn node_code_error(error: a3s_code_core::CodeError) -> napi::Error {
-    napi::Error::from_reason(format!("[A3S_CODE_ERROR:{}] {}", error.code(), error))
+    napi::Error::from_reason(format!(
+        "[A3S_CODE_ERROR:{}] {}",
+        error.runtime_code(),
+        error
+    ))
 }
 
 fn node_task_scheduler_error(error: a3s_code_core::TaskSchedulerError) -> napi::Error {
@@ -1079,8 +1083,10 @@ mod immutable_content;
 pub use immutable_content::*;
 
 mod session_governance;
+mod session_goal;
 
 mod session_host_contract;
+mod session_release_contract;
 
 mod session_capabilities;
 

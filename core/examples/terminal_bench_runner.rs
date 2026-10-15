@@ -31,11 +31,73 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Harbor owns task acceptance via its native verifier. Core's completion gate
-/// still requires a host-bound Passed report on each workspace mutation digest
-/// before a turn can end; without that binding, tip Core cannot finish TB tasks.
-const HARBOR_HOST_COMPLETION_ATTEMPTS: usize = 16;
+/// Retries when a stream makes no new workspace mutation: the model ends
+/// before any admission gate, ends idle after a bind, or the stream dies
+/// without a terminal event. A distinct mutation digest is progress and does
+/// not consume this budget. The same digest twice still fails closed. The
+/// execution deadline bounds a run that keeps producing new digests.
+const HARBOR_HOST_IDLE_ATTEMPTS: usize = 16;
+/// A tool call after a host bind is not evidence the task grader would pass.
+/// Ask the model to prove the original requirements again, this many times.
+/// A new mutation digest does not consume the cap. The same digest twice
+/// still fails closed.
+const HARBOR_HOST_UNPROVEN_STOPS: usize = 3;
+/// One streamed model call. The resilience default of 120s cancels a
+/// deep-effort turn that is still emitting tokens. Ten minutes stays inside
+/// the benchmark's outer execution deadline and is not a per-task budget.
+const HARBOR_HOST_LLM_TIMEOUT_MS: u64 = 600_000;
+/// DeepSeek's coding comparisons score the `max` menu entry above `high`.
+/// Every benchmark task uses that menu entry.
+const HARBOR_HOST_REASONING_EFFORT: &str = "max";
 const MUTATION_DIGEST_IN_GATE: &str = "workspace mutation ";
+
+/// Shown on every benchmark turn. It restates the runner's own rule: the
+/// host bind is not the grader. It names no task and no hidden check.
+const TASK_PROOF_NOTE: &str = "\
+Host note: A host admission bind only reopens the completion gate. It is not \
+the task grader. Before you stop, re-read every requirement in the task and \
+check it with a tool. A check that reports forbidden output, a warning, or a \
+failed criterion means that requirement is still open. Change the program \
+until every requirement holds at the same time, including on an input the \
+task says must work and that is not the unchanged sample. Do not keep \
+forbidden output because a sample path appears to need it. Do not stop with \
+a status summary. Delete temporary files you created for a check. The tree \
+you leave is what gets graded.";
+
+fn bind_continuation(digest: &str) -> String {
+    format!(
+        "Continue the task. The host bound admission digest {digest} only so \
+         the completion gate can reopen. That bind is not the task grader. \
+         Paths named by the gate are files the edit already touched, not a \
+         list of missing deliverables. Re-read the original requirements and \
+         prove each one with a tool. A warning or forbidden output means that \
+         requirement is still open. Prove it on an input the task says must \
+         work and that is not the unchanged sample. Do not stop with a status \
+         summary."
+    )
+}
+
+fn fresh_review_prompt(task_prompt: &str) -> String {
+    format!("{task_prompt}\n\n{TASK_PROOF_NOTE}")
+}
+
+/// Summary focus for the one fresh reading after a capped stop. The reading
+/// exists because that stop still carries a transcript that claimed the
+/// sample passed. Keep the requirements and the current program, and drop
+/// the claim that a check already proved them.
+fn fresh_review_focus() -> &'static str {
+    "Keep the task requirements, the current program, and every requirement a check showed is still open. Drop claims that a check already proved the task."
+}
+
+fn unproven_stop_continuation() -> String {
+    "You used tools and then stopped. The task has not been graded. The host \
+     admission bind is not the task grader. Re-read the original requirements \
+     and prove each one again with a tool. A warning or forbidden output means \
+     that requirement is still open. Prove it on an input the task says must \
+     work and that is not the unchanged sample. Do not stop with a status \
+     summary."
+        .to_string()
+}
 
 use result::{
     classify_failure, count_artifact_evidence, persist_result, ExecutionPhase, RunProgress,
@@ -129,6 +191,101 @@ fn parse_completion_gate_mutation_digest(message: &str) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostAdmissionStep {
+    BindNewDigest,
+    SameDigestStillOpen,
+    NudgeIdleAfterBind,
+    NudgeBeforeAnyGate,
+    /// Tools ran after a bind, then the model stopped. That is not a grade.
+    NudgeUnprovenStop,
+    /// The proof cap was used. Drop the anchored transcript once and read the
+    /// task again. This is not a grade and does not forgive an open digest.
+    FreshContextReview,
+    RetryNonTerminal,
+    Finish,
+    NonTerminalExhausted,
+}
+
+#[derive(Debug, Default)]
+struct HostAdmissionBudget {
+    idle_used: usize,
+    non_terminal_used: usize,
+    unproven_stops: usize,
+    fresh_review_used: bool,
+}
+
+fn idle_retry_available(used: usize) -> bool {
+    used.saturating_add(1) < HARBOR_HOST_IDLE_ATTEMPTS
+}
+
+fn unproven_stop_available(used: usize) -> bool {
+    used < HARBOR_HOST_UNPROVEN_STOPS
+}
+
+fn execution_deadline_reached(elapsed_ms: u64, budget_ms: u64) -> bool {
+    elapsed_ms >= budget_ms
+}
+
+/// Decide the next host-admission cycle from the stream that just ended.
+///
+/// Inserts a digest only when it is new. Callers record the Harbor host
+/// report for `BindNewDigest` and fail closed for `SameDigestStillOpen`.
+fn host_admission_step(
+    bound_digests: &mut HashSet<String>,
+    budget: &mut HostAdmissionBudget,
+    gate_digest: Option<&str>,
+    tools_this_attempt: usize,
+    terminal_event: bool,
+    worker_failed: bool,
+) -> HostAdmissionStep {
+    if let Some(digest) = gate_digest {
+        if !bound_digests.insert(digest.to_string()) {
+            return HostAdmissionStep::SameDigestStillOpen;
+        }
+        return HostAdmissionStep::BindNewDigest;
+    }
+    if tools_this_attempt == 0 && !bound_digests.is_empty() {
+        if idle_retry_available(budget.idle_used) {
+            budget.idle_used = budget.idle_used.saturating_add(1);
+            return HostAdmissionStep::NudgeIdleAfterBind;
+        }
+    } else if bound_digests.is_empty() && !worker_failed && terminal_event {
+        if idle_retry_available(budget.idle_used) {
+            budget.idle_used = budget.idle_used.saturating_add(1);
+            return HostAdmissionStep::NudgeBeforeAnyGate;
+        }
+    } else if !bound_digests.is_empty()
+        && tools_this_attempt > 0
+        && terminal_event
+        && !worker_failed
+        && unproven_stop_available(budget.unproven_stops)
+    {
+        budget.unproven_stops = budget.unproven_stops.saturating_add(1);
+        return HostAdmissionStep::NudgeUnprovenStop;
+    } else if !bound_digests.is_empty()
+        && tools_this_attempt > 0
+        && terminal_event
+        && !worker_failed
+        && !budget.fresh_review_used
+    {
+        // A capped stop still carries the transcript that claimed the sample
+        // passed. One fresh reading gets its own proof budget. A second capped
+        // stop finishes. The same digest stays fail-closed.
+        budget.fresh_review_used = true;
+        budget.unproven_stops = 0;
+        return HostAdmissionStep::FreshContextReview;
+    }
+    if !terminal_event {
+        if idle_retry_available(budget.non_terminal_used) {
+            budget.non_terminal_used = budget.non_terminal_used.saturating_add(1);
+            return HostAdmissionStep::RetryNonTerminal;
+        }
+        return HostAdmissionStep::NonTerminalExhausted;
+    }
+    HostAdmissionStep::Finish
+}
+
 fn harbor_host_verification_report(digest: &str) -> VerificationReport {
     VerificationReport::new(
         "harbor:terminal-bench",
@@ -157,13 +314,18 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
         // task do not accidentally select the read-only Explore style.
         .with_prompt_slots(SystemPromptSlots {
             style: Some(AgentStyle::GeneralPurpose),
+            extra: Some(TASK_PROOF_NOTE.to_string()),
             ..SystemPromptSlots::default()
         })
         // Harbor supplies the complete task instruction. Disable A3S planning
         // pre-analysis so the model receives that instruction verbatim as the
         // user message instead of a planner-rewritten wrapper.
         .with_planning_mode(PlanningMode::Disabled)
+        // The benchmark model is the ACL default. Request its `max` thinking
+        // menu entry for every task.
+        .with_reasoning_effort(HARBOR_HOST_REASONING_EFFORT)
         .with_resilience_defaults()
+        .with_llm_api_timeout(HARBOR_HOST_LLM_TIMEOUT_MS)
         .with_auto_compact(true)
         // Terminal-Bench includes long-horizon tasks whose official agent
         // timeout is measured in hours. Keep the framework's internal
@@ -215,13 +377,19 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
         .context("build workspace-bound A3S Code session")?;
     eprintln!("a3s-code: session ready");
 
-    let mut prompt = task_prompt;
+    let mut prompt = format!("{task_prompt}\n\n{TASK_PROOF_NOTE}");
     let mut bound_digests = HashSet::new();
-    let mut last_error: Option<anyhow::Error> = None;
-    for attempt in 0..HARBOR_HOST_COMPLETION_ATTEMPTS {
+    let mut admission_budget = HostAdmissionBudget::default();
+    let mut stream_index = 0usize;
+    loop {
+        if execution_deadline_reached(progress.duration_ms(), args.max_execution_time_ms) {
+            session.close().await;
+            anyhow::bail!("A3S Code execution deadline exceeded");
+        }
+        stream_index = stream_index.saturating_add(1);
         eprintln!(
             "a3s-code: stream started attempt={} bound={}",
-            attempt + 1,
+            stream_index,
             bound_digests.len()
         );
         // Stream attempts are the reliable turn proxy while session.stream may
@@ -289,112 +457,117 @@ async fn execute(args: &Args, progress: &mut RunProgress) -> Result<()> {
             }
         }
 
-        if let Some(digest) = gate_digest {
-            if !bound_digests.insert(digest.clone()) {
+        let step = host_admission_step(
+            &mut bound_digests,
+            &mut admission_budget,
+            gate_digest.as_deref(),
+            tools_this_attempt,
+            progress.terminal_event,
+            worker_error.is_some(),
+        );
+        match step {
+            HostAdmissionStep::BindNewDigest => {
+                let Some(digest) = gate_digest else {
+                    session.close().await;
+                    anyhow::bail!("host admission bind missing mutation digest");
+                };
+                debug_assert_eq!(
+                    harbor_host_verification_report(&digest).schema,
+                    VERIFICATION_REPORT_SCHEMA
+                );
+                session.record_verification_reports([harbor_host_verification_report(&digest)]);
+                eprintln!("a3s-code: bound Harbor host verification for mutation {digest}");
+                prompt = bind_continuation(&digest);
+            }
+            HostAdmissionStep::SameDigestStillOpen => {
                 session.close().await;
+                let digest = gate_digest.as_deref().unwrap_or("");
                 anyhow::bail!("completion gate still open after host verification for {digest}");
             }
-            debug_assert_eq!(
-                harbor_host_verification_report(&digest).schema,
-                VERIFICATION_REPORT_SCHEMA
-            );
-            session.record_verification_reports([harbor_host_verification_report(&digest)]);
-            eprintln!("a3s-code: bound Harbor host verification for mutation {digest}");
-            prompt = format!(
-                "Continue solving the Terminal-Bench task. The host only bound an \
-                 admission verification for mutation digest {digest} so A3S Code's \
-                 completion gate would reopen — that is NOT Harbor's task grader and \
-                 does NOT mean the task is solved. Keep reading, editing, and running \
-                 local checks until the task requirements are actually met. Do not \
-                 stop with a status summary until you have concrete evidence the \
-                 solution works under the task's own tests."
-            );
-            last_error = worker_error.map(|error| anyhow::anyhow!("{error:#}"));
-            continue;
-        }
-
-        // After a host admission bind, models often emit a status summary and
-        // End without tools. That is not Harbor success — nudge once more.
-        if tools_this_attempt == 0
-            && !bound_digests.is_empty()
-            && attempt + 1 < HARBOR_HOST_COMPLETION_ATTEMPTS
-        {
-            eprintln!(
-                "a3s-code: idle end after host admission bind; continuing (attempt {})",
-                attempt + 2
-            );
-            prompt = "You stopped without taking further tool actions after the host \
-                admission bind. Harbor's task grader has not passed yet. Continue \
-                investigating and fixing until the task requirements are met; do not \
-                stop with a status summary."
-                .to_string();
-            last_error = worker_error.map(|error| anyhow::anyhow!("{error:#}"));
-            continue;
-        }
-
-        // Early End without ever hitting the completion gate usually means the
-        // model explored and stopped before producing a graded workspace change.
-        // Keep driving until it attempts a completable mutation (gate) or the
-        // attempt budget is exhausted.
-        if bound_digests.is_empty()
-            && worker_error.is_none()
-            && progress.terminal_event
-            && attempt + 1 < HARBOR_HOST_COMPLETION_ATTEMPTS
-        {
-            eprintln!(
-                "a3s-code: ended before any host admission gate; continuing (attempt {})",
-                attempt + 2
-            );
-            prompt = "You stopped before producing a graded workspace solution. \
-                Harbor's verifier still has nothing to accept. Continue implementing \
-                the task with concrete file edits and local checks; do not stop with \
-                a short status word or plan-only summary."
-                .to_string();
-            continue;
-        }
-
-        // Abrupt stream death (e.g. missing Skill) must not discard the trial.
-        if !progress.terminal_event && attempt + 1 < HARBOR_HOST_COMPLETION_ATTEMPTS {
-            let detail = worker_error
-                .as_ref()
-                .map(|error| format!("{error:#}"))
-                .unwrap_or_else(|| "stream closed without terminal event".to_string());
-            eprintln!(
-                "a3s-code: non-terminal stream end ({detail}); continuing (attempt {})",
-                attempt + 2
-            );
-            prompt = format!(
-                "The previous attempt ended abruptly ({detail}). Continue solving the \
-                 Terminal-Bench task with the available tools (bash/read/write/edit). \
-                 Do not call Skill tools that are not installed."
-            );
-            last_error = worker_error.map(|error| anyhow::anyhow!("{error:#}"));
-            continue;
-        }
-
-        // Session close is unconditional once the gate is not requesting a
-        // host bind: even a failed worker join must release Run-owned resources.
-        session.close().await;
-        if let Some(error) = worker_error {
-            // An End event is the first terminal observation. Preserve it when a
-            // late worker join failure occurs during cleanup.
-            if !progress.terminal_event {
-                return Err(error).context("join A3S Code stream");
+            HostAdmissionStep::NudgeIdleAfterBind => {
+                eprintln!(
+                    "a3s-code: idle end after host admission bind; continuing (attempt {})",
+                    stream_index.saturating_add(1)
+                );
+                prompt = "You stopped without taking further tool actions after the host \
+                    admission bind. Harbor's task grader has not passed yet. Continue \
+                    investigating and fixing until the task requirements are met; do not \
+                    stop with a status summary."
+                    .to_string();
             }
-            eprintln!("[a3s-code warning] worker ended after terminal event: {error}");
+            HostAdmissionStep::NudgeBeforeAnyGate => {
+                eprintln!(
+                    "a3s-code: ended before any host admission gate; continuing (attempt {})",
+                    stream_index.saturating_add(1)
+                );
+                prompt = "You stopped before producing a graded workspace solution. \
+                    Harbor's verifier still has nothing to accept. Continue implementing \
+                    the task with concrete file edits and local checks; do not stop with \
+                    a short status word or plan-only summary."
+                    .to_string();
+            }
+            HostAdmissionStep::NudgeUnprovenStop => {
+                eprintln!(
+                    "a3s-code: tool use after a bind is not a grade; continuing (attempt {})",
+                    stream_index.saturating_add(1)
+                );
+                prompt = unproven_stop_continuation();
+            }
+            HostAdmissionStep::FreshContextReview => {
+                eprintln!(
+                    "a3s-code: capped stop kept an anchored transcript; compacting before another reading (attempt {})",
+                    stream_index.saturating_add(1)
+                );
+                if let Err(error) = session
+                    .compact_conversation(Some(fresh_review_focus()))
+                    .await
+                {
+                    eprintln!("a3s-code: compact skipped: {error}");
+                }
+                prompt = fresh_review_prompt(&task_prompt);
+            }
+            HostAdmissionStep::RetryNonTerminal => {
+                let detail = worker_error
+                    .as_ref()
+                    .map(|error| format!("{error:#}"))
+                    .unwrap_or_else(|| "stream closed without terminal event".to_string());
+                eprintln!(
+                    "a3s-code: non-terminal stream end ({detail}); continuing (attempt {})",
+                    stream_index.saturating_add(1)
+                );
+                prompt = format!(
+                    "The previous attempt ended abruptly ({detail}). Continue solving the \
+                     Terminal-Bench task with the available tools (bash/read/write/edit). \
+                     Do not call Skill tools that are not installed."
+                );
+            }
+            HostAdmissionStep::NonTerminalExhausted => {
+                session.close().await;
+                if let Some(error) = worker_error {
+                    return Err(error).context("join A3S Code stream");
+                }
+                progress.stream_closed_without_terminal_event = true;
+                anyhow::bail!("A3S Code stream ended without a terminal event");
+            }
+            HostAdmissionStep::Finish => {
+                // Session close is unconditional once the gate is not requesting
+                // another host bind. A late worker join failure after End must
+                // not discard the terminal observation.
+                session.close().await;
+                if let Some(error) = worker_error {
+                    if !progress.terminal_event {
+                        return Err(error).context("join A3S Code stream");
+                    }
+                    eprintln!("[a3s-code warning] worker ended after terminal event: {error}");
+                }
+                if !progress.terminal_event {
+                    progress.stream_closed_without_terminal_event = true;
+                    anyhow::bail!("A3S Code stream ended without a terminal event");
+                }
+                return Ok(());
+            }
         }
-        if !progress.terminal_event {
-            progress.stream_closed_without_terminal_event = true;
-            anyhow::bail!("A3S Code stream ended without a terminal event")
-        }
-        return Ok(());
     }
-
-    session.close().await;
-    if let Some(error) = last_error {
-        return Err(error).context("Harbor host completion binding exhausted");
-    }
-    anyhow::bail!("Harbor host completion binding exhausted without a terminal stream")
 }
 
 #[tokio::main]
@@ -452,6 +625,253 @@ mod tests {
             Some(digest)
         );
         assert!(parse_completion_gate_mutation_digest("unrelated error").is_none());
+    }
+
+    #[test]
+    fn distinct_mutation_digests_do_not_consume_the_idle_retry_budget() {
+        let mut bound = HashSet::new();
+        let mut budget = HostAdmissionBudget::default();
+        for index in 0..32u32 {
+            let digest = format!("{index:064x}");
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, Some(&digest), 3, true, true,),
+                HostAdmissionStep::BindNewDigest,
+            );
+        }
+        assert_eq!(bound.len(), 32);
+        assert_eq!(budget.idle_used, 0);
+        assert_eq!(budget.non_terminal_used, 0);
+        assert_eq!(budget.unproven_stops, 0);
+        let repeated = format!("{:064x}", 0u32);
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, Some(&repeated), 3, true, true),
+            HostAdmissionStep::SameDigestStillOpen,
+        );
+    }
+
+    #[test]
+    fn a_tool_using_stop_after_a_bind_is_not_a_grade_until_the_cap() {
+        let mut bound = HashSet::new();
+        bound.insert(format!("{:064x}", 7u32));
+        let mut budget = HostAdmissionBudget::default();
+        for expected in 1..=HARBOR_HOST_UNPROVEN_STOPS {
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+                HostAdmissionStep::NudgeUnprovenStop,
+            );
+            assert_eq!(budget.unproven_stops, expected);
+        }
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+            HostAdmissionStep::FreshContextReview,
+        );
+        assert!(budget.fresh_review_used);
+        assert_eq!(budget.unproven_stops, 0);
+        for expected in 1..=HARBOR_HOST_UNPROVEN_STOPS {
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+                HostAdmissionStep::NudgeUnprovenStop,
+            );
+            assert_eq!(budget.unproven_stops, expected);
+        }
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+            HostAdmissionStep::Finish,
+        );
+        assert_eq!(budget.idle_used, 0);
+        let repeated = format!("{:064x}", 7u32);
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, Some(&repeated), 2, true, true),
+            HostAdmissionStep::SameDigestStillOpen,
+        );
+    }
+
+    #[test]
+    fn admission_continuations_keep_the_bind_distinct_from_the_grader() {
+        let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let bound = bind_continuation(digest);
+        assert!(bound.contains(digest));
+        assert!(bound.contains("not the task grader"));
+        assert!(unproven_stop_continuation().contains("not the task grader"));
+        assert!(TASK_PROOF_NOTE.contains("not the task grader"));
+        assert!(TASK_PROOF_NOTE.contains("re-read every requirement"));
+        assert!(TASK_PROOF_NOTE.contains("temporary"));
+        assert!(TASK_PROOF_NOTE.contains("requirement is still open"));
+        assert!(TASK_PROOF_NOTE.contains("not the unchanged sample"));
+        assert!(unproven_stop_continuation().contains("prove each one again"));
+        assert!(unproven_stop_continuation().contains("requirement is still open"));
+        assert!(unproven_stop_continuation().contains("not the unchanged sample"));
+        assert!(!unproven_stop_continuation().contains("copied from an input"));
+        assert!(fresh_review_prompt("task").contains("task"));
+        assert!(fresh_review_prompt("task").contains("not the task grader"));
+        assert!(fresh_review_prompt("task").contains("requirement is still open"));
+        assert!(!fresh_review_prompt("task").contains("copied from an input"));
+        assert!(fresh_review_focus().contains("task requirements"));
+        assert!(fresh_review_focus().contains("current program"));
+        assert!(fresh_review_focus().contains("still open"));
+        assert!(fresh_review_focus().contains("Drop claims"));
+        let handoff = a3s_code_core::compaction_system_prompt();
+        assert!(handoff.contains("already finished"));
+        assert!(handoff.contains("requirements"));
+        assert!(handoff.contains("still open"));
+        assert!(handoff.contains("unchanged sample"));
+        assert!(handoff.contains("edits that are still in the tree"));
+        let host_notes = [
+            TASK_PROOF_NOTE,
+            bound.as_str(),
+            &unproven_stop_continuation(),
+            fresh_review_focus(),
+            handoff,
+        ];
+        for note in host_notes {
+            for aimed in [
+                "bun-sourcemap-leak",
+                "private-trace-probe",
+                "sourcesContent",
+                "(value) => value",
+            ] {
+                assert!(!note.contains(aimed), "{aimed} must stay out of host notes");
+            }
+        }
+        let resumed = SessionOptions::new()
+            .with_resilience_defaults()
+            .with_llm_api_timeout(HARBOR_HOST_LLM_TIMEOUT_MS);
+        assert_eq!(resumed.llm_api_timeout_ms, Some(HARBOR_HOST_LLM_TIMEOUT_MS));
+        assert!(HARBOR_HOST_LLM_TIMEOUT_MS > 120_000);
+        let effort = SessionOptions::new().with_reasoning_effort(HARBOR_HOST_REASONING_EFFORT);
+        assert_eq!(effort.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(
+            a3s_code_core::llm::deepseek_thinking_top_p("max"),
+            Some(0.95)
+        );
+        assert_eq!(a3s_code_core::llm::deepseek_thinking_top_p("none"), None);
+        assert_eq!(
+            a3s_code_core::context_window_for_model(
+                None,
+                None,
+                "boyue/deepseek-v4-flash",
+                true,
+                200_000,
+            ),
+            1_000_000
+        );
+        assert_eq!(
+            a3s_code_core::context_window_for_model(
+                None,
+                Some(32_000),
+                "boyue/deepseek-v4-flash",
+                true,
+                200_000,
+            ),
+            32_000
+        );
+        assert_eq!(
+            a3s_code_core::context_window_for_model(None, None, "openai/gpt-test", true, 200_000),
+            128_000
+        );
+        assert_eq!(
+            a3s_code_core::documented_context_tokens("boyue/bailian/deepseek-v4.1-flash"),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn summary_transcript_omits_chain_of_thought() {
+        let mut message = a3s_code_core::llm::Message::assistant("edited build.ts");
+        message.reasoning_content = Some("the sample check already proved the task".to_string());
+        message
+            .content
+            .push(a3s_code_core::llm::ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "echo hi"}),
+            });
+        let rendered = a3s_code_core::render_message_for_summary(&message);
+        assert!(rendered.contains("edited build.ts"));
+        assert!(rendered.contains("Tool call bash"));
+        assert!(rendered.contains("echo hi"));
+        assert!(!rendered.contains("already proved"));
+        assert!(!rendered.to_ascii_lowercase().contains("reasoning"));
+    }
+
+    #[tokio::test]
+    async fn a_read_past_the_line_limit_marks_the_omitted_bytes() {
+        let dir = std::env::temp_dir().join(format!("a3s-read-line-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("long.txt"), "a".repeat(2500)).unwrap();
+        std::fs::write(dir.join("short.txt"), "hello\n").unwrap();
+        let executor = a3s_code_core::tools::ToolExecutor::new(dir.to_string_lossy().to_string());
+        let long_result = executor
+            .execute("read", &serde_json::json!({"file_path": "long.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(long_result.exit_code, 0, "{}", long_result.output);
+        assert!(long_result
+            .output
+            .contains("[line truncated, 500 bytes omitted]"));
+        assert!(long_result
+            .output
+            .contains("continue with byte_offset=2000"));
+        assert!(!long_result.output.contains(&"a".repeat(2500)));
+        let short_result = executor
+            .execute("read", &serde_json::json!({"file_path": "short.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(short_result.exit_code, 0, "{}", short_result.output);
+        assert!(short_result.output.contains("hello"));
+        assert!(!short_result.output.contains("line truncated"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn idle_and_non_terminal_retries_still_stop() {
+        let mut bound = HashSet::new();
+        let mut budget = HostAdmissionBudget::default();
+        for _ in 0..(HARBOR_HOST_IDLE_ATTEMPTS - 1) {
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+                HostAdmissionStep::NudgeBeforeAnyGate,
+            );
+        }
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, None, 2, true, false),
+            HostAdmissionStep::Finish,
+        );
+
+        let mut bound = HashSet::new();
+        bound.insert(format!("{:064x}", 4u32));
+        let mut budget = HostAdmissionBudget::default();
+        for _ in 0..(HARBOR_HOST_IDLE_ATTEMPTS - 1) {
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, None, 0, false, true),
+                HostAdmissionStep::NudgeIdleAfterBind,
+            );
+        }
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, None, 0, true, false),
+            HostAdmissionStep::Finish,
+        );
+
+        let mut bound = HashSet::new();
+        let mut budget = HostAdmissionBudget::default();
+        for _ in 0..(HARBOR_HOST_IDLE_ATTEMPTS - 1) {
+            assert_eq!(
+                host_admission_step(&mut bound, &mut budget, None, 4, false, true),
+                HostAdmissionStep::RetryNonTerminal,
+            );
+        }
+        assert_eq!(
+            host_admission_step(&mut bound, &mut budget, None, 4, false, true),
+            HostAdmissionStep::NonTerminalExhausted,
+        );
+    }
+
+    #[test]
+    fn execution_deadline_is_reached_when_elapsed_meets_the_budget() {
+        assert!(!execution_deadline_reached(0, 1));
+        assert!(execution_deadline_reached(10, 10));
+        assert!(execution_deadline_reached(11, 10));
     }
 
     #[test]

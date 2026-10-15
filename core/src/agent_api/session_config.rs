@@ -111,11 +111,21 @@ impl ResolvedSessionConfig {
                 resource: SessionBuildResource::WorkspaceRetrieval,
             });
         }
-        let memory_config = agent.code_config.memory.clone().unwrap_or_default();
+        let mut memory_config = agent.code_config.memory.clone().unwrap_or_default();
         if memory_config.prune_policy.is_some() || !options.memory_maintenance.is_empty() {
-            return Err(CodeError::AsyncSessionBuildRequired {
-                resource: SessionBuildResource::MemoryMaintenance,
-            });
+            // Pruning and scheduled maintenance are optional surfaces: the
+            // synchronous build cannot own an async runtime, so they degrade
+            // to disabled for this session with an error-level log instead
+            // of refusing to build (the default-on prune policy would
+            // otherwise make every sync session unusable). Hosts that need
+            // maintenance use the async build, which owns the runtime.
+            tracing::error!(
+                session_id = %session_id,
+                "memory maintenance is configured but the synchronous session \
+                 path cannot own the runtime; maintenance disabled for this session"
+            );
+            memory_config.prune_policy = None;
+            options.memory_maintenance = Default::default();
         }
         let memory_store =
             options
@@ -437,9 +447,10 @@ fn resolve_limits(
             .unwrap_or(base.max_parallel_tasks)
             .max(1),
         max_execution_time_ms: options.max_execution_time_ms.or(base.max_execution_time_ms),
-        max_context_tokens: crate::agent::resolve_context_window(
+        max_context_tokens: crate::agent::context_window_for_model(
             options.max_context_tokens,
             configured_model_context_tokens(&agent.code_config, model_name),
+            model_name,
             options.auto_compact,
             base.max_context_tokens,
         ),
@@ -495,15 +506,6 @@ pub(super) fn resolve_session_llm_client(
     let model_ref = if let Some(ref model) = opts.model {
         model.as_str()
     } else {
-        if opts.temperature.is_some()
-            || opts.thinking_budget.is_some()
-            || opts.reasoning_effort.is_some()
-        {
-            tracing::warn!(
-                "temperature/thinking_budget set without model override - these will be ignored. \
-                 Use with_model() to apply LLM parameter overrides."
-            );
-        }
         code_config
             .default_model
             .as_deref()
@@ -537,16 +539,14 @@ pub(super) fn resolve_session_llm_client(
             ),
         })?;
 
-    if opts.model.is_some() {
-        if let Some(temp) = opts.temperature {
-            llm_config = llm_config.with_temperature(temp);
-        }
-        if let Some(budget) = opts.thinking_budget {
-            llm_config = llm_config.with_thinking_budget(budget);
-        }
-        if let Some(effort) = opts.reasoning_effort.clone() {
-            llm_config = llm_config.with_reasoning_effort(effort);
-        }
+    if let Some(temp) = opts.temperature {
+        llm_config = llm_config.with_temperature(temp);
+    }
+    if let Some(budget) = opts.thinking_budget {
+        llm_config = llm_config.with_thinking_budget(budget);
+    }
+    if let Some(effort) = opts.reasoning_effort.clone() {
+        llm_config = llm_config.with_reasoning_effort(effort);
     }
 
     if let Some(timeout_ms) = opts.llm_api_timeout_ms {
@@ -625,7 +625,7 @@ async fn resolve_session_memory(
 }
 
 fn default_memory_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".a3s").join("memory")
+    crate::state_root::workspace_state_dir(workspace).join("memory")
 }
 
 pub(super) async fn resolve_session_store(

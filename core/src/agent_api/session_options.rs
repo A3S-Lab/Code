@@ -101,11 +101,17 @@ impl std::fmt::Debug for SessionOptions {
             .field("manual_delegation_enabled", &self.manual_delegation_enabled)
             .field("auto_parallel_delegation", &self.auto_parallel_delegation)
             .field("prompt_slots", &self.prompt_slots.is_some())
+            .field("work_policy", &self.work_policy)
             .finish()
     }
 }
 
 impl SessionOptions {
+    pub fn with_work_policy(mut self, policy: crate::WorkPolicyV1) -> Self {
+        self.work_policy = Some(policy);
+        self
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -313,11 +319,30 @@ impl SessionOptions {
         self
     }
 
+    /// Keep exact managed files out of directory discovery and its refreshes.
+    /// Names from unrelated files still participate in conflict detection.
+    pub fn with_projected_skill_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.projected_skill_files = files;
+        self
+    }
+
     /// Merge environment variables into Bash / sandbox command execution.
     ///
     /// Replaces any previously configured `command_env` map.
     pub fn with_command_env(mut self, env: HashMap<String, String>) -> Self {
         self.command_env = Some(env);
+        self
+    }
+
+    /// Watch directories for later installs without loading them now. A
+    /// session created before its project/user skills directory exists still
+    /// sees the first `a3s code skills add` land there.
+    pub fn with_watch_skill_dirs(
+        mut self,
+        dirs: impl IntoIterator<Item = impl Into<std::path::PathBuf>>,
+    ) -> Self {
+        self.watch_skill_dirs
+            .extend(dirs.into_iter().map(Into::into));
         self
     }
 
@@ -327,10 +352,10 @@ impl SessionOptions {
             .skill_registry
             .unwrap_or_else(|| Arc::new(crate::skills::SkillRegistry::new()));
         if let Err(e) = registry.load_from_dir(&dir) {
-            tracing::warn!(
+            tracing::error!(
                 dir = %dir.as_ref().display(),
                 error = %e,
-                "Failed to load skills from directory — continuing without them"
+                "failed to load skill directory; skills from this path are not loaded"
             );
         }
         self.skill_registry = Some(registry);
@@ -646,6 +671,22 @@ impl SessionOptions {
         self
     }
 
+    /// Set the default local sandbox's network posture (closed set:
+    /// `deny` default, `mediated` arms Gate 4 forced-proxy egress).
+    /// Explicit host opt-in — arming makes in-sandbox egress available
+    /// through mediation where it was denied before.
+    pub fn with_sandbox_network_mode(mut self, mode: crate::sandbox::SandboxNetworkMode) -> Self {
+        self.sandbox_network = mode;
+        self
+    }
+
+    /// Origins (`host` or `host:port`) the armed mediator may let
+    /// through. Required (non-empty) for [`crate::sandbox::SandboxNetworkMode::Mediated`].
+    pub fn with_sandbox_network_allow(mut self, origins: Vec<String>) -> Self {
+        self.sandbox_network_allow = origins;
+        self
+    }
+
     /// Provide a workspace backend for this session.
     ///
     /// Built-in tools keep their stable names and schemas, while their backing
@@ -680,6 +721,19 @@ impl SessionOptions {
     /// trusted layer deliberately opts the session out.
     pub fn without_workspace_retrieval(mut self) -> Self {
         self.workspace_retrieval = None;
+        self
+    }
+
+    /// Enable session-bound Code Intelligence.
+    ///
+    /// The code_symbols, code_navigation, and code_diagnostics tools get a
+    /// real workspace runtime (the local language-runtime provider on the
+    /// shared manifest backend). Without this — and without host-supplied
+    /// workspace services that already carries a provider — those tools
+    /// answer "no CI runtime". Language servers are resolved lazily per
+    /// query, so enabling this does not start anything at session build.
+    pub fn with_code_intelligence(mut self) -> Self {
+        self.code_intelligence = true;
         self
     }
 
@@ -848,6 +902,43 @@ impl SessionOptions {
         self
     }
 
+    /// Declare the workspace's suite verification contracts (host manifest).
+    ///
+    /// A contract admits one shell command as the project's test suite and
+    /// names the paths a passing run covers. When the model runs that command
+    /// through bash with exit 0 and every mutated path is covered, the gate
+    /// accepts the run as `Verified` instead of demanding a path-referencing
+    /// existence check. Contracts are host-authored; a session built without
+    /// them keeps the strict path-binding gate.
+    ///
+    /// Invalid contracts (empty id/command/covers) refuse session
+    /// construction instead of silently never binding.
+    pub fn with_verification_contracts(
+        mut self,
+        contracts: Vec<crate::verification::VerificationContractV1>,
+    ) -> Self {
+        self.verification_contracts = contracts;
+        self
+    }
+
+    /// One-contract convenience over
+    /// [`Self::with_verification_contracts`](Self::with_verification_contracts).
+    pub fn with_verification_contract(
+        mut self,
+        contract: crate::verification::VerificationContractV1,
+    ) -> Self {
+        self.verification_contracts.push(contract);
+        self
+    }
+
+    /// Require actual assistant delivery after a verified tool result.
+    /// Evidence-only hosts can retain automatic tool completion. This is a
+    /// host surface contract, never classification of words in a user prompt.
+    pub fn with_assistant_final_response(mut self, required: bool) -> Self {
+        self.require_assistant_final_response = Some(required);
+        self
+    }
+
     pub fn with_plan_run(mut self, admission: crate::harness_loop::PlanRunAdmission) -> Self {
         self.plan_run = admission;
         self
@@ -855,6 +946,15 @@ impl SessionOptions {
 
     pub fn with_path_rules(mut self, rules: Vec<crate::path_instructions::PathRule>) -> Self {
         self.path_rules = rules;
+        self
+    }
+
+    /// Override the path-instruction byte budget for this session. `None`
+    /// (the default) keeps the product default. The value is validated at
+    /// session construction: zero or a budget above the hard ceiling fails
+    /// closed instead of clamping.
+    pub fn with_injection_budget(mut self, budget: usize) -> Self {
+        self.path_injection_budget = Some(budget);
         self
     }
 

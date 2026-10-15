@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAgent>()?;
     m.add_class::<PySession>()?;
+    m.add_class::<super::session_release_contract::PyRunHandle>()?;
     m.add_class::<PyAgentResult>()?;
     m.add_class::<PyAgentEvent>()?;
     m.add_class::<PyToolResult>()?;

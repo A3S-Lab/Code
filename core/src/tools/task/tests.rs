@@ -197,7 +197,7 @@ async fn delegated_context_inherits_search_limits_and_flights_but_gets_a_fresh_c
         max_queued: 0,
         max_queue_wait: std::time::Duration::ZERO,
     });
-    let retry_budget = a3s_search::RetryBudget::new(a3s_search::RetryBudgetConfig {
+    let retry_budget = a3s_search::retry::RetryBudget::new(a3s_search::retry::RetryBudgetConfig {
         capacity: 1,
         retry_cost: 1,
         success_credit: 0,
@@ -1296,6 +1296,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+mod child_policy;
 use tokio::sync::{mpsc, Barrier, Notify};
 
 fn text_response(text: impl Into<String>) -> LlmResponse {
@@ -1579,6 +1580,7 @@ fn child_context_with_budget(
     budget_guard: Arc<dyn BudgetGuard>,
 ) -> crate::child_run::ChildRunContext {
     crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: None,
         hook_engine: None,
         skill_registry: None,
@@ -2680,6 +2682,7 @@ impl crate::security::SecurityProvider for RedactingSourceSecurityProvider {
 
 fn redacting_parent_context() -> crate::child_run::ChildRunContext {
     crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: Some(Arc::new(RedactingSourceSecurityProvider)),
         hook_engine: None,
         skill_registry: None,
@@ -3381,6 +3384,7 @@ async fn background_task_keeps_the_admitted_run_permission_snapshot_across_turn_
         .expect("mutable host boundary must produce a run snapshot");
     let tracker = Arc::new(InMemorySubagentTaskTracker::new());
     let parent_context = crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: None,
         hook_engine: None,
         skill_registry: None,
@@ -3762,6 +3766,7 @@ async fn deep_research_child_agent_inherits_parent_permissions_for_bash() {
     ]));
     let parent_policy = PermissionPolicy::new().allow("bash(*)");
     let parent_context = crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: None,
         hook_engine: None,
         skill_registry: None,
@@ -3888,6 +3893,7 @@ async fn delegated_child_retains_large_tool_original_through_parent_content_adap
     ]));
     let parent_policy = PermissionPolicy::new().allow("read(*)");
     let parent_context = crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: None,
         hook_engine: None,
         skill_registry: None,
@@ -5665,6 +5671,7 @@ async fn child_source_anchor_is_sanitized_before_task_metadata_persistence() {
         MockLlmClient::text_response("Evidence collected."),
     ]));
     let parent_context = crate::child_run::ChildRunContext {
+        work_policy: None,
         security_provider: Some(Arc::new(RedactingSourceSecurityProvider)),
         hook_engine: None,
         skill_registry: None,
@@ -6509,8 +6516,10 @@ fn settle_delegated_execution_covers_close_error_branches() {
 
 #[test]
 fn reject_unclean_capability_subtask_close_formats_incomplete_report() {
-    let mut report = crate::capability::ScopeCloseReport::default();
-    report.tasks_failed = 1;
+    let report = crate::capability::ScopeCloseReport {
+        tasks_failed: 1,
+        ..Default::default()
+    };
     let error = reject_unclean_capability_subtask_close(&report)
         .expect_err("unclean report must fail closed");
     assert!(
@@ -7163,3 +7172,137 @@ impl LlmClient for NotifyThenFailClient {
 
 #[path = "delegation_soak.rs"]
 mod delegation_soak;
+
+#[tokio::test]
+async fn foreground_task_is_cancellable_while_waiting_on_the_scheduler_lease() {
+    use crate::subagent_task_tracker::InMemorySubagentTaskTracker;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 1,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let tracker = Arc::new(InMemorySubagentTaskTracker::new());
+    let executor = Arc::new(
+        TaskExecutor::new(
+            test_registry_with_text_worker(),
+            Arc::new(StaticLlmClient::new("must not run before the lease")),
+            workspace.path().to_string_lossy().to_string(),
+        )
+        .with_subagent_tracker(Arc::clone(&tracker))
+        .with_task_scheduler(Arc::clone(&scheduler), true),
+    );
+
+    // Exhaust the single slot so the foreground task parks on the lease —
+    // the registration window this test holds closed.
+    let holder = scheduler
+        .acquire(
+            crate::task_scheduler::TaskPriority::Foreground,
+            "holder",
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let parked = tokio::spawn({
+        let executor = Arc::clone(&executor);
+        async move {
+            executor
+                .execute_with_task_id(
+                    "task-window".to_string(),
+                    TaskParams {
+                        agent: "worker".to_string(),
+                        description: "parks on the lease".to_string(),
+                        prompt: "nope".to_string(),
+                        background: false,
+                        max_steps: Some(1),
+                        output_schema: None,
+                    },
+                    None,
+                    Some("parent-session"),
+                    true,
+                )
+                .await
+        }
+    });
+    // The canceller entry must exist WHILE the task is still waiting on
+    // the scheduler — before any child work started.
+    let mut registered = false;
+    for _ in 0..100 {
+        if tracker.cancel("task-window").await {
+            registered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        registered,
+        "the foreground canceller must be registered during the scheduler wait"
+    );
+    let settled = tokio::time::timeout(Duration::from_secs(5), parked)
+        .await
+        .expect("cancelling the parked foreground task must settle it")
+        .expect("join");
+    // Executor-level contract: an admission cancelled mid-wait surfaces as
+    // an error naming cancellation (the tool layer maps it to a typed
+    // failed output for the model).
+    let failure = settled.expect_err("a parked-then-cancelled admission must fail");
+    assert!(
+        failure.to_string().to_lowercase().contains("cancel"),
+        "unexpected failure shape: {failure}"
+    );
+    drop(holder);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn early_setup_failure_leaves_no_stale_canceller_entry() {
+    let workspace = tempfile::tempdir().unwrap();
+    let scheduler = Arc::new(
+        crate::task_scheduler::TaskScheduler::new(crate::task_scheduler::TaskSchedulerConfig {
+            max_active: 2,
+            aging_interval_ms: 60_000,
+        })
+        .unwrap(),
+    );
+    let tracker = Arc::new(crate::subagent_task_tracker::InMemorySubagentTaskTracker::new());
+    let executor = TaskExecutor::new(
+        test_registry_with_text_worker(),
+        Arc::new(StaticLlmClient::new("should not run")),
+        workspace.path().to_string_lossy().to_string(),
+    )
+    .with_subagent_tracker(Arc::clone(&tracker))
+    .with_task_scheduler(Arc::clone(&scheduler), true);
+    TEST_FORCE_IDENTITY_DERIVE_FAILURE.store(true, Ordering::SeqCst);
+    let error = executor
+        .execute_with_task_id(
+            "task-early-fail".to_string(),
+            TaskParams {
+                agent: "worker".to_string(),
+                description: "identity fail".to_string(),
+                prompt: "nope".to_string(),
+                background: false,
+                max_steps: Some(1),
+                output_schema: None,
+            },
+            None,
+            Some("parent-session"),
+            true,
+        )
+        .await
+        .expect_err("forced identity derive failure must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("derive delegated task execution identity"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !tracker.cancel("task-early-fail").await,
+        "an early-exit error must clear its canceller entry (no stale pin on a dead task id)"
+    );
+    scheduler.shutdown().await;
+}

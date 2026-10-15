@@ -43,6 +43,17 @@ pub(crate) fn openai_reasoning_effort(token: &str) -> Option<&'static str> {
     }
 }
 
+/// DeepSeek `reasoning_effort` (`none` disables thinking; `low` / `high` / `max`).
+pub(crate) fn deepseek_reasoning_effort(token: &str) -> Option<&'static str> {
+    match normalize_effort(token) {
+        "none" => Some("none"),
+        "minimal" | "low" => Some("low"),
+        "medium" | "high" | "xhigh" => Some("high"),
+        "max" | "ultracode" => Some("max"),
+        _ => None,
+    }
+}
+
 /// GLM `reasoning_effort` (`low` / `high` / `max`).
 pub(crate) fn glm_reasoning_effort(token: &str) -> Option<&'static str> {
     match normalize_effort(token) {
@@ -78,6 +89,24 @@ pub(crate) fn is_glm_model(model: &str) -> bool {
         || id.starts_with("glm")
 }
 
+/// Sampling value DeepSeek applies while thinking is enabled.
+///
+/// Thinking mode ignores temperature. `top_p` is the parameter that still
+/// takes effect, and a value below 0.95 is raised to 0.95. `0.95` is the
+/// documented sample. Disabled thinking does not send it.
+pub fn deepseek_thinking_top_p(level: &str) -> Option<f64> {
+    match level {
+        "low" | "high" | "max" => Some(0.95),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_deepseek_model(model: &str) -> bool {
+    let id = model.rsplit(['/', ':']).next().unwrap_or(model);
+    let id = id.trim().to_ascii_lowercase();
+    id.starts_with("deepseek")
+}
+
 pub(crate) fn is_openai_reasoning_model(model: &str) -> bool {
     let id = model.rsplit(['/', ':']).next().unwrap_or(model);
     let id = id.trim().to_ascii_lowercase();
@@ -102,6 +131,9 @@ pub fn native_effort_menu(model_id: &str) -> &'static [&'static str] {
     if matches!(provider, "glm" | "zhipu" | "bigmodel") || is_glm_model(name) {
         return &["low", "high", "max"];
     }
+    if provider == "deepseek" || is_deepseek_model(name) {
+        return &["low", "high", "max"];
+    }
     &["low", "medium", "high", "xhigh", "max"]
 }
 
@@ -116,10 +148,16 @@ pub fn model_sends_native_effort(model_id: &str) -> bool {
         Some((provider, name)) => (provider, name),
         None => ("", id.as_str()),
     };
+    // Cursor model ids already encode effort and fast variants. Do not send
+    // an a3s effort parameter to that account.
+    if provider == "cursor" {
+        return false;
+    }
     matches!(
         provider,
-        "anthropic" | "claude" | "cc-switch" | "glm" | "zhipu" | "bigmodel"
+        "anthropic" | "claude" | "cc-switch" | "glm" | "zhipu" | "bigmodel" | "deepseek"
     ) || is_glm_model(name)
+        || is_deepseek_model(name)
         || name.starts_with("claude")
         || is_openai_reasoning_model(name)
 }
@@ -137,6 +175,15 @@ mod tests {
         assert_eq!(openai_reasoning_effort("none"), Some("none"));
         assert_eq!(glm_reasoning_effort("medium"), Some("high"));
         assert_eq!(glm_reasoning_effort("xhigh"), Some("max"));
+        assert_eq!(deepseek_reasoning_effort("max"), Some("max"));
+        assert_eq!(deepseek_reasoning_effort("medium"), Some("high"));
+        assert_eq!(deepseek_reasoning_effort("none"), Some("none"));
+        assert!(is_deepseek_model("boyue/deepseek-v4-flash"));
+        assert!(model_sends_native_effort("deepseek/deepseek-v4-flash"));
+        assert_eq!(
+            native_effort_menu("deepseek/deepseek-v4-flash"),
+            &["low", "high", "max"]
+        );
         assert_eq!(anthropic_effort("nope"), None);
     }
 
@@ -158,6 +205,9 @@ mod tests {
         assert!(model_sends_native_effort("zhipu/glm-5.3"));
         assert!(!model_sends_native_effort("ollama/llama3"));
         assert!(!model_sends_native_effort("openai/gpt-4o"));
+        assert!(!model_sends_native_effort("cursor/gpt-5.2"));
+        assert!(!model_sends_native_effort("cursor/composer-2.5"));
+        assert!(model_sends_native_effort("openai/gpt-5.4"));
     }
 
     #[test]

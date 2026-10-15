@@ -821,7 +821,7 @@ fn extract_auto_mode_change(json: &serde_json::Value) -> Option<bool> {
     }
     match params.get("permission_mode").and_then(|v| v.as_str()) {
         Some("auto") => Some(true),
-        Some("always-approve" | "ask" | "default") => Some(false),
+        Some("yolo" | "ask" | "default") => Some(false),
         _ => None,
     }
 }

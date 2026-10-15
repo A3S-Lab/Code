@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 #[allow(dead_code)]
 #[path = "durable_memory_semantic_refresh/support.rs"]
 mod refresh_support;
@@ -8,7 +10,7 @@ use a3s_code_core::memory::{
     SEMANTIC_REFRESH_JOB_NAME,
 };
 use a3s_code_core::{
-    Agent, AgentSession, CodeConfig, CodeError, LlmClient, SessionBuildResource, SessionOptions,
+    Agent, AgentSession, CodeError, LlmClient, SessionBuildResource, SessionOptions,
 };
 use a3s_memory::repository::{
     InMemoryRepository, MemoryChangeSet, MemoryOperation, MemoryRepository, MemoryStatus,
@@ -219,7 +221,9 @@ async fn scheduled_semantic_refresh_publishes_revisions_retains_receipts_and_sto
     );
     assert!(schedule.last_receipt().is_none());
 
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let agent_session = agent
         .session_async(
@@ -363,7 +367,9 @@ async fn close_waits_for_post_publication_verification_and_retains_the_receipt()
         semantic(Arc::new(FixtureProvider), Default::default(), index),
     );
     let schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(5)).unwrap();
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let agent_session = Arc::new(
         agent
@@ -408,7 +414,9 @@ async fn close_waits_for_post_publication_verification_and_retains_the_receipt()
 #[tokio::test]
 async fn scheduled_semantic_refresh_rejects_missing_or_weak_bindings_before_start() {
     assert!(ScheduledSemanticRefresh::try_new(Duration::ZERO).is_err());
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let llm: Arc<dyn LlmClient> = Arc::new(UnusedLlmClient);
     let missing_schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(5)).unwrap();
@@ -477,4 +485,15 @@ async fn scheduled_semantic_refresh_rejects_missing_or_weak_bindings_before_star
     ));
     assert_eq!(weak_index.status(), VectorIndexStatus::default());
     assert!(weak_schedule.last_receipt().is_none());
+}
+
+// This fixture owns only the explicitly scheduled V2 refresh job.
+fn semantic_only_code_config() -> a3s_code_core::CodeConfig {
+    a3s_code_core::CodeConfig {
+        memory: Some(a3s_code_core::memory::MemoryConfig {
+            prune_policy: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }

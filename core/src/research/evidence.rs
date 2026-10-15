@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 pub const RESEARCH_EVIDENCE_FACT_SCHEMA_V1: &str = "a3s.code.evidence-fact.v1";
 const RESEARCH_EVIDENCE_FACT_DIGEST_DOMAIN: &str = "a3s.code.evidence-fact.identity.v1";
+const SOURCE_SNAPSHOT_METADATA_KEY: &str = "sourceSnapshotDigest";
 pub const RESEARCH_MAX_FACT_METADATA: usize = 32;
 pub const RESEARCH_MAX_METADATA_VALUE_BYTES: usize = 1024;
 
@@ -45,6 +46,27 @@ pub struct ResearchEvidenceFactV1 {
 }
 
 impl ResearchEvidenceFactV1 {
+    /// Bind a host-observed source snapshot through the existing digest-bound
+    /// metadata contract. The host still checks it against the associated Run;
+    /// this value alone grants no authority to read or mutate a source.
+    pub fn with_source_snapshot_digest(
+        mut self,
+        digest: impl Into<String>,
+    ) -> Result<Self, ResearchContractError> {
+        self.validate()?;
+        self.metadata
+            .insert(SOURCE_SNAPSHOT_METADATA_KEY.to_owned(), digest.into());
+        self.validate_without_digest()?;
+        self.fact_digest = self.expected_digest()?;
+        Ok(self)
+    }
+
+    pub fn source_snapshot_digest(&self) -> Option<&str> {
+        self.metadata
+            .get(SOURCE_SNAPSHOT_METADATA_KEY)
+            .map(String::as_str)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         run_id: impl Into<String>,
@@ -109,6 +131,9 @@ impl ResearchEvidenceFactV1 {
             validate_digest_field("sourceDigest", source_digest)?;
         }
         validate_digest_field("contentDigest", &self.content_digest)?;
+        if let Some(digest) = self.source_snapshot_digest() {
+            validate_digest_field("sourceSnapshotDigest", digest)?;
+        }
         if self.metadata.len() > RESEARCH_MAX_FACT_METADATA {
             return Err(ResearchContractError::InvalidField("metadata"));
         }
@@ -151,6 +176,10 @@ impl ResearchEvidenceFactV1 {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "evidence/release_tests.rs"]
+mod release_tests;
 
 #[cfg(test)]
 mod tests {

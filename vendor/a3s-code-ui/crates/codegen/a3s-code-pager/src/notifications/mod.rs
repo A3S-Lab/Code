@@ -39,9 +39,11 @@ pub struct NotificationService {
     progress_active: bool,
     /// Last time the progress bar escape was emitted (keep-alive clock).
     progress_last_sent: Option<Instant>,
-    /// Whether we have already fired an `ApprovalRequired` terminal notification for the current batch of queued permissions.
-    /// Set to `true` after the first notification; cleared via [`clear_permission_notification`] when the queue drains to empty.
-    permission_notified: bool,
+    /// Agents we already fired an `ApprovalRequired` terminal notification
+    /// for. Per-agent: a SECOND agent's permission must still notify while
+    /// the first agent's prompt sits unanswered — a single global flag
+    /// silenced exactly that case (the parked-permission hang had no bell).
+    permission_notified: std::collections::HashSet<crate::app::agent::AgentId>,
     /// Out-of-band escape queue for notification/shutdown escapes; see [`EscapeWriter`](crate::render::draw::EscapeWriter).
     escape_writer: EscapeWriter,
 }
@@ -65,7 +67,7 @@ impl NotificationService {
             terminal_ctx,
             progress_active: false,
             progress_last_sent: None,
-            permission_notified: false,
+            permission_notified: std::collections::HashSet::new(),
             escape_writer,
         }
     }
@@ -182,20 +184,34 @@ impl NotificationService {
         self.escape_writer.emit(buf);
     }
 
-    /// Returns `true` if a terminal notification for `ApprovalRequired` has already been emitted and should not be repeated.
-    pub fn should_suppress_permission_notification(&self) -> bool {
-        self.permission_notified
+    /// Returns `true` if a terminal notification for `ApprovalRequired` has
+    /// already been emitted for THIS agent and should not be repeated.
+    pub fn should_suppress_permission_notification(
+        &self,
+        agent: crate::app::agent::AgentId,
+    ) -> bool {
+        self.permission_notified.contains(&agent)
     }
 
-    /// Record that an `ApprovalRequired` notification has been emitted.
-    pub fn mark_permission_notified(&mut self) {
-        self.permission_notified = true;
+    /// Record that an `ApprovalRequired` notification has been emitted for
+    /// this agent.
+    pub fn mark_permission_notified(&mut self, agent: crate::app::agent::AgentId) {
+        self.permission_notified.insert(agent);
     }
 
-    /// Reset the permission notification flag.
-    /// Call this when the permission queue drains to empty.
+    /// Drop the notified mark for every agent whose queue is no longer
+    /// pending, so a future permission from them notifies again.
+    pub fn retain_permission_notified(
+        &mut self,
+        still_pending: &[crate::app::agent::AgentId],
+    ) {
+        self.permission_notified.retain(|agent| still_pending.contains(agent));
+    }
+
+    /// Reset every permission notification mark.
+    /// Call this when no agent has a queued permission.
     pub fn clear_permission_notification(&mut self) {
-        self.permission_notified = false;
+        self.permission_notified.clear();
     }
 
     fn clear_progress_into(&mut self, buf: &mut String) {
@@ -236,7 +252,7 @@ impl NotificationService {
             terminal_ctx,
             progress_active: false,
             progress_last_sent: None,
-            permission_notified: false,
+            permission_notified: std::collections::HashSet::new(),
             escape_writer: EscapeWriter::disconnected(),
         }
     }
@@ -655,17 +671,32 @@ mod tests {
 
     #[test]
     fn permission_suppression_lifecycle() {
+        use crate::app::agent::AgentId;
         let mut svc = NotificationService::new_for_test(NotificationConfig::default());
+        let a = AgentId(1);
+        let b = AgentId(2);
 
         // Initially not suppressed: first permission should fire
-        assert!(!svc.should_suppress_permission_notification());
+        assert!(!svc.should_suppress_permission_notification(a));
 
-        // After marking, subsequent notifications are suppressed.
-        svc.mark_permission_notified();
-        assert!(svc.should_suppress_permission_notification());
+        // After marking, subsequent notifications are suppressed for THAT
+        // agent — but a second agent's permission still has its own bell.
+        svc.mark_permission_notified(a);
+        assert!(svc.should_suppress_permission_notification(a));
+        assert!(
+            !svc.should_suppress_permission_notification(b),
+            "a second agent's permission must not be silenced by the first"
+        );
 
-        // Clearing (queue drained) allows the next batch to fire.
+        // Retaining only the still-pending agent keeps its mark and re-arms
+        // the drained one.
+        svc.mark_permission_notified(b);
+        svc.retain_permission_notified(&[b]);
+        assert!(svc.should_suppress_permission_notification(b));
+        assert!(!svc.should_suppress_permission_notification(a));
+
+        // Clearing (no queued permissions) allows the next batch to fire.
         svc.clear_permission_notification();
-        assert!(!svc.should_suppress_permission_notification());
+        assert!(!svc.should_suppress_permission_notification(b));
     }
 }

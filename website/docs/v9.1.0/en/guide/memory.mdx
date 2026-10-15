@@ -65,9 +65,10 @@ skipped entirely when the session is bound to an exact cognitive package.
 
 ## LLM Extraction
 
-LLM memory extraction is enabled by default when memory is available. Every
-completed turn with a non-empty prompt and response is submitted to the active
-model. The model, not a keyword list or tool-type heuristic, decides whether
+LLM memory extraction is enabled by default when memory is configured. Eligible
+completed turns with a non-empty prompt and response are admitted through the
+existing budget, model-call and cancellation controls. Ordinary resume does not
+admit extraction. The model, not a keyword list or tool-type heuristic, decides whether
 the turn contains anything that can change a future answer or action. It must
 return an empty `items` array when nothing qualifies. Tool calls and tool
 results are context for that judgment; they are never mechanically copied into
@@ -86,14 +87,19 @@ safety rather than judging semantic value.
 The extraction prompt includes up to five related existing memories. The model
 can use `supersedes` for a directly replaced or consolidated memory and
 `conflicts_with` for a contradiction that should remain visible. The runtime
-accepts only relation IDs it supplied to the model. It removes accepted
-superseded items, preserves conflicts, and includes relation annotations in
-future recall.
+accepts only relation IDs it supplied to the model. It archives superseded
+items with their provenance and replacement link, excludes them from recall,
+preserves conflicts, and includes relation annotations in future recall.
 
-Extraction jobs are queued in FIFO order per session. Streaming runs extract in
-the background after the final event, so a slow extraction does not delay the
-response; non-streaming `send` runs extract before returning. Graceful session
-close waits up to five seconds for extraction accepted before close.
+Extraction jobs are queued in FIFO order per session. A streaming job's ticket
+is registered before the first final event, and extraction runs in the background
+after that event. Non-streaming `send` awaits the extraction attempt before
+returning. Session close waits up to five seconds for accepted extraction, then
+requests cancellation. These boundaries do not guarantee a memory write: a job
+can be refused, fail or store nothing. Automatic persistence requires a validated
+model item and an actual backend acknowledgement. Hosts can use `MemoryObserver`
+to observe successful primary writes and verify their canonical IDs after reopening
+the backend; that observation does not certify all later relation/archive work.
 
 Tune extraction in the config file:
 

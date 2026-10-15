@@ -11,6 +11,7 @@ use super::AgentSession;
 use crate::compaction::CompactionBudget;
 use crate::error::{write_or_recover, CodeError, Result};
 use crate::llm::Message;
+use a3s_effect::LogStore;
 
 impl AgentSession {
     /// Resolved context window for this session, in tokens.
@@ -26,9 +27,22 @@ impl AgentSession {
     pub async fn compact_conversation(&self, focus: Option<&str>) -> Result<()> {
         let _lease = ExecutionCoordinator::admit(self, "compact").await?;
         let focus = focus.map(str::trim).filter(|focus| !focus.is_empty());
-        let from_log =
-            crate::fact_control::compaction_transcript(&self.workspace, &self.session_id)
-                .map_err(|error| CodeError::Session(error.to_string()))?;
+        let log = self
+            .run_admission
+            .fact_log_slot()
+            .lock()
+            .map_err(|_| CodeError::Session("compaction original log is poisoned".into()))?
+            .clone()
+            .ok_or_else(|| CodeError::Session("compaction original log is absent".into()))?;
+        let writer = log
+            .try_writer_fence()
+            .map_err(|error| CodeError::Session(error.to_string()))?;
+        let facts = log
+            .read(&crate::fact_control::thread_for_session(&self.session_id))
+            .map_err(|error| CodeError::Session(error.to_string()))?;
+        let persistence = SessionPersistenceContext::from_session(self);
+        let source = persistence.source_from_facts(&facts)?;
+        let from_log = crate::fact_control::compaction_transcript_from_facts(&facts);
         let messages = if from_log.len() >= 2 {
             from_log
         } else if from_log.is_empty() {
@@ -44,32 +58,42 @@ impl AgentSession {
             self.config.auto_compact_threshold,
             0,
         );
+        let cancellation = self.session_cancel.child_token();
+        let client = super::agent_loop_runtime::build_agent_loop(self).scoped_llm_client_for_parts(
+            Some(&self.session_id),
+            &None,
+            &cancellation,
+        );
         let compacted = crate::compaction::compact_messages(
             &self.session_id,
             &messages,
-            &self.llm_client,
+            &client,
             budget,
             focus,
+            source.as_ref(),
         )
         .await
-        .map_err(|error| CodeError::Session(error.to_string()))?;
+        .map_err(|error| CodeError::Session(format!("{error:#}")))?;
         let Some(compacted) = compacted else {
             return Err(CodeError::Session("Nothing to compact yet.".into()));
         };
-        crate::fact_control::append_compaction_done(
-            &self.workspace,
-            &self.session_id,
-            &compacted.summary,
-        )
-        .map_err(|error| CodeError::Session(error.to_string()))?;
-        *write_or_recover(&self.history) = vec![Message::user_wire(&format!(
-            "{}{}",
-            crate::prompts::CONTEXT_SUMMARY_PREFIX,
-            compacted.summary
-        ))];
-        SessionPersistenceContext::from_session(self)
-            .auto_save_if_enabled()
-            .await;
+        self.close_handle.mutate_immediate(|| -> Result<()> {
+            crate::fact_control::append_compaction_done(
+                &log,
+                &writer,
+                &self.session_id,
+                &compacted.summary,
+                source.as_ref(),
+            )
+            .map_err(|error| CodeError::Session(error.to_string()))?;
+            *write_or_recover(&self.history) = vec![Message::user_wire(&format!(
+                "{}{}",
+                crate::prompts::CONTEXT_SUMMARY_PREFIX,
+                compacted.summary
+            ))];
+            Ok(())
+        })??;
+        persistence.auto_save_if_enabled().await;
         Ok(())
     }
 }

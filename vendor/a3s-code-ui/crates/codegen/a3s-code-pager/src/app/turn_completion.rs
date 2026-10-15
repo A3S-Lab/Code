@@ -68,6 +68,175 @@ impl From<Option<&str>> for TurnStopReason {
     }
 }
 
+/// How the run closed at the agent's completion gate. Wire values come from
+/// the agent's `CompletionTerminal` (`turn_outcome_payload` in the acp crate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnTerminal {
+    Narrative,
+    Verified,
+    Waived,
+    Distinct,
+}
+
+impl TurnTerminal {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "narrative" => Ok(Self::Narrative),
+            "verified" => Ok(Self::Verified),
+            "waived" => Ok(Self::Waived),
+            "distinct" => Ok(Self::Distinct),
+            other => Err(format!(
+                "unknown turn terminal {other:?}: expected one of narrative, verified, waived, distinct"
+            )),
+        }
+    }
+}
+
+/// The verification status the gate's summary reported for the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnVerification {
+    Passed,
+    Failed,
+    NeedsReview,
+    Skipped,
+}
+
+impl TurnVerification {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "passed" => Ok(Self::Passed),
+            "failed" => Ok(Self::Failed),
+            "needsreview" => Ok(Self::NeedsReview),
+            "skipped" => Ok(Self::Skipped),
+            other => Err(format!(
+                "unknown turn verification {other:?}: expected one of passed, failed, needsreview, skipped"
+            )),
+        }
+    }
+}
+
+/// Why the harness stopped the run short. A forced stop is informative even
+/// on a narrative close, so it overrides the silence rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForcedStopWire {
+    ToolBudget,
+    ReadOnlyEvidence,
+    ResponseTruncated,
+}
+
+impl ForcedStopWire {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "tool_budget" => Ok(Self::ToolBudget),
+            "read_only_evidence" => Ok(Self::ReadOnlyEvidence),
+            "response_truncated" => Ok(Self::ResponseTruncated),
+            other => Err(format!(
+                "unknown forced stop {other:?}: expected one of tool_budget, read_only_evidence, response_truncated"
+            )),
+        }
+    }
+}
+
+/// One `x.ai/turn/outcome` notification, parsed. The agent emits it before
+/// the prompt response resolves, so it can render beside the turn marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnOutcomeInfo {
+    pub(crate) terminal: TurnTerminal,
+    pub(crate) verification: TurnVerification,
+    /// Bound required checks the gate counted for the run.
+    pub(crate) required_checks: u32,
+    pub(crate) failed_checks: u32,
+    /// Present when the harness stopped the run short.
+    pub(crate) forced: Option<ForcedStopWire>,
+}
+
+/// Parse the `x.ai/turn/outcome` notification params
+/// (`{"sessionId":..., "outcome":{terminal,status,requiredChecks,failedChecks}}`).
+/// Unknown terminal/status values drop with a warn naming the expected set
+/// (fail-closed rendering, no guessing); malformed JSON drops with a warn.
+pub(crate) fn parse_turn_outcome(params: &str) -> Option<TurnOutcomeInfo> {
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        #[serde(rename = "sessionId")]
+        #[allow(dead_code)]
+        session_id: String,
+        outcome: Outcome,
+    }
+    #[derive(serde::Deserialize)]
+    struct Outcome {
+        terminal: String,
+        status: String,
+        #[serde(rename = "requiredChecks", default)]
+        required_checks: u32,
+        #[serde(rename = "failedChecks", default)]
+        failed_checks: u32,
+        forced: Option<String>,
+    }
+    let payload = serde_json::from_str::<Payload>(params)
+        .map_err(|error| tracing::warn!(%error, "failed to parse x.ai/turn/outcome"))
+        .ok()?;
+    let terminal = TurnTerminal::parse(&payload.outcome.terminal)
+        .map_err(|error| tracing::warn!(%error, "x.ai/turn/outcome carries an unknown terminal; dropping"))
+        .ok()?;
+    let verification = TurnVerification::parse(&payload.outcome.status)
+        .map_err(
+            |error| tracing::warn!(%error, "x.ai/turn/outcome carries an unknown status; dropping"),
+        )
+        .ok()?;
+    let forced = payload
+        .outcome
+        .forced
+        .as_deref()
+        .map(ForcedStopWire::parse)
+        .transpose()
+        .map_err(
+            |error| tracing::warn!(%error, "x.ai/turn/outcome carries an unknown forced stop; dropping"),
+        )
+        .ok()?;
+    Some(TurnOutcomeInfo {
+        terminal,
+        verification,
+        required_checks: payload.outcome.required_checks,
+        failed_checks: payload.outcome.failed_checks,
+        forced,
+    })
+}
+
+/// The single copy owner for the outcome line. `None` stays silent: a clean
+/// narrative close (the common case) must not add noise above the marker.
+pub(crate) fn turn_outcome_event(info: &TurnOutcomeInfo) -> Option<SessionEvent> {
+    // A forced stop is informative even on a narrative close: the turn did
+    // NOT end because the model finished — the harness cut it short.
+    if let Some(forced) = info.forced {
+        let cause = match forced {
+            ForcedStopWire::ToolBudget => "tool budget reached",
+            ForcedStopWire::ReadOnlyEvidence => "read-only evidence limit",
+            ForcedStopWire::ResponseTruncated => "answer truncated (length limit)",
+        };
+        return Some(SessionEvent::TurnOutcome {
+            line: format!("stopped: {cause}"),
+        });
+    }
+    let checks = match info.terminal {
+        TurnTerminal::Verified => match info.required_checks {
+            0 => "verified \u{2713}".to_string(),
+            1 => "verified \u{2713} (1 check)".to_string(),
+            n => format!("verified \u{2713} ({n} checks)"),
+        },
+        TurnTerminal::Waived => "waived".to_string(),
+        // Step closures did not share one digest; the split is the message.
+        TurnTerminal::Distinct => "closed on split digests".to_string(),
+        TurnTerminal::Narrative => return None,
+    };
+    let mut line = checks;
+    if info.failed_checks > 0 {
+        line.push_str(&format!(" \u{00b7} {} failed", info.failed_checks));
+    } else if info.verification == TurnVerification::NeedsReview {
+        line.push_str(" \u{00b7} needs review");
+    }
+    Some(SessionEvent::TurnOutcome { line })
+}
+
 pub(crate) struct TerminalMarkerInput<'a> {
     pub stop: TurnStopReason,
     pub elapsed_ms: Option<u64>,
@@ -710,3 +879,169 @@ pub(super) fn apply_terminal_outcome(
 #[cfg(test)]
 #[path = "turn_completion/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod turn_outcome_tests {
+    use super::*;
+    use crate::scrollback::block::RenderBlock;
+
+    fn info(
+        terminal: TurnTerminal,
+        verification: TurnVerification,
+        failed: u32,
+    ) -> TurnOutcomeInfo {
+        TurnOutcomeInfo {
+            terminal,
+            verification,
+            required_checks: 0,
+            failed_checks: failed,
+            forced: None,
+        }
+    }
+
+    /// A clean narrative close stays silent — the common case must not add
+    /// noise above the marker.
+    #[test]
+    fn narrative_close_renders_no_outcome_line() {
+        assert!(
+            turn_outcome_event(&info(TurnTerminal::Narrative, TurnVerification::Passed, 0))
+                .is_none()
+        );
+    }
+
+    /// A forced stop overrides the narrative silence rule — the harness cut
+    /// the turn short, and that must be visible.
+    #[test]
+    fn forced_stop_renders_even_on_a_narrative_close() {
+        let mut budget = info(TurnTerminal::Narrative, TurnVerification::Skipped, 0);
+        budget.forced = Some(ForcedStopWire::ToolBudget);
+        let event = turn_outcome_event(&budget).expect("a forced stop must render");
+        assert!(
+            matches!(&event, SessionEvent::TurnOutcome { line } if line.contains("stopped: tool budget")),
+            "got {event:?}"
+        );
+        let mut read_only = info(TurnTerminal::Narrative, TurnVerification::Skipped, 0);
+        read_only.forced = Some(ForcedStopWire::ReadOnlyEvidence);
+        let event = turn_outcome_event(&read_only).expect("a forced stop must render");
+        assert!(
+            matches!(&event, SessionEvent::TurnOutcome { line } if line.contains("read-only evidence limit")),
+            "got {event:?}"
+        );
+    }
+
+    #[test]
+    fn forced_stop_wire_parse_errors_name_the_set() {
+        assert!(
+            ForcedStopWire::parse("zombie")
+                .unwrap_err()
+                .contains("tool_budget, read_only_evidence, response_truncated")
+        );
+    }
+
+    #[test]
+    fn verified_close_names_the_checks() {
+        let mut verified = info(TurnTerminal::Verified, TurnVerification::Passed, 0);
+        verified.required_checks = 2;
+        let event = turn_outcome_event(&verified).expect("a verified close renders");
+        match &event {
+            SessionEvent::TurnOutcome { line } => {
+                assert!(line.contains("verified"), "{line}");
+                assert!(
+                    !line.contains("failed"),
+                    "no failure suffix when clean: {line}"
+                );
+            }
+            other => panic!("expected TurnOutcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_checks_and_needs_review_surface() {
+        let failed = turn_outcome_event(&info(TurnTerminal::Verified, TurnVerification::Failed, 1))
+            .expect("failed checks render");
+        assert!(matches!(&failed, SessionEvent::TurnOutcome { line } if line.contains("1 failed")));
+        let review = turn_outcome_event(&info(
+            TurnTerminal::Waived,
+            TurnVerification::NeedsReview,
+            0,
+        ))
+        .expect("needs review renders");
+        assert!(
+            matches!(&review, SessionEvent::TurnOutcome { line } if line.contains("needs review"))
+        );
+    }
+
+    /// The closed sets name themselves in the parse error (naming rules).
+    #[test]
+    fn closed_set_parse_errors_name_the_set() {
+        assert!(
+            TurnTerminal::parse("zombie")
+                .unwrap_err()
+                .contains("narrative, verified, waived, distinct")
+        );
+        assert!(
+            TurnVerification::parse("zombie")
+                .unwrap_err()
+                .contains("passed, failed, needsreview, skipped")
+        );
+    }
+
+    /// The wire parse: happy path, unknown closed-set members, and malformed
+    /// JSON all resolve deterministically (the latter two to None).
+    #[test]
+    fn parse_turn_outcome_covers_the_wire_shapes() {
+        let happy = parse_turn_outcome(
+            r#"{"sessionId":"s1","outcome":{"terminal":"verified","status":"passed","requiredChecks":2,"failedChecks":0}}"#,
+        )
+        .expect("valid payload parses");
+        assert_eq!(
+            happy,
+            TurnOutcomeInfo {
+                terminal: TurnTerminal::Verified,
+                verification: TurnVerification::Passed,
+                required_checks: 2,
+                failed_checks: 0,
+                forced: None,
+            }
+        );
+        assert!(
+            parse_turn_outcome(
+                r#"{"sessionId":"s1","outcome":{"terminal":"zombie","status":"passed"}}"#
+            )
+            .is_none(),
+            "unknown terminal drops"
+        );
+        assert!(
+            parse_turn_outcome(
+                r#"{"sessionId":"s1","outcome":{"terminal":"verified","status":"nope"}}"#
+            )
+            .is_none(),
+            "unknown status drops"
+        );
+        assert!(parse_turn_outcome("not json").is_none());
+        let forced = parse_turn_outcome(
+            r#"{"sessionId":"s1","outcome":{"terminal":"narrative","status":"skipped","forced":"tool_budget"}}"#,
+        )
+        .expect("forced payload parses");
+        assert_eq!(forced.forced, Some(ForcedStopWire::ToolBudget));
+        assert!(
+            parse_turn_outcome(
+                r#"{"sessionId":"s1","outcome":{"terminal":"narrative","status":"skipped","forced":"zombie"}}"#
+            )
+            .is_none(),
+            "unknown forced stop drops"
+        );
+    }
+
+    /// The outcome line is NOT itself a terminal marker: the real marker
+    /// (TurnCompleted) follows it.
+    #[test]
+    fn outcome_line_is_not_turn_terminal() {
+        let block = crate::scrollback::blocks::SessionEventBlock::new(
+            turn_outcome_event(&info(TurnTerminal::Verified, TurnVerification::Passed, 1)).unwrap(),
+        );
+        assert!(!block.event.is_turn_terminal());
+        assert!(block.event.message().contains("verified"));
+        let _ = RenderBlock::SessionEvent(block);
+    }
+}

@@ -1596,7 +1596,7 @@ fn extract_auto_mode_change_derives_from_permission_mode() {
     let payload = r#"{"jsonrpc":"2.0","method":"x.ai/yolo_mode_changed","params":{"permission_mode":"auto"}}"#;
     assert_eq!(extract_auto_mode_change(&pv(payload)), Some(true));
 
-    for mode in ["ask", "always-approve", "default"] {
+    for mode in ["ask", "yolo", "default"] {
         let payload = format!(
             r#"{{"jsonrpc":"2.0","method":"x.ai/yolo_mode_changed","params":{{"permission_mode":"{mode}"}}}}"#
         );

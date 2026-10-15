@@ -470,10 +470,22 @@ export interface HarnessComposeOptions {
    * `parts`. Entries are stock names or `host:<id>` (Rust registry).
    */
   components?: Array<string>
-  /** Actor step limit. Omit to keep the derived session default. Independent of `toolBudget`. */
+  /**
+   * Actor step limit. Omit to keep the derived session default.
+   * Independent of `toolBudget`.
+   */
   stepLimit?: number
-  /** Provider attempts for one infer, including the first call. Omit to keep 2. Zero is rejected. */
+  /**
+   * Provider attempts for one infer, including the first call.
+   * Omit to keep 2. Zero is rejected.
+   */
   modelAttempts?: number
+}
+/** Engineering work policy `{ id, revision, instructions }`, validated by Core. */
+export interface WorkPolicyObject {
+  id: string
+  revision: number
+  instructions: string
 }
 /**
  * Host-provided deterministic ID and clock configuration.
@@ -502,6 +514,16 @@ export interface SessionOptions {
   builtinSkills?: boolean
   /** Extra directories to scan for skill files (.md with YAML frontmatter). */
   skillDirs?: Array<string>
+  /** Host-selected skill watch roots and exact projected skill files. */
+  watchSkillDirs?: Array<string>
+  projectedSkillFiles?: Array<string>
+  /** Explicit network mode: deny (default) or mediated. */
+  sandboxNetwork?: string
+  sandboxNetworkAllow?: Array<string>
+  codeIntelligence?: boolean
+  /** Path instruction byte budget; Core rejects zero and oversized values. */
+  pathInjectionBudget?: number
+  verificationContracts?: Array<any>
   /**
    * Whether active skill allowed-tools restrict ordinary session tool calls.
    *
@@ -687,8 +709,11 @@ export interface SessionOptions {
    * Only applied when `model` is also set. Provider must support extended thinking.
    */
   thinkingBudget?: number
-  /** Provider reasoning effort level (e.g. "low" | "medium" | "high" | "xhigh" | "max"). Only applied when `model` is also set. */
-  reasoningEffort?: string | undefined | null
+  /**
+   * Provider reasoning effort level (e.g. "low" | "medium" | "high" | "xhigh" | "max").
+   * Only applied when `model` is also set. Providers without the parameter reject it.
+   */
+  reasoningEffort?: string
   /**
    * Request token-level log probabilities from OpenAI-compatible backends.
    *
@@ -783,6 +808,10 @@ export interface SessionOptions {
   allowProcessHostSandbox?: boolean
   /** Opt-in read-only verifier. Default is off. */
   verifierEnabled?: boolean
+  /** Require actual assistant delivery after a verified tool result. Default is off. */
+  requireAssistantFinalResponse?: boolean
+  /** Engineering work policy; the session's first Run admits it. Omit for none. */
+  workPolicy?: WorkPolicyObject
   /**
    * Meta Harness compose recipe. Omit for the legacy `coding_actor` stock tree.
    *
@@ -1056,6 +1085,12 @@ export interface BudgetGuardHandlers {
    */
   timeoutMs?: number
 }
+/** Provider token totals already accumulated for one session. */
+export interface RecordedUsageTokens {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
 /** Current health of one scheduled memory maintenance job. */
 export interface MemoryMaintenanceJobHealth {
   name: string
@@ -1207,6 +1242,31 @@ export interface WorkspaceHybridSearchResultObject {
 /** Structural SessionOptions shape. Pass an `ImmutableContentAdapterOptions` instance. */
 export interface ImmutableContentAdapterOptionsObject {
   instanceId: string
+}
+export interface AgentRunStream {
+  stream: EventStream
+  run?: RunHandle
+}
+/**
+ * Exactly one field is set: the decision, the started slice's stream, or the
+ * snapshot of the Run this operation already admitted.
+ */
+export interface GoalTickStream {
+  decision?: string
+  started?: AgentRunStream
+  replayed?: any
+}
+/**
+ * Host-selected MCP definition. The transport object follows the Core MCP
+ * wire contract; unsupported transport kinds fail during normalization.
+ */
+export interface McpServerConfig {
+  name: string
+  transport: any
+  enabled?: boolean
+  env?: Record<string, string>
+  oauth?: any
+  toolTimeoutSecs?: number
 }
 export interface AgentResult {
   text: string
@@ -1574,11 +1634,6 @@ export declare class Harness {
   /** Validate and return a compose recipe for `SessionOptions.harness`. */
   static compose(options: HarnessComposeOptions): HarnessComposeOptions
 }
-export interface RecordedUsageTokens {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-}
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
   /**
@@ -1811,10 +1866,10 @@ export declare class Session {
   /** Return the model identifier bound to this session. */
   get modelName(): string
   /**
-   * Summarize the current conversation and keep that summary for later turns.
-   * `focus` is host instruction for the summary and is not written into the
-   * transcript. A session with fewer than two visible messages errors and
-   * leaves the log unchanged.
+   * Summarize the current conversation and keep that summary for later
+   * turns. `focus` is host instruction for the summary and is not written
+   * into the transcript. A session with fewer than two visible messages
+   * errors and leaves the log unchanged.
    */
   compactConversation(focus?: string | undefined | null): Promise<void>
   /** Return the resolved context window for the session model, in tokens. */
@@ -1950,14 +2005,6 @@ export declare class Session {
    * Takes effect on the next `send` / `stream`.
    */
   setPlanningMode(mode: string): void
-  /**
-   * Record a permission posture for the next fact-run admission.
-   *
-   * Accepts `default`, `plan`, `auto`, or `always-approve` (`yolo` is the
-   * same posture). An open run keeps the policy it froze at open. Takes
-   * effect on the next `send` / `stream`.
-   */
-  setPermissionPosture(posture: string): void
   /**
    * Clear a prior `setPlanningMode` override so the next loop uses the
    * session-built `planningMode` again.
@@ -2168,6 +2215,30 @@ export declare class Session {
    * @returns Object with `counters`, `gauges`, and `histograms` maps, or null
    */
   queueMetrics(): Promise<any>
+  /** Admit a create/revise Goal definition; starts no Run. */
+  applyGoalDefinition(commandJson: any): any
+  /** Propose or explicitly accept a plan; accepts no step result. */
+  applyGoalPlan(commandJson: any): any
+  /** Record pause/resume/cancel on an idle session. */
+  applyGoalControl(commandJson: any): any
+  /** Pause/cancel even while a goal slice runs: the original RunControl settles it first. */
+  controlGoal(commandJson: any, graceMs: number): Promise<any>
+  /** Declare or observe a step wait; returns `{ recorded, definition }`. */
+  applyGoalWait(commandJson: any): any
+  /** The bound Goal read from its original facts, or null. */
+  goalDefinition(): any
+  /** Digest of the work policy a Run admitted, or null. */
+  workPolicyDigest(): string | null
+  /** Refuse unless the step and Run are the bound Goal's current ones. */
+  checkGoalStepRun(goalId: string, goalRevision: number, planRevision: number, stepId: string, runId: string): void
+  /** Close stopped goal slices without replay; returns appended fact count. */
+  reconcileGoalSlices(): number
+  /** Inspect a tick decision without reserving or running anything. */
+  previewGoalTick(commandJson: any): Promise<string>
+  /** Admit at most one original Run: `{ decision }` or `{ run: { snapshot, replayed } }`. */
+  tickGoal(commandJson: any): Promise<any>
+  /** Admit host-bound review drafts, all or nothing; returns newly admitted count. */
+  admitSessionReviewDrafts(scenarioId: string, sourceReviewId: string, observedAtMs: number, draftsJson: any): number
   /** Current durable session-review store. */
   sessionReviewStore(): any
   /** Registered scenario ids, sorted. */
@@ -2212,6 +2283,25 @@ export declare class Session {
   republishInheritedMcpTools(): Promise<void>
   /** Whether this session inherits at least one shared MCP manager. */
   inheritsMcpManagers(): boolean
+  /**
+   * Stream with the exact Core Run captured at admission. Local commands
+   * that do not admit a model Run omit the optional Run handle.
+   */
+  streamWithRun(prompt: string, history?: Array<MessageObject> | undefined | null): Promise<AgentRunStream>
+  /** `tickGoal` for an interactive host: a started slice's events arrive as a stream. */
+  streamGoalTick(commandJson: any): Promise<GoalTickStream>
+  /**
+   * Irreversibly discard facts after seq in this session's log. This does
+   * not create a second session or roll back files, vectors or memory.
+   * Refuses while a Run owns this session.
+   */
+  forkSessionAt(seq: number): Promise<number>
+  projectedCapabilityNames(): Array<string>
+  /** Store the policy admitted by the next Run; an open Run keeps its pin. */
+  setPermissionPolicy(policy: PermissionPolicy): void
+  setPermissionPosture(posture: string): void
+  /** Bounded read of this session's original Run/artifact evidence. */
+  readEvaluationEvidence(request: any): Promise<any>
   /**
    * Add or replace a Skill in this live session.
    *
@@ -2411,6 +2501,13 @@ export declare class ImmutableContentAdapterOptions {
   constructor(authorityDigest: string, maximumBytes: number, adapterName: string, put: (request: { binding: any; descriptor: any; contentBase64: string }) => any, timeoutMs?: number | null)
   get instanceId(): string
 }
+export declare class RunHandle {
+  get id(): string
+  get sessionId(): string
+  /** Request cancellation of this exact original worker. */
+  cancel(): Promise<boolean>
+  snapshot(): Promise<any>
+}
 /** AI coding agent. Create with `Agent.create()`, then call `agent.session()`. */
 export declare class Agent {
   /**
@@ -2452,6 +2549,17 @@ export declare class Agent {
    * Empty when the agent has no global manager. Enabled is not connected.
    */
   globalMcpStatus(): Promise<Array<McpServerStatusEntry>>
+  /** Registered global MCP definitions, including host-supplied credentials. */
+  globalMcpConfigs(): Promise<McpServerConfig[]>
+  /** Whether the host armed sampling for subsequently connected servers. */
+  hasSamplingHandlerFactory(): Promise<boolean>
+  /**
+   * Opt into sampling on subsequently connected servers. The callback gets
+   * the exact server name and MCP request and returns an MCP result object.
+   * The host owns consent and model selection. Throws, rejection and timeout
+   * refuse the request; unset factories keep Core's default refusal.
+   */
+  setSamplingHandlerFactory(handler: (serverName: string, params: any) => Promise<Record<string, unknown>>, timeoutMs?: number): void
   /**
    * Return current occupancy of the priority scheduler shared by every
    * session created from this Agent.
@@ -2497,6 +2605,11 @@ export declare class Agent {
    * event loop. New applications should prefer this over `resumeSession()`.
    */
   resumeSessionAsync(sessionId: string, options: SessionOptions): Promise<Session>
+  /**
+   * Fork a saved `SessionSnapshotV1` into a new session with fresh host options.
+   * An admitted source work policy must be supplied unchanged; source Goal facts stay at the source.
+   */
+  forkSessionAsync(snapshot: any, workspace: string, options: SessionOptions): Promise<Session>
   /**
    * Atomically rebuild a live, idle session with new options.
    *

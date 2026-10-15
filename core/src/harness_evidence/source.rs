@@ -9,7 +9,7 @@ use super::{
 use crate::agent::AgentConfig;
 use crate::llm::structured::StructuredDirective;
 use crate::llm::{Message, ToolDefinition};
-use crate::workspace::{WorkspaceRetrievalStatus, WorkspaceServices};
+use crate::workspace::{WorkspaceCapabilities, WorkspaceRetrievalStatus, WorkspaceServices};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -68,7 +68,7 @@ impl<'a> ModelCallObservation<'a> {
 
 #[derive(Clone)]
 pub(crate) struct RunCapabilityEvidenceSource {
-    workspace_services: Arc<WorkspaceServices>,
+    environment: EvidenceEnvironment,
     permission_checker_bound: bool,
     permission_policy: Option<crate::permissions::PermissionPolicy>,
     confirmation_manager_bound: bool,
@@ -82,6 +82,34 @@ pub(crate) struct RunCapabilityEvidenceSource {
     max_execution_time_ms: Option<u64>,
     tool_presentation_profile: crate::tools::ToolPresentationProfileV1,
     presentation_source_tools: Vec<ToolDefinition>,
+}
+
+/// The fact child receives only owned observations. The live variant stays
+/// with the original parent; it is never hidden behind a child-held reader.
+#[derive(Clone)]
+enum EvidenceEnvironment {
+    Live(Arc<WorkspaceServices>),
+    Frozen {
+        capabilities: WorkspaceCapabilities,
+        retrieval: Box<Option<WorkspaceRetrievalStatus>>,
+    },
+}
+
+impl EvidenceEnvironment {
+    fn observe(&self) -> (WorkspaceCapabilities, Option<WorkspaceRetrievalStatus>) {
+        match self {
+            Self::Live(services) => (
+                services.capabilities(),
+                services
+                    .workspace_retrieval()
+                    .map(|runtime| runtime.status()),
+            ),
+            Self::Frozen {
+                capabilities,
+                retrieval,
+            } => (*capabilities, retrieval.as_ref().clone()),
+        }
+    }
 }
 
 impl RunCapabilityEvidenceSource {
@@ -130,7 +158,7 @@ impl RunCapabilityEvidenceSource {
             presentation_source_tools.clear();
         }
         Self {
-            workspace_services,
+            environment: EvidenceEnvironment::Live(workspace_services),
             permission_checker_bound,
             permission_policy: config.permission_policy.clone(),
             confirmation_manager_bound,
@@ -145,6 +173,19 @@ impl RunCapabilityEvidenceSource {
             tool_presentation_profile: config.tool_presentation_profile.clone(),
             presentation_source_tools,
         }
+    }
+
+    /// New fact attempts sample the parent once before spawn. The same source
+    /// and capture policy then operate over passive owned material; fallback
+    /// legs do not regain per-leg live retrieval freshness.
+    pub(crate) fn freeze_for_fact_attempt(&self) -> Self {
+        let (capabilities, retrieval) = self.environment.observe();
+        let mut frozen = self.clone();
+        frozen.environment = EvidenceEnvironment::Frozen {
+            capabilities,
+            retrieval: Box::new(retrieval),
+        };
+        frozen
     }
 
     #[cfg(test)]
@@ -251,18 +292,16 @@ impl RunCapabilityEvidenceSource {
             llm_api_timeout_ms: self.llm_api_timeout_ms,
             max_execution_time_ms: self.max_execution_time_ms,
         };
-        let runtime = self.workspace_services.workspace_retrieval();
-        let status = runtime
-            .as_ref()
-            .map(|runtime| runtime.status())
-            .unwrap_or_else(WorkspaceRetrievalStatus::disabled);
+        let (capabilities, retrieval_status) = self.environment.observe();
+        let retrieval_enabled = retrieval_status.is_some();
+        let status = retrieval_status.unwrap_or_else(WorkspaceRetrievalStatus::disabled);
         let model_digest = status
             .model
             .as_ref()
             .map(|model| measure(RETRIEVAL_MODEL_DOMAIN, model).map(|value| value.digest))
             .transpose()?;
         let retrieval = WorkspaceRetrievalCapabilitySnapshotV1 {
-            enabled: runtime.is_some(),
+            enabled: retrieval_enabled,
             phase: status.phase,
             catalog_revision: status.catalog_revision,
             source_revision: status.source_revision,
@@ -273,7 +312,7 @@ impl RunCapabilityEvidenceSource {
         RunCapabilitySnapshotV1::new(
             tool_count,
             tools_digest.to_string(),
-            self.workspace_services.capabilities().into(),
+            capabilities.into(),
             policy,
             retrieval,
         )

@@ -1,5 +1,6 @@
 //! S-CM-02: thirty-two semantic publications, half rejected before CAS.
 
+#[allow(dead_code)] // not every helper is used by every including target
 #[path = "durable_memory_semantic_refresh/support.rs"]
 mod refresh_support;
 
@@ -163,7 +164,7 @@ async fn soak_failed_semantic_publications_do_not_tear_generations() {
         let fail = attempt % 2 == 1;
         provider.fail.store(fail, Ordering::SeqCst);
         let before = index.status().revision;
-        let nodes = if successes % 2 == 0 {
+        let nodes = if successes.is_multiple_of(2) {
             generation_a.clone()
         } else {
             generation_b.clone()

@@ -29,7 +29,11 @@ use std::sync::Arc;
 use std::sync::{Condvar, Mutex, RwLock};
 
 #[cfg(feature = "a3s-vec-fts")]
-const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// v2 manifests carry no engine primary keys (dense ordinals are derived);
+/// v3 persists the key per chunk so incrementally built generations with
+/// sparse ordinals reopen with the exact mapping.
+const MANIFEST_SCHEMA_VERSION: u32 = 3;
+const LEGACY_MANIFEST_SCHEMA_VERSION: u32 = 2;
 #[cfg(feature = "a3s-vec-fts")]
 const CURRENT_FILE: &str = "CURRENT";
 #[cfg(feature = "a3s-vec-fts")]
@@ -42,6 +46,11 @@ const STORAGE_LOCK_FILE: &str = ".index.lock";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedChunk {
     id: String,
+    /// Engine primary key of this chunk's document. `None` on v2 manifests
+    /// (dense ordinals are derived on load) and for token-empty chunks that
+    /// have no engine document.
+    #[serde(default)]
+    pk: Option<String>,
     path: String,
     language: Option<String>,
     start_line: usize,
@@ -62,6 +71,7 @@ impl PersistedChunk {
     fn from_chunk(chunk: &WorkspaceChunk) -> Self {
         Self {
             id: chunk.id.as_str().to_owned(),
+            pk: None,
             path: chunk.path.to_string(),
             language: chunk.language.as_deref().map(str::to_owned),
             start_line: chunk.start_line,
@@ -109,7 +119,17 @@ struct PersistentState {
     source_revision: u64,
     indexed_chunks: Arc<[Arc<WorkspaceChunk>]>,
     indexed_files: usize,
+    /// Engine primary key per indexed position. Dense for full builds and
+    /// legacy generations; sparse (with appended ordinals) for delta builds.
+    pks: Arc<[String]>,
     index: super::a3s_vec::A3sVecLexicalIndex,
+    /// Whether this generation was loaded from disk by another process
+    /// epoch. Revision counters are per-epoch: a loaded generation's big
+    /// counters must not veto a fresh epoch's smaller ones, or every
+    /// post-restart edit would leave the durable projection permanently
+    /// stale. Numeric staleness is only authoritative within the epoch that
+    /// published the numbers.
+    from_disk: bool,
 }
 
 #[cfg(feature = "a3s-vec-fts")]
@@ -151,6 +171,14 @@ pub struct WorkspacePersistentIndexStatus {
 pub struct WorkspacePersistentIndex {
     root: PathBuf,
     engine: WorkspaceLexicalEngine,
+    /// Per-instance epoch nonce. Revision counters restart with every
+    /// process, so generation directory names built from them alone collide
+    /// across epochs (a restart rebuild at revision 1 would target the dead
+    /// epoch's `generation-1`, and two live processes at equal revisions
+    /// would write the same directory). The nonce keeps names globally
+    /// unique; old-epoch directories are collected by the generation GC.
+    #[cfg(feature = "a3s-vec-fts")]
+    epoch: String,
     #[cfg(feature = "a3s-vec-fts")]
     writer: Mutex<()>,
     #[cfg(feature = "a3s-vec-fts")]
@@ -190,6 +218,25 @@ impl WorkspacePersistentIndex {
         root: impl Into<PathBuf>,
         engine: WorkspaceLexicalEngine,
     ) -> WorkspaceIndexResult<Arc<Self>> {
+        Self::open_with_epoch(root, engine, None)
+    }
+
+    /// Open with a pinned epoch nonce so tests can predict generation
+    /// directory names (`generation-<revision>-<epoch>`).
+    #[cfg(all(test, feature = "a3s-vec-fts"))]
+    pub(crate) fn open_with_pinned_epoch(
+        root: impl Into<PathBuf>,
+        engine: WorkspaceLexicalEngine,
+        epoch: &str,
+    ) -> WorkspaceIndexResult<Arc<Self>> {
+        Self::open_with_epoch(root, engine, Some(epoch.to_owned()))
+    }
+
+    fn open_with_epoch(
+        root: impl Into<PathBuf>,
+        engine: WorkspaceLexicalEngine,
+        pinned_epoch: Option<String>,
+    ) -> WorkspaceIndexResult<Arc<Self>> {
         // a3s-vec rejects Windows verbatim (`\\?\`) paths from `canonicalize()`.
         // Workspace roots are commonly canonicalized before the index is
         // configured, so strip the prefix at the durable-index boundary.
@@ -217,6 +264,8 @@ impl WorkspacePersistentIndex {
             let index = Arc::new(Self {
                 root,
                 engine,
+                epoch: pinned_epoch
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..8].to_owned()),
                 writer: Mutex::new(()),
                 active_operations: Arc::new((Mutex::new(0), Condvar::new())),
                 building: AtomicBool::new(false),
@@ -405,6 +454,10 @@ impl WorkspacePersistentIndex {
                 .writer
                 .lock()
                 .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
+            let current_epoch_state = self
+                .state
+                .read()
+                .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
             let persisted = match self.read_current_manifest() {
                 Ok(manifest) => manifest,
                 Err(error) => {
@@ -415,21 +468,25 @@ impl WorkspacePersistentIndex {
             if let Some((_, manifest)) = persisted {
                 let requested = (snapshot.source_revision(), snapshot.revision());
                 let on_disk = (manifest.source_revision, manifest.catalog_revision);
-                if on_disk > requested {
+                // Only an in-epoch publication may veto smaller numbers: the
+                // on-disk generation must be the one this instance published.
+                // A loaded (cross-epoch) generation keeps big counters from a
+                // dead process; those numbers cannot order a fresh epoch's
+                // snapshots, so content comparison below decides instead.
+                let published_here = current_epoch_state
+                    .as_ref()
+                    .is_some_and(|state| !state.from_disk);
+                if published_here && on_disk > requested {
                     return Err(WorkspaceIndexError::StaleRevision {
                         requested: snapshot.source_revision(),
                         current: manifest.source_revision,
                     });
                 }
             }
-            let current_state = self
-                .state
-                .read()
-                .map_err(|_| WorkspaceIndexError::LockPoisoned)?;
-            if current_state
-                .as_ref()
-                .is_some_and(|state| state.source_revision > snapshot.source_revision())
-            {
+            let current_state = current_epoch_state;
+            if current_state.as_ref().is_some_and(|state| {
+                !state.from_disk && state.source_revision > snapshot.source_revision()
+            }) {
                 let current = current_state
                     .as_ref()
                     .map(|state| state.source_revision)
@@ -439,8 +496,15 @@ impl WorkspacePersistentIndex {
                     current,
                 });
             }
+            // Tuple equality is only a no-op within the publishing epoch.
+            // A loaded (cross-epoch) generation can carry the same
+            // (source, catalog) numbers as a fresh epoch's first snapshot
+            // while the underlying content differs — for example when the
+            // restart's manifest scan completes after an early edit. The
+            // content comparison below must decide those apart.
             if current_state.as_ref().is_some_and(|state| {
-                state.catalog_revision == snapshot.revision()
+                !state.from_disk
+                    && state.catalog_revision == snapshot.revision()
                     && state.source_revision == snapshot.source_revision()
             }) {
                 return Ok(());
@@ -493,9 +557,18 @@ impl WorkspacePersistentIndex {
                     return Ok(());
                 }
             }
+            // Capture the previous generation facts before releasing the
+            // read guard: the delta arm needs its chunk order and engine keys.
+            let previous = current_state.as_ref().map(|state| {
+                (
+                    state.generation.clone(),
+                    Arc::clone(&state.indexed_chunks),
+                    Arc::clone(&state.pks),
+                )
+            });
             drop(current_state);
 
-            let generation = format!("generation-{}", snapshot.revision());
+            let generation = format!("generation-{}-{}", snapshot.revision(), self.epoch);
             let staging = self.root.join(format!(".{generation}.staging"));
             let destination = self.root.join(&generation);
             remove_path_if_exists(&staging)?;
@@ -506,18 +579,100 @@ impl WorkspacePersistentIndex {
             })?;
 
             let collection_path = staging.join("collection");
-            let mut index = super::a3s_vec::A3sVecLexicalIndex::build_at_path(
-                &collection_path,
-                indexed_chunks
-                    .iter()
-                    .map(|chunk| (chunk.id.as_str().to_owned(), chunk.text.as_ref().to_owned()))
-                    .collect(),
-            )
-            .map_err(|error| {
-                WorkspaceIndexError::InvalidConfig(format!(
-                    "persistent a3s-vec index failed: {error}"
-                ))
-            })?;
+            // Delta arm first: a bounded chunk delta builds the generation by
+            // copying the previous collection and applying engine-level
+            // delete/upsert, instead of rewriting every posting. Any failure
+            // falls back to the full build below (fail closed to today's
+            // behavior); the reopen-time digest verification remains the
+            // final guard for delta correctness.
+            let mut indexed_chunks = indexed_chunks;
+            // The incremental arm's outcome: the built index, the engine keys
+            // aligned to the reordered chunk list, and that reordered list.
+            struct IncrementalGeneration {
+                index: super::a3s_vec::A3sVecLexicalIndex,
+                pks: Arc<[String]>,
+                chunks: Arc<[Arc<WorkspaceChunk>]>,
+            }
+            let mut incremental: Option<IncrementalGeneration> = None;
+            if let Some((previous_generation, previous_chunks, previous_pks)) = previous.as_ref() {
+                if let Some(delta) =
+                    plan_generation_delta(previous_chunks, previous_pks, &indexed_chunks)
+                {
+                    let source = self.root.join(previous_generation).join("collection");
+                    match super::a3s_vec::A3sVecLexicalIndex::apply_delta_at_path(
+                        &collection_path,
+                        &source,
+                        delta.kept,
+                        &delta.removed_pks,
+                        delta.appended,
+                        previous_chunks.len(),
+                    ) {
+                        Ok(built) => {
+                            tracing::debug!(
+                                generation = %generation,
+                                removed = delta.removed_pks.len(),
+                                appended = delta.appended_count,
+                                "persistent a3s-vec generation built incrementally"
+                            );
+                            incremental = Some(IncrementalGeneration {
+                                index: built,
+                                pks: delta.new_pks,
+                                chunks: Arc::from(
+                                    delta.kept_chunks.iter().map(Arc::clone).collect::<Vec<_>>(),
+                                ),
+                            });
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                generation = %generation,
+                                "incremental a3s-vec generation build failed; rebuilding fully"
+                            );
+                            remove_path_if_exists(&staging)?;
+                            fs::create_dir_all(&staging).map_err(|error| {
+                                WorkspaceIndexError::ReadFailed {
+                                    path: staging.display().to_string(),
+                                    message: error.to_string(),
+                                }
+                            })?;
+                        }
+                    }
+                }
+            }
+            let (mut index, pks) = match incremental {
+                Some(generated) => {
+                    indexed_chunks = generated.chunks;
+                    (generated.index, generated.pks)
+                }
+                None => {
+                    let pks = Arc::from(
+                        (0..indexed_chunks.len())
+                            .map(|ordinal| String::from("d") + &ordinal.to_string())
+                            .collect::<Vec<_>>(),
+                    );
+                    let built = super::a3s_vec::A3sVecLexicalIndex::build_at_path(
+                        &collection_path,
+                        indexed_chunks
+                            .iter()
+                            .map(|chunk| {
+                                (chunk.id.as_str().to_owned(), chunk.text.as_ref().to_owned())
+                            })
+                            .collect(),
+                    )
+                    .map_err(|error| {
+                        WorkspaceIndexError::IndexBuildFailed {
+                            retryable: error.retryable(),
+                            message: error.to_string(),
+                        }
+                    })?;
+                    (built, pks)
+                }
+            };
+            let pk_by_id: std::collections::HashMap<&str, &str> = indexed_chunks
+                .iter()
+                .zip(pks.iter())
+                .map(|(chunk, pk)| (chunk.id.as_str(), pk.as_str()))
+                .collect();
             let manifest = GenerationManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
                 lexical_engine: self.engine.stable_id().to_owned(),
@@ -525,7 +680,11 @@ impl WorkspacePersistentIndex {
                 source_revision: snapshot.source_revision(),
                 chunks: chunks
                     .iter()
-                    .map(|chunk| PersistedChunk::from_chunk(chunk))
+                    .map(|chunk| {
+                        let mut persisted = PersistedChunk::from_chunk(chunk);
+                        persisted.pk = pk_by_id.get(chunk.id.as_str()).copied().map(str::to_owned);
+                        persisted
+                    })
                     .collect(),
             };
             write_json_atomic(&staging.join(MANIFEST_FILE), &manifest)?;
@@ -545,7 +704,9 @@ impl WorkspacePersistentIndex {
                 source_revision: manifest.source_revision,
                 indexed_chunks,
                 indexed_files,
+                pks,
                 index,
+                from_disk: false,
             };
             *self
                 .state
@@ -750,6 +911,11 @@ impl WorkspacePersistentIndex {
             return Ok(());
         };
         let generation_root = self.root.join(&generation);
+        let manifest_pks: std::collections::HashMap<String, String> = manifest
+            .chunks
+            .iter()
+            .filter_map(|chunk| chunk.pk.as_ref().map(|pk| (chunk.id.clone(), pk.clone())))
+            .collect();
         let chunks: Arc<[Arc<WorkspaceChunk>]> = Arc::from(
             manifest
                 .chunks
@@ -778,6 +944,22 @@ impl WorkspacePersistentIndex {
             ))
         })?;
         let indexed_files = distinct_path_count(&indexed_chunks);
+        let legacy = manifest.schema_version == LEGACY_MANIFEST_SCHEMA_VERSION;
+        let mut pks = Vec::with_capacity(indexed_chunks.len());
+        let mut next_dense = 0usize;
+        for chunk in indexed_chunks.iter() {
+            match if legacy {
+                None
+            } else {
+                manifest_pks.get(chunk.id.as_str())
+            } {
+                Some(pk) => pks.push(pk.clone()),
+                None => {
+                    pks.push(String::from("d") + &next_dense.to_string());
+                    next_dense += 1;
+                }
+            }
+        }
         *self
             .state
             .write()
@@ -787,7 +969,9 @@ impl WorkspacePersistentIndex {
             source_revision: manifest.source_revision,
             indexed_chunks,
             indexed_files,
+            pks: Arc::from(pks),
             index,
+            from_disk: true,
         });
         Ok(())
     }
@@ -812,7 +996,8 @@ impl WorkspacePersistentIndex {
         }
         let generation_root = self.root.join(&generation);
         let manifest: GenerationManifest = read_json(&generation_root.join(MANIFEST_FILE))?;
-        if manifest.schema_version != MANIFEST_SCHEMA_VERSION
+        if (manifest.schema_version != MANIFEST_SCHEMA_VERSION
+            && manifest.schema_version != LEGACY_MANIFEST_SCHEMA_VERSION)
             || manifest.lexical_engine != self.engine.stable_id()
         {
             return Err(WorkspaceIndexError::InvalidConfig(
@@ -1034,6 +1219,89 @@ fn valid_sha256_digest(value: &str) -> bool {
 }
 
 #[cfg(feature = "a3s-vec-fts")]
+/// A bounded chunk delta between two catalog generations.
+struct GenerationDelta {
+    /// (engine primary key, text) of the chunks carried over, in the new
+    /// indexed order (previous order preserved).
+    kept: Vec<(String, String)>,
+    /// Engine primary keys whose documents must be deleted.
+    removed_pks: Vec<String>,
+    /// (chunk id, text) of the newly admitted chunks, in snapshot order.
+    appended: Vec<(String, String)>,
+    appended_count: usize,
+    /// The new indexed chunk order (previous order for kept chunks, then
+    /// appended chunks); the caller adopts this as the generation's
+    /// indexed_chunks so positions stay aligned with `new_pks`.
+    kept_chunks: Vec<Arc<WorkspaceChunk>>,
+    /// Engine primary keys aligned with the new indexed chunk order.
+    new_pks: Arc<[String]>,
+}
+
+/// Below this share of the corpus (and always for tiny deltas) a generation
+/// is built incrementally; larger churn amortizes worse than a full build.
+#[cfg(feature = "a3s-vec-fts")]
+const DELTA_MAX_SHARE: usize = 3;
+#[cfg(feature = "a3s-vec-fts")]
+const DELTA_FLOOR: usize = 64;
+
+#[cfg(feature = "a3s-vec-fts")]
+fn plan_generation_delta(
+    previous_chunks: &[Arc<WorkspaceChunk>],
+    previous_pks: &[String],
+    next_chunks: &Arc<[Arc<WorkspaceChunk>]>,
+) -> Option<GenerationDelta> {
+    if previous_chunks.len() != previous_pks.len() || previous_chunks.is_empty() {
+        return None;
+    }
+    let cap = DELTA_FLOOR.max(previous_chunks.len() / DELTA_MAX_SHARE);
+    let next_ids: std::collections::HashSet<&str> =
+        next_chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+    let mut kept = Vec::new();
+    let mut kept_chunks = Vec::with_capacity(next_chunks.len());
+    let mut removed_pks = Vec::new();
+    for (chunk, pk) in previous_chunks.iter().zip(previous_pks.iter()) {
+        if next_ids.contains(chunk.id.as_str()) {
+            kept.push((pk.clone(), chunk.text.to_string()));
+            kept_chunks.push(Arc::clone(chunk));
+        } else {
+            removed_pks.push(pk.clone());
+        }
+    }
+    let previous_ids: std::collections::HashSet<&str> = previous_chunks
+        .iter()
+        .map(|chunk| chunk.id.as_str())
+        .collect();
+    let mut appended = Vec::new();
+    let mut appended_chunks = Vec::new();
+    let mut appended_pks = Vec::new();
+    for chunk in next_chunks.iter() {
+        if !previous_ids.contains(chunk.id.as_str()) {
+            appended.push((chunk.id.as_str().to_owned(), chunk.text.to_string()));
+            appended_chunks.push(Arc::clone(chunk));
+        }
+    }
+    let churn = removed_pks.len() + appended.len();
+    if churn > cap {
+        return None;
+    }
+    for next_ordinal in (previous_chunks.len()..).take(appended.len()) {
+        appended_pks.push(String::from("d") + &next_ordinal.to_string());
+    }
+    let appended_count = appended.len();
+    let mut new_pks = kept.iter().map(|(pk, _)| pk.clone()).collect::<Vec<_>>();
+    new_pks.extend(appended_pks);
+    kept_chunks.extend(appended_chunks);
+    Some(GenerationDelta {
+        kept,
+        removed_pks,
+        appended,
+        appended_count,
+        kept_chunks,
+        new_pks: Arc::from(new_pks),
+    })
+}
+
+#[cfg(feature = "a3s-vec-fts")]
 fn indexed_chunks_match(left: &[Arc<WorkspaceChunk>], right: &[Arc<WorkspaceChunk>]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1185,6 +1453,359 @@ mod tests {
         assert_eq!(
             reopened.status().phase,
             super::WorkspacePersistentIndexPhase::Absent
+        );
+    }
+
+    #[cfg(feature = "a3s-vec-fts")]
+    #[test]
+    fn cross_epoch_reopen_accepts_fresher_content_below_the_persisted_counters() {
+        // Epoch 1 publishes with high per-epoch counters, then exits.
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("catalog");
+        let path = WorkspacePath::from_normalized("src/lib.rs");
+        catalog
+            .replace_file(&path, Some("rust"), 6, "epoch one payload sentinel\n")
+            .expect("epoch one replacement");
+        {
+            let index =
+                WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                    .expect("epoch one persistent index");
+            index
+                .sync_snapshot(&catalog.snapshot().expect("epoch one snapshot"))
+                .expect("epoch one generation");
+            assert_eq!(index.status().source_revision, 6);
+        }
+
+        // Epoch 2 rescans the workspace with fresh counters and observes an
+        // edit. The loaded generation's (6, 1) counters must not veto the
+        // fresh epoch's (1, 1): content decides, so the durable projection
+        // publishes instead of going permanently stale.
+        let fresh = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("epoch two catalog");
+        let index =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                .expect("epoch two persistent index");
+        assert_eq!(index.status().source_revision, 6, "generation must load");
+        fresh
+            .replace_file(&path, Some("rust"), 1, "epoch two edited beacon payload\n")
+            .expect("epoch two edit");
+        index
+            .sync_snapshot(&fresh.snapshot().expect("epoch two snapshot"))
+            .expect("a fresh epoch content change must publish, not go stale");
+        let status = index.status();
+        assert_eq!(status.source_revision, 1);
+        assert!(
+            status.indexed_chunks > 0,
+            "the edited content must be indexed"
+        );
+        let hits = index
+            .search(&LexicalSearchRequest::new("edited beacon"))
+            .expect("epoch two query")
+            .hits;
+        assert_eq!(hits.len(), 1, "the beacon must be retrievable durably");
+        assert!(hits[0].chunk.text.contains("epoch two edited beacon"));
+
+        // A second cross-epoch snapshot with identical content reuses the
+        // generation instead of rebuilding it.
+        let generation_before = status.generation.clone();
+        fresh
+            .replace_file(&path, Some("rust"), 2, "epoch two edited beacon payload\n")
+            .expect("same-content replacement");
+        index
+            .sync_snapshot(&fresh.snapshot().expect("same-content snapshot"))
+            .expect("cross-epoch identical content must reuse");
+        assert_eq!(
+            index.status().generation,
+            generation_before,
+            "identical content must not mint a new generation cross-epoch"
+        );
+    }
+
+    #[cfg(feature = "a3s-vec-fts")]
+    #[test]
+    fn cross_epoch_identical_counters_with_different_content_still_publishes() {
+        // Restart race: the fresh epoch's manifest scan completes after an
+        // edit, so its first snapshot carries the same (1, 1) counters as the
+        // loaded generation while the content differs. Tuple equality must
+        // not silently pin the stale generation.
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("catalog");
+        let path = WorkspacePath::from_normalized("src/lib.rs");
+        catalog
+            .replace_file(&path, Some("rust"), 1, "pre-edit payload sentinel\n")
+            .expect("epoch one replacement");
+        {
+            let index =
+                WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                    .expect("epoch one persistent index");
+            index
+                .sync_snapshot(&catalog.snapshot().expect("epoch one snapshot"))
+                .expect("epoch one generation");
+        }
+
+        let raced = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("raced catalog");
+        raced
+            .replace_file(&path, Some("rust"), 1, "post-edit beacon payload\n")
+            .expect("scanned-after-edit replacement");
+        let index =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                .expect("reopened persistent index");
+        assert_eq!(index.status().source_revision, 1);
+        index
+            .sync_snapshot(&raced.snapshot().expect("raced snapshot"))
+            .expect("identical counters with different content must publish");
+        let hits = index
+            .search(&LexicalSearchRequest::new("post-edit beacon"))
+            .expect("query after raced publish")
+            .hits;
+        assert_eq!(hits.len(), 1, "the raced edit must be retrievable durably");
+        assert!(hits[0].chunk.text.contains("post-edit beacon"));
+    }
+
+    #[cfg(feature = "a3s-vec-fts")]
+    #[test]
+    fn incremental_delta_serves_edits_renames_and_reopens() {
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("catalog");
+        const KEEPMARKERS: [&str; 3] = ["maplefjord", "zebraquill", "harborpine"];
+        for (position, name) in ["alpha", "beta", "gamma"].into_iter().enumerate() {
+            catalog
+                .replace_file(
+                    &WorkspacePath::from_normalized(format!("src/{name}.rs")),
+                    Some("rust"),
+                    1,
+                    &format!("pub fn {name}_{}() {{}}\n", KEEPMARKERS[position]),
+                )
+                .expect("initial admission");
+        }
+        let index =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                .expect("persistent index");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("initial snapshot"))
+            .expect("initial generation");
+        let initial = index.status();
+
+        // Single-file edit: one changed chunk → bounded delta path. The
+        // stale sentinel token exists only in the replaced text, so an OR
+        // FTS query against it must return nothing after the delta.
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized("src/beta.rs"),
+                Some("rust"),
+                2,
+                "pub fn pinotnoir() {}\n",
+            )
+            .expect("edit");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("edited snapshot"))
+            .expect("delta generation");
+        let edited = index.status();
+        assert_ne!(edited.generation, initial.generation);
+        let hits = index
+            .search(&LexicalSearchRequest::new("pinotnoir"))
+            .expect("edited query")
+            .hits;
+        assert_eq!(hits.len(), 1, "the edited chunk must be retrievable");
+        assert!(hits[0].chunk.text.contains("pinotnoir"));
+        // The removed posting must be gone: the stale sentinel token
+        // existed only in the pre-edit beta text (FTS queries are OR across
+        // terms, so the probe must be token-unique).
+        assert!(
+            index
+                .search(&LexicalSearchRequest::new("zebraquill"))
+                .expect("stale query")
+                .hits
+                .is_empty(),
+            "the replaced posting must not survive the delta"
+        );
+        // Untouched chunks keep serving.
+        assert_eq!(
+            index
+                .search(&LexicalSearchRequest::new("maplefjord"))
+                .expect("kept query")
+                .hits
+                .len(),
+            1
+        );
+
+        // Rename shape: alpha.rs → renamed.rs with identical content is a
+        // remove+append pair (chunk ids hash the path).
+        catalog
+            .remove_file(&WorkspacePath::from_normalized("src/alpha.rs"), 3)
+            .expect("remove old path");
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized("src/renamed.rs"),
+                Some("rust"),
+                3,
+                "pub fn maplefjord() {}\n",
+            )
+            .expect("admit renamed path");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("renamed snapshot"))
+            .expect("rename delta generation");
+        let renamed_hits = index
+            .search(&LexicalSearchRequest::new("maplefjord"))
+            .expect("renamed query")
+            .hits;
+        assert_eq!(renamed_hits.len(), 1, "exactly the renamed file remains");
+        assert!(renamed_hits[0].chunk.path.ends_with("renamed.rs"));
+
+        // Reopen: the sparse v3 primary keys must reconstruct the exact
+        // mapping (this is the misalignment class the pk field exists for).
+        drop(index);
+        let reopened =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                .expect("reopen after delta generations");
+        assert_eq!(reopened.status().indexed_chunks, 3);
+        let reopened_hits = reopened
+            .search(&LexicalSearchRequest::new("maplefjord"))
+            .expect("reopened query")
+            .hits;
+        assert_eq!(reopened_hits.len(), 1);
+        assert!(reopened_hits[0].chunk.path.ends_with("renamed.rs"));
+        assert_eq!(
+            reopened
+                .search(&LexicalSearchRequest::new("pinotnoir"))
+                .expect("reopened edited query")
+                .hits
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(feature = "a3s-vec-fts")]
+    #[test]
+    fn oversized_delta_and_missing_source_fall_back_to_full_builds() {
+        let directory = tempfile::tempdir().expect("temporary index directory");
+        let catalog = WorkspaceChunkCatalog::new_with_engine(
+            ChunkingConfig::default(),
+            ChunkCatalogLimits::default(),
+            WorkspaceLexicalEngine::A3sVec,
+        )
+        .expect("catalog");
+        const STALE: [&str; 10] = [
+            "stalequilla",
+            "stalequillb",
+            "stalequillc",
+            "stalequilld",
+            "stalequille",
+            "stalequillf",
+            "stalequillg",
+            "stalequillh",
+            "stalequilli",
+            "stalequillj",
+        ];
+        const FRESH: [&str; 10] = [
+            "freshferna",
+            "freshfernb",
+            "freshfernc",
+            "freshfernd",
+            "freshferne",
+            "freshfernf",
+            "freshferng",
+            "freshfernh",
+            "freshferni",
+            "freshfern",
+        ];
+        for (index, stale) in STALE.into_iter().enumerate() {
+            catalog
+                .replace_file(
+                    &WorkspacePath::from_normalized(format!("src/m{index:02}.rs")),
+                    Some("rust"),
+                    1,
+                    &format!("pub fn {stale}() {{}}\n"),
+                )
+                .expect("initial admission");
+        }
+        let index =
+            WorkspacePersistentIndex::open(directory.path(), WorkspaceLexicalEngine::A3sVec)
+                .expect("persistent index");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("initial snapshot"))
+            .expect("initial generation");
+
+        // Churn beyond the cap (> max(64, 30%)): the full build path must
+        // still serve the new content.
+        for (index, fresh) in FRESH.into_iter().enumerate() {
+            catalog
+                .replace_file(
+                    &WorkspacePath::from_normalized(format!("src/m{index:02}.rs")),
+                    Some("rust"),
+                    2,
+                    &format!("pub fn {fresh}() {{}}\n"),
+                )
+                .expect("churn admission");
+        }
+        index
+            .sync_snapshot(&catalog.snapshot().expect("churned snapshot"))
+            .expect("full rebuild after oversized churn");
+        assert_eq!(
+            index
+                .search(&LexicalSearchRequest::new("freshfernf"))
+                .expect("churned query")
+                .hits
+                .len(),
+            1
+        );
+        assert!(index
+            .search(&LexicalSearchRequest::new("stalequillf"))
+            .expect("stale query")
+            .hits
+            .is_empty());
+
+        // A missing delta source (in-memory state references a collection
+        // that disappeared) must fail closed to a full build, not error out.
+        let generation_dir = index
+            .status()
+            .generation
+            .expect("current generation")
+            .to_owned();
+        std::fs::remove_dir_all(directory.path().join(&generation_dir))
+            .expect("remove source collection");
+        catalog
+            .replace_file(
+                &WorkspacePath::from_normalized("src/m00.rs"),
+                Some("rust"),
+                3,
+                "pub fn recoveredmoss() {}\n",
+            )
+            .expect("recovery edit");
+        index
+            .sync_snapshot(&catalog.snapshot().expect("recovery snapshot"))
+            .expect("full build recovery after delta source loss");
+        assert_eq!(
+            index
+                .search(&LexicalSearchRequest::new("recoveredmoss"))
+                .expect("recovery query")
+                .hits
+                .len(),
+            1
         );
     }
 

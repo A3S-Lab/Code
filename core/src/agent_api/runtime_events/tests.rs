@@ -287,6 +287,7 @@ async fn forwarder_exposes_structured_user_question() {
         question: "Which token?".to_string(),
         options: vec!["left".to_string()],
         allow_free_text: true,
+        form: None,
     };
     agent_tx.send(question.clone()).unwrap();
     barrier.flush().await;
@@ -308,7 +309,7 @@ async fn forwarder_exposes_structured_user_question() {
         .collect::<Vec<_>>();
     assert_eq!(
         serde_json::to_value(&persisted).unwrap(),
-        serde_json::to_value(&vec![question]).unwrap()
+        serde_json::to_value([question]).unwrap()
     );
 }
 
@@ -434,6 +435,8 @@ async fn split_stream_secret_is_sanitized_before_stream_store_and_hooks() {
             verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(
                 &[],
             )),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         },
     ] {
@@ -509,6 +512,8 @@ async fn terminal_run_clears_active_tools() {
         text: "done".to_string(),
         usage: crate::llm::TokenUsage::default(),
         verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(&[])),
+        completion_terminal: Default::default(),
+        forced_stop: None,
         meta: None,
     })
     .await;
@@ -519,6 +524,8 @@ async fn terminal_run_clears_active_tools() {
     );
 
     let cleanup = RunCleanupState {
+        session_id: run.session_id.clone(),
+        admission: Arc::new(super::super::run_admission::RunAdmission::default()),
         run_id: run.id.clone(),
         active_tools: Arc::clone(&active_tools),
         current_run_id: Arc::new(tokio::sync::Mutex::new(Some(run.id.clone()))),

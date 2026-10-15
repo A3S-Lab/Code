@@ -51,10 +51,9 @@ async fn live_prompt_copies_the_marker_through_the_tui_agent() {
     let created = acp::Agent::new_session(&agent, acp::NewSessionRequest::new(workspace.clone()))
         .await
         .expect("ACP session");
-    let prompt = format!(
+    let prompt =
         "Using the write tool, create copied.txt containing exactly the contents of marker.txt. \
-         Do not modify marker.txt. Then stop."
-    );
+         Do not modify marker.txt. Then stop.";
     let result = tokio::time::timeout(
         TIMEOUT,
         acp::Agent::prompt(

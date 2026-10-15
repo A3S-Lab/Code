@@ -46,6 +46,8 @@ impl StreamRunWorkerState {
 pub(crate) struct RunControlState {
     session_id: String,
     run_store: Arc<crate::run::InMemoryRunStore>,
+    admission: Arc<super::run_admission::RunAdmission>,
+    original: Option<Arc<super::run_admission::OriginalExecutionContext>>,
     cancel_token: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
     active_run_control: Arc<tokio::sync::Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
@@ -59,6 +61,8 @@ impl RunControlState {
         Self {
             session_id: session.session_id.clone(),
             run_store: Arc::clone(&session.run_store),
+            admission: Arc::clone(&session.run_admission),
+            original: session.run_admission.current_original(),
             cancel_token: Arc::clone(&session.cancel_token),
             current_run_id: Arc::clone(&session.current_run_id),
             active_run_control: Arc::clone(&session.active_run_control),
@@ -66,6 +70,57 @@ impl RunControlState {
             hook_executor: session.hook_executor.clone(),
             host_env: Arc::clone(&session.config.host_env),
         }
+    }
+
+    pub(super) fn bind_original(
+        mut self,
+        original: Arc<super::run_admission::OriginalExecutionContext>,
+    ) -> Result<Self> {
+        original.validate_original_lineage(
+            &self.session_id,
+            &self.admission,
+            &self.active_run_control,
+            &self.current_run_id,
+            &self.cancel_token,
+        )?;
+        self.original = Some(original);
+        Ok(self)
+    }
+
+    fn owned_original(&self) -> Result<Arc<super::run_admission::OriginalExecutionContext>> {
+        let original = self.original.clone().ok_or_else(|| {
+            CodeError::Internal(anyhow::anyhow!("original execution binding required"))
+        })?;
+        original.validate_original_lineage(
+            &self.session_id,
+            &self.admission,
+            &self.active_run_control,
+            &self.current_run_id,
+            &self.cancel_token,
+        )?;
+        Ok(original)
+    }
+
+    pub(super) async fn attach_owned_run_control(
+        &self,
+        run_id: &str,
+        actual: Arc<crate::run_control::RunControlInbox>,
+    ) -> Result<()> {
+        let original = self.owned_original()?;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(CodeError::SessionClosed {
+                session_id: self.session_id.clone(),
+            });
+        }
+        original
+            .attach_original_slots(
+                &self.session_id,
+                &self.admission,
+                run_id,
+                actual,
+                &self.closed,
+            )
+            .await
     }
 
     pub(super) async fn attach_run_control(
@@ -120,20 +175,25 @@ impl RunControlState {
     pub(super) async fn current_run_control(
         &self,
     ) -> Option<Arc<crate::run_control::RunControlInbox>> {
-        let run_id = self.current_run_id.lock().await.clone()?;
-        let control = self.active_run_control.lock().await.clone()?;
-        (control.snapshot_run_id() == run_id).then_some(control)
+        // Read-only inbox correlation also serves retained exact retries in
+        // the original slot-removal/physical-retirement window. Execution and
+        // cancellation continue to require owned_original's live authority.
+        let original = self.original.as_ref()?;
+        original
+            .correlated_current_control(&self.session_id, &self.admission)
+            .await
     }
 
     #[cfg(test)]
     pub(crate) async fn start_run(&self, prompt: &str) -> crate::run::RunHandle {
         let id = format!("run-{}", self.host_env.next_id());
-        let snapshot = self
-            .run_store
-            .create_run_with_id(id, &self.session_id, prompt)
-            .await;
-        *self.current_run_id.lock().await = Some(snapshot.id.clone());
-        self.run_handle(snapshot.id, self.session_id.clone())
+        let reservation = self
+            .reserve_run_with_id(&id, prompt)
+            .await
+            .expect("actual owned Created fixture");
+        assert!(!reservation.replayed());
+        let original = self.owned_original().unwrap();
+        original.created_handle().unwrap()
     }
 
     pub(super) async fn start_run_with_bindings(
@@ -142,44 +202,24 @@ impl RunControlState {
         cognitive_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
         capability_binding: crate::capability::RunCapabilityBindingV1,
     ) -> Result<crate::run::RunHandle> {
-        // Honor the session's host-provided IdGenerator so deterministic
-        // replay tooling can pin run ids alongside session_id.
         let id = format!("run-{}", self.host_env.next_id());
-        let reservation = self
-            .run_store
-            .reserve_run_with_id(id.clone(), &self.session_id, prompt)
-            .await;
-        if reservation.replayed() {
-            return Err(CodeError::RunIdentityConflict { run_id: id });
-        }
-        let snapshot = reservation.snapshot().clone();
-        if let Err(error) = self
-            .bind_capability_generation(&snapshot.id, capability_binding)
-            .await
-        {
-            let _ = self
-                .run_store
-                .settle_terminal(
-                    &snapshot.id,
-                    crate::run::RunTerminalTransition::Failed(error.to_string()),
-                )
-                .await;
-            return Err(error);
-        }
-        if let Some(binding) = cognitive_binding {
-            if let Err(error) = self.bind_cognitive_package(&snapshot.id, binding).await {
-                let _ = self
-                    .run_store
-                    .settle_terminal(
-                        &snapshot.id,
-                        crate::run::RunTerminalTransition::Failed(error.to_string()),
-                    )
-                    .await;
-                return Err(error);
+        match self.reserve_run_with_id(&id, prompt).await {
+            Ok(reservation) if !reservation.replayed() => {}
+            // A retained or foreign id constructed no Run, so the owner can
+            // publish NoRun and keep the typed conflict.
+            Ok(_) | Err(CodeError::RunIdentityConflict { .. }) => {
+                self.owned_original()?.record_no_run_branch()?;
+                return Err(CodeError::RunIdentityConflict { run_id: id });
             }
+            Err(error) => return Err(error),
         }
-        *self.current_run_id.lock().await = Some(snapshot.id.clone());
-        Ok(self.run_handle(snapshot.id, self.session_id.clone()))
+        let original = self.owned_original()?;
+        self.bind_capability_generation(&id, capability_binding)
+            .await?;
+        if let Some(binding) = cognitive_binding {
+            self.bind_cognitive_package(&id, binding).await?;
+        }
+        original.created_handle()
     }
 
     pub(super) async fn reserve_run_with_id(
@@ -187,6 +227,8 @@ impl RunControlState {
         run_id: &str,
         prompt: &str,
     ) -> Result<crate::run::RunReservation> {
+        let original = self.owned_original()?;
+        original.validate_original_worker()?;
         if run_id.trim().is_empty() || run_id.contains('\0') || run_id.contains(['\r', '\n']) {
             return Err(CodeError::RunIdentityConflict {
                 run_id: run_id.to_string(),
@@ -194,7 +236,7 @@ impl RunControlState {
         }
         let reservation = self
             .run_store
-            .reserve_run_with_id(run_id.to_string(), &self.session_id, prompt)
+            .reserve_run_with_id(run_id.to_owned(), &self.session_id, prompt)
             .await;
         let snapshot = reservation.snapshot();
         if snapshot.session_id != self.session_id || snapshot.prompt != prompt {
@@ -202,8 +244,15 @@ impl RunControlState {
                 run_id: run_id.to_string(),
             });
         }
-        if !reservation.replayed() {
-            *self.current_run_id.lock().await = Some(run_id.to_string());
+        if let crate::run::RunReservation::Created(actual) = &reservation {
+            // Actual Created response is bound synchronously BEFORE any next await.
+            let handle = crate::run::RunHandle::new(
+                actual.id.clone(),
+                actual.session_id.clone(),
+                Arc::clone(&self.run_store),
+                super::run_admission::RunCancelPin::from_original(&original),
+            );
+            original.record_created_run(actual.clone(), handle)?;
         }
         Ok(reservation)
     }
@@ -242,10 +291,22 @@ impl RunControlState {
         self.run_store.snapshot(run_id).await
     }
 
-    /// Settle a newly reserved exact Run when admission fails before its
-    /// runtime lifecycle exists. This prevents a failed capability lease from
-    /// leaving a permanent `Created` record or a stale current-run pointer.
-    pub(super) async fn fail_reserved_run_start(&self, run_id: &str, error: &CodeError) {
+    /// The original worker alone publishes a typed admission failure.
+    pub(super) async fn fail_reserved_run_start(
+        &self,
+        original: &Arc<super::run_admission::OriginalExecutionContext>,
+        error: &CodeError,
+    ) -> Result<super::run_admission::OriginalPublicationObservation> {
+        use super::run_admission::{
+            OriginalHookObservation as Hook, OriginalPublicationKind as Kind,
+            OriginalPublicationObservation, OriginalStoreObservation as Store,
+        };
+        let bound = self.owned_original()?;
+        if !Arc::ptr_eq(&bound, original) {
+            return Err(CodeError::Internal(anyhow::anyhow!(
+                "foreign original admission failure"
+            )));
+        }
         let cancelled = matches!(
             error,
             CodeError::SessionClosed { .. }
@@ -255,68 +316,69 @@ impl RunControlState {
                 )
         );
         if cancelled {
-            let _ = self
-                .run_store
-                .settle_terminal(run_id, crate::run::RunTerminalTransition::Cancelled)
-                .await;
-            if let Some(executor) = &self.hook_executor {
-                executor
-                    .record_run_cancelled(
+            original.record_admission_cancel()?;
+        }
+        let sealed = original.seal_publication()?;
+        let target = original.publication_target(&sealed)?;
+        let mut actual = OriginalPublicationObservation {
+            kind: if target.run_id.is_none() {
+                Kind::NoRun
+            } else if target.cancelled {
+                Kind::Cancelled
+            } else {
+                Kind::AdmissionFailed
+            },
+            terminal: Store::NotApplicable,
+            diagnostic: Store::NotApplicable,
+            cancellation_hook: Hook::NotApplicable,
+            event_hook: Hook::NotApplicable,
+        };
+        if let Some(run_id) = target.run_id.as_deref() {
+            actual.terminal = Store::Entered;
+            if target.cancel_origin.is_some() && self.hook_executor.is_some() {
+                actual.cancellation_hook = Hook::NotAttempted;
+            }
+            original.record_publication_progress(&sealed, &actual)?;
+            let transition = if target.cancelled {
+                crate::run::RunTerminalTransition::Cancelled
+            } else {
+                crate::run::RunTerminalTransition::Failed(error.to_string())
+            };
+            actual.terminal = Store::Returned(Box::new(
+                self.run_store.settle_terminal(run_id, transition).await,
+            ));
+            original.record_publication_progress(&sealed, &actual)?;
+            if target.cancel_origin.is_some() {
+                if let Some(hook) = &self.hook_executor {
+                    actual.cancellation_hook = Hook::Entered;
+                    original.record_publication_progress(&sealed, &actual)?;
+                    hook.record_run_cancelled(
                         run_id,
                         &self.session_id,
                         Some("cancelled during Run admission"),
                     )
                     .await;
+                    actual.cancellation_hook = Hook::Returned;
+                    original.record_publication_progress(&sealed, &actual)?;
+                }
             }
-        } else {
-            let _ = self
-                .run_store
-                .settle_terminal(
-                    run_id,
-                    crate::run::RunTerminalTransition::Failed(error.to_string()),
-                )
-                .await;
         }
-
-        let mut current = self.current_run_id.lock().await;
-        if current.as_deref() == Some(run_id) {
-            *current = None;
-        }
+        original.record_publication(sealed, actual.clone())?;
+        Ok(actual)
     }
 
     pub(super) async fn cancel(&self) -> bool {
-        let token = self.cancel_token.lock().await.clone();
-        if let Some(token) = token {
-            token.cancel();
-            let run_id = self.current_run_id.lock().await.clone();
-            if let Some(run_id) = run_id {
-                let settle = async {
-                    let _ = self
-                        .run_store
-                        .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
-                        .await;
-                    if let Some(executor) = &self.hook_executor {
-                        executor
-                            .record_run_cancelled(
-                                &run_id,
-                                &self.session_id,
-                                Some("cancelled by host"),
-                            )
-                            .await;
-                    }
-                };
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), settle).await;
-                let mut current = self.current_run_id.lock().await;
-                if current.as_deref() == Some(run_id.as_str()) {
-                    *current = None;
-                }
-            }
-            tracing::info!(session_id = %self.session_id, "Cancelled ongoing operation");
-            true
-        } else {
-            tracing::debug!(session_id = %self.session_id, "No ongoing operation to cancel");
-            false
-        }
+        let Ok(original) = self.owned_original() else {
+            return false;
+        };
+        let Some(handle) = original
+            .correlated_current_handle(&self.session_id, &self.admission)
+            .await
+        else {
+            return false;
+        };
+        // No store/hook tail. The pin rechecks exact ordered slots before acceptance.
+        handle.cancel().await
     }
 
     pub(super) async fn cancel_run(&self, run_id: &str) -> bool {
@@ -327,20 +389,10 @@ impl RunControlState {
     }
 
     pub(super) async fn current_run(&self) -> Option<crate::run::RunHandle> {
-        let run_id = self.current_run_id.lock().await.clone()?;
-        let snapshot = self.run_store.snapshot(&run_id).await?;
-        Some(self.run_handle(snapshot.id, snapshot.session_id))
-    }
-
-    fn run_handle(&self, run_id: String, session_id: String) -> crate::run::RunHandle {
-        crate::run::RunHandle::new(
-            run_id,
-            session_id,
-            Arc::clone(&self.run_store),
-            Arc::clone(&self.cancel_token),
-            Arc::clone(&self.current_run_id),
-            self.hook_executor.clone(),
-        )
+        let original = self.owned_original().ok()?;
+        original
+            .correlated_current_handle(&self.session_id, &self.admission)
+            .await
     }
 }
 
@@ -494,40 +546,88 @@ impl StreamRunLifecycle {
 mod tests {
     use super::*;
 
-    fn run_control() -> RunControlState {
-        RunControlState {
-            session_id: "session-1".to_string(),
-            run_store: Arc::new(crate::run::InMemoryRunStore::new()),
-            cancel_token: Arc::new(tokio::sync::Mutex::new(None)),
-            current_run_id: Arc::new(tokio::sync::Mutex::new(None)),
-            active_run_control: Arc::new(tokio::sync::Mutex::new(None)),
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            hook_executor: None,
-            host_env: Arc::new(crate::host_env::HostEnv::system()),
-        }
+    async fn prepared() -> (
+        tempfile::TempDir,
+        super::super::Agent,
+        RunControlState,
+        super::super::run_admission::OriginalWorkerHandoff,
+        super::super::run_admission::OwnedWorkerStart,
+        Arc<super::super::run_admission::OriginalExecutionContext>,
+        tokio_util::sync::CancellationToken,
+    ) {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent = super::super::Agent::from_config(super::super::test_config())
+            .await
+            .unwrap();
+        let options = super::super::SessionOptions::new().with_session_id("session-1");
+        let client = Arc::new(super::super::tests::StaticStreamingClient::new(
+            "unused actual fixture",
+        ));
+        let session = agent
+            .build_session(workspace.path().display().to_string(), client, &options)
+            .unwrap();
+        let lease = ExecutionCoordinator::admit(&session, "actual lifecycle fixture")
+            .await
+            .unwrap();
+        let token = session.session_cancel.child_token();
+        let (handoff, start, original) = ExecutionCoordinator::prepare_original_handoff(
+            &session,
+            lease,
+            super::super::run_admission::ExecutionMode::Blocking,
+            token.clone(),
+        )
+        .unwrap();
+        let control = RunControlState::from_session(&session)
+            .bind_original(original.clone())
+            .unwrap();
+        (workspace, agent, control, handoff, start, original, token)
     }
 
     #[tokio::test]
     async fn start_run_sets_current_run() {
-        let control = run_control();
-        let run = control.start_run("hello").await;
-
-        assert_eq!(control.current_run().await.unwrap().id(), run.id());
+        let (_workspace, _agent, control, handoff, start, original, token) = prepared().await;
+        let worker = tokio::spawn(async move {
+            assert!(start.wait().await.unwrap());
+            let run = control.start_run("hello").await;
+            original.validate_original_token(&token).unwrap();
+            let inbox = crate::run_control::RunControlInbox::new("session-1", run.id(), token);
+            original.bind_inbox_once(inbox.clone()).unwrap();
+            control
+                .attach_owned_run_control(run.id(), inbox)
+                .await
+                .unwrap();
+            assert_eq!(control.current_run().await.unwrap().id(), run.id());
+            assert_eq!(
+                control.run_store.snapshot(run.id()).await.unwrap().prompt,
+                "hello"
+            );
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _proxy = handoff.supervise(worker, Vec::new(), tx);
         assert_eq!(
-            control.run_store.snapshot(run.id()).await.unwrap().prompt,
-            "hello"
+            rx.await.unwrap(),
+            super::super::run_admission::OwnerDisposition::RetainedUnproved
         );
     }
 
     #[tokio::test]
     async fn cancel_without_token_is_noop() {
-        let control = run_control();
-        let run = control.start_run("hello").await;
-
-        assert!(!control.cancel().await);
-        assert_ne!(
-            control.run_store.snapshot(run.id()).await.unwrap().status,
-            crate::run::RunStatus::Cancelled
+        let (_workspace, _agent, control, handoff, start, _original, _token) = prepared().await;
+        let worker = tokio::spawn(async move {
+            assert!(start.wait().await.unwrap());
+            let run = control.start_run("hello").await;
+            // Actual Created precedes inbox/slot install: no current cancellation token.
+            assert!(!control.cancel().await);
+            assert_ne!(
+                control.run_store.snapshot(run.id()).await.unwrap().status,
+                crate::run::RunStatus::Cancelled
+            );
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _proxy = handoff.supervise(worker, Vec::new(), tx);
+        assert_eq!(
+            rx.await.unwrap(),
+            super::super::run_admission::OwnerDisposition::RetainedUnproved
         );
     }
 }

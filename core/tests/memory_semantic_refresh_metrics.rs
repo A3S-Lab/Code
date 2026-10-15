@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 #[allow(dead_code)]
 #[path = "durable_memory_semantic_refresh/support.rs"]
 mod refresh_support;
@@ -89,7 +91,10 @@ fn start_runtime(
 ) -> Arc<MemoryMaintenanceRuntime> {
     let memory = Arc::new(AgentMemory::with_config_observers_and_durable(
         Arc::new(InMemoryStore::new()),
-        MemoryConfig::default(),
+        MemoryConfig {
+            prune_policy: None,
+            ..Default::default()
+        },
         Vec::new(),
         Some(durable),
     ));

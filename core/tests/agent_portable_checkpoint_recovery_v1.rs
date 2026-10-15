@@ -164,6 +164,7 @@ fn logical_resume_with_binding(
         session_id: session_id.into(),
         capability_binding,
         standing_context_digest: None,
+        durable_source: None,
         turn,
         messages: vec![Message::user(&format!("continue portable round {turn}"))],
         total_usage: TokenUsage {
@@ -190,7 +191,8 @@ fn empty_catalog_capability_binding() -> a3s_code_core::capability::RunCapabilit
     // Must match AgentConfig defaults used by Harness restore (50 rounds / 8 parallel).
     let ceiling = CapabilityCeiling::all(
         &set,
-        WorkspaceCapabilityCeiling::all(),
+        // Local workspaces do not mount a code-intelligence backend.
+        WorkspaceCapabilityCeiling::all().with_code_intelligence(false),
         GovernanceCapabilityCeiling::none_required(),
         CapabilityExecutionCeiling::new(50, 8, None, None, None).unwrap(),
     )
@@ -209,6 +211,7 @@ fn portable_export_with_binding(
 ) -> SessionCheckpointExportV1 {
     let logical = logical_resume_with_binding(session_id, turn, capability_binding);
     let session = SessionData {
+        durable_source: None,
         id: session_id.into(),
         config: SessionConfig {
             name: "portable Harness fixture".into(),
@@ -668,7 +671,7 @@ async fn portable_recovery_rejects_forced_invalid_capability_binding() {
         "forced-invalid-binding-target",
         &export,
     );
-    a3s_code_core::force_invalid_recovery_binding_for_test();
+    a3s_code_core::force_invalid_recovery_binding_for_test("forced-invalid-binding-target");
     let error = harness
         .execute_checkpoint_recovery(&request, export)
         .await
@@ -1316,6 +1319,7 @@ fn portable_export_rejects_invalid_capability_binding_payload() {
         Some(invalid_schema_capability_binding()),
     );
     let session = SessionData {
+        durable_source: None,
         id: "invalid-binding-session".into(),
         config: SessionConfig {
             name: "portable Harness fixture".into(),

@@ -19,6 +19,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const PRUNE_JOB_NAME: &str = "v1_prune";
+const USAGE_CONSOLIDATION_JOB_NAME: &str = "v1_usage_consolidation";
+/// Character window of normalized content examined for near-duplicates.
+const USAGE_CONSOLIDATION_PREFIX_CHARS: usize = 200;
+/// Word-set Dice coefficient a pair must reach to count as near-duplicate.
+const USAGE_CONSOLIDATION_MIN_OVERLAP: f32 = 0.60;
+/// Bounded per-run scan: the most recent N store items are examined.
+const MAX_CONSOLIDATION_SCAN_ITEMS: usize = 5_000;
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const MIN_JOB_INTERVAL: Duration = Duration::from_secs(1);
@@ -134,12 +141,28 @@ impl std::fmt::Debug for ScheduledMemoryMaintenance {
 }
 
 /// Typed, session-owned memory maintenance schedules and shutdown policy.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[must_use = "maintenance options do nothing until installed on a session or runtime"]
 pub struct MemoryMaintenanceOptions {
     jobs: Vec<ScheduledMemoryMaintenance>,
     semantic_refresh: Option<ScheduledSemanticRefresh>,
+    usage_consolidation: Option<Duration>,
+    consolidation_judge: Option<Arc<dyn ConsolidationJudge>>,
     shutdown_timeout: Duration,
+}
+
+impl std::fmt::Debug for MemoryMaintenanceOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The judge is a live handle (often an LLM client); describe it by
+        // presence, not by derivation.
+        f.debug_struct("MemoryMaintenanceOptions")
+            .field("jobs", &self.jobs)
+            .field("semantic_refresh", &self.semantic_refresh)
+            .field("usage_consolidation", &self.usage_consolidation)
+            .field("consolidation_judge", &self.consolidation_judge.is_some())
+            .field("shutdown_timeout", &self.shutdown_timeout)
+            .finish()
+    }
 }
 
 impl Default for MemoryMaintenanceOptions {
@@ -147,9 +170,89 @@ impl Default for MemoryMaintenanceOptions {
         Self {
             jobs: Vec::new(),
             semantic_refresh: None,
+            usage_consolidation: None,
+            consolidation_judge: None,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
+}
+
+/// Decides whether two memories state the same underlying fact, as the
+/// second stage of consolidation: the lexical Dice filter recalls the
+/// candidate pair, the judge confirms it. Hosts back this with a real
+/// model call ([`LlmConsolidationJudge`]); tests inject a scripted one.
+///
+/// Fail-closed contract: an error or a `false` verdict skips the pair —
+/// consolidation never merges on doubt.
+#[async_trait]
+pub trait ConsolidationJudge: Send + Sync {
+    async fn same_fact(
+        &self,
+        left: &a3s_memory::MemoryItem,
+        right: &a3s_memory::MemoryItem,
+    ) -> anyhow::Result<bool>;
+}
+
+/// A [`ConsolidationJudge`] backed by one structured model call: the two
+/// contents are shown to the model and the closed-set verdict line
+/// (`SAME` / `DIFFERENT`) decides. Anything else is an error — which the
+/// caller treats as "not the same fact".
+pub struct LlmConsolidationJudge {
+    client: Arc<dyn crate::llm::LlmClient>,
+}
+
+impl LlmConsolidationJudge {
+    pub fn new(client: Arc<dyn crate::llm::LlmClient>) -> Self {
+        Self { client }
+    }
+}
+
+const CONSOLIDATION_VERDICT_SAME: &str = "SAME";
+const CONSOLIDATION_VERDICT_DIFFERENT: &str = "DIFFERENT";
+
+#[async_trait]
+impl ConsolidationJudge for LlmConsolidationJudge {
+    async fn same_fact(
+        &self,
+        left: &a3s_memory::MemoryItem,
+        right: &a3s_memory::MemoryItem,
+    ) -> anyhow::Result<bool> {
+        let system = "You compare two memory entries from a long-term agent memory. \
+                      Decide whether they state the SAME underlying fact, preference, or \
+                      instruction (paraphrases, updates, and case/formatting variants count \
+                      as the same; a different fact, even on the same topic, is DIFFERENT). \
+                      Reply with exactly one word: SAME or DIFFERENT.";
+        let prompt = format!(
+            "Memory A:\n{}\n\nMemory B:\n{}\n\nVerdict (SAME or DIFFERENT):",
+            truncate_for_judge(&left.content),
+            truncate_for_judge(&right.content),
+        );
+        let response = self
+            .client
+            .complete(&[crate::llm::Message::user(&prompt)], Some(system), &[])
+            .await?;
+        let verdict = response.message.text().trim().to_ascii_uppercase();
+        // A model may decorate the word; accept it only as a prefix on the
+        // first line so "SAME." or "DIFFERENT — they are different topics"
+        // still classify, but "NOT SAME" never matches.
+        let first_line = verdict.lines().next().unwrap_or_default().trim();
+        if first_line.starts_with(CONSOLIDATION_VERDICT_SAME) {
+            return Ok(true);
+        }
+        if first_line.starts_with(CONSOLIDATION_VERDICT_DIFFERENT) {
+            return Ok(false);
+        }
+        anyhow::bail!("consolidation judge returned a non-closed-set verdict: {verdict:?}")
+    }
+}
+
+/// Judge inputs are bounded: the lexical filter already compared the first
+/// 200 normalized characters, so the judge sees the same window.
+fn truncate_for_judge(content: &str) -> String {
+    content
+        .chars()
+        .take(USAGE_CONSOLIDATION_PREFIX_CHARS)
+        .collect()
 }
 
 impl MemoryMaintenanceOptions {
@@ -167,6 +270,33 @@ impl MemoryMaintenanceOptions {
     pub fn with_semantic_refresh(mut self, schedule: ScheduledSemanticRefresh) -> Self {
         self.semantic_refresh = Some(schedule);
         self
+    }
+
+    /// Install or replace the built-in V1 usage-consolidation schedule.
+    ///
+    /// Opt-in: the job is registered only when an interval is set here. Each
+    /// run consolidates lexical near-duplicates (word-set Dice overlap of at
+    /// least 0.60 over the first 200 normalized characters) in the long-term
+    /// store: the lower-importance twin is deleted and its usage counter is
+    /// merged into the canonical survivor.
+    pub fn with_usage_consolidation(mut self, interval: Duration) -> Self {
+        self.usage_consolidation = Some(interval);
+        self
+    }
+
+    /// Attach a judge that confirms each lexically-recalled consolidation
+    /// pair before it merges. Without a judge the lexical filter decides
+    /// alone (the MEM-CONS1 behavior); with one, a pair merges only when
+    /// the judge agrees — a `false` verdict or an error skips the pair
+    /// (fail-closed: never merge on doubt), and judge calls are bounded
+    /// per run so a large scan cannot turn into an unbounded model bill.
+    pub fn with_consolidation_judge(mut self, judge: Arc<dyn ConsolidationJudge>) -> Self {
+        self.consolidation_judge = Some(judge);
+        self
+    }
+
+    pub fn usage_consolidation_interval(&self) -> Option<Duration> {
+        self.usage_consolidation
     }
 
     pub fn try_with_shutdown_timeout(
@@ -191,7 +321,9 @@ impl MemoryMaintenanceOptions {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.jobs.is_empty() && self.semantic_refresh.is_none()
+        self.jobs.is_empty()
+            && self.semantic_refresh.is_none()
+            && self.usage_consolidation.is_none()
     }
 }
 
@@ -444,6 +576,16 @@ impl MemoryMaintenanceRuntime {
                 }),
             )?);
         }
+        if let Some(interval) = options.usage_consolidation {
+            schedules.push(ScheduledMemoryMaintenance::try_new(
+                USAGE_CONSOLIDATION_JOB_NAME,
+                interval,
+                Arc::new(UsageConsolidationJob {
+                    store: Arc::clone(memory.store()),
+                    judge: options.consolidation_judge.clone(),
+                }),
+            )?);
+        }
         if let Some(semantic_refresh) = &options.semantic_refresh {
             semantic_refresh.validate_for(memory)?;
             schedules.push(semantic_refresh.as_maintenance()?);
@@ -451,7 +593,7 @@ impl MemoryMaintenanceRuntime {
         for schedule in &options.jobs {
             if matches!(
                 schedule.name.as_str(),
-                PRUNE_JOB_NAME | SEMANTIC_REFRESH_JOB_NAME
+                PRUNE_JOB_NAME | SEMANTIC_REFRESH_JOB_NAME | USAGE_CONSOLIDATION_JOB_NAME
             ) {
                 return Err(invalid(
                     "jobs.name",
@@ -586,6 +728,223 @@ impl MemoryMaintenanceJob for PruneMemoryJob {
             .await
             .map(MemoryMaintenanceOutcome::new)
     }
+}
+
+/// V1 usage-telemetry counter kept in a store item's `metadata` map. The key
+/// and decimal format are the contract shared with the turn-side recorder in
+/// `core/src/agent/turn_context/memory.rs`.
+const MEMORY_USAGE_COUNT_METADATA: &str = "usage_count";
+
+/// Built-in lexical near-duplicate consolidation for the V1 long-term store.
+///
+/// One run loads a bounded most-recent window, treats two items as
+/// near-duplicates when the word-set Dice coefficient of their first 200
+/// normalized characters reaches 0.60, and merges the lower-importance twin
+/// into the canonical survivor: the twin is deleted and its usage counter is
+/// added to the survivor's. Curation-protected items (pinned, superseded
+/// audit records, relation holders) never participate.
+struct UsageConsolidationJob {
+    store: Arc<dyn a3s_memory::MemoryStore>,
+    judge: Option<Arc<dyn ConsolidationJudge>>,
+}
+
+/// Judge calls per consolidation run. The lexical filter is the recall
+/// stage; the judge is the precision stage, and a scan of pathological
+/// stores must not become an unbounded model bill.
+const MAX_CONSOLIDATION_JUDGE_CALLS: usize = 32;
+
+#[async_trait]
+impl MemoryMaintenanceJob for UsageConsolidationJob {
+    async fn run(
+        &self,
+        _context: &MemoryMaintenanceContext,
+        cancellation: CancellationToken,
+    ) -> anyhow::Result<MemoryMaintenanceOutcome> {
+        let mut items = self.store.get_recent(MAX_CONSOLIDATION_SCAN_ITEMS).await?;
+        let mut merged_away = HashSet::new();
+        let mut merges = 0usize;
+        let mut judge_budget = MAX_CONSOLIDATION_JUDGE_CALLS;
+        for anchor in 0..items.len() {
+            if cancellation.is_cancelled() {
+                break;
+            }
+            if merged_away.contains(&items[anchor].id) || consolidation_protected(&items[anchor]) {
+                continue;
+            }
+            for other in (anchor + 1)..items.len() {
+                if merged_away.contains(&items[other].id)
+                    || consolidation_protected(&items[other])
+                    || !items_are_near_duplicates(&items[anchor], &items[other])
+                {
+                    continue;
+                }
+                if let Some(judge) = &self.judge {
+                    if judge_budget == 0 {
+                        // Out of judge budget: undjudged pairs stay
+                        // unmerged this run — the next interval judges them.
+                        continue;
+                    }
+                    judge_budget -= 1;
+                    match judge.same_fact(&items[anchor], &items[other]).await {
+                        Ok(true) => {}
+                        // A disagreement or an error skips the pair —
+                        // consolidation never merges on doubt.
+                        Ok(false) => {
+                            tracing::debug!(
+                                anchor = %items[anchor].id,
+                                twin = %items[other].id,
+                                "consolidation judge rejected a lexically-recalled pair"
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                anchor = %items[anchor].id,
+                                twin = %items[other].id,
+                                %error,
+                                "consolidation judge failed; skipping the pair this run"
+                            );
+                            continue;
+                        }
+                    }
+                }
+                let (keep, twin) = if consolidation_keeps_anchor(&items[anchor], &items[other]) {
+                    (anchor, other)
+                } else {
+                    (other, anchor)
+                };
+                let twin_id = items[twin].id.clone();
+                let twin_usage = memory_usage_count(&items[twin]);
+                // Delete before merging counters: a failed counter write can
+                // then only undercount, while the reverse order could
+                // double-count the same twin on the next run.
+                if let Err(error) = self.store.delete(&twin_id).await {
+                    tracing::warn!(
+                        twin_id = %twin_id,
+                        %error,
+                        "Failed to delete a consolidated memory twin"
+                    );
+                    continue;
+                }
+                add_memory_usage_count(&mut items[keep], twin_usage);
+                if let Err(error) = self.store.store(items[keep].clone()).await {
+                    tracing::warn!(
+                        memory_id = %items[keep].id,
+                        %error,
+                        "Failed to persist a consolidated usage counter"
+                    );
+                }
+                merged_away.insert(twin_id);
+                merges += 1;
+                if twin == anchor {
+                    // The anchor itself merged into a stronger twin; it must
+                    // not gather further merges.
+                    break;
+                }
+            }
+        }
+        Ok(MemoryMaintenanceOutcome::new(merges))
+    }
+}
+
+/// Canonical-survivor decision for one near-duplicate pair: the higher
+/// importance wins; exact ties keep the older item, and the smaller id breaks
+/// a full tie so the outcome never depends on scan order.
+fn consolidation_keeps_anchor(
+    anchor: &a3s_memory::MemoryItem,
+    other: &a3s_memory::MemoryItem,
+) -> bool {
+    match other
+        .importance
+        .partial_cmp(&anchor.importance)
+        .unwrap_or(std::cmp::Ordering::Equal)
+    {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal if anchor.timestamp != other.timestamp => {
+            anchor.timestamp < other.timestamp
+        }
+        std::cmp::Ordering::Equal => anchor.id <= other.id,
+    }
+}
+
+fn items_are_near_duplicates(
+    left: &a3s_memory::MemoryItem,
+    right: &a3s_memory::MemoryItem,
+) -> bool {
+    let left_tokens = normalized_prefix_tokens(&left.content);
+    let right_tokens = normalized_prefix_tokens(&right.content);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return false;
+    }
+    let intersection = left_tokens.intersection(&right_tokens).count();
+    let overlap = 2.0 * intersection as f32 / (left_tokens.len() + right_tokens.len()) as f32;
+    overlap >= USAGE_CONSOLIDATION_MIN_OVERLAP
+}
+
+/// Distinct words (≥2 characters) of the first 200 normalized characters.
+fn normalized_prefix_tokens(content: &str) -> HashSet<String> {
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .chars()
+        .take(USAGE_CONSOLIDATION_PREFIX_CHARS)
+        .collect::<String>()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 2)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Curation, provenance, and audit protection: items a lexical consolidation
+/// must never delete or absorb, mirroring the store's prune-protection set.
+fn consolidation_protected(item: &a3s_memory::MemoryItem) -> bool {
+    item.tags.iter().any(|tag| {
+        matches!(
+            tag.as_str(),
+            "keep" | "pinned" | "protected" | "consolidated" | "conflict" | "superseded"
+        )
+    }) || metadata_flag(item, "keep")
+        || metadata_flag(item, "pinned")
+        || metadata_flag(item, "protected")
+        || metadata_nonempty(item, "supersedes")
+        || metadata_nonempty(item, "conflicts_with")
+        || matches!(
+            item.metadata
+                .get(super::MEMORY_STATUS_METADATA)
+                .map(|status| status.trim().to_ascii_lowercase()),
+            Some(status) if matches!(status.as_str(), "superseded" | "tombstoned")
+        )
+}
+
+fn metadata_flag(item: &a3s_memory::MemoryItem, key: &str) -> bool {
+    item.metadata.get(key).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "keep" | "pinned" | "protected"
+        )
+    })
+}
+
+fn metadata_nonempty(item: &a3s_memory::MemoryItem, key: &str) -> bool {
+    item.metadata
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn memory_usage_count(item: &a3s_memory::MemoryItem) -> u32 {
+    item.metadata
+        .get(MEMORY_USAGE_COUNT_METADATA)
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn add_memory_usage_count(item: &mut a3s_memory::MemoryItem, increment: u32) {
+    let updated = memory_usage_count(item).saturating_add(increment);
+    item.metadata
+        .insert(MEMORY_USAGE_COUNT_METADATA.to_string(), updated.to_string());
 }
 
 async fn run_schedule(

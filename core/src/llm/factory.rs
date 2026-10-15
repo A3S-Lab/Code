@@ -1,7 +1,8 @@
 //! LLM client factory
 
 use super::anthropic::AnthropicClient;
-use super::http::ReqwestHttpClient;
+use super::cursor_account::CursorAccountClient;
+use super::http::{default_http_client, ReqwestHttpClient};
 use super::openai::OpenAiClient;
 use super::structured::NativeStructuredSupport;
 use super::types::SecretString;
@@ -43,9 +44,14 @@ pub struct LlmConfig {
     pub top_logprobs: Option<usize>,
     /// When true, temperature is never sent to the API (e.g., o1 models).
     pub disable_temperature: bool,
+    /// The model's declared input modalities exclude images.
+    pub text_only_input: bool,
     /// Explicit native structured-output support. None means infer from provider
     /// and base URL; custom OpenAI-compatible endpoints default to prompt mode.
     pub native_structured_support: Option<NativeStructuredSupport>,
+    /// Test and embedding hook. When set, the Cursor account client uses this
+    /// transport instead of constructing its own HTTP client.
+    pub http_override: Option<Arc<dyn super::http::HttpClient>>,
 }
 
 impl std::fmt::Debug for LlmConfig {
@@ -70,7 +76,9 @@ impl std::fmt::Debug for LlmConfig {
             .field("logprobs", &self.logprobs)
             .field("top_logprobs", &self.top_logprobs)
             .field("disable_temperature", &self.disable_temperature)
+            .field("text_only_input", &self.text_only_input)
             .field("native_structured_support", &self.native_structured_support)
+            .field("http_override", &self.http_override.as_ref().map(|_| "set"))
             .finish()
     }
 }
@@ -98,8 +106,15 @@ impl LlmConfig {
             logprobs: None,
             top_logprobs: None,
             disable_temperature: false,
+            text_only_input: false,
             native_structured_support: None,
+            http_override: None,
         }
+    }
+
+    pub fn with_http_client(mut self, http: Arc<dyn super::http::HttpClient>) -> Self {
+        self.http_override = Some(http);
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -215,13 +230,20 @@ fn is_official_deepseek_url(base_url: &str) -> bool {
 /// Create LLM client with full configuration (supports custom base_url)
 pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
     let retry = config.retry_config.clone().unwrap_or_default();
-    let http = config
-        .api_timeout_ms
-        .map(|timeout_ms| {
-            ReqwestHttpClient::with_timeout(Duration::from_millis(timeout_ms))
-                .expect("failed to build LLM HTTP client with API timeout")
-        })
-        .map(|client| Arc::new(client) as Arc<dyn super::http::HttpClient>);
+    let http = config.api_timeout_ms.map(|timeout_ms| {
+        match ReqwestHttpClient::with_timeout(Duration::from_millis(timeout_ms)) {
+            Ok(client) => Arc::new(client) as Arc<dyn super::http::HttpClient>,
+            // Environment-dependent (TLS init), not a construction
+            // invariant: degrade to a client whose every request names
+            // the reason — a session-start path must never panic the
+            // process (a panic in the exec path kills colocated
+            // workloads).
+            Err(error) => Arc::new(super::http::UnavailableHttpClient::new(format!(
+                "building the LLM HTTP client with the {} ms API timeout failed: {error:#}",
+                timeout_ms
+            ))) as Arc<dyn super::http::HttpClient>,
+        }
+    });
     let api_key = config.api_key.expose().to_string();
     let headers = config.resolved_headers();
 
@@ -263,7 +285,8 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry)
-                .with_native_structured_support(native_structured_support);
+                .with_native_structured_support(native_structured_support)
+                .with_text_only_input(config.text_only_input);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }
@@ -293,7 +316,9 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             Arc::new(client)
         }
         "glm" | "zhipu" | "bigmodel" => {
-            let mut client = ZhipuClient::new(api_key, config.model).with_retry_config(retry);
+            let mut client = ZhipuClient::new(api_key, config.model)
+                .with_retry_config(retry)
+                .with_text_only_input(config.text_only_input);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }
@@ -319,6 +344,24 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             }
             Arc::new(client)
         }
+        // Cursor account sessions speak Connect RPC, not chat completions.
+        // Effort stays off this path: the listed model id already encodes it.
+        "cursor" => {
+            let transport = config
+                .http_override
+                .clone()
+                .or(http)
+                .unwrap_or_else(default_http_client);
+            let mut client =
+                CursorAccountClient::new(api_key, config.model).with_http_client(transport);
+            if let Some(base_url) = config.base_url {
+                client = client.with_base_url(base_url);
+            }
+            if !headers.is_empty() {
+                client = client.with_headers(headers);
+            }
+            Arc::new(client)
+        }
         // OpenAI-compatible providers (deepseek, groq, together, ollama, etc.)
         _ => {
             tracing::info!(
@@ -334,7 +377,8 @@ pub fn create_client_with_config(config: LlmConfig) -> Arc<dyn LlmClient> {
             let mut client = OpenAiClient::new(api_key, config.model)
                 .with_provider_name(config.provider.clone())
                 .with_retry_config(retry)
-                .with_native_structured_support(native_structured_support);
+                .with_native_structured_support(native_structured_support)
+                .with_text_only_input(config.text_only_input);
             if let Some(http) = http.clone() {
                 client = client.with_http_client(http);
             }

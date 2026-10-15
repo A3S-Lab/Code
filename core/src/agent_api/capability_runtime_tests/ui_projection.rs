@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 use crate::capability::{
@@ -132,6 +134,53 @@ fn projected_ui_public_contract_is_send_and_sync() {
     assert_send_sync::<UiDocument>();
     assert_send_sync::<UiBinding>();
     assert_send_sync::<crate::ProjectedUiHandle>();
+}
+
+#[tokio::test]
+async fn denied_projected_ui_is_not_found_without_acquiring_a_use_lease() {
+    let session = test_session("capability-access-ui").await;
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let batch = ui_batch(
+        &session,
+        use_generation(1, 'a'),
+        ui_binding("projected-ui", "v1"),
+        &acquired,
+        &dropped,
+    )
+    .with_allowed_capabilities([])
+    .unwrap();
+    session
+        .apply_capability_batch(batch, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(session
+        .projected_ui("projected-ui")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(session.projected_ui("absent-ui").await.unwrap().is_none());
+    assert_eq!(acquired.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn capability_access_refuses_a_ui_with_a_denied_required_backend() {
+    let session = test_session("capability-access-ui-dependency").await;
+    let before = session.capability_catalog_stamp();
+    let binding = ui_binding("projected-ui", "v1");
+    let upstream = use_generation(1, 'a');
+    let (set, _, id) = use_ui_set(1, upstream.clone(), "projected-ui", &binding);
+    let counter = Arc::new(AtomicUsize::new(0));
+    let batch =
+        SessionCapabilityBatch::from_use_projection(set, provider(upstream, &counter, &counter))
+            .unwrap();
+    assert!(matches!(
+        batch.with_allowed_capabilities([id]),
+        Err(CapabilityRuntimeError::Scope(
+            crate::capability::CapabilityScopeError::CapabilityDependencyDenied { .. }
+        ))
+    ));
+    assert_eq!(session.capability_catalog_stamp(), before);
 }
 
 #[test]

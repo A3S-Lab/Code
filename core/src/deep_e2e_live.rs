@@ -1,8 +1,10 @@
+#![cfg(test)]
+
 //! Live kernel oracles for the deep end-to-end case list.
 //!
-//! `deep_e2e_live_receipts` is not ignored. Without `ci-all` it returns
-//! before any row: several cases need optional features, and a default-feature
-//! run must not claim a receipt. With `ci-all` the test requires a clean
+//! Without `ci-all`, `deep_e2e_live_receipts` is explicitly ignored; forcing
+//! it with `--ignored` fails before any row because required optional cases
+//! are absent. With `ci-all` it is not ignored and requires a clean
 //! worktree, then each case performs one pinned-route completion and prints
 //! that response model on its own row. GitHub runners have no provider ACL,
 //! so the ci-all library job skips this test by name. A ci-all run that
@@ -242,13 +244,16 @@ fn json_has_key(value: &Value, key: &str) -> bool {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(feature = "ci-all"),
+    ignore = "requires ci-all for the actual deep E2E receipt chain"
+)]
 async fn deep_e2e_live_receipts() {
-    // Default `cargo test --lib` does not enable the optional cases. Returning
-    // here prints no receipt row. The ci-all body below is the live path.
+    // Explicit execution with the wrong feature graph must fail, including
+    // `--ignored`; it must never produce a passing libtest summary.
     #[cfg(not(feature = "ci-all"))]
     {
-        eprintln!("DEEP_E2E_SKIP reason=ci-all feature is required for the live receipt");
-        return;
+        panic!("ci-all feature is required for the actual deep E2E receipt chain");
     }
     #[cfg(feature = "ci-all")]
     {
@@ -879,13 +884,10 @@ async fn case_governance(commit: &str) {
         Some(admitted_options("gov-1").with_confirmation_manager(Arc::new(StubConfirm))),
     )
     .expect("session");
-    assert_eq!(
-        session
-            .confirm_tool_use("done", true, None)
-            .await
-            .expect("approve"),
-        true
-    );
+    assert!(session
+        .confirm_tool_use("done", true, None)
+        .await
+        .expect("approve"));
     let err = session.confirm_tool_use("boom", false, None).await;
     match err {
         Err(crate::CodeError::Session(message)) if message.contains("manager down") => {}
@@ -1189,8 +1191,10 @@ async fn case_code_intelligence(commit: &str) {
     let (sender, mut receiver) =
         tokio::sync::watch::channel(crate::CodeIntelligenceStatus::default());
     provider.spawn_status_forwarder(u64::MAX, &mut receiver);
-    let mut leaked = crate::CodeIntelligenceStatus::default();
-    leaked.message = Some("deep-e2e-must-not-publish".to_string());
+    let leaked = crate::CodeIntelligenceStatus {
+        message: Some("deep-e2e-must-not-publish".to_string()),
+        ..Default::default()
+    };
     sender.send_replace(leaked);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let observed = provider.subscribe_status();
@@ -1564,6 +1568,7 @@ async fn case_moli_runtime(commit: &str) {
     let lock_path = dir.path().join(".install.lock");
     let held = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
@@ -1785,6 +1790,7 @@ async fn case_native_sandbox(commit: &str) {
     let marker = dir.path().join("deep-e2e-sandbox-marker");
     let sandbox = crate::agent_api::select_default_local_sandbox(
         dir.path(),
+        crate::sandbox::SandboxNetworkMode::Deny,
         false,
         Err(anyhow::anyhow!("native unavailable")),
     );

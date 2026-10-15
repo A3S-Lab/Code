@@ -159,7 +159,7 @@ pub fn set_last_used_permission(kind: DefaultSelectedPermission) {
 // ── Resolution ──────────────────────────────────────────────────────────────
 
 /// Sticky last-used, then configured default, then the YOLO row by identity, else index 0.
-/// A concrete target skips YOLO. A missing target kind degrades to one-shot allow, never to global always-approve.
+/// A concrete target skips YOLO. A missing target kind degrades to one-shot allow, never to global yolo.
 pub fn resolve_initial_cursor(options: &[acp::PermissionOption]) -> usize {
     let target = match last_used_permission() {
         DefaultSelectedPermission::AlwaysAllowAllSessions => load_default_selected_permission(),
@@ -390,7 +390,7 @@ mod tests {
     }
 
     /// A concrete sticky target with no matching row (the always-allow row may be suppressed as unhonorable) degrades to the one-shot allow.
-    /// It never escalates to the global always-approve row, which is one Enter away from persisting always-approve mode.
+    /// It never escalates to the global yolo row, which is one Enter away from persisting yolo mode.
     #[test]
     fn unmatched_concrete_target_degrades_to_allow_once_not_yolo() {
         std::thread::spawn(|| {

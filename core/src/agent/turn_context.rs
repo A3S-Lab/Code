@@ -16,6 +16,25 @@ mod memory;
 pub(super) struct TurnContext {
     pub(super) effective_prompt: String,
     pub(super) augmented_system: Option<String>,
+    /// (memory id, content, relevance) recalled for this turn. Emitted
+    /// directly on the legacy loop path; handed back to the fact caller so
+    /// the stream worker can emit it before `End`.
+    pub(super) recalled_memories: Vec<(String, String, f32)>,
+    /// `(provider, content_digest)` of each source's latest contribution,
+    /// for the fact spine's per-call context record.
+    pub(super) section_digests: Vec<(String, String)>,
+}
+
+/// The fact actor's model-context result plus the recall telemetry the
+/// stream worker emits at settle time.
+pub(crate) struct FactModelContext {
+    pub(crate) effective_prompt: String,
+    pub(crate) augmented_system: Option<String>,
+    pub(crate) recalled_memories: Vec<(String, String, f32)>,
+    /// `(provider, content_digest)` of each source's latest contribution —
+    /// the fact caller records these per model call so a replay can verify
+    /// which section content the call saw.
+    pub(crate) section_digests: Vec<(String, String)>,
 }
 
 impl AgentLoop {
@@ -23,17 +42,28 @@ impl AgentLoop {
     ///
     /// PrePrompt and context providers run here. They do not choose whether
     /// another model call happens.
+    /// Assemble the model context for the fact actor's turn.
+    ///
+    /// The actor must never send into the host event channel from inside the
+    /// state machine (a full or closing channel would stall the turn or race
+    /// the teardown). Instead the recall telemetry is returned to the caller,
+    /// and the stream worker emits it before `End`.
     pub(crate) async fn fact_model_context(
         &self,
         prompt: &str,
         session_id: &str,
         message_count: usize,
-    ) -> anyhow::Result<(String, Option<String>)> {
+    ) -> anyhow::Result<FactModelContext> {
         let system = self.system_prompt();
         let turn = self
             .prepare_turn_context(&system, prompt, message_count, Some(session_id), &None)
             .await?;
-        Ok((turn.effective_prompt, turn.augmented_system))
+        Ok(FactModelContext {
+            effective_prompt: turn.effective_prompt,
+            augmented_system: turn.augmented_system,
+            recalled_memories: turn.recalled_memories,
+            section_digests: turn.section_digests,
+        })
     }
 
     pub(super) async fn prepare_turn_context(
@@ -84,11 +114,11 @@ impl AgentLoop {
         let mut context_results = self
             .resolve_prompt_context(&effective_prompt, session_id, event_tx)
             .await?;
-        let durable_recall = if self.cognitive_package_binding().is_none() {
+        let (durable_recall, recalled_memories) = if self.cognitive_package_binding().is_none() {
             self.recall_memory_context(&effective_prompt, &mut context_results, event_tx)
                 .await
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         let mut context_assembly = self.assemble_context_results(&context_results);
@@ -131,6 +161,8 @@ impl AgentLoop {
                 &context_assembly,
             ),
             effective_prompt,
+            recalled_memories,
+            section_digests: crate::context::section_digests(&context_results),
         })
     }
 

@@ -506,6 +506,71 @@ Do your best work.
     assert!(agent.prompt.unwrap().contains("helpful agent"));
 }
 
+fn agent_markdown(separator: &str, bom: bool) -> String {
+    let mut text = String::new();
+    if bom {
+        text.push('\u{feff}');
+    }
+    for line in [
+        "---",
+        "name: md-agent",
+        "description: Agent from markdown",
+        "tools:",
+        "  - read",
+        "  - grep",
+        "---",
+    ] {
+        text.push_str(line);
+        text.push_str(separator);
+    }
+    text.push_str("# System Prompt");
+    text.push_str(separator);
+    text.push_str(separator);
+    text.push_str("You are a helpful agent.");
+    text
+}
+
+#[test]
+fn crlf_and_bom_agent_md_matches_lf_name_tools_and_body() {
+    let lf = parse_agent_md(&agent_markdown("\n", false)).expect("lf agent");
+    let crlf = parse_agent_md(&agent_markdown("\r\n", false)).expect("crlf agent");
+    let bom = parse_agent_md(&agent_markdown("\r\n", true)).expect("bom agent");
+    assert_eq!(lf.name, "md-agent");
+    let lf_tools = lf
+        .permissions
+        .allow
+        .iter()
+        .map(|rule| rule.rule.as_str())
+        .collect::<Vec<_>>();
+    let crlf_tools = crlf
+        .permissions
+        .allow
+        .iter()
+        .map(|rule| rule.rule.as_str())
+        .collect::<Vec<_>>();
+    let bom_tools = bom
+        .permissions
+        .allow
+        .iter()
+        .map(|rule| rule.rule.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(lf_tools, ["read(*)", "grep(*)"]);
+    assert_eq!(crlf_tools, lf_tools);
+    assert_eq!(bom_tools, lf_tools);
+    assert!(crlf_tools.iter().all(|rule| !rule.contains('\r')));
+    let lf_prompt = lf.prompt.expect("lf prompt");
+    let crlf_prompt = crlf.prompt.expect("crlf prompt");
+    let bom_prompt = bom.prompt.expect("bom prompt");
+    assert_eq!(crlf_prompt.replace('\r', ""), lf_prompt);
+    assert_eq!(bom_prompt.replace('\r', ""), lf_prompt);
+    assert!(lf_prompt.contains("helpful agent"));
+    assert!(crlf_prompt.starts_with("# System Prompt"));
+    assert!(bom_prompt.starts_with("# System Prompt"));
+    assert!(!crlf_prompt.starts_with('\r'));
+    assert!(!bom_prompt.starts_with('\r'));
+    assert!(parse_agent_md("---\r\nname: md-agent\r\n# no closer\r\n").is_err());
+}
+
 #[test]
 fn test_parse_agent_md_with_prompt_in_frontmatter() {
     let md = r#"---
@@ -976,4 +1041,41 @@ fn test_apply_to_skips_empty_permissions() {
 
     assert!(config.permission_checker.is_none());
     assert!(config.permission_policy.is_none());
+}
+
+#[test]
+fn deny_only_definitions_do_not_earn_auto_approve() {
+    // The enum contract justifies AutoApprove only with an explicit allow
+    // list defining the boundary; a deny-only definition used to inherit
+    // AutoApprove anyway, silently auto-approving every Ask decision.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("deny-only.yaml"),
+        "name: deny-only\ndescription: probe\ndisallowedTools:\n  - WebFetch\n",
+    )
+    .unwrap();
+    let agent = super::loader::load_agents_from_dir(dir.path())
+        .into_iter()
+        .next()
+        .expect("deny-only definition loads");
+    assert_eq!(
+        agent.confirmation_inheritance,
+        Some(ConfirmationInheritance::DenyOnAsk),
+        "deny-only must not be wider than a definition with no tool fields"
+    );
+
+    std::fs::write(
+        dir.path().join("allow-listed.yaml"),
+        "name: allow-listed\ndescription: probe\ntools:\n  - read\n",
+    )
+    .unwrap();
+    let allowed = super::loader::load_agents_from_dir(dir.path())
+        .into_iter()
+        .find(|agent| agent.name == "allow-listed")
+        .expect("allow definition loads");
+    assert_eq!(
+        allowed.confirmation_inheritance,
+        Some(ConfirmationInheritance::AutoApprove),
+        "an explicit allow list keeps the AutoApprove justification"
+    );
 }

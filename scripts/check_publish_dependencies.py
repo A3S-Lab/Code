@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail fast when a Git dependency has no publishable crates.io baseline."""
+"""Fail fast when a Git/path dependency has no publishable registry baseline."""
 
 from __future__ import annotations
 
@@ -47,31 +47,62 @@ def _dependency_tables(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return tables
 
 
-def publish_dependencies(manifest_path: Path) -> list[PublishDependency]:
+def inspect_publish_dependencies(
+    manifest_path: Path,
+    candidates: dict[Path, PublishDependency] | None = None,
+) -> tuple[list[PublishDependency], list[str]]:
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     dependencies: set[PublishDependency] = set()
+    failures: list[str] = []
 
     for table in _dependency_tables(manifest):
         for local_name, specification in table.items():
-            if not isinstance(specification, dict) or "git" not in specification:
+            if not isinstance(specification, dict) or not (
+                "git" in specification or "path" in specification
+            ):
                 continue
+            source_kind = "Git" if "git" in specification else "Path"
             declared = specification.get("version")
             if not isinstance(declared, str):
-                raise ValueError(
-                    f"Git dependency {local_name!r} must declare a registry version"
+                failures.append(
+                    f"{source_kind} dependency {local_name!r} must declare a registry version"
                 )
+                continue
             version = declared.removeprefix("=")
             if not EXACT_VERSION.fullmatch(version):
-                raise ValueError(
-                    f"Git dependency {local_name!r} must use a concrete registry "
+                failures.append(
+                    f"{source_kind} dependency {local_name!r} must use a concrete registry "
                     f"baseline, got {declared!r}"
                 )
+                continue
             package_name = specification.get("package", local_name)
             if not isinstance(package_name, str):
-                raise ValueError(f"Git dependency {local_name!r} has an invalid package name")
-            dependencies.add(PublishDependency(package_name, version))
+                failures.append(
+                    f"{source_kind} dependency {local_name!r} has an invalid package name"
+                )
+                continue
+            dependency = PublishDependency(package_name, version)
+            source_path = specification.get("path")
+            if candidates and isinstance(source_path, str) and "git" not in specification:
+                source_manifest = (manifest_path.parent / source_path / "Cargo.toml").resolve()
+                candidate = candidates.get(source_manifest)
+                if candidate is not None:
+                    if dependency != candidate:
+                        failures.append(
+                            f"candidate dependency {local_name!r} does not match "
+                            f"{source_manifest}: expected {candidate.name} {candidate.version}"
+                        )
+                    continue
+            dependencies.add(dependency)
 
-    return sorted(dependencies)
+    return sorted(dependencies), failures
+
+
+def publish_dependencies(manifest_path: Path) -> list[PublishDependency]:
+    dependencies, failures = inspect_publish_dependencies(manifest_path)
+    if failures:
+        raise ValueError("; ".join(failures))
+    return dependencies
 
 
 def registry_error(
@@ -110,7 +141,12 @@ def registry_error(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="+")
+    parser.add_argument(
+        "--candidate-manifest", type=Path, action="append", default=[],
+        help="Local package published by this release; validate exact path/name/version "
+             "instead of requiring it to be already published",
+    )
     parser.add_argument(
         "--api-base",
         default="https://crates.io/api/v1/crates",
@@ -118,23 +154,44 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    try:
-        dependencies = publish_dependencies(args.manifest)
-    except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
-        print(f"publish dependency preflight failed: {error}", file=sys.stderr)
-        return 1
-
     failures: list[str] = []
-    for dependency in dependencies:
+    candidates: dict[Path, PublishDependency] = {}
+    for path in args.candidate_manifest:
+        try:
+            package = tomllib.loads(path.read_text(encoding="utf-8"))["package"]
+            name, version = package["name"], package["version"]
+            if not isinstance(name, str) or not isinstance(version, str) or not EXACT_VERSION.fullmatch(version):
+                raise ValueError("candidate must declare a package name and concrete version")
+            candidates[path.resolve()] = PublishDependency(name, version)
+        except (OSError, tomllib.TOMLDecodeError, ValueError, KeyError, TypeError) as error:
+            failures.append(f"candidate {path}: {error}")
+
+    dependencies: dict[PublishDependency, list[Path]] = {}
+    for manifest in args.manifest:
+        try:
+            declared, manifest_failures = inspect_publish_dependencies(manifest, candidates)
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+            failures.append(f"{manifest}: {error}")
+            continue
+        failures.extend(f"{manifest}: {error}" for error in manifest_failures)
+        for dependency in declared:
+            dependencies.setdefault(dependency, []).append(manifest)
+
+    for dependency, manifests in sorted(dependencies.items()):
         error = registry_error(dependency, args.api_base)
         if error is None:
             print(f"verified {dependency.name} {dependency.version}")
         else:
-            failures.append(f"{dependency.name} {dependency.version}: {error}")
+            origins = ", ".join(str(manifest) for manifest in manifests)
+            failures.append(f"{dependency.name} {dependency.version} ({origins}): {error}")
+
+    for path, candidate in sorted(candidates.items()):
+        print(f"local release candidate {candidate.name} {candidate.version} ({path}); "
+              "registry delivery remains required")
 
     if failures:
         print(
-            "publish dependency preflight failed; publish these registry baselines first:",
+            "publish dependency preflight failed; resolve these manifest and registry obligations:",
             file=sys.stderr,
         )
         for failure in failures:

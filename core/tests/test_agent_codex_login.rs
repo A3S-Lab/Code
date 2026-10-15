@@ -335,6 +335,7 @@ async fn codex_login_agent_resume_preserves_cumulative_accounting() {
                 session_id: "codex-agent-resume".to_string(),
                 capability_binding: None,
                 standing_context_digest: None,
+                durable_source: None,
                 turn: 2,
                 messages: vec![
                     Message::user("Finish with the exact token A3S_CODEX_RESUME_OK."),

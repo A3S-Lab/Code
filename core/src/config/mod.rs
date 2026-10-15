@@ -12,6 +12,7 @@
 
 mod acl_render;
 mod editor;
+mod goal_control;
 mod loader;
 #[cfg(test)]
 mod loader_tests;
@@ -19,13 +20,20 @@ mod provider;
 mod search;
 #[cfg(test)]
 mod tests;
+mod verification_contract;
 
 pub use editor::{rewrite_acl_sections, ConfigSection};
+pub(crate) use loader::parse_mcp_server_block;
+pub use loader::{
+    host_authoritative_block, withhold_untrusted_host_authoritative_blocks, LayerAcl,
+    HOST_AUTHORITATIVE_BLOCKS,
+};
 pub use provider::{ModelConfig, ModelCost, ModelLimit, ModelModalities, ProviderConfig};
 pub use search::{
     BrowserBackend, DocumentCacheConfig, DocumentParserConfig, HeadlessConfig, SearchCascadeTier,
     SearchConfig, SearchEngineConfig, SearchHealthConfig,
 };
+pub use verification_contract::WorkspaceVerificationContract;
 
 use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
@@ -102,9 +110,64 @@ pub struct OsConfig {
 }
 
 /// Configuration for A3S Code
+/// Parsed `workspace_retrieval { enabled, local_cpu {} }` block: the
+/// host-facing semantic-retrieval declaration. The feature itself is
+/// host-injected (`WorkspaceRetrievalOptions` needs an embedding
+/// provider no ACL can construct); sessions do not silently enable it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceRetrievalConfig {
+    pub enabled: bool,
+    pub local_cpu: bool,
+}
+
+/// Parsed `notifications { run_completion, min_seconds }` block: the
+/// host-facing completion-signal preference. `bell` writes a terminal
+/// bell to the agent's stderr when a run completes after the minimum
+/// duration; focus detection and OS-level notifications stay with the
+/// terminal host (WC-NOTIFY1 boundary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NotificationsConfig {
+    pub run_completion: RunCompletionSignal,
+    pub min_seconds: u64,
+}
+
+/// Closed set of completion signals the agent itself can emit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunCompletionSignal {
+    /// A terminal bell (`\x07`) on stderr when a run completes after
+    /// the minimum duration.
+    Bell,
+    /// No signal (the default posture when the block is absent).
+    #[default]
+    Off,
+}
+
+impl RunCompletionSignal {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "bell" => Ok(Self::Bell),
+            "off" => Ok(Self::Off),
+            other => anyhow::bail!(
+                "notifications run_completion must be one of the closed set \
+                 [bell, off]; got {other:?}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeConfig {
+    /// Host-selected finite cross-Run bounds; absence disables automatic work.
+    /// Workspace-discovered ACL cannot supply or override this policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_control: Option<crate::goal_control::GoalContinuationPolicyV1>,
+    /// Host-authoritative, workspace-scoped suite verification declarations.
+    /// ACP resolves these against the actual workspace at session creation.
+    /// Automatically discovered workspace ACL cannot supply them.
+    #[serde(default)]
+    pub verification_contracts: Vec<WorkspaceVerificationContract>,
     /// Default model in "provider/model" format (e.g., "anthropic/claude-sonnet-4-20250514")
     #[serde(default, alias = "default_model")]
     pub default_model: Option<String>,
@@ -112,6 +175,12 @@ pub struct CodeConfig {
     /// Provider configurations
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    /// Parsed `workspace_retrieval` block, when declared.
+    #[serde(default)]
+    pub workspace_retrieval: Option<WorkspaceRetrievalConfig>,
+    /// Parsed `notifications` block, when declared; absent = off.
+    #[serde(default)]
+    pub notifications: Option<NotificationsConfig>,
 
     /// Session storage backend
     #[serde(default)]
@@ -212,6 +281,15 @@ pub struct CodeConfig {
     /// Search configuration (a3s-search integration)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchConfig>,
+
+    /// Network posture of the default local sandbox (ACL `sandbox` block:
+    /// `network = "deny" | "mediated"`, `network_allow = ["host[:port]", …]`).
+    /// Deny is the fail-closed default; mediated requires a non-empty
+    /// allowlist and is an explicit host opt-in.
+    #[serde(default)]
+    pub sandbox_network: crate::sandbox::SandboxNetworkMode,
+    #[serde(default)]
+    pub sandbox_network_allow: Vec<String>,
 
     /// Optional platform endpoint. When set, hosts may enable account login.
     #[serde(default, skip_serializing_if = "Option::is_none")]

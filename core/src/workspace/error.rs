@@ -103,6 +103,23 @@ pub enum WorkspaceError {
         message: String,
     },
 
+    /// The addressed file exceeds the backend's per-file text size
+    /// bound, so a read that would materialize it refused instead of
+    /// allocating. An unbounded read turns one oversized file into an
+    /// OOM that kills every colocated workload; callers that can
+    /// degrade (grep recount, retrieval indexing) already skip the
+    /// file on error and carry on.
+    #[error("file too large to read as text: {path} is {size_bytes} bytes, limit is {max_bytes}")]
+    TooLarge {
+        /// Path that triggered the failure, in workspace-relative form
+        /// where possible.
+        path: String,
+        /// Observed file size in bytes.
+        size_bytes: u64,
+        /// The backend's per-file byte bound that was exceeded.
+        max_bytes: u64,
+    },
+
     /// The operation's outer timeout (see
     /// [`WorkspaceServices::operation_timeout`](super::WorkspaceServices::operation_timeout))
     /// fired before the backend responded.
@@ -273,6 +290,20 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains("invalid argument"), "got: {s}");
         assert!(s.contains("expected_version"), "got: {s}");
+    }
+
+    #[test]
+    fn too_large_variant_names_path_size_and_limit() {
+        let err = WorkspaceError::TooLarge {
+            path: "logs/huge.log".into(),
+            size_bytes: 17 * 1024 * 1024,
+            max_bytes: 16 * 1024 * 1024,
+        };
+        let s = err.to_string();
+        assert!(s.contains("logs/huge.log"), "got: {s}");
+        assert!(s.contains("too large"), "got: {s}");
+        assert!(s.contains("17825792"), "got: {s}");
+        assert!(s.contains("16777216"), "got: {s}");
     }
 
     #[test]

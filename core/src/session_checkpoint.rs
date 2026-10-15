@@ -48,6 +48,29 @@ pub enum SessionCheckpointError {
 
 pub type SessionCheckpointResult<T> = std::result::Result<T, SessionCheckpointError>;
 
+/// Identify already-loadable source content without granting portable resume
+/// semantics or adding a missing capability binding to a legacy checkpoint.
+pub(crate) fn loop_checkpoint_content_identity(
+    checkpoint: &LoopCheckpoint,
+) -> SessionCheckpointResult<(u64, String)> {
+    codec::loop_checkpoint_content_identity(checkpoint)
+}
+
+/// Reuse this module's canonical codec for internal identity keys. A digest
+/// describes content only; it neither admits recovery nor proves execution.
+pub(crate) fn canonical_identity_digest<T: Serialize>(
+    domain: &str,
+    value: &T,
+) -> SessionCheckpointResult<String> {
+    codec::domain_digest(domain, value)
+}
+
+/// Share the existing bounded, exact checkpoint identity validator with
+/// internal recovery inputs without exposing the codec module itself.
+pub(crate) fn validate_checkpoint_id(field: &str, value: &str) -> SessionCheckpointResult<()> {
+    codec::validate_id(field, value)
+}
+
 impl SessionCheckpointError {
     /// Stable machine-readable code for host and protocol adapters.
     pub const fn code(&self) -> &'static str {
@@ -88,9 +111,12 @@ impl SessionSnapshotEvidenceV1 {
             return Err(invalid_descriptor("snapshot encoding is unsupported"));
         }
         validate_id("snapshot session_id", &self.session_id)?;
-        if self.snapshot_schema_version != SESSION_SNAPSHOT_SCHEMA_VERSION {
+        if !matches!(
+            self.snapshot_schema_version,
+            1 | SESSION_SNAPSHOT_SCHEMA_VERSION
+        ) {
             return Err(invalid_descriptor(
-                "snapshot schema version is not the exact portable v1 version",
+                "snapshot schema version is unsupported for portable evidence",
             ));
         }
         validate_content_identity(self.size_bytes, &self.content_digest)?;
@@ -172,9 +198,12 @@ impl SessionLogicalResumeEvidenceV1 {
         }
         validate_id("logical-resume session_id", &self.session_id)?;
         validate_id("logical-resume source_run_id", &self.source_run_id)?;
-        if self.checkpoint_schema_version != LOOP_CHECKPOINT_SCHEMA_VERSION {
+        if !(LOOP_CHECKPOINT_SCHEMA_VERSION
+            ..=crate::loop_checkpoint::LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION)
+            .contains(&self.checkpoint_schema_version)
+        {
             return Err(invalid_descriptor(
-                "loop checkpoint schema version is not the exact portable v1 version",
+                "loop checkpoint schema version is not portable",
             ));
         }
         if self.completed_tool_rounds == 0 {
@@ -351,6 +380,9 @@ impl SessionCheckpointPayloadV1 {
 mod artifact;
 mod codec;
 
+#[cfg(test)]
+mod identity_tests;
+
 pub use artifact::SessionCheckpointExportV1;
 
 /// Cross-language wire form for [`SessionCheckpointExportV1`] (SDK-CP1).
@@ -402,8 +434,9 @@ mod tests {
     };
     use base64::Engine;
 
-    fn minimal_snapshot(session_id: &str) -> SessionSnapshotV1 {
+    pub(super) fn minimal_snapshot(session_id: &str) -> SessionSnapshotV1 {
         SessionSnapshotV1::session_only(SessionData {
+            durable_source: None,
             id: session_id.into(),
             config: SessionConfig {
                 name: "checkpoint-test".into(),
@@ -443,6 +476,7 @@ mod tests {
             session_id: session_id.into(),
             capability_binding: None,
             standing_context_digest: None,
+            durable_source: None,
             turn: 1,
             messages: Vec::new(),
             total_usage: Default::default(),

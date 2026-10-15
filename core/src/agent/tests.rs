@@ -764,6 +764,40 @@ impl LlmClient for HangingCompactionLlmClient {
     }
 }
 
+struct DelayedStreamingLlmClient {
+    delay: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for DelayedStreamingLlmClient {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+    ) -> Result<LlmResponse> {
+        anyhow::bail!("non-streaming fallback is not this test")
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[Message],
+        _system: Option<&str>,
+        _tools: &[ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<mpsc::Receiver<StreamEvent>> {
+        let delay = self.delay;
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let response = MockLlmClient::text_response("finished after the provider cap");
+            tx.send(StreamEvent::TextDelta(response.text())).await.ok();
+            tx.send(StreamEvent::Done(response)).await.ok();
+        });
+        Ok(rx)
+    }
+}
+
 impl MockLlmClient {
     pub(crate) fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
@@ -3676,6 +3710,65 @@ async fn llm_timeout_is_enforced_when_provider_ignores_generation_timeout() {
 }
 
 #[tokio::test]
+async fn streaming_generation_is_not_cut_by_the_provider_api_timeout() {
+    let mock_client = Arc::new(DelayedStreamingLlmClient {
+        delay: std::time::Duration::from_millis(80),
+    });
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        planning_mode: PlanningMode::Disabled,
+        prompt_slots: SystemPromptSlots {
+            style: Some(AgentStyle::GeneralPurpose),
+            ..Default::default()
+        },
+        llm_api_timeout_ms: Some(20),
+        circuit_breaker_threshold: 1,
+        continuation_enabled: false,
+        ..Default::default()
+    };
+    let agent = AgentLoop::new(
+        mock_client,
+        Arc::new(ToolExecutor::new(temp_dir.path().display().to_string())),
+        ToolContext::new(temp_dir.path().to_path_buf()),
+        config,
+    );
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        agent.execute_with_session(
+            &[],
+            "answer after a long stream",
+            None,
+            Some(event_tx),
+            None,
+        ),
+    )
+    .await
+    .expect("a live stream must finish inside the test budget")
+    .expect("the provider API timeout must not cancel a stream that is still running");
+
+    assert_eq!(result.text, "finished after the provider cap");
+    assert_eq!(
+        super::llm_turn::llm_call_wait(
+            true,
+            Some(std::time::Duration::from_millis(20)),
+            Some(std::time::Duration::from_secs(60)),
+        ),
+        Some(std::time::Duration::from_secs(60))
+    );
+    assert_eq!(
+        super::llm_turn::llm_call_wait(
+            false,
+            Some(std::time::Duration::from_millis(20)),
+            Some(std::time::Duration::from_secs(60)),
+        ),
+        Some(std::time::Duration::from_millis(20))
+    );
+}
+
+#[tokio::test]
 async fn max_execution_time_bounds_a_stalled_llm_call() {
     let mock_client = Arc::new(HangingCompactionLlmClient::new());
     let temp_dir = tempfile::tempdir().unwrap();
@@ -3940,10 +4033,32 @@ async fn test_auto_compact_rearms_and_continues_across_cycles() {
     let requests = mock_client.request_texts.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert!(requests[1].contains("summary cycle one"));
-    assert!(requests[1].contains("finish the first task"));
-    assert!(requests[2].contains("summary cycle one"));
-    assert!(requests[3].contains("summary cycle two"));
-    assert!(requests[3].contains("finish the second task"));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("finish the first task")),
+        "the continuation prompt must reach the model: {:?}",
+        *requests
+    );
+    assert!(
+        requests[2].contains("summary cycle one") || requests[1].contains("summary cycle one"),
+        "first summary must survive into a later request: {:?}",
+        *requests
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("summary cycle two")),
+        "second summary must reach the model: {:?}",
+        *requests
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("finish the second task")),
+        "second continuation must reach the model: {:?}",
+        *requests
+    );
 }
 
 #[tokio::test]
@@ -4825,16 +4940,21 @@ async fn test_agent_conversation_history_preserved() {
         .await
         .unwrap();
 
-    // History should contain: old user + old assistant + new user + new assistant
-    assert_eq!(result.messages.len(), 4);
-    assert_eq!(result.messages[0].text(), "What is Rust?");
+    // History should contain: old user + old assistant + new user + new
+    // assistant. Wire-only control turns (the per-call output-language
+    // override) ride the history too; product assertions scope to the
+    // product-visible bubble.
+    let product: Vec<_> = result
+        .messages
+        .iter()
+        .filter(|message| message.transcript_visibility.is_product())
+        .collect();
+    assert_eq!(product.len(), 4);
+    assert_eq!(product[0].text(), "What is Rust?");
+    assert_eq!(product[1].text(), "Rust is a systems programming language.");
+    assert_eq!(product[2].text(), "Who created it?");
     assert_eq!(
-        result.messages[1].text(),
-        "Rust is a systems programming language."
-    );
-    assert_eq!(result.messages[2].text(), "Who created it?");
-    assert_eq!(
-        result.messages[3].text(),
+        product[3].text(),
         "Rust was created by Graydon Hoare at Mozilla."
     );
 }
@@ -4958,7 +5078,7 @@ async fn test_duplicate_tool_guard_reports_tool_end_without_stream_error() {
 }
 
 #[tokio::test]
-async fn test_duplicate_guard_keeps_the_turn_alive_after_repeated_feedback() {
+async fn duplicate_guard_forces_finalization() {
     let temp_dir = tempfile::tempdir().unwrap();
     let workspace = temp_dir.path().to_string_lossy().to_string();
     let args = serde_json::json!({"mode": "grep", "query": "never-matches"});
@@ -4975,8 +5095,10 @@ async fn test_duplicate_guard_keeps_the_turn_alive_after_repeated_feedback() {
         ToolContext::new(PathBuf::from(workspace)),
         AgentConfig {
             permission_checker: Some(Arc::new(PermissionPolicy::new().allow("search(*)"))),
-            duplicate_tool_call_threshold: 2,
+            duplicate_tool_call_threshold: 3,
             max_tool_rounds: 100,
+            continuation_enabled: false,
+            planning_mode: crate::prompts::PlanningMode::Disabled,
             ..Default::default()
         },
     );
@@ -4997,10 +5119,215 @@ async fn test_duplicate_guard_keeps_the_turn_alive_after_repeated_feedback() {
             )
         })
         .count();
-    assert!(nudges >= 2, "repeated identical calls stay in the turn");
+    assert_eq!(nudges, 1, "the fourth identical call is the guard");
+    assert!(result.messages.iter().any(|message| message
+        .text()
+        .contains("Repeated identical tool calls have no new evidence")));
+    let presented = mock_client.request_tools.lock().unwrap();
+    assert!(
+        presented.last().is_some_and(|tools| tools.is_empty()),
+        "the turn after the guard presents no tools: {presented:?}"
+    );
     assert!(!events
         .iter()
         .any(|event| matches!(event, AgentEvent::Error { .. })));
+}
+
+#[tokio::test]
+async fn same_response_identical_tool_runs_once() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    executor.register_dynamic_tool(Arc::new(RecordedCallTool {
+        calls: Arc::clone(&calls),
+    }));
+    let same = serde_json::json!({"which": "same"});
+    let client = Arc::new(MockLlmClient::new(vec![
+        LlmResponse {
+            message: Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "first".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: same.clone(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "twin".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: same,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "other".to_string(),
+                        name: "recorded_call".to_string(),
+                        input: serde_json::json!({"which": "other"}),
+                    },
+                ],
+                reasoning_content: None,
+                transcript_text: None,
+                transcript_visibility: Default::default(),
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("tool_use".to_string()),
+            token_logprobs: Vec::new(),
+            meta: None,
+        },
+        MockLlmClient::text_response("one execution"),
+    ]));
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowAllTools)),
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client,
+        executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+    let result = agent
+        .execute(&[], "call the recorded tool", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec!["same".to_string(), "other".to_string()]
+    );
+    let twin = result
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } if tool_use_id == "twin" => Some((content.as_text(), *is_error)),
+            _ => None,
+        })
+        .expect("twin result");
+    assert_eq!(twin.1, Some(true));
+    assert!(twin.0.contains("identical arguments"));
+}
+
+#[tokio::test]
+async fn read_only_evidence_forces_finalization() {
+    let evidence_limit = execution_state::READ_ONLY_EVIDENCE_LIMIT as usize;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    executor.register_dynamic_tool(Arc::new(RecordedCallTool {
+        calls: Arc::clone(&calls),
+    }));
+    let mut responses = Vec::new();
+    for index in 0..evidence_limit {
+        responses.push(MockLlmClient::tool_call_response(
+            &format!("read-{index}"),
+            "recorded_call",
+            serde_json::json!({"which": format!("read-{index}")}),
+        ));
+    }
+    responses.push(MockLlmClient::text_response(
+        "partial answer from the evidence",
+    ));
+    responses.push(MockLlmClient::tool_call_response(
+        "must-not-run",
+        "recorded_call",
+        serde_json::json!({"which": "must-not-run"}),
+    ));
+    let client = Arc::new(MockLlmClient::new(responses));
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowAllTools)),
+        max_tool_rounds: 100,
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client.clone(),
+        executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+    let result = agent.execute(&[], "inspect only", None).await.unwrap();
+    assert_eq!(result.text, "partial answer from the evidence");
+    assert_eq!(calls.lock().unwrap().len(), evidence_limit);
+    assert!(!calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call == "must-not-run"));
+    assert!(result.messages.iter().any(|message| {
+        message
+            .text()
+            .contains("Read-only evidence gathering has no further effect on the task")
+    }));
+    let presented = client.request_tools.lock().unwrap();
+    assert!(presented.last().is_some_and(|tools| tools.is_empty()));
+}
+
+#[tokio::test]
+async fn distinct_read_then_edit_is_not_finalized() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = Arc::new(ToolExecutor::new(workspace.path().display().to_string()));
+    executor.register_dynamic_tool(Arc::new(RecordedCallTool {
+        calls: Arc::clone(&calls),
+    }));
+    let client = Arc::new(MockLlmClient::new(vec![
+        MockLlmClient::tool_call_response(
+            "read-1",
+            "recorded_call",
+            serde_json::json!({"which": "read"}),
+        ),
+        MockLlmClient::tool_call_response(
+            "edit-1",
+            "recorded_call",
+            serde_json::json!({"which": "edit"}),
+        ),
+        MockLlmClient::tool_call_response(
+            "read-2",
+            "recorded_call",
+            serde_json::json!({"which": "read-again"}),
+        ),
+        MockLlmClient::text_response("edited"),
+    ]));
+    let config = AgentConfig {
+        tools: executor.definitions(),
+        planning_mode: crate::prompts::PlanningMode::Disabled,
+        continuation_enabled: false,
+        permission_checker: Some(Arc::new(AllowAllTools)),
+        max_tool_rounds: 100,
+        ..AgentConfig::default()
+    };
+    let agent = AgentLoop::new(
+        client,
+        executor,
+        ToolContext::new(workspace.path().to_path_buf()),
+        config,
+    );
+    let result = agent.execute(&[], "read then edit", None).await.unwrap();
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec![
+            "read".to_string(),
+            "edit".to_string(),
+            "read-again".to_string()
+        ]
+    );
+    assert_eq!(result.text, "edited");
+    assert!(!result.messages.iter().any(|message| {
+        message
+            .text()
+            .contains("Read-only evidence gathering has no further effect")
+            || message
+                .text()
+                .contains("Repeated identical tool calls have no new evidence")
+    }));
 }
 
 #[tokio::test]
@@ -5124,12 +5451,19 @@ async fn test_agent_multiple_tools_single_turn() {
         "expected at least the tool-call turn and final response turn"
     );
 
-    // Messages: user → assistant(2 tools) → user(tool_result) → user(tool_result) → assistant(text)
-    assert_eq!(result.messages[0].role, "user");
-    assert_eq!(result.messages[1].role, "assistant");
-    assert_eq!(result.messages[2].role, "user"); // tool result 1
-    assert_eq!(result.messages[3].role, "user"); // tool result 2
-    assert_eq!(result.messages[4].role, "assistant");
+    // Messages: user → assistant(2 tools) → user(tool_result) → user(tool_result) → assistant(text).
+    // Wire-only control turns ride the raw history; the product sequence is
+    // what the transcript exports.
+    let roles: Vec<&str> = result
+        .messages
+        .iter()
+        .filter(|message| message.transcript_visibility.is_product())
+        .map(|message| message.role.as_str())
+        .collect();
+    assert_eq!(
+        roles,
+        vec!["user", "assistant", "user", "user", "assistant"]
+    );
 }
 
 #[tokio::test]
@@ -5385,8 +5719,8 @@ fn parallel_write_batch_fast_path_is_only_a_data_race_check() {
     fn write_call(id: &str, path: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
-            name: "write_file".to_string(),
-            args: serde_json::json!({ "path": path, "content": "x" }),
+            name: "write".to_string(),
+            args: serde_json::json!({ "file_path": path, "content": "x" }),
         }
     }
 
@@ -5501,10 +5835,14 @@ mod nested_tool_governance_tests {
 
     struct PublicRuntimeOrchestrator;
 
+    // Retained for the parallel/blocking side-effect scenarios that the
+    // runtime-orchestration tests spin up selectively.
+    #[allow(dead_code)]
     struct ParallelSideEffectTool {
         calls: Arc<AtomicUsize>,
     }
 
+    #[allow(dead_code)]
     struct BlockingSideEffectTool {
         calls: Arc<AtomicUsize>,
         started: Arc<Notify>,

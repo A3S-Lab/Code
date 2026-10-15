@@ -1,0 +1,52 @@
+suite "native-refusal-recovery" {
+    version = 1
+
+    scenario "known-refusal-then-independent-read" {
+        surface = "tui"
+        timeout_ms = 300000
+
+        wait "real-model-ready" {
+            text = "DeepSeek V4 Flash"
+        }
+
+        expect "configured-provider" {
+            text = "boyue/"
+        }
+
+        terminal_paste "refusal-request" {
+            text = "Use read once on task.txt, then follow its instructions exactly."
+        }
+
+        press "submit-refusal-request" {
+            key = "Enter"
+        }
+
+        wait "owned-command-confirmation" {
+            text = "Yes, proceed"
+        }
+
+        press "approve-this-invocation" {
+            key = "1"
+        }
+
+        wait "refusal-request-ended" {
+            regex = "(?s)REFUSAL-CONFIRMED-[0-9a-f-]+.*Worked for"
+        }
+
+        terminal_paste "independent-read-request" {
+            text = "Read recovery.txt exactly once. Quote its exact contents. Do not call other tools."
+        }
+
+        press "submit-independent-read" {
+            key = "Enter"
+        }
+
+        wait "read-request-ended" {
+            regex = "(?s)RECOVERED-[0-9a-f-]+.*Worked for"
+        }
+
+        terminal_recording "bounded-terminal-evidence" {
+            path = "terminal/recovery.vt"
+        }
+    }
+}

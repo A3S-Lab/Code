@@ -52,8 +52,8 @@ pub enum LogSource {
     #[strum(serialize = "a3s-pager")]
     #[serde(rename = "a3s-pager")]
     GrokPager,
-    #[strum(serialize = "a3s-desktop")]
-    #[serde(rename = "a3s-desktop")]
+    #[strum(serialize = "a3s-work")]
+    #[serde(rename = "a3s-work")]
     GrokDesktop,
 }
 

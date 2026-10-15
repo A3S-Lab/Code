@@ -245,19 +245,26 @@ func NewMoliHeadlessConfig() *HeadlessConfig {
 // SessionOptions contains the same value-shaped session configuration exposed
 // by the Rust, TypeScript, and Python SDKs.
 type SessionOptions struct {
-	Model                              string              `json:"model,omitempty"`
-	TaskPriority                       TaskPriority        `json:"task_priority,omitempty"`
-	BuiltinSkills                      *bool               `json:"builtin_skills,omitempty"`
-	AgentDirs                          []string            `json:"agent_dirs,omitempty"`
-	SkillDirs                          []string            `json:"skill_dirs,omitempty"`
-	WorkerAgents                       []WorkerAgentSpec   `json:"worker_agents,omitempty"`
-	QueueConfig                        *SessionQueueConfig `json:"queue_config,omitempty"`
-	SearchConfig                       *SearchConfig       `json:"search_config,omitempty"`
-	PermissionPolicy                   *PermissionPolicy   `json:"permission_policy,omitempty"`
-	ConfirmationPolicy                 *ConfirmationPolicy `json:"confirmation_policy,omitempty"`
-	EnforceActiveSkillToolRestrictions *bool               `json:"enforce_active_skill_tool_restrictions,omitempty"`
-	FileMemoryDir                      string              `json:"file_memory_dir,omitempty"`
-	FileSessionStoreDir                string              `json:"file_session_store_dir,omitempty"`
+	Model                              string                 `json:"model,omitempty"`
+	TaskPriority                       TaskPriority           `json:"task_priority,omitempty"`
+	BuiltinSkills                      *bool                  `json:"builtin_skills,omitempty"`
+	AgentDirs                          []string               `json:"agent_dirs,omitempty"`
+	SkillDirs                          []string               `json:"skill_dirs,omitempty"`
+	WatchSkillDirs                     []string               `json:"watch_skill_dirs,omitempty"`
+	ProjectedSkillFiles                []string               `json:"projected_skill_files,omitempty"`
+	SandboxNetwork                     string                 `json:"sandbox_network,omitempty"`
+	SandboxNetworkAllow                []string               `json:"sandbox_network_allow,omitempty"`
+	CodeIntelligence                   *bool                  `json:"code_intelligence,omitempty"`
+	PathInjectionBudget                *uint                  `json:"path_injection_budget,omitempty"`
+	VerificationContracts              []VerificationContract `json:"verification_contracts,omitempty"`
+	WorkerAgents                       []WorkerAgentSpec      `json:"worker_agents,omitempty"`
+	QueueConfig                        *SessionQueueConfig    `json:"queue_config,omitempty"`
+	SearchConfig                       *SearchConfig          `json:"search_config,omitempty"`
+	PermissionPolicy                   *PermissionPolicy      `json:"permission_policy,omitempty"`
+	ConfirmationPolicy                 *ConfirmationPolicy    `json:"confirmation_policy,omitempty"`
+	EnforceActiveSkillToolRestrictions *bool                  `json:"enforce_active_skill_tool_restrictions,omitempty"`
+	FileMemoryDir                      string                 `json:"file_memory_dir,omitempty"`
+	FileSessionStoreDir                string                 `json:"file_session_store_dir,omitempty"`
 	// SecurityProvider selects the typed security boundary for this session.
 	SecurityProvider *DefaultSecurityProvider `json:"security_provider,omitempty"`
 	// Deprecated: use SecurityProvider: NewDefaultSecurityProvider().
@@ -314,6 +321,10 @@ type SessionOptions struct {
 	ReadOnlySession            *bool                           `json:"read_only_session,omitempty"`
 	AllowProcessHostSandbox    *bool                           `json:"allow_process_host_sandbox,omitempty"`
 	VerifierEnabled            *bool                           `json:"verifier_enabled,omitempty"`
+	// RequireAssistantFinalResponse requires assistant delivery after a verified tool result.
+	RequireAssistantFinalResponse *bool `json:"require_assistant_final_response,omitempty"`
+	// WorkPolicy is the session's engineering work policy; nil means none.
+	WorkPolicy *WorkPolicy `json:"work_policy,omitempty"`
 	// Harness composes the Meta Harness. Nil keeps the default coding_actor tree.
 	Harness *HarnessOptions `json:"harness,omitempty"`
 }

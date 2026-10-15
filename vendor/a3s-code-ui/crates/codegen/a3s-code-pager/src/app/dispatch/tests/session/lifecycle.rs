@@ -2902,7 +2902,7 @@ fn bg_task_killed_no_op_for_unknown_session() {
             .is_some_and(|t| t.pending_kill)
     );
 }
-/// Mutual exclusion: enabling always-approve via dispatch clears the per-session `auto_mode` display flag (yolo wins).
+/// Mutual exclusion: enabling yolo via dispatch clears the per-session `auto_mode` display flag (yolo wins).
 #[test]
 fn set_yolo_on_clears_session_auto_mode() {
     use crate::app::actions::PermissionModeKind;
@@ -2919,7 +2919,7 @@ fn set_yolo_on_clears_session_auto_mode() {
     assert!(expect_agent(&app, AgentId(0)).session.is_yolo());
     assert!(
         !expect_agent(&app, AgentId(0)).session.is_auto(),
-        "enabling always-approve must clear the per-session auto flag (yolo wins)"
+        "enabling yolo must clear the per-session auto flag (yolo wins)"
     );
 }
 /// Gate OFF and policy pin: Plan exit lands on Normal (ask) but MUST still push `SetSessionMode(Default)` so the agent leaves Plan.
@@ -2988,7 +2988,7 @@ fn cycle_mode_pre_session_blocked_by_policy_pin() {
     assert_eq!(agent_toast(&app).as_deref(), Some(POLICY_WARNING));
 }
 /// Pre-session cycle from Plan with STALE `yolo_mode = true` (e.g. client state restored from before the pin landed) resets to Normal.
-/// Yolo is cleared too (matching the with-session catch-all for the same Plan+yolo input) so always-approve is not left active behind another banner.
+/// Yolo is cleared too (matching the with-session catch-all for the same Plan+yolo input) so yolo is not left active behind another banner.
 #[test]
 fn cycle_mode_pre_session_clears_stale_yolo_under_pin() {
     let mut app = test_app_with_agent();
@@ -3012,7 +3012,7 @@ fn cycle_mode_pre_session_clears_stale_yolo_under_pin() {
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
         Some("ask"),
-        "Plan+yolo resets to Normal (matches the with-session catch-all), not always-approve"
+        "Plan+yolo resets to Normal (matches the with-session catch-all), not yolo"
     );
 }
 /// While session creation is in flight, Shift+Tab cycles the mode locally (optimistic pending plus a deferred ACP push) and never creates a session.

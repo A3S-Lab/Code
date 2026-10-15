@@ -9,7 +9,38 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const MUTATION_OBSERVATION_SCHEMA: &str = "a3s.code.mutation-observation.v1";
-const MUTATING_FILE_TOOLS: &[&str] = &["write", "edit", "patch", "download"];
+/// File tools whose settled result puts a workspace path on the mutation
+/// ledger. The fact-spine continuation replay uses the same list so an
+/// interrupted run's inherited debt matches what a live run would observe.
+pub(crate) const MUTATING_FILE_TOOLS: &[&str] = &["write", "edit", "patch", "download"];
+
+/// Why the run was cut short by something other than the model finishing.
+/// Carried on the settled `End` event so clients can say why a turn ended
+/// instead of presenting the cut as the model's confident final answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForcedStop {
+    /// The tool-round budget was exhausted; the next call was denied.
+    ToolBudget,
+    /// The read-only evidence ceiling fired; the turn was forced to answer.
+    ReadOnlyEvidence,
+    /// The provider cut the final response at its length limit (stop_reason
+    /// `length`/`max_tokens` with no tool call): the settled answer is
+    /// truncated, not complete.
+    ResponseTruncated,
+}
+
+impl ForcedStop {
+    /// Wire name for the `x.ai/turn/outcome` payload; the pager's parser
+    /// accepts exactly these values.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolBudget => "tool_budget",
+            Self::ReadOnlyEvidence => "read_only_evidence",
+            Self::ResponseTruncated => "response_truncated",
+        }
+    }
+}
 
 /// How a successful run closed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +165,9 @@ pub struct MutationRecord {
     pub tool: String,
     pub path: String,
     pub content_digest: String,
+    /// Exact observed state. The content field above remains file bytes only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_identity: Option<a3s_effect::ToolFileIdentityV1>,
 }
 
 /// A background child that shares this workspace and has not been observed yet.
@@ -161,6 +195,37 @@ pub struct MutationLedger {
     /// a partial list is not an identity a waiver can close.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     observation_incomplete: bool,
+    /// Durable invocation uncertainty is not cleared by a successful local
+    /// scan. Only identity-bound receipt/reconciliation facts can discharge it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    unresolved_tool_effects: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    applied_tool_receipts: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    applied_background_receipts: std::collections::BTreeSet<String>,
+}
+
+/// Normalize a mutation path to its workspace-relative form: a model may
+/// hand a mutating tool an ABSOLUTE path under the workspace, and the
+/// ledger's consumers (contract covers patterns, existence-check matching,
+/// the gate's path list) are workspace-relative. Paths outside the
+/// workspace and already-relative paths pass through unchanged — the
+/// normalization is an identity for everything but the under-workspace
+/// absolute spelling, so ledger digests stay stable across the two
+/// spellings of the same edit.
+pub(crate) fn workspace_relative_path(workspace: &std::path::Path, path: &str) -> String {
+    let trimmed = path.trim();
+    if !trimmed.starts_with('/') {
+        return trimmed.to_string();
+    }
+    let workspace = workspace.to_string_lossy();
+    let workspace = workspace.trim_end_matches('/');
+    if let Some(stripped) = trimmed.strip_prefix(&format!("{workspace}/")) {
+        if !stripped.is_empty() {
+            return stripped.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 impl MutationLedger {
@@ -174,6 +239,26 @@ impl MutationLedger {
 
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.records.iter().map(|record| record.path.as_str())
+    }
+
+    pub(crate) fn observes_current_workspace(&self, root: &std::path::Path) -> bool {
+        let expected = self
+            .records
+            .iter()
+            .map(|record| (record.path.as_str(), record.after_identity.as_ref()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let observed = crate::porcelain::observe_path_effects(
+            root,
+            crate::porcelain::PathDelta {
+                paths: expected.keys().map(|path| (*path).to_string()).collect(),
+                incomplete: false,
+            },
+        );
+        observed.completeness == a3s_effect::ToolObservationCompleteness::Complete
+            && observed.changes.len() == expected.len()
+            && observed.changes.iter().all(|change| {
+                expected.get(change.path.as_str()).copied().flatten() == Some(&change.after)
+            })
     }
 
     /// Latest content digest recorded for a mutated path (path-boundary match).
@@ -280,6 +365,292 @@ impl MutationLedger {
         self.observation_incomplete = incomplete;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_unresolved_tool_effects(
+        &mut self,
+        unresolved: std::collections::BTreeSet<String>,
+    ) {
+        self.restore_unresolved_tool_effects(unresolved, &std::collections::BTreeSet::new());
+    }
+
+    /// Recovery may add evidence of uncertainty, but a cache or turn marker
+    /// cannot erase it. The caller's validated, exact durable background
+    /// terminals can settle matching cached children without a local registry.
+    pub(crate) fn restore_unresolved_tool_effects(
+        &mut self,
+        unresolved: std::collections::BTreeSet<String>,
+        settled_workspace_children: &std::collections::BTreeSet<String>,
+    ) {
+        self.unresolved_tool_effects.extend(unresolved);
+        self.open_children.retain(|child| {
+            !settled_workspace_children.contains(&format!("workspace-child:{}", child.task_id))
+        });
+        self.unresolved_tool_effects.retain(|key| {
+            !key.starts_with("workspace-child:") || !settled_workspace_children.contains(key)
+        });
+    }
+
+    /// Compare cached claims, including uncertainty, with a projection made
+    /// only from validated original receipts. The caller owns log/admission
+    /// validation and prefix selection; cached keys or current filesystem
+    /// scans cannot stand in for that projection.
+    pub(crate) fn checkpoint_cache_covered_by(&self, original: &Self) -> bool {
+        // A receipt's honest Unknown/Incomplete and exact external-operation
+        // ids already exist in the original projection. Extra cached debt
+        // still needs provenance. Local observation failures and child
+        // snapshot fields have no exact typed receipt projection here.
+        if !self.open_children.is_empty()
+            || self.observation_incomplete
+            || !self
+                .unresolved_tool_effects
+                .is_subset(&original.unresolved_tool_effects)
+        {
+            return false;
+        }
+        if original.applied_tool_receipts.is_empty()
+            && original.applied_background_receipts.is_empty()
+        {
+            return false;
+        }
+        if !self.records.is_empty()
+            && (self.applied_tool_receipts.is_empty()
+                && self.applied_background_receipts.is_empty())
+        {
+            // Legacy cached paths have no receipt provenance. They remain
+            // conservative debt, even when an unrelated read is in the log.
+            return false;
+        }
+        if !self
+            .applied_tool_receipts
+            .is_subset(&original.applied_tool_receipts)
+            || !self
+                .applied_background_receipts
+                .is_subset(&original.applied_background_receipts)
+        {
+            return false;
+        }
+        let observed = original
+            .records
+            .iter()
+            .map(|record| (record.path.as_str(), record))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut paths = std::collections::BTreeSet::new();
+        self.records.iter().all(|record| {
+            record.after_identity.is_some()
+                && paths.insert(record.path.as_str())
+                && observed.get(record.path.as_str()).is_some_and(|observed| {
+                    observed.after_identity == record.after_identity
+                        && observed.content_digest == record.content_digest
+                })
+        }) && (self.records.is_empty() || self.digest == effect_digest(&self.records))
+    }
+
+    pub(crate) fn checkpoint_receipt_keys(
+        &self,
+    ) -> (
+        &std::collections::BTreeSet<String>,
+        &std::collections::BTreeSet<String>,
+    ) {
+        (
+            &self.applied_tool_receipts,
+            &self.applied_background_receipts,
+        )
+    }
+
+    /// Cached negative claims must be present in the selected original-log
+    /// prefix before that prefix can be compared as the cache candidate.
+    pub(crate) fn checkpoint_uncertainty_keys(&self) -> &std::collections::BTreeSet<String> {
+        &self.unresolved_tool_effects
+    }
+
+    /// A cache containing only negative claims needs no invented receipt.
+    /// The caller supplies exact validated typed uncertainty from the chosen
+    /// original-log boundary, never a cached or generic ledger debt set.
+    pub(crate) fn checkpoint_negative_cache_covered_by(
+        &self,
+        validated_original_uncertainty: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        self.records.is_empty()
+            && self.applied_tool_receipts.is_empty()
+            && self.applied_background_receipts.is_empty()
+            && self.open_children.is_empty()
+            && !self.observation_incomplete
+            && !self.unresolved_tool_effects.is_empty()
+            && self
+                .unresolved_tool_effects
+                .is_subset(validated_original_uncertainty)
+    }
+
+    /// A checkpoint is a conservative cache of the log projection. Fill
+    /// missing observations without replacing a later live projection, and
+    /// allow the original log to reapply every receipt after this merge.
+    pub(crate) fn restore_checkpoint_cache(
+        &mut self,
+        cached: &Self,
+        original_cache_coverage_complete: bool,
+    ) {
+        let cached_has_evidence = cached.has_checkpoint_evidence();
+        let mut records_changed = false;
+        for record in &cached.records {
+            if !self
+                .records
+                .iter()
+                .any(|current| current.path == record.path)
+            {
+                self.records.push(record.clone());
+                records_changed = true;
+            }
+        }
+        for child in &cached.open_children {
+            if !self
+                .open_children
+                .iter()
+                .any(|current| current.task_id == child.task_id)
+            {
+                self.open_children.push(child.clone());
+            }
+        }
+        self.observation_incomplete |= cached.observation_incomplete;
+        self.unresolved_tool_effects
+            .extend(cached.unresolved_tool_effects.iter().cloned());
+        if cached_has_evidence && !original_cache_coverage_complete {
+            self.unresolved_tool_effects
+                .insert("tool_effect_cache_evidence_missing".into());
+        }
+        self.begin_receipt_replay();
+        if records_changed {
+            self.rehash();
+        }
+    }
+
+    pub(crate) fn has_checkpoint_evidence(&self) -> bool {
+        !self.records.is_empty()
+            || !self.open_children.is_empty()
+            || !self.unresolved_tool_effects.is_empty()
+            || self.observation_incomplete
+            || !self.applied_tool_receipts.is_empty()
+            || !self.applied_background_receipts.is_empty()
+    }
+
+    pub(crate) fn has_uncertain_tool_invocations(&self) -> bool {
+        self.unresolved_tool_effects
+            .iter()
+            .any(|key| !key.starts_with("workspace-child:"))
+    }
+
+    /// A full log projection must apply every typed event in log order. An
+    /// eagerly observed foreground receipt must not hide a later replay step
+    /// after an older background receipt first becomes visible locally.
+    pub(crate) fn begin_receipt_replay(&mut self) {
+        self.applied_tool_receipts.clear();
+        self.applied_background_receipts.clear();
+    }
+
+    pub(crate) fn observe_tool_receipt(
+        &mut self,
+        tool: &str,
+        result: &a3s_effect::ToolExecutionResultV1,
+    ) {
+        if result.validate().is_err() {
+            self.unresolved_tool_effects
+                .insert("tool_effect_schema_unsupported".into());
+            return;
+        }
+        let key = match result.identity.key() {
+            Ok(key) => key,
+            Err(_) => {
+                self.unresolved_tool_effects
+                    .insert("tool_effect_identity_mismatch".into());
+                return;
+            }
+        };
+        if !self.applied_tool_receipts.insert(key.clone()) {
+            return;
+        }
+        for change in &result.effects.changes {
+            self.observe_receipt_path(tool, &change.path, &change.after);
+        }
+        if result.outcome == a3s_effect::ToolExecutionOutcome::Unknown
+            || result.effects.completeness == a3s_effect::ToolObservationCompleteness::Incomplete
+        {
+            self.unresolved_tool_effects.insert(key);
+        }
+        self.unresolved_tool_effects.extend(
+            result
+                .effects
+                .unresolved_external_operations
+                .iter()
+                .cloned(),
+        );
+    }
+
+    /// Project byte-bound observations from an existing background terminal.
+    /// Its immutable fact key supplies deduplication only; this cannot admit,
+    /// execute or manufacture a tool invocation receipt.
+    pub(crate) fn observe_background_receipt(
+        &mut self,
+        fact_key: &str,
+        effects: &a3s_effect::ToolEffectObservationV1,
+    ) {
+        if fact_key.trim().is_empty() {
+            self.unresolved_tool_effects
+                .insert("background-receipt-identity-missing".into());
+            return;
+        }
+        if effects.validate().is_err() {
+            self.unresolved_tool_effects
+                .insert(format!("background-receipt-invalid:{fact_key}"));
+            return;
+        }
+        if !self.applied_background_receipts.insert(fact_key.into()) {
+            return;
+        }
+        for change in &effects.changes {
+            self.observe_receipt_path("background", &change.path, &change.after);
+        }
+        if effects.completeness == a3s_effect::ToolObservationCompleteness::Incomplete {
+            self.unresolved_tool_effects
+                .insert(format!("background-receipt-incomplete:{fact_key}"));
+        }
+        self.unresolved_tool_effects
+            .extend(effects.unresolved_external_operations.iter().cloned());
+    }
+
+    fn observe_receipt_path(
+        &mut self,
+        tool: &str,
+        path: &str,
+        after: &a3s_effect::ToolFileIdentityV1,
+    ) {
+        if path.is_empty() || crate::porcelain::is_harness_path(path) {
+            return;
+        }
+        // Whole-workspace observations overlap within a prepared batch. The
+        // observer and invocation are provenance, not a new file state.
+        if self
+            .records
+            .iter()
+            .any(|record| record.path == path && record.after_identity.as_ref() == Some(after))
+        {
+            return;
+        }
+        // An authoritative after-state supersedes older byte-only observations
+        // for this exact path, including a stale content digest after deletion.
+        self.records.retain(|record| record.path != path);
+        self.records.push(MutationRecord {
+            tool: tool.to_string(),
+            path: path.to_string(),
+            content_digest: after
+                .content_digest
+                .as_deref()
+                .map(|digest| digest.strip_prefix("sha256:").unwrap_or(digest))
+                .unwrap_or_default()
+                .to_string(),
+            after_identity: Some(after.clone()),
+        });
+        self.rehash();
+    }
+
     /// Record a workspace delta the tools did not publish. Paths already on
     /// the ledger are not added again, so a bound digest stays stable.
     pub fn observe_unseen_paths(&mut self, paths: &[String]) {
@@ -308,6 +679,7 @@ impl MutationLedger {
                 tool: "workspace".to_string(),
                 path,
                 content_digest: String::new(),
+                after_identity: None,
             });
         }
         self.rehash();
@@ -332,6 +704,7 @@ impl MutationLedger {
             tool,
             path: path.to_string(),
             content_digest,
+            after_identity: None,
         });
         self.rehash();
     }
@@ -359,6 +732,7 @@ pub async fn absorb_open_workspace_children(
             continue;
         }
         if crate::porcelain::workspace_child_pending(&child.task_id) {
+            crate::porcelain::request_workspace_child_settlement(&child.task_id);
             if let Some(paths) =
                 crate::porcelain::await_workspace_child(&child.task_id, workspace, cancel).await
             {
@@ -449,6 +823,41 @@ fn content_digest(metadata: &Value) -> String {
 }
 
 fn effect_digest(records: &[MutationRecord]) -> String {
+    if records.iter().any(|record| record.after_identity.is_some()) {
+        let mut canonical = b"a3s.code.workspace-effect-state.v1\0".to_vec();
+        for record in records {
+            match &record.after_identity {
+                Some(after) => {
+                    canonical.push(1);
+                    append_effect_field(&mut canonical, record.path.as_bytes());
+                    append_effect_field(&mut canonical, after.kind.as_str().as_bytes());
+                    match after.mode {
+                        Some(mode) => {
+                            canonical.push(1);
+                            canonical.extend_from_slice(&mode.to_be_bytes());
+                        }
+                        None => canonical.push(0),
+                    }
+                    match &after.content_digest {
+                        Some(digest) => {
+                            canonical.push(1);
+                            append_effect_field(&mut canonical, digest.as_bytes());
+                        }
+                        None => canonical.push(0),
+                    }
+                }
+                None => {
+                    canonical.push(0);
+                    append_effect_field(&mut canonical, record.path.as_bytes());
+                    append_effect_field(&mut canonical, record.tool.as_bytes());
+                    append_effect_field(&mut canonical, record.content_digest.as_bytes());
+                }
+            }
+        }
+        return sha256::digest(canonical);
+    }
+    // Legacy checkpoints retain their original digest until typed state is
+    // observed; absent fields do not invent a stronger historical identity.
     let canonical = records
         .iter()
         .map(|record| format!("{}|{}|{}", record.tool, record.path, record.content_digest))
@@ -456,6 +865,21 @@ fn effect_digest(records: &[MutationRecord]) -> String {
         .join("\n");
     sha256::digest(canonical.as_bytes())
 }
+
+fn append_effect_field(canonical: &mut Vec<u8>, field: &[u8]) {
+    canonical.extend_from_slice(field.len().to_string().as_bytes());
+    canonical.push(b':');
+    canonical.extend_from_slice(field);
+}
+
+#[cfg(test)]
+mod receipt_tests;
+
+#[cfg(test)]
+mod receipt_restore_tests;
+
+#[cfg(test)]
+mod background_receipt_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionGate {
@@ -486,6 +910,14 @@ pub fn decide_with_observations(
     allow_continuation: bool,
     observations: &[crate::external_observation::ExternalObservationV1],
 ) -> CompletionGate {
+    if !ledger.unresolved_tool_effects.is_empty() {
+        return CompletionGate::Incomplete {
+            message: format!(
+                "tool_effect_unresolved: {} invocation obligation(s) require identity-bound reconciliation; local scans, final text, and ordinary waivers cannot discharge them.",
+                ledger.unresolved_tool_effects.len()
+            ),
+        };
+    }
     let open = crate::external_observation::still_open(observations, waivers, ledger.digest());
     if crate::external_observation::blocks_success(&open) {
         let digest = open
@@ -538,7 +970,7 @@ pub fn decide_with_observations(
     }
     let paths = mutation_paths_for_gate(ledger);
     let message = format!(
-        "completion gate: workspace mutation {digest}{paths} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
+        "{UNBOUND_MUTATION_GATE}{digest}{paths} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
     );
     // A host waiver is not model-grantable, and editor-authored reports are
     // rejected. Built-in bash may bind a digest only when an existence check
@@ -548,6 +980,17 @@ pub fn decide_with_observations(
     // only invites another tool call. An open external observation still
     // continues, because a workspace write can satisfy that subject.
     CompletionGate::Incomplete { message }
+}
+
+const UNBOUND_MUTATION_GATE: &str = "completion gate: workspace mutation ";
+
+/// The mutation digest named by an unbound-mutation gate message from
+/// [`decide_with_observations`]. A host that answers the gate with its own
+/// check reads the digest back through this function, not a matcher of its own.
+pub fn unbound_mutation_digest(message: &str) -> Option<&str> {
+    let start = message.find(UNBOUND_MUTATION_GATE)? + UNBOUND_MUTATION_GATE.len();
+    let digest = message[start..].split(' ').next()?;
+    (!digest.is_empty()).then_some(digest)
 }
 
 /// A few ledger paths, so a failed turn names what changed. The digest stays
@@ -756,7 +1199,7 @@ mod tests {
             &[],
             &[],
             true,
-            &[observation.clone()],
+            std::slice::from_ref(&observation),
         ) {
             CompletionGate::Continue { message } => {
                 assert!(message.starts_with("completion gate:"));
@@ -785,6 +1228,28 @@ mod tests {
             }
             other => panic!("expected incomplete, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unbound_mutation_digest_reads_back_the_gate_message() {
+        let ledger = ledger_with_write();
+        let CompletionGate::Incomplete { message } = decide_completion(&ledger, &[], &[], false)
+        else {
+            panic!("expected incomplete");
+        };
+        assert_eq!(unbound_mutation_digest(&message), Some(ledger.digest()));
+        assert_eq!(
+            unbound_mutation_digest(&format!("stream failed: {message}")),
+            Some(ledger.digest())
+        );
+        let mut partial = ledger_with_write();
+        partial.set_observation_incomplete(true);
+        let CompletionGate::Incomplete { message } = decide_completion(&partial, &[], &[], false)
+        else {
+            panic!("expected incomplete");
+        };
+        assert_eq!(unbound_mutation_digest(&message), None);
+        assert_eq!(unbound_mutation_digest("unrelated error"), None);
     }
 
     #[test]
@@ -820,7 +1285,7 @@ mod tests {
         ledger.set_observation_incomplete(true);
         let waiver = CompletionWaiverV1::new(ledger.digest(), "user accepted residual risk")
             .expect("waiver");
-        match decide_completion(&ledger, &[], &[waiver], false) {
+        match decide_completion(&ledger, &[], std::slice::from_ref(&waiver), false) {
             CompletionGate::Incomplete { message } => {
                 assert!(message.contains("observation is incomplete"));
                 assert!(!message.contains("tests passed"));
@@ -840,7 +1305,7 @@ mod tests {
         let ledger = ledger_with_write();
         let waiver = CompletionWaiverV1::new(ledger.digest(), "user accepted residual risk")
             .expect("waiver");
-        match decide_completion(&ledger, &[], &[waiver.clone()], false) {
+        match decide_completion(&ledger, &[], std::slice::from_ref(&waiver), false) {
             CompletionGate::Allow(CompletionTerminal::Waived { effect_digest }) => {
                 assert_eq!(effect_digest, ledger.digest());
             }
@@ -853,7 +1318,7 @@ mod tests {
             Some(&serde_json::json!({"file_path": "other.rs", "after": "different"})),
         );
         assert!(matches!(
-            decide_completion(&other, &[], &[waiver], false),
+            decide_completion(&other, &[], std::slice::from_ref(&waiver), false),
             CompletionGate::Incomplete { .. }
         ));
     }

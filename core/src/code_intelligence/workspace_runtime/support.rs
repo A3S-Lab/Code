@@ -217,6 +217,8 @@ pub(super) fn profile_language(profile: ProjectLanguageProfile) -> LanguageId {
     match profile {
         ProjectLanguageProfile::Rust => LanguageId::from("rust"),
         ProjectLanguageProfile::TypeScriptJavaScript => LanguageId::from("typescript-javascript"),
+        ProjectLanguageProfile::Python => LanguageId::from("python"),
+        ProjectLanguageProfile::CCpp => LanguageId::from("c-cpp"),
     }
 }
 

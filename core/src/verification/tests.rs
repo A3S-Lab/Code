@@ -328,7 +328,7 @@ fn goal_achievement_gate_requires_passed_required_checks() {
     );
     assert!(goal_achieved_after_evidence_gate(
         true,
-        &[required_passed.clone()]
+        std::slice::from_ref(&required_passed)
     ));
     assert!(!goal_achieved_after_evidence_gate(
         false,
@@ -389,7 +389,7 @@ fn goal_emit_requires_acceptance_report_when_machine_acceptance_exists() {
         ],
     );
     assert!(
-        !should_emit_goal_achieved_for_workspace(true, &[preset_only.clone()], Some(root.path())),
+        !should_emit_goal_achieved_for_workspace(true, std::slice::from_ref(&preset_only), Some(root.path())),
         "workspace preset alone must not authorize GoalAchieved when ACCEPTANCE machine criteria exist"
     );
 
@@ -666,7 +666,8 @@ fn shell_verification_report_attaches_for_goal_acceptance_commands() {
     assert!(report.subject.contains("acceptance:goal-demo-abcd"));
     assert_eq!(report.status, VerificationStatus::Passed);
     assert!(
-        VerificationSummary::from_reports(&[report.clone()]).supports_goal_achievement(),
+        VerificationSummary::from_reports(std::slice::from_ref(&report))
+            .supports_goal_achievement(),
         "passing ACCEPTANCE command evidence must authorize GoalAchieved gate"
     );
 
@@ -1449,4 +1450,146 @@ fn acceptance_helpers_cover_empty_quote_and_absolute_in_workspace_paths() {
         Some("loop-a")
     );
     assert_eq!(acceptance_loop_id_from_command_id("acceptance::1"), None);
+}
+
+// --- Host-declared suite verification contracts ---------------------------
+
+fn contract() -> VerificationContractV1 {
+    VerificationContractV1::new("node-suite", "node test.mjs", ["src/**"]).unwrap()
+}
+
+fn ledger_paths(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|path| path.to_string()).collect()
+}
+
+#[test]
+fn contract_admission_refuses_empty_id_command_or_covers() {
+    assert!(VerificationContractV1::new("", "node test.mjs", ["src/**"]).is_err());
+    assert!(VerificationContractV1::new("suite", "  ", ["src/**"]).is_err());
+    assert!(VerificationContractV1::new("suite", "node test.mjs", [" "]).is_err());
+    assert!(contract().validate().is_ok());
+}
+
+#[test]
+fn contract_coverage_matches_exact_suffix_and_directory_glob() {
+    assert!(contract_covers_path("src/**", "src/impl.mjs"));
+    assert!(contract_covers_path("src/**", "src/nested/impl.mjs"));
+    assert!(!contract_covers_path("src/**", "data/a.mjs"));
+    assert!(!contract_covers_path("src/**", "src"));
+    assert!(contract_covers_path("src/impl.mjs", "src/impl.mjs"));
+    // Host manifests are exact: no suffix leniency, no basename equality.
+    assert!(!contract_covers_path("impl.mjs", "src/impl.mjs"));
+    assert!(!contract_covers_path("impl.mjs", "test-fixtures/impl.mjs"));
+    assert!(!contract_covers_path("src/impl.mjs", "src/impl.mjs.bak"));
+    assert!(!contract_covers_path("", "src/impl.mjs"));
+    assert!(!contract_covers_path("src/**", ""));
+}
+
+#[test]
+fn contract_report_binds_only_a_full_passing_covered_run() {
+    let suite = contract();
+    let digest = "sha256:digest";
+
+    // The happy path: the declared command ran, exit 0, all paths covered.
+    let report = host_report_for_verification_contract(
+        &suite,
+        "node test.mjs",
+        0,
+        &ledger_paths(&["src/impl.mjs"]),
+        digest,
+    );
+    assert!(report.is_some());
+    let report = report.unwrap();
+    assert_eq!(report.effect_digest.as_deref(), Some(digest));
+    assert_eq!(report.subject, "shell:contract:node-suite");
+    assert!(report.checks.iter().all(|check| check.required));
+    assert!(matches!(
+        report.checks[0].status,
+        VerificationStatus::Passed
+    ));
+
+    // Extra arguments can select fewer tests and are not host-declared.
+    assert!(host_report_for_verification_contract(
+        &suite,
+        "node test.mjs --reporter=quiet",
+        0,
+        &ledger_paths(&["src/impl.mjs", "src/other.mjs"]),
+        digest
+    )
+    .is_none());
+}
+
+#[test]
+fn contract_report_rejects_masked_status_quoted_mentions_and_modified_arguments() {
+    let suite = contract();
+    let paths = ledger_paths(&["src/impl.mjs"]);
+    for command in [
+        "node test.mjs || true",
+        "node test.mjs; true",
+        "node test.mjs && printf pass",
+        "echo 'node test.mjs'",
+        "false && node test.mjs; true",
+        "node test.mjs --list-only",
+        "node test.mjs > /dev/null; exit 0",
+    ] {
+        assert!(
+            host_report_for_verification_contract(&suite, command, 0, &paths, "sha256:effect")
+                .is_none(),
+            "accepted {command}"
+        );
+    }
+    assert!(host_report_for_verification_contract(
+        &suite,
+        "  node test.mjs\n",
+        0,
+        &paths,
+        "sha256:effect"
+    )
+    .is_some());
+    for path in ["src/../data/a.mjs", "../src/impl.mjs", "/src/impl.mjs"] {
+        assert!(!contract_covers_path("src/**", path));
+    }
+    for pattern in ["../src/**", "/src/**", "src/../data/**", ""] {
+        assert!(VerificationContractV1::new("suite", "node test.mjs", [pattern]).is_err());
+    }
+}
+
+#[test]
+fn contract_report_refuses_failed_partial_and_foreign_runs() {
+    let suite = contract();
+    let digest = "sha256:digest";
+    let paths = ledger_paths(&["src/impl.mjs"]);
+
+    // A failing suite run is evidence of failure, never of pass.
+    assert!(
+        host_report_for_verification_contract(&suite, "node test.mjs", 1, &paths, digest).is_none()
+    );
+    // A different command is not the declared suite.
+    assert!(
+        host_report_for_verification_contract(&suite, "node other.mjs", 0, &paths, digest)
+            .is_none()
+    );
+    // A preset-prefix command (`node test.mjs x`) does not make
+    // `node not-test.mjs` a suite run.
+    assert!(
+        host_report_for_verification_contract(&suite, "node not-test.mjs", 0, &paths, digest)
+            .is_none()
+    );
+    // An uncovered mutation is not verified by this suite.
+    assert!(host_report_for_verification_contract(
+        &suite,
+        "node test.mjs",
+        0,
+        &ledger_paths(&["src/impl.mjs", "data/a.mjs"]),
+        digest
+    )
+    .is_none());
+    // Nothing mutated: nothing to verify.
+    assert!(
+        host_report_for_verification_contract(&suite, "node test.mjs", 0, &[], digest).is_none()
+    );
+    // No effect digest: the gate could not bind it anyway.
+    assert!(
+        host_report_for_verification_contract(&suite, "node test.mjs", 0, &paths, "  ").is_none()
+    );
 }

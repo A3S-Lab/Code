@@ -104,6 +104,7 @@ pub(crate) use session_notification::drop_unexpected_replay;
 #[allow(unused_imports)]
 use session_notification::*;
 use session_notification::{
+    handle_turn_outcome,
     PlanModeTransition, advance_reconnect_cursor, confirm_context_used,
     handle_session_notification, handle_session_notification_with_origin,
 };
@@ -613,6 +614,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "x.ai/task_backgrounded" => handle_task_backgrounded(notif, app),
         "x.ai/task_completed" => handle_task_completed(notif, app),
         "x.ai/models/update" => handle_models_update(notif, app),
+        "x.ai/turn/outcome" => handle_turn_outcome(notif, app),
         "x.ai/settings/update" => handle_settings_update(notif, app),
         "x.ai/sessions/changed" => handle_sessions_changed(notif, app),
         "x.ai/queue/changed" => handle_queue_changed(notif, app),

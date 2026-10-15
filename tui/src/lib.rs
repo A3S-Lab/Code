@@ -11,7 +11,7 @@ mod markdown_plain;
 mod model;
 mod screen;
 mod scrollback;
-mod session;
+pub mod session;
 mod slash;
 mod transcript;
 

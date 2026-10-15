@@ -13,6 +13,12 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+mod authority;
+use authority::{
+    ArchiveProgress, MemoryRetentionAttempt, MemoryRetentionProgress, MemoryRetentionRefusalV1,
+    PrimaryProgress,
+};
+
 const MEMORY_EXTRACTION_SYSTEM: &str = "\
 You extract durable, reusable memory for a coding agent.
 Return JSON only. Do not include markdown.
@@ -128,7 +134,7 @@ pub(super) struct TurnMemoryExtractionSchedule<'a> {
 }
 
 impl AgentLoop {
-    /// Register one extraction before a stream worker returns.
+    /// Register one extraction before the first terminal publication.
     ///
     /// Session close only waits for tickets that already exist. The model call
     /// itself stays off the host's turn-end path.
@@ -139,13 +145,19 @@ impl AgentLoop {
         cancel: &CancellationToken,
     ) -> Option<crate::memory::MemoryExtractionTicket> {
         if cancel.is_cancelled() {
+            authority::trace_not_admitted(MemoryRetentionRefusalV1::Cancelled);
             return None;
         }
-        let memory = self.config.memory.as_ref()?;
+        let Some(memory) = self.config.memory.as_ref() else {
+            authority::trace_not_admitted(MemoryRetentionRefusalV1::Disabled);
+            return None;
+        };
         if !memory.llm_extraction_enabled() {
+            authority::trace_not_admitted(MemoryRetentionRefusalV1::Disabled);
             return None;
         }
         if prompt.trim().is_empty() || response.trim().is_empty() {
+            authority::trace_not_admitted(MemoryRetentionRefusalV1::EmptyTurn);
             return None;
         }
         Some(memory.enqueue_llm_extraction())
@@ -155,6 +167,7 @@ impl AgentLoop {
     ///
     /// The fact log does not own an execution-loop snapshot. The prompt and
     /// the assistant text are the turn evidence.
+    #[cfg(test)]
     pub(crate) async fn fact_extract_turn_memory(
         &self,
         prompt: &str,
@@ -269,7 +282,7 @@ impl AgentLoop {
     async fn extract_turn_memories_with_llm(
         &self,
         extraction: TurnMemoryExtraction<'_>,
-        mut ticket: crate::memory::MemoryExtractionTicket,
+        ticket: crate::memory::MemoryExtractionTicket,
     ) {
         let TurnMemoryExtraction {
             snapshot,
@@ -279,19 +292,31 @@ impl AgentLoop {
             event_tx,
             cancel_token,
         } = extraction;
-        ticket.wait_for_turn().await;
+        // Match the existing governed facade's actual invocation selection.
+        // matches_parts intentionally does not compare the argument token.
+        let effective_cancel = self
+            .bound_invocation
+            .as_ref()
+            .filter(|invocation| invocation.matches_parts(Some(session_id), event_tx))
+            .map(|invocation| invocation.cancellation())
+            .unwrap_or(cancel_token);
+        let mut attempt = MemoryRetentionAttempt::new(ticket, effective_cancel, session_id);
+        attempt.wait_for_turn().await;
         let Some(memory) = self.config.memory.as_ref().cloned() else {
+            attempt.progress.refuse(MemoryRetentionRefusalV1::Disabled);
+            attempt.finish();
             return;
         };
         if !memory.llm_extraction_enabled() {
+            attempt.progress.refuse(MemoryRetentionRefusalV1::Disabled);
+            attempt.finish();
             return;
         }
-        // An explicit remember is the user's fact. Persist it before the
-        // extraction model call so a bounded close wait still leaves it.
-        if is_explicit_remember_request(prompt) {
-            remember_explicit_preference(&memory, prompt).await;
+        if effective_cancel.is_cancelled() {
+            attempt.progress.refuse(MemoryRetentionRefusalV1::Cancelled);
+            attempt.finish();
+            return;
         }
-
         let max_items = memory.llm_extraction_max_items().clamp(1, 10);
         let related_memories = related_memories_for_extraction(&memory, prompt, response).await;
         let transcript = turn_transcript(snapshot, memory.llm_extraction_max_input_chars());
@@ -336,36 +361,75 @@ impl AgentLoop {
             Ok(response) => response,
             Err(e) => {
                 tracing::warn!(error = %e, "LLM memory extraction failed");
-                String::new()
+                let refusal = if matches!(
+                    e.downcast_ref::<crate::error::CodeError>(),
+                    Some(crate::error::CodeError::BudgetExhausted { .. })
+                ) {
+                    MemoryRetentionRefusalV1::BudgetDenied
+                } else if effective_cancel.is_cancelled() {
+                    MemoryRetentionRefusalV1::Cancelled
+                } else {
+                    MemoryRetentionRefusalV1::ProviderFailed
+                };
+                attempt.progress.refuse(refusal);
+                attempt.finish();
+                return;
             }
         };
 
-        let extracted = if model_text.trim().is_empty() {
-            Vec::new()
-        } else {
-            match parse_extracted_memories(&model_text) {
-                Ok(items) => items,
-                Err(e) => {
-                    tracing::warn!(error = %e, "LLM memory extraction returned invalid JSON");
-                    Vec::new()
-                }
+        let parsed = match parse_extracted_memories(&model_text) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!(error = %e, "LLM memory extraction returned invalid JSON");
+                attempt
+                    .progress
+                    .refuse(MemoryRetentionRefusalV1::InvalidOutput);
+                attempt.finish();
+                return;
             }
         };
 
+        // Preserve the original filter -> typed take -> validator/seen order.
+        // Only these already selected items acquire write obligations. Register
+        // all of them before writer/observer/V2 awaits can abandon later work.
+        let mut rejected = parsed.rejected_items;
         let mut seen = HashSet::new();
-        let mut stored = 0usize;
-        for extracted in extracted.into_iter().take(max_items) {
+        let mut selected = Vec::new();
+        for extracted in parsed.items.into_iter().take(max_items) {
             let Some((item, supersedes, conflicts_with)) = extracted.into_memory_item(
                 &self.tool_context.workspace,
                 session_id,
                 &related_memories.allowed_supersedes,
             ) else {
+                rejected += 1;
                 continue;
             };
             let key = normalize_memory_content(&item.content);
             if key.is_empty() || !seen.insert(key) {
                 continue;
             }
+            selected.push((item, supersedes, conflicts_with));
+        }
+        if !attempt.validated(selected.len(), rejected) {
+            attempt.finish();
+            return;
+        }
+        for (index, (_, supersedes, _)) in selected.iter().enumerate() {
+            for id in supersedes {
+                if attempt
+                    .progress
+                    .require_archive(index, id.clone())
+                    .is_none()
+                {
+                    attempt
+                        .progress
+                        .refuse(MemoryRetentionRefusalV1::AdmissionUnproved);
+                    attempt.finish();
+                    return;
+                }
+            }
+        }
+        for (index, (item, supersedes, conflicts_with)) in selected.into_iter().enumerate() {
             let shadow_item = item.clone();
             let item = if let Some(existing) =
                 similar_existing_memory(&memory, &item, &supersedes, &conflicts_with).await
@@ -375,9 +439,17 @@ impl AgentLoop {
                 item
             };
 
-            match memory.remember_item(item).await {
+            let Some(mut progress) = PrimaryProgress::new(&mut attempt.progress, index) else {
+                attempt
+                    .progress
+                    .refuse(MemoryRetentionRefusalV1::AdmissionUnproved);
+                break;
+            };
+            let stored = memory
+                .remember_item_with_progress(item, Some(effective_cancel), Some(&mut progress))
+                .await;
+            match stored {
                 Ok(item) => {
-                    stored += 1;
                     if let (Some(binding), Some(evidence)) =
                         (memory.durable_memory(), durable_evidence.as_ref())
                     {
@@ -390,7 +462,15 @@ impl AgentLoop {
                             );
                         }
                     }
-                    mark_superseded_memories(&memory, &supersedes, &item.id).await;
+                    mark_superseded_memories(
+                        &memory,
+                        index,
+                        &supersedes,
+                        &item.id,
+                        effective_cancel,
+                        &mut attempt.progress,
+                    )
+                    .await;
                     if let Some(tx) = event_tx {
                         tx.send(AgentEvent::MemoryStored {
                             memory_id: item.id,
@@ -404,12 +484,18 @@ impl AgentLoop {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to store extracted memory");
+                    let reason = if !attempt.progress.primary()[index].entered
+                        && effective_cancel.is_cancelled()
+                    {
+                        MemoryRetentionRefusalV1::Cancelled
+                    } else {
+                        MemoryRetentionRefusalV1::StoreFailed
+                    };
+                    attempt.progress.refuse(reason);
                 }
             }
         }
-        if stored == 0 || is_explicit_remember_request(prompt) {
-            remember_explicit_preference(&memory, prompt).await;
-        }
+        attempt.finish();
     }
 
     async fn complete_memory_extraction(
@@ -624,8 +710,10 @@ Return exactly this JSON shape:
 {{\"items\":[{{\"memory_type\":\"semantic|procedural\",\"content\":\"standalone reusable memory\",\"importance\":0.0,\"confidence\":0.0,\"tags\":[\"tag\"],\"source\":\"project_fact|workflow|failure|preference|decision\",\"scope\":\"workspace|user\",\"reason\":\"why this will matter in a future session\",\"supersedes\":[\"related-memory-id\"],\"conflicts_with\":[\"related-memory-id\"],\"evolution\":null|{{\"kind\":\"preference|skill|okf\",\"pattern_key\":\"stable.semantic.pattern\",\"title\":\"short reusable title\",\"summary\":\"what should be learned\",\"instructions\":[\"standalone instruction or fact\"]}}}}]}}
 
 Acceptance rules:
+- If the user explicitly asks to remember, note, or retain something for later — in ANY language (for example \"remember this\", \"请记住\", \"覚えておいて\", \"기억해\") — extract that item with importance at least 0.90, confidence at least 0.95, and source \"preference\". An explicit retention request is durable user knowledge, never current-turn narration, and always clears the thresholds.
 - Return {{\"items\":[]}} unless the memory is likely to change a future answer or action.
 - Use semantic only for durable facts, preferences, or decisions; use procedural only for reusable workflows or failure lessons.
+- Write content and reason in the user's language when clear; do not translate durable facts into another language. Preserve literal names, identifiers, code, and commands exactly.
 - importance must be at least {MIN_MEMORY_IMPORTANCE:.2} and confidence at least {MIN_MEMORY_CONFIDENCE:.2}.
 - scope is workspace for repository-specific knowledge and user for stable user preferences.
 - failure memories must state a reusable cause, diagnostic, or prevention rule, never a raw error or stack trace.
@@ -816,7 +904,12 @@ fn turn_transcript(snapshot: &MemoryExtractionSnapshot, max_chars: usize) -> Str
     lines.join("\n\n")
 }
 
-fn parse_extracted_memories(text: &str) -> anyhow::Result<Vec<ExtractedMemory>> {
+struct ParsedExtractedMemories {
+    items: Vec<ExtractedMemory>,
+    rejected_items: usize,
+}
+
+fn parse_extracted_memories(text: &str) -> anyhow::Result<ParsedExtractedMemories> {
     let json = extract_json(text).ok_or_else(|| anyhow::anyhow!("missing JSON object or array"))?;
     let value: serde_json::Value = serde_json::from_str(&json)?;
     let values = if let Some(items) = value.get("items") {
@@ -831,18 +924,24 @@ fn parse_extracted_memories(text: &str) -> anyhow::Result<Vec<ExtractedMemory>> 
             .ok_or_else(|| anyhow::anyhow!("expected JSON object with items or an array"))?
     };
 
-    Ok(values
+    let mut rejected_items = 0;
+    let items = values
         .into_iter()
         .filter_map(
             |value| match serde_json::from_value::<ExtractedMemory>(value) {
                 Ok(item) => Some(item),
                 Err(e) => {
                     tracing::warn!(error = %e, "Skipping malformed extracted memory item");
+                    rejected_items += 1;
                     None
                 }
             },
         )
-        .collect())
+        .collect();
+    Ok(ParsedExtractedMemories {
+        items,
+        rejected_items,
+    })
 }
 
 fn extract_json(text: &str) -> Option<String> {
@@ -941,12 +1040,41 @@ fn normalize_memory_content(content: &str) -> String {
 
 async fn mark_superseded_memories(
     memory: &Arc<AgentMemory>,
+    primary_index: usize,
     supersedes: &[String],
     replacement_id: &str,
+    cancel: &CancellationToken,
+    progress: &mut MemoryRetentionProgress,
 ) {
     for id in supersedes {
-        if let Err(e) = memory.mark_superseded(id, replacement_id).await {
-            tracing::warn!(memory_id = %id, error = %e, "Failed to archive superseded memory");
+        let Some(index) = progress.archives().iter().position(|archive| {
+            archive.primary_index == primary_index && archive.addressed_id == *id
+        }) else {
+            progress.refuse(MemoryRetentionRefusalV1::AdmissionUnproved);
+            return;
+        };
+        let Some(mut callback) = ArchiveProgress::new(progress, index) else {
+            progress.refuse(MemoryRetentionRefusalV1::AdmissionUnproved);
+            return;
+        };
+        match memory
+            .mark_superseded_with_progress(id, replacement_id, Some(cancel), Some(&mut callback))
+            .await
+        {
+            Ok(applied) => {
+                if !progress.finish_archive(index, applied) || !applied {
+                    progress.refuse(MemoryRetentionRefusalV1::RelationUpdateFailed);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(memory_id = %id, error = %e, "Failed to archive superseded memory");
+                let reason = if !progress.archives()[index].entered && cancel.is_cancelled() {
+                    MemoryRetentionRefusalV1::Cancelled
+                } else {
+                    MemoryRetentionRefusalV1::RelationUpdateFailed
+                };
+                progress.refuse(reason);
+            }
         }
     }
 }
@@ -1107,36 +1235,6 @@ fn sensitive_memory_patterns() -> &'static [Regex] {
         .as_slice()
 }
 
-fn is_explicit_remember_request(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("remember") && (lower.contains("preference") || lower.contains("codename"))
-}
-
-async fn remember_explicit_preference(memory: &AgentMemory, prompt: &str) {
-    let content = compact(prompt.trim(), MAX_MEMORY_CONTENT_CHARS);
-    if content.chars().count() < 20 || !is_explicit_remember_request(&content) {
-        return;
-    }
-    if contains_sensitive_memory_material(&content) {
-        tracing::warn!(
-            "Skipping explicit preference because it appears to contain sensitive material"
-        );
-        return;
-    }
-    if let Ok(hits) = memory.store.search(&content, 5).await {
-        if hits.iter().any(|hit| hit.content.contains(&content)) {
-            return;
-        }
-    }
-    let item = MemoryItem::new(content)
-        .with_type(MemoryType::Semantic)
-        .with_importance(0.9)
-        .with_tag("explicit-preference");
-    if let Err(error) = memory.remember_item(item).await {
-        tracing::warn!(%error, "Failed to store explicit preference");
-    }
-}
-
 fn should_attempt_llm_memory_extraction(
     _snapshot: &MemoryExtractionSnapshot,
     prompt: &str,
@@ -1146,5 +1244,4 @@ fn should_attempt_llm_memory_extraction(
 }
 
 #[cfg(test)]
-#[path = "memory_extraction_runtime/tests.rs"]
 mod tests;

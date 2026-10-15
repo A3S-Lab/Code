@@ -4,7 +4,7 @@ use a3s_code_acp::check_admitted_tool;
 fn seam_admission_consumer_denies_tool() {
     let mut executed = false;
     let decision = check_admitted_tool(
-        "always-approve",
+        "yolo",
         "bash(*)",
         "bash",
         &serde_json::json!({"command": "echo hi"}),
@@ -14,5 +14,5 @@ fn seam_admission_consumer_denies_tool() {
     );
     assert_eq!(decision, Err("deny"));
     assert!(!executed);
-    println!("decision=deny executed=false tool=bash posture=always-approve");
+    println!("decision=deny executed=false tool=bash posture=yolo");
 }

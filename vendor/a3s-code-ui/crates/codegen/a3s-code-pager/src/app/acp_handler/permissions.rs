@@ -42,7 +42,7 @@ pub(super) fn handle_permission_request(
 
     if !app
         .notification_service
-        .should_suppress_permission_notification()
+        .should_suppress_permission_notification(owning_agent_id)
     {
         app.notification_service.notify(NotificationEvent {
             kind: NotificationEventKind::ApprovalRequired,
@@ -50,7 +50,8 @@ pub(super) fn handle_permission_request(
             body: NotificationEventKind::ApprovalRequired.as_ref().into(),
             session_id: Some(perm.request.session_id.0.to_string()),
         });
-        app.notification_service.mark_permission_notified();
+        app.notification_service
+            .mark_permission_notified(owning_agent_id);
     }
 
     let needs_redraw = enqueue_permission(perm, agent);
@@ -115,9 +116,20 @@ fn enqueue_permission(
 
     let subagent_label = resolve_subagent_label(agent, &perm.request.session_id);
 
+    let question = perm.request.meta.as_ref().and_then(|meta| {
+        meta.get(a3s_code_workspace::permission::QUESTION_META_KEY)
+            .and_then(|value| {
+                serde_json::from_value::<a3s_code_workspace::permission::QuestionPermissionMeta>(
+                    value.clone(),
+                )
+                .ok()
+            })
+    });
+
     let (title, description, bash_command_raw) = build_permission_display(
         &perm.request,
         bash_highlights.as_ref(),
+        question.as_ref(),
         #[cfg(feature = "local-workspace")]
         matches!(
             agent.workspace_mode,
@@ -158,6 +170,7 @@ fn enqueue_permission(
         bash_deny_selection_count,
         bash_command_raw,
         mcp_scope,
+        question,
         title,
         description,
         args_expanded: false,
@@ -191,8 +204,26 @@ fn resolve_subagent_label(agent: &AgentView, session_id: &acp::SessionId) -> Opt
 pub(super) fn build_permission_display(
     req: &acp::RequestPermissionRequest,
     bash_highlights: Option<&BashCommandHighlights>,
+    question: Option<&a3s_code_workspace::permission::QuestionPermissionMeta>,
     session_local_workspace: bool,
 ) -> (String, Vec<String>, Option<String>) {
+    if let Some(_question) = question {
+        // An agent question riding the permission channel: no "Allow …?"
+        // framing and no local-workspace qualification. The question's first
+        // non-empty line is the title; the full text renders as the
+        // collapsible description body so a long question is never truncated
+        // away (leading blank lines degrade the title, not the content).
+        let text = req.tool_call.fields.title.as_deref().unwrap_or_default();
+        let title = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .to_string();
+        let description: Vec<String> = text.lines().map(str::to_owned).collect();
+        return (title, description, None);
+    }
+
     let is_bash = bash_highlights.is_some();
 
     let bash_input = req.tool_call.fields.raw_input.as_ref().and_then(|v| {

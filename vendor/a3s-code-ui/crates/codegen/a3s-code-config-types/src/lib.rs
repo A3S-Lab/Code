@@ -805,7 +805,7 @@ pub struct RemoteSettings {
     /// Remote next-prompt suggestion settings, parsed by the shell.
     #[serde(default)]
     pub prompt_suggestions: Option<serde_json::Value>,
-    /// Soft default permission mode (`"ask"`, `"auto"`, `"always-approve"`, or `"default"`).
+    /// Soft default permission mode (`"ask"`, `"auto"`, `"yolo"`, or `"default"`).
     /// It is used only when no effective TOML permission key is set.
     #[serde(default)]
     pub permission_mode: Option<String>,

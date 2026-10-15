@@ -287,7 +287,7 @@ impl PromptStyle {
     }
 }
 
-/// A flag displayed in the prompt info line (e.g., "plan", "always-approve").
+/// A flag displayed in the prompt info line (e.g., "plan", "yolo").
 pub struct PromptFlag<'a> {
     /// Display text for the flag.
     pub text: &'a str,
@@ -331,7 +331,7 @@ pub fn mode_flags<'a>(
 pub struct PromptInfo<'a> {
     /// Primary label to display on the info line (left side).
     pub model_name: &'a str,
-    /// Flags to display on the left side, joined by " · " (e.g., "plan", "always-approve").
+    /// Flags to display on the left side, joined by " · " (e.g., "plan", "yolo").
     pub flags: &'a [PromptFlag<'a>],
     /// Whether multiline mode is active (shown right-aligned).
     pub multiline: bool,

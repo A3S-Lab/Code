@@ -36,6 +36,9 @@ pub(super) enum CompletionFlow {
 }
 
 impl AgentLoop {
+    pub(crate) fn requires_assistant_final_response(&self) -> bool {
+        self.config.require_assistant_final_response
+    }
     pub(crate) fn fact_completion_gate(
         &self,
         ledger: &crate::harness_loop::MutationLedger,
@@ -347,6 +350,8 @@ impl AgentLoop {
                 text: final_text.to_string(),
                 usage: state.total_usage.clone(),
                 verification_summary: Box::new(verification_summary),
+                completion_terminal: Default::default(),
+                forced_stop: None,
                 meta: response.meta.clone(),
             })
             .await

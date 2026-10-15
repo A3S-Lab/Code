@@ -1,5 +1,10 @@
 # CLI ↔ a3s-code-core 9.0.0 breakage catalog
 
+This note is historical. The paths `crates/cli` and `crates/code` are gone.
+The product TUI is the pager launched by `apps/cli`. The hybrid scaffold is
+`apps/code/tui`, binary `a3s-code-tui-hybrid`. Do not treat the counts below
+as the current build.
+
 Scratch pin of `crates/cli` to `a3s-code-core =9.0.0` (worktree `/tmp/cli-v9`,
 log `/tmp/cli-v9-check.log`) while the in-tree CLI still lists
 `a3s-code-core =8.7.0`.

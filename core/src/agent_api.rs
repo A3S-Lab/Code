@@ -48,6 +48,7 @@ mod conversation_runtime;
 pub(crate) use agent_sessions::create_session;
 #[cfg(test)]
 pub(crate) use conversation_runtime::exact_run_replay;
+pub(crate) use conversation_runtime::GoalTickOrigin;
 pub(crate) use conversation_runtime::{
     ExactRecoveryError, ExactRecoveryPreparation, PreparedExactRecovery,
 };
@@ -62,6 +63,7 @@ pub(crate) use tests::test_config;
 mod direct_tool_facade;
 mod direct_tools;
 mod execution_coordinator;
+mod goal_facade;
 mod governance_facade;
 mod hook_control;
 mod project_instructions;
@@ -70,6 +72,8 @@ mod projected_flow;
 mod projected_host_capability;
 mod projected_ui;
 mod run_admission;
+pub(crate) use run_admission::OriginalModelCallPort;
+pub(crate) use run_admission::RunCancelPin;
 mod run_facade;
 mod run_hook_executor;
 mod run_lifecycle;
@@ -173,6 +177,31 @@ pub enum AgentRunSpawn {
     },
 }
 
+/// Outcome of [`AgentSession::tick_goal`]: a non-advancing decision, or the
+/// one original Run admitted for the tick's operation id.
+#[allow(clippy::large_enum_variant)]
+pub enum GoalTickAdmission {
+    Decided(crate::goal_control::GoalTickDecisionV1),
+    Admitted(AgentRunSpawn),
+}
+
+/// Outcome of [`AgentSession::stream_goal_tick`]: the same admission as
+/// [`GoalTickAdmission`], with a started slice's events left to the host.
+#[allow(clippy::large_enum_variant)]
+pub enum GoalTickStream {
+    Decided(crate::goal_control::GoalTickDecisionV1),
+    Started(AgentRunStream),
+    Replayed(crate::run::RunSnapshot),
+}
+
+/// One admitted stream, retaining its exact Run even after execution settles.
+/// Slash commands that do not admit a model Run return `run: None`.
+pub struct AgentRunStream {
+    pub run: Option<crate::run::RunHandle>,
+    pub events: mpsc::Receiver<AgentEvent>,
+    pub worker: JoinHandle<()>,
+}
+
 impl AgentRunSpawn {
     pub const fn replayed(&self) -> bool {
         matches!(self, Self::Replayed { .. })
@@ -205,6 +234,9 @@ pub struct ReadFileOptions {
 /// Optional per-session overrides.
 #[derive(Clone, Default)]
 pub struct SessionOptions {
+    /// Immutable host guidance, admitted in the original session before execution.
+    pub work_policy: Option<crate::WorkPolicyV1>,
+    pub(crate) durable_source: Option<crate::store::SessionFactSourceV1>,
     /// Override the default model. Format: `"provider/model"` (e.g., `"openai/gpt-4o"`).
     pub model: Option<String>,
     /// Priority used for top-level operations created by this session.
@@ -261,6 +293,11 @@ pub struct SessionOptions {
     /// Extra directories to scan for skill files (*.md).
     /// Merged with any global `skill_dirs` from [`CodeConfig`].
     pub skill_dirs: Vec<PathBuf>,
+    /// Directories the session watches for later skill installs without
+    /// loading them eagerly (they may not exist yet).
+    pub watch_skill_dirs: Vec<PathBuf>,
+    /// Canonical skill files owned by the host capability projection.
+    pub projected_skill_files: Vec<PathBuf>,
     /// Extra environment variables merged into Bash / sandbox command execution.
     ///
     /// Hosts use this to inject absolute tool paths (for example `A3S_BOX_CLI`
@@ -417,6 +454,19 @@ pub struct SessionOptions {
     /// `A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX=1`) so default `bash` does not
     /// require a `require_escalated` trial round.
     pub allow_process_host_sandbox: bool,
+    /// Network posture of the default local sandbox.
+    ///
+    /// Default [`SandboxNetworkMode::Deny`] (fail-closed baseline: no
+    /// network). `Mediated` arms the Gate 4 forced-proxy stack — an
+    /// explicit host opt-in, because it makes in-sandbox egress
+    /// AVAILABLE through mediation where it was denied before.
+    pub sandbox_network: crate::sandbox::SandboxNetworkMode,
+    /// Origins (`host` or `host:port`) the armed mediator may let
+    /// through. Mediation without an allowlist is refused by design —
+    /// the sandbox crate rejects the flag with nothing to mediate — so
+    /// `Mediated` requires at least one entry here, and construction
+    /// then fails closed rather than degrading.
+    pub sandbox_network_allow: Vec<String>,
     /// Optional host-provided workspace backend.
     ///
     /// When set, built-in tools such as `read`, `write`, `ls`, and `bash`
@@ -430,6 +480,11 @@ pub struct SessionOptions {
     /// workspace catalog, vectors stay in memory, and no vector state is
     /// serialized with the session snapshot.
     pub workspace_retrieval: Option<crate::workspace::WorkspaceRetrievalOptions>,
+    /// Enable session-bound Code Intelligence: the code_symbols,
+    /// code_navigation, and code_diagnostics tools get a real workspace
+    /// runtime (shared manifest backend with retrieval). Host-supplied
+    /// workspace services already carrying a provider are left untouched.
+    pub code_intelligence: bool,
     /// Enable auto-compaction when context usage exceeds threshold.
     pub auto_compact: bool,
     /// Context usage percentage threshold for auto-compaction (0.0 - 1.0).
@@ -504,10 +559,22 @@ pub struct SessionOptions {
     pub effect_isolation: bool,
     /// Host-confirmed completion waivers bound to an effect digest.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Host-declared suite verification contracts. A contract tells the
+    /// completion gate that one shell command IS the project's test suite and
+    /// names the paths a passing run verifies; the model cannot add one.
+    pub verification_contracts: Vec<crate::verification::VerificationContractV1>,
+    /// Host delivery policy. Some(true) obtains an assistant final response
+    /// after tool verification instead of synthesizing "completed". None
+    /// retains the agent-level policy; this never bypasses completion gates.
+    pub require_assistant_final_response: Option<bool>,
     /// Admitted plan digest for an implementation run. Empty means ordinary.
     pub plan_run: crate::harness_loop::PlanRunAdmission,
     /// Path-scoped instruction fragments. The AGENTS.md prefix stays stable.
     pub path_rules: Vec<crate::path_instructions::PathRule>,
+    /// Explicit per-session injection byte budget. `None` keeps the product
+    /// default; zero or a value above the hard ceiling refuses session
+    /// construction (fail closed, never clamped).
+    pub path_injection_budget: Option<usize>,
     /// Opt-in read-only verifier. Default is off so local-code spends no extra model call.
     pub verifier_enabled: bool,
     /// Host-only completion attestor (#160). Trait hook; omitted from serializable SDKs.

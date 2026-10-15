@@ -4,6 +4,20 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [9.1.3] - Unreleased
+
+- Expose original admitted Run handles, bounded evaluation evidence, policy
+  setters and seven value-typed session options. MCP sampling callbacks remain
+  host-owned and require a running asyncio loop; call blocking SDK methods
+  through `asyncio.to_thread` while that loop serves callbacks.
+
+- Align the native package, bootstrap and bundled Core candidate at 9.1.3.
+- Expose global MCP definitions, sampling-factory status and an explicitly
+  opted-in asyncio sampling callback with bounded waits and failure refusal.
+- Build local SDKs against the same first-party dependency implementations as
+  the Code workspace. Public-dependency and platform qualification remain
+  release gates; this candidate has not been published.
+
 ## [9.1.2] - 2026-10-03
 
 - Bundled Core 9.1.2. A permission posture is admitted on the next fact run. An open run keeps its frozen tool catalog, step limit, and completion gate. Deny wins over always-approve. `Session.set_permission_posture` records that posture.

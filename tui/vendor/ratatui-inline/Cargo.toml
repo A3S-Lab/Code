@@ -8,6 +8,9 @@ publish = false
 authors = ["A3S Lab"]
 
 [features]
+# Exposes the completed-frame buffer to the crate's own tests and hosts
+# that drive flush/swap_buffers directly.
+test-support = []
 default = []
 scrolling-regions = []
 

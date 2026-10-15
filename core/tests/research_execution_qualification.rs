@@ -860,5 +860,8 @@ fn capability_binding_round_trip_retains_the_exact_use_generation() {
     let use_generation = reopened.use_generation().unwrap();
     assert_eq!(use_generation.generation(), 7);
     assert_eq!(use_generation.revision(), digest('a'));
-    assert_eq!(use_generation.registry_revision(), digest('b'));
+    assert_eq!(
+        use_generation.registry_revision(),
+        Some(digest('b').as_str())
+    );
 }

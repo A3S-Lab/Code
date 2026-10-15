@@ -16,6 +16,7 @@
 
 use crate::hitl::ConfirmationProvider;
 use crate::hooks::{HookEvent, HookExecutor, SessionEndEvent};
+#[cfg(test)]
 use crate::run::InMemoryRunStore;
 use crate::subagent_task_tracker::{InMemorySubagentTaskTracker, SubagentStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,17 +39,11 @@ pub(crate) struct SessionCloseHandle {
     /// Session-level parent token. All in-flight run/subagent tokens are
     /// `child_token()` of this.
     pub(crate) session_cancel: CancellationToken,
-    /// Host clock used for deterministic receipt/checkpoint timestamps.
-    pub(crate) host_env: Arc<crate::host_env::HostEnv>,
-    /// Per-run cancel-token slot (currently active run's token, if any).
-    /// Populated by the run lifecycle.
-    pub(crate) cancel_token: Arc<Mutex<Option<CancellationToken>>>,
-    /// Current run id (matches `cancel_token` when set).
-    pub(crate) current_run_id: Arc<Mutex<Option<String>>>,
-    /// Active run-control inbox. Closing the session must close this gate at
-    /// the same admission boundary as the session cancellation token so a
-    /// caller cannot enqueue controls into a run that is already terminating.
+    /// Active original run-control inbox. Session close requests the captured
+    /// original; only its worker seals and accounts for accepted controls.
+    #[cfg(test)]
     pub(crate) active_run_control: Arc<Mutex<Option<Arc<crate::run_control::RunControlInbox>>>>,
+    #[cfg(test)]
     pub(crate) run_store: Arc<InMemoryRunStore>,
     pub(crate) subagent_tasks: Arc<InMemorySubagentTaskTracker>,
     pub(crate) confirmation_manager: Option<Arc<dyn ConfirmationProvider>>,
@@ -97,7 +92,40 @@ pub(crate) struct SessionCloseHandle {
     pub(crate) owned_workspace_backend: Option<Arc<crate::workspace::ManifestWorkspaceBackend>>,
 }
 
+/// Lifetime-only original identity hold. It deliberately exposes no close,
+/// cancellation, dereference or accessor operation to the guardian.
+pub(super) struct SessionIdentityPin {
+    _original: Arc<SessionCloseHandle>,
+}
+
+/// Worker-only read of the exact original admission boundary. Kept outside the
+/// guardian/context; deliberately not Clone, Deref, or a close/cancel handle.
+pub(super) struct SessionAdmissionBoundary {
+    original: Arc<SessionCloseHandle>,
+}
+
+impl SessionAdmissionBoundary {
+    pub(super) fn closed_under_original_boundary(&self) -> bool {
+        match self.original.immediate_extension_mutation.lock() {
+            Ok(_original_guard) => self.original.closed.load(Ordering::Acquire),
+            Err(_) => true,
+        }
+    }
+}
+
 impl SessionCloseHandle {
+    pub(super) fn execution_admission_boundary(self: &Arc<Self>) -> SessionAdmissionBoundary {
+        SessionAdmissionBoundary {
+            original: Arc::clone(self),
+        }
+    }
+
+    pub(super) fn identity_pin(self: &Arc<Self>) -> SessionIdentityPin {
+        SessionIdentityPin {
+            _original: Arc::clone(self),
+        }
+    }
+
     /// Return whether `close()` has already been called.
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
@@ -112,10 +140,10 @@ impl SessionCloseHandle {
     /// 2. Stop the lane queue from accepting new commands;
     /// 3. Cancel and join owned memory maintenance;
     /// 4. Drain completed-turn memory extractions already accepted for storage;
-    /// 5. Fire the session-level cancellation token so every derived run
-    ///    and subagent task token fires;
-    /// 6. Mark the active run as `Cancelled` in the run store and notify the
-    ///    configured hook executor;
+    /// 5. Request cancellation of the captured original, then fire the parent
+    ///    session token; its worker alone publishes terminal state and hooks
+    ///    and retires its slots;
+    /// 6. Close owned retrieval resources;
     /// 7. Mark every still-running delegated subagent task as `Cancelled`
     ///    in the tracker;
     /// 8. Cancel pending HITL tool confirmations so blocked tool callers
@@ -125,27 +153,51 @@ impl SessionCloseHandle {
     ///     after a bounded cooperative grace period;
     /// 11. Disconnect MCP servers owned by this session only.
     pub(crate) async fn close(&self) {
-        {
-            let _mutation = self
-                .immediate_extension_mutation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.closed.swap(true, Ordering::AcqRel) {
-                return;
-            }
+        if let Err(error) = self.close_original(None).await {
+            tracing::warn!(session_id = %self.session_id, error = %error, "Session close refused");
         }
+    }
+
+    pub(super) async fn close_for_replacement(
+        &self,
+        fence: &super::run_admission::RunAdmissionLease,
+    ) -> crate::error::Result<()> {
+        self.close_original(Some(fence)).await
+    }
+
+    async fn close_original(
+        &self,
+        fence: Option<&super::run_admission::RunAdmissionLease>,
+    ) -> crate::error::Result<()> {
+        let original = {
+            let _mutation = self.immediate_extension_mutation.lock().map_err(|_| {
+                crate::error::CodeError::Session("Poisoned session close boundary".into())
+            })?;
+            if fence.is_some_and(|actual| !actual.is_nonexecuting_fence_for(&self.run_admission)) {
+                return Err(crate::error::CodeError::SessionBusy {
+                    session_id: self.session_id.clone(),
+                });
+            }
+            if self.closed.load(Ordering::Acquire) {
+                return if fence.is_some() {
+                    // Another close's entry bit is not its completion proof.
+                    Err(crate::error::CodeError::SessionClosed {
+                        session_id: self.session_id.clone(),
+                    })
+                } else {
+                    Ok(())
+                };
+            }
+            self.closed.store(true, Ordering::Release);
+            // Capture once, before ANY queue, memory or other await. None is
+            // not a release witness and must never select a later original.
+            self.run_admission.current_original()
+        };
 
         // 1. Establish the queue admission boundary before the first
         // cancellation await so close cannot race with a new queued command.
         if let Some(queue) = &self.command_queue {
             queue.shutdown().await;
-        }
-
-        // Close the run-control gate before firing parent cancellation. This
-        // makes post-close steer/interrupt requests fail deterministically and
-        // settles any accepted-but-not-yet-applied controls exactly once.
-        if let Some(control) = self.active_run_control.lock().await.take() {
-            control.close(self.host_env.now_ms()).await;
         }
 
         // 2. Stop periodic memory mutation before draining the final accepted
@@ -177,7 +229,11 @@ impl SessionCloseHandle {
             }
         }
 
-        // 4. Fire the session-level token so children cascade.
+        // 4. Preserve accepted memory drain before requesting the captured
+        // original and firing the parent token. No ID-only publication tail.
+        if let Some(original) = &original {
+            let _ = original.request_session_close().await;
+        }
         self.session_cancel.cancel();
 
         // The runtime derives its token from `session_cancel`, then performs a
@@ -187,24 +243,6 @@ impl SessionCloseHandle {
         }
         if let Some(backend) = &self.owned_workspace_backend {
             backend.shutdown();
-        }
-
-        // 5. Mark the active run cancelled and notify the hook executor. The
-        //    per-run token has already fired via step 1.
-        let had_active_token = self.cancel_token.lock().await.is_some();
-        if had_active_token {
-            if let Some(run_id) = self.current_run_id.lock().await.clone() {
-                let _ = self
-                    .run_store
-                    .settle_terminal(&run_id, crate::run::RunTerminalTransition::Cancelled)
-                    .await;
-                if let Some(hook) = &self.hook_executor {
-                    hook.record_run_cancelled(&run_id, &self.session_id, Some("cancelled by host"))
-                        .await;
-                }
-            }
-            *self.current_run_id.lock().await = None;
-            *self.cancel_token.lock().await = None;
         }
 
         // 6. Mark every still-running subagent task cancelled.
@@ -237,22 +275,41 @@ impl SessionCloseHandle {
             }
         }
 
-        // 9. Give the active operation a bounded cooperative grace period.
-        // If a streaming execution or a blocked event forwarder ignores
-        // cancellation, abort those concrete tasks while leaving the lifecycle
-        // supervisor alive to clear run state and release admission.
-        if !self.run_admission.wait_until_idle(RUN_CANCEL_GRACE).await {
-            if self.run_admission.abort_stream_workers() {
-                if !self.run_admission.wait_until_idle(RUN_ABORT_GRACE).await {
-                    tracing::warn!(
-                        session_id = %self.session_id,
-                        "Session streaming tasks did not settle after forced abortion"
-                    );
+        // 9. Observe only the original captured at entry. A retained actual
+        // nonexecuting replacement fence skips its own admission wait. Idle,
+        // abort requests and timeout cannot qualify original release.
+        if fence.is_none() {
+            if let Some(original) = &original {
+                if self
+                    .run_admission
+                    .wait_for_original_release(original, RUN_CANCEL_GRACE)
+                    .await
+                    .is_none()
+                {
+                    if self.run_admission.abort_original_stream_workers(original) {
+                        if self
+                            .run_admission
+                            .wait_for_original_release(original, RUN_ABORT_GRACE)
+                            .await
+                            .is_none()
+                        {
+                            tracing::warn!(
+                                session_id = %self.session_id,
+                                "Original streaming owner remains unproved after abort request"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            session_id = %self.session_id,
+                            "Original owner release remains unproved during close"
+                        );
+                    }
                 }
-            } else {
+            } else if !self.run_admission.wait_until_idle(RUN_CANCEL_GRACE).await {
+                // Diagnostic only. Do not abort or rediscover a later owner.
                 tracing::warn!(
                     session_id = %self.session_id,
-                    "Session blocking run did not settle before close timeout"
+                    "Session admission remains held without a captured original"
                 );
             }
         }
@@ -297,9 +354,9 @@ impl SessionCloseHandle {
             .unwrap_or_else(|poison| poison.into_inner())
             .remove_all(&self.skill_registry);
 
-        // No conversation Run remains after the admission drain above. Retire
-        // the current projection's prepared effects, then close every retired
-        // or rolled-back batch through the bounded catalog cleanup policy.
+        // The bounded observation above may leave an unproved original.
+        // Retire the projection's prepared effects through the existing catalog
+        // policy; this cleanup is not an original execution-release witness.
         self.capability_catalog.retire_current_effects();
         let capability_cleanup = self.capability_catalog.drain_cleanup().await;
         if !capability_cleanup.is_clean() {
@@ -323,6 +380,7 @@ impl SessionCloseHandle {
         }
 
         tracing::info!(session_id = %self.session_id, "AgentSession closed");
+        Ok(())
     }
 
     pub(crate) fn mutate_immediate<T>(

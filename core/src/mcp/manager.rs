@@ -31,6 +31,16 @@ pub struct McpServerStatus {
 }
 
 /// MCP Manager for managing multiple MCP servers
+/// Builds the sampling handler a connected server's client will be
+/// armed with (server name in). The host that sets the factory owns the
+/// composition — the product wiring is `Bounded(ApprovalGated(Llm))`
+/// with the consent bridge inside the bound (SEC-SAMPLE1); a host that
+/// sets no factory keeps the fail-closed `-32601` refusal for
+/// server-initiated sampling.
+pub type SamplingHandlerFactory = std::sync::Arc<
+    dyn Fn(&str) -> std::sync::Arc<dyn crate::mcp::transport::SamplingHandler> + Send + Sync,
+>;
+
 pub struct McpManager {
     /// Connected clients
     clients: RwLock<HashMap<String, Arc<McpClient>>>,
@@ -44,6 +54,9 @@ pub struct McpManager {
     /// [`McpManager::disconnect_idle`] to release FDs and background
     /// workers from servers that are no longer in active use.
     last_used_at_ms: RwLock<HashMap<String, u64>>,
+    /// Host-provided per-server sampling handler factory; see
+    /// [`SamplingHandlerFactory`].
+    sampling_factory: RwLock<Option<SamplingHandlerFactory>>,
 }
 
 impl McpManager {
@@ -54,7 +67,23 @@ impl McpManager {
             configs: RwLock::new(HashMap::new()),
             connect_errors: RwLock::new(HashMap::new()),
             last_used_at_ms: RwLock::new(HashMap::new()),
+            sampling_factory: RwLock::new(None),
         }
+    }
+
+    /// Arm server-initiated sampling for every client this manager
+    /// connects: the factory is consulted once per server at client
+    /// construction, BEFORE the initialize handshake (installing is the
+    /// capability declaration). Not setting a factory keeps sampling
+    /// refused (`-32601`), fail closed.
+    pub async fn set_sampling_handler_factory(&self, factory: SamplingHandlerFactory) {
+        *self.sampling_factory.write().await = Some(factory);
+    }
+
+    /// Whether a sampling factory is armed (host introspection; the
+    /// unarmed default refuses sampling).
+    pub async fn has_sampling_handler_factory(&self) -> bool {
+        self.sampling_factory.read().await.is_some()
     }
 
     /// Register a server configuration
@@ -115,7 +144,8 @@ impl McpManager {
                 .ok_or_else(|| anyhow!("MCP server not found: {}", name))?
         };
 
-        let (client, tools) = connect_ready_client(&config).await?;
+        let sampling = self.sampling_factory.read().await.clone();
+        let (client, tools) = connect_ready_client(&config, sampling.as_ref()).await?;
         tracing::info!("MCP server '{}' connected with {} tools", name, tools.len());
 
         // Store client + stamp initial last-used time so idle reapers
@@ -473,8 +503,33 @@ impl McpManager {
 /// projection adapters use this seam to pair the client with a frozen
 /// [`crate::mcp::McpBinding`], while compatibility callers publish it through
 /// [`McpManager`] after the same readiness barrier.
+/// Install the factory-provided sampling handler BEFORE initialize:
+/// installing is the `sampling` capability declaration in the handshake
+/// (SEC-SAMPLE1 — this manager site is the sanctioned install point the
+/// landing guard's API_HOME records). No factory, no capability: the
+/// server's sampling requests keep the fail-closed `-32601` refusal.
+fn arm_client_sampling(
+    client: &McpClient,
+    config: &McpServerConfig,
+    sampling: Option<&SamplingHandlerFactory>,
+) {
+    if let Some(factory) = sampling {
+        client.install_sampling_handler(factory(&config.name));
+    }
+}
+
 pub(crate) async fn connect_ready_client(
     config: &McpServerConfig,
+    sampling: Option<&SamplingHandlerFactory>,
+) -> Result<(Arc<McpClient>, Vec<McpTool>)> {
+    connect_ready_client_retained(config, None, None, sampling).await
+}
+
+pub(crate) async fn connect_ready_client_retained(
+    config: &McpServerConfig,
+    retention: Option<Arc<dyn crate::capability::RetainedUseGeneration>>,
+    working_directory: Option<&std::path::Path>,
+    sampling: Option<&SamplingHandlerFactory>,
 ) -> Result<(Arc<McpClient>, Vec<McpTool>)> {
     if !config.enabled {
         return Err(anyhow!("MCP server is disabled: {}", config.name));
@@ -483,11 +538,13 @@ pub(crate) async fn connect_ready_client(
     let auth_header = McpManager::resolve_auth_header(config.oauth.as_ref()).await?;
     let transport: Arc<dyn McpTransport> = match &config.transport {
         McpTransportConfig::Stdio { command, args } => Arc::new(
-            StdioTransport::spawn_with_timeout(
+            StdioTransport::spawn_with_timeout_and_retention(
                 command,
                 args,
                 &config.env,
                 config.tool_timeout_secs,
+                retention,
+                working_directory,
             )
             .await?,
         ),
@@ -518,6 +575,7 @@ pub(crate) async fn connect_ready_client(
     };
 
     let client = Arc::new(McpClient::new(config.name.clone(), transport));
+    arm_client_sampling(&client, config, sampling);
     if let Err(error) = client.initialize().await {
         if let Err(close_error) = client.close().await {
             tracing::warn!(
@@ -541,6 +599,10 @@ pub(crate) async fn connect_ready_client(
             return Err(error);
         }
     };
+    // Keep the tools cache current: a server that adds or removes tools
+    // after connect re-lists on `tools/list_changed` instead of staying
+    // invisible until the next reconnect.
+    client.spawn_list_changed_refresher();
     Ok((client, tools))
 }
 
@@ -563,5 +625,90 @@ fn now_epoch_ms() -> u64 {
 }
 
 #[cfg(test)]
-#[path = "manager/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod sampling_arm_tests {
+    use super::*;
+
+    #[test]
+    fn sampling_factory_arms_the_client_capability_declaration() {
+        use std::sync::Arc;
+
+        struct CannedSampling;
+
+        #[async_trait::async_trait]
+        impl crate::mcp::transport::SamplingHandler for CannedSampling {
+            async fn create_message(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::json!({ "role": "assistant" }))
+            }
+        }
+
+        let config = crate::mcp::McpServerConfig {
+            name: "probe".into(),
+            transport: crate::mcp::McpTransportConfig::Stdio {
+                command: "true".into(),
+                args: Vec::new(),
+            },
+            enabled: true,
+            env: Default::default(),
+            oauth: None,
+            tool_timeout_secs: 60,
+        };
+        // The arm step runs before any I/O; a client with no transport
+        // wired is enough to pin the capability declaration. A unit
+        // transport that answers nothing keeps this test hermetic.
+        struct UnwiredTransport;
+
+        #[async_trait::async_trait]
+        impl crate::mcp::transport::McpTransport for UnwiredTransport {
+            async fn request(
+                &self,
+                _request: crate::mcp::protocol::JsonRpcRequest,
+            ) -> anyhow::Result<crate::mcp::protocol::JsonRpcResponse> {
+                Err(anyhow::anyhow!("unwired"))
+            }
+
+            async fn notify(
+                &self,
+                _notification: crate::mcp::protocol::JsonRpcNotification,
+            ) -> anyhow::Result<()> {
+                Err(anyhow::anyhow!("unwired"))
+            }
+
+            fn notifications(&self) -> tokio::sync::mpsc::Receiver<crate::mcp::McpNotification> {
+                tokio::sync::mpsc::channel(1).1
+            }
+
+            async fn close(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn is_connected(&self) -> bool {
+                false
+            }
+
+            fn set_sampling_handler(
+                &self,
+                _handler: std::sync::Arc<dyn crate::mcp::transport::SamplingHandler>,
+            ) {
+            }
+        }
+
+        let client = McpClient::new("probe".into(), std::sync::Arc::new(UnwiredTransport));
+        // No factory: the capability stays undeclared (fail closed).
+        arm_client_sampling(&client, &config, None);
+        assert!(!client
+            .sampling_declared
+            .load(std::sync::atomic::Ordering::SeqCst));
+        // With the factory: installing IS the declaration.
+        let factory: SamplingHandlerFactory = Arc::new(|_server| Arc::new(CannedSampling));
+        arm_client_sampling(&client, &config, Some(&factory));
+        assert!(client
+            .sampling_declared
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+}

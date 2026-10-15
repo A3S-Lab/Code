@@ -52,14 +52,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **Pager `/config`（9.1.0）。** 在 ACL 配置里编辑 provider 和 model。默认值是
   一对 `provider/model`。模型的 URL 或 key 留空时继承 provider。
 - **搜索保持快路径（9.1.0）。** 自动 `web_search` 依次是 API、HTTP、headless。
-  Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。
-- **常驻上下文与重放（9.1.2）。** 新的事实日志运行在第一次模型调用前准入常驻
-  上下文摘要。相同的运行事件游标会在写入新的链摘要前重放。权限姿态在下一次
-  事实运行准入；已经打开的运行保持打开时冻结的工具、步数上限和完成门禁。
-  npm、crates.io、PyPI 当前包版本是 **9.1.2**。
-- **发布状态。** 9.1.2 是渠道发布，不是企业 GA。Terminal-Bench 4.0 仍按产品
-  决定推迟。`3b2f72aa` 上的 `DM-PROD1` 资格包不覆盖这次常驻上下文准入。CAR
-  保持在范围外。
+  Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。npm、crates.io、
+  PyPI 当前包版本是 **9.1.1**。
 
 ## 9.0 有什么新内容
 
@@ -134,7 +128,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.1` 文档线；
-当前包版本 **9.1.2**）。
+当前包版本 **9.1.1**）。
 
 ### 更早的版本线
 
@@ -1806,6 +1800,39 @@ A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
 模型驱动的提示注入遏制、绝对路径工作空间隔离、
 秘密编辑，并在执行之前取消已启动的命令
 取消后的副作用。它从不记录提供商凭据。
+
+### Terminal-Bench 评测
+
+Terminal-Bench 4.0 通过 `a3s-code-acp --unattended` 在 Harbor 的 ACP 运行器下评测。
+先编译一次静态 Linux 二进制，全量评测前先跑一个任务：
+
+```bash
+CARGO_TARGET_DIR=$HOME/a3s-tb-target rustup run 1.97.1 cargo zigbuild --locked \
+  --target x86_64-unknown-linux-musl --release -p a3s-code-acp --bin a3s-code-acp
+A3S_CODE_CONFIG=/path/to/tb.acl A3S_TB_MODEL=provider/model \
+A3S_TB_INCLUDE_TASK=html-js-filter ../../scripts/harbor/run_acp_tb.sh
+```
+
+**模型。** `A3S_TB_MODEL` 写成 ACL 里声明的 `provider/model`（`providers` 块名和
+`models` 块名）；它覆盖 `scripts/harbor/.env` 里的 `A3S_TB_MODEL`，都没有时用
+`deepseek/deepseek-v4-pro`。换模型：在 ACL 加一个 `providers` 块，密钥写
+`api_key = env("NAME")`，把 `NAME` 写进 `.env`，换一个新的 `A3S_TB_JOB_NAME`
+先跑一个任务。该任务的 `agent/acp-summary.json` 里 `requested_model` 和
+`resolved_session_model_id` 必须是新 ID，`set_model_error` 为 null。ACL 没有声明的
+ID 会让每个任务都报 `unknown model id` 失败。
+
+**推理强度。** `A3S_CODE_ACP_REASONING_EFFORT` 取 `low`、`medium`、`high`、`xhigh`、
+`max` 之一；不设就是 `max`，填其他值 `a3s-code-acp` 启动即失败。各提供商收到自己的值：
+GLM 和 DeepSeek 是 `low`/`high`/`max`，OpenAI 推理模型最高 `xhigh`，Anthropic 原样
+收到，其他模型不发推理强度参数。任务的 `agent/acp-launch.sh` 里有
+`--reasoning-effort <档位>`；没有这个参数就是 `max`。命名的任务会把二进制、ACL、模型和推理强度
+记到 `.harbor-acp/jobs/<任务名>.a3s-launch`，之后不一致的重跑或 `A3S_TB_RESUME=1` 续跑会被拒绝。
+shell 里设的变量优先于 `.env`。
+
+只能改 A3S Code，不改任何任务、测试、验证器或超时。得分是所有可运行任务的平均
+reward，异常按 0 计。准备包、凭据、全量与续跑、并发、计分和证据见
+[Harbor 运行手册](../../scripts/harbor/README.md)；评测通道和门禁见
+[TERMINAL_BENCH.md](manual/TERMINAL_BENCH.md)。
 
 ## 许可证
 

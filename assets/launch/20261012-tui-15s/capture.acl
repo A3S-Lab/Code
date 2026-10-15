@@ -1,0 +1,18 @@
+suite "a3s-code-launch-reference" {
+    version = 1
+    scenario "real-pager-reference" {
+        surface = "tui"
+        timeout_ms = 180000
+        wait "composer-ready" { text = "A3S Code  9.1.3" }
+        terminal_recording "ready" { path = "terminal/01-ready.vt" }
+        terminal_paste "task-draft" { text = "读取 title.rs，用三条要点说明空输入逻辑，每条不超过20字。" }
+        wait "task-visible" { text = "读取 title.rs" }
+        terminal_recording "draft" { path = "terminal/03-draft.vt" }
+        press "send-task" { key = "Enter" }
+        wait "task-finished" { text = "Worked for" }
+        terminal_recording "response" { path = "terminal/04-response.vt" }
+        terminal_paste "browse-commands" { text = "/" }
+        wait "palette-open" { text = "Switch the active model" }
+        terminal_recording "palette" { path = "terminal/05-palette.vt" }
+    }
+}

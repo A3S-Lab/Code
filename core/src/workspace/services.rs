@@ -264,7 +264,7 @@ impl WorkspaceServices {
     /// the default local retrieval path when the native feature is available.
     pub fn local_with_indexed_retrieval(root: impl Into<PathBuf>) -> Result<Arc<Self>> {
         let backend = ManifestWorkspaceBackend::new(root);
-        let index_root = backend.local_root().join(".a3s-code").join("index");
+        let index_root = crate::state_root::workspace_index_dir(backend.local_root()).join("index");
         let persistent = backend
             .configure_persistent_index(index_root)
             .map_err(|error| anyhow!("failed to configure persistent workspace index: {error}"))?;

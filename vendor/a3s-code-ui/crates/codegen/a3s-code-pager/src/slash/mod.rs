@@ -639,7 +639,7 @@ impl SlashController {
     }
 
     /// Gate `/auto` on the auto permission-mode feature. When unavailable, `/auto` is hard-hidden.
-    /// `/always-approve` is always offered; both commands are true toggles (re-running the active mode turns it off).
+    /// `/yolo` is always offered; both commands are true toggles (re-running the active mode turns it off).
     pub fn set_auto_mode_available(&mut self, available: bool) {
         self.registry.set_auto_mode_available(available);
     }
@@ -2763,8 +2763,8 @@ mod tests {
         );
     }
 
-    /// With the gate open, both `/always-approve` and `/auto` are offered and dispatchable.
-    /// With the gate closed, `/auto` is hard-hidden; `/always-approve` is still offered.
+    /// With the gate open, both `/yolo` and `/auto` are offered and dispatchable.
+    /// With the gate closed, `/auto` is hard-hidden; `/yolo` is still offered.
     #[test]
     fn set_auto_mode_available_gates_only_auto() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
@@ -2773,15 +2773,15 @@ mod tests {
             |ctrl: &SlashController, name: &str| ctrl.registry().get_for_dispatch(name).is_some();
 
         ctrl.set_auto_mode_available(true);
-        assert!(visible(&ctrl, "always-approve"));
+        assert!(visible(&ctrl, "yolo"));
         assert!(visible(&ctrl, "auto"));
-        assert!(dispatchable(&ctrl, "always-approve"));
+        assert!(dispatchable(&ctrl, "yolo"));
         assert!(dispatchable(&ctrl, "auto"));
 
         ctrl.set_auto_mode_available(false);
-        assert!(visible(&ctrl, "always-approve"));
+        assert!(visible(&ctrl, "yolo"));
         assert!(!visible(&ctrl, "auto"));
-        assert!(dispatchable(&ctrl, "always-approve"));
+        assert!(dispatchable(&ctrl, "yolo"));
         assert!(!dispatchable(&ctrl, "auto"));
     }
 
@@ -2794,9 +2794,9 @@ mod tests {
         ctrl.set_auto_mode_available(true);
 
         for (query, display) in [
-            ("/", "/always-approve"),
-            ("/alw", "/always-approve"),
-            ("/always-approve", "/always-approve"),
+            ("/", "/yolo"),
+            ("/yo", "/yolo"),
+            ("/yolo", "/yolo"),
             ("/", "/auto"),
             ("/au", "/auto"),
             ("/auto", "/auto"),
@@ -2815,7 +2815,7 @@ mod tests {
     fn permission_mode_toggles_are_complete_for_enter() {
         let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
         ctrl.set_auto_mode_available(true);
-        assert!(is_command_complete("/always-approve", ctrl.registry()));
+        assert!(is_command_complete("/yolo", ctrl.registry()));
         assert!(is_command_complete("/auto", ctrl.registry()));
     }
 

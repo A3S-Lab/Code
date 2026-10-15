@@ -155,11 +155,99 @@
             ),
         ] {
             let req = hook_ask_permission_req(raw_input, acp_title, options);
-            let (title, description, command) = build_permission_display(&req, None, false);
+            let (title, description, command) = build_permission_display(&req, None, None, false);
             assert_eq!(title, expected_title);
             assert_eq!(command.as_deref(), expected_command);
             assert_eq!(description.first().map(String::as_str), Some(ask_line));
         }
+    }
+
+    #[test]
+    fn question_meta_serializes_camelcase_and_excludes_foreign_payloads() {
+        use a3s_code_workspace::permission::QuestionPermissionMeta;
+        let parsed: QuestionPermissionMeta =
+            serde_json::from_value(serde_json::json!({"allowFreeText": true})).unwrap();
+        assert!(parsed.allow_free_text);
+        // No defaults in either direction: a bash-scope payload must not
+        // decode as a question, so the two metas can never be conflated.
+        assert!(
+            serde_json::from_value::<QuestionPermissionMeta>(serde_json::json!({
+                "highlighted_words": ["cargo"], "prefix": [], "suffix": []
+            }))
+            .is_err()
+        );
+    }
+
+    fn question_permission_req(title: &str, allow_free_text: bool) -> acp::RequestPermissionRequest {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            a3s_code_workspace::permission::QUESTION_META_KEY.to_owned(),
+            serde_json::json!({ "allowFreeText": allow_free_text }),
+        );
+        let fields = acp::ToolCallUpdateFields::new().title(title);
+        acp::RequestPermissionRequest::new(
+            acp::SessionId::new(std::sync::Arc::from("s1")),
+            acp::ToolCallUpdate::new(acp::ToolCallId::new(std::sync::Arc::from("call-1")), fields),
+            vec![acp::PermissionOption::new(
+                acp::PermissionOptionId::new(std::sync::Arc::from("question-0")),
+                "first choice".to_string(),
+                acp::PermissionOptionKind::RejectOnce,
+            )],
+        )
+        .meta(Some(meta))
+    }
+
+    #[test]
+    fn question_display_uses_the_question_text_without_allow_framing() {
+        for allow_free_text in [true, false] {
+            let req = question_permission_req("Which file may I delete?\nContext: staged files only", allow_free_text);
+            let question = a3s_code_workspace::permission::QuestionPermissionMeta {
+                allow_free_text,
+            };
+            let (title, description, command) =
+                build_permission_display(&req, None, Some(&question), true);
+            assert_eq!(title, "Which file may I delete?");
+            assert!(
+                !title.starts_with("Allow"),
+                "a question is not framed as a permission: {title}"
+            );
+            assert!(
+                !title.contains("on your machine"),
+                "no local-workspace qualification for questions: {title}"
+            );
+            assert_eq!(
+                description,
+                vec![
+                    "Which file may I delete?".to_string(),
+                    "Context: staged files only".to_string()
+                ],
+                "the full question text must render as the description body"
+            );
+            assert_eq!(command, None);
+        }
+    }
+
+    #[test]
+    fn question_display_skips_leading_blank_lines_for_the_title() {
+        let req = question_permission_req(
+            "\n  \nWhich file may I delete?\nContext: staged files only",
+            true,
+        );
+        let question = a3s_code_workspace::permission::QuestionPermissionMeta {
+            allow_free_text: true,
+        };
+        let (title, description, _) = build_permission_display(&req, None, Some(&question), false);
+        assert_eq!(title, "Which file may I delete?");
+        assert_eq!(
+            description,
+            vec![
+                String::new(),
+                "  ".to_string(),
+                "Which file may I delete?".to_string(),
+                "Context: staged files only".to_string()
+            ],
+            "blank lines stay in the description; only the title skips them"
+        );
     }
 
     #[test]

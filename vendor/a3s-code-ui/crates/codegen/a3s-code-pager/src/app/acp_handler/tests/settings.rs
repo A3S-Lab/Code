@@ -356,10 +356,10 @@
     fn auto_gate_killswitch_notifies_agents_to_leave_auto() {
         // The kill-switch must tell live sessions to leave Auto, else the agent keeps classifier-approving while the UI shows "Ask"
         // Every live Auto tab receives its own notification
-        // It omits `yolo_mode` so a sibling always-approve tab is preserved
+        // It omits `yolo_mode` so a sibling yolo tab is preserved
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = AppView::new(tx, ModelState::default(), Vec::new(), crate::render::draw::EscapeWriter::disconnected());
-        // Two auto agents and one always-approve sibling, all with live sessions
+        // Two auto agents and one yolo sibling, all with live sessions
         app.agents.insert(AgentId(0), make_agent(Some("sess-0")));
         app.agents.insert(AgentId(1), make_agent(Some("sess-1")));
         app.agents.insert(AgentId(2), make_agent(Some("sess-yolo")));
@@ -379,10 +379,10 @@
         let _ = handle_ext_notification(&killswitch, &mut app);
 
         assert!(!app.auto_mode_gate, "gate must be off after kill-switch");
-        // Sibling always-approve is untouched: the kill-switch clears only auto
+        // Sibling yolo is untouched: the kill-switch clears only auto
         assert!(
             app.agents.get(&AgentId(2)).unwrap_or_else(|| panic!("missing map entry")).session.is_yolo(),
-            "sibling always-approve must stay yolo after the auto kill-switch"
+            "sibling yolo must stay yolo after the auto kill-switch"
         );
 
         let mut notified_sessions = Vec::new();
@@ -403,7 +403,7 @@
                 );
                 assert!(
                     params.get("yolo_mode").is_none(),
-                    "yolo_mode must be omitted so a sibling always-approve session is preserved"
+                    "yolo_mode must be omitted so a sibling yolo session is preserved"
                 );
                 notified_sessions.push(
                     params
@@ -501,7 +501,7 @@
         let apply_yolo = acp::ExtNotification::new(
             "x.ai/settings/update",
             serde_json::value::to_raw_value(&serde_json::json!({
-                "permission_mode": "always-approve",
+                "permission_mode": "yolo",
             }))
             .unwrap()
             .into(),
@@ -509,7 +509,7 @@
         let _ = handle_ext_notification(&apply_yolo, &mut app);
         assert!(
             !app.default_yolo,
-            "user-claimed mode must not re-arm default_yolo from remote always-approve"
+            "user-claimed mode must not re-arm default_yolo from remote yolo"
         );
         assert_eq!(
             app.current_ui.permission_mode.as_deref(),
@@ -568,7 +568,7 @@
         let push = acp::ExtNotification::new(
             "x.ai/settings/update",
             serde_json::value::to_raw_value(&serde_json::json!({
-                "permission_mode": "always-approve",
+                "permission_mode": "yolo",
             }))
             .unwrap()
             .into(),
@@ -580,7 +580,7 @@
             .as_deref()
             .expect("applier always writes a display mode");
         assert!(
-            matches!(display, "ask" | "auto" | "always-approve" | "default"),
+            matches!(display, "ask" | "auto" | "yolo" | "default"),
             "soft push must rewrite the sentinel display via the applier, got {display:?}"
         );
         assert!(
@@ -600,12 +600,12 @@
         super::super::settings::apply_soft_default_permission_mode(
             &mut app,
             None,
-            Some("always-approve"),
+            Some("yolo"),
         );
-        assert!(app.default_yolo, "remote always-approve must arm default_yolo");
+        assert!(app.default_yolo, "remote yolo must arm default_yolo");
         assert_eq!(
             app.current_ui.permission_mode.as_deref(),
-            Some("always-approve"),
+            Some("yolo"),
         );
         assert!(
             app.permission_mode_from_soft_default,
@@ -622,15 +622,15 @@
         let mut app = make_app_with_agent("sess-null-pm");
         app.auto_mode_gate = true;
         app.permission_mode_from_soft_default = true;
-        app.current_ui.permission_mode = Some("always-approve".into());
+        app.current_ui.permission_mode = Some("yolo".into());
         app.default_yolo = true;
 
         super::super::settings::apply_soft_default_permission_mode(&mut app, None, None);
-        assert!(!app.default_yolo, "remote null must disarm a soft always-approve");
+        assert!(!app.default_yolo, "remote null must disarm a soft yolo");
         assert_ne!(
             app.current_ui.permission_mode.as_deref(),
-            Some("always-approve"),
-            "the soft always-approve must be cleared from the UI mirror"
+            Some("yolo"),
+            "the soft yolo must be cleared from the UI mirror"
         );
         assert!(app.permission_mode_from_soft_default);
         assert!(
@@ -649,9 +649,9 @@
         super::super::settings::apply_soft_default_permission_mode(
             &mut app,
             fallback.get("ui"),
-            Some("always-approve"),
+            Some("yolo"),
         );
-        assert!(!app.default_yolo, "broken config must not arm always-approve");
+        assert!(!app.default_yolo, "broken config must not arm yolo");
         assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
     }
 
@@ -664,9 +664,9 @@
         super::super::settings::apply_soft_default_permission_mode(
             &mut app,
             None,
-            Some("always-approve"),
+            Some("yolo"),
         );
-        assert!(!app.default_yolo, "policy pin must block a remote always-approve");
+        assert!(!app.default_yolo, "policy pin must block a remote yolo");
         assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
 
         let mut app = make_app_with_agent("sess-gate-pm");

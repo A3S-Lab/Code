@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::{
     CapabilityCeiling, CapabilitySet, Sha256Digest, UseCapabilityGeneration,
     CAPABILITY_CEILING_SCHEMA, CAPABILITY_SET_SCHEMA, MAX_CAPABILITY_CANONICAL_BYTES,
-    USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
+    USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA, USE_SELECTION_CURSOR_SCHEMA,
 };
 
 pub const RUN_CAPABILITY_BINDING_SCHEMA: &str = "a3s.code.run-capability-binding.v1";
@@ -46,7 +46,10 @@ pub struct RunUseCapabilityGenerationV1 {
     schema: String,
     generation: u64,
     revision: String,
-    registry_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection_id: Option<String>,
 }
 
 impl RunUseCapabilityGenerationV1 {
@@ -55,18 +58,41 @@ impl RunUseCapabilityGenerationV1 {
             schema: generation.schema().to_owned(),
             generation: generation.generation(),
             revision: generation.revision().to_string(),
-            registry_revision: generation.registry_revision().to_string(),
+            registry_revision: generation.registry_revision().map(ToString::to_string),
+            selection_id: generation.selection_id().map(str::to_owned),
         }
     }
 
     pub fn validate(&self) -> Result<(), RunCapabilityBindingError> {
-        ensure_schema(
-            "useGeneration.schema",
-            &self.schema,
-            USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
-        )?;
+        if self.generation == 0 {
+            return Err(invalid_field(
+                "useGeneration.generation",
+                "zero is not an admitted Use generation",
+            ));
+        }
         ensure_digest("useGeneration.revision", &self.revision)?;
-        ensure_digest("useGeneration.registryRevision", &self.registry_revision)?;
+        match (
+            self.schema.as_str(),
+            self.registry_revision.as_deref(),
+            self.selection_id.as_deref(),
+        ) {
+            (USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA, Some(registry), None) => {
+                ensure_digest("useGeneration.registryRevision", registry)?;
+            }
+            (USE_SELECTION_CURSOR_SCHEMA, None, Some(id)) => {
+                let revision = Sha256Digest::new(self.revision.clone())
+                    .map_err(|error| invalid_field("useGeneration.revision", error.to_string()))?;
+                UseCapabilityGeneration::selection(id, self.generation, revision).map_err(
+                    |error| invalid_field("useGeneration.selectionId", error.to_string()),
+                )?;
+            }
+            _ => {
+                return Err(invalid_field(
+                    "useGeneration.origin",
+                    "unsupported or mixed Use publication evidence",
+                ))
+            }
+        }
         Ok(())
     }
 
@@ -82,8 +108,12 @@ impl RunUseCapabilityGenerationV1 {
         &self.revision
     }
 
-    pub fn registry_revision(&self) -> &str {
-        &self.registry_revision
+    pub fn registry_revision(&self) -> Option<&str> {
+        self.registry_revision.as_deref()
+    }
+
+    pub fn selection_id(&self) -> Option<&str> {
+        self.selection_id.as_deref()
     }
 }
 

@@ -18,6 +18,11 @@ pub enum CapabilityScopeError {
         capability: String,
         catalog_digest: String,
     },
+    #[error("Capability '{capability}' requires denied dependency '{dependency}'")]
+    CapabilityDependencyDenied {
+        capability: String,
+        dependency: String,
+    },
     #[error("Capability ceiling belongs to another immutable catalog")]
     CeilingCatalogMismatch,
     #[error("Child capability scope broadens parent ceiling dimension '{dimension}'")]
@@ -27,18 +32,23 @@ pub enum CapabilityScopeError {
     #[error("Catalog has no A3S Use generation but Run admission supplied a Use lease")]
     UnexpectedUseGenerationLease,
     #[error(
-        "A3S Use Run lease does not match the catalog cursor (generation {expected_generation} vs {actual_generation}, capability revision mismatch: {revision_mismatch}, Registry revision mismatch: {registry_revision_mismatch})"
+        "A3S Use Run lease does not match the catalog cursor (generation {expected_generation} vs {actual_generation}, capability revision mismatch: {revision_mismatch}, Registry revision mismatch: {registry_revision_mismatch}, publication origin mismatch: {origin_mismatch})"
     )]
     UseGenerationLeaseMismatch {
         expected_generation: u64,
         actual_generation: u64,
         revision_mismatch: bool,
         registry_revision_mismatch: bool,
+        origin_mismatch: bool,
     },
     #[error("Capability scope '{scope_id}' is no longer active")]
     ScopeInactive { scope_id: String },
     #[error("Tool invocation has no active Agent Turn capability scope")]
     AgentTurnScopeUnavailable,
+    #[error("Workspace operation not found in active capability scope")]
+    WorkspaceOperationUnavailable,
+    #[error("Unknown workspace operation '{operation}'; expected read|write|execute|search|git|code_intelligence")]
+    InvalidWorkspaceOperation { operation: String },
     #[error("Capability scope '{scope_id}' no longer accepts lifecycle registrations")]
     SupervisorClosed { scope_id: String },
     #[error("Capability scope requires an active Tokio runtime")]

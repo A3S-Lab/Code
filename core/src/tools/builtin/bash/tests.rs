@@ -259,19 +259,41 @@ async fn default_sandbox_execution_preserves_timeout_env_and_streaming_contract(
 
     assert!(result.success, "{}", result.content);
     assert!(called.load(Ordering::SeqCst));
+    let recorded = request
+        .lock()
+        .unwrap()
+        .take()
+        .expect("sandbox request recorded");
+    assert_eq!(recorded.command, "printf result");
+    assert_eq!(recorded.guest_workspace, "/workspace");
+    assert_eq!(recorded.timeout_ms, MIN_TIMEOUT_MS);
+    assert!(recorded.had_output_observer);
+    let env = recorded.env.expect("command env reaches the sandbox");
     assert_eq!(
-        request.lock().unwrap().as_ref(),
-        Some(&RecordedSandboxRequest {
-            command: "printf result".to_string(),
-            guest_workspace: "/workspace".to_string(),
-            timeout_ms: MIN_TIMEOUT_MS,
-            env: Some(HashMap::from([(
-                "A3S_TEST_ENV".to_string(),
-                "visible".to_string(),
-            )])),
-            had_output_observer: true,
-        })
+        env.get("A3S_TEST_ENV").map(String::as_str),
+        Some("visible"),
+        "caller-provided env is forwarded: {env:?}"
     );
+    // The unix git witness always installs its PATH shim for the guest, so
+    // the forwarded env also carries the shim prepend and the real-path and
+    // witness variables. The ambient PATH inside them is machine state and
+    // must not be compared for equality.
+    #[cfg(unix)]
+    {
+        assert!(
+            env.contains_key("A3S_CODE_GIT_REAL_PATH"),
+            "witness real path missing: {env:?}"
+        );
+        assert!(
+            env.contains_key("A3S_CODE_GIT_WITNESS"),
+            "witness marker missing: {env:?}"
+        );
+        let path = env.get("PATH").expect("witness PATH prepend");
+        assert!(
+            path.contains("/command-git-witness-"),
+            "witness bin not first on PATH: {path}"
+        );
+    }
     assert!(matches!(
         event_rx.recv().await,
         Some(ToolStreamEvent::OutputDelta(delta))
@@ -425,11 +447,15 @@ async fn sandbox_execution_is_bounded_when_the_backend_ignores_the_timeout() {
     let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(HangingSandbox));
 
     // Paused time does not wake `tokio::process`, so each porcelain git
-    // query burns its full 400ms budget. A non-repo snapshot is status plus
-    // rev-parse, and both the pre-exec watch and the timeout re-read pay it.
-    // The product deadline is still `timeout`; this bound only proves the
-    // tool returns instead of following a hanging sandbox.
-    const PORCELAIN_GIT_BUDGET_MS: u64 = 400 * 4;
+    // query burns its full GIT_QUERY_TIMEOUT (5s) budget. A non-repo
+    // snapshot is status plus rev-parse, and both the pre-exec watch and the
+    // timeout re-read pay it: four queries. The product deadline is still
+    // `timeout`; this bound only proves the tool returns instead of
+    // following a hanging sandbox.
+    // Two extra query budgets of slack: the outer deadline shares the
+    // simulated clock with the inner timeouts and must not race the last
+    // porcelain re-read at the same tick.
+    const PORCELAIN_GIT_BUDGET_MS: u64 = 5000 * 6;
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(MIN_TIMEOUT_MS + PORCELAIN_GIT_BUDGET_MS),
         tool.execute(
@@ -1782,6 +1808,136 @@ impl crate::workspace::WorkspaceFileSystem for EmptyWorkspaceFs {
     }
 }
 
+struct LifetimeRefusalSandbox;
+
+#[async_trait]
+impl BashSandbox for LifetimeRefusalSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        Err(crate::sandbox::native::native_process_lifetime_unqualified())
+    }
+
+    async fn exec(
+        &self,
+        _request: SandboxCommandRequest,
+    ) -> anyhow::Result<SandboxExecutionOutput> {
+        Err(crate::sandbox::native::native_process_lifetime_unqualified())
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct DisplayOnlyLifetimeSandbox;
+
+#[async_trait]
+impl BashSandbox for DisplayOnlyLifetimeSandbox {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<SandboxOutput> {
+        anyhow::bail!(
+            "{}",
+            crate::sandbox::native::NATIVE_PROCESS_LIFETIME_UNQUALIFIED
+        )
+    }
+
+    async fn exec(
+        &self,
+        _request: SandboxCommandRequest,
+    ) -> anyhow::Result<SandboxExecutionOutput> {
+        anyhow::bail!(
+            "{}",
+            crate::sandbox::native::NATIVE_PROCESS_LIFETIME_UNQUALIFIED
+        )
+    }
+
+    async fn shutdown(&self) {}
+}
+
+#[tokio::test]
+async fn typed_pre_spawn_lifetime_refusal_settles_as_a_tool_failure() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let sentinel = temp.path().join("must-not-exist");
+    let ctx =
+        ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(LifetimeRefusalSandbox));
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": format!("printf started > {}", sentinel.display())
+            }),
+            &ctx,
+        )
+        .await
+        .expect("a typed pre-spawn refusal is a completed tool result");
+    assert!(!result.success);
+    assert_eq!(
+        result.content,
+        crate::sandbox::native::NATIVE_PROCESS_LIFETIME_UNQUALIFIED
+    );
+    assert!(matches!(
+        result.error_kind,
+        Some(ToolErrorKind::Unsupported { ref message })
+            if message == crate::sandbox::native::NATIVE_PROCESS_LIFETIME_UNQUALIFIED
+    ));
+    let metadata = result.metadata.expect("refusal metadata");
+    assert!(metadata["exit_code"].is_null());
+    assert_eq!(metadata["sandboxed"], true);
+    assert_eq!(metadata["sandbox_available"], true);
+    assert_eq!(metadata["command_started"], false);
+    assert!(metadata.get("observation_incomplete").is_none());
+    assert!(!sentinel.exists());
+}
+
+#[tokio::test]
+async fn lifetime_refusal_text_without_the_type_stays_a_tool_error() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_sandbox(Arc::new(DisplayOnlyLifetimeSandbox));
+    let err = tool
+        .execute(&serde_json::json!({"command": "true"}), &ctx)
+        .await
+        .expect_err("display text is not the refusal type");
+    assert!(
+        err.to_string().contains("Sandbox bash execution failed"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+#[cfg(target_os = "macos")]
+async fn macos_native_lifetime_refusal_settles_without_starting_a_process() {
+    let tool = BashTool;
+    let temp = tempfile::tempdir().unwrap();
+    let sandbox = crate::sandbox::native::NativeBashSandbox::new(temp.path()).unwrap();
+    let sentinel = temp.path().join("must-not-exist");
+    let ctx = ToolContext::new(temp.path().to_path_buf()).with_sandbox(Arc::new(sandbox));
+    let result = tool
+        .execute(
+            &serde_json::json!({
+                "command": format!("printf started > {}", sentinel.display())
+            }),
+            &ctx,
+        )
+        .await
+        .expect("macOS native refusal is a completed tool result");
+    assert!(!result.success);
+    assert_eq!(
+        result.content,
+        crate::sandbox::native::NATIVE_PROCESS_LIFETIME_UNQUALIFIED
+    );
+    assert!(matches!(
+        result.error_kind,
+        Some(ToolErrorKind::Unsupported { .. })
+    ));
+    assert!(!sentinel.exists());
+}
+
 #[tokio::test]
 async fn sandbox_backend_failure_is_surfaced_as_tool_error() {
     let tool = BashTool;
@@ -1811,7 +1967,10 @@ async fn sandbox_outer_timeout_includes_capture_summary_metadata() {
             },
         },
     ));
-    const PORCELAIN_GIT_BUDGET_MS: u64 = 400 * 4;
+    // Two extra query budgets of slack: the outer deadline shares the
+    // simulated clock with the inner timeouts and must not race the last
+    // porcelain re-read at the same tick.
+    const PORCELAIN_GIT_BUDGET_MS: u64 = 5000 * 6;
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(MIN_TIMEOUT_MS + PORCELAIN_GIT_BUDGET_MS),
         tool.execute(
@@ -2047,4 +2206,539 @@ fn test_bash_request_network_grant_requires_confirmation() {
     assert!(!tool.requires_confirmation(&serde_json::json!({
         "sandbox_permissions": "use_default",
     })));
+}
+
+fn changed_path_list(metadata: Option<&serde_json::Value>) -> Vec<String> {
+    metadata
+        .and_then(|metadata| metadata.get("changed_paths"))
+        .and_then(|paths| paths.as_array())
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|path| path.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn bash_git_repo(root: &std::path::Path) {
+    bash_git(root, &["init"]);
+    bash_git(root, &["config", "user.email", "test@example.com"]);
+    bash_git(root, &["config", "user.name", "test"]);
+    bash_git(root, &["config", "commit.gpgsign", "false"]);
+}
+
+fn bash_git(root: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|error| panic!("git {args:?} failed to spawn: {error}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn a_parallel_commit_during_bash_is_not_this_commands_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    bash_git_repo(root.path());
+    std::fs::write(root.path().join("README.md"), "base\n").unwrap();
+    bash_git(root.path(), &["add", "README.md"]);
+    bash_git(root.path(), &["commit", "-m", "base"]);
+
+    let root_path = root.path().to_path_buf();
+    let committer = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::fs::write(root_path.join("guest.txt"), "foreign\n").unwrap();
+        bash_git(&root_path, &["add", "guest.txt"]);
+        bash_git(&root_path, &["commit", "-m", "foreign"]);
+    });
+
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf());
+    let result = tool
+        .execute(&escalated_args("sleep 1"), &ctx)
+        .await
+        .unwrap();
+    committer.await.unwrap();
+    assert!(result.success, "{result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        !paths.iter().any(|path| path == "guest.txt"),
+        "parallel commit was attributed to sleep: {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn bash_that_invokes_git_keeps_its_own_commit() {
+    let root = tempfile::tempdir().unwrap();
+    bash_git_repo(root.path());
+    std::fs::write(root.path().join("README.md"), "base\n").unwrap();
+    bash_git(root.path(), &["add", "README.md"]);
+    bash_git(root.path(), &["commit", "-m", "base"]);
+
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf());
+    let result = tool
+        .execute(
+            &escalated_args(
+                "printf 'owned\\n' > owned.txt && git add owned.txt && git -C . -c user.email=test@example.com commit -m owned",
+            ),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(result.success, "{result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        paths.iter().any(|path| path == "owned.txt"),
+        "own commit missing from {paths:?}"
+    );
+    eprintln!("ORACLE own-commit-paths={}", paths.join(","));
+}
+
+#[tokio::test]
+async fn bash_checkout_keeps_the_switched_path() {
+    let root = tempfile::tempdir().unwrap();
+    bash_git(root.path(), &["init", "-b", "main"]);
+    bash_git(root.path(), &["config", "user.email", "test@example.com"]);
+    bash_git(root.path(), &["config", "user.name", "test"]);
+    bash_git(root.path(), &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.path().join("README.md"), "base\n").unwrap();
+    bash_git(root.path(), &["add", "README.md"]);
+    bash_git(root.path(), &["commit", "-m", "base"]);
+    bash_git(root.path(), &["checkout", "-b", "side"]);
+    std::fs::write(root.path().join("switched.txt"), "side\n").unwrap();
+    bash_git(root.path(), &["add", "switched.txt"]);
+    bash_git(root.path(), &["commit", "-m", "side"]);
+    bash_git(root.path(), &["checkout", "main"]);
+    assert!(!root.path().join("switched.txt").exists());
+
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf());
+    let result = tool
+        .execute(
+            &escalated_args("git -C . -c user.email=test@example.com checkout side"),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(result.success, "{result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        paths.iter().any(|path| path == "switched.txt"),
+        "checkout path missing from {paths:?}"
+    );
+    eprintln!("ORACLE checkout-paths={}", paths.join(","));
+}
+
+#[tokio::test]
+async fn bash_readonly_git_does_not_take_a_parallel_commit() {
+    let root = tempfile::tempdir().unwrap();
+    bash_git_repo(root.path());
+    std::fs::write(root.path().join("README.md"), "base\n").unwrap();
+    bash_git(root.path(), &["add", "README.md"]);
+    bash_git(root.path(), &["commit", "-m", "base"]);
+
+    let root_path = root.path().to_path_buf();
+    let committer = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::write(root_path.join("guest.txt"), "foreign\n").unwrap();
+        bash_git(&root_path, &["add", "guest.txt"]);
+        bash_git(&root_path, &["commit", "-m", "foreign"]);
+    });
+
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf());
+    let result = tool
+        .execute(
+            &escalated_args(
+                r#"sleep 0.05
+git -c core.quotepath=false status --porcelain >/dev/null
+git ls-files >/dev/null
+i=0
+while [ "$i" -lt 40 ]; do
+  if git cat-file -e HEAD:guest.txt 2>/dev/null; then
+    printf seen > proof.txt
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+git log -1 --oneline >/dev/null
+git check-ignore -q -- guest.txt || true
+"#,
+            ),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    committer.await.unwrap();
+    assert!(result.success, "{result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        paths.iter().any(|path| path == "proof.txt"),
+        "command write missing from {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path == "guest.txt"),
+        "read-only git took a parallel commit: {paths:?}"
+    );
+    eprintln!("ORACLE readonly-git-paths={}", paths.join(","));
+}
+
+fn init_main(root: &std::path::Path) {
+    bash_git(root, &["init", "-b", "main"]);
+    bash_git(root, &["config", "user.email", "test@example.com"]);
+    bash_git(root, &["config", "user.name", "test"]);
+    bash_git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("README.md"), "base\n").unwrap();
+    bash_git(root, &["add", "README.md"]);
+    bash_git(root, &["commit", "-m", "base"]);
+}
+
+fn commit_file(root: &std::path::Path, name: &str) {
+    std::fs::write(root.join(name), format!("{name}\n")).unwrap();
+    bash_git(root, &["add", name]);
+    bash_git(root, &["commit", "-m", name]);
+}
+
+async fn assert_command_keeps(root: &std::path::Path, command: &str, path: &str) {
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.to_path_buf());
+    let result = tool.execute(&escalated_args(command), &ctx).await.unwrap();
+    assert!(result.success, "{command} failed: {result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        paths.iter().any(|item| item == path),
+        "{command} missing {path} from {paths:?}"
+    );
+    eprintln!("ORACLE git-paths path={path} kept={}", paths.join(","));
+}
+
+#[tokio::test]
+async fn bash_head_moving_subcommands_keep_their_paths() {
+    let switch_root = tempfile::tempdir().unwrap();
+    init_main(switch_root.path());
+    bash_git(switch_root.path(), &["checkout", "-b", "side"]);
+    commit_file(switch_root.path(), "switch.txt");
+    bash_git(switch_root.path(), &["checkout", "main"]);
+    assert!(!switch_root.path().join("switch.txt").exists());
+    assert_command_keeps(
+        switch_root.path(),
+        "git -C . -c user.email=test@example.com switch side",
+        "switch.txt",
+    )
+    .await;
+
+    let reset_root = tempfile::tempdir().unwrap();
+    init_main(reset_root.path());
+    bash_git(reset_root.path(), &["checkout", "-b", "side"]);
+    commit_file(reset_root.path(), "reset.txt");
+    bash_git(reset_root.path(), &["checkout", "main"]);
+    assert!(!reset_root.path().join("reset.txt").exists());
+    assert_command_keeps(
+        reset_root.path(),
+        "git -C . -c user.email=test@example.com reset --hard side",
+        "reset.txt",
+    )
+    .await;
+
+    let merge_root = tempfile::tempdir().unwrap();
+    init_main(merge_root.path());
+    bash_git(merge_root.path(), &["checkout", "-b", "side"]);
+    commit_file(merge_root.path(), "merge.txt");
+    bash_git(merge_root.path(), &["checkout", "main"]);
+    assert_command_keeps(
+        merge_root.path(),
+        "git -C . -c user.email=test@example.com merge --ff-only side",
+        "merge.txt",
+    )
+    .await;
+
+    let rebase_root = tempfile::tempdir().unwrap();
+    init_main(rebase_root.path());
+    bash_git(rebase_root.path(), &["checkout", "-b", "feature"]);
+    commit_file(rebase_root.path(), "rebase.txt");
+    bash_git(rebase_root.path(), &["checkout", "main"]);
+    assert_command_keeps(
+        rebase_root.path(),
+        "git -C . -c user.email=test@example.com rebase feature",
+        "rebase.txt",
+    )
+    .await;
+
+    let origin = tempfile::tempdir().unwrap();
+    init_main(origin.path());
+    let pull_root = tempfile::tempdir().unwrap();
+    bash_git(
+        pull_root.path(),
+        &["clone", origin.path().to_str().unwrap(), "."],
+    );
+    commit_file(origin.path(), "pull.txt");
+    assert_command_keeps(
+        pull_root.path(),
+        "git -C . -c user.email=test@example.com pull --ff-only",
+        "pull.txt",
+    )
+    .await;
+
+    let cherry_root = tempfile::tempdir().unwrap();
+    init_main(cherry_root.path());
+    bash_git(cherry_root.path(), &["checkout", "-b", "side"]);
+    commit_file(cherry_root.path(), "cherry.txt");
+    bash_git(cherry_root.path(), &["checkout", "main"]);
+    assert_command_keeps(
+        cherry_root.path(),
+        "git -C . -c user.email=test@example.com cherry-pick side",
+        "cherry.txt",
+    )
+    .await;
+
+    let revert_root = tempfile::tempdir().unwrap();
+    init_main(revert_root.path());
+    commit_file(revert_root.path(), "revert.txt");
+    bash_git(revert_root.path(), &["rm", "revert.txt"]);
+    bash_git(revert_root.path(), &["commit", "-m", "remove revert"]);
+    assert!(!revert_root.path().join("revert.txt").exists());
+    assert_command_keeps(
+        revert_root.path(),
+        "git -C . -c user.email=test@example.com revert --no-edit HEAD",
+        "revert.txt",
+    )
+    .await;
+
+    let upstream = tempfile::tempdir().unwrap();
+    init_main(upstream.path());
+    let patch_repo = tempfile::tempdir().unwrap();
+    bash_git(
+        patch_repo.path(),
+        &["clone", upstream.path().to_str().unwrap(), "."],
+    );
+    bash_git(
+        patch_repo.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    bash_git(patch_repo.path(), &["config", "user.name", "test"]);
+    bash_git(patch_repo.path(), &["config", "commit.gpgsign", "false"]);
+    commit_file(patch_repo.path(), "am.txt");
+    let patches = tempfile::tempdir().unwrap();
+    bash_git(
+        patch_repo.path(),
+        &["format-patch", "-1", "-o", patches.path().to_str().unwrap()],
+    );
+    let patch = std::fs::read_dir(patches.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "patch")
+        })
+        .expect("format-patch wrote no patch");
+    let am_root = tempfile::tempdir().unwrap();
+    bash_git(
+        am_root.path(),
+        &["clone", upstream.path().to_str().unwrap(), "."],
+    );
+    bash_git(
+        am_root.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    bash_git(am_root.path(), &["config", "user.name", "test"]);
+    bash_git(am_root.path(), &["config", "commit.gpgsign", "false"]);
+    assert_command_keeps(
+        am_root.path(),
+        &format!(
+            "git -C . -c user.email=test@example.com am {}",
+            patch.display()
+        ),
+        "am.txt",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bash_diff_and_show_do_not_take_a_parallel_commit() {
+    let root = tempfile::tempdir().unwrap();
+    init_main(root.path());
+    let root_path = root.path().to_path_buf();
+    let committer = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::fs::write(root_path.join("guest.txt"), "foreign\n").unwrap();
+        bash_git(&root_path, &["add", "guest.txt"]);
+        bash_git(&root_path, &["commit", "-m", "foreign"]);
+    });
+    let tool = BashTool;
+    let ctx = ToolContext::new(root.path().to_path_buf());
+    let result = tool
+        .execute(
+            &escalated_args(
+                r#"sleep 0.05
+git -c core.quotepath=false diff >/dev/null
+git -c core.quotepath=false show --stat HEAD >/dev/null
+i=0
+while [ "$i" -lt 40 ]; do
+  if git cat-file -e HEAD:guest.txt 2>/dev/null; then
+    printf seen > proof.txt
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+"#,
+            ),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    committer.await.unwrap();
+    assert!(result.success, "{result:?}");
+    let paths = changed_path_list(result.metadata.as_ref());
+    assert!(
+        paths.iter().any(|path| path == "proof.txt"),
+        "command write missing from {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path == "guest.txt"),
+        "diff or show took a parallel commit: {paths:?}"
+    );
+    eprintln!("ORACLE diff-show-paths={}", paths.join(","));
+}
+
+#[test]
+fn prefix_session_cwd_quotes_shell_metacharacters_in_the_cwd() {
+    // A cwd containing shell metacharacters must be single-quoted so the
+    // prefixed `cd` cannot execute them: unquoted interpolation would run
+    // `cd /worktree/$(reboot) && ls` at parse time, bypassing every
+    // permission surface that approved only `ls`.
+    let workspace = tempfile::tempdir().unwrap();
+    let hostile = workspace.path().join("$(reboot) `id` spaces");
+    std::fs::create_dir_all(&hostile).unwrap();
+    let session = format!("bash-quote-{}", std::process::id());
+    crate::shell_session::bind_session(&session, &hostile);
+    let ctx = ToolContext::new(hostile.clone()).with_session_id(&session);
+    let prefixed = prefix_session_cwd("ls", &ctx);
+    crate::shell_session::drop_session(&session);
+    assert_eq!(
+        prefixed,
+        format!(
+            "cd '{}' && ls",
+            hostile.display().to_string().replace('\'', "'\\''")
+        ),
+        "the cwd must arrive shell-quoted: {prefixed}"
+    );
+}
+
+#[tokio::test]
+async fn sandbox_shaped_failure_proposes_one_escalated_retry() {
+    let tool = BashTool;
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::new(AtomicBool::new(false)),
+        request: Arc::new(std::sync::Mutex::new(None)),
+        output: SandboxExecutionOutput {
+            stdout: String::new(),
+            stderr: "sh: ping: Operation not permitted\n".to_string(),
+            exit_code: 126,
+            timed_out: false,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 34,
+            captured_bytes: 34,
+            truncated: false,
+            timed_out: false,
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_session_id("bash-hint-shaped")
+        .with_sandbox(sandbox);
+    let result = tool
+        .execute(
+            &serde_json::json!({"command": "ping -c1 example.com", "sandbox_permissions": "use_default"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(
+        result.content.contains("sandbox-induced"),
+        "hint present: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("require_escalated"),
+        "the hint names the approval-gated retry: {}",
+        result.content
+    );
+    let metadata = result.metadata.expect("metadata");
+    assert_eq!(metadata["sandbox_failure_hint"], "a syscall was blocked");
+    crate::external_observation::release_session("bash-hint-shaped");
+}
+
+#[tokio::test]
+async fn unrelated_failure_and_success_never_propose_escalation() {
+    let tool = BashTool;
+    // A plain command error (bad flag) is not sandbox-shaped.
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::new(AtomicBool::new(false)),
+        request: Arc::new(std::sync::Mutex::new(None)),
+        output: SandboxExecutionOutput {
+            stdout: String::new(),
+            stderr: "ls: illegal option -- 9\n".to_string(),
+            exit_code: 1,
+            timed_out: false,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 25,
+            captured_bytes: 25,
+            truncated: false,
+            timed_out: false,
+        },
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_session_id("bash-hint-plain")
+        .with_sandbox(sandbox);
+    let result = tool
+        .execute(&serde_json::json!({"command": "ls -9"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!result.success);
+    assert!(
+        !result.content.contains("sandbox-induced"),
+        "no hint for a plain failure: {}",
+        result.content
+    );
+    // A successful run never carries the hint even if its output mentions a
+    // signal word in passing.
+    let sandbox = Arc::new(RecordingExtendedSandbox {
+        called: Arc::new(AtomicBool::new(false)),
+        request: Arc::new(std::sync::Mutex::new(None)),
+        output: SandboxExecutionOutput {
+            stdout: "grep found 'Operation not permitted' in the docs\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        },
+        summary: CommandOutputSummary {
+            total_bytes: 44,
+            captured_bytes: 44,
+            truncated: false,
+            timed_out: false,
+        },
+    });
+    let ctx = ToolContext::new(temp.path().to_path_buf())
+        .with_session_id("bash-hint-plain")
+        .with_sandbox(sandbox);
+    let result = tool
+        .execute(&serde_json::json!({"command": "grep ..."}), &ctx)
+        .await
+        .unwrap();
+    assert!(result.success);
+    assert!(!result.content.contains("sandbox-induced"));
+    crate::external_observation::release_session("bash-hint-plain");
 }

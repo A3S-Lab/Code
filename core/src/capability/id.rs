@@ -7,6 +7,7 @@ use super::CapabilitySetError;
 
 pub const MAX_CAPABILITY_IDENTIFIER_BYTES: usize = 256;
 pub const USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA: &str = "a3s.use.capability-snapshot-cursor.v1";
+pub const USE_SELECTION_CURSOR_SCHEMA: &str = "a3s.use.selection-cursor.v1";
 
 /// Canonical lowercase SHA-256 value used by capability identity contracts.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -163,7 +164,10 @@ pub struct UseCapabilityGeneration {
     schema: &'static str,
     generation: u64,
     revision: Sha256Digest,
-    registry_revision: Sha256Digest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_revision: Option<Sha256Digest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_id: Option<Box<str>>,
 }
 
 impl UseCapabilityGeneration {
@@ -172,8 +176,40 @@ impl UseCapabilityGeneration {
             schema: USE_CAPABILITY_SNAPSHOT_CURSOR_SCHEMA,
             generation,
             revision,
-            registry_revision,
+            registry_revision: Some(registry_revision),
+            selection_id: None,
         }
+    }
+
+    /// Exact reconcile selection identity; no Registry evidence is invented.
+    pub fn selection(
+        selection_id: impl Into<String>,
+        generation: u64,
+        revision: Sha256Digest,
+    ) -> Result<Self, CapabilitySetError> {
+        let selection_id = selection_id.into();
+        let mut chars = selection_id.chars();
+        if selection_id.len() > 128
+            || !chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(CapabilitySetError::InvalidIdentifier {
+                field: "selection_id",
+                reason: "it is not a bounded selection identity",
+            });
+        }
+        if generation == 0 {
+            return Err(CapabilitySetError::InvalidGeneration {
+                field: "use_selection_generation",
+            });
+        }
+        Ok(Self {
+            schema: USE_SELECTION_CURSOR_SCHEMA,
+            generation,
+            revision,
+            registry_revision: None,
+            selection_id: Some(selection_id.into_boxed_str()),
+        })
     }
 
     pub const fn schema(&self) -> &'static str {
@@ -188,8 +224,55 @@ impl UseCapabilityGeneration {
         &self.revision
     }
 
-    pub fn registry_revision(&self) -> &Sha256Digest {
-        &self.registry_revision
+    pub fn registry_revision(&self) -> Option<&Sha256Digest> {
+        self.registry_revision.as_ref()
+    }
+
+    pub fn selection_id(&self) -> Option<&str> {
+        self.selection_id.as_deref()
+    }
+
+    pub(super) fn origin_matches(&self, other: &Self) -> bool {
+        self.schema == other.schema && self.selection_id == other.selection_id
+    }
+}
+
+/// Exact publication within a reconcile selection; no manifest/version is inferred.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciledPackageGeneration {
+    package_id: Box<str>,
+    generation: NonZeroU64,
+    revision: Sha256Digest,
+}
+
+impl ReconciledPackageGeneration {
+    pub fn new(
+        package_id: impl Into<String>,
+        generation: u64,
+        revision: Sha256Digest,
+    ) -> Result<Self, CapabilitySetError> {
+        let package_id = package_id.into();
+        validate_identifier("package_id", &package_id)?;
+        let generation =
+            NonZeroU64::new(generation).ok_or(CapabilitySetError::InvalidGeneration {
+                field: "package_publication_generation",
+            })?;
+        Ok(Self {
+            package_id: package_id.into_boxed_str(),
+            generation,
+            revision,
+        })
+    }
+
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    pub const fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+    pub fn revision(&self) -> &Sha256Digest {
+        &self.revision
     }
 }
 

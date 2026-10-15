@@ -27,113 +27,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 1
 fi
 
-if [ -z "${A3S_OPENAI_API_KEY:-}" ] && [ -n "${MINIMAX_API_KEY:-}" ]; then
-  export A3S_OPENAI_API_KEY="$MINIMAX_API_KEY"
+if [ "${A3S_CODE_ACL_ENV_PREPARED:-0}" != "1" ]; then
+  exec bash "$SCRIPT_DIR/with_acl_env.sh" run "$CONFIG_FILE" bash "$SCRIPT_DIR/sdk_real_config_env_integration.sh"
 fi
-
-if [ -z "${A3S_OPENAI_BASE_URL:-}" ] && [ -n "${MINIMAX_BASE_URL:-}" ]; then
-  export A3S_OPENAI_BASE_URL="$MINIMAX_BASE_URL"
-fi
-
-ENV_CONFIG_FILE=""
-cleanup_env_config() {
-  if [ -n "$ENV_CONFIG_FILE" ] && [ -f "$ENV_CONFIG_FILE" ]; then
-    rm -f "$ENV_CONFIG_FILE"
-  fi
-}
-trap cleanup_env_config EXIT
-
-generated="$(python3 - "$CONFIG_FILE" <<'PY'
-import os
-import re
-import stat
-import sys
-import tempfile
-from pathlib import Path
-
-source = Path(sys.argv[1])
-text = source.read_text()
-default_model = re.search(
-    r'^\s*default_model\s*=\s*"([^"]+)"', text, re.M
-)
-if not default_model or "/" not in default_model.group(1):
-    print("default_model must use provider/model syntax", file=sys.stderr)
-    sys.exit(1)
-
-provider_name = default_model.group(1).split("/", 1)[0]
-provider = re.search(
-    rf'(providers\s+"{re.escape(provider_name)}"\s*\{{)(.*?)(\n\}})',
-    text,
-    re.S,
-)
-if not provider:
-    print(f'default provider "{provider_name}" not found in config', file=sys.stderr)
-    sys.exit(1)
-
-body = provider.group(2)
-provider_env = re.sub(r"[^A-Za-z0-9]", "_", provider_name).upper()
-
-def configured_value(names):
-    for name in names:
-        match = re.search(
-            rf'\b{name}\s*=\s*(?:"([^"]*)"|env\("([^"]+)"\))',
-            body,
-        )
-        if match:
-            if match.group(1) is not None:
-                return match.group(1)
-            return os.environ.get(match.group(2))
-    return None
-
-api_key = (
-    os.environ.get(f"A3S_{provider_env}_API_KEY")
-    or configured_value(("apiKey", "api_key"))
-    or os.environ.get("A3S_OPENAI_API_KEY")
-)
-base_url = (
-    os.environ.get(f"A3S_{provider_env}_BASE_URL")
-    or configured_value(("baseUrl", "base_url"))
-    or os.environ.get("A3S_OPENAI_BASE_URL")
-)
-
-rewritten_body = re.sub(
-    r'\b(apiKey|api_key)\s*=\s*(?:"[^"]*"|env\("[^"]+"\))',
-    'apiKey = env("A3S_OPENAI_API_KEY")',
-    body,
-    count=1,
-)
-rewritten_body = re.sub(
-    r'\b(baseUrl|base_url)\s*=\s*(?:"[^"]*"|env\("[^"]+"\))',
-    'baseUrl = env("A3S_OPENAI_BASE_URL")',
-    rewritten_body,
-    count=1,
-)
-if rewritten_body == body:
-    rewritten_body = '\n  apiKey = env("A3S_OPENAI_API_KEY")\n  baseUrl = env("A3S_OPENAI_BASE_URL")' + body
-
-rewritten = text[:provider.start(2)] + rewritten_body + text[provider.end(2):]
-
-fd, config_path = tempfile.mkstemp(prefix="a3s-code-sdk-config-env-", suffix=".acl")
-with os.fdopen(fd, "w") as handle:
-    handle.write(rewritten)
-os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
-
-if api_key:
-    print("api_key=" + api_key)
-if base_url:
-    print("base_url=" + base_url)
-print("config_file=" + config_path)
-PY
-)"
-
-while IFS= read -r entry; do
-  entry="${entry%$'\r'}"
-  case "$entry" in
-    api_key=*) export A3S_OPENAI_API_KEY="${entry#api_key=}" ;;
-    base_url=*) export A3S_OPENAI_BASE_URL="${entry#base_url=}" ;;
-    config_file=*) ENV_CONFIG_FILE="${entry#config_file=}" ;;
-  esac
-done < <(printf '%s\n' "$generated")
 
 missing=0
 for name in A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL; do
@@ -147,7 +43,7 @@ if [ "$missing" -ne 0 ]; then
   exit 2
 fi
 
-export A3S_CONFIG_FILE="${ENV_CONFIG_FILE:-$CONFIG_FILE}"
+export A3S_CONFIG_FILE="$CONFIG_FILE"
 
 echo "[1/4] Type-checking Node SDK examples"
 (cd "$WORKSPACE/sdk/node/examples" && npm run typecheck)

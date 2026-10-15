@@ -21,9 +21,9 @@ use crate::verification::VerificationReport;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Schema version. Bumped on incompatible format changes; impls of
-/// [`LoopCheckpointSink`] should reject loads from a future version.
+/// Unbound checkpoint schema. Source-bound checkpoints use schema2 so old readers refuse them.
 pub const LOOP_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+pub(crate) const LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION: u32 = 2;
 
 /// Loop state that must survive crash recovery to preserve convergence limits.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +41,14 @@ pub struct LoopConvergenceState {
     pub guarded_duplicate_signature: Option<String>,
     #[serde(default)]
     pub guarded_duplicate_count: u32,
+    /// Consecutive tool rounds that left the workspace unchanged.
+    /// Older checkpoints omit the field and resume at zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub read_only_evidence_rounds: u32,
+    /// The next provider turn must answer without tools.
+    /// Older checkpoints omit the field and do not force that turn.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duplicate_finalization_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_incomplete_response_hash: Option<String>,
     #[serde(default)]
@@ -111,6 +119,10 @@ pub struct LoopCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_context_digest: Option<String>,
 
+    /// Original policy/Goal prefix admitted at this tool-round boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_source: Option<crate::store::SessionFactSourceV1>,
+
     /// 1-based tool round counter at checkpoint time.
     /// `0` is reserved for "no rounds completed yet".
     pub turn: usize,
@@ -142,30 +154,43 @@ pub struct LoopCheckpoint {
 }
 
 impl LoopCheckpoint {
-    /// Reject a checkpoint written by a *newer*, incompatible schema
-    /// version than this build understands — honoring the contract on
-    /// [`LOOP_CHECKPOINT_SCHEMA_VERSION`].
-    ///
-    /// Field *additions* are absorbed transparently by `#[serde(default)]`,
-    /// so an older checkpoint (lower `schema_version`, including a pre-v1
-    /// `0`) always remains loadable. A *future* version, however, may have
-    /// changed the meaning of existing fields or the tool-round boundary
-    /// semantics; resuming from one risks silent corruption (e.g.
-    /// re-running a non-idempotent tool on the wrong side of the boundary).
-    ///
-    /// [`SessionStore`](crate::store::SessionStore) impls call this right
-    /// after deserialization, so both `resume_run` (which surfaces the
-    /// error to the caller) and the live-run [`LoopCheckpointSink`] (which
-    /// logs and starts fresh) refuse to act on an unreadable checkpoint.
+    pub(crate) fn schema_for(source: Option<&crate::store::SessionFactSourceV1>) -> u32 {
+        if source.is_some() {
+            LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION
+        } else {
+            LOOP_CHECKPOINT_SCHEMA_VERSION
+        }
+    }
+
+    pub(crate) fn validate_source(
+        &self,
+        source: Option<&crate::store::SessionFactSourceV1>,
+    ) -> anyhow::Result<()> {
+        self.ensure_loadable()?;
+        if self.durable_source.as_ref() != source {
+            anyhow::bail!("loop checkpoint durable source differs from the current Session source");
+        }
+        Ok(())
+    }
+
+    /// Preserve legacy unbound schemas0/1; require schema2 for an original source.
+    /// A source cannot be dropped or attached by an optional-field downgrade.
     pub fn ensure_loadable(&self) -> anyhow::Result<()> {
-        if self.schema_version > LOOP_CHECKPOINT_SCHEMA_VERSION {
+        if self.schema_version > LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION {
             anyhow::bail!(
                 "loop checkpoint for run {} has schema version {} but this build supports at \
                  most {}; refusing to resume from an incompatible future checkpoint",
                 self.run_id,
                 self.schema_version,
-                LOOP_CHECKPOINT_SCHEMA_VERSION
+                LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION
             );
+        }
+        match (&self.durable_source, self.schema_version) {
+            (Some(source), LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION) => source.validate()?,
+            (None, 0..=LOOP_CHECKPOINT_SCHEMA_VERSION) => {}
+            _ => anyhow::bail!(
+                "loop checkpoint schema version and durable source disagree; refusing to resume"
+            ),
         }
         if let Some(binding) = &self.capability_binding {
             binding.validate().map_err(|error| {
@@ -293,6 +318,7 @@ mod tests {
             session_id: "session-1".to_string(),
             capability_binding: None,
             standing_context_digest: None,
+            durable_source: None,
             turn,
             messages: vec![Message::user("hi")],
             total_usage: TokenUsage::default(),
@@ -459,3 +485,6 @@ mod tests {
         assert_eq!(store.backend_name(), "failing-checkpoint");
     }
 }
+
+#[cfg(test)]
+mod source_tests;

@@ -16,6 +16,16 @@ Requirements:
 - Note the **current state**: what has been completed and what still needs to be done.
 - Preserve the latest active user request, corrections, constraints, and immediate
   next action precisely.
+- Preserve exact task-relevant values and identifiers learned from tool results
+  within the concise summary. Summarizing file contents does not require dropping
+  a value the user explicitly asked the agent to retain.
+- Record only constraints supported by original user instructions or host policy,
+  with their original scope. Mark completed requests as completed. A one-response
+  format such as "reply OK" is not a permanent response format, and retaining a
+  fact for later does not itself impose confidentiality or prohibit answering a
+  later explicit question about that fact.
+- Prior summaries are fallible generated notes. Do not promote an earlier
+  summary's inference into a new user instruction, permission, or prohibition.
 - If the transcript already starts with a context summary, merge it into one
   updated cumulative summary. Do not nest or repeat old summaries.
 - Do NOT include raw file contents or full command output — only summaries.

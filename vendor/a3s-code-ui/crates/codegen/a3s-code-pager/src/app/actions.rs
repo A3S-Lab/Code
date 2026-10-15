@@ -142,7 +142,7 @@ pub enum Action {
     RevisePlan(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
     /// The suggestion text is server/model-controlled, so it must bypass slash-command and exit-alias resolution.
-    /// A `/always-approve` or `/quit` chip must never execute as a command.
+    /// A `/yolo` or `/quit` chip must never execute as a command.
     SubmitFollowUp(String),
     /// Execute a slash command without consuming the prompt textarea.
     /// Used by modal-driven slash dispatchers (command palette, ArgPicker) where the user's draft text in the prompt should survive the command.
@@ -424,13 +424,13 @@ pub enum Action {
     AnnouncementsOpenCta(a3s_code_telemetry::events::AnnouncementCtaSurface),
     /// Cycle session mode (Shift+Tab): Normal, Plan, Auto, Always-Approve, then back to Normal (Auto skipped when the feature gate is off).
     /// Plan entered on top of a permission (Plan + Auto, Plan + Always-Approve) exits plan and keeps that permission.
-    /// Plan mode sends a signal to the shell; always-approve is local.
+    /// Plan mode sends a signal to the shell; yolo is local.
     CycleMode,
     /// Toggle YOLO mode (auto-approve all permissions). Ctrl+O.
     ToggleYolo,
-    /// Set YOLO (auto-approve / `always-approve`) mode.
+    /// Set YOLO (auto-approve / `yolo`) mode.
     SetYoloMode(bool),
-    /// Set the permission mode by canonical kind (`always-approve` / `ask` / `default`).
+    /// Set the permission mode by canonical kind (`yolo` / `ask` / `default`).
     /// Typed wrapper over [`Action::SetYoloMode`] that preserves the `default` canonical (the `bool` variant collapses `default` to `ask`).
     SetPermissionMode(PermissionModeKind),
     /// Toggle multiline input mode (swap Enter and Shift+Enter behavior).
@@ -974,7 +974,7 @@ pub enum PermissionModePersist {
 }
 /// Canonical permission-mode state for the `permission_mode` setting.
 /// `Default` and `Ask` both project onto `yolo_mode = false` at runtime but are distinct on disk.
-/// `Auto` uses the LLM classifier (not full always-approve).
+/// `Auto` uses the LLM classifier (not full yolo).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionModeKind {
     /// Agent's default behavior (prompt). `yolo_mode = false`.
@@ -994,7 +994,7 @@ impl PermissionModeKind {
             Self::Default => "default",
             Self::Ask => "ask",
             Self::Auto => "auto",
-            Self::AlwaysApprove => "always-approve",
+            Self::AlwaysApprove => "yolo",
         }
     }
     /// Bool projection onto the YOLO runtime flag: `AlwaysApprove` is `true`, everything else `false`.
@@ -1003,7 +1003,7 @@ impl PermissionModeKind {
     pub fn is_always_approve(self) -> bool {
         matches!(self, Self::AlwaysApprove)
     }
-    /// LLM classifier mode (distinct from always-approve).
+    /// LLM classifier mode (distinct from yolo).
     pub fn is_auto(self) -> bool {
         matches!(self, Self::Auto)
     }
@@ -1014,7 +1014,7 @@ impl PermissionModeKind {
             "default" => Some(Self::Default),
             "ask" => Some(Self::Ask),
             "auto" => Some(Self::Auto),
-            "always-approve" => Some(Self::AlwaysApprove),
+            "yolo" => Some(Self::AlwaysApprove),
             _ => None,
         }
     }
@@ -1063,10 +1063,17 @@ mod permission_mode_kind_tests {
             PermissionModeKind::Auto.as_canonical(),
             PermissionModeKind::AlwaysApprove.as_canonical()
         );
+        assert_eq!(PermissionModeKind::AlwaysApprove.as_canonical(), "yolo");
+        assert_eq!(
+            PermissionModeKind::from_canonical("yolo"),
+            Some(PermissionModeKind::AlwaysApprove)
+        );
+        assert_eq!(PermissionModeKind::from_canonical("always-approve"), None);
+        assert_eq!(PermissionModeKind::from_canonical("force"), None);
     }
     #[test]
     fn permission_mode_choices_include_auto_in_catalog() {
-        for c in ["default", "ask", "auto", "always-approve"] {
+        for c in ["default", "ask", "auto", "yolo"] {
             assert!(
                 PermissionModeKind::from_canonical(c).is_some(),
                 "catalog canonical {c} must parse"
@@ -1659,7 +1666,7 @@ pub enum Effect {
     /// Persist the permission mode to config.toml and notify the agent via ACP.
     /// See [`PermissionModePersist`] for rollback behavior.
     PersistPermissionMode {
-        /// One of `"ask"`, `"always-approve"`, or `"default"`.
+        /// One of `"ask"`, `"yolo"`, or `"default"`.
         canonical: &'static str,
         session_id: Option<acp::SessionId>,
         persist: PermissionModePersist,

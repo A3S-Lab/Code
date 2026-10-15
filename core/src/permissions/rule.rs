@@ -98,7 +98,10 @@ impl PermissionRule {
         (Some("search".to_string()), Some(pattern))
     }
 
-    /// Check if this rule matches a tool invocation
+    /// Check if this rule matches a tool invocation.
+    ///
+    /// Batch reads match a rule when any member matches, for rule diagnostics.
+    /// Use `PermissionPolicy::check` to authorize every member of a batch.
     pub fn matches(&self, tool_name: &str, args: &serde_json::Value) -> bool {
         if !self.matches_tool(tool_name) {
             return false;
@@ -151,6 +154,11 @@ impl PermissionRule {
 
     /// Match argument pattern against tool arguments
     fn matches_args(&self, pattern: &str, tool_name: &str, args: &serde_json::Value) -> bool {
+        match super::read_batch::paths(tool_name, args) {
+            Ok(Some(paths)) => return paths.iter().any(|path| self.glob_match(pattern, path)),
+            Err(_) => return false,
+            Ok(None) => {}
+        }
         // Handle wildcard pattern "*" - matches everything
         if pattern == "*" {
             return true;
@@ -177,15 +185,6 @@ impl PermissionRule {
             "read" | "write" | "edit" | "download" => {
                 if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
                     return path.to_string();
-                }
-                if tool_name.eq_ignore_ascii_case("read") {
-                    if let Some(files) = args.get("files").and_then(|v| v.as_array()) {
-                        return files
-                            .iter()
-                            .filter_map(|entry| entry.get("path").and_then(|v| v.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                    }
                 }
                 String::new()
             }

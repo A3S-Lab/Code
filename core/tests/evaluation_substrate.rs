@@ -1,13 +1,15 @@
 #![cfg(feature = "evaluation")]
+#[cfg(feature = "research")]
+use a3s_code_core::evaluation::digest_bytes;
 use a3s_code_core::evaluation::{
-    digest_bytes, AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1,
-    AuxiliaryRunError, AuxiliaryRunService, AuxiliaryRunSpecV1, AuxiliaryRunStateV1,
-    EvaluationRecordV1, EvaluationResultSink, EvaluationResultV1, EvidenceContentModeV1,
-    EvidenceReadRequestV1, ExecutionFactRecorder, ExecutionFrameV1, ExecutionTargetV1,
-    InMemoryAuxiliaryRunService, InMemoryEvaluationResultStore, InMemoryExecutionFactJournal,
-    RunEvidenceReader,
+    AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryRunContextV1, AuxiliaryRunError,
+    AuxiliaryRunService, AuxiliaryRunSpecV1, AuxiliaryRunStateV1, EvaluationRecordV1,
+    EvaluationResultSink, EvaluationResultV1, EvidenceContentModeV1, EvidenceReadRequestV1,
+    ExecutionFactRecorder, ExecutionFrameV1, ExecutionTargetV1, InMemoryAuxiliaryRunService,
+    InMemoryEvaluationResultStore, InMemoryExecutionFactJournal, RunEvidenceReader,
 };
 use a3s_code_core::{AgentEvent, InMemoryRunStore, RunEventRecord};
+#[cfg(feature = "research")]
 use a3s_code_core::{
     ResearchReviewCategoryV1, ResearchReviewFindingV1, ResearchReviewSeverityV1,
     ResearchReviewStatusV1,
@@ -114,6 +116,7 @@ async fn evidence_to_auxiliary_to_result_is_publicly_composable() {
 }
 
 #[tokio::test]
+#[cfg(feature = "research")]
 async fn evaluator_result_binds_to_an_open_review_finding_without_implying_approval() {
     let (runs, target, journal) = prepared_run().await;
     let evidence = RunEvidenceReader::new(Arc::clone(&runs))

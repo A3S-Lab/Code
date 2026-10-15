@@ -8,8 +8,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// Schema version written by [`SessionSnapshotV1`].
-pub const SESSION_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Highest schema version; unbound snapshots preserve the legacy v1 wire.
+pub const SESSION_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// A complete, versioned persistence generation for one session.
 ///
@@ -38,6 +38,14 @@ pub struct SessionSnapshotV1 {
 }
 
 impl SessionSnapshotV1 {
+    pub(crate) fn schema_for(session: &SessionData) -> u32 {
+        if session.durable_source.is_some() {
+            SESSION_SNAPSHOT_SCHEMA_VERSION
+        } else {
+            1
+        }
+    }
+
     pub fn new(
         session: SessionData,
         artifacts: &ArtifactStore,
@@ -50,7 +58,7 @@ impl SessionSnapshotV1 {
             artifacts.retained_uris().into_iter().collect();
         retained_artifact_uris.sort();
         Self {
-            schema_version: SESSION_SNAPSHOT_SCHEMA_VERSION,
+            schema_version: Self::schema_for(&session),
             session,
             artifacts: artifacts.artifacts(),
             retained_artifact_uris,
@@ -87,12 +95,36 @@ impl SessionSnapshotV1 {
         self.validate_for_session(&source_session_id)?;
 
         let session_id = session_id.into();
+        if self.session.durable_source.is_some() {
+            bail!("durable session fork requires explicit source admission");
+        }
         if session_id.trim().is_empty() {
             bail!("forked session id cannot be empty");
         }
 
         self.session.id = session_id.clone();
         self.session.config.workspace = workspace.into();
+        self.rebind_session_owners()?;
+        Ok(self)
+    }
+
+    /// The runtime adapter has verified the source and admitted the new policy.
+    pub(crate) fn fork_with_runtime_state(mut self, mut target: SessionData) -> Result<Self> {
+        self.validate_for_session(&self.session.id)?;
+        target.messages = self.session.messages;
+        target.context_usage = self.session.context_usage;
+        target.total_usage = self.session.total_usage;
+        target.total_cost = self.session.total_cost;
+        target.cost_records = self.session.cost_records;
+        target.tasks = self.session.tasks;
+        self.session = target;
+        self.schema_version = Self::schema_for(&self.session);
+        self.rebind_session_owners()?;
+        Ok(self)
+    }
+
+    fn rebind_session_owners(&mut self) -> Result<()> {
+        let session_id = self.session.id.clone();
         for record in &mut self.run_records {
             record.snapshot.session_id.clone_from(&session_id);
         }
@@ -102,8 +134,10 @@ impl SessionSnapshotV1 {
             }
         }
 
-        self.validate_for_session(&session_id)?;
-        Ok(self)
+        if let Some(review) = &mut self.session_review {
+            review.rebind_session(&session_id)?;
+        }
+        self.validate_for_session(&session_id)
     }
 
     pub fn artifact_store(&self) -> ArtifactStore {
@@ -115,12 +149,16 @@ impl SessionSnapshotV1 {
     }
 
     pub fn ensure_loadable(&self) -> Result<()> {
-        if self.schema_version != SESSION_SNAPSHOT_SCHEMA_VERSION {
+        let expected = Self::schema_for(&self.session);
+        if self.schema_version != expected {
             bail!(
                 "unsupported session snapshot schema version {}; expected {}",
                 self.schema_version,
-                SESSION_SNAPSHOT_SCHEMA_VERSION
+                expected
             );
+        }
+        if let Some(source) = &self.session.durable_source {
+            source.validate()?;
         }
         Ok(())
     }

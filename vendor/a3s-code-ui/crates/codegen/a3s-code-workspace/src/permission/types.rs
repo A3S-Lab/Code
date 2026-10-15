@@ -190,6 +190,23 @@ pub struct HookAsk {
 }
 pub const HOOK_ASK_META_KEY: &str = "hookAsk";
 const HOOK_ASK_SEPARATOR: &str = " — ";
+/// Meta key marking a `request_permission` as an agent question riding the
+/// permission channel, not a permission ask. Question choices use
+/// `RejectOnce` kinds (so a YOLO `AllowOnce` drain cannot answer them); this
+/// marker is the only way a client can tell a choice row from the reject row.
+/// Twin of the local constant in `apps/code/acp/src/agent.rs` (that crate does
+/// not depend on this one; keep the two in sync).
+pub const QUESTION_META_KEY: &str = "question";
+/// Payload under [`QUESTION_META_KEY`]: whether the question accepts a
+/// free-text answer in addition to its choices.
+/// No serde defaults in either direction: a bash-scope or hook-ask meta object
+/// must fail to deserialize into this type (and this payload must fail to
+/// deserialize as those), so the payloads can never be mistaken for each other.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionPermissionMeta {
+    pub allow_free_text: bool,
+}
 impl HookAsk {
     pub fn ask_line(&self) -> String {
         let hook_name = &self.hook_name;

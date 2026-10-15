@@ -1,3 +1,7 @@
+// Each integration-test target includes this module separately; not every
+// helper is used by every target.
+#![allow(dead_code)]
+
 pub mod codex_login_client;
 pub mod layer_c_model;
 

@@ -260,7 +260,7 @@ impl Tool for SearchTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional. Workspace-relative directory or file to search. Default: workspace root."
+                    "description": "Optional. Workspace-relative directory or file to search, or an a3s://tool-output/... artifact URI (grep mode only). Default: workspace root."
                 },
                 "include": {
                     "type": "string",
@@ -324,6 +324,13 @@ impl Tool for SearchTool {
             Ok(mode) => mode,
             Err(error) => return Ok(ToolOutput::error(error)),
         };
+        if let Some(uri) = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .filter(|path| crate::tools::artifact_view::is_tool_output_uri(path))
+        {
+            return Ok(with_search_mode(artifact_grep(mode, uri, args, ctx), mode));
+        }
         let adapted = match self.adapted_args(mode, args) {
             Ok(adapted) => adapted,
             Err(error) => return Ok(ToolOutput::error(error)),
@@ -337,6 +344,45 @@ impl Tool for SearchTool {
         };
         Ok(with_search_mode(output, mode))
     }
+}
+
+fn artifact_grep(
+    mode: SearchMode,
+    uri: &str,
+    args: &serde_json::Value,
+    ctx: &ToolContext,
+) -> ToolOutput {
+    if mode != SearchMode::Grep {
+        return ToolOutput::error(format!(
+            "a tool-output artifact path supports mode='grep' only, not mode='{}'",
+            mode.as_str()
+        ));
+    }
+    let Some(query) = args
+        .get("query")
+        .and_then(serde_json::Value::as_str)
+        .filter(|query| !query.trim().is_empty())
+    else {
+        return ToolOutput::error("query parameter is required");
+    };
+    let count = |name: &str, default: usize| {
+        args.get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(default)
+    };
+    let case_insensitive = args
+        .get("case_sensitive")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+    crate::tools::artifact_view::grep(
+        ctx,
+        uri,
+        query,
+        case_insensitive,
+        count("context", 0),
+        count("limit", crate::tools::artifact_view::DEFAULT_GREP_MATCHES),
+    )
 }
 
 fn copy_if_present(

@@ -12,6 +12,10 @@ const LAYOUT_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub(crate) enum ProjectLanguageProfile {
     Rust,
     TypeScriptJavaScript,
+    /// No marker: the server is served the workspace root.
+    Python,
+    /// No marker: the server is served the workspace root.
+    CCpp,
 }
 
 /// Supported project marker kind.
@@ -102,6 +106,8 @@ fn hash_marker(marker: &ProjectMarker, hasher: &mut StableLayoutHasher) {
     hasher.write_u8(match marker.profile {
         ProjectLanguageProfile::Rust => 1,
         ProjectLanguageProfile::TypeScriptJavaScript => 2,
+        ProjectLanguageProfile::Python => 3,
+        ProjectLanguageProfile::CCpp => 4,
     });
     hasher.write_u8(match marker.kind {
         ProjectMarkerKind::CargoManifest => 1,

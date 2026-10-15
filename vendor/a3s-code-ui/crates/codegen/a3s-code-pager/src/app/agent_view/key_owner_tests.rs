@@ -215,7 +215,7 @@ fn permission_hints_follow_focus() {
     let parked = hint_labels(&agent);
     assert!(
         !parked.contains(&"next option".to_string())
-            && !parked.contains(&"always-approve".to_string()),
+            && !parked.contains(&"yolo".to_string()),
         "parked in the scrollback the bar must drop the card's keys, got {parked:?}"
     );
     assert!(

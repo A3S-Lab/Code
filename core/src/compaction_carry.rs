@@ -10,9 +10,11 @@ use crate::llm::{ContentBlock, Message};
 
 const STANDING_HEADER: &str = "# Instructions (personal + project AGENTS.md chain)";
 const STANDING_END: &str = "<!-- /standing -->";
+const SOURCE_HEADER: &str = "## Durable source";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CarriedObligations {
+    pub durable_source: Option<crate::store::SessionFactSourceV1>,
     pub standing: Vec<String>,
     pub active_goal: Option<String>,
     pub earlier_goal: Option<String>,
@@ -80,8 +82,18 @@ pub(crate) fn obligations_from_folded(lines: &[String]) -> CarriedObligations {
 /// Goal, constraint, and step sections are removed so a contradictory summary
 /// cannot replace the transcript.
 pub(crate) fn seal_summary(model_summary: &str, carried: &CarriedObligations) -> String {
-    let body = strip_model_sections(model_summary);
+    let mut body = strip_model_sections(model_summary);
+    // This reserved section comes only from the original typed binding.
+    while body.contains(SOURCE_HEADER) {
+        body = strip_heading(&body, SOURCE_HEADER);
+    }
     let mut parts = Vec::new();
+    if let Some(source) = &carried.durable_source {
+        parts.push(format!(
+            "{SOURCE_HEADER}\nsequence: {}\nschema: {}\ndomain: {}\ndigest: {}\nReference only: policy, goal state and accepted progress come from original facts.",
+            source.sequence, source.identity.schema, source.identity.domain, source.identity.digest
+        ));
+    }
     for block in &carried.standing {
         let block = block.trim();
         if block.is_empty() {
@@ -134,10 +146,12 @@ pub(crate) fn is_pure_standing_line(line: &str) -> bool {
     is_pure_standing(body)
 }
 
-/// Fallback summaries must stay short. A huge first user turn is not reattached
-/// as the goal; structured obligations still are.
+/// Fallback summaries must stay short. A first user turn longer than a normal
+/// task instruction is not reattached as the goal; structured obligations
+/// still are. Two thousand characters dropped real task instructions on the
+/// failure path, so the cap stays above those and below a pasted transcript.
 pub(crate) fn cap_fallback_goals(carried: &mut CarriedObligations) {
-    const MAX_FALLBACK_GOAL: usize = 2_000;
+    const MAX_FALLBACK_GOAL: usize = 16_384;
     if carried
         .active_goal
         .as_ref()
@@ -615,9 +629,9 @@ mod tests {
     #[test]
     fn label_scan_survives_a_multibyte_char_before_the_label_width() {
         // U+2013 occupies bytes 7..10, so a 9-byte ASCII label must not slice it.
-        let unicode = format!("abcdefg\u{2013}more");
+        let unicode = "abcdefg\u{2013}more";
         assert!(!unicode.is_char_boundary(9));
-        let carried = obligations_from_messages(&[Message::user(&unicode)]);
+        let carried = obligations_from_messages(&[Message::user(unicode)]);
         assert!(carried.constraints.is_empty());
         let carried = obligations_from_folded(&[format!("user\n{unicode}")]);
         assert!(carried.constraints.is_empty());

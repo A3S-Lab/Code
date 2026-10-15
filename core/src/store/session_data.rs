@@ -142,6 +142,10 @@ impl Default for SessionConfig {
 /// Non-serializable fields (event_tx, command_queue, etc.) are rebuilt on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
+    /// Original policy/Goal fact prefix required to restore this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_source: Option<super::SessionFactSourceV1>,
+
     /// Session ID
     pub id: String,
 

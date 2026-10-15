@@ -137,10 +137,10 @@ impl OpenAiClient {
                         break;
                     }
 
-                    while let Some(event_end) = buffer.find("\n\n") {
-                        let event_data: String = buffer.drain(..event_end).collect();
-                        buffer.drain(..2);
-
+                    // eof stays false here. A trailing unframed JSON body is
+                    // parsed after the stream ends, and a chunk that stops on
+                    // CR must not become an event before the next byte arrives.
+                    for event_data in crate::sse::take_sse_events(&mut buffer, false) {
                         for line in event_data.lines() {
                             if let Some(data) = crate::sse::data_field_value(line) {
                                 if data == "[DONE]" {
@@ -299,7 +299,7 @@ impl OpenAiClient {
                                                             as u64,
                                                     );
                                                 }
-                                                if let Some(delta) = Self::merge_stream_text(
+                                                if let Some(delta) = Self::append_stream_delta(
                                                     &mut reasoning_content_accum,
                                                     rc,
                                                 ) {
@@ -316,7 +316,7 @@ impl OpenAiClient {
                                                             as u64,
                                                     );
                                                 }
-                                                if let Some(delta) = Self::merge_stream_text(
+                                                if let Some(delta) = Self::append_stream_delta(
                                                     &mut text_content,
                                                     &content,
                                                 ) {
@@ -518,7 +518,7 @@ impl OpenAiClient {
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
                                     if let Some(delta) =
-                                        Self::merge_stream_text(&mut reasoning_content_accum, rc)
+                                        Self::append_stream_delta(&mut reasoning_content_accum, rc)
                                     {
                                         let _ = tx.send(StreamEvent::ReasoningDelta(delta)).await;
                                     }
@@ -529,7 +529,7 @@ impl OpenAiClient {
                                             Some(request_started_at.elapsed().as_millis() as u64);
                                     }
                                     if let Some(delta) =
-                                        Self::merge_stream_text(&mut text_content, &content)
+                                        Self::append_stream_delta(&mut text_content, &content)
                                     {
                                         let _ = tx.send(StreamEvent::TextDelta(delta)).await;
                                     }
@@ -599,6 +599,27 @@ impl OpenAiClient {
                             "OpenAI-compatible stream ended without any parseable events"
                         );
                     }
+                    return;
+                }
+
+                // Truncation evidence: refuse to finalize a response whose
+                // tail may be missing. Tool-call arguments arrive as an
+                // incremental JSON string; non-empty arguments that fail to
+                // parse mean the byte stream was cut mid-call, and sending
+                // the buffered content as Done would make a truncated turn
+                // indistinguishable from a complete one. Closing without
+                // Done hands the shape to the caller's retryable
+                // "stream ended before a response" path instead.
+                let truncated_tool_args = tool_calls.iter().any(|(_, (_, _, args))| {
+                    !args.trim().is_empty()
+                        && serde_json::from_str::<serde_json::Value>(args).is_err()
+                });
+                if truncated_tool_args {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        model = %request_model,
+                        "OpenAI-compatible stream ended with unparseable tool arguments; refusing to finalize as complete"
+                    );
                     return;
                 }
 

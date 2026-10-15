@@ -18,10 +18,8 @@ pub fn markdown_to_plain(input: &str) -> String {
             }
             Event::End(
                 TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock,
-            ) => {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
+            ) if !out.ends_with('\n') => {
+                out.push('\n');
             }
             _ => {}
         }

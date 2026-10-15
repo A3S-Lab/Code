@@ -272,7 +272,7 @@ pub struct AgentArgs {
     )]
     pub reasoning_effort: Option<String>,
     /// Auto-approve all tool executions
-    #[arg(long = "always-approve", alias = "yolo")]
+    #[arg(long = "yolo")]
     pub yolo: bool,
     /// Path to an agent profile file.
     #[arg(long = "agent-profile", value_name = "PATH")]
@@ -442,11 +442,7 @@ pub struct PagerArgs {
     )]
     pub debug_file: Option<PathBuf>,
     /// Auto-approve all tool executions.
-    #[clap(
-        long = "always-approve",
-        alias = "yolo",
-        alias = "dangerously-skip-permissions"
-    )]
+    #[arg(long = "yolo")]
     pub yolo: bool,
     /// Trust this folder and persist the decision to the trust store.
     #[arg(long = "trust", alias = "trust-folder", hide = true)]

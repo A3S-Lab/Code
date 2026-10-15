@@ -1,0 +1,312 @@
+{
+  "run_id": "a3s-test-95546-1",
+  "suite": "a3s-code-film-reference",
+  "status": "failed",
+  "scenarios": [
+    {
+      "id": "read-and-model-menu",
+      "name": "read-and-model-menu",
+      "surface": "tui",
+      "status": "failed",
+      "duration_ms": 13218,
+      "steps": [
+        {
+          "id": "ready",
+          "status": "passed",
+          "duration_ms": 229,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 7549,
+                "total_bytes": 7549,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 6,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n   main ~/c/a/a/c/a/l/20261012-tui-60s/workspace                                                             \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n              ╭────────────────────────────────────────────────────────────────────────────────╮              \n              │                                                                                │              \n              │    ⠀⠀⢀⣠⣶⣶⣶⣶⣶⣶⣶⣾⣄⡀⠀⠀    A3S Code  9.1.3                                         │              \n              │    ⢀⣿⣿⣿⠋⠁⢠⣶⣶⡄⠈⠙⣿⣿⣿⡀    Thanks for trying A3S Code, give feedback with /feedback│              \n              │    ⢸⣿⠃⠀⠀⢰⣿⣿⣿⣿⡆⠀⠀⠘⣿⡇                                                            │              \n              │    ⢸⣿⠀⠀⣴⣿⣿⡇⢸⣿⣿⣦⠀⠀⣿⡇    New worktree                                    ctrl+w  │              \n              │    ⢸⣿⣧⣿⣿⣿⣿⣿⣿⣽⣿⣿⣧⣼⣿⡇    Resume session                                  ctrl+r  │              \n              │    ⠈⠻⣿⣿⣥⣀⠀⠉⠉⠿⣿⣿⣿⣿⠟⠁    Changelog                                               │              \n              │    ⠀⠀⠀⠙⠻⠿⠿⠿⠿⠿⠿⠟⠋⠀⠀⠀    Quit                                            ctrl+q  │              \n              │                                                                                │              \n              ╰────────────────────────────────────────────────────────────────────────────────╯              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                                      │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n                                                                                                              \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "task",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "text pasted into terminal",
+            "data": {
+              "bracketed": true,
+              "bytes": 179,
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "draft",
+          "status": "passed",
+          "duration_ms": 12,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 10060,
+                "total_bytes": 10060,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 40,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-60s/workspace                                                               \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n    ⠋ Starting session… 0.0s                                                                                  \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯ 直接用 read 工具读取 title.py 和 test_title.py，不调用 bash，不执行命令。用三条要点解释空白输入处    │  \n  │   理，并列出已有测试覆盖的五种输入。                                                                   │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n  Enter:send  │  Opt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts                                    \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "submit",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal key pressed",
+            "data": {
+              "key": "Enter",
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "finished",
+          "status": "passed",
+          "duration_ms": 12935,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 166121,
+                "total_bytes": 166121,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 6,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-60s/workspace                                                   16K / 128K  \n                                                                                                              \n                                                                                                              \n     ❯ 直接用 read 工具读取 title.py 和 test_title.py，不调用 bash，不执行命令。用三条要点解释空   2:05 PM    \n       白输入处理，并列出已有测试覆盖的五种输入。                                                             \n                                                                                                              \n                                                       ▲                                                      \n     空白字符（空格、制表符、换行等）。                                                                       \n     • strip 后为空即回退：用 if not trimmed 判断，只有当去空白后变成空字符串时才返回固定值                   \n     \"Untitled\"；注意这个回退针对的是「整体为空白」，而非对空白做变换。                                       \n     • 非空原样返回：只要 strip 后仍有内容，就返回去空白后的字符串（trimmed），不做大小写、标点               \n     等其他变换，字符串内部的空白也保留。                                                                     \n                                                                                                              \n     已有测试覆盖的五种输入                                                                                   \n                                                                                                              \n     1. \"\" → \"Untitled\"                                                                                       \n     2. \"   \"（三个空格）→ \"Untitled\"                                                                        █\n     3. \"\\t\\n\"（制表符 + 换行）→ \"Untitled\"                                                                  █\n     4. \"  A3S Code  \"（首尾空格）→ \"A3S Code\"                                                               █\n     5. \"你好\"（非 ASCII 文本）→ \"你好\"                                                                      █\n                                                                                                             █\n     补充：读代码可见 title(value) 未处理 None 输入——直接 value.strip() 会在传入 None 时抛                   █\n     AttributeError；test_title.py 也没有 None 以及「仅含前导/尾随空白」「全角空格 \\u3000」等边              █\n     界用例。                                                                                                █\n                                                                                                             █\n     Worked for 12s                                                                                          █\n                                                                                                             █\n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                                      │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n  Shift+Tab:mode  │  Ctrl+x:shortcuts                                                                         \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "coverage-visible",
+          "status": "failed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": null,
+          "error": {
+            "code": "test.assert.text_visible",
+            "message": "expected terminal text \"Unicode\" is not visible"
+          }
+        }
+      ],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "id": "settings",
+      "name": "settings",
+      "surface": "tui",
+      "status": "passed",
+      "duration_ms": 284,
+      "steps": [
+        {
+          "id": "ready",
+          "status": "passed",
+          "duration_ms": 230,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 7549,
+                "total_bytes": 7549,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 6,
+                  "row": 30,
+                  "visible": true
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n   main ~/c/a/a/c/a/l/20261012-tui-60s/workspace                                                             \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n              ╭────────────────────────────────────────────────────────────────────────────────╮              \n              │                                                                                │              \n              │    ⠀⠀⢀⣠⣶⣶⣶⣶⣶⣶⣶⣾⣄⡀⠀⠀    A3S Code  9.1.3                                         │              \n              │    ⢀⣿⣿⣿⠋⠁⢠⣶⣶⡄⠈⠙⣿⣿⣿⡀    Thanks for trying A3S Code, give feedback with /feedback│              \n              │    ⢸⣿⠃⠀⠀⢰⣿⣿⣿⣿⡆⠀⠀⠘⣿⡇                                                            │              \n              │    ⢸⣿⠀⠀⣴⣿⣿⡇⢸⣿⣿⣦⠀⠀⣿⡇    New worktree                                    ctrl+w  │              \n              │    ⢸⣿⣧⣿⣿⣿⣿⣿⣿⣽⣿⣿⣧⣼⣿⡇    Resume session                                  ctrl+r  │              \n              │    ⠈⠻⣿⣿⣥⣀⠀⠉⠉⠿⣿⣿⣿⣿⠟⠁    Changelog                                               │              \n              │    ⠀⠀⠀⠙⠻⠿⠿⠿⠿⠿⠿⠟⠋⠀⠀⠀    Quit                                            ctrl+q  │              \n              │                                                                                │              \n              ╰────────────────────────────────────────────────────────────────────────────────╯              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n                                                                                                              \n  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                                      │  \n  ╰─────────────────────────────────────────────────────────────────────── boyue/DeepSeek V4 Flash (high) ─╯  \n                                                                                                              \n                                                                                                              \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "settings-command",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "text pasted into terminal",
+            "data": {
+              "bracketed": true,
+              "bytes": 9,
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "open-settings",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal key pressed",
+            "data": {
+              "key": "Enter",
+              "surface": "tui"
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "settings-visible",
+          "status": "passed",
+          "duration_ms": 12,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal wait condition matched",
+            "data": {
+              "output": {
+                "retained_bytes": 16304,
+                "total_bytes": 16304,
+                "truncated": false
+              },
+              "process": {
+                "running": true
+              },
+              "surface": "tui",
+              "viewport": {
+                "alternate_screen": true,
+                "application_cursor": false,
+                "bracketed_paste": true,
+                "columns": 110,
+                "cursor": {
+                  "column": 93,
+                  "row": 31,
+                  "visible": false
+                },
+                "rows": 35,
+                "text": "                                                                                                              \n  main ~/c/a/a/c/a/l/20261012-tui-60s/workspace                                                               \n                                                                                                              \n                ┌─ Settings ────────────────────────────────────────────────────────── [✗] ─┐                 \n                │                                                                           │                 \n                │   / to search                                                             │                 \n                │  ───────────────────────────────────────────────────────────────────────  │                 \n                │   Appearance ───────────────────────────────────────────────────────────  │                 \n                │  ▸ Compact mode                                                  off      │                 \n                │  ▸ Default screen mode                                    Fullscreen  ›   │                 \n                │  ▸ Show timestamps                                                on      │                 \n                │  ▸ Timeline sidebar                                              off      │                 \n                │  ▸ Snap prompt to top on send                                     on      │                 \n                │  ▸ Disable vim input mode                                         on      │                 \n                │  ▸ Vim scrollback navigation                                     off      │                 \n                │  ▸ Theme                                              A3S Code Night  ›   │                 \n                │  ▸ Auto dark theme                                    A3S Code Night  ›   │                 \n                │  ▸ Auto light theme                                     A3S Code Day  ›   │                 \n                │  ▸ Render Mermaid diagrams                                      Auto  ›   │                 \n                │  ▸ Max thoughts width                                            120      │                 \n                │  ▸ Show thinking blocks                                           on      │                 \n                │  ▸ Respect manual folds                                          off      │                 \n                │  ▸ Group tool calls                                               on      │                 \n                │  ▸ Collapsed edit blocks                                         off      │                 \n                │  ▸ Match display refresh rate                                     on      │                 \n                │   Mouse ────────────────────────────────────────────────────────────────  │                 \n                │                                                                           │                 \n    ⠋ Starting s│                  Tip · Ask A3S Code to change a setting                   │                 \n                │                                                                           │                 \n  ╭─────────────│       ↑/↓/j/k nav  |  g/G top/btm  |  Space toggle  |  Enter toggle       │──────────────╮  \n  │ ❯           │            → expand  |  / search  |  d reset  |  F2/Esc close             │              │  \n  ╰─────────────└───────────────────────────────────────────────────────────────────────────┘Flash (high) ─╯  \n                                                                                                              \n                                                                                                              \n                                                                                                              "
+              }
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "theme-visible",
+          "status": "passed",
+          "duration_ms": 0,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal text is visible",
+            "data": {
+              "text": "A3S Code Night",
+              "visible": true
+            },
+            "evidence": []
+          },
+          "error": null
+        },
+        {
+          "id": "settings",
+          "status": "passed",
+          "duration_ms": 3,
+          "attempts": 1,
+          "output": {
+            "summary": "terminal recording captured",
+            "data": {
+              "bytes": 16304
+            },
+            "evidence": [
+              {
+                "name": "terminal/settings.vt",
+                "path": "/Users/roylin/code/a3s/apps/code/assets/launch/20261012-tui-60s/.a3s-test/runs/a3s-test-95546-1/settings/terminal/settings.vt",
+                "media_type": "application/vnd.a3s.terminal-vt"
+              }
+            ]
+          },
+          "error": null
+        }
+      ],
+      "error": null,
+      "cleanup_error": null
+    }
+  ]
+}

@@ -111,7 +111,7 @@ pub(super) fn permission_mode_artifact_str(
 ) -> &'static str {
     use a3s_code_telemetry::enums::PermissionMode;
     match mode {
-        PermissionMode::AlwaysApprove => "always-approve",
+        PermissionMode::AlwaysApprove => "yolo",
         PermissionMode::Auto => "auto",
         PermissionMode::Ask => "ask",
     }

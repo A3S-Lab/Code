@@ -4,13 +4,32 @@
 //! drive real A3S sessions instead of the in-process A3S Code `MvpAgent`.
 
 mod agent;
+pub mod approval_learning;
 mod cc_switch;
 mod config;
+mod cursor_account;
+mod document_read;
+mod engineering;
+pub mod form_request;
 mod goal;
 mod grok_account;
+mod harness_assemble;
+mod host_context;
+mod local_assets;
+pub mod log_file;
+mod plugin_mcp;
+mod plugin_selection;
+mod plugin_tools;
+mod plugin_workspace;
+mod run_observation;
+mod sampling_consent;
+mod turn_cancel;
+pub mod unattended;
+mod wiki_search;
 
 pub use agent::A3sCodeAgent;
 pub use config::{load_launch_config, LaunchConfig};
+pub use plugin_selection::PluginSelectionHost;
 
 /// Project one tool through the posture the next admission freezes.
 ///

@@ -93,7 +93,10 @@ async fn resumed_session_rejects_a_retained_run_id_collision_without_overwrite()
         .await
         .unwrap();
     let error = resumed.send(QUERY, None).await.unwrap_err();
-    assert!(matches!(error, CodeError::RunIdentityConflict { .. }));
+    assert!(
+        matches!(error, CodeError::RunIdentityConflict { .. }),
+        "{error:?}"
+    );
     assert!(resumed_client.observations().is_empty());
     let retained = resumed.runs().await;
     assert_eq!(retained.len(), 1);

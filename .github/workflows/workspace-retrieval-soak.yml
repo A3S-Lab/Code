@@ -32,7 +32,7 @@ jobs:
         run: bash .github/setup-workspace.sh
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Relock standalone dependencies
         run: bash .github/relock-standalone-deps.sh

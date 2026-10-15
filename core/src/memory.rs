@@ -19,10 +19,11 @@ mod maintenance;
 #[path = "memory/semantic_refresh.rs"]
 mod semantic_refresh;
 pub use maintenance::{
-    MemoryMaintenanceCloseReport, MemoryMaintenanceContext, MemoryMaintenanceError,
-    MemoryMaintenanceHealth, MemoryMaintenanceJob, MemoryMaintenanceJobHealth,
-    MemoryMaintenanceOptions, MemoryMaintenanceOutcome, MemoryMaintenancePhase,
-    MemoryMaintenanceRuntime, ScheduledMemoryMaintenance,
+    ConsolidationJudge, LlmConsolidationJudge, MemoryMaintenanceCloseReport,
+    MemoryMaintenanceContext, MemoryMaintenanceError, MemoryMaintenanceHealth,
+    MemoryMaintenanceJob, MemoryMaintenanceJobHealth, MemoryMaintenanceOptions,
+    MemoryMaintenanceOutcome, MemoryMaintenancePhase, MemoryMaintenanceRuntime,
+    ScheduledMemoryMaintenance,
 };
 pub use semantic_refresh::{
     ScheduledSemanticRefresh, SemanticRefreshMetrics, SemanticRefreshRunMetrics,
@@ -54,6 +55,14 @@ pub trait MemoryObserver: Send + Sync {
     async fn on_memory_stored(&self, observation: MemoryObservation) -> anyhow::Result<()>;
 }
 
+/// Borrowed synchronous bookkeeping at the original V1 store boundary.
+/// A primary Ack carries the backend's canonical ID; an archive unit Ack
+/// carries None and addresses the exact ID already held by its caller.
+pub(crate) trait MemoryWriteProgress: Send {
+    fn entered(&mut self) -> bool;
+    fn acknowledged(&mut self, canonical_id: Option<&str>);
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -71,9 +80,12 @@ pub struct MemoryConfig {
     /// Maximum working memory items (default: 10)
     #[serde(default = "MemoryConfig::default_max_working")]
     pub max_working: usize,
-    /// Pruning policy run by an explicitly owned maintenance runtime.
-    /// `None` disables scheduled pruning.
-    #[serde(default)]
+    /// Pruning policy run by the session-owned maintenance runtime.
+    /// Default ON (10,000 items / 180 days / importance < 0.3) — unbounded
+    /// memory growth is a resource leak, and the product decision landed
+    /// on fail-closed retention. `None` (ACL `prune = "off"`) disables
+    /// scheduled pruning for hosts that manage retention themselves.
+    #[serde(default = "MemoryConfig::default_prune_policy")]
     pub prune_policy: Option<PrunePolicy>,
     /// How often owned maintenance prunes, in seconds (default: 3600).
     #[serde(default = "MemoryConfig::default_prune_interval_secs")]
@@ -95,6 +107,12 @@ pub struct MemoryConfig {
     /// Maximum transcript characters passed into the LLM memory extractor.
     #[serde(default = "MemoryConfig::default_llm_extraction_max_input_chars")]
     pub llm_extraction_max_input_chars: usize,
+    /// Live handle for the semantic arm of usage telemetry. Host-injected
+    /// (the same shape as the CLI vector memory store's embedding
+    /// provider), never serialized — ACL parsing leaves it unset and the
+    /// free lexical arm runs alone.
+    #[serde(skip)]
+    pub semantic_usage_judge: Option<std::sync::Arc<SemanticUsageJudge>>,
 }
 
 impl MemoryConfig {
@@ -107,6 +125,13 @@ impl MemoryConfig {
     fn default_prune_interval_secs() -> u64 {
         3600
     }
+    fn default_prune_policy() -> Option<PrunePolicy> {
+        Some(PrunePolicy {
+            max_age_days: 180,
+            min_importance_to_keep: 0.3,
+            max_items: 10_000,
+        })
+    }
     fn default_llm_extraction() -> bool {
         true
     }
@@ -118,18 +143,133 @@ impl MemoryConfig {
     }
 }
 
+/// The semantic arm of usage telemetry: cosine similarity between a
+/// memory's content and the turn's final text, above a host-chosen
+/// threshold. Host-injected (`EmbeddingProvider` is a live handle, the
+/// same shape as the CLI's vector memory store), opt-in, and fail-quiet —
+/// an embedding error decides nothing.
+pub struct SemanticUsageJudge {
+    executor: crate::embedding::EmbeddingExecutor,
+    threshold: f32,
+}
+
+impl std::fmt::Debug for SemanticUsageJudge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticUsageJudge")
+            .field("threshold", &self.threshold)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Default cosine threshold: strict enough that a topical neighbour does
+/// not count, loose enough that a paraphrase does.
+pub const SEMANTIC_USAGE_DEFAULT_THRESHOLD: f32 = 0.60;
+
+impl SemanticUsageJudge {
+    pub fn new(
+        provider: std::sync::Arc<dyn crate::embedding::EmbeddingProvider>,
+        threshold: f32,
+    ) -> anyhow::Result<Self> {
+        if !threshold.is_finite() || !(-1.0..=1.0).contains(&threshold) {
+            anyhow::bail!("semantic usage threshold must be a finite cosine in [-1, 1]");
+        }
+        Ok(Self {
+            executor: crate::embedding::EmbeddingExecutor::new(
+                provider,
+                crate::embedding::EmbeddingExecutorConfig::default(),
+            )?,
+            threshold,
+        })
+    }
+
+    /// True when the memory content is semantically present in the final
+    /// text; None when the judge cannot decide (embedding failure).
+    pub(crate) async fn used(&self, memory_content: &str, final_text: &str) -> Option<bool> {
+        // Both texts are judged on the same window the lexical arm sees;
+        // the usage signal is about this turn's reply, not the whole log.
+        let memory_window: String = memory_content
+            .chars()
+            .take(USAGE_TELEMETRY_WINDOW_CHARS)
+            .collect();
+        let text_window: String = final_text
+            .chars()
+            .take(USAGE_TELEMETRY_WINDOW_CHARS)
+            .collect();
+        let inputs = vec![
+            crate::embedding::EmbeddingInput::new("memory", memory_window),
+            crate::embedding::EmbeddingInput::new("text", text_window),
+        ];
+        let execution = self
+            .executor
+            .embed(inputs, tokio_util::sync::CancellationToken::new())
+            .await
+            .map_err(|error| {
+                tracing::debug!(
+                    %error,
+                    "semantic usage judge embedding failed; lexical arm only"
+                );
+                error
+            })
+            .ok()?;
+        let memory_vector = execution
+            .vectors
+            .iter()
+            .find(|v| &*v.id == "memory")?
+            .values
+            .clone();
+        let text_vector = execution
+            .vectors
+            .iter()
+            .find(|v| &*v.id == "text")?
+            .values
+            .clone();
+        Some(cosine_similarity(&memory_vector, &text_vector) >= self.threshold)
+    }
+}
+
+/// Cosine similarity of two equal-length vectors; 0.0 when either is
+/// zero-length or the norms vanish.
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    let length = left.len().min(right.len());
+    let (mut dot, mut left_norm, mut right_norm) = (0.0f32, 0.0f32, 0.0f32);
+    for index in 0..length {
+        dot += left[index] * right[index];
+        left_norm += left[index] * left[index];
+        right_norm += right[index] * right[index];
+    }
+    if left_norm <= f32::EPSILON || right_norm <= f32::EPSILON {
+        return 0.0;
+    }
+    dot / (left_norm.sqrt() * right_norm.sqrt())
+}
+
+/// The reply window semantic usage is judged over — one screen of reply,
+/// where "used in this turn" actually happens.
+const USAGE_TELEMETRY_WINDOW_CHARS: usize = 2_000;
+
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             relevance: RelevanceConfig::default(),
             max_short_term: 100,
             max_working: 10,
-            prune_policy: None,
+            prune_policy: Self::default_prune_policy(),
             prune_interval_secs: 3600,
             llm_extraction: true,
             llm_extraction_max_items: 5,
             llm_extraction_max_input_chars: 8_000,
+            semantic_usage_judge: None,
         }
+    }
+}
+
+impl MemoryConfig {
+    /// Attach the semantic usage judge (host-injected live handle). The
+    /// lexical arm always runs; the judge only decides the memories the
+    /// lexical arm could not.
+    pub fn with_semantic_usage_judge(mut self, judge: std::sync::Arc<SemanticUsageJudge>) -> Self {
+        self.semantic_usage_judge = Some(judge);
+        self
     }
 }
 
@@ -164,6 +304,7 @@ pub struct AgentMemory {
     pub(crate) llm_extraction: bool,
     pub(crate) llm_extraction_max_items: usize,
     pub(crate) llm_extraction_max_input_chars: usize,
+    pub(crate) semantic_usage_judge: Option<std::sync::Arc<SemanticUsageJudge>>,
     extraction_queue: Arc<MemoryExtractionQueue>,
     observers: Arc<Vec<Arc<dyn MemoryObserver>>>,
     durable_memory: Option<crate::durable_memory::DurableMemorySession>,
@@ -269,6 +410,7 @@ impl AgentMemory {
             llm_extraction: config.llm_extraction,
             llm_extraction_max_items: config.llm_extraction_max_items,
             llm_extraction_max_input_chars: config.llm_extraction_max_input_chars,
+            semantic_usage_judge: config.semantic_usage_judge.clone(),
             extraction_queue: Arc::new(MemoryExtractionQueue::default()),
             observers: Arc::new(observers),
             durable_memory,
@@ -292,8 +434,29 @@ impl AgentMemory {
 
     /// Store a memory and return the normalized item that was sent to storage.
     pub async fn remember_item(&self, item: MemoryItem) -> anyhow::Result<MemoryItem> {
+        self.remember_item_with_progress(item, None, None).await
+    }
+
+    pub(crate) async fn remember_item_with_progress(
+        &self,
+        item: MemoryItem,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+        mut progress: Option<&mut dyn MemoryWriteProgress>,
+    ) -> anyhow::Result<MemoryItem> {
         let incoming = item.clone();
+        if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            anyhow::bail!("memory extraction cancelled before store entry");
+        }
+        if progress
+            .as_mut()
+            .is_some_and(|progress| !progress.entered())
+        {
+            anyhow::bail!("memory store entry progress could not be recorded");
+        }
         let item = self.store.store_and_return(item).await?;
+        if let Some(progress) = progress.as_mut() {
+            progress.acknowledged(Some(&item.id));
+        }
         let mut short_term = self.short_term.write().await;
         if let Some(existing) = short_term
             .iter_mut()
@@ -332,10 +495,22 @@ impl AgentMemory {
     }
 
     /// Preserve a superseded V1 item for audit while removing it from recall.
+    #[cfg(test)]
     pub(crate) async fn mark_superseded(
         &self,
         id: &str,
         replacement_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.mark_superseded_with_progress(id, replacement_id, None, None)
+            .await
+    }
+
+    pub(crate) async fn mark_superseded_with_progress(
+        &self,
+        id: &str,
+        replacement_id: &str,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+        mut progress: Option<&mut dyn MemoryWriteProgress>,
     ) -> anyhow::Result<bool> {
         if id == replacement_id {
             anyhow::bail!("a memory cannot supersede itself");
@@ -354,7 +529,21 @@ impl AgentMemory {
         if !item.tags.iter().any(|tag| tag == "superseded") {
             item.tags.push("superseded".to_string());
         }
+        // Retrieval may await. Recheck the same effective token only after
+        // it returns, immediately before the actual archive store entry.
+        if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            anyhow::bail!("memory extraction cancelled before archive store entry");
+        }
+        if progress
+            .as_mut()
+            .is_some_and(|progress| !progress.entered())
+        {
+            anyhow::bail!("archive store entry progress could not be recorded");
+        }
         self.store.store(item).await?;
+        if let Some(progress) = progress.as_mut() {
+            progress.acknowledged(None);
+        }
         self.short_term.write().await.retain(|item| item.id != id);
         self.working.write().await.retain(|item| item.id != id);
         Ok(true)

@@ -32,6 +32,7 @@
 //! | queue_config            | No        | Child runs are synchronous within parent       |
 //! | planning_mode           | No        | Child tasks are pre-planned by parent          |
 //! | context_providers       | No        | Child has its own prompt context                |
+//! | work_policy             | Yes       | Independent policy bytes, never parent Goal authority |
 
 use crate::agent::AgentConfig;
 use crate::hitl::{
@@ -53,6 +54,7 @@ use tokio::sync::oneshot;
 /// use the child's own defaults (set by `AgentDefinition::apply_to`).
 #[derive(Clone)]
 pub struct ChildRunContext {
+    pub work_policy: Option<crate::WorkPolicyV1>,
     pub security_provider: Option<Arc<dyn SecurityProvider>>,
     pub hook_engine: Option<Arc<dyn HookExecutor>>,
     pub skill_registry: Option<Arc<SkillRegistry>>,
@@ -626,6 +628,7 @@ impl ChildRunContext {
     /// Called after `AgentDefinition::apply_to()` so that parent capabilities
     /// fill remaining gaps without overriding agent-specific settings.
     pub(crate) fn apply_to(&self, config: &mut AgentConfig) {
+        config.work_policy = self.work_policy.clone();
         if config.security_provider.is_none() {
             config.security_provider = self.security_provider.clone();
         }

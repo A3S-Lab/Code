@@ -1,5 +1,11 @@
 # A3S Code Deep Test-Case Catalog
 
+For the actual interactive pager → ACP → Core surface, use the
+[2026-10-12 TUI E2E plan](../tui-e2e/20261012/README.md): 200 behavior,
+setting, or availability-gate rows with 1,000 planned cases. It includes
+current unavailable entries and does not claim those features are supported
+or that the cases have run. This SDK capability catalog remains separate.
+
 **Line:** Core `8.6.0` (`6b3e4f70`)
 **Source of truth:** `core/src/sdk_capabilities.rs` `CAPABILITY_SPECS`
 **Status:** case specification. A row is not a passing test. `Home` names the

@@ -26,14 +26,20 @@ pub(super) fn validate_payload(
     validate_id("payload session_id", session_id)?;
 
     if let Some(logical_resume) = &payload.logical_resume {
-        if logical_resume.schema_version != LOOP_CHECKPOINT_SCHEMA_VERSION {
+        if !(LOOP_CHECKPOINT_SCHEMA_VERSION
+            ..=crate::loop_checkpoint::LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION)
+            .contains(&logical_resume.schema_version)
+        {
             return Err(SessionCheckpointError::InvalidPayload(
-                "loop checkpoint is not the exact portable v1 schema".into(),
+                "loop checkpoint schema is not portable".into(),
             ));
         }
         logical_resume
             .ensure_loadable()
             .and_then(|()| logical_resume.ensure_owned_by(&logical_resume.run_id, session_id))
+            .map_err(|error| SessionCheckpointError::InvalidPayload(error.to_string()))?;
+        logical_resume
+            .validate_source(payload.snapshot.session.durable_source.as_ref())
             .map_err(|error| SessionCheckpointError::InvalidPayload(error.to_string()))?;
         if logical_resume.turn == 0 {
             return Err(SessionCheckpointError::InvalidPayload(
@@ -126,9 +132,12 @@ pub(super) fn snapshot_evidence(
 pub(super) fn logical_resume_evidence(
     checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
 ) -> SessionCheckpointResult<SessionLogicalResumeEvidenceV1> {
-    if checkpoint.schema_version != LOOP_CHECKPOINT_SCHEMA_VERSION {
+    if !(LOOP_CHECKPOINT_SCHEMA_VERSION
+        ..=crate::loop_checkpoint::LOOP_CHECKPOINT_SOURCE_SCHEMA_VERSION)
+        .contains(&checkpoint.schema_version)
+    {
         return Err(SessionCheckpointError::InvalidPayload(
-            "loop checkpoint is not the exact portable v1 schema".into(),
+            "loop checkpoint schema is not portable".into(),
         ));
     }
     checkpoint
@@ -141,8 +150,7 @@ pub(super) fn logical_resume_evidence(
             "logical resume has no completed tool-round boundary".into(),
         ));
     }
-    let checkpoint_bytes = canonical_json_bytes(checkpoint)?;
-    ensure_bounded_content(&checkpoint_bytes)?;
+    let (size_bytes, checkpoint_content_digest) = loop_checkpoint_content_identity(checkpoint)?;
     let completed_tool_rounds = u64::try_from(checkpoint.turn).map_err(|_| {
         SessionCheckpointError::InvalidPayload(
             "tool-round counter cannot be represented by the v1 descriptor".into(),
@@ -156,13 +164,28 @@ pub(super) fn logical_resume_evidence(
         checkpoint_schema_version: checkpoint.schema_version,
         completed_tool_rounds,
         checkpoint_ms: checkpoint.checkpoint_ms,
-        size_bytes: content_size(&checkpoint_bytes)?,
-        content_digest: content_digest(&checkpoint_bytes),
+        size_bytes,
+        content_digest: checkpoint_content_digest,
         evidence_digest: String::new(),
     };
     evidence.evidence_digest = evidence.expected_digest()?;
     evidence.validate()?;
     Ok(evidence)
+}
+
+/// Identity-only projection for both portable v1 and loadable legacy source
+/// caches. This deliberately does not require a portable tool-round boundary.
+pub(super) fn loop_checkpoint_content_identity(
+    checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
+) -> SessionCheckpointResult<(u64, String)> {
+    checkpoint
+        .ensure_loadable()
+        .map_err(|error| SessionCheckpointError::InvalidPayload(error.to_string()))?;
+    validate_id("source checkpoint session_id", &checkpoint.session_id)?;
+    validate_id("source checkpoint run_id", &checkpoint.run_id)?;
+    let bytes = canonical_json_bytes(checkpoint)?;
+    ensure_bounded_content(&bytes)?;
+    Ok((content_size(&bytes)?, content_digest(&bytes)))
 }
 
 pub(super) fn canonical_json_bytes<T: Serialize>(value: &T) -> SessionCheckpointResult<Vec<u8>> {

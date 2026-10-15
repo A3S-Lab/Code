@@ -3,7 +3,8 @@
 use super::AgentSession;
 use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
 use crate::session_review::{
-    ReviewScenario, ReviewScenarioRegistry, SessionReviewFindingV1, SessionReviewStoreV1,
+    admit_finding_drafts, ReviewFindingDraft, ReviewScenario, ReviewScenarioRegistry,
+    SessionReviewFindingV1, SessionReviewStoreV1,
 };
 use std::sync::Arc;
 
@@ -74,6 +75,63 @@ impl AgentSession {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    /// Admit host-bound drafts through the original admission, all or nothing.
+    /// Redelivered identical content is a no-op and keeps its lifecycle state;
+    /// the same finding id with any other content refuses the whole batch.
+    pub fn admit_session_review_drafts(
+        &self,
+        scenario_id: &str,
+        source_review_id: &str,
+        observed_at_ms: u64,
+        drafts: Vec<ReviewFindingDraft>,
+    ) -> Result<usize> {
+        let mut store = write_or_recover(&self.session_review);
+        let mut ids = std::collections::BTreeSet::new();
+        let mut fresh = Vec::new();
+        for draft in drafts {
+            if !ids.insert(draft.finding_id.clone()) {
+                return Err(CodeError::Session(format!(
+                    "review finding {} repeats in one admission",
+                    draft.finding_id
+                )));
+            }
+            match store
+                .findings
+                .iter()
+                .find(|finding| finding.finding_id == draft.finding_id)
+            {
+                Some(existing)
+                    if existing.scenario_id == scenario_id
+                        && existing.source_review_id == source_review_id
+                        && existing.severity == draft.severity
+                        && existing.category == draft.category
+                        && existing.claim == draft.claim
+                        && existing.evidence == draft.evidence
+                        && existing.subject == draft.subject
+                        && existing.quote == draft.quote
+                        && existing.suggestion == draft.suggestion => {}
+                Some(_) => {
+                    return Err(CodeError::Session(format!(
+                        "review finding {} already holds other content",
+                        draft.finding_id
+                    )))
+                }
+                None => fresh.push(draft),
+            }
+        }
+        let mut next = store.clone();
+        let admitted = admit_finding_drafts(
+            &mut next,
+            scenario_id,
+            source_review_id,
+            observed_at_ms,
+            fresh,
+        )
+        .map_err(|error| CodeError::Session(error.to_string()))?;
+        *store = next;
+        Ok(admitted)
     }
 
     /// Insert or replace a finding (new findings must be `pending`).

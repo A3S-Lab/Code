@@ -26,6 +26,47 @@ pub use a3s_sandbox::{
 };
 pub use process_host::ProcessHostBashSandbox;
 
+pub(crate) use native::parse_network_allow_rules;
+
+/// Closed set of sandbox network postures the product exposes.
+///
+/// `Deny` (the fail-closed default) keeps the baseline: sandboxed commands
+/// have no network. `Mediated` arms the sandbox crate's Gate 4 stack — the
+/// deny-by-default platform profile plus a loopback-only CONNECT mediator,
+/// with `HTTP_PROXY`/`HTTPS_PROXY` (and `NO_PROXY=""`) forced into the
+/// child environment so egress routes through mediation decisions instead
+/// of escaping outright. Arming is an explicit host opt-in: it widens a
+/// previously denied surface to AVAILABLE-through-mediation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxNetworkMode {
+    /// No network in the sandbox (baseline, unchanged).
+    #[default]
+    Deny,
+    /// Gate 4 mediated egress: forced proxy through the loopback mediator.
+    Mediated,
+}
+
+impl SandboxNetworkMode {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deny" => Ok(Self::Deny),
+            "mediated" => Ok(Self::Mediated),
+            other => anyhow::bail!(
+                "sandbox network mode must be one of the closed set \
+                 [deny, mediated]; got {other:?}"
+            ),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Mediated => "mediated",
+        }
+    }
+}
+
 /// Output from running a command inside a sandbox.
 pub struct SandboxOutput {
     /// Standard output bytes decoded as UTF-8.
@@ -94,6 +135,14 @@ impl From<SandboxOutput> for SandboxExecutionOutput {
 /// session via [`crate::SessionOptions::with_sandbox_handle`].
 #[async_trait]
 pub trait BashSandbox: Send + Sync {
+    /// Check whether this backend can admit command execution without starting
+    /// a process or producing effects. A refusal is a known unexecuted call,
+    /// rather than an execution whose terminal state is unknown. Implementations
+    /// must still enforce the same boundary inside their execution methods.
+    fn validate_execution_available(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Execute a shell command inside the sandbox.
     ///
     /// * `command` — the shell command string (passed as `bash -c <command>`).
@@ -119,6 +168,16 @@ pub trait BashSandbox: Send + Sync {
         self.exec_command(&request.command, &request.guest_workspace)
             .await
             .map(Into::into)
+    }
+
+    /// Whether [`Self::exec`] supports Run-owned background execution.
+    ///
+    /// Opting in promises streaming output, final capture accounting, and
+    /// termination of the command and its descendants when the execution
+    /// future is dropped. The legacy adapter cannot prove these guarantees
+    /// and therefore refuses background execution by default.
+    fn supports_background_execution(&self) -> bool {
+        false
     }
 
     /// Shut down the sandbox (best-effort, infallible from caller's perspective).
@@ -150,6 +209,7 @@ pub trait BashSandbox: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_api::SessionOptions;
     use std::sync::Arc;
 
     struct MockSandbox {
@@ -241,5 +301,40 @@ mod tests {
                 "{path} should be handled by another boundary or remain ordinary"
             );
         }
+    }
+
+    #[test]
+    fn sandbox_network_mode_parse_names_the_closed_set() {
+        assert_eq!(
+            SandboxNetworkMode::parse("deny").unwrap(),
+            SandboxNetworkMode::Deny
+        );
+        assert_eq!(
+            SandboxNetworkMode::parse(" Mediated ").unwrap(),
+            SandboxNetworkMode::Mediated
+        );
+        let error = SandboxNetworkMode::parse("open").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("closed set"), "got: {message}");
+        assert!(
+            message.contains("deny") && message.contains("mediated"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn sandbox_network_mode_default_is_deny() {
+        assert_eq!(
+            SessionOptions::new().sandbox_network,
+            SandboxNetworkMode::Deny
+        );
+        assert_eq!(
+            SessionOptions::new()
+                .with_sandbox_network_mode(SandboxNetworkMode::Mediated)
+                .sandbox_network,
+            SandboxNetworkMode::Mediated
+        );
+        assert_eq!(SandboxNetworkMode::Deny.as_str(), "deny");
+        assert_eq!(SandboxNetworkMode::Mediated.as_str(), "mediated");
     }
 }

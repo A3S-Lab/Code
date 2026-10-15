@@ -312,6 +312,8 @@ fn representative_events() -> Vec<EventCase> {
                     ..TokenUsage::default()
                 },
                 verification_summary: Box::new(VerificationSummary::from_reports(&[])),
+                completion_terminal: Default::default(),
+                forced_stop: None,
                 meta: None,
             },
             "text",
@@ -362,6 +364,7 @@ fn representative_events() -> Vec<EventCase> {
                 question: "Which file?".into(),
                 options: vec!["a.rs".into()],
                 allow_free_text: false,
+                form: None,
             },
             "question_id",
             json!("q-1"),
@@ -785,6 +788,8 @@ fn sdk_projection_derives_reasoning_and_terminal_fields_from_the_envelope() {
             ..TokenUsage::default()
         },
         verification_summary: Box::new(VerificationSummary::from_reports(&[])),
+        completion_terminal: Default::default(),
+        forced_stop: None,
         meta: None,
     })
     .expect("terminal event should project");

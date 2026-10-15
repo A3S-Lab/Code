@@ -164,7 +164,9 @@ impl VecMemoryStore {
 
 fn fs_err_create_dir_all(root: &Path) -> Result<()> {
     std::fs::create_dir_all(root)
-        .map_err(|error| anyhow!("create memory root {}: {error}", root.display()))
+        .map_err(|error| anyhow!("create memory root {}: {error}", root.display()))?;
+    crate::secure_state::restrict_state_dir(root)
+        .map_err(|error| anyhow!("restrict memory root {}: {error}", root.display()))
 }
 
 #[cfg(windows)]
@@ -268,6 +270,59 @@ mod tests {
         store.delete(&item.id).await.unwrap();
         assert_eq!(store.count().await.unwrap(), 0);
         assert!(store.retrieve(&item.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn search_over_many_records_returns_ranked_hits_without_scan_order() {
+        // The id-mapping behind `search` runs on EVERY model prompt; it
+        // once walked the whole collection. This pin holds the behavioral
+        // contract of the primary-key fetch: the RIGHT hits, in FTS
+        // ranking order, with unrelated records absent — across a store
+        // large enough that a scan-order bug would surface as ordering
+        // drift.
+        use a3s_memory::MemoryStore as _;
+        let root = tempfile::tempdir().unwrap();
+        let store = VecMemoryStore::open(root.path()).unwrap();
+        for index in 0..200 {
+            let mut filler = MemoryItem::new(format!(
+                "filler record {index} about harbor cranes and tide tables"
+            ));
+            filler.importance = 0.5;
+            store.store(filler).await.unwrap();
+        }
+        for (id, content) in [
+            ("m1", "the workspace prefers rust-analyzer navigation"),
+            ("m2", "navigation preference: rust-analyzer over rls"),
+            ("m3", "unrelated note about compiler flags"),
+        ] {
+            let mut item = MemoryItem::new(content);
+            item.importance = 0.9;
+            store.store(item).await.unwrap();
+            let _ = id;
+        }
+        let hits = store
+            .search("rust-analyzer navigation preference", 5)
+            .await
+            .unwrap();
+        assert!(
+            hits.len() >= 2,
+            "both navigation memories must surface: {:?}",
+            hits.iter()
+                .map(|hit| hit.content.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            hits[0].content.contains("preference") || hits[0].content.contains("prefers"),
+            "FTS ranking order preserved (the preference memories outrank filler): {:?}",
+            hits.iter()
+                .map(|hit| hit.content.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            hits.iter()
+                .all(|hit| !hit.content.starts_with("filler record")),
+            "filler must not crowd out the matches"
+        );
     }
 
     #[test]
@@ -382,21 +437,24 @@ impl MemoryStore for VecMemoryStore {
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryItem>> {
         let hits = self.recall(query, limit)?;
-        let wanted: std::collections::HashSet<&str> =
-            hits.iter().map(|(id, _)| id.as_str()).collect();
-        let mut items = Vec::with_capacity(hits.len());
-        for document in self.collection.iter().map_err(display_error)? {
-            let document = document.map_err(display_error)?;
-            let document_id = memory_id(&document)?;
-            if document_id.is_empty() || !wanted.contains(document_id.as_str()) {
-                continue;
-            }
-            items.push(doc_to_item(&document)?);
-            if items.len() == hits.len() {
-                break;
-            }
+        if hits.is_empty() {
+            return Ok(Vec::new());
         }
-        // Preserve FTS ranking order.
+        // Primary-key fetch, not a collection scan: this runs on EVERY
+        // model prompt (recall_similar), and the previous full `iter()`
+        // made per-turn recall O(collection) to map ≤limit ids back to
+        // documents. `fetch` keeps the FTS ranking via the re-sort below.
+        // Vectors are skipped — recall needs fields only.
+        let pks: Vec<&str> = hits.iter().map(|(id, _)| id.as_str()).collect();
+        let documents = self
+            .collection
+            .fetch_with_options(&pks, None, false)
+            .map_err(display_error)?;
+        let mut items = Vec::with_capacity(documents.len());
+        for document in &documents {
+            items.push(doc_to_item(document)?);
+        }
+        // Preserve FTS ranking order (fetch returns primary-key order).
         items.sort_by_cached_key(|item| {
             hits.iter()
                 .position(|(id, _)| id == &item.id)

@@ -36,6 +36,43 @@ fn is_foreign_hook_batch(agent: &AgentView, batch_prompt_id: Option<&str>) -> bo
         (Some(batch), Some(current)) if batch != current
     )
 }
+/// `x.ai/turn/outcome`: how the completed run closed at the agent's
+/// completion gate. Arrives before the prompt response (same FIFO wire), so
+/// the line renders beside the terminal marker instead of after it.
+pub(super) fn handle_turn_outcome(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    #[derive(serde::Deserialize)]
+    struct SessionId {
+        #[serde(rename = "sessionId")]
+        id: String,
+    }
+    let session_id = serde_json::from_str::<SessionId>(notif.params.get())
+        .map_err(|error| tracing::warn!(%error, "failed to parse x.ai/turn/outcome"))
+        .ok()
+        .map(|payload| payload.id);
+    let info = crate::app::turn_completion::parse_turn_outcome(notif.params.get());
+    let (Some(session_id), Some(info)) = (session_id, info) else {
+        return false;
+    };
+    let Some(event) = crate::app::turn_completion::turn_outcome_event(&info) else {
+        return false;
+    };
+    let Some(matched) = super::routing::find_session_match(app, &session_id.into()) else {
+        tracing::warn!("x.ai/turn/outcome for unknown session; dropping");
+        return false;
+    };
+    let Some(agent) = app.agents.get_mut(&matched.agent_id()) else {
+        return false;
+    };
+    // Bash-mode turns suppress the marker; the outcome line follows suit.
+    if agent.bash_turn {
+        return false;
+    }
+    agent.scrollback.push_block(crate::scrollback::block::RenderBlock::SessionEvent(
+        crate::scrollback::blocks::SessionEventBlock::new(event),
+    ));
+    true
+}
+
 pub(super) fn refresh_context_used(view: &mut AgentView, used: u64) {
     let total = view.session.models.get_context_window().unwrap_or(0);
     view.apply_context_used(used, total);

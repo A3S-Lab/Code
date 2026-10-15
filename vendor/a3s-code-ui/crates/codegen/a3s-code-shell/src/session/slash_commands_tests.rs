@@ -208,7 +208,7 @@ fn always_approve_parses_on_off() {
     for arg in ["", "on", "true", "1", "yes", "enable"] {
         assert!(
             matches!(
-                resolve_builtin("always-approve", arg),
+                resolve_builtin("yolo", arg),
                 Some(BuiltinAction::SetYolo { enabled: true })
             ),
             "expected on for {arg:?}",
@@ -217,7 +217,7 @@ fn always_approve_parses_on_off() {
     for arg in ["off", "false", "0", "no", "disable"] {
         assert!(
             matches!(
-                resolve_builtin("always-approve", arg),
+                resolve_builtin("yolo", arg),
                 Some(BuiltinAction::SetYolo { enabled: false })
             ),
             "expected off for {arg:?}",
@@ -233,6 +233,24 @@ fn yolo_alias_resolves_to_always_approve() {
         outcome,
         SlashCommandOutcome::Builtin(BuiltinAction::SetYolo { enabled: true })
     ));
+}
+
+#[test]
+fn retired_posture_names_are_not_set_yolo() {
+    for name in ["/always-approve", "/force"] {
+        let outcome = resolve(
+            vec![text_block(name)],
+            &[],
+            all_gated(),
+            SkillSlashRewrite::default(),
+            &[],
+        );
+        let is_yolo = matches!(
+            outcome,
+            Err(SlashCommandOutcome::Builtin(BuiltinAction::SetYolo { .. }))
+        );
+        assert!(!is_yolo, "{name} resolved as SetYolo: {outcome:?}");
+    }
 }
 
 // ── resolve ─────────────────────────────────────────────────────
@@ -292,7 +310,7 @@ fn resolve_model_authored_skill_requires_exact_child_catalog_name_and_loader() {
         ("local:commit", true),
         ("missing", true),
         ("commit", false),
-        ("always-approve", true),
+        ("yolo", true),
     ] {
         assert!(
             super::resolve_model_authored_skill(
@@ -597,7 +615,7 @@ fn available_commands_orders_builtins_first() {
         names,
         [
             "compact",
-            "always-approve",
+            "yolo",
             "flush",
             "dream",
             "memory",
@@ -830,7 +848,7 @@ fn pre_session_builtin_commands_excludes_gated_entries() {
         );
     }
     // Always-on commands are still present.
-    for required in ["compact", "always-approve", "context", "session-info"] {
+    for required in ["compact", "yolo", "context", "session-info"] {
         assert!(
             names.iter().any(|n| n == required),
             "{required} should be present, got: {names:?}",
@@ -1450,7 +1468,7 @@ fn default_availability_is_fail_closed_on_every_gate() {
             "{forbidden} must not be advertised under default fail-closed availability, got: {names:?}",
         );
     }
-    for required in ["compact", "always-approve", "context", "session-info"] {
+    for required in ["compact", "yolo", "context", "session-info"] {
         assert!(
             names.iter().any(|n| n == required),
             "AlwaysOn {required} must always be advertised, got: {names:?}",

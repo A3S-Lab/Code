@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-core"
-version = "9.1.2"
+version = "9.1.3"
 dependencies = [
  "a3s-acl 0.3.0",
  "a3s-common",
@@ -41,6 +41,8 @@ dependencies = [
  "aws-smithy-types",
  "base64 0.21.7",
  "bytes",
+ "cap-fs-ext",
+ "cap-std",
  "chrono",
  "dirs 5.0.1",
  "flate2",
@@ -84,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-code-node"
-version = "9.1.2"
+version = "9.1.3"
 dependencies = [
  "a3s-code-core",
  "anyhow",
@@ -119,8 +121,10 @@ dependencies = [
 [[package]]
 name = "a3s-effect"
 version = "0.1.1"
-source = "git+https://github.com/A3S-Lab/Effect?rev=08a11f782190cf8f83e034064dd018a3f99ec9e1#08a11f782190cf8f83e034064dd018a3f99ec9e1"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "fs2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -173,7 +177,6 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.4"
-source = "git+https://github.com/A3S-Lab/Memory.git?rev=97a5e885d196be77dc1823ad86238e77d942ed73#97a5e885d196be77dc1823ad86238e77d942ed73"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -189,7 +192,6 @@ dependencies = [
 [[package]]
 name = "a3s-sandbox"
 version = "0.2.2"
-source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=7e948a365d8fe4d870dc90a2fa75f1b9082cc42a#7e948a365d8fe4d870dc90a2fa75f1b9082cc42a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -206,8 +208,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "3.1.4"
-source = "git+https://github.com/A3S-Lab/Search.git?rev=e38555cebb5a0fe9a982bde72700971262ac0773#e38555cebb5a0fe9a982bde72700971262ac0773"
+version = "3.2.0"
 dependencies = [
  "a3s-acl 0.2.2",
  "a3s-updater",
@@ -401,6 +402,12 @@ name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
+name = "ambient-authority"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9d4ee0d472d1cd2e28c97dfa124b3d8d992e10eb0a035f33f5d12e3a177ba3b"
 
 [[package]]
 name = "android_system_properties"
@@ -1220,6 +1227,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-fs-ext"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d78e5a3368ae89b7cb68186411452b4b9fac8b41be9c19bf3f47c2d2c8e36e6b"
+dependencies = [
+ "cap-primitives",
+ "cap-std",
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "cap-primitives"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b5f74729fd2f44701d1a8eb47e906cdb3ccd9ec0f02baad85a744b791940b18"
+dependencies = [
+ "ambient-authority",
+ "fs-set-times",
+ "io-extras",
+ "io-lifetimes 3.0.1",
+ "ipnet",
+ "maybe-owned",
+ "rustix 1.1.5",
+ "rustix-linux-procfs",
+ "windows-sys 0.60.2",
+ "winx",
+]
+
+[[package]]
+name = "cap-std"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+dependencies = [
+ "cap-primitives",
+ "io-extras",
+ "io-lifetimes 3.0.1",
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1630,7 +1679,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -2037,6 +2086,17 @@ checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fs-set-times"
+version = "0.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
+dependencies = [
+ "io-lifetimes 2.0.4",
+ "rustix 1.1.5",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2841,6 +2901,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-extras"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
+dependencies = [
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "io-lifetimes"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
+
+[[package]]
+name = "io-lifetimes"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f0fb0570afe1fed943c5c3d4102d5358592d8625fda6a0007fdbe65a92fba96"
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3108,6 +3190,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "maybe-owned"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 
 [[package]]
 name = "md-5"
@@ -4177,6 +4265,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustix-linux-procfs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fc84bf7e9aa16c4f2c758f27412dc9841341e16aa682d9c7ac308fe3ee12056"
+dependencies = [
+ "once_cell",
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "rustls"
 version = "0.21.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4772,7 +4870,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.52.0",
@@ -5496,7 +5594,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5810,6 +5908,16 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
+
+[[package]]
+name = "winx"
+version = "0.36.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
+dependencies = [
+ "bitflags 2.13.2",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "wit-bindgen"

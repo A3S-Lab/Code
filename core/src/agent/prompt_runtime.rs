@@ -10,18 +10,88 @@ impl AgentLoop {
     /// Get the assembled system prompt from slots.
     #[allow(dead_code)]
     pub(super) fn system_prompt(&self) -> String {
-        self.config.prompt_slots.build()
+        if self.config.work_policy.is_some() {
+            let mut slots = self.config.prompt_slots.clone();
+            self.append_work_policy(&mut slots);
+            return self.with_verification_context(slots.build());
+        }
+        self.with_verification_context(self.config.prompt_slots.build())
     }
 
     pub(crate) fn admitted_system_prompt(&self) -> String {
         self.system_prompt()
     }
 
+    pub(crate) fn validate_durable_source(
+        &self,
+        session_id: &str,
+        facts: &[a3s_effect::Fact],
+    ) -> anyhow::Result<()> {
+        if let Some(source) = &self.config.durable_source {
+            source.verify(session_id, facts)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn work_policy(&self) -> Option<&crate::WorkPolicyV1> {
+        self.config.work_policy.as_ref()
+    }
+
+    pub(crate) fn with_work_policy(mut self, policy: Option<crate::WorkPolicyV1>) -> Self {
+        self.tool_context.run_work_policy = policy.clone();
+        self.config.work_policy = policy;
+        self
+    }
+
+    fn append_work_policy(&self, slots: &mut crate::SystemPromptSlots) {
+        if let Some(policy) = &self.config.work_policy {
+            let guidelines = slots.guidelines.get_or_insert_with(String::new);
+            if !guidelines.is_empty() {
+                guidelines.push_str("\n\n");
+            }
+            guidelines.push_str(policy.instructions());
+        }
+    }
+
     /// Get the assembled system prompt from slots with an explicit style.
     fn system_prompt_for_style(&self, style: AgentStyle) -> String {
         let mut slots = self.config.prompt_slots.clone();
         slots.style = Some(style);
-        slots.build()
+        self.append_work_policy(&mut slots);
+        self.with_verification_context(slots.build())
+    }
+
+    fn with_verification_context(&self, mut system: String) -> String {
+        if self.config.verification_contracts.is_empty() {
+            return system;
+        }
+        // Project the admitted host manifest, never commands inferred from
+        // repository text or the user's phrasing. This is model context, not
+        // a grant of tool execution or authority to change the manifest.
+        let contracts: Vec<_> = self
+            .config
+            .verification_contracts
+            .iter()
+            .map(|contract| {
+                serde_json::json!({
+                    "id": contract.id,
+                    "command": contract.command.trim(),
+                    "covers": contract.covers,
+                })
+            })
+            .collect();
+        system.push_str(
+            "\n\nHost verification contracts for this workspace:\n\
+             The following JSON is the admitted host manifest. When verifying covered edits, \
+             use the command string as the entire bash command, with no extra arguments, \
+             prefixes, suffixes or shell composition. Read-only inspection is not verification. \
+             A successful checker must run after the latest edit; a failed check or a later edit \
+             cannot yield Verified completion. These declarations do not authorize execution, \
+             waive permission or sandbox checks, or allow changing the checker or the manifest. \
+             Report a failed or unavailable check truthfully; never claim it passed.\n",
+        );
+        system.push_str(&serde_json::Value::Array(contracts).to_string());
+        system
     }
 
     async fn resolve_effective_style(&self, prompt: &str) -> AgentStyle {

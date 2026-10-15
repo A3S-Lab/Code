@@ -169,6 +169,12 @@ impl AgentView {
                     && opt.kind == agent_client_protocol::PermissionOptionKind::RejectOnce
                     && crate::input::key::is_text_input_key(key)
                     && matches!(key.code, KeyCode::Char(c) if !c.is_ascii_digit())
+                    // A question that does not accept free text offers choices
+                    // only; typing must not open the followup input row.
+                    && perm
+                        .question
+                        .as_ref()
+                        .is_none_or(|q| q.allow_free_text)
                 {
                     perm.focus = PermissionFocus::FollowupInput;
                     let _ = self.prompt.handle_key(key);
@@ -1435,6 +1441,72 @@ mod cancel_turn_mouse_tests {
         );
         assert!(agent.cancel_turn_view.is_none());
         assert!(agent.session.state.is_turn_running());
+    }
+}
+#[cfg(test)]
+mod permission_question_key_tests {
+    use super::test_fixtures::make_agent;
+    use super::*;
+    use crate::app::app_view::InputOutcome;
+    use agent_client_protocol as acp;
+    use std::sync::Arc;
+
+    fn question_state(
+        allow_free_text: bool,
+    ) -> crate::views::permission_view::PermissionViewState {
+        let mut perm = super::test_fixtures::make_followup_permission_state();
+        perm.focus = crate::views::permission_view::PermissionFocus::Options;
+        perm.options = ["left", "right", "neither"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                acp::PermissionOption::new(
+                    acp::PermissionOptionId::new(Arc::from(format!("question-{i}"))),
+                    (*label).to_string(),
+                    acp::PermissionOptionKind::RejectOnce,
+                )
+            })
+            .collect();
+        perm.question = Some(a3s_code_workspace::permission::QuestionPermissionMeta {
+            allow_free_text,
+        });
+        perm
+    }
+
+    /// Typing on a choice row opens the free-text input only when the ask
+    /// accepts free text; a closed question keeps the chooser.
+    #[test]
+    fn typing_on_a_question_choice_opens_free_text_only_when_allowed() {
+        for (allow_free_text, expect_followup) in [(true, true), (false, false)] {
+            let mut agent = make_agent();
+            agent.permission_queue.push_back(question_state(allow_free_text));
+            let typed = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty());
+            let outcome = agent.handle_permission_key(&typed);
+            assert!(matches!(outcome, InputOutcome::Changed), "{outcome:?}");
+            let focus_is_followup = matches!(
+                agent.permission_queue.front().unwrap().focus,
+                crate::views::permission_view::PermissionFocus::FollowupInput
+            );
+            assert_eq!(
+                focus_is_followup, expect_followup,
+                "allow_free_text={allow_free_text}"
+            );
+        }
+    }
+
+    /// Digits never open the input row; they select the numbered choice.
+    #[test]
+    fn digits_still_select_a_question_choice() {
+        let mut agent = make_agent();
+        agent.permission_queue.push_back(question_state(false));
+        let two = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::empty());
+        let outcome = agent.handle_permission_key(&two);
+        match outcome {
+            InputOutcome::Action(Action::PermissionSelect(id)) => {
+                assert_eq!(id.0.as_ref(), "question-1");
+            }
+            other => panic!("expected PermissionSelect(question-1), got {other:?}"),
+        }
     }
 }
 #[cfg(test)]

@@ -29,7 +29,7 @@ pub fn display_grok_home_prefix() -> String {
 pub fn display_grok_home_prefix_for(home: &Path) -> String {
     let default = a3s_code_config::default_grok_home();
     if home == default || home == dunce::canonicalize(&default).unwrap_or(default) {
-        "~/.grok".to_string()
+        "~/.a3s".to_string()
     } else {
         "$GROK_HOME".to_string()
     }
@@ -397,17 +397,17 @@ mod tests {
 
     #[test]
     fn display_grok_home_prefix_default_install() {
-        if std::env::var("GROK_HOME").is_ok() {
+        if std::env::var("GROK_HOME").is_ok() || std::env::var("A3S_HOME").is_ok() {
             return;
         }
-        assert_eq!(display_grok_home_prefix(), "~/.grok");
+        assert_eq!(display_grok_home_prefix(), "~/.a3s");
     }
 
     #[test]
     fn display_user_grok_path_joins_relative() {
         let path = display_user_grok_path(a3s_code_config::USER_CONFIG_FILENAME);
         assert!(path.ends_with("/config.toml") || path.ends_with("\\config.toml"));
-        assert!(path.contains(".grok") || path.contains("$GROK_HOME"));
+        assert!(path.contains(".a3s") || path.contains("$GROK_HOME") || path.contains("$A3S_HOME"));
     }
 
     #[test]

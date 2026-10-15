@@ -412,10 +412,13 @@ async fn runtime_budget_guard_refreshes_the_registered_skill_tool() {
     use crate::skills::{Skill, SkillKind, SkillRegistry};
 
     let skills = Arc::new(SkillRegistry::new());
+    // A tool-scoped skill spawns the nested run whose provider call the
+    // runtime guard must gate. An inherits-session-tools skill is guidance
+    // for the calling turn and spawns no child.
     skills.register_unchecked(Arc::new(Skill {
         name: "budgeted-skill".to_string(),
         description: "Exercise runtime budget inheritance".to_string(),
-        allowed_tools: None,
+        allowed_tools: Some("read(*)".to_string()),
         disable_model_invocation: false,
         kind: SkillKind::Instruction,
         content: "Return a short answer.".to_string(),
@@ -461,6 +464,7 @@ async fn runtime_budget_guard_refreshes_the_registered_skill_tool() {
 
 #[tokio::test]
 async fn delegated_child_run_publishes_events_to_the_parent_hook_executor() {
+    let workspace = tempfile::tempdir().unwrap();
     let hook = Arc::new(RecordingRuntimeHook::default());
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new()
@@ -471,7 +475,7 @@ async fn delegated_child_run_publishes_events_to_the_parent_hook_executor() {
         ));
     let session = agent
         .build_session(
-            "/tmp/test-delegated-hook-inheritance".into(),
+            workspace.path().to_string_lossy().into_owned(),
             Arc::new(StaticStreamingClient::new("child answer")),
             &opts,
         )

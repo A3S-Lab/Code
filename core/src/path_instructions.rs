@@ -5,7 +5,12 @@
 
 use sha2::{Digest, Sha256};
 
-const INJECTION_BYTE_BUDGET: usize = 4_096;
+pub(crate) const INJECTION_BYTE_BUDGET: usize = 4_096;
+
+/// Hard fail-closed ceiling for an explicit injection-budget override
+/// ([`SessionOptions::with_injection_budget`]). An arm above this ceiling
+/// refuses session construction instead of clamping.
+pub(crate) const MAX_PATH_INJECTION_BUDGET: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathRule {
@@ -26,9 +31,22 @@ pub fn prefix_digest(prefix: &str) -> String {
 }
 
 pub fn inject(prefix: &str, rules: &[PathRule], targeted_paths: &[String]) -> PathInjection {
+    inject_with_budget(prefix, rules, targeted_paths, INJECTION_BYTE_BUDGET)
+}
+
+/// Budget-parameterized twin of [`inject`]. The product default stays
+/// [`INJECTION_BYTE_BUDGET`]; the WC-INJECT1 budget decision measures both
+/// arms through this seam. Every budget stays bounded at its call site —
+/// zero and unbounded are not valid arms.
+pub(crate) fn inject_with_budget(
+    prefix: &str,
+    rules: &[PathRule],
+    targeted_paths: &[String],
+    budget: usize,
+) -> PathInjection {
     let mut injected = String::new();
     for rule in rules {
-        if injected.len() >= INJECTION_BYTE_BUDGET {
+        if injected.len() >= budget {
             break;
         }
         if !targeted_paths
@@ -37,7 +55,7 @@ pub fn inject(prefix: &str, rules: &[PathRule], targeted_paths: &[String]) -> Pa
         {
             continue;
         }
-        let remaining = INJECTION_BYTE_BUDGET.saturating_sub(injected.len());
+        let remaining = budget.saturating_sub(injected.len());
         let text = truncate_utf8(&rule.text, remaining);
         if text.is_empty() {
             continue;
@@ -146,6 +164,30 @@ mod tests {
             glob: "crates/code/**".into(),
             text: "Prefer boring harness code.".into(),
         }]
+    }
+
+    #[test]
+    fn budget_cut_drops_the_tail_and_a_larger_budget_keeps_it() {
+        let prefix = "# Instructions";
+        // Tail carries the fact; the front is filler past the default cut.
+        let mut text = String::new();
+        while text.len() < INJECTION_BYTE_BUDGET + 64 {
+            text.push_str("Filler guidance sentence for the measurement arm. ");
+        }
+        text.push_str("TAIL-CODENAME-XYLOPHONE-4471");
+        let rules = vec![PathRule {
+            glob: "src/**".into(),
+            text: text.clone(),
+        }];
+        let target = vec!["src/lib.rs".into()];
+
+        let cut = inject(prefix, &rules, &target);
+        assert!(!cut.injected.contains("TAIL-CODENAME-XYLOPHONE-4471"));
+        assert!(cut.injected.len() <= INJECTION_BYTE_BUDGET);
+
+        let full = inject_with_budget(prefix, &rules, &target, 64 * 1024);
+        assert!(full.injected.contains("TAIL-CODENAME-XYLOPHONE-4471"));
+        assert_eq!(full.injected.len(), text.len());
     }
 
     #[test]

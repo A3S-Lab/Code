@@ -1,5 +1,4 @@
 use rand::{Rng as _, SeedableRng as _};
-use unicode_width::UnicodeWidthStr as _;
 
 use super::super::*;
 use super::is_extended_grapheme_boundary;

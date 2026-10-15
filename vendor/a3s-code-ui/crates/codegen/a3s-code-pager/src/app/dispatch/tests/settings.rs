@@ -3081,7 +3081,7 @@ fn rollback_permission_mode_reverts_state_no_effect() {
     assert!(expect_agent(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve")
+        Some("yolo")
     );
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SettingPersistFailed {
@@ -3128,11 +3128,11 @@ fn action_for_reset_permission_mode_dispatches_set_permission_mode_for_each_cano
             )
         }
     }
-    match action_for_reset("permission_mode", &SettingValue::Enum("always-approve")) {
+    match action_for_reset("permission_mode", &SettingValue::Enum("yolo")) {
         Some(Action::SetPermissionMode(PermissionModeKind::AlwaysApprove)) => {}
         other => {
             panic!(
-                "action_for_reset(permission_mode, 'always-approve') must produce \
+                "action_for_reset(permission_mode, 'yolo') must produce \
                  Action::SetPermissionMode(AlwaysApprove), got {other:?}"
             )
         }

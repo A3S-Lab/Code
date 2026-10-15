@@ -314,7 +314,7 @@ impl PermissionHandle {
     }
 }
 
-/// Clamp requested yolo against the pin: the pin wins, so a client can never enable always-approve while it is set.
+/// Clamp requested yolo against the pin: the pin wins, so a client can never enable yolo while it is set.
 fn clamp_yolo(requested: bool, yolo_pin: Option<&'static str>) -> bool {
     requested && yolo_pin.is_none()
 }
@@ -431,7 +431,7 @@ pub fn spawn_permission_manager_with_hub(
 /// The denial the model reads when `prompt_policy = "deny"` refuses a request no rule matched.
 pub const PROMPT_POLICY_DENY_REASON: &str = "denied by prompt policy (tool not pre-approved)";
 
-/// [`spawn_permission_manager_with_hub`] with the always-approve pin supplied by the caller.
+/// [`spawn_permission_manager_with_hub`] with the yolo pin supplied by the caller.
 /// A session spawn that already read the pin for config resolution feeds the manager that same read, so the manager's yolo clamp cannot disagree with the resolver.
 /// The pin is cached on the actor and never re-read per tool-call.
 #[allow(clippy::too_many_arguments)]
@@ -464,9 +464,9 @@ pub fn spawn_permission_manager_with_pin(
             .is_some_and(|c| matches!(c.prompt_policy, PromptPolicy::Deny))
     {
         tracing::warn!(
-            "always-approve is active while prompt_policy is dontAsk (Deny); \
-             unapproved tools will not be auto-denied until always-approve is off. \
-             Pin always-approve off with requirements.toml \
+            "yolo is active while prompt_policy is dontAsk (Deny); \
+             unapproved tools will not be auto-denied until yolo is off. \
+             Pin yolo off with requirements.toml \
              ([ui] disable_bypass_permissions_mode = true) to enforce managed dontAsk."
         );
     }
@@ -525,10 +525,10 @@ pub fn spawn_permission_manager_with_pin(
                 PermissionCommand::SetYoloMode(enabled) => {
                     let clamped = clamp_yolo(enabled, yolo_pin);
                     if enabled && !clamped && !pin_refusal_logged {
-                        tracing::warn!("always-approve enable refused: disabled by managed policy");
+                        tracing::warn!("yolo enable refused: disabled by managed policy");
                         pin_refusal_logged = true;
                     }
-                    tracing::info!("always-approve set to: {}", clamped);
+                    tracing::info!("yolo set to: {}", clamped);
                     yolo_mode = clamped;
                     yolo_state_actor.store(clamped, Ordering::Relaxed);
                     if clamped {
@@ -2561,7 +2561,7 @@ mod tests {
 
     /// Spawn a manager whose prompter is wired to a live gateway receiver backed by `client`.
     /// Prompting then performs a real `request_permission` round-trip.
-    /// `client_type` selects the option set the prompter builds (e.g. the always-approve option is only offered for `GrokTUI | GrokPager | Desktop`).
+    /// `client_type` selects the option set the prompter builds (e.g. the yolo option is only offered for `GrokTUI | GrokPager | Desktop`).
     fn manager_with_recording_client(
         cwd: &AbsPathBuf,
         config: Option<crate::permission::types::PermissionConfig>,
@@ -5439,7 +5439,7 @@ mod tests {
                 let ev = events
                     .try_recv()
                     .expect("a permission event must be emitted");
-                assert_eq!(ev.permission_mode.as_deref(), Some("always-approve"));
+                assert_eq!(ev.permission_mode.as_deref(), Some("yolo"));
                 assert_eq!(ev.decision_reason.as_deref(), Some("yolo"));
                 assert!(ev.auto_approved);
                 assert!(!ev.user_prompted);

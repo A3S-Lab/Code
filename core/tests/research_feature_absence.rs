@@ -1,3 +1,6 @@
+// The feature-absence assertions are constant by design.
+#![allow(clippy::assertions_on_constants)]
+
 //! U-RX-04: the default build must not compile the research module.
 //!
 //! This file is not compiled when `--features research` is on. The default

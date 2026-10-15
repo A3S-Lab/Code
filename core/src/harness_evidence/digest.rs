@@ -79,6 +79,10 @@ pub(super) fn require_digest(
     Ok(())
 }
 
+pub(super) fn to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,8 +97,4 @@ mod tests {
         assert!(measurement.digest.starts_with("sha256:"));
         assert_eq!(measurement.bytes, 7);
     }
-}
-
-pub(super) fn to_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }

@@ -90,6 +90,7 @@ fn set_yolo_mode_on_drains_permission_queue_with_allow_once() {
         bash_deny_selection_count: 0,
         bash_command_raw: None,
         mcp_scope: None,
+        question: None,
         title: "test".to_string(),
         description: vec![],
         args_expanded: false,
@@ -212,7 +213,7 @@ fn set_permission_mode_always_approve_blocked_by_policy_pin() {
     );
     assert_ne!(
         state.ui_snapshot.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
         "modal canonical must not show the refused mode",
     );
     assert_eq!(agent_toast(&app).as_deref(), Some(POLICY_WARNING));
@@ -305,7 +306,7 @@ fn rollback_permission_mode_unknown_canonical_defaults_to_ask() {
 
 /// Rollback path refreshes open modal snapshots in the same way the success path does.
 /// Mirror of `set_yolo_mode_refreshes_open_modal_snapshots` for the `apply_setting_rollback` entry into `set_yolo_mode_inner`.
-/// Without this, a modal open when a disk write fails shows a stale "always-approve" indicator after the state has rolled back to "ask".
+/// Without this, a modal open when a disk write fails shows a stale "yolo" indicator after the state has rolled back to "ask".
 #[test]
 fn rollback_permission_mode_refreshes_open_modal_snapshots() {
     use crate::settings::SettingValue;
@@ -377,7 +378,7 @@ fn set_permission_mode_ask_emits_brand_consistent_toast() {
         "PR 11 R1 G-3 #11: Ask toast must brand as 'Permission mode' not 'Always-approve'",
     );
 
-    // Effect carries the new canonical and the prior canonical (was "always-approve" from the test-setup pre-set)
+    // Effect carries the new canonical and the prior canonical (was "yolo" from the test-setup pre-set)
     assert_eq!(effects.len(), 1);
     match effects.first() {
         Some(Effect::PersistPermissionMode {
@@ -386,8 +387,8 @@ fn set_permission_mode_ask_emits_brand_consistent_toast() {
             assert_eq!(*canonical, "ask");
             assert_eq!(
                 *persist,
-                crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
-                "prior canonical was 'always-approve' (pre-set by SetYoloMode(true))",
+                crate::app::actions::PermissionModePersist::WithRollback("yolo"),
+                "prior canonical was 'yolo' (pre-set by SetYoloMode(true))",
             );
         }
         other => panic!("expected PersistPermissionMode, got {other:?}"),
@@ -417,12 +418,12 @@ fn set_permission_mode_with_live_yolo_and_no_ui_mirror_rolls_back_to_always_appr
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("default"));
 
     // **Rollback contract.**
-    // Rollback must target "always-approve" (the LIVE state at dispatch time), NOT "ask" (a bool-projected guess from the None mirror)
+    // Rollback must target "yolo" (the LIVE state at dispatch time), NOT "ask" (a bool-projected guess from the None mirror)
     match effects.first() {
         Some(Effect::PersistPermissionMode { persist, .. }) => {
             assert_eq!(
                 *persist,
-                crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
+                crate::app::actions::PermissionModePersist::WithRollback("yolo"),
                 "PR 11 R1 Security #8: LIVE yolo state must take precedence over the \
                      None on-disk mirror when computing the rollback canonical — \
                      otherwise a `--yolo` startup + Default-commit + disk-failure diverges \
@@ -444,7 +445,7 @@ fn rollback_permission_mode_default_canonical_preserves_default() {
     assert!(agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve"),
+        Some("yolo"),
     );
 
     // Simulate disk-write failure with `rollback_value = Enum("default")`
@@ -568,6 +569,7 @@ fn push_bash_allow_always(
         bash_deny_selection_count: 2,
         bash_command_raw: Some("gh api repos/owner/repo/pulls".into()),
         mcp_scope: None,
+        question: None,
         title: "Allow command?".into(),
         description: vec![],
         args_expanded: false,

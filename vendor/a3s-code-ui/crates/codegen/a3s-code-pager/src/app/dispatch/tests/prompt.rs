@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod code_command_refusal;
+
 fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
     let Some(agent) = app.agents.get(&id) else {
         panic!("expected agent {id:?}");
@@ -6747,7 +6749,7 @@ fn a3s_code_effective_slash_commands_change_visible_state() {
         Some("session-info")
     );
 
-    let app = send_slash("/always-approve");
+    let app = send_slash("/yolo");
     assert!(agent_ref(&app, id).session.is_yolo());
 
     let app = send_slash("/multiline");

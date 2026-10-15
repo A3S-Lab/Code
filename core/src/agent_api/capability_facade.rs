@@ -282,6 +282,17 @@ impl AgentSession {
         self.capability_catalog.current_stamp()
     }
 
+    /// Public names visible in the current catalog generation.
+    pub fn projected_capability_names(&self) -> Vec<String> {
+        let projection = self.capability_catalog.pin();
+        projection
+            .projection()
+            .set()
+            .iter()
+            .map(|(_, descriptor)| descriptor.public_name().to_owned())
+            .collect()
+    }
+
     /// Verify that a new Run on this Session would receive the exact persisted
     /// scoped capability catalog and authority ceiling.
     pub fn ensure_recovery_capability_binding(
@@ -310,6 +321,7 @@ impl AgentSession {
             return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
         }
 
+        batch.validate_workspace(&self.workspace)?;
         let preparation_cancellation = tokio_util::sync::CancellationToken::new();
         let prepared = tokio::select! {
             biased;
@@ -353,6 +365,7 @@ impl AgentSession {
             .command_registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prepared.validate_workspace(&self.workspace)?;
         let current_projection = self.capability_catalog.pin();
         super::agent_loop_runtime::validate_capability_projection_runtime(
             self,
@@ -409,7 +422,8 @@ impl AgentSession {
             return Err(crate::capability::CapabilityRuntimeError::SessionClosed);
         }
 
-        let target_ceiling = self.capability_run_ceiling(batch.target())?;
+        let target_ceiling =
+            self.capability_run_ceiling(batch.target(), batch.allowed_capabilities())?;
         expected
             .ensure_matches(batch.target(), &target_ceiling)
             .map_err(
@@ -418,6 +432,7 @@ impl AgentSession {
                 },
             )?;
 
+        batch.validate_workspace(&self.workspace)?;
         let preparation_cancellation = tokio_util::sync::CancellationToken::new();
         let prepared = tokio::select! {
             biased;
@@ -456,6 +471,7 @@ impl AgentSession {
             .command_registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prepared.validate_workspace(&self.workspace)?;
         let current_projection = self.capability_catalog.pin();
         super::agent_loop_runtime::validate_capability_projection_runtime(
             self,
@@ -493,13 +509,17 @@ impl AgentSession {
             }
             self.capability_catalog.pin()
         };
-        let ceiling = self.capability_run_ceiling(projection.projection().set())?;
+        let ceiling = self.capability_run_ceiling(
+            projection.projection().set(),
+            projection.allowed_capabilities(),
+        )?;
         crate::capability::SessionCapabilityRun::admit(
             projection,
             "active",
             "active",
             ceiling,
             self.session_cancel.child_token(),
+            &self.workspace,
         )
         .await
     }
@@ -507,6 +527,31 @@ impl AgentSession {
     pub(super) fn capability_run_ceiling(
         &self,
         set: &crate::capability::CapabilitySet,
+        allowed: Option<&std::collections::BTreeSet<crate::capability::CapabilityId>>,
+    ) -> std::result::Result<
+        crate::capability::CapabilityCeiling,
+        crate::capability::CapabilityRuntimeError,
+    > {
+        // Preserve the legacy policy's base-first short circuit. Only guard
+        // presence enters this ceiling; owned capture supplies its exact
+        // already-resolved parent guard to the shared implementation below.
+        let effective_budget_guard = self
+            .config
+            .budget_guard
+            .clone()
+            .or_else(|| self.budget_guard());
+        self.capability_run_ceiling_from_captured_budget(
+            set,
+            allowed,
+            effective_budget_guard.as_ref(),
+        )
+    }
+
+    pub(super) fn capability_run_ceiling_from_captured_budget(
+        &self,
+        set: &crate::capability::CapabilitySet,
+        allowed: Option<&std::collections::BTreeSet<crate::capability::CapabilityId>>,
+        effective_budget_guard: Option<&Arc<dyn crate::budget::BudgetGuard>>,
     ) -> std::result::Result<
         crate::capability::CapabilityCeiling,
         crate::capability::CapabilityRuntimeError,
@@ -521,7 +566,7 @@ impl AgentSession {
         if self.config.security_provider.is_some() {
             governance = governance.require_security_guard();
         }
-        if self.config.budget_guard.is_some() || self.budget_guard().is_some() {
+        if effective_budget_guard.is_some() {
             governance = governance.require_budget_guard();
         }
         if self.config.enforce_active_skill_tool_restrictions {
@@ -534,9 +579,21 @@ impl AgentSession {
             self.config.llm_api_timeout_ms,
             self.config.max_execution_time_ms,
         )?;
-        crate::capability::CapabilityCeiling::all(
+        let allowed: Vec<_> = match allowed {
+            Some(allowed) => allowed.iter().cloned().collect(),
+            None => set.iter().map(|(id, _)| id.clone()).collect(),
+        };
+        let workspace = self.tool_context.workspace_services.capabilities();
+        crate::capability::CapabilityCeiling::new(
             set,
-            crate::capability::WorkspaceCapabilityCeiling::all(),
+            allowed,
+            crate::capability::WorkspaceCapabilityCeiling::none()
+                .with_read(workspace.read)
+                .with_write(workspace.write)
+                .with_execute(workspace.exec)
+                .with_search(workspace.search)
+                .with_git(workspace.git)
+                .with_code_intelligence(workspace.code_intelligence),
             governance,
             execution,
         )

@@ -511,7 +511,7 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::CycleMode,
             label: "mode",
-            description: "Cycle mode (Normal / Plan / Always-approve)",
+            description: "Cycle mode (Normal / Plan / YOLO)",
             // All Shift+Tab encodings; see `input::key::shift_tab_keys()`
             default_key: crate::input::key::shift_tab_keys()[0],
             alt_keys: crate::input::key::shift_tab_keys()
@@ -524,7 +524,7 @@ pub(super) fn default_actions(
             hint_key_display: Some("Shift+Tab"),
             requires_confirmation: false,
             long_help: Some(
-                "Steps the session mode: Normal -> Plan -> Always-Approve -> Normal.\nPlan keeps the agent planning first and writes no files; Always-Approve runs every tool call without asking.\nCtrl+O toggles auto-approve directly.",
+                "Steps the session mode: Normal -> Plan -> YOLO -> Normal.\nPlan keeps the agent planning first and writes no files; YOLO runs every tool call without asking.\nCtrl+O toggles auto-approve directly.",
             ),
         },
         // ── Panes (agent-level: toggle side panes) ─────────────────
@@ -736,7 +736,7 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::ToggleYolo,
             label: "yolo",
-            description: "Toggle always-approve",
+            description: "Toggle YOLO",
             default_key: key!('o', CONTROL),
             alt_keys: vec![],
             category: Category::Session,
@@ -745,7 +745,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Turns auto-approve (YOLO) on or off for this session.\nWhile on, the agent runs every tool call (edits, shell, deletes) with no per-action confirmation.\nSame state as the Shift+Tab cycle's Always-Approve; use with care.",
+                "Turns YOLO on or off for this session.\nWhile on, the agent runs every tool call (edits, shell, deletes) with no per-action confirmation.\nSame state as the Shift+Tab cycle's YOLO; use with care.",
             ),
         },
         ActionDef {
@@ -986,7 +986,7 @@ pub(super) fn default_actions(
             hint_key_display: Some("Shift+Tab"),
             requires_confirmation: false,
             long_help: Some(
-                "Cycles the dispatch mode for agents you launch from the dashboard: Normal, Plan, then Always-Approve.\nPlan has new agents plan before changing files; Always-Approve runs their tools without prompting.\nMirrors the in-session Shift+Tab cycle, applied to new dispatches.",
+                "Cycles the dispatch mode for agents you launch from the dashboard: Normal, Plan, then YOLO.\nPlan has new agents plan before changing files; YOLO runs their tools without prompting.\nMirrors the in-session Shift+Tab cycle, applied to new dispatches.",
             ),
         },
         ActionDef {
@@ -1074,12 +1074,12 @@ pub(super) fn default_actions(
                 "Closes the dashboard and returns to where you were.\nEsc is a cascade: it first dismisses an open peek or clears an active filter, and only exits once nothing else is pending.\nRebind this action to a different key to exit directly.",
             ),
         },
-        // Mirror of `ToggleYolo` (Ctrl+O) but scoped to the dashboard: flips the selected row's agent's always-approve / YOLO mode
+        // Mirror of `ToggleYolo` (Ctrl+O) but scoped to the dashboard: flips the selected row's agent's yolo / YOLO mode
         // Reachable from the dashboard view (and from inside the session overlay)
         ActionDef {
             id: ActionId::DashboardToggleAutoApprove,
-            label: "always-approve",
-            description: "Toggle always-approve",
+            label: "yolo",
+            description: "Toggle YOLO",
             default_key: key!('o', CONTROL),
             alt_keys: vec![],
             category: Category::Dashboard,

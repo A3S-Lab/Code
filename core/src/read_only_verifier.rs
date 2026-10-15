@@ -23,14 +23,29 @@ pub fn should_invoke(enabled: bool, mutated: bool) -> bool {
     enabled && mutated
 }
 
+/// Dynamically registered tools (session MCP servers, plugins) are outside
+/// the verifier turn's declared read-only contract: a denylist cannot know
+/// which `mcp__…` names mutate (`mcp__fs__write_file` passes the lists), so
+/// the whole dynamic namespace fails closed for this turn. Known read-only
+/// builtins remain available for evidence gathering.
+fn is_dynamically_registered(tool: &str) -> bool {
+    tool.starts_with("mcp__") || tool.starts_with("plugin__")
+}
+
 pub fn presentable(tool: &str) -> bool {
     let tool = tool.to_ascii_lowercase();
+    if is_dynamically_registered(&tool) {
+        return false;
+    }
     !MUTATING_TOOLS.contains(&tool.as_str()) && !NESTED_WRITER_TOOLS.contains(&tool.as_str())
 }
 
 pub fn tool_allowed(tool: &str, args: &serde_json::Value) -> bool {
     let tool = tool.to_ascii_lowercase();
     if MUTATING_TOOLS.contains(&tool.as_str()) || NESTED_WRITER_TOOLS.contains(&tool.as_str()) {
+        return false;
+    }
+    if is_dynamically_registered(&tool) {
         return false;
     }
     if tool == "bash" {
@@ -117,6 +132,23 @@ pub fn failed_report(digest: &str) -> VerificationReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dynamically_registered_tools_fail_closed_in_the_verifier_turn() {
+        assert!(!super::presentable("mcp__fs__write_file"));
+        assert!(!super::tool_allowed(
+            "mcp__fs__write_file",
+            &serde_json::json!({"path": "x", "content": "y"})
+        ));
+        assert!(!super::presentable("plugin__runner"));
+        // Known read-only builtins stay available for evidence gathering.
+        assert!(super::presentable("read"));
+        assert!(super::presentable("grep"));
+        assert!(super::tool_allowed(
+            "read",
+            &serde_json::json!({"path": "x"})
+        ));
+    }
+
     use super::*;
     use crate::harness_loop::{decide_completion, CompletionGate, MutationLedger};
 

@@ -1,5 +1,7 @@
 use super::*;
 
+mod sampling;
+
 /// AI coding agent. Create with `Agent.create()`, then call `agent.session()`.
 #[pyclass(name = "Agent")]
 pub(super) struct PyAgent {
@@ -96,7 +98,7 @@ impl PyAgent {
         let mut parsed = Vec::with_capacity(servers.len());
         for item in servers.iter() {
             let dict = item.downcast::<PyDict>()?;
-            let json_str = py_dict_to_json(&dict)?;
+            let json_str = py_dict_to_json(dict)?;
             let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|error| {
                 PyValueError::new_err(format!("Invalid MCP server config: {error}"))
             })?;
@@ -130,6 +132,39 @@ impl PyAgent {
             dict.set_item(name, item)?;
         }
         Ok(dict)
+    }
+
+    /// Registered global MCP definitions, including host-supplied credentials.
+    fn global_mcp_configs(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let agent = self.inner.clone();
+        let configs = py.allow_threads(move || get_runtime().block_on(agent.global_mcp_configs()));
+        let text = serde_json::to_string(&configs)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(py.import("json")?.call_method1("loads", (text,))?.unbind())
+    }
+
+    /// Whether the host armed sampling for subsequently connected servers.
+    fn has_sampling_handler_factory(&self, py: Python<'_>) -> bool {
+        let agent = self.inner.clone();
+        py.allow_threads(move || get_runtime().block_on(agent.has_sampling_handler_factory()))
+    }
+
+    /// Opt into sampling on subsequently connected servers. Call from a
+    /// running asyncio loop with an async (server_name, params) callback.
+    /// The host owns consent and model selection; errors and timeout refuse.
+    #[pyo3(signature = (handler, timeout_ms=30_000))]
+    fn set_sampling_handler_factory(
+        &self,
+        py: Python<'_>,
+        handler: PyObject,
+        timeout_ms: u64,
+    ) -> PyResult<()> {
+        let factory = sampling::factory(py, handler, timeout_ms)?;
+        let agent = self.inner.clone();
+        py.allow_threads(move || {
+            get_runtime().block_on(agent.set_sampling_handler_factory(factory))
+        })
+        .map_err(py_code_error)
     }
 
     /// Return current occupancy of the priority scheduler shared by every
@@ -392,6 +427,34 @@ impl PyAgent {
                 operation: Some(AsyncSessionOperation::Resume {
                     agent: Arc::clone(&self.inner),
                     session_id,
+                    options,
+                }),
+            },
+        )?;
+        run_in_asyncio_executor(py, callable.into_any())
+    }
+
+    /// Return an asyncio Future that forks a saved ``SessionSnapshotV1`` (a dict)
+    /// into a new session with fresh host options. An admitted source work policy
+    /// must be supplied unchanged; source Goal facts stay at the source.
+    #[pyo3(signature = (snapshot, workspace, options))]
+    fn fork_session_async<'py>(
+        &self,
+        py: Python<'py>,
+        snapshot: &Bound<'py, PyAny>,
+        workspace: String,
+        options: PySessionOptions,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let snapshot = serde_json::from_str(&py_any_to_json(snapshot)?)
+            .map_err(|error| PyValueError::new_err(format!("invalid session snapshot: {error}")))?;
+        let options = build_rust_session_options_async(py, options)?;
+        let callable = Bound::new(
+            py,
+            AsyncSessionCall {
+                operation: Some(AsyncSessionOperation::Fork {
+                    agent: Arc::clone(&self.inner),
+                    snapshot: Box::new(snapshot),
+                    workspace,
                     options,
                 }),
             },

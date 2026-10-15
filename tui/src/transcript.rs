@@ -76,6 +76,30 @@ impl Scrollback {
                 body.push_str("\n\n");
             }
         }
+        // The transcript is exactly the artifact the security discipline
+        // keeps at 0600 elsewhere: refuse to write through a symlink, and
+        // create the file owner-only before content lands.
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "refusing to export through a symlink: {}",
+                    path.display()
+                )));
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)?;
+            file.write_all(body.as_bytes())
+        }
+        #[cfg(not(unix))]
         std::fs::write(path, body)
     }
 }

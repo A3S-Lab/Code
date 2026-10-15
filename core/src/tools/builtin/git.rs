@@ -253,7 +253,7 @@ impl Tool for GitTool {
                         "Worktree operations are not supported by this workspace backend",
                     ));
                 };
-                self.worktree(args, worktree.as_ref()).await
+                self.worktree(args, ctx, worktree.as_ref()).await
             }
             _ => Ok(ToolOutput::error(format!(
                 "Unknown command: {command}. Use: status, log, branch, checkout, diff, stash, remote, worktree"
@@ -612,6 +612,7 @@ impl GitTool {
     async fn worktree(
         &self,
         args: &serde_json::Value,
+        ctx: &ToolContext,
         worktree: &dyn WorkspaceGitWorktreeProvider,
     ) -> Result<ToolOutput> {
         let subcommand = args
@@ -621,7 +622,7 @@ impl GitTool {
 
         match subcommand {
             "list" => self.list_worktrees(args, worktree).await,
-            "create" => self.create_worktree(args, worktree).await,
+            "create" => self.create_worktree(args, ctx, worktree).await,
             "remove" => self.remove_worktree(args, worktree).await,
             _ => Ok(ToolOutput::error(format!(
                 "Unknown worktree subcommand: {subcommand}. Use: list, create, remove"
@@ -684,6 +685,7 @@ impl GitTool {
     async fn create_worktree(
         &self,
         args: &serde_json::Value,
+        ctx: &ToolContext,
         worktree: &dyn WorkspaceGitWorktreeProvider,
     ) -> Result<ToolOutput> {
         let branch = match args
@@ -707,6 +709,27 @@ impl GitTool {
             .get("path")
             .and_then(|v| v.as_str())
             .map(ToString::to_string);
+
+        // Run-owned cleanup (WC-WTREE1): register before acquisition so a
+        // crash between creation and registration cannot leak the worktree.
+        // Git enforces one worktree per branch, which makes the branch a
+        // stable cleanup key. Plain sessions without a capability context
+        // degrade to explicit `worktree remove`; registration is
+        // unavailable there, not bypassed.
+        if let Some(provider) = ctx.workspace_services.git_worktree() {
+            match ctx.register_run_capability_effect(WorktreeCleanupEffect {
+                provider,
+                branch: branch.to_string(),
+            }) {
+                Ok(()) => {}
+                Err(crate::capability::CapabilityScopeError::AgentTurnScopeUnavailable) => {}
+                Err(error) => {
+                    return Ok(ToolOutput::error(format!(
+                        "worktree cleanup could not be registered to the Run: {error}"
+                    )))
+                }
+            }
+        }
 
         match worktree
             .create_worktree(WorkspaceGitCreateWorktreeRequest {
@@ -881,9 +904,57 @@ fn sanitize_remote_url(raw: &str) -> String {
     url.into()
 }
 
+/// Run-owned worktree cleanup (WC-WTREE1). The Run that admitted a
+/// worktree removes it before scope close settles; a worktree that is
+/// already gone (explicitly removed, or a creation that failed after
+/// registration) closes cleanly. Removal runs fail-closed (`force:
+/// false`): a dirty worktree refuses the Run's successful completion and
+/// surfaces the path instead of silently discarding work.
+struct WorktreeCleanupEffect {
+    provider: std::sync::Arc<dyn WorkspaceGitWorktreeProvider>,
+    branch: String,
+}
+
+#[async_trait]
+impl crate::capability::CapabilityEffect for WorktreeCleanupEffect {
+    fn name(&self) -> &str {
+        "git-worktree-cleanup"
+    }
+
+    async fn close(self: Box<Self>) -> Result<(), crate::capability::CapabilityEffectError> {
+        let entries = self.provider.list_worktrees().await.map_err(|error| {
+            crate::capability::CapabilityEffectError::new(format!(
+                "worktree cleanup for branch {} could not list worktrees: {error}",
+                self.branch
+            ))
+        })?;
+        let Some(entry) = entries
+            .into_iter()
+            .find(|entry| entry.branch == self.branch)
+        else {
+            // Idempotent: never created, or already removed.
+            return Ok(());
+        };
+        self.provider
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: entry.path.clone(),
+                force: false,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                crate::capability::CapabilityEffectError::new(format!(
+                    "worktree cleanup failed to remove {} (branch {}): {error}",
+                    entry.path, self.branch
+                ))
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::CapabilityEffect as _;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -1288,5 +1359,192 @@ mod tests {
         for secret in ["user", "secret", "access_token", "hidden", "fragment"] {
             assert!(!rendered.contains(secret), "{secret} leaked in {rendered}");
         }
+    }
+
+    fn local_worktree_provider(
+        root: &std::path::Path,
+    ) -> std::sync::Arc<dyn WorkspaceGitWorktreeProvider> {
+        ToolContext::new(root.to_path_buf())
+            .workspace_services
+            .git_worktree()
+            .expect("local workspace git provider")
+    }
+
+    #[tokio::test]
+    async fn worktree_cleanup_effect_removes_the_worktree_on_close() {
+        let repository = repository_with_commits(1);
+        let root = repository.path().to_path_buf();
+        let provider = local_worktree_provider(&root);
+
+        let created = provider
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "wt-clean".into(),
+                path: None,
+                new_branch: true,
+            })
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&created.path).exists());
+
+        let effect = WorktreeCleanupEffect {
+            provider,
+            branch: "wt-clean".into(),
+        };
+        Box::new(effect)
+            .close()
+            .await
+            .expect("clean worktree must close cleanly");
+        assert!(
+            !std::path::Path::new(&created.path).exists(),
+            "scope close must remove the worktree"
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_cleanup_effect_is_idempotent_when_already_removed() {
+        let repository = repository_with_commits(1);
+        let provider = local_worktree_provider(repository.path());
+
+        let effect = WorktreeCleanupEffect {
+            provider,
+            branch: "wt-never-created".into(),
+        };
+        // Never created (registration preceded a failed creation), or
+        // explicitly removed: close is clean both times.
+        Box::new(effect).close().await.expect("first close");
+        Box::new(WorktreeCleanupEffect {
+            provider: local_worktree_provider(repository.path()),
+            branch: "wt-never-created".into(),
+        })
+        .close()
+        .await
+        .expect("second close");
+    }
+
+    #[tokio::test]
+    async fn worktree_cleanup_effect_fails_closed_on_a_dirty_worktree() {
+        let repository = repository_with_commits(1);
+        let root = repository.path().to_path_buf();
+        let provider = local_worktree_provider(&root);
+
+        let created = provider
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "wt-dirty".into(),
+                path: None,
+                new_branch: true,
+            })
+            .await
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&created.path).join("uncommitted.txt"),
+            "uncommitted work\n",
+        )
+        .unwrap();
+
+        let effect = WorktreeCleanupEffect {
+            provider,
+            branch: "wt-dirty".into(),
+        };
+        let error = Box::new(effect)
+            .close()
+            .await
+            .expect_err("a dirty worktree must refuse silent cleanup");
+        assert!(
+            error.message().contains(&created.path),
+            "the refusal must name the worktree path: {}",
+            error.message()
+        );
+        assert!(
+            std::path::Path::new(&created.path).exists(),
+            "the dirty worktree must survive for explicit disposition"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_main_tree_session_cannot_write_into_its_worktree() {
+        // WC-WTREE1 isolation pin: the default worktree lands OUTSIDE the
+        // workspace root (a sibling directory), so the workspace boundary
+        // keeps generations disjoint — a Run admitted on the main tree
+        // cannot write into the worktree generation.
+        let repository = repository_with_commits(1);
+        let root = repository.path().to_path_buf();
+        let ctx = ToolContext::new(root.clone()).with_session_id("worktree-isolation");
+        let provider = local_worktree_provider(&root);
+        let created = provider
+            .create_worktree(WorkspaceGitCreateWorktreeRequest {
+                branch: "wt-isolate".into(),
+                path: None,
+                new_branch: true,
+            })
+            .await
+            .unwrap();
+
+        let probe = std::path::Path::new(&created.path).join("probe.txt");
+        let write = super::super::write::WriteTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": probe.to_string_lossy(),
+                    "content": "cross-generation probe\n"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !write.success,
+            "a write into the worktree generation must be refused, got: {}",
+            write.content
+        );
+        assert!(!probe.exists(), "no probe file may appear");
+
+        provider
+            .remove_worktree(WorkspaceGitRemoveWorktreeRequest {
+                path: created.path.clone(),
+                force: true,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn worktree_create_on_a_plain_context_still_creates_and_removes() {
+        // Plain sessions (no capability context) degrade to explicit
+        // remove; creation must not fail because registration is
+        // unavailable.
+        let repository = repository_with_commits(1);
+        let tool = GitTool;
+        let ctx = ToolContext::new(repository.path().to_path_buf())
+            .with_session_id("worktree-plain-test");
+
+        let created = tool
+            .execute(
+                &serde_json::json!({"command": "worktree", "subcommand": "create", "name": "wt-plain"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            created.success,
+            "plain-context creation: {}",
+            created.content
+        );
+        let path = created
+            .content
+            .lines()
+            .find_map(|line| line.strip_prefix("Created worktree at: "))
+            .expect("creation reports the path")
+            .trim()
+            .to_string();
+        assert!(std::path::Path::new(&path).exists());
+
+        let removed = tool
+            .execute(
+                &serde_json::json!({"command": "worktree", "subcommand": "remove", "path": path}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(removed.success, "explicit remove: {}", removed.content);
+        assert!(!std::path::Path::new(&path).exists());
     }
 }

@@ -61,6 +61,7 @@ pub(crate) struct InvocationContext {
     memory_context_incarnation: Arc<str>,
     cancellation: CancellationToken,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
+    retired_fact_event_tx: Option<mpsc::WeakSender<AgentEvent>>,
     agent_event_tx: Option<broadcast::Sender<AgentEvent>>,
     agent_event_barrier: Option<AgentEventBarrier>,
     governance: InvocationGovernance,
@@ -81,6 +82,75 @@ pub(crate) struct CapturedModelEvidence {
     pub(super) presentation: ModelPresentationSnapshotV1,
     pub(super) input: ModelInputSnapshotV1,
     pub(super) tool_result_context: ToolResultContextUsageV1,
+}
+
+/// Sender-free material selected from the original invocation before spawn.
+/// The source here is always the SAME source type's frozen environment.
+#[derive(Clone)]
+pub(crate) struct FactInvocationView {
+    run_id: Arc<str>,
+    session_id: Arc<str>,
+    cancellation: CancellationToken,
+    budget_guard: Option<Arc<dyn BudgetGuard>>,
+    lineage: Arc<AtomicU64>,
+    call_sequence: Arc<AtomicU64>,
+    source: RunCapabilityEvidenceSource,
+}
+
+impl FactInvocationView {
+    pub(super) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub(super) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    pub(super) fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+    pub(super) fn budget_guard(&self) -> Option<&Arc<dyn BudgetGuard>> {
+        self.budget_guard.as_ref()
+    }
+
+    pub(super) fn same_original(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lineage, &other.lineage)
+            && Arc::ptr_eq(&self.call_sequence, &other.call_sequence)
+            && same_guard(self.budget_guard.as_ref(), other.budget_guard.as_ref())
+    }
+
+    pub(super) fn capture(
+        &self,
+        observation: ModelCallObservation<'_>,
+    ) -> Result<CapturedModelEvidence, HarnessEvidenceError> {
+        capture_evidence(&self.source, &self.call_sequence, observation)
+    }
+}
+
+fn same_guard(left: Option<&Arc<dyn BudgetGuard>>, right: Option<&Arc<dyn BudgetGuard>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        _ => false,
+    }
+}
+
+fn capture_evidence(
+    source: &RunCapabilityEvidenceSource,
+    sequence: &AtomicU64,
+    observation: ModelCallObservation<'_>,
+) -> Result<CapturedModelEvidence, HarnessEvidenceError> {
+    let previous = sequence
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| HarnessEvidenceError::CallSequenceExhausted)?;
+    let (capability, presentation, input, tool_result_context) =
+        source.capture_with_presentation(previous + 1, observation)?;
+    Ok(CapturedModelEvidence {
+        capability,
+        presentation,
+        input,
+        tool_result_context,
+    })
 }
 
 impl std::fmt::Debug for InvocationContext {
@@ -128,6 +198,7 @@ impl InvocationContext {
             memory_context_incarnation: Arc::from(uuid::Uuid::new_v4().to_string()),
             cancellation,
             event_tx,
+            retired_fact_event_tx: None,
             agent_event_tx: None,
             agent_event_barrier: None,
             governance,
@@ -208,14 +279,27 @@ impl InvocationContext {
         &self.event_tx
     }
 
+    /// Release only this completed fact invocation's strong host sender.
+    /// The original channel identity remains passive matching data; every
+    /// identity, governance resource and evidence sequence stays unchanged.
+    pub(super) fn retire_fact_host_events(mut self) -> Self {
+        if let Some(actual) = self.event_tx.take() {
+            self.retired_fact_event_tx = Some(actual.downgrade());
+        }
+        self
+    }
+
     pub(super) fn matches_parts(
         &self,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> bool {
-        let same_events = match (&self.event_tx, event_tx) {
-            (None, None) => true,
-            (Some(bound), Some(requested)) => bound.same_channel(requested),
+        let same_events = match (&self.event_tx, &self.retired_fact_event_tx, event_tx) {
+            (None, None, None) => true,
+            (Some(bound), _, Some(requested)) => bound.same_channel(requested),
+            (None, Some(bound), Some(requested)) => bound
+                .upgrade()
+                .is_some_and(|actual| actual.same_channel(requested)),
             _ => false,
         };
         self.session_id() == session_id.unwrap_or("") && same_events
@@ -225,6 +309,46 @@ impl InvocationContext {
         &self.governance
     }
 
+    pub(super) fn freeze_for_fact_attempt(&self) -> anyhow::Result<FactInvocationView> {
+        let state = self.model_evidence.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("fact model invocation has no original evidence source")
+        })?;
+        Ok(FactInvocationView {
+            run_id: Arc::clone(&self.run_id),
+            session_id: Arc::clone(&self.session_id),
+            cancellation: self.cancellation.clone(),
+            budget_guard: self.governance.budget_guard.clone(),
+            lineage: Arc::clone(&self.memory_context_sequence),
+            call_sequence: Arc::clone(&state.call_sequence),
+            source: state.source.freeze_for_fact_attempt(),
+        })
+    }
+
+    pub(super) fn matches_fact_view(&self, view: &FactInvocationView) -> bool {
+        Arc::ptr_eq(&self.memory_context_sequence, &view.lineage)
+            && self
+                .model_evidence
+                .as_ref()
+                .is_some_and(|state| Arc::ptr_eq(&state.call_sequence, &view.call_sequence))
+            && same_guard(
+                self.governance.budget_guard.as_ref(),
+                view.budget_guard.as_ref(),
+            )
+    }
+
+    pub(super) async fn fact_capability_is_current(&self, digest: &str) -> bool {
+        let Some(state) = &self.model_evidence else {
+            return false;
+        };
+        state.last_capability_digest.lock().await.as_deref() == Some(digest)
+    }
+
+    pub(super) async fn fact_capability_projected(&self, digest: String) {
+        if let Some(state) = &self.model_evidence {
+            *state.last_capability_digest.lock().await = Some(digest);
+        }
+    }
+
     pub(crate) fn capture_model_evidence(
         &self,
         observation: ModelCallObservation<'_>,
@@ -232,22 +356,7 @@ impl InvocationContext {
         let Some(state) = &self.model_evidence else {
             return Ok(None);
         };
-        let previous = state
-            .call_sequence
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| HarnessEvidenceError::CallSequenceExhausted)?;
-        let call_sequence = previous + 1;
-        let (capability, presentation, input, tool_result_context) = state
-            .source
-            .capture_with_presentation(call_sequence, observation)?;
-        Ok(Some(CapturedModelEvidence {
-            capability,
-            presentation,
-            input,
-            tool_result_context,
-        }))
+        capture_evidence(&state.source, &state.call_sequence, observation).map(Some)
     }
 
     pub(crate) async fn send_capability_if_changed(
@@ -387,6 +496,85 @@ mod tests {
                 PermissionDecision::Allow
             }
         }
+    }
+
+    struct OriginalGuard;
+
+    #[async_trait::async_trait]
+    impl BudgetGuard for OriginalGuard {
+        async fn check_before_llm(&self, _: &str, _: usize) -> crate::budget::BudgetDecision {
+            crate::budget::BudgetDecision::Allow
+        }
+
+        async fn record_after_llm(&self, _: &str, _: &crate::llm::TokenUsage) {}
+    }
+
+    #[test]
+    fn retired_fact_host_lane_releases_sender_and_preserves_original_identity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let token = CancellationToken::new();
+        let guard: Arc<dyn BudgetGuard> = Arc::new(OriginalGuard);
+        let context = InvocationContext::new(
+            "original-run",
+            "original-session",
+            token.clone(),
+            Some(sender.clone()),
+            InvocationGovernance {
+                budget_guard: Some(Arc::clone(&guard)),
+                ..Default::default()
+            },
+        );
+        let lineage = Arc::clone(&context.memory_context_sequence);
+        let incarnation = context.memory_context_incarnation().to_owned();
+        assert_eq!(context.next_memory_context_sequence(), Some(1));
+
+        let retired = context.retire_fact_host_events().retire_fact_host_events();
+        assert_eq!(retired.run_id(), "original-run");
+        assert_eq!(retired.session_id(), "original-session");
+        assert_eq!(retired.memory_context_incarnation(), incarnation);
+        assert!(Arc::ptr_eq(&retired.memory_context_sequence, &lineage));
+        assert!(Arc::ptr_eq(
+            retired.governance.budget_guard.as_ref().unwrap(),
+            &guard
+        ));
+        assert_eq!(retired.next_memory_context_sequence(), Some(2));
+        assert!(retired.matches_parts(Some("original-session"), &Some(sender.clone())));
+        assert!(retired.event_tx.is_none());
+        assert!(!retired.cancellation.is_cancelled());
+        token.cancel();
+        assert!(retired.cancellation.is_cancelled());
+        drop(sender);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn retired_fact_host_lane_rejects_foreign_and_absent_channels() {
+        let (sender, _) = mpsc::channel(1);
+        let (foreign, _) = mpsc::channel(1);
+        let retired = InvocationContext::new(
+            "original-run",
+            "original-session",
+            CancellationToken::new(),
+            Some(sender.clone()),
+            InvocationGovernance::default(),
+        )
+        .retire_fact_host_events();
+        assert!(retired.matches_parts(Some("original-session"), &Some(sender)));
+        assert!(!retired.matches_parts(Some("original-session"), &Some(foreign)));
+        assert!(!retired.matches_parts(Some("original-session"), &None));
+        assert!(!retired.matches_parts(Some("foreign-session"), &None));
+        let absent = InvocationContext::new(
+            "absent-run",
+            "original-session",
+            CancellationToken::new(),
+            None,
+            InvocationGovernance::default(),
+        )
+        .retire_fact_host_events();
+        assert!(absent.matches_parts(Some("original-session"), &None));
     }
 
     #[test]

@@ -717,6 +717,16 @@ pub(super) fn preprocess_windows_command(command: &str) -> String {
 }
 
 #[cfg(windows)]
+fn utf8_char_len(first_byte: u8) -> usize {
+    match first_byte {
+        b if b & 0b1110_0000 == 0b1100_0000 => 2,
+        b if b & 0b1111_0000 == 0b1110_0000 => 3,
+        b if b & 0b1111_1000 == 0b1111_0000 => 4,
+        _ => 1,
+    }
+}
+
+#[cfg(windows)]
 fn rewrite_curl_json_literals(command: &str, verbatim_mode: bool) -> String {
     const FLAGS: [&str; 5] = ["--data-raw", "--data-binary", "--data", "-d", "--json"];
 
@@ -725,10 +735,21 @@ fn rewrite_curl_json_literals(command: &str, verbatim_mode: bool) -> String {
     let mut i = 0usize;
 
     while i < bytes.len() {
+        // A multi-byte UTF-8 sequence never starts a flag; copy the whole
+        // character so byte-index slicing below stays on char boundaries
+        // (a mid-character slice panics, aborting the release process).
+        if !bytes[i].is_ascii() {
+            let ch_len = utf8_char_len(bytes[i]);
+            let end = (i + ch_len).min(bytes.len());
+            out.push_str(&command[i..end]);
+            i = end;
+            continue;
+        }
         let mut matched_flag = None;
         for flag in FLAGS {
             if command[i..].starts_with(flag) {
-                let before_ok = i == 0 || command[..i].chars().last().unwrap().is_whitespace();
+                let before_ok =
+                    i == 0 || command[..i].chars().last().is_some_and(char::is_whitespace);
                 let after = i + flag.len();
                 let after_ok = after >= bytes.len()
                     || bytes[after].is_ascii_whitespace()

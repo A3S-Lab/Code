@@ -115,6 +115,7 @@ fn checkpoint(source_run_id: &str, session_id: &str, turn: usize) -> LoopCheckpo
         session_id: session_id.into(),
         capability_binding: None,
         standing_context_digest: None,
+        durable_source: None,
         turn,
         messages: vec![Message::user(&format!("continue after tool round {turn}"))],
         total_usage: TokenUsage {
@@ -133,6 +134,7 @@ fn checkpoint(source_run_id: &str, session_id: &str, turn: usize) -> LoopCheckpo
 
 fn portable_export(checkpoint: &LoopCheckpoint) -> SessionCheckpointExportV1 {
     let session = SessionData {
+        durable_source: None,
         id: checkpoint.session_id.clone(),
         config: SessionConfig {
             name: "exact recovery fixture".into(),

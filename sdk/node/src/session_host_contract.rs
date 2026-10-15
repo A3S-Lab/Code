@@ -24,7 +24,7 @@ fn parse_outcome(outcome: &str) -> napi::Result<OutcomeKind> {
     }
 }
 
-fn nonnegative_ms(at_ms: i64) -> napi::Result<u64> {
+pub(super) fn nonnegative_ms(at_ms: i64) -> napi::Result<u64> {
     u64::try_from(at_ms).map_err(|_| napi::Error::from_reason("at_ms must be non-negative"))
 }
 

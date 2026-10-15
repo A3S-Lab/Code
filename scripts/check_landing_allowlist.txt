@@ -1,0 +1,46 @@
+# Pre-ratchet OUTCOME.md files that carry a renamed exclusion section
+# instead of the exact heading. Shrink-only: fix a file's heading, then
+# remove its line here. Enforced by scripts/check_landing.py.
+docs/evidence/agent-services/20261008-metered-design/OUTCOME.md
+docs/evidence/gateway/20261004-hot-path-bench-recertification/OUTCOME.md
+docs/evidence/im/20261003-im-p3-product/OUTCOME.md
+docs/evidence/long-horizon/20261009-capabilities/OUTCOME.md
+docs/evidence/maas/20261008-agent-forms/OUTCOME.md
+docs/evidence/maas/20261008-maas-mcp-service/OUTCOME.md
+docs/evidence/model-service/20261005-console-catalog-delivery/OUTCOME.md
+docs/evidence/model-service/20261005-console-visibility-fixes/OUTCOME.md
+docs/evidence/model-service/20261005-review-findings/OUTCOME.md
+docs/evidence/skill-mcp/20261009-sk-mcp1/OUTCOME.md
+docs/evidence/sms/20261008-console-write-scope/OUTCOME.md
+docs/evidence/sms/20261008-content-management/OUTCOME.md
+docs/evidence/sms/20261008-real-send-switch/OUTCOME.md
+docs/evidence/sms/20261008-sms-console/OUTCOME.md
+docs/evidence/sms/20261008-smsbao-provider/OUTCOME.md
+docs/evidence/sms/20261008-system-sms/OUTCOME.md
+docs/evidence/studio-document-tools/20261008-development/OUTCOME.md
+docs/evidence/studio-plugins/20261007-ui-scope-foundation/OUTCOME.md
+docs/evidence/studio-plugins/20261008-acp-plugin-processes/OUTCOME.md
+docs/evidence/studio-plugins/20261008-activity-pages/OUTCOME.md
+docs/evidence/studio-plugins/20261008-composer-revisions/OUTCOME.md
+docs/evidence/studio-plugins/20261008-delegated-plugin-tools/OUTCOME.md
+docs/evidence/studio-plugins/20261008-document-capabilities/OUTCOME.md
+docs/evidence/studio-plugins/20261008-harness-document-read/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-generation-retention/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-harness-tool-binding/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-publication-query/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-selection-snapshot/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-skill-mcp-binding/OUTCOME.md
+docs/evidence/studio-plugins/20261008-native-workspace-binding/OUTCOME.md
+docs/evidence/studio-plugins/20261008-pending-document-input/OUTCOME.md
+docs/evidence/studio-plugins/20261008-run-resource-completion/OUTCOME.md
+docs/evidence/studio-plugins/20261008-shared-documents/OUTCOME.md
+docs/evidence/studio-plugins/20261008-workspace-operation-access/OUTCOME.md
+docs/evidence/studio-plugins/20261008-workspace-ownership/OUTCOME.md
+docs/evidence/studio-plugins/20261008-workspace-snapshots/OUTCOME.md
+docs/evidence/studio-task-acp/2026-10-07-live-rows/OUTCOME.md
+docs/evidence/studio-task-acp/2026-10-07-local-handshake/OUTCOME.md
+docs/evidence/studio-task-acp/2026-10-07-task-rows/OUTCOME.md
+docs/evidence/ui-consolidation/20261004-s6-pilot-migration/OUTCOME.md
+docs/evidence/wc-gap-p0/20261009-measurement-rails/OUTCOME.md
+docs/evidence/wc-gap-p1/20261009-bg1/OUTCOME.md
+docs/evidence/wc-gap-p1/20261009-wtree1/OUTCOME.md

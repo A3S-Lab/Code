@@ -246,7 +246,7 @@ impl AgentView {
                     hints.push(HintItem::new(key!('e'), "edit pattern"));
                 }
                 hints.extend(ctrl_f_hint);
-                hints.push(HintItem::new(key!('o', CONTROL), "always-approve"));
+                hints.push(HintItem::new(key!('o', CONTROL), "yolo"));
                 hints.push(HintItem::new(key!('c', CONTROL), "cancel"));
                 hints.push(self.card_esc_hint());
                 hints

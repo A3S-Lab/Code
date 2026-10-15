@@ -213,10 +213,18 @@ impl WorkspaceRetrievalRuntime {
         let searched_records = vector_result.searched_records;
         let mut truncated = vector_result.truncated;
         let mut filtered_stale = false;
+        let min_score = self.semantic_min_score;
         let candidates = vector_result
             .hits
             .into_iter()
             .filter_map(|hit| {
+                // Zero/negative-similarity records are not evidence: without
+                // this floor the vector top-k pads the requested page with
+                // orthogonal chunks that then reach the model (and hybrid
+                // fusion) as pseudo-evidence. NaN scores fail closed here.
+                if hit.score.is_nan() || hit.score <= min_score {
+                    return None;
+                }
                 let Some(chunk) = chunks.get(hit.id.as_str()) else {
                     filtered_stale = true;
                     return None;

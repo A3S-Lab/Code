@@ -144,20 +144,12 @@ impl Skill {
     /// ...
     /// ```
     pub fn parse(content: &str) -> Option<Self> {
-        // Parse frontmatter (YAML between --- markers)
-        let parts: Vec<&str> = content.splitn(3, "---").collect();
-
-        if parts.len() < 3 {
-            return None;
-        }
-
-        let frontmatter = parts[1].trim();
-        let body = parts[2].trim();
-
-        // Parse YAML frontmatter
-        let mut skill: Skill = serde_yaml::from_str(frontmatter).ok()?;
-        skill.content = body.to_string();
-
+        // Fence lines are logical lines, so LF, CRLF, and CR (and a leading
+        // BOM) cannot leave a carriage return on a YAML scalar or the body.
+        // A missing closing fence fails closed.
+        let (frontmatter, body) = crate::directory_projection::split_frontmatter(content).ok()?;
+        let mut skill: Skill = serde_yaml::from_str(&frontmatter).ok()?;
+        skill.content = body.trim().to_string();
         Some(skill)
     }
 
@@ -238,8 +230,17 @@ impl Skill {
             && allowed.split_whitespace().count() > 1
     }
 
+    /// An instruction or persona skill with no `allowed-tools` keeps the
+    /// session's tools. A tool skill with no declaration denies every tool.
+    pub fn inherits_session_tools(&self) -> bool {
+        self.allowed_tools.is_none() && self.kind != SkillKind::Tool
+    }
+
     /// Check if a tool is allowed by this skill
     pub fn is_tool_allowed(&self, tool_name: &str) -> bool {
+        if self.inherits_session_tools() {
+            return true;
+        }
         let permissions = self.parse_allowed_tools();
 
         if permissions.is_empty() {
@@ -311,6 +312,53 @@ You are a test assistant.
         assert_eq!(skill.description, "A test skill");
         assert_eq!(skill.kind, SkillKind::Instruction);
         assert!(skill.content.contains("You are a test assistant"));
+    }
+
+    fn skill_markdown(separator: &str, bom: bool) -> String {
+        let mut text = String::new();
+        if bom {
+            text.push('\u{feff}');
+        }
+        for line in [
+            "---",
+            "name: test-skill",
+            "description: A test skill",
+            "allowed-tools:",
+            "  - read(*)",
+            "  - grep(*)",
+            "kind: instruction",
+            "---",
+        ] {
+            text.push_str(line);
+            text.push_str(separator);
+        }
+        text.push_str("# Instructions");
+        text.push_str(separator);
+        text.push_str(separator);
+        text.push_str("You are a test assistant.");
+        text
+    }
+
+    #[test]
+    fn crlf_and_bom_skill_matches_lf_name_tools_and_body() {
+        let lf = Skill::parse(&skill_markdown("\n", false)).expect("lf skill");
+        let crlf = Skill::parse(&skill_markdown("\r\n", false)).expect("crlf skill");
+        let bom = Skill::parse(&skill_markdown("\r\n", true)).expect("bom skill");
+        assert_eq!(lf.name, "test-skill");
+        assert_eq!(lf.allowed_tools.as_deref(), Some("read(*), grep(*)"));
+        assert_eq!(crlf.name, lf.name);
+        assert_eq!(crlf.allowed_tools, lf.allowed_tools);
+        assert_eq!(bom.name, lf.name);
+        assert_eq!(bom.allowed_tools, lf.allowed_tools);
+        assert_eq!(crlf.content.replace('\r', ""), lf.content);
+        assert_eq!(bom.content.replace('\r', ""), lf.content);
+        assert!(lf.content.starts_with("# Instructions"));
+        assert!(crlf.content.starts_with("# Instructions"));
+        assert!(bom.content.starts_with("# Instructions"));
+        assert!(!crlf.content.starts_with('\r'));
+        assert!(!bom.content.starts_with('\r'));
+        assert!(!crlf.allowed_tools.as_deref().unwrap_or("").contains('\r'));
+        assert!(Skill::parse("---\r\nname: test-skill\r\n# no closer\r\n").is_none());
     }
 
     #[test]
@@ -445,7 +493,7 @@ allowed-tools:
     }
 
     #[test]
-    fn test_omitted_allowed_tools_does_not_allow_tools() {
+    fn test_omitted_allowed_tools_inherits_session_tools_for_instructions() {
         let skill = Skill {
             name: "test".to_string(),
             description: "test".to_string(),
@@ -457,6 +505,25 @@ allowed-tools:
             version: None,
         };
 
+        assert!(skill.inherits_session_tools());
+        assert!(skill.is_tool_allowed("read"));
+        assert!(skill.is_tool_allowed("bash"));
+    }
+
+    #[test]
+    fn test_omitted_allowed_tools_denies_tool_kind() {
+        let skill = Skill {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            allowed_tools: None,
+            disable_model_invocation: false,
+            kind: SkillKind::Tool,
+            content: String::new(),
+            tags: Vec::new(),
+            version: None,
+        };
+
+        assert!(!skill.inherits_session_tools());
         assert!(!skill.is_tool_allowed("read"));
     }
 }

@@ -1,7 +1,12 @@
 # Capability inventory: A3S Code TUI ↔ a3s-build pager
 
-Source of A3S business: `crates/cli/src/tui` (in-process TUI before spawn of
-`a3s-code-tui`). Source of UI surfaces: `/tmp/grok-build` @
+This inventory is historical. `crates/cli/src/tui` does not exist. The
+running `a3s code` screen is the pager `a3s-code-tui` under
+`apps/code/vendor/a3s-code-ui`, launched by `apps/cli`. The hybrid scaffold
+in this directory is `a3s-code-tui-hybrid`.
+
+Source of A3S business at the time of the inventory: the removed in-process
+CLI TUI. Source of UI surfaces: `/tmp/grok-build` @
 `f0e3be1100ef5252488e3be8bb0e91cf68d8c305`.
 
 Status legend: **keep** (A3S), **vendor** (grok UI), **adapt** (shape from grok,

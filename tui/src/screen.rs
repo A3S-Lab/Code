@@ -43,6 +43,7 @@ pub async fn run_fullscreen(
     home: Option<&Path>,
     fallback_model: &str,
     mut on_first_frame: Option<Box<dyn FnOnce() + Send>>,
+    resume_session: Option<String>,
 ) -> anyhow::Result<()> {
     let layers = LaunchLayers {
         workspace: workspace.to_path_buf(),
@@ -72,13 +73,14 @@ pub async fn run_fullscreen(
     let mut menu_index = 0usize;
     let mut painted = false;
     let mut dirty = true;
-    let mut agent = match CodeAgentAdapter::open(layers.clone()).await {
-        Ok(agent) => Some(agent),
-        Err(error) => {
-            scrollback.push_assistant(&format!("agent: {error}"));
-            None
-        }
-    };
+    let mut agent =
+        match CodeAgentAdapter::open_with_session(layers.clone(), resume_session.clone()).await {
+            Ok(agent) => Some(agent),
+            Err(error) => {
+                scrollback.push_assistant(&format!("agent: {error}"));
+                None
+            }
+        };
     let model_id = agent
         .as_ref()
         .map(|agent| agent.model_id().to_string())

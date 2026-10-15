@@ -1,3 +1,4 @@
+#![cfg(test)]
 #![allow(deprecated)]
 use a3s_code_core::memory::{
     AgentMemory, MemoryConfig, MemoryMaintenanceContext, MemoryMaintenanceError,
@@ -441,7 +442,13 @@ async fn agent_memory_construction_is_inert_and_runtime_ownership_is_exclusive()
 
 #[tokio::test(start_paused = true)]
 async fn failed_job_degrades_health_and_later_success_recovers_it() {
-    let memory = Arc::new(AgentMemory::new(Arc::new(InMemoryStore::new())));
+    let memory = Arc::new(AgentMemory::with_config(
+        Arc::new(InMemoryStore::new()),
+        MemoryConfig {
+            prune_policy: None,
+            ..Default::default()
+        },
+    ));
     let consolidator = Arc::new(RecoveringConsolidator::default());
     let job = ScheduledMemoryMaintenance::try_new(
         "recovering_consolidation",
@@ -482,21 +489,34 @@ async fn failed_job_degrades_health_and_later_success_recovers_it() {
 }
 
 #[tokio::test]
-async fn maintenance_requires_async_session_build_and_rejects_zero_prune_interval() {
+async fn sync_build_disables_optional_maintenance_and_async_build_rejects_zero_interval() {
     let agent = Agent::from_config(offline_config()).await.unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    let sync_error = agent
-        .session(
-            workspace.path().display().to_string(),
-            Some(SessionOptions::new().with_memory(Arc::new(InMemoryStore::new()))),
-        )
-        .expect_err("owned maintenance must not be silently skipped by sync construction");
-    assert!(matches!(
-        sync_error,
-        CodeError::AsyncSessionBuildRequired {
-            resource: SessionBuildResource::MemoryMaintenance
+    for host_job in [false, true] {
+        let consolidator = Arc::new(CountingConsolidator::default());
+        let mut options = SessionOptions::new().with_memory(Arc::new(InMemoryStore::new()));
+        if host_job {
+            let job = ScheduledMemoryMaintenance::try_new(
+                "sync-must-not-spawn",
+                Duration::from_secs(1),
+                consolidator.clone(),
+            )
+            .unwrap();
+            options =
+                options.with_memory_maintenance(MemoryMaintenanceOptions::new().with_job(job));
         }
-    ));
+        let sync_session = agent
+            .session(workspace.path().display().to_string(), Some(options))
+            .expect("sync construction must disable optional maintenance");
+        let health = sync_session.memory_maintenance_health();
+        assert_eq!(health.phase, MemoryMaintenancePhase::Disabled);
+        assert!(
+            health.jobs.is_empty(),
+            "sync construction spawned maintenance"
+        );
+        assert_eq!(consolidator.runs.load(Ordering::SeqCst), 0);
+        sync_session.close().await;
+    }
 
     let mut invalid = offline_config();
     invalid.memory.as_mut().unwrap().prune_interval_secs = 0;

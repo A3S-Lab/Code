@@ -397,12 +397,34 @@ fn storage_view(sessions_root: &Path) -> RelocationResult<RelocationView> {
     RelocationView::load_for_sessions_root(sessions_root)
 }
 
+/// Pager session trees to read. New sessions are written only under the
+/// product home. An older shell under `<os home>/.grok/sessions` is readable
+/// on resume and is not a write target.
+fn session_lookup_roots_from(primary: &Path, os_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = vec![primary.to_path_buf()];
+    if let Some(home) = os_home {
+        let legacy = home.join(".grok").join("sessions");
+        if legacy.as_path() != primary {
+            roots.push(legacy);
+        }
+    }
+    roots
+}
+
+fn session_lookup_roots() -> Vec<PathBuf> {
+    session_lookup_roots_from(
+        &grok_home().join("sessions"),
+        a3s_dirs::home_dir().as_deref(),
+    )
+}
+
 /// Check if a session exists locally under the given cwd.
 /// A session is only "already local" if it lives under the same cwd as the current invocation.
 /// A session stored under a different cwd does NOT satisfy this check; the caller must still run the remote restore into the requested cwd.
 pub fn session_exists_for_cwd(session_id: &str, cwd: &str) -> bool {
-    let sessions_root = crate::util::grok_home::grok_home().join("sessions");
-    session_exists_for_cwd_in_root(session_id, cwd, &sessions_root)
+    session_lookup_roots()
+        .iter()
+        .any(|root| session_exists_for_cwd_in_root(session_id, cwd, root))
 }
 
 /// A directory is a resumable session only if it has a `summary.json`; this skips `images/`-only stubs that would otherwise hijack `--resume`.
@@ -423,8 +445,9 @@ fn session_exists_for_cwd_in_root(session_id: &str, cwd: &str, sessions_root: &P
 /// When a remote session is restored, a new local child is created with `summary.parent_session_id == remote_session_id`.
 /// On a second `a3s -r <remote_id>` in the same cwd, this function returns the already-restored child so no duplicate restore is performed.
 pub fn find_local_child_for_remote(remote_session_id: &str, cwd: &str) -> Option<String> {
-    let sessions_root = crate::util::grok_home::grok_home().join("sessions");
-    find_local_child_for_remote_in_root(remote_session_id, cwd, &sessions_root)
+    session_lookup_roots().into_iter().find_map(|root| {
+        find_local_child_for_remote_in_root(remote_session_id, cwd, &root)
+    })
 }
 
 /// Resolve a session ID to one that is available locally under `cwd`.
@@ -463,8 +486,9 @@ pub(crate) fn resolve_local_session_for_repo(
     session_id: &str,
     candidate_cwds: &[&str],
 ) -> Option<ResolvedLocalSession> {
-    let sessions_root = crate::util::grok_home::grok_home().join("sessions");
-    resolve_local_session_for_repo_in_root(session_id, candidate_cwds, &sessions_root)
+    session_lookup_roots().into_iter().find_map(|root| {
+        resolve_local_session_for_repo_in_root(session_id, candidate_cwds, &root)
+    })
 }
 
 pub(crate) fn resolve_local_session_for_repo_in_root(
@@ -571,8 +595,14 @@ pub fn resolve_local_session_any_cwd(session_id: &str) -> Option<String> {
 pub fn resolve_local_session_ids_any_cwd<S: AsRef<str>>(
     session_ids: &[S],
 ) -> io::Result<std::collections::HashSet<String>> {
-    resolve_local_session_ids_any_cwd_in_root(session_ids, &grok_home().join("sessions"))
-        .map_err(io::Error::other)
+    let mut found = std::collections::HashSet::new();
+    for root in session_lookup_roots() {
+        found.extend(
+            resolve_local_session_ids_any_cwd_in_root(session_ids, &root)
+                .map_err(io::Error::other)?,
+        );
+    }
+    Ok(found)
 }
 
 fn resolve_local_session_ids_any_cwd_in_root<S: AsRef<str>>(
@@ -592,8 +622,14 @@ fn resolve_local_session_ids_any_cwd_in_root<S: AsRef<str>>(
 }
 
 pub(crate) fn resolve_local_session_any_cwd_result(session_id: &str) -> io::Result<Option<String>> {
-    resolve_local_session_any_cwd_in_root(session_id, &grok_home().join("sessions"))
-        .map_err(io::Error::other)
+    for root in session_lookup_roots() {
+        if let Some(cwd) =
+            resolve_local_session_any_cwd_in_root(session_id, &root).map_err(io::Error::other)?
+        {
+            return Ok(Some(cwd));
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_local_session_any_cwd_in_root(
@@ -614,10 +650,22 @@ pub fn find_session_dir_by_id(session_id: &str) -> Option<PathBuf> {
     find_any_session_dir_by_id_result(session_id).ok().flatten()
 }
 
+pub(crate) fn find_persisted_session_dir_in_roots(
+    session_id: &str,
+    roots: &[PathBuf],
+) -> io::Result<Option<PathBuf>> {
+    for root in roots {
+        if let Some(path) = find_persisted_session_dir_by_id_in_root_result(session_id, root)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn find_persisted_session_dir_by_id_result(
     session_id: &str,
 ) -> io::Result<Option<PathBuf>> {
-    find_persisted_session_dir_by_id_in_root_result(session_id, &grok_home().join("sessions"))
+    find_persisted_session_dir_in_roots(session_id, &session_lookup_roots())
 }
 
 pub(crate) fn find_persisted_session_dir_by_id_in_root_result(
@@ -630,9 +678,15 @@ pub(crate) fn find_persisted_session_dir_by_id_in_root_result(
 }
 
 pub(crate) fn find_any_session_dir_by_id_result(session_id: &str) -> io::Result<Option<PathBuf>> {
-    storage_view(&grok_home().join("sessions"))
-        .and_then(|view| view.find_any_session_dir(session_id))
-        .map_err(io::Error::other)
+    for root in session_lookup_roots() {
+        if let Some(path) = storage_view(&root)
+            .and_then(|view| view.find_any_session_dir(session_id))
+            .map_err(io::Error::other)?
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -674,7 +728,12 @@ pub(crate) fn find_summary_by_session_id(session_id: &str) -> Option<Summary> {
         !FIND_SUMMARY_BY_SESSION_ID_FORBIDDEN.get(),
         "sessions-index walk invoked from a forbidden path"
     );
-    find_summary_by_session_id_in_root(session_id, &grok_home().join("sessions"))
+    for root in session_lookup_roots() {
+        if let Some(summary) = find_summary_by_session_id_in_root(session_id, &root) {
+            return Some(summary);
+        }
+    }
+    None
 }
 
 /// Inner implementation with injectable root for testing.
@@ -3704,6 +3763,10 @@ mod collect_session_files_tests;
 #[cfg(test)]
 #[path = "persistence_session_exists_tests.rs"]
 mod session_exists_tests;
+
+#[cfg(test)]
+#[path = "persistence_lookup_roots_tests.rs"]
+mod persistence_lookup_roots_tests;
 
 #[cfg(test)]
 #[path = "persistence_find_summary_by_session_id_tests.rs"]

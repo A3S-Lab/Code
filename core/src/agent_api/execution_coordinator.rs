@@ -40,6 +40,86 @@ pub(super) struct ExecutionCoordinator {
     terminal_settled: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Passive original inputs only. Labels are data, never owner binding proof.
+/// The owned prepare producer still requires T005's real once-bound protocol.
+pub(super) struct OwnedCoordinatorInputs {
+    session_id: String,
+    run_store: Arc<crate::run::InMemoryRunStore>,
+}
+
+impl OwnedCoordinatorInputs {
+    pub(super) fn capture_original(session: &AgentSession) -> Self {
+        Self {
+            session_id: session.session_id.clone(),
+            run_store: Arc::clone(&session.run_store),
+        }
+    }
+}
+
+struct CoordinatorPreparationDraft {
+    inputs: OwnedCoordinatorInputs,
+    run_id: String,
+    cancellation: CancellationToken,
+    run_control: Arc<RunControlInbox>,
+}
+
+impl CoordinatorPreparationDraft {
+    fn new(
+        inputs: OwnedCoordinatorInputs,
+        run_id: String,
+        agent_loop: &AgentLoop,
+        cancellation: CancellationToken,
+    ) -> Self {
+        let run_control = RunControlInbox::new_with_hook_executor(
+            inputs.session_id.clone(),
+            run_id.clone(),
+            cancellation.clone(),
+            agent_loop.hook_executor(),
+        );
+        Self {
+            inputs,
+            run_id,
+            cancellation,
+            run_control,
+        }
+    }
+
+    // Compatibility only: this attachment does not confer original binding.
+    // T005's unavailable attach_owned/once-bind producer must not fall back here.
+    async fn finish_legacy(
+        self,
+        state: RunControlState,
+        agent_loop: &mut AgentLoop,
+    ) -> ExecutionCoordinator {
+        state
+            .attach_run_control(&self.run_id, Arc::clone(&self.run_control))
+            .await;
+        self.finish_binding(agent_loop)
+    }
+
+    fn finish_binding(self, agent_loop: &mut AgentLoop) -> ExecutionCoordinator {
+        let invocation = agent_loop
+            .invocation_context(
+                self.run_id.clone(),
+                Some(self.inputs.session_id.as_str()),
+                None,
+                self.cancellation.clone(),
+            )
+            .with_run_control(Arc::clone(&self.run_control));
+        *agent_loop = invocation.bind_agent_loop(agent_loop);
+        agent_loop.set_checkpoint_run(&self.run_id);
+
+        ExecutionCoordinator {
+            session_id: self.inputs.session_id,
+            run_id: self.run_id,
+            cancellation: self.cancellation,
+            run_control: self.run_control,
+            run_store: self.inputs.run_store,
+            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl ExecutionCoordinator {
     /// Acquire a task-scheduler lease using the coordinator's canonical error
@@ -182,35 +262,33 @@ impl ExecutionCoordinator {
         agent_loop: &mut AgentLoop,
         cancellation: CancellationToken,
     ) -> Self {
-        let run_id = run_id.into();
-        let run_control = RunControlInbox::new_with_hook_executor(
-            session.session_id.clone(),
-            run_id.clone(),
-            cancellation.clone(),
-            agent_loop.hook_executor(),
-        );
-        RunControlState::from_session(session)
-            .attach_run_control(&run_id, run_control.clone())
-            .await;
-        let invocation = agent_loop
-            .invocation_context(
-                run_id.clone(),
-                Some(session.session_id.as_str()),
-                None,
-                cancellation.clone(),
-            )
-            .with_run_control(run_control.clone());
-        *agent_loop = invocation.bind_agent_loop(agent_loop);
-        agent_loop.set_checkpoint_run(&run_id);
-
-        Self {
-            session_id: session.session_id.clone(),
-            run_id,
+        CoordinatorPreparationDraft::new(
+            OwnedCoordinatorInputs::capture_original(session),
+            run_id.into(),
+            agent_loop,
             cancellation,
-            run_control,
-            run_store: Arc::clone(&session.run_store),
-            terminal_settled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        )
+        .finish_legacy(RunControlState::from_session(session), agent_loop)
+        .await
+    }
+
+    /// Construct one actual inbox and attach it to the already entered owner.
+    /// Final invocation assembly follows the owned attachment await.
+    pub(super) async fn prepare_owned(
+        inputs: OwnedCoordinatorInputs,
+        state: RunControlState,
+        original: &Arc<run_admission::OriginalExecutionContext>,
+        run_id: String,
+        agent_loop: &mut AgentLoop,
+        cancellation: CancellationToken,
+    ) -> Result<Self> {
+        original.validate_original_token(&cancellation)?;
+        let draft = CoordinatorPreparationDraft::new(inputs, run_id, agent_loop, cancellation);
+        original.bind_inbox_once(Arc::clone(&draft.run_control))?;
+        state
+            .attach_owned_run_control(&draft.run_id, Arc::clone(&draft.run_control))
+            .await?;
+        Ok(draft.finish_binding(agent_loop))
     }
 
     pub(super) fn run_id(&self) -> &str {
@@ -284,6 +362,25 @@ impl ExecutionCoordinator {
         agent_event_tx: broadcast::Sender<AgentEvent>,
         agent_event_barrier: AgentEventBarrier,
     ) -> InvocationContext {
+        self.invocation_base(agent_loop, runtime_tx)
+            .with_agent_events(agent_event_tx, agent_event_barrier)
+    }
+
+    /// Fact tools retain their existing broadcast relay in the ToolContext.
+    /// That lane has no acknowledgement receiver; never invent a barrier.
+    pub(super) fn fact_invocation(
+        &self,
+        agent_loop: &AgentLoop,
+        runtime_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> InvocationContext {
+        self.invocation_base(agent_loop, runtime_tx)
+    }
+
+    fn invocation_base(
+        &self,
+        agent_loop: &AgentLoop,
+        runtime_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> InvocationContext {
         agent_loop
             .invocation_context(
                 self.run_id.clone(),
@@ -291,13 +388,31 @@ impl ExecutionCoordinator {
                 runtime_tx,
                 self.cancellation.clone(),
             )
-            .with_agent_events(agent_event_tx, agent_event_barrier)
-            .with_run_control(self.run_control.clone())
+            .with_run_control(Arc::clone(&self.run_control))
     }
 
     #[cfg(test)]
     fn identity(&self) -> (&str, &str) {
         (&self.session_id, &self.run_id)
+    }
+}
+
+// Separate from the legacy allow(dead_code) impl: unused T002 definitions
+// remain visible to compiler diagnostics until coordinated production wiring.
+impl ExecutionCoordinator {
+    /// Non-activating T002 component. Canonical production callers switch only
+    /// with the coordinated T004–T007 ownership repair.
+    pub(super) fn prepare_original_handoff(
+        session: &AgentSession,
+        lease: RunAdmissionLease,
+        mode: run_admission::ExecutionMode,
+        original_cancel: CancellationToken,
+    ) -> Result<(
+        run_admission::OriginalWorkerHandoff,
+        run_admission::OwnedWorkerStart,
+        Arc<run_admission::OriginalExecutionContext>,
+    )> {
+        run_admission::OriginalWorkerHandoff::prepare(session, lease, mode, original_cancel)
     }
 }
 

@@ -118,6 +118,32 @@ impl Agent {
         agent_sessions::sync_global_mcp_servers(self, servers).await
     }
 
+    /// Arm server-initiated sampling on this agent's global MCP manager:
+    /// the factory is consulted once per server at client construction
+    /// (see [`crate::mcp::SamplingHandlerFactory`]). Not setting a
+    /// factory keeps sampling refused (`-32601`), fail closed.
+    pub async fn set_sampling_handler_factory(
+        &self,
+        factory: crate::mcp::SamplingHandlerFactory,
+    ) -> Result<()> {
+        let Some(manager) = self.global_mcp.as_ref() else {
+            return Err(crate::error::CodeError::Config(
+                "Agent has no global MCP manager to arm sampling on".into(),
+            ));
+        };
+        manager.set_sampling_handler_factory(factory).await;
+        Ok(())
+    }
+
+    /// Whether a sampling handler factory is armed on the global manager
+    /// (hosts introspect their wiring; the unarmed default refuses).
+    pub async fn has_sampling_handler_factory(&self) -> bool {
+        let Some(manager) = self.global_mcp.as_ref() else {
+            return false;
+        };
+        manager.has_sampling_handler_factory().await
+    }
+
     /// Live status of servers registered on this agent's shared global MCP manager.
     ///
     /// Empty when the agent has no global manager. Hosts use this to project
@@ -128,6 +154,14 @@ impl Agent {
         match self.global_mcp.as_ref() {
             Some(manager) => manager.get_status().await,
             None => std::collections::HashMap::new(),
+        }
+    }
+
+    /// Server definitions registered on the shared global MCP manager.
+    pub async fn global_mcp_configs(&self) -> Vec<crate::mcp::McpServerConfig> {
+        match self.global_mcp.as_ref() {
+            Some(manager) => manager.all_configs().await,
+            None => Vec::new(),
         }
     }
 
@@ -146,6 +180,18 @@ impl Agent {
         options: Option<SessionOptions>,
     ) -> Result<AgentSession> {
         agent_sessions::create_session_async(self, workspace, options).await
+    }
+
+    /// Fork validated historical state into a new session with fresh host options.
+    /// An admitted source policy must be explicitly supplied unchanged. Source
+    /// Goal facts, execution authority and loop checkpoints remain at the source.
+    pub async fn fork_session_async(
+        &self,
+        snapshot: crate::store::SessionSnapshotV1,
+        workspace: impl Into<String>,
+        options: SessionOptions,
+    ) -> Result<AgentSession> {
+        agent_sessions::fork_session_async(self, snapshot, workspace.into(), options).await
     }
 
     /// Open a protocol-owned session, resuming its complete persisted snapshot

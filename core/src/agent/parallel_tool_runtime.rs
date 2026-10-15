@@ -118,15 +118,18 @@ impl AgentLoop {
     }
 }
 
+/// Parallel-safe write names use the REGISTERED tool names (`write`, `edit`).
+/// The original set drifted to registry-absent verbs (`write_file`,
+/// `edit_file`, …), which silently disabled concurrent writes on this path.
 fn is_parallel_safe_write(name: &str, _args: &Value) -> bool {
-    matches!(
-        name,
-        "write_file" | "edit_file" | "create_file" | "append_to_file" | "replace_in_file"
-    )
+    matches!(name, "write" | "edit")
 }
 
+/// Write-class tools key their target on `file_path` (the registered schema);
+/// a call without it stays sequential rather than guessing.
 fn extract_write_path(args: &Value) -> Option<String> {
-    args.get("path")
+    args.get("file_path")
+        .or_else(|| args.get("path"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
@@ -139,15 +142,25 @@ mod tests {
     #[test]
     fn parallel_write_safety_requires_known_write_tool_and_path() {
         assert!(is_parallel_safe_write(
-            "write_file",
-            &json!({"path":"a.txt"})
+            "write",
+            &json!({"file_path":"a.txt"})
+        ));
+        assert!(is_parallel_safe_write(
+            "edit",
+            &json!({"file_path":"a.txt"})
         ));
         assert!(!is_parallel_safe_write(
-            "read_file",
-            &json!({"path":"a.txt"})
+            "read",
+            &json!({"file_path":"a.txt"})
         ));
+        for drifted in ["write_file", "edit_file", "create_file"] {
+            assert!(
+                !is_parallel_safe_write(drifted, &json!({"file_path":"a.txt"})),
+                "{drifted} is not a registered tool name"
+            );
+        }
         assert_eq!(
-            extract_write_path(&json!({"path":"a.txt"})),
+            extract_write_path(&json!({"file_path":"a.txt"})),
             Some("a.txt".to_string())
         );
         assert_eq!(extract_write_path(&json!({"file":"a.txt"})), None);

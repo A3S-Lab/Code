@@ -1,0 +1,3 @@
+# This certification executable must support the runner's --locked bootstrap.
+!Cargo.lock
+/target/

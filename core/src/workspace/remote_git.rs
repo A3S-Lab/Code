@@ -135,6 +135,21 @@ pub struct RemoteGitConflict {
     pub message: String,
 }
 
+/// True only when `base_url` names a loopback endpoint (`localhost`, a
+/// loopback IP, or a parseable URL whose host is one). Unparseable URLs
+/// are not loopback — the caller refuses them.
+fn base_url_is_loopback(base_url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(base_url) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    }
+}
+
 /// Client for a remote `gitserver`. See module docs / RFC for the protocol.
 #[derive(Debug, Clone)]
 pub struct RemoteGitBackend {
@@ -156,6 +171,18 @@ impl RemoteGitBackend {
             .unwrap_or(true)
             && config.client_cert_pem.is_none()
         {
+            // Fail closed: no credentials is a localhost-dev-only mode.
+            // A remote endpoint without a bearer token or mTLS refuses
+            // activation instead of warning and sending unauthenticated
+            // (and, worse, tokenless) traffic to an arbitrary host.
+            if !base_url_is_loopback(&config.base_url) {
+                return Err(anyhow!(
+                    "remote git backend refuses to activate without a bearer \
+                     token or mTLS against non-localhost endpoint '{}'; set a \
+                     token or client certificates",
+                    config.base_url
+                ));
+            }
             tracing::warn!(
                 "RemoteGitBackend constructed without bearer token or mTLS; \
                  this is only safe on a trusted localhost gitserver"

@@ -22,6 +22,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+mod release_contract;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 mod immutable_content;
@@ -54,6 +56,15 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "agent_refresh_mcp_tools",
     "agent_sync_global_mcp_servers",
     "agent_global_mcp_status",
+    "agent_global_mcp_configs",
+    "agent_has_sampling_handler_factory",
+    "agent_set_sampling_handler_factory",
+    "session_projected_capability_names",
+    "session_set_permission_policy",
+    "session_set_permission_posture",
+    "session_fork_session_at",
+    "session_read_evaluation_evidence",
+    "session_stream_with_run",
     "agent_task_scheduler_stats",
     "agent_task_scheduler_health",
     "agent_replace_session",
@@ -167,6 +178,20 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_record_outcome",
     "session_note_promoted_digest",
     "session_outcome_ledger_snapshot",
+    "agent_fork_session",
+    "session_apply_goal_definition",
+    "session_apply_goal_plan",
+    "session_apply_goal_control",
+    "session_control_goal",
+    "session_apply_goal_wait",
+    "session_goal_definition",
+    "session_work_policy_digest",
+    "session_check_goal_step_run",
+    "session_reconcile_goal_slices",
+    "session_preview_goal_tick",
+    "session_tick_goal",
+    "session_stream_goal_tick",
+    "session_admit_review_drafts",
     "session_has_memory",
     "session_remember_success",
     "session_remember_failure",
@@ -191,7 +216,6 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_set_budget_guard",
     "session_set_output_language",
     "session_set_planning_mode",
-    "session_set_permission_posture",
     "session_clear_planning_mode_override",
     "session_set_session_checkpoint_export_sink",
     "session_register_command",
@@ -324,7 +348,7 @@ impl BridgeFailure {
 
 impl From<CodeError> for BridgeFailure {
     fn from(error: CodeError) -> Self {
-        Self::new(error.code(), error.to_string())
+        Self::new(error.runtime_code(), error.to_string())
     }
 }
 
@@ -413,7 +437,11 @@ impl BridgeState {
         } else {
             None
         };
-        options.into_core(callbacks)
+        // Unoptimized builds give this builder a ~600 KiB frame; keep it off
+        // the request task's stack, which already holds the router's frame.
+        tokio::task::spawn_blocking(move || options.into_core(callbacks))
+            .await
+            .map_err(|error| BridgeFailure::new("RUNTIME_ERROR", error.to_string()))?
     }
 
     async fn optional_session_options(
@@ -480,27 +508,159 @@ impl BridgeState {
         &'a self,
         request: &'a BridgeRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Value, BridgeFailure>> + Send + 'a>> {
-        Box::pin(async move { self.dispatch_inner(request).await })
+        Box::pin(async move {
+            check_envelope(request)?;
+            // Goal and fork operations never enter the router's ~1.6 MiB debug poll frame.
+            if GOAL_OPERATIONS.contains(&request.operation.as_str()) {
+                self.dispatch_goal(request).await
+            } else {
+                self.dispatch_inner(request).await
+            }
+        })
+    }
+
+    fn dispatch_goal<'a>(
+        &'a self,
+        request: &'a BridgeRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, BridgeFailure>> + Send + 'a>> {
+        Box::pin(async move {
+            match request.operation.as_str() {
+                "agent_fork_session" => {
+                    let agent_id: String = required(&request.params, "agent_id")?;
+                    let snapshot: a3s_code_core::store::SessionSnapshotV1 =
+                        required(&request.params, "snapshot")?;
+                    let workspace: String = required(&request.params, "workspace")?;
+                    let options = optional::<BridgeSessionOptions>(&request.params, "options")?
+                        .unwrap_or_default();
+                    let options = self.session_options(options).await?;
+                    let agent = self.agent(&agent_id).await?;
+                    let session = Arc::new(
+                        Box::pin(agent.fork_session_async(snapshot, workspace, options)).await?,
+                    );
+                    self.insert_session(agent_id, session).await
+                }
+                "session_apply_goal_definition" => encode(
+                    self.request_session(&request.params)
+                        .await?
+                        .apply_goal_definition(required(&request.params, "command")?)?,
+                ),
+                "session_apply_goal_plan" => encode(
+                    self.request_session(&request.params)
+                        .await?
+                        .apply_goal_plan(required(&request.params, "command")?)?,
+                ),
+                "session_apply_goal_control" => encode(
+                    self.request_session(&request.params)
+                        .await?
+                        .apply_goal_control(required(&request.params, "command")?)?,
+                ),
+                "session_control_goal" => {
+                    let command = required(&request.params, "command")?;
+                    let grace_ms: u64 = required(&request.params, "grace_ms")?;
+                    let session = self.request_session(&request.params).await?;
+                    encode(
+                        Box::pin(
+                            session
+                                .control_goal(command, std::time::Duration::from_millis(grace_ms)),
+                        )
+                        .await?,
+                    )
+                }
+                "session_apply_goal_wait" => encode(
+                    self.request_session(&request.params)
+                        .await?
+                        .apply_goal_wait(required(&request.params, "command")?)?,
+                ),
+                "session_goal_definition" => {
+                    let definition = self
+                        .request_session(&request.params)
+                        .await?
+                        .goal_definition()?;
+                    Ok(json!({ "definition": definition }))
+                }
+                "session_work_policy_digest" => {
+                    let digest = self
+                        .request_session(&request.params)
+                        .await?
+                        .work_policy_digest()?;
+                    Ok(json!({ "digest": digest }))
+                }
+                "session_check_goal_step_run" => {
+                    let goal_id: String = required(&request.params, "goal_id")?;
+                    let goal_revision: u32 = required(&request.params, "goal_revision")?;
+                    let plan_revision: u32 = required(&request.params, "plan_revision")?;
+                    let step_id: String = required(&request.params, "step_id")?;
+                    let run_id: String = required(&request.params, "run_id")?;
+                    self.request_session(&request.params)
+                        .await?
+                        .check_goal_step_run(
+                            &goal_id,
+                            goal_revision,
+                            plan_revision,
+                            &step_id,
+                            &run_id,
+                        )?;
+                    Ok(json!({ "checked": true }))
+                }
+                "session_reconcile_goal_slices" => {
+                    let appended = self
+                        .request_session(&request.params)
+                        .await?
+                        .reconcile_goal_slices()?;
+                    Ok(json!({ "appended": appended }))
+                }
+                "session_preview_goal_tick" => {
+                    let command = required(&request.params, "command")?;
+                    let session = self.request_session(&request.params).await?;
+                    let decision = Box::pin(session.preview_goal_tick(&command)).await?;
+                    Ok(json!({ "decision": decision.as_str() }))
+                }
+                "session_tick_goal" => {
+                    let command = required(&request.params, "command")?;
+                    let session = self.request_session(&request.params).await?;
+                    match Box::pin(session.tick_goal(&command)).await? {
+                        a3s_code_core::GoalTickAdmission::Decided(decision) => {
+                            Ok(json!({ "decision": decision.as_str() }))
+                        }
+                        a3s_code_core::GoalTickAdmission::Admitted(spawn) => {
+                            Ok(json!({ "run": run_spawn_value(&spawn)? }))
+                        }
+                    }
+                }
+                "session_admit_review_drafts" => {
+                    let scenario_id: String = required(&request.params, "scenario_id")?;
+                    let source_review_id: String = required(&request.params, "source_review_id")?;
+                    let observed_at_ms: u64 = required(&request.params, "observed_at_ms")?;
+                    let drafts = required(&request.params, "drafts")?;
+                    let admitted = self
+                        .request_session(&request.params)
+                        .await?
+                        .admit_session_review_drafts(
+                            &scenario_id,
+                            &source_review_id,
+                            observed_at_ms,
+                            drafts,
+                        )?;
+                    Ok(json!({ "admitted": admitted }))
+                }
+                operation => Err(BridgeFailure::new(
+                    "INTERNAL_ERROR",
+                    format!("{operation:?} is not a goal operation"),
+                )),
+            }
+        })
     }
 
     async fn dispatch_inner(&self, request: &BridgeRequest) -> Result<Value, BridgeFailure> {
-        if request.protocol_version != BRIDGE_PROTOCOL_VERSION {
-            return Err(BridgeFailure::new(
-                "PROTOCOL_ERROR",
-                format!(
-                    "unsupported bridge protocol version {}; expected {}",
-                    request.protocol_version, BRIDGE_PROTOCOL_VERSION
-                ),
-            ));
-        }
-        if !request.params.is_object() {
-            return Err(BridgeFailure::new(
-                "INVALID_REQUEST",
-                "params must be a JSON object",
-            ));
-        }
-
         match request.operation.as_str() {
+            "agent_global_mcp_configs"
+            | "agent_has_sampling_handler_factory"
+            | "agent_set_sampling_handler_factory"
+            | "session_projected_capability_names"
+            | "session_set_permission_policy"
+            | "session_set_permission_posture"
+            | "session_fork_session_at"
+            | "session_read_evaluation_evidence" => release_contract::dispatch(self, request).await,
             "sdk_capabilities" => Ok(json!({
                 "protocol_version": BRIDGE_PROTOCOL_VERSION,
                 "operations": BRIDGE_OPERATIONS,
@@ -2037,13 +2197,6 @@ impl BridgeState {
                     .set_output_language(language)?;
                 Ok(json!({ "configured": true }))
             }
-            "session_set_permission_posture" => {
-                let posture: String = required(&request.params, "posture")?;
-                self.request_session(&request.params)
-                    .await?
-                    .set_permission_posture(&posture)?;
-                Ok(json!({ "configured": true }))
-            }
             "session_set_planning_mode" => {
                 let mode: String = required(&request.params, "mode")?;
                 let planning_mode = match mode.trim().to_ascii_lowercase().as_str() {
@@ -2186,9 +2339,43 @@ impl BridgeState {
         writer: &mpsc::UnboundedSender<BridgeEnvelope>,
     ) -> Result<Value, BridgeFailure> {
         let session = self.request_session(&request.params).await?;
+        let admit = |identity: Value| {
+            let mut envelope = BridgeEnvelope::success(request.id, identity);
+            envelope.kind = "admission";
+            writer
+                .send(envelope)
+                .map_err(|_| BridgeFailure::new("BRIDGE_CLOSED", "bridge output is closed"))
+        };
+        let run_identity = |admitted: &a3s_code_core::AgentRunStream| {
+            admitted
+                .run
+                .as_ref()
+                .map(|run| json!({"run_id": run.id(), "session_id": run.session_id()}))
+                .unwrap_or_else(|| json!({}))
+        };
+        if request.operation == "session_stream_goal_tick" {
+            let command = required(&request.params, "command")?;
+            let admitted = match Box::pin(session.stream_goal_tick(&command)).await? {
+                a3s_code_core::GoalTickStream::Decided(decision) => {
+                    admit(json!({ "decision": decision.as_str() }))?;
+                    return Ok(json!({ "completed": true }));
+                }
+                a3s_code_core::GoalTickStream::Replayed(snapshot) => {
+                    admit(json!({ "replayed": snapshot }))?;
+                    return Ok(json!({ "completed": true }));
+                }
+                a3s_code_core::GoalTickStream::Started(admitted) => admitted,
+            };
+            admit(run_identity(&admitted))?;
+            return forward_stream(request.id, admitted.events, admitted.worker, writer).await;
+        }
         let prompt: String = required(&request.params, "prompt")?;
         let history = optional::<Vec<Message>>(&request.params, "history")?;
-        let (mut events, handle) = if request.operation == "session_stream_with_attachments" {
+        let (events, handle) = if request.operation == "session_stream_with_run" {
+            let admitted = session.stream_with_run(&prompt, history.as_deref()).await?;
+            admit(run_identity(&admitted))?;
+            (admitted.events, admitted.worker)
+        } else if request.operation == "session_stream_with_attachments" {
             let attachments = required::<Vec<BridgeAttachment>>(&request.params, "attachments")?
                 .into_iter()
                 .map(BridgeAttachment::into_core)
@@ -2199,17 +2386,7 @@ impl BridgeState {
         } else {
             session.stream(&prompt, history.as_deref()).await?
         };
-        while let Some(event) = events.recv().await {
-            let envelope = EventEnvelopeV1::try_from(event)
-                .map_err(|error| BridgeFailure::new("SERIALIZATION_ERROR", error.to_string()))?;
-            writer
-                .send(BridgeEnvelope::event(request.id, envelope))
-                .map_err(|_| BridgeFailure::new("BRIDGE_CLOSED", "bridge output is closed"))?;
-        }
-        handle
-            .await
-            .map_err(|error| BridgeFailure::new("RUNTIME_ERROR", error.to_string()))?;
-        Ok(json!({ "completed": true }))
+        forward_stream(request.id, events, handle, writer).await
     }
 
     pub async fn close_all(&self) {
@@ -2237,6 +2414,25 @@ impl BridgeState {
         self.graphs.write().await.clear();
         *self.callbacks.write().await = None;
     }
+}
+
+async fn forward_stream(
+    id: u64,
+    mut events: mpsc::Receiver<a3s_code_core::AgentEvent>,
+    handle: tokio::task::JoinHandle<()>,
+    writer: &mpsc::UnboundedSender<BridgeEnvelope>,
+) -> Result<Value, BridgeFailure> {
+    while let Some(event) = events.recv().await {
+        let envelope = EventEnvelopeV1::try_from(event)
+            .map_err(|error| BridgeFailure::new("SERIALIZATION_ERROR", error.to_string()))?;
+        writer
+            .send(BridgeEnvelope::event(id, envelope))
+            .map_err(|_| BridgeFailure::new("BRIDGE_CLOSED", "bridge output is closed"))?;
+    }
+    handle
+        .await
+        .map_err(|error| BridgeFailure::new("RUNTIME_ERROR", error.to_string()))?;
+    Ok(json!({ "completed": true }))
 }
 
 /// Serve requests from stdin until EOF and write correlated JSONL envelopes to
@@ -2292,7 +2488,10 @@ pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
             };
             let result = if matches!(
                 request.operation.as_str(),
-                "session_stream" | "session_stream_with_attachments"
+                "session_stream"
+                    | "session_stream_with_attachments"
+                    | "session_stream_with_run"
+                    | "session_stream_goal_tick"
             ) {
                 state.stream(&request, &writer_tx).await
             } else {
@@ -3134,10 +3333,14 @@ impl BridgeTrajectoryConfig {
 struct BridgeWorkspaceBackend {
     kind: String,
     root: Option<String>,
+    /// Read through the workspace-factory arm; kept deserialized here so the
+    /// bridge wire shape stays one struct.
+    #[allow(dead_code)]
     s3: Option<BridgeS3Config>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // wire-complete deserialization; the factory arm reads the fields it needs
 struct BridgeS3Config {
     endpoint: Option<String>,
     region: Option<String>,
@@ -3243,6 +3446,13 @@ struct BridgeSessionOptions {
     builtin_skills: Option<bool>,
     agent_dirs: Vec<String>,
     skill_dirs: Vec<String>,
+    watch_skill_dirs: Vec<String>,
+    projected_skill_files: Vec<String>,
+    sandbox_network: Option<String>,
+    sandbox_network_allow: Vec<String>,
+    code_intelligence: bool,
+    path_injection_budget: Option<usize>,
+    verification_contracts: Vec<a3s_code_core::verification::VerificationContractV1>,
     worker_agents: Vec<BridgeWorkerAgentSpec>,
     queue_config: Option<BridgeSessionQueueConfig>,
     search_config: Option<a3s_code_core::config::SearchConfig>,
@@ -3305,7 +3515,17 @@ struct BridgeSessionOptions {
     read_only_session: Option<bool>,
     allow_process_host_sandbox: Option<bool>,
     verifier_enabled: Option<bool>,
+    require_assistant_final_response: Option<bool>,
+    work_policy: Option<BridgeWorkPolicy>,
     harness: Option<BridgeHarnessCompose>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BridgeWorkPolicy {
+    id: String,
+    revision: u32,
+    instructions: String,
 }
 
 /// Meta Harness compose recipe; mirrors Node/Python `HarnessComposeOptions`.
@@ -3386,6 +3606,28 @@ impl BridgeSessionOptions {
             ));
         }
         let mut options = SessionOptions::new();
+        options =
+            options.with_watch_skill_dirs(self.watch_skill_dirs.into_iter().map(PathBuf::from));
+        options = options.with_projected_skill_files(
+            self.projected_skill_files
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        );
+        if let Some(mode) = self.sandbox_network {
+            options = options.with_sandbox_network_mode(
+                a3s_code_core::sandbox::SandboxNetworkMode::parse(&mode)
+                    .map_err(|error| BridgeFailure::new("INVALID_REQUEST", error.to_string()))?,
+            );
+        }
+        options = options.with_sandbox_network_allow(self.sandbox_network_allow);
+        if self.code_intelligence {
+            options = options.with_code_intelligence();
+        }
+        if let Some(budget) = self.path_injection_budget {
+            options = options.with_injection_budget(budget);
+        }
+        options = options.with_verification_contracts(self.verification_contracts);
         if let Some(value) = self.model {
             options = options.with_model(value);
         }
@@ -3593,6 +3835,17 @@ impl BridgeSessionOptions {
         if let Some(enabled) = self.verifier_enabled {
             options = options.with_verifier(enabled);
         }
+        if let Some(required) = self.require_assistant_final_response {
+            options = options.with_assistant_final_response(required);
+        }
+        if let Some(policy) = self.work_policy {
+            let policy =
+                a3s_code_core::WorkPolicyV1::new(policy.id, policy.revision, policy.instructions)
+                    .map_err(|error| {
+                    BridgeFailure::new("INVALID_REQUEST", format!("work_policy: {error}"))
+                })?;
+            options = options.with_work_policy(policy);
+        }
         if let Some(harness) = self.harness {
             // SDK hosts cannot inject a Rust registry; `host:<id>` resolves
             // against Core's builtin components.
@@ -3712,6 +3965,41 @@ impl BridgeSessionOptions {
         }
         Ok(options)
     }
+}
+
+const GOAL_OPERATIONS: &[&str] = &[
+    "agent_fork_session",
+    "session_apply_goal_definition",
+    "session_apply_goal_plan",
+    "session_apply_goal_control",
+    "session_control_goal",
+    "session_apply_goal_wait",
+    "session_goal_definition",
+    "session_work_policy_digest",
+    "session_check_goal_step_run",
+    "session_reconcile_goal_slices",
+    "session_preview_goal_tick",
+    "session_tick_goal",
+    "session_admit_review_drafts",
+];
+
+fn check_envelope(request: &BridgeRequest) -> Result<(), BridgeFailure> {
+    if request.protocol_version != BRIDGE_PROTOCOL_VERSION {
+        return Err(BridgeFailure::new(
+            "PROTOCOL_ERROR",
+            format!(
+                "unsupported bridge protocol version {}; expected {}",
+                request.protocol_version, BRIDGE_PROTOCOL_VERSION
+            ),
+        ));
+    }
+    if !request.params.is_object() {
+        return Err(BridgeFailure::new(
+            "INVALID_REQUEST",
+            "params must be a JSON object",
+        ));
+    }
+    Ok(())
 }
 
 fn required<T: DeserializeOwned>(params: &Value, key: &str) -> Result<T, BridgeFailure> {
@@ -3935,6 +4223,7 @@ mod tests {
                     name = "Test Model"
                 }
             }
+            memory { prune = "off" }
         "#
     }
 

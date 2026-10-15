@@ -189,7 +189,7 @@ impl FilenamePager {
                         })
                 })
             })
-            .expect("live permission mode must be Ask, not Auto or always-approve");
+            .expect("live permission mode must be Ask, not Auto or yolo");
         self.harness
             .inject_keys(F2)
             .expect("close without changing settings");

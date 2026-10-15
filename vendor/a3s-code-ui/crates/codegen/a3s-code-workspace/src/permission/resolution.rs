@@ -1,5 +1,5 @@
 //! Merges native `.a3s/config.toml`, managed/enterprise settings, and `.claude` settings into the effective `PermissionConfig`.
-//! Also holds the MCP-server and marketplace allowlists and the always-approve policy pin.
+//! Also holds the MCP-server and marketplace allowlists and the yolo policy pin.
 
 use crate::permission::claude_settings::*;
 use crate::permission::rules::*;
@@ -275,7 +275,7 @@ pub async fn resolve_permission_config_with_fallback(
         .map(|r| r.config)
 }
 
-/// [`resolve_permission_config_with_fallback`] with the always-approve pin supplied by the caller.
+/// [`resolve_permission_config_with_fallback`] with the yolo pin supplied by the caller.
 /// A session spawn reads the pin once and feeds that read here and to its other pin consumers (CLI catch-all drop, mode hint, manager clamp).
 /// A requirements.toml edit landing between independent reads could otherwise leave those consumers disagreeing about the lock.
 pub async fn resolve_permission_config_with_fallback_pinned(
@@ -293,7 +293,7 @@ pub async fn resolve_permission_config_with_fallback_pinned(
 
 /// Client `startupHints.permissionMode` pre-declares an allow for headless agent-initiated turns after the client hangs up.
 /// Any session-creating client may stamp it; it grants nothing a connected allow-all client could not, and never weakens deny or pre-prompt rejection.
-/// The always-approve pin kills it fleet-wide, and an explicit `defaultMode` outranks it.
+/// The yolo pin kills it fleet-wide, and an explicit `defaultMode` outranks it.
 pub const PERMISSION_MODE_ALWAYS_ALLOW: &str = "alwaysAllow";
 
 /// Apply `startupHints.permissionMode`. Only [`PERMISSION_MODE_ALWAYS_ALLOW`] is honored, and only if bypass is not pinned off.
@@ -311,7 +311,7 @@ pub fn apply_permission_mode_hint(
     if let Some(reason) = policy_block {
         warn!(
             reason,
-            "startupHints.permissionMode=alwaysAllow ignored: always-approve disabled by managed policy"
+            "startupHints.permissionMode=alwaysAllow ignored: yolo disabled by managed policy"
         );
         return false;
     }
@@ -346,7 +346,7 @@ pub fn deny_read_globs_from_config(config: &PermissionConfig) -> Vec<String> {
 }
 
 /// Outcome of [`resolve_permissions_with_provenance`]: the rule resolution
-/// plus the single always-approve pin read it used. The pin is carried even
+/// plus the single yolo pin read it used. The pin is carried even
 /// when nothing resolves, so callers never re-read it for their own reporting.
 pub struct ProvenanceResolution {
     /// The pin read this resolution used ([`yolo_policy_lock`]).
@@ -362,7 +362,7 @@ pub struct ResolvedPermissions {
     pub sources: Vec<RequirementSource>,
     /// Rules from `.claude/settings.json` that couldn't be parsed (empty for TOML).
     pub skipped: Vec<SkippedPermission>,
-    /// The always-approve pin this resolution applied ([`yolo_policy_lock`]).
+    /// The yolo pin this resolution applied ([`yolo_policy_lock`]).
     pub yolo_lock: Option<YoloPolicyLock>,
 }
 
@@ -423,7 +423,7 @@ fn drop_untrusted_catchall_allows(
             if is_catchall_allow(&sourced.value) && !is_admin_source(&sourced.source) {
                 warn!(
                     source = %sourced.source,
-                    "catch-all allow rule ignored: always-approve disabled by managed policy"
+                    "catch-all allow rule ignored: yolo disabled by managed policy"
                 );
                 skipped.push(SkippedPermission {
                     rule: format!(
@@ -452,7 +452,7 @@ struct ResolveInputs<'a> {
 }
 
 impl ResolveInputs<'static> {
-    /// Production inputs; the caller supplies the always-approve pin so one
+    /// Production inputs; the caller supplies the yolo pin so one
     /// read serves the whole flow.
     fn live(project_trusted: bool, yolo_lock: Option<YoloPolicyLock>) -> Self {
         Self {
@@ -841,7 +841,7 @@ pub fn claude_bypass_lock_request(features: &ManagedSettingsFeatures) -> bool {
     features.source_path.is_some() && features.disable_yolo == Some(true)
 }
 
-/// Which requirements key activated the always-approve hard lock
+/// Which requirements key activated the yolo hard lock
 /// ([`yolo_disabled_by_policy`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -857,16 +857,16 @@ impl YoloPinReason {
     pub const fn message(self) -> &'static str {
         match self {
             Self::DisableBypassPermissionsMode => {
-                "always-approve disabled by managed policy ([ui] disable_bypass_permissions_mode = true in requirements.toml)"
+                "yolo disabled by managed policy ([ui] disable_bypass_permissions_mode = true in requirements.toml)"
             }
             Self::LegacyYoloFalse => {
-                "always-approve disabled by managed policy ([ui] yolo = false in requirements.toml)"
+                "yolo disabled by managed policy ([ui] yolo = false in requirements.toml)"
             }
         }
     }
 }
 
-/// The active always-approve hard lock: the pin reason plus the label of the requirements layer that set it.
+/// The active yolo hard lock: the pin reason plus the label of the requirements layer that set it.
 /// The label is a file path, or the diskless macOS MDM source id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YoloPolicyLock {
@@ -901,7 +901,7 @@ fn requirements_lock_bool(ui: Option<&toml::Value>, key: &str, path: &Path) -> O
                 path = %path.display(),
                 key,
                 "[ui] {key} must be a boolean; ignoring non-bool value \
-                 (always-approve lock not applied from this key in this layer)"
+                 (yolo lock not applied from this key in this layer)"
             );
             None
         }
@@ -920,7 +920,7 @@ fn resolve_yolo_policy_block<'a>(
     };
     for (path, layer) in requirement_layers {
         let ui = layer.get("ui");
-        // Native lock key (default false). `true` pins always-approve off.
+        // Native lock key (default false). `true` pins yolo off.
         if requirements_lock_bool(ui, "disable_bypass_permissions_mode", path) == Some(true) {
             return lock(path, YoloPinReason::DisableBypassPermissionsMode);
         }

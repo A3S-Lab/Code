@@ -2391,7 +2391,7 @@ impl acp::Agent for MvpAgent {
             let want_auto = auto_mode_explicit == Some(true)
                 || permission_mode == "auto";
             let clear_auto = auto_mode_explicit == Some(false)
-                || (matches!(permission_mode, "always-approve" | "ask" | "default")
+                || (matches!(permission_mode, "yolo" | "ask" | "default")
                     && !want_auto);
             let enable_auto = want_auto && yolo_signal != Some(true);
             if enable_auto || clear_auto {

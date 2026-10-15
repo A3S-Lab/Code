@@ -66,12 +66,12 @@ const THEME_CHOICES: &[EnumChoice] = &[
     },
 ];
 
-// Permission-mode catalog. Persisted values map onto runtime flags: "always-approve" ↔ yolo_mode = true
+// Permission-mode catalog. Persisted values map onto runtime flags: "yolo" ↔ yolo_mode = true
 // (auto-approve all). `supports_preview: false` because toggling YOLO drains the permission queue (unsafe for
 // per-keystroke preview).
 
-// Choice order runs safe to unsafe: Default, Ask, Auto, Always approve
-// "Always approve" at the end creates a speed bump against accidental selection
+// Choice order runs safe to unsafe: Default, Ask, Auto, Yolo.
+// Yolo at the end creates a speed bump against accidental selection.
 const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
     // "default" is the agent's default behavior: the same as "ask" at runtime, but distinct on disk and in the modal indicator
     EnumChoice {
@@ -90,8 +90,8 @@ const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
         description: "LLM classifier approves safe tools; dangerous actions may still prompt or deny.",
     },
     EnumChoice {
-        canonical: "always-approve",
-        display: "Always approve",
+        canonical: "yolo",
+        display: "YOLO",
         description: "Auto-approve every tool action. Skips ALL permission prompts.",
     },
 ];
@@ -766,7 +766,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
-        // Security-relevant: "always-approve" bypasses all permission prompts.
+        // Security-relevant: "yolo" bypasses all permission prompts.
         // The modal reads live state from `PagerLocalSnapshot.yolo_mode` (not `ui.permission_mode`) to reflect Ctrl+O toggles immediately
         SettingMeta {
             key: "permission_mode",
@@ -776,7 +776,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             description: "Default uses the agent's built-in behavior; \
                           Ask prompts for each tool action; \
                           Auto uses an LLM classifier for risky tools; \
-                          Always approve grants all permissions automatically.",
+                          YOLO grants all permissions automatically.",
             keywords: &[
                 "permission",
                 "approve",
@@ -806,7 +806,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Remember tool approvals",
             description: "Show \"Always allow\" options in permission prompts so you can stop \
                           being re-asked about a specific command or tool. Applies in ask and \
-                          auto; Always-approve still skips all prompts. Restart required.",
+                          auto; YOLO still skips all prompts. Restart required.",
             keywords: &[
                 "permission",
                 "approve",

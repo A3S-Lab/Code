@@ -515,8 +515,10 @@ func TestRustBridgeWorkspaceRetrievalIntegration(t *testing.T) {
 			for _, input := range request.Inputs {
 				values := []float32{0, 1, 0, 0}
 				text := strings.ToLower(input.Text)
-				if strings.Contains(text, "cleanup") ||
-					strings.Contains(text, "release every session resource") {
+				// A 32-byte chunk cannot contain the whole comment. Bind this
+				// fixture topic to a token that survives the declared window;
+				// orthogonal vectors must remain filtered by the Core contract.
+				if strings.Contains(text, "cleanup") || strings.Contains(text, "release") {
 					values = []float32{1, 0, 0, 0}
 				}
 				vectors = append(vectors, EmbeddingVector{ID: input.ID, Values: values})

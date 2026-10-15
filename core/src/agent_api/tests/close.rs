@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 #[tokio::test]
@@ -200,10 +202,12 @@ async fn test_close_cancels_in_flight_send() {
         .await
         .expect("send should stop after close")
         .expect("worker should not panic");
-    let result = result.expect("close cancellation should preserve interrupted history");
-    assert_eq!(result.messages.len(), 2);
-    assert_eq!(result.messages[0].text(), "hello");
-    assert!(result.messages[1].text().contains("interrupted"));
+    assert!(matches!(result, Err(ref error)
+        if error.cancelled_run_id() == Some(run_id.as_str())));
+    let history = session.history();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].text(), "hello");
+    assert!(history[1].text().contains("interrupted"));
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,
         crate::run::RunStatus::Cancelled

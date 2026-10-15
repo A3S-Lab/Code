@@ -1020,13 +1020,13 @@ fn symlinked_default_home_keeps_home_label() {
     let real_grok = tmp.path().join("grok-on-disk");
     std::fs::create_dir_all(&fake_home).unwrap();
     std::fs::create_dir_all(&real_grok).unwrap();
-    std::os::unix::fs::symlink(&real_grok, fake_home.join(".grok")).unwrap();
+    std::os::unix::fs::symlink(&real_grok, fake_home.join(".a3s")).unwrap();
     let _home = crate::test_util::EnvVarGuard::set("HOME", &fake_home);
-    let resolved = dunce::canonicalize(&fake_home).unwrap().join(".grok");
+    let resolved = dunce::canonicalize(&fake_home).unwrap().join(".a3s");
     let canonical = dunce::canonicalize(&resolved).unwrap();
     assert_ne!(canonical, resolved, "the symlink must actually resolve");
     assert_eq!(
         crate::util::display_grok_home_prefix_for(&canonical),
-        "~/.grok"
+        "~/.a3s"
     );
 }

@@ -3,6 +3,10 @@
 //! Reads `auth.json` for the bearer token and `models_cache.json` for the
 //! catalog previously fetched by Grok CLI. Registers them as provider `grok`
 //! against `https://cli-chat-proxy.grok.com/v1` (OpenAI chat-completions).
+//! The cache contributes only the model catalog — a cache entry can never
+//! redirect the endpoint the bearer token is sent to (that endpoint is the
+//! provider contract; override it with an explicit provider block and
+//! `A3S_DISABLE_GROK_ACCOUNT=1`).
 //!
 //! Secrets are never logged. Disable with `A3S_DISABLE_GROK_ACCOUNT=1`.
 
@@ -282,8 +286,8 @@ fn provider_from_parts(
         .unwrap_or(MIN_CLIENT_VERSION)
         .to_string();
 
-    let mut base_url = DEFAULT_BASE_URL.to_string();
-    let mut models = models_from_cache(cache, &mut base_url);
+    let base_url = DEFAULT_BASE_URL.to_string();
+    let mut models = models_from_cache(cache);
     if models.is_empty() {
         // Fall back to a single placeholder so the account is still selectable
         // when the cache has not been populated yet.
@@ -334,7 +338,7 @@ fn provider_from_parts(
     })
 }
 
-fn models_from_cache(cache: &Value, base_url: &mut String) -> Vec<ModelConfig> {
+fn models_from_cache(cache: &Value) -> Vec<ModelConfig> {
     let Some(map) = cache.get("models").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -357,14 +361,12 @@ fn models_from_cache(cache: &Value, base_url: &mut String) -> Vec<ModelConfig> {
             .get("description")
             .and_then(Value::as_str)
             .map(str::to_string);
-        if let Some(url) = info
-            .get("base_url")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            *base_url = url.to_string();
-        }
+        // `info.base_url` is deliberately NOT read: the cache is disk
+        // state written by another program, and a cache entry must never
+        // decide where this provider's bearer token and identity headers
+        // are sent. The endpoint is the provider contract
+        // (DEFAULT_BASE_URL); a custom endpoint belongs in an explicit
+        // provider block with the account import disabled.
         models.push(model_config(id, name, description.as_deref()));
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -414,7 +416,9 @@ mod tests {
                     "info": {
                         "id": "grok-4.7",
                         "name": "Grok 4.7",
-                        "base_url": "https://cli-chat-proxy.grok.com/v1",
+                        // A hostile or stale cache entry must not redirect
+                        // where the bearer token is sent.
+                        "base_url": "https://collector.example.net/v1",
                         "hidden": false,
                         "supported_in_api": true
                     }
@@ -452,10 +456,7 @@ mod tests {
                 .map(String::as_str),
             Some("1.0.41")
         );
-        assert_eq!(
-            import.provider.base_url.as_deref(),
-            Some("https://cli-chat-proxy.grok.com/v1")
-        );
+        assert_eq!(import.provider.base_url.as_deref(), Some(DEFAULT_BASE_URL));
     }
 
     #[test]

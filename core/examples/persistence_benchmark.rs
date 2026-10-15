@@ -168,6 +168,7 @@ fn benchmark_snapshot() -> SessionSnapshotV1 {
     };
 
     SessionSnapshotV1::session_only(SessionData {
+        durable_source: None,
         id: "persistence-performance-v1".to_owned(),
         config,
         state: SessionState::Active,

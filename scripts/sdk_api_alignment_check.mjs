@@ -93,6 +93,14 @@ const INTENTIONAL_SESSION_OMISSIONS = new Map([
     'review_scenario_registry',
     'Rust Arc handle; SDKs expose review_scenario_ids and finding queries instead.',
   ],
+  [
+    'with_legacy_goal_state',
+    'Takes a Rust async closure over a product host\'s legacy goal metadata; SDK hosts have no legacy goal tracker.',
+  ],
+  [
+    'apply_goal_import',
+    'Takes a Rust async source verifier for the product host\'s legacy goal import; SDKs expose apply_goal_definition.',
+  ],
 ]);
 
 const AGENT_ALIASES = new Map([
@@ -762,6 +770,7 @@ const normalizeGo = (name) => name.replace(/_/g, '').toLowerCase();
 const GO_METHOD_ALIASES = new Map([
   ['create', 'NewAgent'],
   ['replace_session_async', 'ReplaceSession'],
+  ['fork_session_async', 'ForkSession'],
 ]);
 const goConstructors = [...go.matchAll(/^func\s+(New[A-Z][A-Za-z0-9]*)\s*\(/gm)].map((m) => m[1]);
 for (const [label, goNames, required] of [

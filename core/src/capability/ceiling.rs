@@ -330,26 +330,7 @@ impl CapabilityCeiling {
         governance: GovernanceCapabilityCeiling,
         execution: CapabilityExecutionCeiling,
     ) -> Result<Self, CapabilityScopeError> {
-        let mut allowed = BTreeSet::new();
-        for capability in allowed_capabilities {
-            if allowed.len() >= MAX_CAPABILITIES {
-                return Err(CapabilityScopeError::BoundExceeded {
-                    field: "ceiling_capabilities",
-                    max: MAX_CAPABILITIES,
-                });
-            }
-            if !set.contains(&capability) {
-                return Err(CapabilityScopeError::CapabilityOutsideCatalog {
-                    capability: capability.to_string(),
-                    catalog_digest: set.digest().to_string(),
-                });
-            }
-            if !allowed.insert(capability.clone()) {
-                return Err(CapabilityScopeError::DuplicateCeilingCapability {
-                    capability: capability.to_string(),
-                });
-            }
-        }
+        let allowed = validated_allowed_capabilities(set, allowed_capabilities)?;
         Ok(Self {
             schema: CAPABILITY_CEILING_SCHEMA,
             catalog_digest: set.digest().clone(),
@@ -459,4 +440,31 @@ const fn optional_limit_expands(child: Option<u64>, parent: Option<u64>) -> bool
         (None, Some(_)) => true,
         (Some(child), Some(parent)) => child > parent,
     }
+}
+
+pub(super) fn validated_allowed_capabilities(
+    set: &CapabilitySet,
+    allowed_capabilities: impl IntoIterator<Item = CapabilityId>,
+) -> Result<BTreeSet<CapabilityId>, CapabilityScopeError> {
+    let mut allowed = BTreeSet::new();
+    for capability in allowed_capabilities {
+        if allowed.len() >= MAX_CAPABILITIES {
+            return Err(CapabilityScopeError::BoundExceeded {
+                field: "ceiling_capabilities",
+                max: MAX_CAPABILITIES,
+            });
+        }
+        if !set.contains(&capability) {
+            return Err(CapabilityScopeError::CapabilityOutsideCatalog {
+                capability: capability.to_string(),
+                catalog_digest: set.digest().to_string(),
+            });
+        }
+        if !allowed.insert(capability.clone()) {
+            return Err(CapabilityScopeError::DuplicateCeilingCapability {
+                capability: capability.to_string(),
+            });
+        }
+    }
+    Ok(allowed)
 }

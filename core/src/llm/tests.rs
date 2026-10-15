@@ -1382,6 +1382,174 @@ mod extra_llm_tests2 {
         assert!(!response.text().contains('\u{fffd}'));
     }
 
+    fn anthropic_hello_sse(separator: &str) -> String {
+        let events = [
+            r#"{"type":"message_start","message":{"id":"msg-1","type":"message","model":"model","usage":{"input_tokens":1}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+            r#"{"type":"message_stop"}"#,
+        ];
+        let mut out = String::new();
+        for event in events {
+            out.push_str("data: ");
+            out.push_str(event);
+            out.push_str(separator);
+            out.push_str(separator);
+        }
+        out
+    }
+
+    fn anthropic_client(chunks: Vec<Bytes>) -> AnthropicClient {
+        AnthropicClient::new("key".to_string(), "model".to_string())
+            .with_http_client(Arc::new(MockStreamingHttpClient { chunks }))
+    }
+
+    async fn anthropic_text_deltas(chunks: Vec<Bytes>) -> (Vec<String>, LlmResponse) {
+        let mut rx = anthropic_client(chunks)
+            .complete_streaming(&[Message::user("go")], None, &[], CancellationToken::new())
+            .await
+            .expect("stream opened");
+        let mut deltas = Vec::new();
+        let mut done = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::TextDelta(delta) => deltas.push(delta),
+                StreamEvent::Done(response) => {
+                    done = Some(response);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (deltas, done.expect("Done"))
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_crlf_data_frame_matches_lf_payload() {
+        let lf_wire = anthropic_hello_sse("\n");
+        let crlf_wire = anthropic_hello_sse("\r\n");
+        let (lf_deltas, lf) = anthropic_text_deltas(vec![Bytes::from(lf_wire)]).await;
+        let (crlf_deltas, crlf) = anthropic_text_deltas(vec![Bytes::from(crlf_wire)]).await;
+        assert_eq!(lf_deltas, vec!["hello".to_string()]);
+        assert_eq!(crlf_deltas, lf_deltas);
+        assert_eq!(lf.text(), "hello");
+        assert_eq!(crlf.text(), lf.text());
+        assert!(!crlf.text().contains('\r'));
+    }
+
+    /// Yields scripted chunks and signals after each one is consumed.
+    struct ScriptedAnthropicSse {
+        incoming: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Option<Bytes>>>>,
+        parked: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl HttpClient for ScriptedAnthropicSse {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
+        ) -> Result<HttpResponse> {
+            anyhow::bail!("post() not expected in scripted anthropic tests")
+        }
+
+        async fn post_streaming(
+            &self,
+            _url: &str,
+            _headers: Vec<(&str, &str)>,
+            _body: &serde_json::Value,
+            _cancel_token: CancellationToken,
+        ) -> Result<StreamingHttpResponse> {
+            let rx = self
+                .incoming
+                .lock()
+                .expect("scripted sse lock")
+                .take()
+                .expect("one scripted stream");
+            let parked = std::sync::Arc::clone(&self.parked);
+            let byte_stream =
+                futures::stream::unfold((rx, parked, false), |(mut rx, parked, seen)| async move {
+                    if seen {
+                        parked.notify_one();
+                    }
+                    match rx.recv().await {
+                        Some(Some(bytes)) => {
+                            Some((Ok::<Bytes, anyhow::Error>(bytes), (rx, parked, true)))
+                        }
+                        _ => None,
+                    }
+                });
+            Ok(StreamingHttpResponse {
+                status: 200,
+                retry_after: None,
+                byte_stream: Box::pin(byte_stream),
+                error_body: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_split_cr_does_not_emit_partial_event() {
+        let wire = anthropic_hello_sse("\r\n");
+        let blank = wire.find("\r\n\r\n").expect("crlf blank line");
+        let head = wire[..blank + 3].to_string();
+        assert!(head.ends_with('\r'), "the held suffix is a bare CR");
+        let tail = wire[blank + 3..].to_string();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let parked = std::sync::Arc::new(tokio::sync::Notify::new());
+        let client = AnthropicClient::new("key".to_string(), "model".to_string()).with_http_client(
+            Arc::new(ScriptedAnthropicSse {
+                incoming: std::sync::Mutex::new(Some(rx)),
+                parked: std::sync::Arc::clone(&parked),
+            }),
+        );
+        let mut events = client
+            .complete_streaming(&[Message::user("go")], None, &[], CancellationToken::new())
+            .await
+            .expect("stream opened");
+
+        tx.send(Some(Bytes::from(head)))
+            .expect("reader accepts the partial frame");
+        tokio::time::timeout(std::time::Duration::from_secs(2), parked.notified())
+            .await
+            .expect("reader parked while the buffer ends on CR");
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "a buffer ending on CR must not emit a partial event"
+        );
+
+        tx.send(Some(Bytes::from(tail)))
+            .expect("reader accepts the rest of the frame");
+        tx.send(None).expect("close the scripted stream");
+        let mut deltas = Vec::new();
+        let mut done = None;
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                match event {
+                    StreamEvent::TextDelta(delta) => deltas.push(delta),
+                    StreamEvent::Done(response) => {
+                        done = Some(response);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(finished.is_ok(), "the completed CRLF frame must finish");
+        assert_eq!(deltas, vec!["hello".to_string()]);
+        let response = done.expect("Done");
+        assert_eq!(response.text(), "hello");
+        assert!(!response.text().contains('\r'));
+    }
+
     #[tokio::test]
     async fn test_anthropic_streaming_parser_closes_when_caller_cancels() {
         let client = AnthropicClient::new("key".to_string(), "model".to_string())
@@ -1763,9 +1931,7 @@ mod extra_llm_tests2 {
     #[tokio::test]
     async fn stream_trailing_full_response_json_is_parsed() {
         // Trailing bare OpenAiResponse (not a chunk) at EOF.
-        let trailing = concat!(
-            r#"{"id":"full-1","object":"chat.completion","model":"m","choices":[{"message":{"role":"assistant","content":"full","reasoning_content":"r"},"finish_reason":"stop","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#,
-        );
+        let trailing = r#"{"id":"full-1","object":"chat.completion","model":"m","choices":[{"message":{"role":"assistant","content":"full","reasoning_content":"r"},"finish_reason":"stop","logprobs":{"content":[{"token":"full","logprob":-0.5,"bytes":null,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#;
         let client = OpenAiClient::new("key".to_string(), "model".to_string()).with_http_client(
             Arc::new(MockStreamingHttpClient {
                 chunks: vec![Bytes::from(trailing)],

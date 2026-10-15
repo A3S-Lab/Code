@@ -694,7 +694,7 @@ async fn list_permissions(cwd: &Path, project_trusted: bool) -> PermissionsRepor
     // `source_path` is set only when the file was read and parsed successfully, so it signals "actually loaded" rather than merely present
     let managed_settings_active = ms.features.source_path.is_some();
 
-    // The resolution carries the always-approve pin it applied, even when nothing resolves, so the enforced row and the resolved rules can't disagree about the pin. This covers only the pin: `ms.features` rows come from a separate `managed_settings()` read.
+    // The resolution carries the yolo pin it applied, even when nothing resolves, so the enforced row and the resolved rules can't disagree about the pin. This covers only the pin: `ms.features` rows come from a separate `managed_settings()` read.
     let resolution::ProvenanceResolution {
         yolo_lock,
         resolved,
@@ -1411,7 +1411,7 @@ fn format_force_login_team(team: &Option<ForceLoginTeam>) -> String {
 /// Uses product vocabulary, not the internal field names (no `ui.yolo` / `--yolo` / `permission_mode`).
 fn enforced_label(p: &EnforcedPolicy) -> String {
     let name = match p.setting {
-        EnforcedSetting::AlwaysApprove => "Permissions mode: always-approve",
+        EnforcedSetting::AlwaysApprove => "Permissions mode: yolo",
         EnforcedSetting::Telemetry => "Telemetry",
         EnforcedSetting::Feedback => "Feedback",
         EnforcedSetting::ProjectMcpServers => "Project MCP servers",
@@ -2207,7 +2207,7 @@ mod tests {
         };
         assert_eq!(
             enforced_label(&p),
-            "Permissions mode: always-approve disabled"
+            "Permissions mode: yolo disabled"
         );
         assert!(!enforced_label(&p).contains("yolo"));
 

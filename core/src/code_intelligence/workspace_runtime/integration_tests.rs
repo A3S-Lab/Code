@@ -196,6 +196,70 @@ async fn first_workspace_symbol_query_opens_a_saved_source_document() {
     runtime.shutdown().await;
 }
 
+/// Runs only where `server` is installed: the built-in profile must answer
+/// and leave nothing but the source file in the project.
+async fn built_in_profile_answers_without_writing_into_the_workspace(
+    server: &str,
+    id: ProjectLanguageProfile,
+    source: &str,
+    content: &str,
+) {
+    let on_path = std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join(server).is_file())
+    });
+    if !on_path {
+        return;
+    }
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let workspace = tempfile::tempdir().unwrap();
+    write_workspace_files(workspace.path(), &[(source, content)]);
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    let snapshot = snapshot(&root, &[source]);
+    let profile = LanguageServerProfile::built_in_defaults()
+        .into_iter()
+        .find(|profile| profile.id() == id)
+        .expect("built-in profile");
+    let runtime = test_runtime(&root, &snapshot, vec![profile]);
+
+    let result = runtime
+        .document_symbols(
+            &WorkspacePath::from_normalized(source),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("document symbols");
+    runtime.shutdown().await;
+
+    assert!(result.items.iter().any(|symbol| symbol.name == "answer"));
+    let top: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(top, ["src"], "{server} wrote into the workspace");
+}
+
+#[tokio::test]
+async fn built_in_clangd_answers_without_writing_into_the_workspace() {
+    built_in_profile_answers_without_writing_into_the_workspace(
+        "clangd",
+        ProjectLanguageProfile::CCpp,
+        "src/main.c",
+        "int answer(void) { return 42; }\n",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn built_in_basedpyright_answers_without_writing_into_the_workspace() {
+    built_in_profile_answers_without_writing_into_the_workspace(
+        "basedpyright-langserver",
+        ProjectLanguageProfile::Python,
+        "src/main.py",
+        "def answer() -> int:\n    return 42\n",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn abandoned_caller_does_not_restart_an_in_flight_language_runtime() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;

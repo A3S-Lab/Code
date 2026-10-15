@@ -9,14 +9,18 @@
 //! admission boundary for `Agent::close`.
 
 use super::{
-    agent_binding, session_builder, session_close::SessionCloseHandle, session_config,
-    session_persistence, Agent, AgentSession, SessionOptions,
+    agent_binding, run_admission::RunAdmissionLease, session_builder,
+    session_close::SessionCloseHandle, session_config, session_persistence, Agent, AgentSession,
+    SessionOptions,
 };
 use crate::error::{CodeError, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+mod fork;
+pub(super) use fork::fork_session_async;
 
 /// Agent-owned registry state guarded by `Agent::sessions`.
 ///
@@ -41,16 +45,31 @@ enum SessionRegistryEntry {
 
 impl SessionRegistry {
     fn prune_dead_sessions(&mut self) {
-        self.entries.retain(|_, entry| match entry {
-            SessionRegistryEntry::Building(_) => true,
-            SessionRegistryEntry::Live(weak) => {
-                weak.upgrade().is_some_and(|handle| !handle.is_closed())
+        let live: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                SessionRegistryEntry::Live(weak) => Some((id.clone(), weak.clone())),
+                SessionRegistryEntry::Building(_) | SessionRegistryEntry::Replacing { .. } => None,
+            })
+            .collect();
+        for (id, weak) in live {
+            let Some(handle) = weak.upgrade() else {
+                self.entries.remove(&id);
+                continue;
+            };
+            if !handle.is_closed() {
+                continue;
             }
-            // The reservation owns cleanup while a replacement is building.
-            // Keep the entry even if the current handle closes so another
-            // factory cannot steal the ID before finalization observes it.
-            SessionRegistryEntry::Replacing { .. } => true,
-        });
+            let Ok(fence) = handle.run_admission.try_acquire(&id) else {
+                continue;
+            };
+            if fence.is_nonexecuting_fence_for(&handle.run_admission) {
+                // Keep the actual exclusive fence alive through the erase.
+                // A closed bit alone cannot retire a retained original owner.
+                self.entries.remove(&id);
+            }
+        }
     }
 
     fn remove_reservation(&mut self, session_id: &str, reservation_id: u64) {
@@ -75,56 +94,65 @@ struct SessionReplacementReservation {
     session_id: String,
     reservation_id: u64,
     current: Weak<SessionCloseHandle>,
+    fence: RunAdmissionLease,
     finalized: bool,
 }
 
 impl SessionReplacementReservation {
-    fn finalize(
-        mut self,
-        replacement: &Arc<SessionCloseHandle>,
-    ) -> Result<Arc<SessionCloseHandle>> {
-        let result = {
-            let mut registry = self
+    async fn finalize(mut self, replacement: &Arc<SessionCloseHandle>) -> Result<()> {
+        let current = {
+            let registry = self
                 .registry
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
+                .map_err(|_| CodeError::Session("Poisoned session registry".into()))?;
             if self.agent_closed.load(Ordering::Acquire) {
-                remove_replacement_reservation(
-                    &mut registry,
-                    &self.session_id,
-                    self.reservation_id,
-                );
-                Err(agent_closed_error())
-            } else if !replacement_reservation_is_owned(
+                return Err(agent_closed_error());
+            }
+            if !replacement_reservation_is_owned(
                 &registry,
                 &self.session_id,
                 self.reservation_id,
+                &self.current,
             ) {
-                Err(CodeError::Session(format!(
+                return Err(CodeError::Session(format!(
                     "Session replacement reservation was lost for '{}'",
                     self.session_id
-                )))
-            } else {
-                let current = self.current.upgrade().filter(|handle| !handle.is_closed());
-                match current {
-                    Some(current) => {
-                        registry.entries.insert(
-                            self.session_id.clone(),
-                            SessionRegistryEntry::Live(Arc::downgrade(replacement)),
-                        );
-                        Ok(current)
-                    }
-                    None => {
-                        registry.entries.remove(&self.session_id);
-                        Err(CodeError::SessionClosed {
-                            session_id: self.session_id.clone(),
-                        })
-                    }
-                }
+                )));
             }
+            self.current
+                .upgrade()
+                .ok_or_else(|| CodeError::SessionClosed {
+                    session_id: self.session_id.clone(),
+                })?
         };
+        current.close_for_replacement(&self.fence).await?;
+        {
+            let mut registry = self
+                .registry
+                .lock()
+                .map_err(|_| CodeError::Session("Poisoned session registry".into()))?;
+            if self.agent_closed.load(Ordering::Acquire) {
+                return Err(agent_closed_error());
+            }
+            if !replacement_reservation_is_owned(
+                &registry,
+                &self.session_id,
+                self.reservation_id,
+                &self.current,
+            ) || !self.fence.is_nonexecuting_fence_for(&current.run_admission)
+            {
+                return Err(CodeError::Session(format!(
+                    "Session replacement reservation was lost for '{}'",
+                    self.session_id
+                )));
+            }
+            registry.entries.insert(
+                self.session_id.clone(),
+                SessionRegistryEntry::Live(Arc::downgrade(replacement)),
+            );
+        }
         self.finalized = true;
-        result
+        Ok(())
     }
 }
 
@@ -133,23 +161,21 @@ impl Drop for SessionReplacementReservation {
         if self.finalized {
             return;
         }
-        let mut registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if !replacement_reservation_is_owned(&registry, &self.session_id, self.reservation_id) {
+        let Ok(mut registry) = self.registry.lock() else {
+            // Preserve the original occupied entry when rollback is unproved.
             return;
-        }
-        match self.current.upgrade().filter(|handle| !handle.is_closed()) {
-            Some(current) if !self.agent_closed.load(Ordering::Acquire) => {
-                registry.entries.insert(
-                    self.session_id.clone(),
-                    SessionRegistryEntry::Live(Arc::downgrade(&current)),
-                );
-            }
-            _ => {
-                registry.entries.remove(&self.session_id);
-            }
+        };
+        if replacement_reservation_is_owned(
+            &registry,
+            &self.session_id,
+            self.reservation_id,
+            &self.current,
+        ) {
+            // Restore even a closed original, before the actual fence drops.
+            registry.entries.insert(
+                self.session_id.clone(),
+                SessionRegistryEntry::Live(self.current.clone()),
+            );
         }
     }
 }
@@ -158,24 +184,15 @@ fn replacement_reservation_is_owned(
     registry: &SessionRegistry,
     session_id: &str,
     reservation_id: u64,
+    original: &Weak<SessionCloseHandle>,
 ) -> bool {
     matches!(
         registry.entries.get(session_id),
         Some(SessionRegistryEntry::Replacing {
             reservation_id: current,
-            ..
-        }) if *current == reservation_id
+            current: registered,
+        }) if *current == reservation_id && Weak::ptr_eq(registered, original)
     )
-}
-
-fn remove_replacement_reservation(
-    registry: &mut SessionRegistry,
-    session_id: &str,
-    reservation_id: u64,
-) {
-    if replacement_reservation_is_owned(registry, session_id, reservation_id) {
-        registry.entries.remove(session_id);
-    }
 }
 
 /// RAII reservation for one in-progress session build.
@@ -410,6 +427,7 @@ pub(crate) fn create_session(
     let resolved =
         session_config::ResolvedSessionConfig::resolve_sync(agent, &canonical, merged_opts)?;
     let session = session_builder::build_agent_session_sync(agent, workspace, resolved)?;
+    session.admit_configured_policy()?;
     reservation.finalize(&session.close_handle)?;
     Ok(session)
 }
@@ -428,7 +446,10 @@ pub(super) async fn create_session_async(
     let resolved =
         session_config::ResolvedSessionConfig::resolve(agent, &canonical, options).await?;
     let session = session_builder::build_agent_session(agent, workspace, resolved).await?;
-    if let Err(error) = reservation.finalize(&session.close_handle) {
+    if let Err(error) = session
+        .admit_configured_policy()
+        .and_then(|()| reservation.finalize(&session.close_handle))
+    {
         session.close().await;
         return Err(error);
     }
@@ -542,6 +563,12 @@ fn reserve_session_replacement(
         ),
     })?;
 
+    let fence = current_handle.run_admission.try_acquire(session_id)?;
+    if !fence.is_nonexecuting_fence_for(&current_handle.run_admission) {
+        return Err(CodeError::SessionBusy {
+            session_id: session_id.to_string(),
+        });
+    }
     let reservation_id = sessions.next_reservation_id;
     sessions.next_reservation_id = sessions
         .next_reservation_id
@@ -563,6 +590,7 @@ fn reserve_session_replacement(
         session_id: session_id.to_string(),
         reservation_id,
         current,
+        fence,
         finalized: false,
     })
 }
@@ -621,9 +649,11 @@ pub(super) async fn close_session(agent: &Agent, session_id: &str) -> bool {
             Some(SessionRegistryEntry::Live(weak)) => Weak::upgrade(weak),
             Some(SessionRegistryEntry::Replacing { current, .. }) => {
                 let handle = Weak::upgrade(current);
-                // Removing the entry invalidates the in-progress replacement;
-                // its finalization will close the newly built session.
-                sessions.entries.remove(session_id);
+                let original = current.clone();
+                // Invalidate the token without exposing an identity vacancy.
+                sessions
+                    .entries
+                    .insert(session_id.to_string(), SessionRegistryEntry::Live(original));
                 handle
             }
             Some(SessionRegistryEntry::Building(_)) | None => None,
@@ -653,6 +683,11 @@ pub(super) async fn close_agent(agent: &Agent) {
             return;
         }
         sessions.prune_dead_sessions();
+        for entry in sessions.entries.values_mut() {
+            if let SessionRegistryEntry::Replacing { current, .. } = entry {
+                *entry = SessionRegistryEntry::Live(current.clone());
+            }
+        }
         sessions
             .entries
             .values()
@@ -829,20 +864,18 @@ pub(super) async fn replace_session_async(
 
     let session_id = current.session_id().to_string();
     let reservation = reserve_session_replacement(agent, current)?;
-    current.save().await?;
+    // Public `save()` takes its own admission lease. This reservation
+    // already holds the exclusive idle fence, so that second admit
+    // returns SessionBusy and the replacement never lands.
+    super::session_persistence::SessionPersistenceContext::from_session(current)
+        .save()
+        .await?;
     let options = options.with_session_id(&session_id);
     let replacement = build_resumed_session(agent, &session_id, options, None).await?;
-    let current_handle = match reservation.finalize(&replacement.close_handle) {
-        Ok(handle) => handle,
-        Err(error) => {
-            replacement.close().await;
-            return Err(error);
-        }
-    };
-
-    // The registry already points at the replacement, so no new work can be
-    // admitted through the old session ID while cleanup runs.
-    current_handle.close().await;
+    if let Err(error) = reservation.finalize(&replacement.close_handle).await {
+        replacement.close().await;
+        return Err(error);
+    }
     Ok(replacement)
 }
 
@@ -871,6 +904,11 @@ async fn build_session_from_snapshot(
     workspace_override: Option<String>,
 ) -> Result<AgentSession> {
     if let Some(workspace) = workspace_override {
+        session_persistence::restore_source(
+            &snapshot.session,
+            std::path::Path::new(&workspace),
+            options.work_policy.as_ref(),
+        )?;
         restore_protocol_workspace(&snapshot, &workspace).await?;
         snapshot.session.config.workspace = workspace;
     }
@@ -882,8 +920,9 @@ async fn build_session_from_snapshot(
     let canonical = super::safe_canonicalize(std::path::Path::new(&workspace));
     let resolved = session_config::ResolvedSessionConfig::resolve(agent, &canonical, opts).await?;
     let session = session_builder::build_agent_session(agent, workspace, resolved).await?;
-    if let Err(error) =
-        session_persistence::restore_persisted_session_state(&session, snapshot).await
+    if let Err(error) = session_persistence::restore_persisted_session_state(&session, snapshot)
+        .await
+        .and_then(|()| session.admit_configured_policy())
     {
         session.close().await;
         return Err(error);
@@ -935,3 +974,6 @@ async fn restore_protocol_workspace(
         message: format!("could not restore Agent Harness workspace: {error}"),
     })
 }
+
+#[cfg(test)]
+mod owner_identity_tests;

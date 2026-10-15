@@ -96,6 +96,7 @@ impl CapabilitySet {
                             revision_mismatch: expected.revision() != observed.revision(),
                             registry_revision_mismatch: expected.registry_revision()
                                 != observed.registry_revision(),
+                            origin_mismatch: !expected.origin_matches(observed),
                         });
                     }
                     None => use_generation = Some(observed.clone()),

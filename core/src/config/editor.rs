@@ -12,6 +12,7 @@ pub enum ConfigSection {
     DefaultModel,
     Providers,
     ModelRuntime,
+    GoalControl,
     Execution,
     Storage,
     Memory,
@@ -23,6 +24,11 @@ pub enum ConfigSection {
 }
 
 /// Rewrite selected sections of an ACL document from a typed configuration.
+///
+/// The source must be loadable by the current build: the closed set that
+/// governs the loader governs the editor too, so a document an older build
+/// could read but this one cannot is refused here rather than silently
+/// rewritten.
 pub fn rewrite_acl_sections(
     source: &str,
     config: &CodeConfig,
@@ -477,13 +483,6 @@ mcp_servers "remote" {
   }
 }
 
-# unknown top-level configuration must survive every settings save
-future_feature "keep-me" {
-  enabled = true
-  nested {
-    value = "untouched"
-  }
-}
 "#;
 
     #[test]
@@ -523,31 +522,23 @@ unknown { nested { enabled = true } }
             .expect("document parser")
             .max_file_size_mb = 96;
 
-        let output = rewrite_acl_sections(
-            COMPLETE_ACL,
-            &config,
-            &[
-                ConfigSection::DefaultModel,
-                ConfigSection::Providers,
-                ConfigSection::ModelRuntime,
-                ConfigSection::Execution,
-                ConfigSection::Storage,
-                ConfigSection::Memory,
-                ConfigSection::Queue,
-                ConfigSection::Search,
-                ConfigSection::Os,
-                ConfigSection::DocumentParser,
-                ConfigSection::McpServers,
-            ],
-        )
-        .expect("rewrite every section");
+        let rewrite_sections = [
+            ConfigSection::DefaultModel,
+            ConfigSection::Providers,
+            ConfigSection::ModelRuntime,
+            ConfigSection::Execution,
+            ConfigSection::Storage,
+            ConfigSection::Memory,
+            ConfigSection::Queue,
+            ConfigSection::Search,
+            ConfigSection::Os,
+            ConfigSection::DocumentParser,
+            ConfigSection::McpServers,
+        ];
+        let output = rewrite_acl_sections(COMPLETE_ACL, &config, &rewrite_sections)
+            .expect("rewrite every section");
 
         assert!(output.contains("# keep this document comment"));
-        assert!(
-            output.contains("# unknown top-level configuration must survive every settings save")
-        );
-        assert!(output.contains("future_feature \"keep-me\""));
-        assert!(output.contains("value = \"untouched\""));
         for expression in [
             "env(\"A3S_EDITOR_STORAGE_URL\")",
             "env(\"A3S_EDITOR_PROVIDER_KEY\")",

@@ -79,7 +79,7 @@ fn policy(allows: &[&str]) -> PermissionPolicy {
     }
     .allow("read(**)");
     for rule in allows {
-        policy = policy.allow(*rule);
+        policy = policy.allow(rule);
     }
     policy
 }

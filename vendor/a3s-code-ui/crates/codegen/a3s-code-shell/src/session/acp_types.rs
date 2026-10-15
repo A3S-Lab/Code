@@ -627,7 +627,7 @@ pub struct StartupHints {
     #[serde(skip)]
     pub parent_cwd: Option<PathBuf>,
     /// Only `"alwaysAllow"` is honored: would-be prompts resolve as allow at the manager's dispatch gate.
-    /// Clamped off by the managed always-approve pin; a configured `defaultMode` wins.
+    /// Clamped off by the managed yolo pin; a configured `defaultMode` wins.
     /// Unlike `yoloMode` / `autoMode`, a warm re-attach to an already-resident actor does NOT re-apply it.
     #[serde(default)]
     pub permission_mode: Option<String>,

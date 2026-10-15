@@ -221,14 +221,14 @@ pub(super) fn sync_active_permission_mode_mirror(app: &mut AppView) {
     };
     let (is_yolo, is_auto) = (agent.session.is_yolo(), agent.session.is_auto());
     let reanchor = if is_yolo {
-        Some("always-approve")
+        Some("yolo")
     } else if is_auto && app.auto_mode_gate {
         // Gate-aware: never re-anchor the global mirror to "auto" when the feature gate is off, even if a stale per-session `auto_mode` survived
         // (Defense-in-depth with the settings kill-switch fan-out.)
         Some("auto")
     } else if matches!(
         app.current_ui.permission_mode.as_deref(),
-        Some("always-approve") | Some("auto")
+        Some("yolo") | Some("auto")
     ) {
         // Non-yolo/non-auto agent: clear a stale yolo/auto mirror left by a different agent; preserve an existing ask/default distinction
         Some("ask")

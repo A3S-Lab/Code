@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -329,6 +329,7 @@ struct PublishedGeneration {
     projection: Arc<CapabilityProjection>,
     stamp: CapabilityCatalogStamp,
     use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+    allowed_capabilities: Option<Arc<BTreeSet<CapabilityId>>>,
     effects: Mutex<Vec<Box<dyn CapabilityEffect>>>,
     cleanup: Arc<CleanupQueue>,
 }
@@ -337,6 +338,7 @@ impl PublishedGeneration {
     fn new(
         projection: Arc<CapabilityProjection>,
         use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+        allowed_capabilities: Option<Arc<BTreeSet<CapabilityId>>>,
         effects: Vec<Box<dyn CapabilityEffect>>,
         cleanup: Arc<CleanupQueue>,
     ) -> Self {
@@ -345,6 +347,7 @@ impl PublishedGeneration {
             projection,
             stamp,
             use_lease_provider,
+            allowed_capabilities,
             effects: Mutex::new(effects),
             cleanup,
         }
@@ -390,6 +393,7 @@ impl CatalogInner {
         base: &CapabilityCatalogStamp,
         projection: Arc<CapabilityProjection>,
         use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+        allowed_capabilities: Option<Arc<BTreeSet<CapabilityId>>>,
         effects: Vec<Box<dyn CapabilityEffect>>,
     ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
         let committed = CapabilityCatalogStamp::from_projection(&projection);
@@ -413,6 +417,7 @@ impl CatalogInner {
             let published = Arc::new(PublishedGeneration::new(
                 projection,
                 use_lease_provider,
+                allowed_capabilities,
                 effects,
                 Arc::clone(&self.cleanup),
             ));
@@ -441,6 +446,7 @@ impl CapabilityCatalog {
         let cleanup = Arc::new(CleanupQueue::default());
         let current = Arc::new(PublishedGeneration::new(
             initial,
+            None,
             None,
             Vec::new(),
             Arc::clone(&cleanup),
@@ -553,6 +559,10 @@ impl CapabilityProjectionLease {
 
     pub fn projection(&self) -> &CapabilityProjection {
         &self.generation.projection
+    }
+
+    pub(crate) fn allowed_capabilities(&self) -> Option<&BTreeSet<CapabilityId>> {
+        self.generation.allowed_capabilities.as_deref()
     }
 
     pub(super) fn use_lease_provider(&self) -> Option<&Arc<dyn UseGenerationLeaseProvider>> {

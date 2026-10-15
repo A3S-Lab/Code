@@ -6,6 +6,8 @@
 //! helper operations such as compaction.
 
 use super::{AgentEvent, AgentLoop, InvocationContext};
+
+mod fact_governance;
 use crate::budget::{BudgetDecision, BudgetGuard};
 use crate::harness_evidence::{
     ModelCallObservation, ModelInputKindV1, ModelPresentationApplicationV1, ModelUsageBinding,
@@ -19,6 +21,11 @@ use crate::llm::{
 };
 use anyhow::Context;
 use async_trait::async_trait;
+pub(crate) use fact_governance::{
+    FactAccountingDisposition, FactModelAccountingObservation, FactModelCallOutcome,
+    FactModelFrame, FactOutputObservation, FactProjectionObservation, FactStoreObservation,
+};
+pub use fact_governance::{FactModelBinding, FactModelBindingRequest};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -485,22 +492,13 @@ impl LlmInvoker {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        let permit = match preadmitted {
-            Some(permit) => permit,
-            None => Arc::new(
-                self.model_generation_admission
-                    .acquire(cancellation)
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error))?,
-            ),
-        };
-        let queue_wait = permit.queue_wait().as_micros().min(u128::from(u64::MAX)) as u64;
-        self.queue_wait_micros
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some(value.saturating_add(queue_wait))
-            })
-            .ok();
-        Ok(permit)
+        acquire_generation(
+            &self.model_generation_admission,
+            preadmitted,
+            &self.queue_wait_micros,
+            cancellation,
+        )
+        .await
     }
 
     fn take_queue_wait(&self) -> Duration {
@@ -516,22 +514,7 @@ impl LlmInvoker {
     where
         F: Future<Output = anyhow::Result<LlmResponse>> + Send,
     {
-        let trust = match admit_prompt_trust(messages) {
-            Ok(admission) => {
-                self.middleware_obs.record_trust_admitted(
-                    false,
-                    admission.trusted,
-                    admission.workspace_data,
-                    admission.external,
-                    admission.external_reviewed,
-                );
-                admission
-            }
-            Err(error) => {
-                self.middleware_obs.record_trust_rejected();
-                return Err(error);
-            }
-        };
+        let trust = admit_model_trust(messages, &self.middleware_obs, false)?;
         let _ = (trust, ModelMiddlewareStage::BudgetAdmission);
         check_before_llm(
             self.invocation.governance().budget_guard(),
@@ -628,22 +611,7 @@ impl LlmInvoker {
         F: FnOnce(CancellationToken) -> Fut + Send,
         Fut: Future<Output = anyhow::Result<mpsc::Receiver<StreamEvent>>> + Send,
     {
-        let _trust = match admit_prompt_trust(messages) {
-            Ok(admission) => {
-                self.middleware_obs.record_trust_admitted(
-                    true,
-                    admission.trusted,
-                    admission.workspace_data,
-                    admission.external,
-                    admission.external_reviewed,
-                );
-                admission
-            }
-            Err(error) => {
-                self.middleware_obs.record_trust_rejected();
-                return Err(error);
-            }
-        };
+        let _trust = admit_model_trust(messages, &self.middleware_obs, true)?;
         let _ = ModelMiddlewareStage::BudgetAdmission;
         check_before_llm(
             self.invocation.governance().budget_guard(),
@@ -889,6 +857,10 @@ impl LlmInvoker {
 
 #[async_trait]
 impl LlmClient for LlmInvoker {
+    fn gateway_decision_auth(&self) -> Option<crate::llm::GatewayDecisionAuth> {
+        self.inner.gateway_decision_auth()
+    }
+
     fn model_generation_concurrency(&self) -> ModelGenerationConcurrency {
         self.inner.model_generation_concurrency()
     }
@@ -903,6 +875,13 @@ impl LlmClient for LlmInvoker {
         preadmitted: Option<Arc<ModelGenerationPermit>>,
     ) -> Option<Arc<dyn LlmClient>> {
         Some(Arc::new(self.rebound(admission, preadmitted)))
+    }
+
+    fn bind_fact_model_governance(
+        &self,
+        request: &FactModelBindingRequest,
+    ) -> Option<FactModelBinding> {
+        fact_governance::bind_invoker(self, request)
     }
 
     fn model_generation_is_managed(&self) -> bool {
@@ -992,6 +971,29 @@ impl LlmClient for LlmInvoker {
 }
 
 impl AgentLoop {
+    /// Retire the completed fact host lane without constructing another scope.
+    /// Callers must also drop their completed model facade before a memory tail
+    /// can outlive the host channel.
+    pub(crate) fn retire_fact_host_events(&mut self) {
+        self.bound_invocation = self
+            .bound_invocation
+            .take()
+            .map(InvocationContext::retire_fact_host_events);
+    }
+
+    pub(crate) async fn fact_capability_is_current(&self, digest: &str) -> bool {
+        match &self.bound_invocation {
+            Some(invocation) => invocation.fact_capability_is_current(digest).await,
+            None => false,
+        }
+    }
+
+    pub(crate) async fn fact_capability_projected(&self, digest: String) {
+        if let Some(invocation) = &self.bound_invocation {
+            invocation.fact_capability_projected(digest).await;
+        }
+    }
+
     /// Select the admission scope for a provider facade. Session builders
     /// explicitly install a shared gate so sibling facades participate in the
     /// same provider pool; compatibility loops retain one gate per facade,
@@ -1209,6 +1211,79 @@ impl AgentLoop {
     }
 }
 
+fn admit_model_trust(
+    messages: &[Message],
+    observations: &super::ModelMiddlewareObs,
+    streaming: bool,
+) -> anyhow::Result<PromptTrustAdmission> {
+    match admit_prompt_trust(messages) {
+        Ok(admission) => {
+            observations.record_trust_admitted(
+                streaming,
+                admission.trusted,
+                admission.workspace_data,
+                admission.external,
+                admission.external_reviewed,
+            );
+            Ok(admission)
+        }
+        Err(error) => {
+            observations.record_trust_rejected();
+            Err(error)
+        }
+    }
+}
+
+async fn budget_decision_before_llm(
+    guard: Option<&Arc<dyn BudgetGuard>>,
+    session_id: &str,
+    estimated_prompt_tokens: usize,
+    cancellation: &CancellationToken,
+) -> anyhow::Result<BudgetDecision> {
+    let Some(guard) = guard else {
+        if cancellation.is_cancelled() {
+            anyhow::bail!("Operation cancelled by user");
+        }
+        return Ok(BudgetDecision::Allow);
+    };
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => anyhow::bail!("Operation cancelled by user"),
+        decision = guard.check_before_llm(session_id, estimated_prompt_tokens) => Ok(decision),
+    }
+}
+
+fn budget_decision_result(decision: &BudgetDecision) -> anyhow::Result<()> {
+    match decision {
+        BudgetDecision::Allow | BudgetDecision::SoftLimit { .. } => Ok(()),
+        BudgetDecision::Deny { resource, reason } => Err(anyhow::Error::new(
+            crate::error::CodeError::BudgetExhausted {
+                resource: resource.clone(),
+                reason: reason.clone(),
+            },
+        )),
+    }
+}
+
+async fn acquire_generation(
+    admission: &ModelGenerationAdmission,
+    original: Option<Arc<ModelGenerationPermit>>,
+    queue_wait_micros: &AtomicU64,
+    cancellation: &CancellationToken,
+) -> anyhow::Result<Arc<ModelGenerationPermit>> {
+    let permit = match original {
+        Some(permit) => permit,
+        None => Arc::new(admission.acquire(cancellation).await?),
+    };
+    let queued = permit.queue_wait().as_micros().min(u128::from(u64::MAX)) as u64;
+    queue_wait_micros
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(queued))
+        })
+        .ok();
+    Ok(permit)
+}
+
 async fn check_before_llm(
     budget_guard: Option<&Arc<dyn BudgetGuard>>,
     session_id: &str,
@@ -1216,19 +1291,13 @@ async fn check_before_llm(
     event_tx: &Option<mpsc::Sender<AgentEvent>>,
     cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
-    let Some(guard) = budget_guard else {
-        if cancel_token.is_cancelled() {
-            anyhow::bail!("Operation cancelled by user");
-        }
-        return Ok(());
-    };
-
-    let decision = tokio::select! {
-        biased;
-        _ = cancel_token.cancelled() => anyhow::bail!("Operation cancelled by user"),
-        decision = guard.check_before_llm(session_id, estimated_prompt_tokens) => decision,
-    };
-
+    let decision = budget_decision_before_llm(
+        budget_guard,
+        session_id,
+        estimated_prompt_tokens,
+        cancel_token,
+    )
+    .await?;
     match decision {
         BudgetDecision::Allow => Ok(()),
         BudgetDecision::SoftLimit {
@@ -1262,9 +1331,7 @@ async fn check_before_llm(
                     })
                     .await;
             }
-            Err(anyhow::Error::new(
-                crate::error::CodeError::BudgetExhausted { resource, reason },
-            ))
+            budget_decision_result(&BudgetDecision::Deny { resource, reason })
         }
     }
 }

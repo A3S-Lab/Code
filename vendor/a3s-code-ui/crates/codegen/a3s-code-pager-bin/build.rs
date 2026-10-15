@@ -11,8 +11,31 @@ fn git_stdout(args: &[&str]) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+fn short_commit(value: &str) -> Option<String> {
+    let value = value.trim();
+    let hex = value
+        .chars()
+        .take(12)
+        .collect::<String>();
+    (hex.len() == 12 && hex.chars().all(|ch| ch.is_ascii_hexdigit())).then_some(hex)
+}
+
+/// Code revision stamped when this pager is built inside a parent git tree.
+///
+/// A standalone Code checkout stamps `git rev-parse HEAD`. Nested under the OS
+/// repo, that command walks up to the parent HEAD, which is not the Code tag
+/// the CLI launch was synced from.
+fn pinned_code_commit(manifest_dir: &Path) -> Option<String> {
+    let code_root = manifest_dir.ancestors().nth(5)?;
+    let pin = code_root.join("CODE_REVISION");
+    println!("cargo:rerun-if-changed={}", pin.display());
+    let text = std::fs::read_to_string(&pin).ok()?;
+    short_commit(&text)
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=GROK_VERSION");
+    println!("cargo:rerun-if-env-changed=GROK_COMMIT");
 
     // Watch the git files that change on commit/checkout so the version stamp refreshes
     // Never emit a missing path: cargo treats it as always dirty and rebuilds this crate every build
@@ -26,9 +49,24 @@ fn main() {
         println!("cargo:rerun-if-changed={path}");
     }
 
-    let commit = git_stdout(&["rev-parse", "HEAD"])
-        .map(|s| s.chars().take(12).collect::<String>())
-        .filter(|s| s.len() == 12)
+    let manifest_dir = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default()).to_path_buf();
+    let code_root = manifest_dir.ancestors().nth(5).map(Path::to_path_buf);
+    let git_root = git_stdout(&["rev-parse", "--show-toplevel"]).map(std::path::PathBuf::from);
+    let git_is_code_repo = match (&code_root, &git_root) {
+        (Some(code_root), Some(git_root)) => git_root == code_root,
+        _ => false,
+    };
+    let commit = std::env::var("GROK_COMMIT")
+        .ok()
+        .and_then(|value| short_commit(&value))
+        .or_else(|| {
+            if git_is_code_repo {
+                git_stdout(&["rev-parse", "HEAD"]).and_then(|value| short_commit(&value))
+            } else {
+                pinned_code_commit(&manifest_dir)
+            }
+        })
+        .or_else(|| git_stdout(&["rev-parse", "HEAD"]).and_then(|value| short_commit(&value)))
         .unwrap_or_else(|| "unknown".to_string());
 
     let version = std::env::var("GROK_VERSION")

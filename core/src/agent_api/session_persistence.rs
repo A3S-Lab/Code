@@ -3,6 +3,9 @@
 //! This module owns how an in-memory session becomes one `SessionSnapshotV1`
 //! generation and how that same generation rehydrates runtime state.
 
+mod source;
+pub(super) use source::restore_source;
+
 use super::{AgentSession, SessionOptions};
 use crate::agent::{AgentConfig, AgentResult};
 use crate::error::{read_or_recover, write_or_recover, CodeError, Result};
@@ -116,6 +119,7 @@ pub(crate) struct SessionPersistenceContext {
     cognitive_package_binding: Option<crate::cognitive_context::CognitivePackageBindingV1>,
     immutable_content_adapter_binding: Option<crate::tools::ImmutableContentAdapterBindingV1>,
     tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
+    fact_log: Arc<std::sync::Mutex<Option<Arc<a3s_effect::FileLog>>>>,
     auto_save: bool,
     session_review: Arc<RwLock<crate::session_review::SessionReviewStoreV1>>,
 }
@@ -155,6 +159,7 @@ impl SessionPersistenceContext {
                 .immutable_content_adapter()
                 .map(|adapter| adapter.binding().clone()),
             tool_result_transform_policy: session.tool_result_transform_policy.clone(),
+            fact_log: session.run_admission.fact_log_slot(),
             auto_save: session.auto_save,
             session_review: Arc::clone(&session.session_review),
         }
@@ -164,8 +169,14 @@ impl SessionPersistenceContext {
     pub(super) fn record_result(&self, result: &AgentResult) {
         *write_or_recover(&self.history) = result.messages.clone();
         if !result.verification_reports.is_empty() {
-            write_or_recover(&self.verification_reports)
-                .extend(result.verification_reports.clone());
+            // A later turn seeds this store onto a fresh fact surface. Echoing
+            // that seed back here would append the same reports on every success.
+            let mut stored = write_or_recover(&self.verification_reports);
+            for report in &result.verification_reports {
+                if !stored.contains(report) {
+                    stored.push(report.clone());
+                }
+            }
         }
     }
 
@@ -254,7 +265,7 @@ impl SessionPersistenceContext {
         let history = read_or_recover(&self.history).clone();
         let verification_reports = read_or_recover(&self.verification_reports).clone();
         let seed = read_or_recover(&self.persistence_state).seed();
-        let data = build_session_data_snapshot(SessionDataSnapshotInput {
+        let mut data = build_session_data_snapshot(SessionDataSnapshotInput {
             session_id: &self.session_id,
             workspace: &self.workspace,
             config: &self.config,
@@ -272,6 +283,7 @@ impl SessionPersistenceContext {
         })
         .await;
 
+        data.durable_source = self.capture_source()?;
         let snapshot = SessionSnapshotV1::new(
             data,
             &self.tool_executor.artifact_store(),
@@ -364,6 +376,15 @@ pub(super) fn apply_persisted_runtime_options(
     mut opts: SessionOptions,
     data: &SessionData,
 ) -> Result<SessionOptions> {
+    let restored_policy = restore_source(
+        data,
+        Path::new(&data.config.workspace),
+        opts.work_policy.as_ref(),
+    )?;
+    if opts.work_policy.is_none() {
+        opts.work_policy = restored_policy;
+    }
+    opts.durable_source = data.durable_source.clone();
     let model_was_explicit = opts.model.is_some();
     opts.session_id = Some(data.id.clone());
 
@@ -555,6 +576,7 @@ pub(super) async fn restore_persisted_session_state(
     for artifact in restored_store.artifacts() {
         target_store.put(artifact);
     }
+    target_store.set_retained_uris(restored_store.retained_uris());
 
     session.trace_sink.replace_events(snapshot.trace_events);
     session
@@ -598,6 +620,7 @@ async fn build_session_data_snapshot(input: SessionDataSnapshotInput<'_>) -> Ses
     let model_name = persisted_model_name(input.model_name);
     let now = chrono::Utc::now().timestamp();
     let mut data = input.seed.baseline.unwrap_or_else(|| SessionData {
+        durable_source: None,
         id: input.session_id.to_string(),
         config: crate::store::SessionConfig::default(),
         state: crate::store::SessionState::Active,

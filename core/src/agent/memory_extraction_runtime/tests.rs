@@ -11,7 +11,7 @@ fn parses_fenced_extraction_json() {
 {"items":[{"memory_type":"semantic","content":"A3S memory should store durable project facts.","importance":0.8,"tags":["A3S","Memory"],"source":"project_fact"}]}
 ```"#,
         )
-        .unwrap();
+        .unwrap().items;
 
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].memory_type, "semantic");
@@ -26,7 +26,7 @@ fn parser_keeps_valid_items_when_sibling_is_malformed() {
                 {"memory_type":"procedural","content":"Run memory extraction tests after changing extraction parsing behavior.","importance":0.7,"tags":["tests"],"source":"workflow"}
             ]}"#,
         )
-        .unwrap();
+        .unwrap().items;
 
     assert_eq!(items.len(), 2);
     assert!(items[0].content.contains("completed non-empty turn"));
@@ -584,3 +584,18 @@ fn every_completed_turn_is_sent_to_the_llm_value_judge() {
         "好的"
     ));
 }
+
+#[test]
+fn extraction_prompt_carries_the_language_neutral_retention_rule() {
+    // Model guidance remains language-neutral. Former verb-matcher inputs
+    // now have actual Session fail-closed coverage in memory_retention_tests.
+    let prompt = super::build_extraction_prompt("p", "r", "t", "", 3);
+    assert!(
+        prompt.contains("in ANY language"),
+        "the language-neutral rule is present"
+    );
+    assert!(prompt.contains("0.90") && prompt.contains("0.95"));
+    assert!(prompt.contains("never current-turn narration"));
+}
+
+mod canonical;

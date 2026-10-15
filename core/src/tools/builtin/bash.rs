@@ -63,8 +63,48 @@ fn with_changed_paths(metadata: serde_json::Value, paths: &[String]) -> serde_js
 
 pub struct BashTool;
 
+/// Sandbox-shaped failure signals: the command itself was likely fine, the
+/// sandbox denied a capability. The on-failure approval tier (Codex parity):
+/// surface a one-shot escalation SUGGESTION through the model — the retry
+/// must still pass the existing `require_escalated` approval gate, nothing
+/// auto-executes, and escalated runs never see the hint (no retry loop).
+fn sandbox_failure_hint(output: &str) -> Option<&'static str> {
+    const SIGNALS: &[(&str, &str)] = &[
+        ("Operation not permitted", "a syscall was blocked"),
+        ("Permission denied", "a filesystem access was denied"),
+        ("sandbox", "the sandbox rejected the operation"),
+        ("Connection refused", "a network egress was refused"),
+        ("Network is unreachable", "network egress is unavailable"),
+        ("Temporary failure in name resolution", "DNS was refused"),
+        ("Could not resolve host", "DNS was refused"),
+    ];
+    let lower = output.to_lowercase();
+    SIGNALS
+        .iter()
+        .find(|(signal, _)| lower.contains(&signal.to_lowercase()))
+        .map(|(_, why)| *why)
+}
+
 async fn workspace_watch(root: &std::path::Path) -> crate::porcelain::Watch {
     crate::porcelain::Watch::start(root).await
+}
+
+/// A typed pre-spawn refusal never created a process. Close the span, and
+/// do not attribute paths seen in that window to the command.
+async fn settled_pre_spawn_refusal(
+    ctx: &ToolContext,
+    span: CommandSpan,
+    message: String,
+) -> ToolOutput {
+    let _ = span.finish(ctx).await;
+    ToolOutput::error(message.clone())
+        .with_metadata(serde_json::json!({
+            "exit_code": null,
+            "sandboxed": true,
+            "sandbox_available": true,
+            "command_started": false,
+        }))
+        .with_error_kind(ToolErrorKind::Unsupported { message })
 }
 
 /// A session that dirtied a path owns it. The command is not parsed; ownership
@@ -82,10 +122,187 @@ fn claim_dirtied_paths(ctx: &ToolContext, paths: &[String]) {
     }
 }
 
-async fn observed_changes(ctx: &ToolContext, before: crate::porcelain::Watch) -> Vec<String> {
-    let paths = before.finish(ctx.workspace.as_path()).await;
-    claim_dirtied_paths(ctx, &paths);
-    paths
+/// One bash invocation's workspace watch plus a PATH `git` witness.
+///
+/// The witness records that this process ran a HEAD-moving git subcommand.
+/// Read-only git (`status`, `ls-files`, `log`) does not own a parallel commit.
+/// A missing witness file means the command removed it, so the revision stays
+/// attributed.
+pub(crate) struct CommandSpan {
+    watch: crate::porcelain::Watch,
+    witness: Option<GitWitness>,
+}
+
+impl CommandSpan {
+    pub(crate) async fn begin(workspace: &std::path::Path) -> Self {
+        Self {
+            watch: workspace_watch(workspace).await,
+            witness: GitWitness::install(workspace),
+        }
+    }
+
+    pub(crate) fn env(
+        &self,
+        base: Option<Arc<HashMap<String, String>>>,
+    ) -> Option<Arc<HashMap<String, String>>> {
+        let Some(witness) = &self.witness else {
+            return base;
+        };
+        let mut merged = base
+            .as_ref()
+            .map(|env| env.as_ref().clone())
+            .unwrap_or_default();
+        witness.apply(&mut merged);
+        Some(Arc::new(merged))
+    }
+
+    pub(crate) async fn finish(self, ctx: &ToolContext) -> Vec<String> {
+        self.finish_observed(ctx).await.paths
+    }
+
+    pub(crate) async fn finish_observed(self, ctx: &ToolContext) -> crate::porcelain::PathDelta {
+        let attribute_revision = self
+            .witness
+            .as_ref()
+            .map(GitWitness::moved_head)
+            .unwrap_or(true);
+        let mut observed = self
+            .watch
+            .finish_observed_with_revision(ctx.workspace.as_path(), attribute_revision)
+            .await;
+        observed
+            .paths
+            .retain(|path| !crate::porcelain::is_harness_path(path));
+        claim_dirtied_paths(ctx, &observed.paths);
+        observed
+    }
+}
+
+struct GitWitness {
+    root: std::path::PathBuf,
+    bin: std::path::PathBuf,
+    witness: std::path::PathBuf,
+}
+
+impl GitWitness {
+    fn install(workspace: &std::path::Path) -> Option<Self> {
+        #[cfg(not(unix))]
+        {
+            let _ = workspace;
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let root = crate::state_root::workspace_state_dir(workspace)
+                .join("loops")
+                .join(format!(
+                    "command-git-witness-{}-{unique}",
+                    std::process::id()
+                ));
+            let bin = root.join("bin");
+            let witness = root.join("seen");
+            if std::fs::create_dir_all(&bin).is_err() {
+                return None;
+            }
+            let script = bin.join("git");
+            // Parse argv here. The user's shell text is not evidence of which
+            // paths moved, and a read-only `git status` must not claim HEAD.
+            let body = r#"#!/bin/sh
+skip_next=0
+moved=0
+for arg in "$@"; do
+  if [ "$skip_next" = 1 ]; then
+    skip_next=0
+    continue
+  fi
+  if [ "$skip_next" = 2 ]; then
+    skip_next=0
+    case "$arg" in
+      -*) ;;
+      *) continue ;;
+    esac
+  fi
+  case "$arg" in
+    -c|-C|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+      skip_next=1
+      ;;
+    --exec-path)
+      skip_next=2
+      ;;
+    --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--super-prefix=*|--config-env=*|--list-cmds=*)
+      ;;
+    -C*)
+      ;;
+    -*)
+      ;;
+    commit|checkout|switch|reset|merge|rebase|pull|cherry-pick|revert|am)
+      moved=1
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+if [ "$moved" = 1 ] && [ -n "$A3S_CODE_GIT_WITNESS" ]; then
+  printf '%s\n' git >> "$A3S_CODE_GIT_WITNESS" 2>/dev/null || true
+fi
+if [ -n "$A3S_CODE_GIT_REAL_PATH" ]; then
+  PATH=$A3S_CODE_GIT_REAL_PATH
+  export PATH
+fi
+exec git "$@"
+"#;
+            if std::fs::write(&script, body).is_err() {
+                let _ = std::fs::remove_dir_all(&root);
+                return None;
+            }
+            use std::os::unix::fs::PermissionsExt;
+            if std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).is_err() {
+                let _ = std::fs::remove_dir_all(&root);
+                return None;
+            }
+            if std::fs::write(&witness, b"").is_err() {
+                let _ = std::fs::remove_dir_all(&root);
+                return None;
+            }
+            Some(Self { root, bin, witness })
+        }
+    }
+
+    fn apply(&self, env: &mut HashMap<String, String>) {
+        let original = env
+            .get("PATH")
+            .cloned()
+            .or_else(|| std::env::var("PATH").ok())
+            .unwrap_or_default();
+        env.insert(
+            "PATH".to_string(),
+            format!("{}:{original}", self.bin.display()),
+        );
+        env.insert("A3S_CODE_GIT_REAL_PATH".to_string(), original);
+        env.insert(
+            "A3S_CODE_GIT_WITNESS".to_string(),
+            self.witness.display().to_string(),
+        );
+    }
+
+    fn moved_head(&self) -> bool {
+        match std::fs::read_to_string(&self.witness) {
+            Ok(text) => text.contains("git"),
+            Err(_) => true,
+        }
+    }
+}
+
+impl Drop for GitWitness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 #[cfg(test)]
@@ -361,6 +578,29 @@ impl Tool for BashTool {
         )
     }
 
+    fn validate_execution_available(
+        &self,
+        args: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<()> {
+        // Observation and session-shell control do not start a command.
+        if args
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+            || args
+                .get("sandbox_permissions")
+                .and_then(serde_json::Value::as_str)
+                == Some("require_escalated")
+        {
+            return Ok(());
+        }
+        if let Some(sandbox) = &ctx.sandbox {
+            sandbox.validate_execution_available()?;
+        }
+        Ok(())
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
         if let Some(output) = observe_detached_job(args, ctx).await {
             return Ok(output);
@@ -402,6 +642,12 @@ impl Tool for BashTool {
             }
         };
         let request_network_grant = raw_mode == "request_network_grant";
+        if let Err(error) = self.validate_execution_available(args, ctx) {
+            let message = error.to_string();
+            return Ok(
+                ToolOutput::error(&message).with_error_kind(ToolErrorKind::Unsupported { message })
+            );
+        }
         if let Some(denied) = refuse_hidden_foreign_write(ctx) {
             return Ok(denied);
         }
@@ -463,13 +709,14 @@ impl Tool for BashTool {
                 } else {
                     None
                 };
-                let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
+                let span = CommandSpan::begin(ctx.workspace.as_path()).await;
+                let command_env = span.env(ctx.command_env.clone());
                 let execution = sandbox.exec(crate::sandbox::SandboxCommandRequest {
                     command: command_for_sandbox(command),
                     guest_workspace: "/workspace".to_string(),
                     timeout_ms,
                     output_observer: output_observer.clone(),
-                    env: ctx.command_env.clone(),
+                    env: command_env,
                 });
                 let result = match tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
@@ -477,6 +724,17 @@ impl Tool for BashTool {
                 )
                 .await
                 {
+                    Ok(Err(error))
+                        if crate::sandbox::native::is_native_process_lifetime_unqualified(
+                            &error,
+                        ) || crate::sandbox::process_host::is_process_host_spawn_refused(
+                            &error,
+                        ) =>
+                    {
+                        // The process does not exist. A later string wrap would
+                        // drop this type and the receipt would book Unknown.
+                        return Ok(settled_pre_spawn_refusal(ctx, span, error.to_string()).await);
+                    }
                     Ok(result) => result
                         .map_err(|e| anyhow::anyhow!("Sandbox bash execution failed: {}", e))?,
                     Err(_) => {
@@ -500,7 +758,7 @@ impl Tool for BashTool {
                                 "sandboxed": true,
                                 "output": capture_metadata,
                             }),
-                            &observed_changes(ctx, before_porcelain).await,
+                            &span.finish(ctx).await,
                         ));
                         timed_out.error_kind = Some(ToolErrorKind::Timeout {
                             op: "bash".to_string(),
@@ -537,7 +795,7 @@ impl Tool for BashTool {
                             "sandboxed": true,
                             "output": capture_metadata,
                         }),
-                        &observed_changes(ctx, before_porcelain).await,
+                        &span.finish(ctx).await,
                     ));
                     timed_out.error_kind = Some(ToolErrorKind::Timeout {
                         op: "bash".to_string(),
@@ -554,9 +812,20 @@ impl Tool for BashTool {
                 if let Some(grant) = grant_metadata {
                     base_metadata["network_grant"] = grant;
                 }
-                let changed_paths = observed_changes(ctx, before_porcelain).await;
+                let changed_paths = span.finish(ctx).await;
+                let mut content = output;
+                if result.exit_code != 0 {
+                    if let Some(why) = sandbox_failure_hint(&content) {
+                        base_metadata["sandbox_failure_hint"] = serde_json::json!(why);
+                        content.push_str(&format!(
+                            "\n\n[The exit looks sandbox-induced ({why}). If the command is \
+                             legitimate, retry once with sandbox_permissions=require_escalated \
+                             and a justification; the host must approve it.]"
+                        ));
+                    }
+                }
                 return Ok(ToolOutput {
-                    content: output,
+                    content,
                     success: result.exit_code == 0,
                     metadata: crate::verification::merge_shell_verification_metadata(
                         Some(with_changed_paths(base_metadata, &changed_paths)),
@@ -578,17 +847,18 @@ impl Tool for BashTool {
             .workspace_services
             .command_runner()
             .expect("bash registered without workspace command runner");
-        let before_porcelain = workspace_watch(ctx.workspace.as_path()).await;
+        let span = CommandSpan::begin(ctx.workspace.as_path()).await;
+        let command_env = span.env(ctx.command_env.clone());
         let result = runner
             .exec(CommandRequest {
                 command: command.to_string(),
                 timeout_ms,
                 output_observer,
-                env: ctx.command_env.clone(),
+                env: command_env,
             })
             .await
             .map_err(|e| anyhow::anyhow!("Workspace bash execution failed: {}", e))?;
-        let changed_paths = observed_changes(ctx, before_porcelain).await;
+        let changed_paths = span.finish(ctx).await;
 
         let capture_summary = *event_observer.summary.lock().unwrap();
         let capture_metadata = capture_summary.map(|summary| {
@@ -811,7 +1081,7 @@ fn session_shell_control(args: &serde_json::Value, ctx: &ToolContext) -> Option<
 /// lines that exceed the Windows limit (error 206). Every other command,
 /// including `echo`, is left unchanged. The completion gate still parses the
 /// original `test -f` text from the tool arguments.
-fn command_for_sandbox(command: &str) -> String {
+pub(crate) fn command_for_sandbox(command: &str) -> String {
     #[cfg(windows)]
     {
         windows_existence_check(command).unwrap_or_else(|| command.to_string())
@@ -843,6 +1113,25 @@ fn windows_existence_check(command: &str) -> Option<String> {
     ))
 }
 
+/// Quote a path for safe single-word interpolation into a POSIX shell
+/// command. The session cwd can contain anything the filesystem allows
+/// (spaces, `$(`, backticks): unquoted interpolation would execute
+/// metacharacters at shell parse time, after every permission surface has
+/// approved a different string.
+fn shell_quote_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    if text.is_empty() {
+        return "''".to_string();
+    }
+    if text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    {
+        return text.into_owned();
+    }
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 fn prefix_session_cwd(command: &str, ctx: &ToolContext) -> String {
     let Some(session_id) = ctx.session_id.as_deref() else {
         return command.to_string();
@@ -850,10 +1139,11 @@ fn prefix_session_cwd(command: &str, ctx: &ToolContext) -> String {
     if let Ok(admitted) =
         crate::shell_session::admit(session_id, command, shell_admission(ctx, command))
     {
+        let cwd = shell_quote_path(&admitted.cwd);
         if command.trim().starts_with("cd ") {
-            return format!("cd {}", admitted.cwd.display());
+            return format!("cd {cwd}");
         }
-        return format!("cd {} && {command}", admitted.cwd.display());
+        return format!("cd {cwd} && {command}");
     }
     command.to_string()
 }

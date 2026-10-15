@@ -35,10 +35,17 @@ mod execution_entry;
 mod execution_mode;
 mod execution_state;
 pub(crate) use execution_state::ExecutionSeed;
+pub(crate) use execution_state::READ_ONLY_EVIDENCE_LIMIT;
+pub(crate) use loop_runtime::READ_ONLY_EVIDENCE_FINALIZATION;
 mod hook_runtime;
 mod invocation_context;
 pub(crate) use invocation_context::InvocationContext;
 mod llm_invoker;
+pub(crate) use llm_invoker::{
+    FactAccountingDisposition, FactModelAccountingObservation, FactModelCallOutcome,
+    FactModelFrame, FactOutputObservation, FactProjectionObservation, FactStoreObservation,
+};
+pub use llm_invoker::{FactModelBinding, FactModelBindingRequest};
 mod model_middleware_obs;
 pub use model_middleware_obs::ModelMiddlewareHealthSnapshot;
 pub(crate) use model_middleware_obs::ModelMiddlewareObs;
@@ -85,6 +92,47 @@ pub(crate) fn resolve_context_window(
     })
 }
 
+/// Vendor-documented context window for a model whose ACL block omits one.
+///
+/// DeepSeek's model page lists 1M tokens for Flash and Pro. The legacy Flash
+/// ids are served by that same Flash model. Any other id stays `None`, and
+/// auto-compact keeps the conservative unknown-model window.
+pub fn documented_context_tokens(model_name: &str) -> Option<usize> {
+    let id = model_name
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(model_name)
+        .trim()
+        .to_ascii_lowercase();
+    match id.as_str() {
+        "deepseek-flash"
+        | "deepseek-v4-flash"
+        | "deepseek-v4-flash-vision-exp"
+        | "deepseek-v4.1-flash"
+        | "deepseek-v4-pro" => Some(1_000_000),
+        _ => None,
+    }
+}
+
+/// Context window used for compaction accounting.
+///
+/// An explicit session option wins, then a positive ACL `limit.context`,
+/// then [`documented_context_tokens`].
+pub fn context_window_for_model(
+    explicit: Option<usize>,
+    configured: Option<usize>,
+    model_name: &str,
+    auto_compact: bool,
+    default_window: usize,
+) -> usize {
+    resolve_context_window(
+        explicit,
+        configured.or_else(|| documented_context_tokens(model_name)),
+        auto_compact,
+        default_window,
+    )
+}
+
 /// Character budget for the fact-log compactor.
 ///
 /// About four characters per token, measured at the auto-compact threshold of
@@ -125,6 +173,11 @@ pub(crate) struct AgentConfig {
     /// without overriding the core agentic capabilities. The default agentic core
     /// (tool usage, autonomous behavior, completion criteria) is always preserved.
     pub prompt_slots: SystemPromptSlots,
+    pub work_policy: Option<crate::WorkPolicyV1>,
+    /// Trusted host bounds for automatic Goal ticks; child runs never inherit them.
+    pub goal_control: Option<crate::goal_control::GoalContinuationPolicyV1>,
+    #[doc(hidden)]
+    pub durable_source: Option<crate::store::SessionFactSourceV1>,
     pub tools: Vec<ToolDefinition>,
     /// Immutable model-facing Tool presentation policy for this loop.
     /// Execution continues through the separately owned `ToolExecutor`.
@@ -246,10 +299,21 @@ pub(crate) struct AgentConfig {
     pub host_env: Arc<crate::host_env::HostEnv>,
     /// Host-confirmed waivers. Assistant text cannot populate this list.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
+    /// Host-declared suite verification contracts. The model cannot add one;
+    /// a contract binds a Passed report only from a real host-bash run with
+    /// exit 0 whose effect digest matches the mutation ledger.
+    pub verification_contracts: Vec<crate::verification::VerificationContractV1>,
+    /// Interactive hosts require the assistant to deliver the user's reply
+    /// after verification; a verified tool effect alone is not that reply.
+    pub require_assistant_final_response: bool,
     /// Distinguishes an ordinary run from a plan-mode implementation admission.
     pub plan_run: crate::harness_loop::PlanRunAdmission,
     /// Path-scoped rules injected only when a turn targets a matching path.
     pub path_rules: Vec<crate::path_instructions::PathRule>,
+    /// Explicit per-session injection byte budget. `None` keeps the
+    /// product default ([`crate::path_instructions::INJECTION_BYTE_BUDGET`]).
+    /// Zero or a value above the hard ceiling refuses session construction.
+    pub path_injection_budget: Option<usize>,
     /// Opt-in read-only verifier. Default sessions do not spend a second model call.
     pub verifier_enabled: bool,
     /// Host-only completion attestor. Invoked with the live mutation digest
@@ -272,6 +336,7 @@ impl std::fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentConfig")
             .field("prompt_slots", &self.prompt_slots)
+            .field("work_policy", &self.work_policy)
             .field("tools", &self.tools)
             .field("tool_presentation_profile", &self.tool_presentation_profile)
             .field("max_tool_rounds", &self.max_tool_rounds)
@@ -323,6 +388,9 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             prompt_slots: SystemPromptSlots::default(),
+            work_policy: None,
+            goal_control: None,
+            durable_source: None,
             tools: Vec::new(), // Tools are provided by ToolExecutor
             tool_presentation_profile: crate::tools::ToolPresentationProfileV1::default(),
             max_tool_rounds: MAX_TOOL_ROUNDS,
@@ -358,8 +426,11 @@ impl Default for AgentConfig {
             budget_guard: None,
             host_env: Arc::new(crate::host_env::HostEnv::system()),
             completion_waivers: Vec::new(),
+            verification_contracts: Vec::new(),
+            require_assistant_final_response: false,
             plan_run: crate::harness_loop::PlanRunAdmission::ordinary(),
             path_rules: Vec::new(),
+            path_injection_budget: None,
             verifier_enabled: false,
             completion_attestor: None,
             harness: None,
@@ -476,6 +547,15 @@ pub enum AgentEvent {
         text: String,
         usage: TokenUsage,
         verification_summary: Box<crate::verification::VerificationSummary>,
+        /// How the run closed at the completion gate. Defaults to
+        /// `Narrative` so stored events from before the field existed (and
+        /// non-fact-path emitters) replay unchanged.
+        #[serde(default)]
+        completion_terminal: crate::harness_loop::CompletionTerminal,
+        /// Why the harness stopped the run short, when it did. Absent on a
+        /// model-initiated stop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forced_stop: Option<crate::harness_loop::ForcedStop>,
         #[serde(skip_serializing_if = "Option::is_none")]
         meta: Option<crate::llm::LlmResponseMeta>,
     },
@@ -516,6 +596,10 @@ pub enum AgentEvent {
         options: Vec<String>,
         #[serde(default)]
         allow_free_text: bool,
+        /// OpenUI Lang source. Present only for
+        /// `ask_user_form`; the answer then carries the submitted values JSON.
+        #[serde(default)]
+        form: Option<String>,
     },
 
     /// External task pending (needs SDK processing)
@@ -904,6 +988,9 @@ pub struct AgentResult {
     pub verification_reports: Vec<crate::verification::VerificationReport>,
     /// How the run was allowed to finish. Incomplete mutations do not produce this value.
     pub completion: crate::harness_loop::CompletionTerminal,
+    /// Set when the harness stopped the run short (budget deny, read-only
+    /// evidence ceiling) so clients can surface why the turn ended.
+    pub forced_stop: Option<crate::harness_loop::ForcedStop>,
     /// `ordinary` or `plan_implementation`. A plan-exit claim without a digest stays ordinary.
     pub run_admission: String,
 }

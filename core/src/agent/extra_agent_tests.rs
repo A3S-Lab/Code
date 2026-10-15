@@ -1515,6 +1515,8 @@ fn test_agent_event_serialize_end() {
             cache_write_tokens: None,
         },
         verification_summary: Box::new(crate::verification::VerificationSummary::from_reports(&[])),
+        completion_terminal: Default::default(),
+        forced_stop: None,
         meta: None,
     };
     let json = serde_json::to_string(&event).unwrap();
@@ -1536,6 +1538,7 @@ fn test_agent_result_fields() {
         verification_reports: Vec::new(),
         completion: crate::harness_loop::CompletionTerminal::Narrative,
         run_admission: "ordinary".to_string(),
+        forced_stop: None,
     };
     assert_eq!(result.text, "output");
     assert_eq!(result.messages.len(), 1);
@@ -1591,6 +1594,7 @@ fn test_agent_result_verification_summary() {
         verification_reports: vec![report],
         completion: crate::harness_loop::CompletionTerminal::Narrative,
         run_admission: "ordinary".to_string(),
+        forced_stop: None,
     };
 
     let summary = result.verification_summary();
@@ -2084,6 +2088,7 @@ fn test_agent_result_clone() {
         verification_reports: Vec::new(),
         completion: crate::harness_loop::CompletionTerminal::Narrative,
         run_admission: "ordinary".to_string(),
+        forced_stop: None,
     };
     let cloned = result.clone();
     assert_eq!(cloned.text, result.text);
@@ -2100,6 +2105,7 @@ fn test_agent_result_debug() {
         verification_reports: Vec::new(),
         completion: crate::harness_loop::CompletionTerminal::Narrative,
         run_admission: "ordinary".to_string(),
+        forced_stop: None,
     };
     let debug = format!("{:?}", result);
     assert!(debug.contains("AgentResult"));
@@ -4054,10 +4060,10 @@ async fn interrupted_stream_retries_ten_times_in_the_same_turn() {
         result
             .messages
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| message.role == "user" && message.is_product_transcript())
             .count(),
         1,
-        "provider retries must not append another user message"
+        "provider retries must not append another product user message (the wire-only language contract is one control turn)"
     );
     assert_eq!(
         result

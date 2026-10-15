@@ -18,6 +18,7 @@
 //! Falls back gracefully: if the server returns plain JSON, it is used directly.
 //! If the server returns SSE, the first `data:` event containing a JSON-RPC response is used.
 
+use super::notifications::{NotificationReceiver, NotificationSender};
 use super::McpTransport;
 use crate::llm::http::build_reqwest_client;
 use crate::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpNotification};
@@ -42,7 +43,7 @@ pub struct StreamableHttpTransport {
     /// Optional session ID returned by server
     session_id: RwLock<Option<String>>,
     connected: Arc<AtomicBool>,
-    notification_rx: RwLock<Option<mpsc::Receiver<McpNotification>>>,
+    notification_rx: NotificationReceiver,
     sse_abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
@@ -77,7 +78,7 @@ impl StreamableHttpTransport {
             build_reqwest_client(Some(Duration::from_secs(timeout_secs)), Some(header_map))
                 .context("Failed to build HTTP client")?;
 
-        let (notification_tx, notification_rx) = mpsc::channel::<McpNotification>(256);
+        let (notification_tx, notification_rx) = NotificationReceiver::channel(256);
         let connected = Arc::new(AtomicBool::new(true));
 
         // Spawn SSE listener for server-initiated notifications (GET endpoint)
@@ -93,7 +94,7 @@ impl StreamableHttpTransport {
             client,
             session_id: RwLock::new(None),
             connected,
-            notification_rx: RwLock::new(Some(notification_rx)),
+            notification_rx,
             sse_abort: Mutex::new(Some(sse_handle.abort_handle())),
         })
     }
@@ -144,6 +145,16 @@ impl StreamableHttpTransport {
         }
     }
 
+    /// The first JSON-RPC response among complete SSE events in `buffer`.
+    fn response_from_sse_events(buffer: &mut String, eof: bool) -> Option<JsonRpcResponse> {
+        for event_text in crate::sse::take_sse_events(buffer, eof) {
+            if let Some(response) = Self::extract_json_rpc_response(&event_text) {
+                return Some(response);
+            }
+        }
+        None
+    }
+
     /// Read an SSE stream and return the first JSON-RPC response found.
     async fn parse_sse_response(response: reqwest::Response) -> Result<JsonRpcResponse> {
         use futures::StreamExt;
@@ -155,15 +166,13 @@ impl StreamableHttpTransport {
             let bytes = chunk.context("SSE stream error")?;
             buffer.push_str(&String::from_utf8_lossy(&bytes));
 
-            // Process complete SSE events (double newline separated)
-            while let Some(pos) = buffer.find("\n\n") {
-                let event_text = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
-
-                if let Some(resp) = Self::extract_json_rpc_response(&event_text) {
-                    return Ok(resp);
-                }
+            if let Some(response) = Self::response_from_sse_events(&mut buffer, false) {
+                return Ok(response);
             }
+        }
+
+        if let Some(response) = Self::response_from_sse_events(&mut buffer, true) {
+            return Ok(response);
         }
 
         Err(anyhow!("SSE stream ended without a JSON-RPC response"))
@@ -209,7 +218,7 @@ impl StreamableHttpTransport {
     async fn sse_listener(
         client: Client,
         url: String,
-        tx: mpsc::Sender<McpNotification>,
+        tx: NotificationSender,
         connected: Arc<AtomicBool>,
     ) {
         let mut delay = SSE_RECONNECT_BASE_MS;
@@ -239,13 +248,9 @@ impl StreamableHttpTransport {
                         match chunk {
                             Ok(bytes) => {
                                 buffer.push_str(&String::from_utf8_lossy(&bytes));
-                                while let Some(pos) = buffer.find("\n\n") {
-                                    let event = buffer[..pos].to_string();
-                                    buffer = buffer[pos + 2..].to_string();
+                                for event in crate::sse::take_sse_events(&mut buffer, false) {
                                     if let Some(n) = Self::extract_notification(&event) {
-                                        if tx.send(n).await.is_err() {
-                                            return;
-                                        }
+                                        tx.send(n).await;
                                     }
                                 }
                             }
@@ -253,6 +258,11 @@ impl StreamableHttpTransport {
                                 tracing::warn!(error = %e, "Streamable HTTP SSE stream error");
                                 break;
                             }
+                        }
+                    }
+                    for event in crate::sse::take_sse_events(&mut buffer, true) {
+                        if let Some(notification) = Self::extract_notification(&event) {
+                            tx.send(notification).await;
                         }
                     }
                 }
@@ -337,11 +347,11 @@ impl McpTransport for StreamableHttpTransport {
     }
 
     fn notifications(&self) -> mpsc::Receiver<McpNotification> {
-        let mut rx = self.notification_rx.blocking_write();
-        rx.take().unwrap_or_else(|| {
-            let (_, rx) = mpsc::channel(1);
-            rx
-        })
+        self.notification_rx.take()
+    }
+
+    fn tool_list_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.notification_rx.tool_list_changes())
     }
 
     async fn close(&self) -> Result<()> {
@@ -402,6 +412,22 @@ impl std::fmt::Debug for StreamableHttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_sse_frame_is_a_tools_list_response() {
+        let mut buffer = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"tools\":[{\"name\":\"lookup\",\"inputSchema\":{\"type\":\"object\"}}]}}\r\n\r\n".to_string();
+        let response = StreamableHttpTransport::response_from_sse_events(&mut buffer, false)
+            .expect("CRLF tools/list frame");
+        assert!(buffer.is_empty());
+        assert_eq!(response.id, Some(7));
+        let tools = response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("tools"))
+            .and_then(|tools| tools.as_array())
+            .expect("tools array");
+        assert_eq!(tools[0]["name"], "lookup");
+    }
 
     #[test]
     fn test_extract_json_rpc_response_valid() {

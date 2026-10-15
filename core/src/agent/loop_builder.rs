@@ -18,6 +18,11 @@ impl AgentLoop {
         self.config.permission_checker.clone()
     }
 
+    /// The host budget authority captured by this Run's loop configuration.
+    pub(crate) fn tool_budget_guard(&self) -> Option<Arc<dyn crate::budget::BudgetGuard>> {
+        self.config.budget_guard.clone()
+    }
+
     /// Safety gate bound to this loop's configuration, for callers outside the
     /// agent module tree that must enforce the same tool-owned escalation rules.
     pub(crate) fn tool_safety_gate(&self) -> crate::safety_gate::ToolSafetyGate<'_> {
@@ -83,11 +88,12 @@ impl AgentLoop {
     pub(crate) fn new(
         llm_client: Arc<dyn LlmClient>,
         tool_executor: Arc<ToolExecutor>,
-        tool_context: ToolContext,
+        mut tool_context: ToolContext,
         config: AgentConfig,
     ) -> Self {
         let model_generation_admission =
             ModelGenerationAdmission::new(llm_client.model_generation_concurrency());
+        tool_context.run_work_policy = config.work_policy.clone();
         Self {
             llm_client,
             model_generation_admission,
@@ -182,6 +188,20 @@ impl AgentLoop {
     #[allow(dead_code)]
     pub fn with_checkpoint_sink(mut self, sink: Arc<dyn LoopCheckpointSink>) -> Self {
         self.checkpoint_sink = Some(sink);
+        self
+    }
+
+    /// Bind the broadcast lane tools use to surface host-facing lifecycle
+    /// events (subagent start/progress/end, confirmations, questions).
+    /// Conversation fact streams inject one per stream so those events are
+    /// relayed to the host channel instead of being dropped; without it the
+    /// tool context carries no lane and delegated subagent telemetry never
+    /// reaches the stream consumer.
+    pub fn with_agent_event_tx(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<crate::agent::AgentEvent>,
+    ) -> Self {
+        self.tool_context = self.tool_context.with_agent_event_tx(tx);
         self
     }
 

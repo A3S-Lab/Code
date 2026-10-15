@@ -125,7 +125,7 @@ impl NormalizedToolResult {
 }
 
 impl AgentLoop {
-    pub(super) fn collect_verification_report(
+    pub(crate) fn collect_verification_report(
         reports: &mut Vec<VerificationReport>,
         metadata: &Option<Value>,
     ) {

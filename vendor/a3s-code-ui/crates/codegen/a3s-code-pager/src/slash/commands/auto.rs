@@ -1,6 +1,6 @@
 //! `/auto` toggles auto permission mode (LLM classifier).
 //!
-//! - Off (or always-approve): returns `SetPermissionMode(Auto)`.
+//! - Off (or yolo): returns `SetPermissionMode(Auto)`.
 //! - Already auto: returns `SetPermissionMode(Ask)` to toggle off.
 //!
 //! The dispatcher mutates the state, persists it (rolling back on failure), and shows the toast.
@@ -21,7 +21,7 @@ impl SlashCommand for AutoCommand {
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
-        // Yolo wins over auto: if always-approve is on, treat auto as off so `/auto` switches into auto rather than "toggling off" to ask
+        // Yolo wins over auto: if yolo is on, treat auto as off so `/auto` switches into auto rather than "toggling off" to ask
         let currently_auto = ctx.pager_state.auto_mode && !ctx.pager_state.yolo_mode;
         let kind = if currently_auto {
             PermissionModeKind::Ask

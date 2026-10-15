@@ -48,6 +48,7 @@ mod lease;
 mod memory_store;
 mod session_data;
 mod session_snapshot;
+mod session_source;
 mod wal;
 mod watch;
 
@@ -66,6 +67,7 @@ pub use session_data::{
     DEFAULT_AUTO_COMPACT_THRESHOLD,
 };
 pub use session_snapshot::{SessionSnapshotV1, SESSION_SNAPSHOT_SCHEMA_VERSION};
+pub use session_source::SessionFactSourceV1;
 pub use wal::{
     snapshot_content_digest, FileSessionStoreWal, SessionStoreWalEntryV1, SessionStoreWalPhaseV1,
     SESSION_STORE_WAL_ENTRY_SCHEMA_V1,

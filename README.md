@@ -65,16 +65,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   inherits the provider.
 - **Search stays fast (9.1.0).** Automatic `web_search` is API, then HTTP,
   then headless. Moli is taken from the binary already shipped beside `a3s`
-  before any download.
-- **Standing context and replay (9.1.2).** A new fact-log run admits a
-  standing-context digest before the first model call. An identical run-event
-  cursor is replayed before a new chain digest. A permission posture is
-  admitted on the next fact run; an open run keeps the tools, step limit, and
-  completion gate it froze at open. Current package on npm, crates.io, and
-  PyPI: **9.1.2**.
-- **Release status.** 9.1.2 is a channel release, not Enterprise GA.
-  Terminal-Bench 4.0 stays deferred. The `DM-PROD1` pack on `3b2f72aa` does
-  not cover this admission. CAR stays out of scope.
+  before any download. Current package on npm, crates.io, and PyPI: **9.1.1**.
 
 ## What's new in 9.0
 
@@ -170,7 +161,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   Release workflow failed musl and did not complete the full Node matrix.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.1` line;
-current package **9.1.2**).
+current package **9.1.1**).
 
 ### Earlier lines
 
@@ -330,8 +321,14 @@ Agent execution also has one explicit lifetime tree. A host invocation admits
 `Session -> Run`; model orchestration and each provider/Tool iteration own a
 Turn, while Skill and Task children recurse as `Turn -> Subtask -> Turn`.
 Tool effects and stream bridges settle with their Turn. Explicit background
-Tasks and post-turn memory extraction are promoted only after the invoking
-Turn is validated, then remain supervised by the Run until bounded close.
+Tasks are promoted only after the invoking Turn is validated, then remain
+supervised by the Run until bounded close. Post-turn memory extraction uses
+the session's FIFO extraction queue. Streaming admits its ticket before the
+first final event, then extracts after that event; session close waits up to
+five seconds before requesting cancellation. Neither the final event nor
+close guarantees a memory write. A validated model item and the memory
+backend's acknowledgement establish automatic persistence; hosts can observe
+successful primary writes through `MemoryObserver` and verify them after reopen.
 
 ## Why A3S Code
 
@@ -1854,6 +1851,44 @@ The suite uses disposable workspaces and an in-memory memory store. It proves
 model-driven prompt-injection containment, absolute-path workspace isolation,
 secret redaction, and cancellation of an already-started command before its
 post-cancellation side effect. It never logs provider credentials.
+
+### Terminal-Bench evaluation
+
+Terminal-Bench 4.0 runs through `a3s-code-acp --unattended` behind Harbor's ACP
+runner. Build a static Linux binary once, then run one task before a full run:
+
+```bash
+CARGO_TARGET_DIR=$HOME/a3s-tb-target rustup run 1.97.1 cargo zigbuild --locked \
+  --target x86_64-unknown-linux-musl --release -p a3s-code-acp --bin a3s-code-acp
+A3S_CODE_CONFIG=/path/to/tb.acl A3S_TB_MODEL=provider/model \
+A3S_TB_INCLUDE_TASK=html-js-filter ../../scripts/harbor/run_acp_tb.sh
+```
+
+**Model.** `A3S_TB_MODEL` is `provider/model` as declared in the ACL (the
+`providers` and `models` block names); it overrides `A3S_TB_MODEL` in
+`scripts/harbor/.env`, and the fallback is `deepseek/deepseek-v4-pro`. To
+switch models, add a `providers` block whose key is `api_key = env("NAME")`,
+put `NAME` in `.env`, and run one task under a new `A3S_TB_JOB_NAME`. The
+trial's `agent/acp-summary.json` must show the new id in `requested_model`
+and `resolved_session_model_id`, with `set_model_error` null. An id the ACL
+does not declare fails every trial with `unknown model id`.
+
+**Reasoning effort.** `A3S_CODE_ACP_REASONING_EFFORT` is one of `low`,
+`medium`, `high`, `xhigh` or `max`; unset means `max`, and any other value
+stops `a3s-code-acp` at launch. Each provider receives its own value: GLM gets
+`low`/`high`/`max`, DeepSeek `low`/`high`/`max`, OpenAI reasoning models top
+out at `xhigh`, Anthropic gets the level unchanged, and other models get no
+effort parameter. The trial's `agent/acp-launch.sh` carries
+`--reasoning-effort <level>`; no flag means `max`. A named job records its
+binary, ACL, model and effort in `.harbor-acp/jobs/<job>.a3s-launch` and
+refuses a later run or `A3S_TB_RESUME=1` resume that differs. A variable set in
+the shell wins over `.env`.
+
+Only A3S Code may change: no task, test, verifier or timeout is edited. Score
+is the mean reward over every runnable task, with exceptions counted as 0. The
+[Harbor runbook](../../scripts/harbor/README.md) covers setup bundles,
+credentials, full and resumed runs, concurrency, scoring and evidence;
+[TERMINAL_BENCH.md](manual/TERMINAL_BENCH.md) covers the lanes and gates.
 
 ## License
 

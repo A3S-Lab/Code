@@ -122,6 +122,8 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
 }
 use a3s_code_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
 use std::env;
+
+mod startup;
 #[cfg(all(feature = "test-seams", debug_assertions))]
 mod test_seam {
     const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "GROK_TEST_TRUSTED_PUBKEY_FILE";
@@ -2046,6 +2048,20 @@ fn main() {
     ));
     let args = PagerArgs::parse_cli();
     if dispatch_version_if_requested(&args) || dispatch_doctor_if_requested(&args) {
+        return;
+    }
+    if let Some(summary) = startup::non_tty_summary(
+        &args,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        env!("VERSION_WITH_COMMIT"),
+    ) {
+        if let Err(error) =
+            std::io::Write::write_all(&mut std::io::stdout().lock(), summary.as_bytes())
+        {
+            eprintln!("A3S Code TUI: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     a3s_code_pager_minimal::install();

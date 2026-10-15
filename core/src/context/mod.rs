@@ -31,7 +31,8 @@ pub mod skill_catalog_provider;
 pub mod static_provider;
 
 pub use assembler::{
-    ContextAssembler, ContextAssembly, ContextAssemblyPolicy, ContextBudget, ContextSourcePolicy,
+    section_digests, ContextAssembler, ContextAssembly, ContextAssemblyPolicy, ContextBudget,
+    ContextSourcePolicy,
 };
 pub use fs_provider::{FileSystemContextConfig, FileSystemContextProvider};
 pub use recent_workspace_provider::RecentWorkspaceFilesContextProvider;
@@ -47,6 +48,8 @@ pub const CONTEXT_PRIORITY_METADATA: &str = "a3s.context.priority";
 pub const CONTEXT_TRUST_METADATA: &str = "a3s.context.trust";
 pub const CONTEXT_FRESHNESS_METADATA: &str = "a3s.context.freshness";
 pub(crate) const CONTEXT_REQUIRED_METADATA: &str = "a3s.context.required";
+
+const CONTEXT_RESULT_CONTENT_DIGEST_DOMAIN: &str = "a3s.code.context.result-content.v1";
 
 /// Type of context being queried
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -429,6 +432,22 @@ impl ContextResult {
     /// Check if the result is empty
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Domain-separated SHA-256 digest of this result's contributed content.
+    ///
+    /// The digest is content-addressed: item identifiers, sources, and
+    /// metadata are excluded so two contributions from the same provider
+    /// compare equal exactly when their rendered content matches. Assembly
+    /// pairs the provider name with this digest to replace a source's stale
+    /// section instead of appending a near-duplicate.
+    pub fn content_digest(&self) -> String {
+        let mut payload = Vec::new();
+        for item in &self.items {
+            payload.extend_from_slice(item.content.as_bytes());
+            payload.push(0);
+        }
+        crate::content_digest::digest_bytes(CONTEXT_RESULT_CONTENT_DIGEST_DOMAIN, &payload)
     }
 
     /// Format all items as XML for system prompt injection
@@ -819,6 +838,48 @@ mod tests {
         let result = ContextResult::new("provider");
         let xml = result.to_xml();
         assert!(xml.is_empty());
+    }
+
+    #[test]
+    fn test_context_result_content_digest_is_content_addressed() {
+        let mut left = ContextResult::new("memory");
+        left.add_item(ContextItem::new(
+            "left",
+            ContextType::Memory,
+            "shared section",
+        ));
+        let mut right = ContextResult::new("memory");
+        right.add_item(ContextItem::new(
+            "right",
+            ContextType::Memory,
+            "shared section",
+        ));
+
+        assert_eq!(left.content_digest(), right.content_digest());
+        assert!(crate::content_digest::validate_digest(&left.content_digest()).is_ok());
+
+        let mut changed = ContextResult::new("memory");
+        changed.add_item(ContextItem::new(
+            "left",
+            ContextType::Memory,
+            "edited section",
+        ));
+        assert_ne!(left.content_digest(), changed.content_digest());
+    }
+
+    #[test]
+    fn test_context_result_content_digest_tracks_every_item() {
+        let mut result = ContextResult::new("provider");
+        result.add_item(ContextItem::new("a", ContextType::Resource, "alpha"));
+        let single = result.content_digest();
+
+        result.add_item(ContextItem::new("b", ContextType::Resource, "beta"));
+        assert_ne!(result.content_digest(), single);
+
+        let mut rebuilt = ContextResult::new("provider");
+        rebuilt.add_item(ContextItem::new("a", ContextType::Resource, "alpha"));
+        rebuilt.add_item(ContextItem::new("b", ContextType::Resource, "beta"));
+        assert_eq!(result.content_digest(), rebuilt.content_digest());
     }
 
     #[test]

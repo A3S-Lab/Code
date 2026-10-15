@@ -50,7 +50,7 @@ fn policy(allows: &[&str]) -> PermissionPolicy {
     }
     .allow("read(**)");
     for rule in allows {
-        policy = policy.allow(*rule);
+        policy = policy.allow(rule);
     }
     policy
 }
@@ -343,7 +343,7 @@ async fn live_mcp_stdio_progress_notifications_arrive_during_tool_call() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires boyue/deepseek-v4-flash from .a3s/config.acl"]
 async fn live_oversized_tool_end_still_projects_event_page() {
-    assert!(
+    const _: () = assert!(
         AGENT_PROTOCOL_MAX_EVENT_PAYLOAD_BYTES < MAX_OUTPUT_SIZE,
         "suite depends on tool output being able to exceed protocol payload"
     );

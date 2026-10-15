@@ -1,5 +1,10 @@
-# Force LF line endings where tests require cross-platform string matching
-prompts/*.md text eol=lf
+# Force LF line endings where tests require cross-platform string matching.
+# Prompt sources live under core/prompts and are include_str!'d. A root-level
+# `prompts/*.md` pattern does not match them, so a Windows autocrlf checkout
+# compiled those files as CRLF.
+core/prompts/** text eol=lf
+# Shell scripts fail at the shebang when Git checks them out as CRLF.
+*.sh text eol=lf
 core/tests/fixtures/agentic-ontology/r0-cross-project-v1/** text eol=lf
 
 # Generated protocol declarations are compared across all supported CI hosts.

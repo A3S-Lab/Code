@@ -11,11 +11,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
-const MAX_BATCH_READ_FILES: usize = 32;
+pub(crate) const MAX_BATCH_READ_FILES: usize = 32;
 const MIN_BATCH_READ_OUTPUT_BYTES: usize = 1_024;
 const DEFAULT_BATCH_READ_OUTPUT_BYTES: usize = 64 * 1_024;
 const MAX_BATCH_READ_OUTPUT_BYTES: usize = MAX_OUTPUT_SIZE - (4 * 1_024);
-const MAX_BATCH_READ_PATH_BYTES: usize = 4 * 1_024;
+pub(crate) const MAX_BATCH_READ_PATH_BYTES: usize = 4 * 1_024;
+
+/// Show one file line from `byte_offset`. A line past [`MAX_LINE_LENGTH`]
+/// keeps a prefix and names the next byte index, so a reader can continue
+/// the same line instead of treating the prefix as the whole line.
+pub(crate) fn display_read_line(line: &str, byte_offset: usize) -> String {
+    let start = line.floor_char_boundary(byte_offset.min(line.len()));
+    let rest = &line[start..];
+    let shown = truncate_utf8(rest, MAX_LINE_LENGTH);
+    if shown.len() == rest.len() {
+        return shown.to_string();
+    }
+    let next = start + shown.len();
+    format!(
+        "{shown} [line truncated, {} bytes omitted] continue with byte_offset={next}",
+        rest.len() - shown.len()
+    )
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +40,8 @@ struct BatchReadEntry {
     path: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     offset: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    byte_offset: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit: Option<usize>,
 }
@@ -31,18 +50,33 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
+fn parse_byte_offset(value: Option<&serde_json::Value>) -> Result<usize, String> {
+    match value {
+        None => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| "byte_offset must be a non-negative integer".to_string()),
+    }
+}
+
 pub struct ReadTool;
 
 fn read_properties() -> serde_json::Value {
     serde_json::json!({
         "file_path": {
             "type": "string",
-            "description": "Path to one file, absolute or relative to the workspace. Use exactly one of file_path or files."
+            "description": "Path to one file, absolute or relative to the workspace, or an a3s://tool-output/... artifact URI named by a truncated tool result. Use exactly one of file_path or files."
         },
         "offset": {
             "type": "integer",
             "minimum": 0,
             "description": "Optional. Line number to start reading from. 0-indexed. Default: 0."
+        },
+        "byte_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional. Byte index within each returned line. Use the byte_offset named by a truncated line to read the rest of that line. Default: 0."
         },
         "limit": {
             "type": "integer",
@@ -69,6 +103,11 @@ fn read_properties() -> serde_json::Value {
                         "type": "integer",
                         "minimum": 0,
                         "description": "Optional 0-based starting line. Default: 0."
+                    },
+                    "byte_offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional byte index within each returned line. Default: 0."
                     },
                     "limit": {
                         "type": "integer",
@@ -129,7 +168,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read one text or image file, or pack 1-32 text files into one bounded response. Returns line-numbered text and exact continuation arguments when more content remains."
+        "Read one text or image file, or pack 1-32 text files into one bounded response. Returns line-numbered text and exact continuation arguments when more content remains. A line longer than 2000 bytes is cut. The result names the next byte_offset so the rest of that line can be read."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -192,6 +231,19 @@ impl Tool for ReadTool {
             None => MAX_READ_LINES,
         };
         let limit = requested_limit.min(MAX_READ_LINES);
+        let byte_offset = match parse_byte_offset(args.get("byte_offset")) {
+            Ok(value) => value,
+            Err(error) => return Ok(ToolOutput::error(error)),
+        };
+        if crate::tools::artifact_view::is_tool_output_uri(file_path) {
+            return Ok(crate::tools::artifact_view::read_page(
+                ctx,
+                file_path,
+                offset,
+                limit,
+                byte_offset,
+            ));
+        }
 
         let workspace_path = match ctx.resolve_workspace_path(file_path) {
             Ok(p) => p,
@@ -241,8 +293,11 @@ impl Tool for ReadTool {
         let mut output = String::new();
         for (i, line) in range.lines.iter().enumerate() {
             let line_num = offset + i + 1; // 1-indexed
-            let truncated = truncate_utf8(line, MAX_LINE_LENGTH);
-            output.push_str(&format!("{:>6}\t{}\n", line_num, truncated));
+            output.push_str(&format!(
+                "{:>6}\t{}\n",
+                line_num,
+                display_read_line(line, byte_offset)
+            ));
         }
 
         if let Some(next_offset) = range.next_offset {
@@ -316,11 +371,67 @@ async fn execute_batch_read(args: &serde_json::Value, ctx: &ToolContext) -> Resu
     let mut failed_files = 0usize;
     let mut returned_lines = 0usize;
 
-    for (index, entry) in entries.iter().enumerate() {
-        let workspace_path = match ctx.resolve_workspace_path(&entry.path) {
-            Ok(path) => path,
-            Err(error) => {
-                let display_path = escape_control_chars_for_display(&entry.path);
+    // Prefetch every entry's resolution and ranged read CONCURRENTLY:
+    // entries are independent (the schema caps the batch at
+    // MAX_BATCH_READ_FILES), and awaiting them one by one in the
+    // assembly loop made the wall clock the sum of per-file I/O. The
+    // assembly below stays strictly ordered — segments, the shared byte
+    // budget, and continuation semantics are untouched, and every error
+    // renders to the same segment text the sequential loop produced.
+    enum EntryFetch {
+        Range {
+            workspace_path: String,
+            display_path: String,
+            range: WorkspaceTextRange,
+        },
+        ReadError {
+            display_path: String,
+            error: String,
+        },
+        ResolveError {
+            display_path: String,
+            error: String,
+        },
+    }
+    let fetched: Vec<EntryFetch> = futures::future::join_all(entries.iter().map(|entry| async {
+        match ctx.resolve_workspace_path(&entry.path) {
+            Ok(workspace_path) => {
+                // Batch headers stay workspace-relative so repeated roots
+                // do not consume the shared context budget. Source anchors
+                // carry the same canonical path.
+                let display_path = escape_control_chars_for_display(workspace_path.as_str());
+                let limit = entry.limit.unwrap_or(MAX_READ_LINES);
+                match read_range(ctx, &workspace_path, entry.offset, limit).await {
+                    Ok(range) => EntryFetch::Range {
+                        workspace_path: workspace_path.as_str().to_string(),
+                        display_path,
+                        range,
+                    },
+                    Err(error) => EntryFetch::ReadError {
+                        display_path,
+                        error: error.to_string(),
+                    },
+                }
+            }
+            Err(error) => EntryFetch::ResolveError {
+                display_path: escape_control_chars_for_display(&entry.path),
+                error: error.to_string(),
+            },
+        }
+    }))
+    .await;
+
+    for (index, (entry, fetch)) in entries.iter().zip(fetched).enumerate() {
+        let (workspace_path, display_path, range) = match fetch {
+            EntryFetch::Range {
+                workspace_path,
+                display_path,
+                range,
+            } => (workspace_path, display_path, range),
+            EntryFetch::ResolveError {
+                display_path,
+                error,
+            } => {
                 let segment = format!("=== {display_path} ===\nFailed to resolve path: {error}");
                 if !accept_batch_message(
                     &mut segments,
@@ -338,14 +449,10 @@ async fn execute_batch_read(args: &serde_json::Value, ctx: &ToolContext) -> Resu
                 failed_files += 1;
                 continue;
             }
-        };
-        // Batch headers stay workspace-relative so repeated roots do not consume
-        // the shared context budget. Source anchors carry the same canonical path.
-        let display_path = escape_control_chars_for_display(workspace_path.as_str());
-        let limit = entry.limit.unwrap_or(MAX_READ_LINES);
-        let range = match read_range(ctx, &workspace_path, entry.offset, limit).await {
-            Ok(range) => range,
-            Err(error) => {
+            EntryFetch::ReadError {
+                display_path,
+                error,
+            } => {
                 let segment =
                     format!("=== {display_path} ===\nFailed to read file {display_path}: {error}");
                 if !accept_batch_message(
@@ -424,7 +531,7 @@ async fn execute_batch_read(args: &serde_json::Value, ctx: &ToolContext) -> Resu
                 format!(
                     "{:>6}\t{}",
                     entry.offset + line_index + 1,
-                    truncate_utf8(line, MAX_LINE_LENGTH)
+                    display_read_line(line, entry.byte_offset)
                 )
             })
             .collect::<Vec<_>>();
@@ -589,6 +696,7 @@ fn batch_progress_after(
         return Some(BatchReadEntry {
             path: entry.path.clone(),
             offset,
+            byte_offset: entry.byte_offset,
             limit: entry.limit.map(|limit| limit.saturating_sub(shown)),
         });
     }
@@ -599,6 +707,7 @@ fn batch_progress_after(
     range.next_offset.map(|next_offset| BatchReadEntry {
         path: entry.path.clone(),
         offset: next_offset,
+        byte_offset: entry.byte_offset,
         limit: None,
     })
 }
@@ -991,6 +1100,101 @@ mod tests {
         assert!(!result.content.contains("\ta\n"));
     }
 
+    /// One line per path, after a per-call artificial latency: a
+    /// deterministic overlap oracle for the concurrent batch prefetch.
+    struct SlowBackend {
+        latency: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl WorkspaceFileSystem for SlowBackend {
+        async fn read_text(&self, path: &WorkspacePath) -> WorkspaceResult<String> {
+            Err(WorkspaceError::InvalidArgument {
+                message: format!("read_text unsupported for {}", path.as_str()),
+            })
+        }
+
+        async fn write_text(
+            &self,
+            _path: &WorkspacePath,
+            _content: &str,
+        ) -> WorkspaceResult<WorkspaceWriteOutcome> {
+            Err(WorkspaceError::InvalidArgument {
+                message: "write_text is unsupported".to_string(),
+            })
+        }
+
+        async fn list_dir(&self, _path: &WorkspacePath) -> WorkspaceResult<Vec<WorkspaceDirEntry>> {
+            Err(WorkspaceError::InvalidArgument {
+                message: "list_dir is unsupported".to_string(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceTextReader for SlowBackend {
+        async fn read_text_range(
+            &self,
+            path: &WorkspacePath,
+            offset: usize,
+            _limit: usize,
+        ) -> WorkspaceResult<WorkspaceTextRange> {
+            tokio::time::sleep(self.latency).await;
+            Ok(WorkspaceTextRange {
+                lines: vec![format!("{}@{}", path.as_str(), offset)],
+                next_offset: None,
+                eof: true,
+                total_lines: Some(1),
+            })
+        }
+    }
+
+    /// The batch prefetch must overlap the per-file reads: three 60 ms
+    /// reads finish in ~one latency, not their sum. The 150 ms bound
+    /// sits at 2.5x the concurrent floor against the 180 ms sequential
+    /// floor — a wide margin, timing-shaped but stable (sleeps only,
+    /// no spawns).
+    #[tokio::test]
+    async fn batch_read_prefetch_overlaps_per_file_latency() {
+        let backend = Arc::new(SlowBackend {
+            latency: std::time::Duration::from_millis(60),
+        });
+        let fs: Arc<dyn WorkspaceFileSystem> = backend.clone();
+        let reader: Arc<dyn WorkspaceTextReader> = backend;
+        let services = WorkspaceServices::builder(WorkspaceRef::new("slow", "slow://ws"), fs)
+            .text_reader(reader)
+            .build();
+        let ctx = ToolContext::new(std::env::temp_dir()).with_workspace_services(services);
+
+        let started = std::time::Instant::now();
+        let result = ReadTool
+            .execute(
+                &serde_json::json!({
+                    "files": [
+                        {"path": "a.txt"},
+                        {"path": "b.txt"},
+                        {"path": "c.txt"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("a.txt@0")
+                && result.content.contains("b.txt@0")
+                && result.content.contains("c.txt@0"),
+            "all three files read: {}",
+            result.content
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "three 60ms reads took {elapsed:?} — the prefetch is not overlapping"
+        );
+    }
+
     #[tokio::test]
     async fn test_read_uses_streaming_range_capability_without_whole_file_read() {
         let backend = Arc::new(RangeOnlyBackend);
@@ -1153,7 +1357,70 @@ mod tests {
             "read should succeed, got error: {}",
             result.content
         );
-        // Verify the truncated content is valid UTF-8
+        // The multibyte character sits on the cut, so the prefix stops before
+        // it and the marker reports the omitted tail. 1999 ASCII bytes remain;
+        // the 3-byte character plus 20 ASCII bytes are the omitted 23.
+        assert!(result
+            .content
+            .contains("[line truncated, 23 bytes omitted]"));
+        assert!(!result.content.contains('频'));
         assert!(!result.content.contains("byte index"));
+    }
+
+    #[tokio::test]
+    async fn a_truncated_line_can_be_continued_by_byte_offset() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("one-line.txt");
+        let content = format!(
+            "{}{}",
+            "a".repeat(MAX_LINE_LENGTH),
+            "b".repeat(MAX_LINE_LENGTH)
+        );
+        std::fs::write(&file, &content).unwrap();
+        let tool = ReadTool;
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+        let first = tool
+            .execute(&serde_json::json!({"file_path": "one-line.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(first.success, "{}", first.content);
+        assert!(first.content.contains(&format!(
+            "[line truncated, {MAX_LINE_LENGTH} bytes omitted] continue with byte_offset={MAX_LINE_LENGTH}"
+        )));
+        assert!(!first.content.contains(&"b".repeat(MAX_LINE_LENGTH)));
+
+        let second = tool
+            .execute(
+                &serde_json::json!({"file_path": "one-line.txt", "byte_offset": MAX_LINE_LENGTH}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(second.success, "{}", second.content);
+        assert!(second.content.contains(&"b".repeat(MAX_LINE_LENGTH)));
+        assert!(!second.content.contains("line truncated"));
+        assert!(!second.content.contains(&"a".repeat(MAX_LINE_LENGTH)));
+
+        let multibyte = "a".repeat(1999) + "频" + &"z".repeat(20);
+        std::fs::write(&file, &multibyte).unwrap();
+        let cut = tool
+            .execute(&serde_json::json!({"file_path": "one-line.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(cut.success, "{}", cut.content);
+        assert!(cut
+            .content
+            .contains("[line truncated, 23 bytes omitted] continue with byte_offset=1999"));
+        let rest = tool
+            .execute(
+                &serde_json::json!({"file_path": "one-line.txt", "byte_offset": 1999}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(rest.success, "{}", rest.content);
+        assert!(rest.content.contains('频'));
+        assert!(rest.content.contains(&"z".repeat(20)));
+        assert!(!rest.content.contains("line truncated"));
     }
 }

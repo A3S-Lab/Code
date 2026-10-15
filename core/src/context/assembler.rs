@@ -142,18 +142,29 @@ impl ContextAssembler {
         Self::from_policy(ContextAssemblyPolicy::balanced())
     }
 
+    /// Assemble the latest contribution of each context source into a
+    /// ranked, deduplicated, budgeted set.
+    ///
+    /// Results are keyed by provider name first: when the same source
+    /// contributes more than once in one turn, its latest result replaces
+    /// the earlier contribution instead of appending to it, so repeated
+    /// injection cannot stack stale sections. Item-level dedupe, ranking,
+    /// and budget enforcement are unchanged.
     pub fn assemble(&self, results: &[ContextResult]) -> ContextAssembly {
+        let latest_per_source = retain_latest_result_per_source(results);
         let mut deduped: HashMap<String, ContextItem> = HashMap::new();
         let mut source_count = 0usize;
 
-        for result in results {
+        for result in latest_per_source {
             for item in &result.items {
                 source_count = source_count.saturating_add(1);
                 let key = dedupe_key(item);
                 match deduped.get(&key) {
                     Some(existing)
-                        if ranking_score(existing)
-                            .total_cmp(&ranking_score(item))
+                        if existing
+                            .is_required()
+                            .cmp(&item.is_required())
+                            .then_with(|| ranking_score(existing).total_cmp(&ranking_score(item)))
                             .then_with(|| existing.relevance.total_cmp(&item.relevance))
                             .is_ge() => {}
                     _ => {
@@ -164,14 +175,7 @@ impl ContextAssembler {
         }
 
         let mut items = deduped.into_values().collect::<Vec<_>>();
-        items.sort_by(|a, b| {
-            b.is_required()
-                .cmp(&a.is_required())
-                .then_with(|| ranking_score(b).total_cmp(&ranking_score(a)))
-                .then_with(|| b.relevance.total_cmp(&a.relevance))
-                .then_with(|| estimated_tokens(a).cmp(&estimated_tokens(b)))
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        items.sort_by(compare_ranked_items);
 
         let mut selected = Vec::new();
         let mut total_tokens = 0usize;
@@ -228,6 +232,42 @@ impl ContextAssembler {
     }
 }
 
+/// Keep at most one pending result per provider name; the last contribution
+/// from a source replaces its earlier ones.
+///
+/// Each source keeps its first-appearance position so the surviving order
+/// stays deterministic regardless of hash iteration order.
+/// Replayable identity of one turn's context sections: the
+/// `(provider, content_digest)` pair of each source's latest
+/// contribution, in first-appearance order — the same latest-wins
+/// selection `assemble` applies. Recording these pairs per model call
+/// lets a replay verify which section content the call actually saw;
+/// identical pairs across turns are prompt byte-stability at the
+/// section level.
+pub fn section_digests(results: &[ContextResult]) -> Vec<(String, String)> {
+    retain_latest_result_per_source(results)
+        .into_iter()
+        .map(|result| (result.provider.clone(), result.content_digest()))
+        .collect()
+}
+
+fn retain_latest_result_per_source(results: &[ContextResult]) -> Vec<&ContextResult> {
+    let mut retained: Vec<&ContextResult> = Vec::with_capacity(results.len());
+    let mut positions: HashMap<&str, usize> = HashMap::with_capacity(results.len());
+
+    for result in results {
+        match positions.get(result.provider.as_str()) {
+            Some(&position) => retained[position] = result,
+            None => {
+                positions.insert(result.provider.as_str(), retained.len());
+                retained.push(result);
+            }
+        }
+    }
+
+    retained
+}
+
 fn dedupe_key(item: &ContextItem) -> String {
     item.source.clone().unwrap_or_else(|| item.id.clone())
 }
@@ -259,6 +299,21 @@ fn estimated_tokens(item: &ContextItem) -> usize {
 fn ranking_score(item: &ContextItem) -> f32 {
     item.relevance + item.priority() * 0.25 + item.trust() * 0.15 + item.freshness() * 0.10
 }
+
+fn compare_ranked_items(a: &ContextItem, b: &ContextItem) -> std::cmp::Ordering {
+    b.is_required()
+        .cmp(&a.is_required())
+        .then_with(|| ranking_score(b).total_cmp(&ranking_score(a)))
+        .then_with(|| b.relevance.total_cmp(&a.relevance))
+        .then_with(|| estimated_tokens(a).cmp(&estimated_tokens(b)))
+        .then_with(|| a.id.cmp(&b.id))
+        // Providers may use the same local ID for different exact sources.
+        // Break that final tie before a budget selects a hash-ordered subset.
+        .then_with(|| a.source.cmp(&b.source))
+}
+
+#[cfg(test)]
+mod selection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -373,6 +428,104 @@ mod tests {
 
         assert_eq!(assembly.items[0].id, "boosted");
         assert_eq!(assembly.items[1].id, "plain");
+    }
+
+    #[test]
+    fn assemble_replaces_same_source_contribution_with_latest_result() {
+        let assembler = ContextAssembler::with_default_budget();
+        let assembly = assembler.assemble(&[
+            result(
+                "memory",
+                vec![
+                    ContextItem::new("memory-old", ContextType::Memory, "stale memory")
+                        .with_source("memory://stale")
+                        .with_relevance(0.9)
+                        .with_token_count(2),
+                ],
+            ),
+            result(
+                "memory",
+                vec![
+                    ContextItem::new("memory-new", ContextType::Memory, "fresh memory")
+                        .with_source("memory://fresh")
+                        .with_relevance(0.1)
+                        .with_token_count(2),
+                ],
+            ),
+        ]);
+
+        assert_eq!(assembly.items.len(), 1);
+        assert_eq!(assembly.items[0].id, "memory-new");
+        assert_eq!(assembly.total_tokens, 2);
+        assert!(assembly.to_xml().contains("fresh memory"));
+        assert!(!assembly.to_xml().contains("stale memory"));
+    }
+
+    #[test]
+    fn same_source_identical_content_yields_identical_digest_and_single_section() {
+        let assembler = ContextAssembler::with_default_budget();
+        let content = "shared memory section";
+        let first = result(
+            "memory",
+            vec![
+                ContextItem::new("memory-first", ContextType::Memory, content)
+                    .with_source("memory://first")
+                    .with_token_count(3),
+            ],
+        );
+        let second = result(
+            "memory",
+            vec![
+                ContextItem::new("memory-second", ContextType::Memory, content)
+                    .with_source("memory://second")
+                    .with_token_count(3),
+            ],
+        );
+
+        assert_eq!(first.content_digest(), second.content_digest());
+
+        let rendered = assembler.assemble(&[first, second]).to_xml();
+        assert_eq!(rendered.matches(content).count(), 1);
+    }
+
+    #[test]
+    fn replaced_source_keeps_other_sources_in_the_assembly() {
+        let assembler = ContextAssembler::with_default_budget();
+        let assembly = assembler.assemble(&[
+            result(
+                "memory",
+                vec![
+                    ContextItem::new("memory-a", ContextType::Memory, "stale memory")
+                        .with_source("memory://a")
+                        .with_token_count(2),
+                ],
+            ),
+            result(
+                "skills_catalog",
+                vec![
+                    ContextItem::new("skill-a", ContextType::Skill, "skill entry")
+                        .with_source("skills://a")
+                        .with_token_count(2),
+                ],
+            ),
+            result(
+                "memory",
+                vec![
+                    ContextItem::new("memory-b", ContextType::Memory, "fresh memory")
+                        .with_source("memory://b")
+                        .with_token_count(2),
+                ],
+            ),
+        ]);
+
+        assert_eq!(
+            assembly
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["memory-b", "skill-a"]
+        );
     }
 
     #[test]

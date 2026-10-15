@@ -10,7 +10,8 @@
 //! - WorkBuddy tagged (hy3/`auto`): `<tool_call:id>name">…</invoke>`
 //! - Claude-style: `<invoke name="…">…</invoke>`
 //! - DeepSeek DSML (V3.2/V4): `<｜DSML｜invoke name="…">…</｜DSML｜invoke>`
-//!   (ASCII `||DSML||` accepted as a fallback for mangled streams)
+//!   (ASCII `||DSML||` accepted as a fallback for mangled streams).
+//!   A doubled fullwidth bar and a space before the tag name are the same dialect.
 
 use super::types::{ContentBlock, Message, ToolCall};
 use serde_json::{Map, Value};
@@ -110,10 +111,23 @@ enum MarkupKind {
     DsmlInvoke,
 }
 
+fn normalize_dsml_markup(text: &str) -> String {
+    // Some streams double U+FF5C and insert a space before the element name.
+    let collapsed = text.replace("\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C}", DSML_NS);
+    let mut out = collapsed;
+    for ns in [DSML_NS, DSML_NS_ASCII] {
+        out = out
+            .replace(&format!("<{ns} "), &format!("<{ns}"))
+            .replace(&format!("</{ns} "), &format!("</{ns}"));
+    }
+    out
+}
+
 fn split_leaked_tool_calls(text: &str) -> (String, Vec<ParsedCall>) {
+    let normalized = normalize_dsml_markup(text);
     let mut prose = String::new();
     let mut calls = Vec::new();
-    let mut rest = text;
+    let mut rest = normalized.as_str();
     while let Some((kind, start)) = find_next_markup(rest) {
         prose.push_str(&rest[..start]);
         let at = &rest[start..];
@@ -715,6 +729,18 @@ mod tests {
         assert_eq!(calls[0].args["path"], ".a3s/kb/wiki/science");
         assert_eq!(calls[0].args["limit"], "8");
         assert_eq!(message.text(), "正在检索。");
+        assert!(!message.text().contains("DSML"));
+    }
+
+    #[test]
+    fn recovers_doubled_bar_dsml_with_a_space_before_the_tag() {
+        let raw = "<\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} calls>\n<\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} invoke name=\"bash\">\n<\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} parameter name=\"command\" string=\"true\">sleep 30</\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} parameter>\n<\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} parameter name=\"timeout\" string=\"false\">600</\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} parameter>\n</\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} invoke>\n</\u{FF5C}\u{FF5C}DSML\u{FF5C}\u{FF5C} calls>";
+        let mut message = Message::assistant(raw);
+        let calls = recover_text_tool_calls(&mut message);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].args["command"], "sleep 30");
+        assert_eq!(calls[0].args["timeout"], 600);
         assert!(!message.text().contains("DSML"));
     }
 

@@ -797,7 +797,7 @@ fn dynamic_flow_step_identity_keeps_small_inputs_inline_and_rejects_hard_ceiling
         .expect_err("inputs above 512 KiB must stay rejected as a DoS bound");
     let message = error.to_string();
     assert!(
-        message.contains("65536") == false && message.contains(&(512 * 1024).to_string()),
+        !message.contains("65536") && message.contains(&(512 * 1024).to_string()),
         "hard-ceiling error must cite 512 KiB, not the old 64 KiB reject: {message}"
     );
 }

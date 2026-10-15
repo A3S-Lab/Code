@@ -233,6 +233,8 @@ mod agent_event_protocol_tests {
             text: "done".into(),
             usage: a3s_code_core::TokenUsage::default(),
             verification_summary: Box::new(RustVerificationSummary::from_reports(&[])),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         })
         .await
@@ -269,6 +271,8 @@ mod agent_event_protocol_tests {
             text: "done".into(),
             usage: a3s_code_core::TokenUsage::default(),
             verification_summary: Box::new(RustVerificationSummary::from_reports(&[])),
+            completion_terminal: Default::default(),
+            forced_stop: None,
             meta: None,
         })
         .await

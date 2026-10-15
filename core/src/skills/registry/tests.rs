@@ -316,6 +316,42 @@ fn test_load_from_dir_recurses_into_nested_skill_dirs() -> anyhow::Result<()> {
 
     assert_eq!(loaded, 1);
     assert!(registry.get("nested-skill").is_some());
+
+    let examples = nested.join("examples");
+    std::fs::create_dir_all(&examples)?;
+    std::fs::write(
+        examples.join("note.md"),
+        "---\nname: not-a-skill\ndescription: Package notes\n---\n# Note\n",
+    )?;
+    let registry = SkillRegistry::new();
+    let loaded = registry.load_from_dir(temp_dir.path())?;
+    assert_eq!(loaded, 1);
+    assert!(registry.get("not-a-skill").is_none());
+    Ok(())
+}
+
+#[test]
+fn second_load_from_dir_sees_a_skill_added_after_the_first() -> anyhow::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let first = temp_dir.path().join("first");
+    std::fs::create_dir_all(&first)?;
+    std::fs::write(
+        first.join("SKILL.md"),
+        "---\nname: first-skill\ndescription: First\n---\n# First\n",
+    )?;
+    let registry = SkillRegistry::new();
+    assert_eq!(registry.load_from_dir(temp_dir.path())?, 1);
+    assert!(registry.get("second-skill").is_none());
+
+    let second = temp_dir.path().join("second");
+    std::fs::create_dir_all(&second)?;
+    std::fs::write(
+        second.join("SKILL.md"),
+        "---\nname: second-skill\ndescription: Second\n---\n# Second\n",
+    )?;
+    assert_eq!(registry.load_from_dir(temp_dir.path())?, 2);
+    assert!(registry.get("first-skill").is_some());
+    assert!(registry.get("second-skill").is_some());
     Ok(())
 }
 
@@ -367,11 +403,14 @@ fn test_load_from_dir_does_not_follow_symlinks_outside_the_skill_root() -> anyho
         "---\nname: outside-file-skill\ndescription: Must not be loaded\nkind: instruction\n---\nOUTSIDE_FILE_TOKEN\n",
     )?;
     std::fs::create_dir_all(skill_root.join("alias"))?;
-    std::os::unix::fs::symlink(&outside, skill_root.join("escape"))?;
+    // A nested directory symlink is an escape, not a published package.
+    // Published packages are only direct children of the scan root.
+    std::os::unix::fs::symlink(&outside, skill_root.join("nested").join("escape"))?;
     std::os::unix::fs::symlink(
         outside.join("leak.md"),
         skill_root.join("nested").join("leak.md"),
     )?;
+    std::os::unix::fs::symlink(outside.join("leak.md"), skill_root.join("outside.md"))?;
     std::os::unix::fs::symlink(
         outside.join("SKILL.md"),
         skill_root.join("alias").join("SKILL.md"),
@@ -392,6 +431,62 @@ fn test_load_from_dir_does_not_follow_symlinks_outside_the_skill_root() -> anyho
     assert!(
         bodies.iter().all(|body| !body.contains("OUTSIDE_DIR_TOKEN") && !body.contains("OUTSIDE_FILE_TOKEN")),
         "skill bodies leaked outside content: {bodies:?}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_load_from_dir_loads_a_published_package_symlink() -> anyhow::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let skill_root = temp_dir.path().join("skills");
+    let package = temp_dir.path().join("package");
+    let secret = temp_dir.path().join("secret");
+    std::fs::create_dir_all(&skill_root)?;
+    std::fs::create_dir_all(package.join("nested"))?;
+    std::fs::create_dir_all(&secret)?;
+
+    std::fs::write(
+        package.join("SKILL.md"),
+        "---\nname: published-skill\ndescription: Linked package\nkind: instruction\n---\nPACKAGE_TOKEN\n",
+    )?;
+    std::fs::write(
+        secret.join("SKILL.md"),
+        "---\nname: secret-skill\ndescription: Must not be loaded\nkind: instruction\n---\nSECRET_TOKEN\n",
+    )?;
+    std::fs::write(
+        secret.join("leak.md"),
+        "---\nname: secret-file\ndescription: Must not be loaded\nkind: instruction\n---\nSECRET_FILE_TOKEN\n",
+    )?;
+    std::os::unix::fs::symlink(&secret, package.join("nested").join("escape"))?;
+    std::os::unix::fs::symlink(
+        secret.join("leak.md"),
+        package.join("nested").join("leak.md"),
+    )?;
+    std::os::unix::fs::symlink(secret.join("SKILL.md"), package.join("stolen.md"))?;
+    std::os::unix::fs::symlink(&package, skill_root.join("published"))?;
+
+    let registry = SkillRegistry::new();
+    let loaded = registry.load_from_dir(&skill_root)?;
+
+    assert_eq!(loaded, 1, "the linked package is one skill");
+    assert!(registry.get("published-skill").is_some());
+    assert!(registry.get("secret-skill").is_none());
+    assert!(registry.get("secret-file").is_none());
+    let bodies = registry
+        .all()
+        .into_iter()
+        .map(|skill| skill.content.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        bodies.iter().any(|body| body.contains("PACKAGE_TOKEN")),
+        "published package body missing: {bodies:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .all(|body| !body.contains("SECRET_TOKEN") && !body.contains("SECRET_FILE_TOKEN")),
+        "skill bodies leaked a nested escape: {bodies:?}"
     );
     Ok(())
 }
@@ -771,4 +866,137 @@ fn disable_model_invocation_skills_are_not_model_discoverable() {
     assert_eq!(matches[0].name, "model-skill");
     assert!(registry.match_skills("user-only-skill").is_empty());
     assert!(!registry.to_system_prompt().is_empty());
+}
+
+#[test]
+fn watched_directory_changes_are_live_for_a_running_registry() {
+    let root = TempDir::new().unwrap();
+    let skills = root.path().join("skills");
+    std::fs::create_dir_all(skills.join("first")).unwrap();
+    write_skill(&skills.join("first").join("SKILL.md"), "first", "one");
+
+    let registry = SkillRegistry::new();
+    registry.load_from_dir(&skills).unwrap();
+    assert!(registry.get("first").is_some());
+
+    // A second package lands after the session started (the install path).
+    std::fs::create_dir_all(skills.join("second")).unwrap();
+    write_skill(&skills.join("second").join("SKILL.md"), "second", "two");
+    let reloaded = registry.refresh_watched_dirs();
+    assert_eq!(reloaded, 1, "the changed directory must reload");
+    assert!(registry.get("second").is_some(), "install must be live");
+    assert!(registry.get("first").is_some(), "reload keeps other skills");
+
+    // A removed package disappears on refresh.
+    std::fs::remove_dir_all(skills.join("first")).unwrap();
+    registry.refresh_watched_dirs();
+    assert!(registry.get("first").is_none(), "removal must be live");
+    assert!(registry.get("second").is_some());
+}
+
+#[test]
+fn a_directory_that_did_not_exist_is_picked_up_when_created() {
+    let root = TempDir::new().unwrap();
+    let skills = root.path().join("skills");
+
+    let registry = SkillRegistry::new();
+    registry.watch_dir(&skills);
+    assert_eq!(registry.refresh_watched_dirs(), 0, "nothing to do yet");
+
+    std::fs::create_dir_all(skills.join("late")).unwrap();
+    write_skill(&skills.join("late").join("SKILL.md"), "late", "arrives");
+    assert_eq!(registry.refresh_watched_dirs(), 1);
+    assert!(registry.get("late").is_some());
+}
+
+#[test]
+fn forking_keeps_the_watched_directories() {
+    let root = TempDir::new().unwrap();
+    let skills = root.path().join("skills");
+    std::fs::create_dir_all(skills.join("first")).unwrap();
+    write_skill(&skills.join("first").join("SKILL.md"), "first", "one");
+    let registry = SkillRegistry::new();
+    registry.load_from_dir(&skills).unwrap();
+
+    let forked = registry.fork();
+    std::fs::create_dir_all(skills.join("second")).unwrap();
+    write_skill(&skills.join("second").join("SKILL.md"), "second", "two");
+    assert_eq!(forked.refresh_watched_dirs(), 1);
+    assert!(forked.get("second").is_some());
+}
+
+fn write_skill(path: &std::path::Path, name: &str, description: &str) {
+    let mut file = std::fs::File::create(path).unwrap();
+    writeln!(
+        file,
+        "---\nname: {name}\ndescription: {description}\n---\n# {name}\n"
+    )
+    .unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn projected_file_is_not_loaded_through_a_link_or_after_directory_refresh() {
+    let root = TempDir::new().unwrap();
+    let managed = root.path().join("managed");
+    let local = root.path().join("skills");
+    std::fs::create_dir_all(&managed).unwrap();
+    std::fs::create_dir_all(&local).unwrap();
+    let content = "---\nname: review\ndescription: Managed review\n---\nReview documents.";
+    std::fs::write(managed.join("SKILL.md"), content).unwrap();
+    std::os::unix::fs::symlink(&managed, local.join("review")).unwrap();
+    let registry = SkillRegistry::new();
+    registry.load_from_dir(&local).unwrap();
+    let fork = registry.fork();
+    fork.exclude_discovered_files(&[std::fs::canonicalize(managed.join("SKILL.md")).unwrap()]);
+    assert!(fork.get("review").is_none());
+    assert!(
+        registry.get("review").is_some(),
+        "other sessions retain their catalog"
+    );
+    std::fs::write(
+        local.join("other.md"),
+        "---\nname: other\ndescription: Local skill\n---\nLocal instruction.",
+    )
+    .unwrap();
+    fork.refresh_watched_dirs();
+    assert!(fork.get("other").is_some());
+    assert!(
+        fork.get("review").is_none(),
+        "refresh reintroduced projected bytes"
+    );
+    let projected = Arc::new(Skill::from_file(managed.join("SKILL.md")).unwrap());
+    assert!(fork
+        .snapshot_with_external_skills([projected.clone()])
+        .is_ok());
+    std::fs::remove_file(local.join("review")).unwrap();
+    std::fs::create_dir(local.join("review")).unwrap();
+    std::fs::write(local.join("review/SKILL.md"), content).unwrap();
+    fork.load_from_dir(&local).unwrap();
+    assert!(
+        matches!(
+            fork.snapshot_with_external_skills([projected]),
+            Err(SkillRegistrySnapshotError::NameConflict { .. })
+        ),
+        "unrelated same-name skill must still conflict"
+    );
+}
+
+#[test]
+fn projected_file_exclusion_preserves_an_explicit_host_replacement() {
+    let root = TempDir::new().unwrap();
+    let file = root.path().join("review.md");
+    std::fs::write(
+        &file,
+        "---\nname: review\ndescription: Directory review\n---\nDirectory.",
+    )
+    .unwrap();
+    let registry = SkillRegistry::new();
+    registry.load_from_dir(root.path()).unwrap();
+    let host =
+        Arc::new(Skill::parse("---\nname: review\ndescription: Host review\n---\nHost.").unwrap());
+    registry.register_host(host.clone());
+    registry.exclude_discovered_files(&[std::fs::canonicalize(file).unwrap()]);
+    assert!(Arc::ptr_eq(&registry.get("review").unwrap(), &host));
+    assert!(registry.snapshot_with_external_skills([host]).is_err());
 }

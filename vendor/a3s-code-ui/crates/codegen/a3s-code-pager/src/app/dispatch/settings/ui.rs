@@ -732,7 +732,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
         // One arm per canonical, all dispatched through the typed `Action::SetPermissionMode(kind)`, not the legacy `Action::SetYoloMode(bool)`
         // Only that arm is reachable through the normal reset flow
         // The other arms are there so a changed registered default fires its matching arm rather than silently collapsing onto SetYoloMode
-        ("permission_mode", SettingValue::Enum("always-approve")) => Some(
+        ("permission_mode", SettingValue::Enum("yolo")) => Some(
             Action::SetPermissionMode(crate::app::actions::PermissionModeKind::AlwaysApprove),
         ),
         ("permission_mode", SettingValue::Enum("ask")) => Some(Action::SetPermissionMode(

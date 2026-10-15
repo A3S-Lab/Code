@@ -158,6 +158,31 @@ fn build_rust_session_options_inner(
     if let Some(policy) = so.permission_policy {
         o = o.with_permission_policy(py_permission_policy_to_rust(policy)?);
     }
+    o = o.with_watch_skill_dirs(
+        so.watch_skill_dirs
+            .into_iter()
+            .map(std::path::PathBuf::from),
+    );
+    o = o.with_projected_skill_files(
+        so.projected_skill_files
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+    );
+    if let Some(mode) = so.sandbox_network {
+        o = o.with_sandbox_network_mode(
+            a3s_code_core::sandbox::SandboxNetworkMode::parse(&mode)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+        );
+    }
+    o = o.with_sandbox_network_allow(so.sandbox_network_allow);
+    if so.code_intelligence {
+        o = o.with_code_intelligence();
+    }
+    if let Some(budget) = so.path_injection_budget {
+        o = o.with_injection_budget(budget);
+    }
+    o = o.with_verification_contracts(so.verification_contracts);
     if let Some(policy) = so.confirmation_policy {
         o = o.with_confirmation_policy(py_confirmation_policy_to_rust(policy)?);
     }
@@ -487,6 +512,12 @@ fn apply_py_host_contract_options(
     }
     if let Some(enabled) = source.verifier_enabled {
         options = options.with_verifier(enabled);
+    }
+    if let Some(required) = source.require_assistant_final_response {
+        options = options.with_assistant_final_response(required);
+    }
+    if let Some(policy) = &source.work_policy {
+        options = options.with_work_policy(policy.clone());
     }
     if let Some(harness) = &source.harness {
         // SDK hosts cannot inject a Rust registry; `host:<id>` resolves against

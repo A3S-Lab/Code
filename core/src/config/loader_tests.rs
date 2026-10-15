@@ -296,3 +296,180 @@ mcp_servers "filesystem" {
         Some("oauth-secret")
     );
 }
+
+#[test]
+fn file_storage_backend_stays_in_the_closed_set() {
+    let config = CodeConfig::from_acl("storage_backend = \"file\"\n").expect("file backend");
+    assert_eq!(config.storage_backend, StorageBackend::File);
+}
+
+#[test]
+fn unknown_storage_backend_names_the_closed_set() {
+    let error = CodeConfig::from_acl("storage_backend = \"s3\"\n").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("s3"), "{message}");
+    assert!(message.contains("file, memory, custom"), "{message}");
+}
+
+#[test]
+fn unknown_acl_block_names_the_closed_set() {
+    let error = CodeConfig::from_acl("not_a_section = \"x\"\n").unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("not_a_section"), "{message}");
+    assert!(message.contains("default_model"), "{message}");
+}
+
+#[test]
+fn unknown_queue_handler_mode_names_the_closed_set() {
+    let error = CodeConfig::from_acl(
+        r#"
+queue {
+  lane_handlers {
+    query { mode = "yolo" }
+  }
+}
+"#,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("yolo"), "{message}");
+    assert!(message.contains("internal, external, hybrid"), "{message}");
+}
+
+#[test]
+fn unknown_provider_attribute_names_the_closed_set() {
+    let error = CodeConfig::from_acl(
+        r#"
+providers "openai" {
+  region = "us"
+}
+"#,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("region"), "{message}");
+    assert!(message.contains("api_key"), "{message}");
+}
+
+#[test]
+fn layered_documents_append_skill_and_agent_dirs() {
+    let config = CodeConfig::from_acl(
+        r#"
+skill_dirs = ["/user/skills"]
+agent_dirs = ["/user/agents"]
+
+skill_dirs = ["/workspace/skills", "/user/skills"]
+agent_dirs = ["/workspace/agents"]
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        config.skill_dirs,
+        vec![
+            std::path::PathBuf::from("/user/skills"),
+            std::path::PathBuf::from("/workspace/skills"),
+        ],
+        "a later layer extends the dir set, deduped in first-seen order"
+    );
+    assert_eq!(
+        config.agent_dirs,
+        vec![
+            std::path::PathBuf::from("/user/agents"),
+            std::path::PathBuf::from("/workspace/agents"),
+        ]
+    );
+}
+
+#[test]
+fn overlay_duplicate_providers_makes_layers_consistent() {
+    let mut config = CodeConfig::from_acl(
+        r#"
+default_model = "openai/layered-model"
+
+providers "openai" {
+  apiKey = "user-layer-key"
+  baseUrl = "http://user.invalid/v1/"
+  models "layered-model" {
+    name = "layered-model"
+    family = ""
+    toolCall = true
+  }
+}
+
+default_model = "openai/other-model"
+
+providers "openai" {
+  apiKey = "workspace-layer-key"
+  models "other-model" {
+    name = "other-model"
+    family = ""
+    toolCall = true
+  }
+}
+"#,
+    )
+    .unwrap();
+    // Before the overlay this document carried TWO "openai" entries:
+    // default_model resolved last-wins ("other-model" from the workspace
+    // layer) while find_provider picked the FIRST (user-layer) entry — the
+    // workspace model would run on user-layer credentials.
+    config.overlay_duplicate_providers();
+    assert_eq!(config.providers.len(), 1, "same-named providers merge");
+    let provider = config.find_provider("openai").unwrap();
+    assert_eq!(
+        provider.api_key.as_deref(),
+        Some("workspace-layer-key"),
+        "the later layer wins for scalars it sets"
+    );
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("http://user.invalid/v1/"),
+        "the later layer keeps earlier scalars it does not set"
+    );
+    assert_eq!(
+        provider
+            .models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["layered-model", "other-model"],
+        "model catalogs union with later declarations replacing same ids"
+    );
+    let llm = config
+        .default_llm_config()
+        .expect("default model resolves through the overlaid provider");
+    assert_eq!(llm.provider, "openai");
+    assert_eq!(llm.model, "other-model");
+    assert_eq!(llm.api_key.expose(), "workspace-layer-key");
+}
+
+#[test]
+fn declared_text_only_input_withholds_images_from_the_client() {
+    let config = CodeConfig::from_acl(
+        r#"
+providers "boyue" {
+  api_key = "k"
+  models "text-only" {
+    modalities = { input = ["text"], output = ["text"] }
+  }
+  models "vision" {
+    modalities = { input = ["text", "image"], output = ["text"] }
+  }
+  models "undeclared" {}
+}
+"#,
+    )
+    .expect("config parses");
+    let text_only = |model: &str| {
+        config
+            .llm_config("boyue", model)
+            .expect("model resolves")
+            .text_only_input
+    };
+    assert!(text_only("text-only"));
+    assert!(!text_only("vision"));
+    assert!(
+        !text_only("undeclared"),
+        "no declaration keeps images flowing"
+    );
+}

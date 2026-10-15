@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -46,11 +46,27 @@ impl UseGenerationLeaseError {
 /// A provider is published in the same catalog CAS as its projection. Each Run
 /// calls [`Self::acquire`] again so A3S Use can reject a generation that has
 /// become hidden or stale since Code installed the projection. Implementations
-/// must retain the concrete `a3s_use::CapabilitySnapshotLease` inside the
-/// returned [`RetainedUseGeneration`] value.
+/// must retain the concrete upstream snapshot or reconcile selection lease
+/// inside the returned [`RetainedUseGeneration`] value.
 #[async_trait]
 pub trait UseGenerationLeaseProvider: Send + Sync + 'static {
     fn use_generation(&self) -> &UseCapabilityGeneration;
+
+    /// Check a host's spatial routing restriction before preparation and Run admission.
+    /// Native selection providers must supply a binding; unscoped Registry providers
+    /// preserve their existing routing. A bound host must override this method.
+    /// This does not replace permission, confirmation or workspace service enforcement.
+    fn validate_workspace(
+        &self,
+        _workspace: &std::path::Path,
+    ) -> Result<(), UseGenerationLeaseError> {
+        if self.use_generation().selection_id().is_some() {
+            return Err(UseGenerationLeaseError::new(
+                "native selection provider requires a workspace binding",
+            ));
+        }
+        Ok(())
+    }
 
     async fn acquire(
         &self,
@@ -70,16 +86,19 @@ pub enum CapabilityRuntimeError {
     #[error("A Session capability batch without an A3S Use cursor cannot carry a lease provider")]
     UnexpectedUseLeaseProvider,
     #[error(
-        "A3S Use lease provider does not match the batch cursor (generation {expected_generation} vs {actual_generation}, capability revision mismatch: {revision_mismatch}, Registry revision mismatch: {registry_revision_mismatch})"
+        "A3S Use lease provider does not match the batch cursor (generation {expected_generation} vs {actual_generation}, capability revision mismatch: {revision_mismatch}, Registry revision mismatch: {registry_revision_mismatch}, publication origin mismatch: {origin_mismatch})"
     )]
     UseLeaseProviderMismatch {
         expected_generation: u64,
         actual_generation: u64,
         revision_mismatch: bool,
         registry_revision_mismatch: bool,
+        origin_mismatch: bool,
     },
     #[error("A3S Use generation lease acquisition failed: {message}")]
     UseLeaseAcquisition { message: String },
+    #[error("Session capability workspace binding refused: {message}")]
+    WorkspaceBinding { message: String },
     #[error("Session capability Run admission was cancelled")]
     Cancelled,
     #[error("The owning Session is closed")]
@@ -123,6 +142,7 @@ pub struct SessionCapabilityBatch {
     target: Arc<CapabilitySet>,
     staged: BTreeMap<CapabilityId, Box<dyn CapabilityProjectionAdapter>>,
     use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+    allowed_capabilities: Option<Arc<BTreeSet<CapabilityId>>>,
 }
 
 impl SessionCapabilityBatch {
@@ -135,6 +155,7 @@ impl SessionCapabilityBatch {
             target,
             staged: BTreeMap::new(),
             use_lease_provider: None,
+            allowed_capabilities: None,
         })
     }
 
@@ -151,7 +172,36 @@ impl SessionCapabilityBatch {
             target,
             staged: BTreeMap::new(),
             use_lease_provider: Some(provider),
+            allowed_capabilities: None,
         })
+    }
+
+    /// Narrow projected capability access for every new Run of this generation.
+    /// This does not authorize adapter preparation or widen ordinary Tool policy.
+    pub fn with_allowed_capabilities(
+        mut self,
+        allowed: impl IntoIterator<Item = CapabilityId>,
+    ) -> Result<Self, CapabilityRuntimeError> {
+        let allowed = super::ceiling::validated_allowed_capabilities(&self.target, allowed)?;
+        for id in &allowed {
+            if let Some(descriptor) = self.target.get(id) {
+                for dependency in descriptor.dependencies() {
+                    if !allowed.contains(dependency) {
+                        return Err(CapabilityScopeError::CapabilityDependencyDenied {
+                            capability: id.to_string(),
+                            dependency: dependency.to_string(),
+                        }
+                        .into());
+                    }
+                }
+            }
+        }
+        self.allowed_capabilities = Some(Arc::new(allowed));
+        Ok(self)
+    }
+
+    pub(crate) fn allowed_capabilities(&self) -> Option<&BTreeSet<CapabilityId>> {
+        self.allowed_capabilities.as_deref()
     }
 
     pub fn target(&self) -> &CapabilitySet {
@@ -217,6 +267,13 @@ impl SessionCapabilityBatch {
         Ok(self)
     }
 
+    pub(crate) fn validate_workspace(
+        &self,
+        workspace: &std::path::Path,
+    ) -> Result<(), CapabilityRuntimeError> {
+        validate_provider_workspace(self.use_lease_provider.as_deref(), workspace)
+    }
+
     pub(crate) async fn prepare(
         self,
         catalog: &CapabilityCatalog,
@@ -226,6 +283,7 @@ impl SessionCapabilityBatch {
             target,
             staged,
             use_lease_provider,
+            allowed_capabilities,
         } = self;
         let mut transaction: CapabilityTxn<Staged> = catalog.begin(target)?;
         for (id, adapter) in staged {
@@ -236,6 +294,7 @@ impl SessionCapabilityBatch {
         Ok(PreparedSessionCapabilityBatch {
             transaction,
             use_lease_provider,
+            allowed_capabilities,
         })
     }
 
@@ -248,6 +307,7 @@ impl SessionCapabilityBatch {
             target,
             staged,
             use_lease_provider,
+            allowed_capabilities,
         } = self;
         let mut transaction: CapabilityTxn<Staged> = catalog.begin_recovery_bootstrap(target)?;
         for (id, adapter) in staged {
@@ -258,6 +318,7 @@ impl SessionCapabilityBatch {
         Ok(PreparedSessionCapabilityBatch {
             transaction,
             use_lease_provider,
+            allowed_capabilities,
         })
     }
 }
@@ -277,9 +338,17 @@ impl fmt::Debug for SessionCapabilityBatch {
 pub(crate) struct PreparedSessionCapabilityBatch {
     transaction: CapabilityTxn<Validated>,
     use_lease_provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+    allowed_capabilities: Option<Arc<BTreeSet<CapabilityId>>>,
 }
 
 impl PreparedSessionCapabilityBatch {
+    pub(crate) fn validate_workspace(
+        &self,
+        workspace: &std::path::Path,
+    ) -> Result<(), CapabilityRuntimeError> {
+        validate_provider_workspace(self.use_lease_provider.as_deref(), workspace)
+    }
+
     pub(crate) fn projection(
         &self,
     ) -> Result<&super::CapabilityProjection, CapabilityRuntimeError> {
@@ -288,7 +357,7 @@ impl PreparedSessionCapabilityBatch {
 
     pub(crate) fn commit(self) -> Result<CapabilityCommitReceipt, CapabilityRuntimeError> {
         self.transaction
-            .commit_with_use_lease_provider(self.use_lease_provider)
+            .commit_with_use_lease_provider(self.use_lease_provider, self.allowed_capabilities)
             .map_err(Into::into)
     }
 }
@@ -313,11 +382,22 @@ impl SessionCapabilityRun {
         run_local_id: &str,
         ceiling: CapabilityCeiling,
         cancellation: CancellationToken,
+        workspace: &std::path::Path,
     ) -> Result<Self, CapabilityRuntimeError> {
         if cancellation.is_cancelled() {
             return Err(CapabilityRuntimeError::Cancelled);
         }
+        validate_provider_workspace(projection.use_lease_provider().map(Arc::as_ref), workspace)?;
         let set = projection.projection().set();
+        if projection
+            .allowed_capabilities()
+            .is_some_and(|allowed| ceiling.iter().any(|id| !allowed.contains(id)))
+        {
+            return Err(super::CapabilityScopeError::CeilingExpansion {
+                dimension: "projected_capabilities",
+            }
+            .into());
+        }
         // The host invocation token is the cancellation-tree root, not a
         // resource owned by capability teardown. The Session owns a child so
         // host cancellation still cascades downward, while normal Run close
@@ -348,6 +428,7 @@ impl SessionCapabilityRun {
                         }
                     })?,
                 };
+                validate_provider_workspace(Some(provider.as_ref()), workspace)?;
                 session_scope.admit_use_run(run_local_id, ceiling, lease)?
             }
             None => {
@@ -439,6 +520,7 @@ fn ensure_use_generation_matches(
         actual_generation: actual.generation(),
         revision_mismatch: expected.revision() != actual.revision(),
         registry_revision_mismatch: expected.registry_revision() != actual.registry_revision(),
+        origin_mismatch: !expected.origin_matches(actual),
     })
 }
 
@@ -452,4 +534,18 @@ fn truncate_utf8(mut value: String, max: usize) -> String {
     }
     value.truncate(boundary);
     value
+}
+
+fn validate_provider_workspace(
+    provider: Option<&dyn UseGenerationLeaseProvider>,
+    workspace: &std::path::Path,
+) -> Result<(), CapabilityRuntimeError> {
+    if let Some(provider) = provider {
+        provider.validate_workspace(workspace).map_err(|error| {
+            CapabilityRuntimeError::WorkspaceBinding {
+                message: error.message().to_owned(),
+            }
+        })?;
+    }
+    Ok(())
 }

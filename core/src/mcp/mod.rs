@@ -73,8 +73,8 @@ pub(crate) mod test_support;
 pub use binding::{
     McpBinding, McpBindingError, MAX_MCP_BINDING_DEFINITION_BYTES, MAX_MCP_BINDING_TOOLS,
 };
-pub use client::McpClient;
-pub use manager::{McpManager, McpServerStatus};
+pub use client::{McpClient, SamplingApprover};
+pub use manager::{McpManager, McpServerStatus, SamplingHandlerFactory};
 pub use projection::McpProjectionAdapter;
 pub use protocol::{
     CallToolResult, McpNotification, McpResource, McpServerConfig, McpTool, McpToolAnnotations,

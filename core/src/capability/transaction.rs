@@ -360,19 +360,21 @@ impl CapabilityTxn<Validated> {
     }
 
     pub fn commit(mut self) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
-        self.commit_inner(None)
+        self.commit_inner(None, None)
     }
 
     pub(crate) fn commit_with_use_lease_provider(
         mut self,
         provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+        allowed_capabilities: Option<Arc<std::collections::BTreeSet<super::CapabilityId>>>,
     ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
-        self.commit_inner(provider)
+        self.commit_inner(provider, allowed_capabilities)
     }
 
     fn commit_inner(
         &mut self,
         provider: Option<Arc<dyn UseGenerationLeaseProvider>>,
+        allowed_capabilities: Option<Arc<std::collections::BTreeSet<super::CapabilityId>>>,
     ) -> Result<CapabilityCommitReceipt, CapabilityProjectionError> {
         let projection = self
             .projection
@@ -383,9 +385,13 @@ impl CapabilityTxn<Validated> {
             .take()
             .ok_or(CapabilityProjectionError::InvalidTransactionState)?;
         let effects = std::mem::take(&mut body.effects);
-        let result = body
-            .catalog
-            .publish(&body.base, projection, provider, effects);
+        let result = body.catalog.publish(
+            &body.base,
+            projection,
+            provider,
+            allowed_capabilities,
+            effects,
+        );
         // `publish` owns the effect batch on both success and CAS conflict.
         body.rollback_armed = false;
         result

@@ -29,6 +29,10 @@ impl ContextProvider for SkillCatalogContextProvider {
     }
 
     async fn query(&self, query: &ContextQuery) -> anyhow::Result<ContextResult> {
+        // The skills directory is live: pick up installs, updates, and
+        // removals that landed since the last query (a running session sees
+        // `a3s code skills add` on its next turn).
+        self.skill_registry.refresh_watched_dirs();
         let skill_prompt = self.skill_registry.to_system_prompt();
         if skill_prompt.is_empty() {
             return Ok(ContextResult::new(self.name()));

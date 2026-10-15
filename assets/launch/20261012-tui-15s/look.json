@@ -1,0 +1,9 @@
+{
+  "name": "A3S Code graphite",
+  "color": {"ground":"#0b0e13","deep":"#07090d","card":"#111923","line":"#263445","mute":"#8f9db0","ink":"#eef4fb","accent":"#6ca3ff","accent2":"#3ccf91"},
+  "type": {
+    "display":{"face":"Geist","weight":600,"tracking":-0.03},
+    "text":{"face":"Inter","weight":500,"tracking":-0.01},
+    "mono":{"face":"Geist Mono","weight":400,"tracking":0}
+  }
+}

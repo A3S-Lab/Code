@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 #[tokio::test]
@@ -794,10 +796,12 @@ async fn test_session_cancel_token_propagates_to_in_flight_run() {
         .await
         .expect("send should stop after session_cancel fires")
         .expect("worker should not panic");
-    let result = result.expect("session cancellation should preserve interrupted history");
-    assert_eq!(result.messages.len(), 2);
-    assert_eq!(result.messages[0].text(), "hello");
-    assert!(result.messages[1].text().contains("interrupted"));
+    assert!(matches!(result, Err(ref error)
+        if error.cancelled_run_id() == Some(run_id.as_str())));
+    let history = session.history();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].text(), "hello");
+    assert!(history[1].text().contains("interrupted"));
     assert_eq!(
         session.run_snapshot(&run_id).await.unwrap().status,
         crate::run::RunStatus::Cancelled
@@ -891,29 +895,73 @@ async fn test_send_publishes_runtime_events_to_hook_executor() {
 
 #[tokio::test]
 async fn session_pre_prompt_rewrite_reaches_model_history() {
+    #[derive(Default)]
+    struct HookInputProbe(std::sync::Mutex<Vec<Vec<Message>>>);
+    #[async_trait::async_trait]
+    impl LlmClient for HookInputProbe {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+        ) -> anyhow::Result<LlmResponse> {
+            StaticStreamingClient::new("hooked answer")
+                .complete(messages, system, tools)
+                .await
+        }
+        async fn complete_streaming(
+            &self,
+            messages: &[Message],
+            system: Option<&str>,
+            tools: &[crate::llm::ToolDefinition],
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            self.0.lock().unwrap().push(messages.to_vec());
+            StaticStreamingClient::new("hooked answer")
+                .complete_streaming(messages, system, tools, cancel)
+                .await
+        }
+    }
     let agent = Agent::from_config(test_config()).await.unwrap();
+    let client = Arc::new(HookInputProbe::default());
     let options = SessionOptions::new()
+        .with_planning(false)
         .with_hook_executor(Arc::new(RewritingPromptHook))
         .with_continuation(false);
     let session = agent
         .build_session(
             "/tmp/test-pre-prompt-rewrite".into(),
-            Arc::new(StaticStreamingClient::new("hooked answer")),
+            client.clone(),
             &options,
         )
         .unwrap();
-
-    let result = session.send("ORIGINAL_PROMPT", None).await.unwrap();
-    let user_prompt = result
-        .messages
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        session.send("ORIGINAL_PROMPT", None),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // Observe the actual provider input. The durable product transcript
+    // preserves the original human message rather than hook-only context.
+    let requests = client.0.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let user_prompt = requests[0]
         .iter()
         .rev()
         .find(|message| message.role == "user")
-        .expect("rewritten user message")
+        .unwrap()
         .text();
     assert!(user_prompt.contains("HOOK_REWRITTEN_PROMPT"));
     assert!(user_prompt.contains("HOOK_ADDITIONAL_CONTEXT"));
     assert!(!user_prompt.contains("ORIGINAL_PROMPT"));
+    let original = result
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .unwrap();
+    assert_eq!(original.text(), "ORIGINAL_PROMPT");
 }
 
 #[tokio::test]
@@ -975,4 +1023,25 @@ async fn async_session_build_and_close_fire_lifecycle_hooks_once() {
             .count(),
         1
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_builder_rejects_out_of_range_injection_budgets() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::from_config(test_config()).await.unwrap();
+    for budget in [
+        0usize,
+        crate::path_instructions::MAX_PATH_INJECTION_BUDGET + 1,
+    ] {
+        let error = agent
+            .session_builder(root.path().display().to_string())
+            .options(SessionOptions::new().with_injection_budget(budget))
+            .build()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::error::CodeError::SessionConfiguration { .. }),
+            "budget {budget} must refuse session construction, got {error:?}"
+        );
+    }
 }

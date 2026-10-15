@@ -3021,7 +3021,7 @@ fn rollback_reverts_thread_local_cache_too() {
     .unwrap();
 }
 
-/// `set_yolo_mode_inner` is the backstop: even a (stale) rollback value of "always-approve" must not re-enable yolo under the pin.
+/// `set_yolo_mode_inner` is the backstop: even a (stale) rollback value of "yolo" must not re-enable yolo under the pin.
 #[test]
 fn rollback_to_always_approve_blocked_by_policy_pin() {
     use crate::settings::SettingValue;
@@ -3031,7 +3031,7 @@ fn rollback_to_always_approve_blocked_by_policy_pin() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SettingPersistFailed {
             key: "permission_mode",
-            rollback_value: SettingValue::Enum("always-approve"),
+            rollback_value: SettingValue::Enum("yolo"),
             error: "permission denied".into(),
         }),
         &mut app,

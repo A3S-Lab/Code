@@ -2,18 +2,24 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn seam_admission_permission_posture_denies_under_always_approve() {
-    for posture in ["always-approve", "yolo", "force"] {
-        let policy = policy_for_posture(posture).deny("bash(*)");
+fn seam_admission_permission_posture_denies_under_yolo() {
+    let policy = policy_for_posture("yolo").deny("bash(*)");
+    assert_eq!(
+        policy.check("bash", &json!({"command": "echo hi"})),
+        PermissionDecision::Deny,
+        "yolo deny wins over the execute-lane allow"
+    );
+    assert_eq!(
+        policy.check("write", &json!({})),
+        PermissionDecision::Allow,
+        "yolo still allows an execute tool that is not denied"
+    );
+    for retired in ["always-approve", "force"] {
+        let retired_policy = policy_for_posture(retired);
         assert_eq!(
-            policy.check("bash", &json!({"command": "echo hi"})),
-            PermissionDecision::Deny,
-            "{posture} deny wins over the execute-lane allow"
-        );
-        assert_eq!(
-            policy.check("write", &json!({})),
-            PermissionDecision::Allow,
-            "{posture} still allows an execute tool that is not denied"
+            retired_policy.check("bash", &json!({})),
+            PermissionDecision::Ask,
+            "{retired} is not a posture name"
         );
     }
 
@@ -41,17 +47,57 @@ fn seam_admission_permission_posture_denies_under_always_approve() {
         default_policy.check("bash", &json!({})),
         PermissionDecision::Ask
     );
+    assert_eq!(
+        policy_for_posture("yolo").check("read", &json!({})),
+        PermissionDecision::Allow,
+        "full access reads without a confirmation"
+    );
+    let yolo_write = policy_for_posture("yolo").check("write", &json!({}));
+    let always_bash = policy_for_posture("always-approve").check("bash", &json!({}));
+    let force_bash = policy_for_posture("force").check("bash", &json!({}));
+    let plan_read = plan.check("read", &json!({"file_path": "README.md"}));
+    let plan_write = plan.check("write", &json!({"file_path": "README.md"}));
+    let plan_bash = plan.check("bash", &json!({}));
+    let auto_read = auto.check("read", &json!({}));
+    let auto_bash = auto.check("bash", &json!({}));
+    eprintln!(
+        "ORACLE yolo-write={yolo_write:?} always-approve-bash={always_bash:?} force-bash={force_bash:?}"
+    );
+    eprintln!(
+        "ORACLE plan-read={plan_read:?} plan-write={plan_write:?} plan-bash={plan_bash:?} auto-read={auto_read:?} auto-bash={auto_bash:?}"
+    );
 }
 
 #[test]
-fn interactive_approval_mode_from_name_maps_aliases_and_unknown() {
+fn interactive_approval_mode_parse_names_the_closed_set() {
     use InteractiveApprovalMode::*;
 
-    assert_eq!(InteractiveApprovalMode::from_name("plan"), Plan);
-    assert_eq!(InteractiveApprovalMode::from_name("auto"), Auto);
-    assert_eq!(InteractiveApprovalMode::from_name("force"), Force);
-    assert_eq!(InteractiveApprovalMode::from_name("yolo"), Force);
-    assert_eq!(InteractiveApprovalMode::from_name("unknown-mode"), Default);
+    assert_eq!(InteractiveApprovalMode::parse("plan").unwrap(), Plan);
+    assert_eq!(InteractiveApprovalMode::parse("AUTO").unwrap(), Auto);
+    assert_eq!(InteractiveApprovalMode::parse(" force ").unwrap(), Force);
+    // The yolo alias parses to Force but prints the canonical name.
+    assert_eq!(InteractiveApprovalMode::parse("yolo").unwrap(), Force);
+    assert_eq!(
+        InteractiveApprovalMode::parse("yolo").unwrap().as_str(),
+        "force"
+    );
+    // Unknown names are refused with the set named — a typo of "plan"
+    // must not silently widen plan's denials into default's
+    // confirmations (the old contract coerced to Default: fail-open).
+    let error = InteractiveApprovalMode::parse("plans").unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("closed set"),
+        "the parse error names the refused set: {message}"
+    );
+    assert!(
+        message.contains("plans"),
+        "the parse error names the refused value: {message}"
+    );
+    assert!(
+        InteractiveToolGuardrail::for_mode("unknown-mode").is_err(),
+        "the guardrail factory propagates the refusal"
+    );
 }
 
 #[test]
@@ -121,7 +167,9 @@ fn static_risk_assessment_denies_host_absolute_paths_but_workspace_allows() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("README.md"), "ok\n").unwrap();
     let inside = workspace.path().join("README.md");
-    let guardrail = InteractiveToolGuardrail::for_mode("plan").with_workspace(workspace.path());
+    let guardrail = InteractiveToolGuardrail::for_mode("plan")
+        .unwrap()
+        .with_workspace(workspace.path());
     assert_eq!(
         guardrail.check("read", &json!({"file_path": inside})),
         PermissionDecision::Allow
@@ -159,7 +207,7 @@ fn interactive_git_read_commands_are_routine_when_keys_are_valid() {
 
 #[test]
 fn interactive_auto_mode_streamlines_bounded_git_and_download_mutations() {
-    let auto = InteractiveToolGuardrail::for_mode("auto");
+    let auto = InteractiveToolGuardrail::for_mode("auto").unwrap();
     assert_eq!(
         auto.check("git", &json!({"command": "branch", "name": "feature"})),
         PermissionDecision::Allow
@@ -295,7 +343,9 @@ fn interactive_guardrail_allows_absolute_paths_inside_workspace() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("README.md"), "ok\n").unwrap();
     let inside = workspace.path().join("README.md");
-    let guardrail = InteractiveToolGuardrail::for_mode("plan").with_workspace(workspace.path());
+    let guardrail = InteractiveToolGuardrail::for_mode("plan")
+        .unwrap()
+        .with_workspace(workspace.path());
 
     assert_eq!(
         guardrail.check("read", &json!({"file_path": inside})),
@@ -364,7 +414,7 @@ fn interactive_guardrail_exposes_four_risk_levels_without_weakening_hitl() {
     ];
 
     let default = InteractiveToolGuardrail::default();
-    let auto = InteractiveToolGuardrail::for_mode("auto");
+    let auto = InteractiveToolGuardrail::for_mode("auto").unwrap();
     for (tool, args, level, default_action, legacy_decision) in cases {
         let assessment = default.assess(tool, &args);
         assert_eq!(assessment.level, level, "unexpected risk for {tool}");
@@ -424,7 +474,7 @@ fn download_is_a_bounded_mixed_workspace_mutation() {
         PermissionDecision::Ask
     );
     assert_eq!(
-        InteractiveToolGuardrail::for_mode("auto").check(
+        InteractiveToolGuardrail::for_mode("auto").unwrap().check(
             "download",
             &json!({"url": "https://example.com/release.bin"})
         ),
@@ -444,7 +494,7 @@ fn download_is_a_bounded_mixed_workspace_mutation() {
 
 #[test]
 fn interactive_guardrail_aggregates_the_highest_batch_risk() {
-    let guardrail = InteractiveToolGuardrail::for_mode("auto");
+    let guardrail = InteractiveToolGuardrail::for_mode("auto").unwrap();
     for (args, expected_level, expected_action, expected_permission) in [
         (
             json!({"invocations": [
@@ -625,7 +675,8 @@ fn interactive_guardrail_default_uses_default_mode_and_allows_read_only_bash() {
 #[test]
 fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
     for mode in ["default", "plan", "auto", "force", "yolo"] {
-        let guardrail = InteractiveToolGuardrail::for_mode(mode);
+        let guardrail = InteractiveToolGuardrail::for_mode(mode)
+            .expect("the closed-set fixture modes all parse");
         assert_eq!(
             guardrail.check("bash", &json!({"command": "rm -rf /"})),
             PermissionDecision::Deny,
@@ -639,16 +690,18 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
 
     assert_eq!(
         InteractiveToolGuardrail::for_mode("default")
+            .unwrap()
             .check("write", &json!({"file_path": "README.md"})),
         PermissionDecision::Ask
     );
     assert_eq!(
         InteractiveToolGuardrail::for_mode("plan")
+            .unwrap()
             .check("write", &json!({"file_path": "README.md"})),
         PermissionDecision::Deny,
         "plan mode denies workspace writes instead of escalating them"
     );
-    let plan = InteractiveToolGuardrail::for_mode("plan");
+    let plan = InteractiveToolGuardrail::for_mode("plan").unwrap();
     for (tool, args) in [
         ("edit", json!({"file_path": "src/lib.rs"})),
         ("patch", json!({"file_path": "src/lib.rs"})),
@@ -662,26 +715,41 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
     }
     assert_eq!(
         InteractiveToolGuardrail::for_mode("default")
+            .unwrap()
             .check("edit", &json!({"file_path": "src/lib.rs"})),
         PermissionDecision::Ask
     );
     assert_eq!(
         InteractiveToolGuardrail::for_mode("auto")
+            .unwrap()
             .check("write", &json!({"file_path": "src/lib.rs"})),
         PermissionDecision::Allow
     );
     assert_eq!(
-        InteractiveToolGuardrail::for_mode("plan").check("update_plan", &json!({"plan": []})),
+        InteractiveToolGuardrail::for_mode("plan")
+            .unwrap()
+            .check("update_plan", &json!({"plan": []})),
         PermissionDecision::Allow,
         "plan mode still allows the checklist tool"
     );
+    for mode in ["default", "plan", "auto"] {
+        assert_eq!(
+            InteractiveToolGuardrail::for_mode(mode).unwrap().check(
+                "ask_user_form",
+                &json!({"form": "root = Card(\"Confirm\", [go])\ngo = Button(\"submit\", \"OK\")"})
+            ),
+            PermissionDecision::Allow,
+            "{mode} mode lets the agent ask through a structured user form"
+        );
+    }
     assert_eq!(
         InteractiveToolGuardrail::for_mode("plan")
+            .unwrap()
             .check("code_diagnostics", &json!({"path": "src/lib.rs"})),
         PermissionDecision::Allow,
         "plan mode still allows diagnostics"
     );
-    let auto = InteractiveToolGuardrail::for_mode("auto");
+    let auto = InteractiveToolGuardrail::for_mode("auto").unwrap();
     assert_eq!(
         auto.check("write", &json!({"file_path": "README.md"})),
         PermissionDecision::Allow
@@ -712,7 +780,7 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
             "auto mode must retain HITL for unbounded or external operation {tool}"
         );
     }
-    let force = InteractiveToolGuardrail::for_mode("force");
+    let force = InteractiveToolGuardrail::for_mode("force").unwrap();
     assert_eq!(
         force.check("write", &json!({"file_path": "README.md"})),
         PermissionDecision::Allow
@@ -728,7 +796,9 @@ fn interactive_guardrail_modes_keep_the_hard_deny_floor() {
         "force/yolo must never override a critical rule denial"
     );
     assert_eq!(
-        InteractiveToolGuardrail::for_mode("yolo").check("bash", &json!({"command": "cargo test"})),
+        InteractiveToolGuardrail::for_mode("yolo")
+            .unwrap()
+            .check("bash", &json!({"command": "cargo test"})),
         PermissionDecision::Allow,
         "--yolo is an alias for force approval semantics"
     );
@@ -1659,7 +1729,9 @@ fn workspace_symlink_escape_is_critical_for_read_and_batch() {
         workspace.path().join("link.txt"),
     )
     .unwrap();
-    let guardrail = InteractiveToolGuardrail::for_mode("force").with_workspace(workspace.path());
+    let guardrail = InteractiveToolGuardrail::for_mode("force")
+        .unwrap()
+        .with_workspace(workspace.path());
     assert_eq!(
         guardrail.check("read", &json!({"file_path": "link.txt"})),
         PermissionDecision::Deny

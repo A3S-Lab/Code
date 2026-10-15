@@ -185,8 +185,18 @@ class A3SCodeAgent(BaseAgent):
             context.metadata["result_read_error"] = report_read_error
         if result.return_code != 0:
             reason = (report or {}).get("reason", "unknown")
-            raise RuntimeError(
-                "A3S Code runner failed with exit code "
-                f"{result.return_code} ({reason}); inspect a3s-code.stderr.txt "
-                "and a3s-code.result.json"
-            )
+            tool_calls = 0
+            if isinstance(report, dict):
+                try:
+                    tool_calls = int(report.get("toolCalls") or 0)
+                except (TypeError, ValueError):
+                    tool_calls = 0
+            # Harbor scores the workspace. A persisted attempt that already
+            # called tools is a finished agent phase; raising skips the verifier.
+            # Missing results and provider rejects stay exceptions.
+            if report is None or tool_calls <= 0 or reason == "provider_rejected":
+                raise RuntimeError(
+                    "A3S Code runner failed with exit code "
+                    f"{result.return_code} ({reason}); inspect a3s-code.stderr.txt "
+                    "and a3s-code.result.json"
+                )

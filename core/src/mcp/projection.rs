@@ -2,16 +2,20 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use super::manager::connect_ready_client;
+use super::manager::connect_ready_client_retained;
 use super::{McpBinding, McpClient, McpServerConfig};
 use crate::capability::{
     CapabilityAdapterError, CapabilityEffect, CapabilityEffectError, CapabilityProjectionAdapter,
-    CapabilityValue, PreparedCapability,
+    CapabilityValue, PreparedCapability, RetainedUseGeneration,
 };
+
+/// Same bound as agent bootstrap. One unreachable server must not stall session admission.
+const MCP_PROJECTION_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Fallible MCP preparation owned by one capability contribution.
 ///
@@ -22,11 +26,34 @@ use crate::capability::{
 /// publish a Use generation.
 pub struct McpProjectionAdapter {
     config: McpServerConfig,
+    retention: Option<Arc<dyn RetainedUseGeneration>>,
+    working_directory: Option<std::path::PathBuf>,
 }
 
 impl McpProjectionAdapter {
     pub fn new(config: McpServerConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            retention: None,
+            working_directory: None,
+        }
+    }
+
+    /// Set the trusted host's working directory for the exact stdio process.
+    /// This selects process routing; it does not grant filesystem authority.
+    pub fn with_working_directory(mut self, working_directory: std::path::PathBuf) -> Self {
+        self.working_directory = Some(working_directory);
+        self
+    }
+
+    /// Retain the trusted host's exact artifact selection while its process exists.
+    /// Run admission separately acquires and validates its own generation lease.
+    pub fn with_retained_use_generation(
+        mut self,
+        retention: Arc<dyn RetainedUseGeneration>,
+    ) -> Self {
+        self.retention = Some(retention);
+        self
     }
 }
 
@@ -53,9 +80,28 @@ impl CapabilityProjectionAdapter for McpProjectionAdapter {
             ));
         }
 
-        let (client, tools) = connect_ready_client(&self.config)
-            .await
-            .map_err(|error| CapabilityAdapterError::new(error.to_string()))?;
+        // Sampling stays unarmed here by decision: capability projection
+        // adapters are frozen-binding contexts, and the sampling authority
+        // belongs to the session-facing manager (SEC-SAMPLE1).
+        let (client, tools) = match tokio::time::timeout(
+            MCP_PROJECTION_CONNECT_TIMEOUT,
+            connect_ready_client_retained(
+                &self.config,
+                self.retention.clone(),
+                self.working_directory.as_deref(),
+                None,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|error| CapabilityAdapterError::new(error.to_string()))?,
+            Err(_) => {
+                return Err(CapabilityAdapterError::new(format!(
+                    "MCP projection connect timed out after {}s",
+                    MCP_PROJECTION_CONNECT_TIMEOUT.as_secs()
+                )));
+            }
+        };
         if cancellation.is_cancelled() {
             close_after_failed_prepare(&self.config.name, &client).await;
             return Err(CapabilityAdapterError::new(
@@ -64,7 +110,16 @@ impl CapabilityProjectionAdapter for McpProjectionAdapter {
         }
 
         let binding = match McpBinding::new(&self.config.name, Arc::clone(&client), tools) {
-            Ok(binding) => Arc::new(binding),
+            Ok(binding) => Arc::new(
+                if matches!(
+                    self.config.transport,
+                    super::McpTransportConfig::Stdio { .. }
+                ) {
+                    binding.with_owned_stdio_process()
+                } else {
+                    binding
+                },
+            ),
             Err(error) => {
                 close_after_failed_prepare(&self.config.name, &client).await;
                 return Err(CapabilityAdapterError::new(error.to_string()));

@@ -474,9 +474,9 @@ pub(crate) fn default_palette_entries(
             command: PaletteCommand::SlashCommand("/model ".into()),
         },
         PaletteEntry {
-            label: "Always Approve Mode".into(),
-            shortcut: "/always-approve".into(),
-            command: PaletteCommand::SlashCommand("/always-approve".into()),
+            label: "YOLO".into(),
+            shortcut: "/yolo".into(),
+            command: PaletteCommand::SlashCommand("/yolo".into()),
         },
         PaletteEntry {
             label: "Multiline Input".into(),

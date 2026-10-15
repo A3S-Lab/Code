@@ -9,6 +9,7 @@
 //!   └── builtin tools (file, search, execution, web, and Code Intelligence queries)
 //! ```
 
+pub(crate) mod artifact_view;
 mod artifacts;
 pub(crate) mod builtin;
 mod immutable_content;
@@ -23,6 +24,8 @@ mod selector;
 pub mod skill;
 pub mod task;
 mod types;
+
+pub use process::{execute_owned_process, OwnedProcessOutput, OwnedProcessTermination};
 
 #[cfg(feature = "dynamic-workflow")]
 pub use crate::dynamic_workflow::{
@@ -95,6 +98,9 @@ use std::sync::Arc;
 /// Maximum output size in bytes before truncation
 pub const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
 
+/// Prefix of the line a lossy transform appends to name the retained original.
+pub(crate) const FULL_OUTPUT_ARTIFACT_MARKER: &str = "[Full output artifact: ";
+
 /// Maximum lines to read from a file
 pub const MAX_READ_LINES: usize = 2000;
 
@@ -126,6 +132,7 @@ pub(crate) fn truncate_tool_output_with_artifact(
         tool_name,
         output,
         &ToolResultTransformPolicyV1::conservative(),
+        true,
     )
 }
 
@@ -133,6 +140,7 @@ pub(crate) fn transform_tool_output_with_artifact(
     tool_name: &str,
     output: &str,
     policy: &ToolResultTransformPolicyV1,
+    model_readable: bool,
 ) -> TruncatedToolOutput {
     let transformed = result_transform::transform(output, policy);
     if transformed.loss_mode == ToolResultLossModeV1::None {
@@ -144,8 +152,13 @@ pub(crate) fn transform_tool_output_with_artifact(
     }
     let artifact = tool_output_artifact(tool_name, output, transformed.retained_original_bytes);
     let artifact_uri = artifact.artifact_uri.clone();
+    let reader_hint = if model_readable {
+        " — page it with read (file_path=this URI, offset) or search (mode=grep, path=this URI)"
+    } else {
+        ""
+    };
     let content = format!(
-        "{}\n\n[Full output artifact: {artifact_uri}]",
+        "{}\n\n{FULL_OUTPUT_ARTIFACT_MARKER}{artifact_uri}{reader_hint}]",
         transformed.content
     );
 
@@ -504,6 +517,7 @@ pub struct ToolExecutor {
     workspace: PathBuf,
     registry: Arc<ToolRegistry>,
     command_env: Option<Arc<HashMap<String, String>>>,
+    use_generation: std::sync::Mutex<Option<crate::use_harness::UseHarnessGeneration>>,
 }
 
 /// Build a log line for a tool invocation that excludes argument *values*.
@@ -646,7 +660,26 @@ impl ToolExecutor {
             workspace: workspace_path,
             registry,
             command_env,
+            use_generation: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Bind the leased Use generation. Later turns of this executor expose
+    /// only the tools that generation allows.
+    pub fn bind_use_generation(&self, generation: crate::use_harness::UseHarnessGeneration) {
+        let mut slot = match self.use_generation.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = Some(generation);
+    }
+
+    pub fn use_generation(&self) -> Option<crate::use_harness::UseHarnessGeneration> {
+        let slot = match self.use_generation.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.clone()
     }
 
     fn check_workspace_boundary(
@@ -694,6 +727,7 @@ impl ToolExecutor {
             workspace: self.workspace.clone(),
             registry: Arc::new(self.registry.snapshot_with_external_tools(external)?),
             command_env: self.command_env.clone(),
+            use_generation: std::sync::Mutex::new(self.use_generation()),
         })
     }
 
@@ -796,7 +830,14 @@ impl ToolExecutor {
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<ToolResult> {
-        Self::check_workspace_boundary(name, args, ctx)?;
+        // The boundary check runs before the tool body. Returning `Err`
+        // here made the receipt path book Unknown plus an unresolved
+        // external operation, which then refused every later mutation and
+        // session completion. A known pre-execution refusal is a failed
+        // tool result with no effects, matching `ToolExecutor::execute`.
+        if let Err(error) = Self::check_workspace_boundary(name, args, ctx) {
+            return Ok(ToolResult::error(name, error.to_string()));
+        }
         log_tool_invocation(name, args);
         let mut result = self.registry.execute_with_context(name, args, ctx).await;
         if let Ok(ref mut r) = result {

@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use super::capabilities::{
-    build_session_capabilities, register_skill_capability, SessionCapabilities,
-    SessionCapabilityInput,
+    build_session_capabilities, build_session_capabilities_sync, register_skill_capability,
+    SessionCapabilities, SessionCapabilityInput,
 };
 use super::session_config::{resolve_auto_delegation_config, ResolvedSessionConfig};
 use super::session_runtime::{
@@ -53,7 +53,7 @@ pub(super) async fn build_agent_session(
     install_default_local_sandbox(&canonical, &mut resolved.options);
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let capabilities =
-        build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;
+        build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone()).await?;
     let session_id = resolved_session_id(&resolved);
     let runtime = match build_session_runtime(SessionRuntimeInput {
         code_config: &agent.code_config,
@@ -104,7 +104,7 @@ pub(super) fn build_agent_session_sync(
     install_default_local_sandbox(&canonical, &mut resolved.options);
     let session_cancel = tokio_util::sync::CancellationToken::new();
     let capabilities =
-        build_resolved_capabilities(agent, &canonical, &resolved, session_cancel.clone())?;
+        build_resolved_capabilities_sync(agent, &canonical, &resolved, session_cancel.clone())?;
     let session_id = resolved_session_id(&resolved);
     let runtime = build_session_runtime_sync(SessionRuntimeInput {
         code_config: &agent.code_config,
@@ -161,7 +161,7 @@ fn resolved_session_id(resolved: &ResolvedSessionConfig) -> String {
     resolved.session_id.clone()
 }
 
-fn build_resolved_capabilities(
+async fn build_resolved_capabilities(
     agent: &Agent,
     canonical: &Path,
     resolved: &ResolvedSessionConfig,
@@ -169,6 +169,28 @@ fn build_resolved_capabilities(
 ) -> Result<SessionCapabilities> {
     let opts = &resolved.options;
     build_session_capabilities(
+        SessionCapabilityInput {
+            code_config: &agent.code_config,
+            base_config: &agent.config,
+            limits: &resolved.limits,
+            workspace: canonical,
+            llm_client: Arc::clone(&resolved.llm_client),
+            opts,
+            mcp_sources: resolved.mcp_sources.clone(),
+        },
+        session_lifetime,
+    )
+    .await
+}
+
+fn build_resolved_capabilities_sync(
+    agent: &Agent,
+    canonical: &Path,
+    resolved: &ResolvedSessionConfig,
+    session_lifetime: tokio_util::sync::CancellationToken,
+) -> Result<SessionCapabilities> {
+    let opts = &resolved.options;
+    build_session_capabilities_sync(
         SessionCapabilityInput {
             code_config: &agent.code_config,
             base_config: &agent.config,
@@ -253,6 +275,12 @@ fn finish_agent_session(
     let auto_delegation = resolve_auto_delegation_config(&agent.code_config, opts);
     let rl_trajectory_recorder = resolved.rl_trajectory_recorder.clone();
     let mut config = AgentConfig {
+        work_policy: opts.work_policy.clone(),
+        goal_control: agent.code_config.goal_control.clone(),
+        durable_source: opts.durable_source.clone(),
+        require_assistant_final_response: opts
+            .require_assistant_final_response
+            .unwrap_or(base.require_assistant_final_response),
         prompt_slots,
         tools: tool_defs,
         tool_presentation_profile: opts
@@ -305,8 +333,32 @@ fn finish_agent_session(
     if !opts.completion_waivers.is_empty() {
         config.completion_waivers = opts.completion_waivers.clone();
     }
+    if !opts.verification_contracts.is_empty() {
+        for contract in &opts.verification_contracts {
+            contract
+                .validate()
+                .map_err(|error| crate::error::CodeError::SessionConfiguration {
+                    field: "verification_contracts",
+                    message: error.to_string(),
+                })?;
+        }
+        config.verification_contracts = opts.verification_contracts.clone();
+    }
     config.plan_run = opts.plan_run.clone();
     config.path_rules = opts.path_rules.clone();
+    if let Some(budget) = opts.path_injection_budget {
+        if budget == 0 || budget > crate::path_instructions::MAX_PATH_INJECTION_BUDGET {
+            return Err(crate::error::CodeError::SessionConfiguration {
+                field: "path_injection_budget",
+                message: format!(
+                    "{budget} is outside the admitted range 1..={}; refusing session \
+                     construction instead of clamping",
+                    crate::path_instructions::MAX_PATH_INJECTION_BUDGET
+                ),
+            });
+        }
+        config.path_injection_budget = Some(budget);
+    }
     config.verifier_enabled = opts.verifier_enabled;
     if opts.completion_attestor.is_some() {
         config.completion_attestor = opts.completion_attestor.clone();
@@ -342,7 +394,10 @@ fn finish_agent_session(
     let cancel_token = Arc::new(tokio::sync::Mutex::new(None));
     let current_run_id = Arc::new(tokio::sync::Mutex::new(None));
     let active_run_control = Arc::new(tokio::sync::Mutex::new(None));
-    let run_admission = Arc::new(super::run_admission::RunAdmission::default());
+    let run_admission = Arc::new(super::run_admission::RunAdmission::for_session(
+        &canonical,
+        &session_id,
+    ));
     let run_store = Arc::new({
         let limits = resolved.limits.retention;
         crate::run::InMemoryRunStore::with_retention_limits(
@@ -386,13 +441,9 @@ fn finish_agent_session(
         session_id: session_id.clone(),
         closed: Arc::clone(&closed),
         session_cancel: session_cancel.clone(),
-        host_env: opts
-            .host_env
-            .clone()
-            .unwrap_or_else(|| Arc::clone(&agent.config.host_env)),
-        cancel_token: Arc::clone(&cancel_token),
-        current_run_id: Arc::clone(&current_run_id),
+        #[cfg(test)]
         active_run_control: Arc::clone(&active_run_control),
+        #[cfg(test)]
         run_store: Arc::clone(&run_store),
         subagent_tasks: Arc::clone(&subagent_tasks),
         confirmation_manager: config.confirmation_manager.clone(),

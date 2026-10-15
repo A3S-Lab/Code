@@ -2945,8 +2945,8 @@ fn pr6_current_value_for_reads_pager_snapshot() {
     );
     assert_eq!(
         current_value_for("permission_mode", &ui, &on_snap),
-        Some(SettingValue::Enum("always-approve")),
-        "yolo=true → 'always-approve'",
+        Some(SettingValue::Enum("yolo")),
+        "yolo=true → 'yolo'",
     );
 
     // Defensive: even when `ui.permission_mode` says one thing, the snapshot wins. Pins the LIVE-state-over-disk contract.
@@ -2956,7 +2956,7 @@ fn pr6_current_value_for_reads_pager_snapshot() {
     };
     assert_eq!(
         current_value_for("permission_mode", &conflicting_ui, &on_snap),
-        Some(SettingValue::Enum("always-approve")),
+        Some(SettingValue::Enum("yolo")),
         "snapshot must win over `ui.permission_mode` when they disagree — \
          the snapshot is the LIVE state, `ui` is the at-startup persisted state",
     );
@@ -3023,7 +3023,7 @@ fn pr6_permission_mode_picker_nav_does_not_dispatch_preview() {
     }
 }
 
-/// Enter on "always-approve" commits `SetPermissionMode(AlwaysApprove)`.
+/// Enter on "yolo" commits `SetPermissionMode(AlwaysApprove)`.
 #[test]
 fn pr6_permission_mode_picker_enter_dispatches_set_permission_mode_commit() {
     use a3s_code_pager::app::actions::PermissionModeKind;
@@ -3035,8 +3035,8 @@ fn pr6_permission_mode_picker_enter_dispatches_set_permission_mode_commit() {
     };
     let always_idx = choices
         .iter()
-        .position(|c| c.canonical == "always-approve")
-        .expect("permission_mode must include the 'always-approve' choice");
+        .position(|c| c.canonical == "yolo")
+        .expect("permission_mode must include the 'yolo' choice");
     let default_canonical = match &meta.kind {
         SettingKind::Enum { default, .. } => *default,
         _ => unreachable!(),
@@ -3055,7 +3055,7 @@ fn pr6_permission_mode_picker_enter_dispatches_set_permission_mode_commit() {
         "Enter on permission_mode row must open the picker, got {:?}",
         s.mode(),
     );
-    // Navigate from the seeded default canonical to "always-approve".
+    // Navigate from the seeded default canonical to "yolo".
     let steps = always_idx as isize - initial_idx as isize;
     let nav_key = if steps > 0 {
         KeyCode::Down
@@ -3072,7 +3072,7 @@ fn pr6_permission_mode_picker_enter_dispatches_set_permission_mode_commit() {
             PermissionModeKind::AlwaysApprove,
         )) => {}
         other => panic!(
-            "Enter on 'always-approve' must commit Action::SetPermissionMode(AlwaysApprove), \
+            "Enter on 'yolo' must commit Action::SetPermissionMode(AlwaysApprove), \
              got {other:?}"
         ),
     }
@@ -3103,7 +3103,7 @@ fn pr6_permission_mode_picker_esc_does_not_dispatch_action() {
     );
 }
 
-/// Picker seeds at "always-approve" when `yolo_mode: true`.
+/// Picker seeds at "yolo" when `yolo_mode: true`.
 #[test]
 fn pr6_picker_seeds_choices_idx_from_pager_snapshot_yolo_true() {
     let snapshot = PagerLocalSnapshot {
@@ -3123,8 +3123,8 @@ fn pr6_picker_seeds_choices_idx_from_pager_snapshot_yolo_true() {
     let always_idx = match &reg.find("permission_mode").unwrap().kind {
         SettingKind::Enum { choices, .. } => choices
             .iter()
-            .position(|c| c.canonical == "always-approve")
-            .expect("permission_mode must have 'always-approve' choice"),
+            .position(|c| c.canonical == "yolo")
+            .expect("permission_mode must have 'yolo' choice"),
         _ => panic!("permission_mode must be Enum"),
     };
     match s.mode() {
@@ -3135,11 +3135,11 @@ fn pr6_picker_seeds_choices_idx_from_pager_snapshot_yolo_true() {
         } => {
             assert_eq!(
                 choices_idx, always_idx,
-                "picker must seed at the 'always-approve' index when snapshot says yolo=true"
+                "picker must seed at the 'yolo' index when snapshot says yolo=true"
             );
             assert_eq!(
                 original_value,
-                &SettingValue::Enum("always-approve"),
+                &SettingValue::Enum("yolo"),
                 "original_value must match the live snapshot"
             );
         }
@@ -3318,7 +3318,7 @@ fn pr11_picker_commit_for_default_dispatches_set_permission_mode_default() {
 #[test]
 fn pr11_picker_commit_for_ask_dispatches_set_permission_mode_ask() {
     use a3s_code_pager::app::actions::PermissionModeKind;
-    // Set snapshot so the picker opens seeded at "always-approve", then navigate to "ask" to commit a non-default selection
+    // Set snapshot so the picker opens seeded at "yolo", then navigate to "ask" to commit a non-default selection
     let snapshot = PagerLocalSnapshot {
         yolo_mode: true,
         auto_mode_gate: true,
@@ -3345,7 +3345,7 @@ fn pr11_picker_commit_for_ask_dispatches_set_permission_mode_ask() {
     };
     let always_idx = choices
         .iter()
-        .position(|c| c.canonical == "always-approve")
+        .position(|c| c.canonical == "yolo")
         .unwrap();
     let ask_idx = choices.iter().position(|c| c.canonical == "ask").unwrap();
     let steps = ask_idx as isize - always_idx as isize;
@@ -3385,7 +3385,7 @@ fn pr11_current_value_for_returns_default_when_ui_says_default() {
     );
 }
 
-/// Live yolo_mode=true overrides ui.permission_mode to "always-approve".
+/// Live yolo_mode=true overrides ui.permission_mode to "yolo".
 #[test]
 fn pr11_current_value_for_pager_yolo_overrides_default_canonical() {
     use a3s_code_pager::settings::current_value_for;
@@ -3399,12 +3399,12 @@ fn pr11_current_value_for_pager_yolo_overrides_default_canonical() {
     };
     assert_eq!(
         current_value_for("permission_mode", &ui, &pager),
-        Some(SettingValue::Enum("always-approve")),
+        Some(SettingValue::Enum("yolo")),
         "pager.yolo_mode=true wins over ui.permission_mode='default' — LIVE state precedence",
     );
 }
 
-/// yolo=true with ui=None resolves to "always-approve" (--yolo startup baseline).
+/// yolo=true with ui=None resolves to "yolo" (--yolo startup baseline).
 #[test]
 fn pr11_current_value_for_yolo_true_with_ui_none_returns_always_approve() {
     use a3s_code_pager::settings::current_value_for;
@@ -3418,8 +3418,8 @@ fn pr11_current_value_for_yolo_true_with_ui_none_returns_always_approve() {
     };
     assert_eq!(
         current_value_for("permission_mode", &ui, &pager),
-        Some(SettingValue::Enum("always-approve")),
-        "pager.yolo_mode=true + ui.permission_mode=None → 'always-approve' \
+        Some(SettingValue::Enum("yolo")),
+        "pager.yolo_mode=true + ui.permission_mode=None → 'yolo' \
          (LIVE-state baseline for `--yolo` startup with no config setting)"
     );
 }
@@ -3514,7 +3514,7 @@ fn pr11_permission_mode_kind_canonical_strings_match_choices_catalog() {
     assert_eq!(
         catalog_canonicals.len(),
         4,
-        "catalog must be exactly {{ask, auto, always-approve, default}} — adding a fifth \
+        "catalog must be exactly {{ask, auto, yolo, default}} — adding a fifth \
          choice requires adding a PermissionModeKind variant AND updating action_for_enum_commit \
          + apply_setting_rollback + load_permission_mode + this test (PR 11 contract)",
     );
@@ -3898,8 +3898,8 @@ fn expanded_description_wraps_to_modal_width() {
         "wrapped description must include the 'Default uses' phrase"
     );
     assert!(
-        rendered.contains("Always") && rendered.contains("automatically"),
-        "wrapped description must include the 'Always approve grants all \
+        rendered.contains("YOLO") && rendered.contains("automatically"),
+        "wrapped description must include the 'YOLO grants all \
          permissions automatically' phrase, got:\n{rendered}"
     );
 }

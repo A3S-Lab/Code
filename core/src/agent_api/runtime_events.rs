@@ -592,6 +592,8 @@ async fn receive_checkpoint(
 
 #[derive(Clone)]
 pub(super) struct RunCleanupState {
+    session_id: String,
+    admission: Arc<super::run_admission::RunAdmission>,
     run_id: String,
     active_tools: ActiveToolMap,
     current_run_id: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -603,6 +605,8 @@ pub(super) struct RunCleanupState {
 impl RunCleanupState {
     pub(super) fn from_session(session: &AgentSession, run_id: &str) -> Self {
         Self {
+            session_id: session.session_id.clone(),
+            admission: Arc::clone(&session.run_admission),
             run_id: run_id.to_string(),
             active_tools: Arc::clone(&session.active_tools),
             current_run_id: Arc::clone(&session.current_run_id),
@@ -610,6 +614,11 @@ impl RunCleanupState {
             active_run_control: Arc::clone(&session.active_run_control),
             host_env: Arc::clone(&session.config.host_env),
         }
+    }
+
+    pub(super) fn with_run_id(mut self, actual: String) -> Self {
+        self.run_id = actual;
+        self
     }
 
     pub(super) fn run_id(&self) -> &str {
@@ -622,6 +631,25 @@ impl RunCleanupState {
 
     pub(super) async fn clear_cancel_token(&self) {
         *self.cancel_token.lock().await = None;
+    }
+
+    pub(super) async fn finish_owned(
+        &self,
+        original: &Arc<super::run_admission::OriginalExecutionContext>,
+    ) -> crate::error::Result<()> {
+        original.validate_original_lineage(
+            &self.session_id,
+            &self.admission,
+            &self.active_run_control,
+            &self.current_run_id,
+            &self.cancel_token,
+        )?;
+        original
+            .retire_original_slots(&self.session_id, &self.admission, &self.run_id)
+            .await?;
+        // Exact slot guards are gone; actual exclusive TaskLease remains held.
+        self.active_tools.write().await.clear();
+        original.record_tools_cleaned()
     }
 
     pub(super) async fn finish(&self) {

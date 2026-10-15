@@ -151,6 +151,11 @@ pub(crate) fn apply_model_caps(
         config.disable_temperature = true;
     }
 
+    // Declared input modalities without "image" → never send image parts.
+    // An undeclared list keeps the old behavior.
+    let input = &model.modalities.input;
+    config.text_only_input = !input.is_empty() && !input.iter().any(|kind| kind == "image");
+
     config
 }
 

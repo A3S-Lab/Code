@@ -333,6 +333,8 @@ pub struct CoreEventIdentity {
 pub(crate) struct CanonicalEventPayload {
     pub(crate) event_type: String,
     pub(crate) payload: Vec<u8>,
+    /// Written for digest compatibility; read by the evaluation adapters.
+    #[allow(dead_code)]
     pub(crate) wire: Vec<u8>,
 }
 

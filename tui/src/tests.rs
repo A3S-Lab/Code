@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+mod goal_control;
+
 use a3s_code_core::llm::{LlmClient, LlmResponse, Message, StreamEvent, ToolDefinition};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -68,6 +70,22 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
+fn resume_flag_resolves_the_requested_session_thread() {
+    // CLI issue #149: `a3s code --resume <id>` previously passed a flag
+    // no binary parsed. The scaffold now threads the id into the
+    // fact-log session identity; `--continue` is the default thread by
+    // construction.
+    use crate::session::DEFAULT_SESSION_ID;
+    let resolve = |resume: Option<&str>| -> String {
+        resume
+            .map(str::to_string)
+            .unwrap_or_else(|| DEFAULT_SESSION_ID.to_string())
+    };
+    assert_eq!(resolve(Some("session-42")), "session-42");
+    assert_eq!(resolve(None), "tui-turn");
+}
+
+#[test]
 fn acl_default_model_wins_over_xai_api_key() {
     let _lock = env_lock();
     let _env = EnvVar::set("A3S_DEFAULT_MODEL", None);
@@ -98,6 +116,9 @@ fn tui_turn_records_fact_log_user_message_with_acl_model() {
     let _lock = env_lock();
     let workspace = tempfile_dir();
     let home = tempfile_dir();
+    // Providers are host-authoritative (ratified 2026-10-09): both
+    // providers live in the trusted user layer, while the workspace layer
+    // keeps its say over default_model only.
     let user_acl = r#"
 default_model = "userprov/user-model"
 providers "userprov" {
@@ -106,8 +127,6 @@ providers "userprov" {
     name = "User"
   }
 }
-"#;
-    let workspace_acl = r#"
 providers "workprov" {
   apiKey = env("ANTHROPIC_API_KEY")
   baseUrl = "http://127.0.0.1:9"
@@ -115,6 +134,9 @@ providers "workprov" {
     name = "Work"
   }
 }
+"#;
+    let workspace_acl = r#"
+default_model = "workprov/work-model"
 "#;
     write_acl(&home.join(".a3s/config.acl"), user_acl);
     write_acl(&workspace.join(".a3s/config.acl"), workspace_acl);
@@ -157,6 +179,51 @@ providers "workprov" {
     assert_eq!(user.payload["text"], prompt);
     let _ = std::fs::remove_dir_all(&workspace);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn workspace_providers_do_not_reach_the_merged_catalog() {
+    let _lock = env_lock();
+    let home = tempfile_dir();
+    let workspace = tempfile_dir();
+    // Providers are host-authoritative: the workspace layer's provider
+    // must not enter the catalog (its credentials would route the host's
+    // traffic), while the user layer's provider drives the launch.
+    write_acl(
+        &home.join(".a3s/config.acl"),
+        r#"
+default_model = "userprov/m"
+providers "userprov" {
+  apiKey = "user-key"
+  models "m" { name = "M" }
+}
+"#,
+    );
+    write_acl(
+        &workspace.join(".a3s/config.acl"),
+        r#"
+providers "workprov" {
+  apiKey = "work-key"
+  baseUrl = "http://127.0.0.1:9"
+  models "w" { name = "W" }
+}
+"#,
+    );
+    let layers = LaunchLayers {
+        workspace,
+        explicit_config: None,
+        home: Some(home),
+    };
+    let merged = merge_launch_layers(&layers).expect("user layer launches");
+    assert!(
+        merged.provider_names.iter().any(|name| name == "userprov"),
+        "the user layer's provider drives the launch"
+    );
+    assert!(
+        !merged.provider_names.iter().any(|name| name == "workprov"),
+        "a workspace provider must not reach the merged catalog: {:?}",
+        merged.provider_names
+    );
 }
 
 /// CLI precedence: workspace `default_model` overlays the user layer, then
@@ -271,7 +338,7 @@ fn slash_catalog_covers_a3s_core_commands() {
     let help = matching_commands("/hel");
     assert!(help.iter().any(|c| c.name == "help"));
 }
-
+#[allow(clippy::await_holding_lock)] // serialized env critical section; blocking is the point
 #[tokio::test]
 async fn agent_adapter_prompt_uses_fact_log_session() {
     let _lock = env_lock();
@@ -290,4 +357,32 @@ async fn agent_adapter_prompt_uses_fact_log_session() {
     assert_eq!(agent.cycle_permission_mode(), crate::PermissionMode::Plan);
     let turn = agent.prompt("ping").await.expect("prompt");
     assert_eq!(turn.text, "scripted-ok");
+}
+
+#[test]
+fn default_model_env_accepts_nested_model_ids() {
+    let _lock = env_lock();
+    // Model ids may contain `/` beyond the provider split (the ACP path and
+    // the core resolver both support them); the TUI env override must not
+    // reject what the rest of the product serves.
+    let (_path, acl) = fixture_acl();
+    let nested = "boyue/bailian/deepseek-v4.1-flash";
+    let nested_provider = "\nproviders \"boyue\" {\n  api_key = \"nested-key\"\n  base_url = \"http://127.0.0.1:9\"\n  models \"bailian/deepseek-v4.1-flash\" { name = \"DeepSeek V4.1 Flash\" }\n}\n".to_owned();
+    let with_model = acl
+        .replace(
+            &format!("default_model = \"{}\"", file_default_model(&acl)),
+            &format!("default_model = \"{nested}\""),
+        )
+        .to_owned()
+        + &nested_provider;
+    let path = tempfile_dir().join("config.acl");
+    std::fs::write(&path, &with_model).expect("write nested fixture");
+    let _env = EnvVar::set("A3S_DEFAULT_MODEL", Some(nested));
+    let layers = LaunchLayers {
+        workspace: tempfile_dir(),
+        explicit_config: Some(path),
+        home: None,
+    };
+    let resolved = merge_launch_layers(&layers).expect("nested model id accepted");
+    assert_eq!(resolved.model_id, nested);
 }

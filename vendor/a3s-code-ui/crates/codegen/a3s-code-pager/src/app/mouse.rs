@@ -1683,7 +1683,7 @@ mod tests {
     fn follow_up_chip_click_yields_literal_submit_action() {
         use crate::app::agent_view::test_fixtures::make_agent;
         let mut agent = make_agent();
-        agent.apply_follow_ups("resp-1".into(), vec!["/always-approve".into()]);
+        agent.apply_follow_ups("resp-1".into(), vec!["/yolo".into()]);
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
         let theme = crate::theme::Theme::current();
@@ -1699,7 +1699,7 @@ mod tests {
         });
         match outcome {
             InputOutcome::Action(Action::SubmitFollowUp(text)) => {
-                assert_eq!(text, "/always-approve", "even a /-prefixed chip is literal");
+                assert_eq!(text, "/yolo", "even a /-prefixed chip is literal");
             }
             other => panic!("expected SubmitFollowUp, got {other:?}"),
         }

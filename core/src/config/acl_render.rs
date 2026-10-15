@@ -43,6 +43,31 @@ pub(super) fn render_single_section(
             ),
         ],
         ConfigSection::Execution => render_execution(config, document),
+        ConfigSection::GoalControl => vec![block_entry(
+            &["goal_control"],
+            config.goal_control.as_ref().map(|policy| Block {
+                name: "goal_control".into(),
+                labels: Vec::new(),
+                blocks: Vec::new(),
+                attributes: [
+                    (
+                        "automatic_enabled".into(),
+                        Value::Bool(policy.automatic_enabled),
+                    ),
+                    ("max_slices".into(), string(&policy.max_slices.to_string())),
+                    (
+                        "max_no_progress_slices".into(),
+                        string(&policy.max_no_progress_slices.to_string()),
+                    ),
+                    (
+                        "deadline_unix_ms".into(),
+                        string(&policy.deadline_unix_ms.to_string()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+        )],
         ConfigSection::Storage => render_storage(config, original, document),
         ConfigSection::Memory => vec![block_entry(&["memory"], render_memory(config, document))],
         ConfigSection::Queue => vec![block_entry(&["queue"], render_queue(config, document))],

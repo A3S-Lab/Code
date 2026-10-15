@@ -16,6 +16,8 @@ mod rerank;
 mod semantic;
 mod semantic_batching;
 mod semantic_query;
+#[cfg(feature = "a3s-vec-fts")]
+mod wiki_index;
 
 #[test]
 fn chunking_is_utf8_safe_deterministic_and_bounded_by_lines_and_bytes() {

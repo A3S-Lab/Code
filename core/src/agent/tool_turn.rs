@@ -26,6 +26,10 @@ impl AgentLoop {
                 refuse_ambiguous_tool_call(call, state, event_tx).await;
             }
         }
+        let (tool_calls, duplicates) = collapse_identical_tool_calls(tool_calls);
+        for call in duplicates {
+            refuse_same_response_duplicate(call, state, event_tx).await;
+        }
         if tool_calls.is_empty() {
             return Ok(());
         }
@@ -119,6 +123,21 @@ impl AgentLoop {
     }
 }
 
+fn collapse_identical_tool_calls(calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<ToolCall>) {
+    let mut seen = HashSet::new();
+    let mut runnable = Vec::new();
+    let mut duplicates = Vec::new();
+    for call in calls {
+        let signature = ExecutionLoopState::tool_signature(&call.name, &call.args);
+        if seen.insert(signature) {
+            runnable.push(call);
+        } else {
+            duplicates.push(call);
+        }
+    }
+    (runnable, duplicates)
+}
+
 fn partition_tool_calls(calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<ToolCall>) {
     let mut counts = HashMap::<String, usize>::new();
     for call in &calls {
@@ -162,6 +181,30 @@ fn collapse_duplicate_tool_uses(state: &mut ExecutionLoopState, ambiguous_ids: &
         }
         seen.insert(id.clone())
     });
+}
+
+async fn refuse_same_response_duplicate(
+    tool_call: ToolCall,
+    state: &mut ExecutionLoopState,
+    event_tx: &Option<mpsc::Sender<AgentEvent>>,
+) {
+    let message = ExecutionLoopState::identical_tool_result_text(&tool_call.name, 2);
+    if let Some(tx) = event_tx {
+        tx.send(AgentEvent::ToolEnd {
+            id: tool_call.id.clone(),
+            name: tool_call.name.clone(),
+            args: Some(tool_call.args.clone()),
+            output: message.clone(),
+            exit_code: 1,
+            metadata: Some(serde_json::json!({ "guard": "same_response_duplicate" })),
+            error_kind: None,
+        })
+        .await
+        .ok();
+    }
+    state
+        .messages
+        .push(Message::tool_result_trusted(&tool_call.id, &message, true));
 }
 
 async fn refuse_ambiguous_tool_call(

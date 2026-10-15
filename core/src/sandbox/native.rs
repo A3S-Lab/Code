@@ -31,6 +31,33 @@ impl NativeBashSandbox {
         })
     }
 
+    /// Build with an explicit network posture. `Deny` is byte-identical to
+    /// [`Self::new`]; `Mediated` arms Gate 4 on the same baseline policy
+    /// with the given origins (`host` or `host:port`, any path). An empty
+    /// allowlist is refused by the sandbox crate — mediating nothing is
+    /// not a posture — and unsupported platforms fail closed.
+    pub fn with_network_mode(
+        workspace: impl Into<PathBuf>,
+        mode: super::SandboxNetworkMode,
+        allow_origins: &[String],
+    ) -> Result<Self> {
+        let inner = match mode {
+            super::SandboxNetworkMode::Deny => a3s_sandbox::NativeSandbox::new(workspace)?,
+            super::SandboxNetworkMode::Mediated => {
+                let mut policy = a3s_sandbox::SandboxPolicy::a3s_bash_baseline();
+                policy.features.mediated_network = true;
+                policy.network.allow = parse_network_allow_rules(allow_origins)?;
+                a3s_sandbox::NativeSandbox::with_policy(workspace, policy)?
+            }
+        };
+        Ok(Self { inner })
+    }
+
+    /// Whether Gate 4 mediation is armed in the active policy.
+    pub fn network_mediation_armed(&self) -> bool {
+        self.inner.policy().features.mediated_network
+    }
+
     pub fn workspace(&self) -> &Path {
         self.inner.workspace()
     }
@@ -42,6 +69,45 @@ impl NativeBashSandbox {
     pub async fn probe(&self) -> Result<()> {
         self.inner.probe().await
     }
+
+    fn ensure_process_lifetime_qualified(&self) -> Result<()> {
+        if cfg!(target_os = "macos") {
+            return Err(native_process_lifetime_unqualified());
+        }
+        Ok(())
+    }
+}
+
+/// Stable reason carried by [`NativeProcessLifetimeUnqualified`].
+///
+/// Callers identify the refusal by downcasting that type. This text is the
+/// operator-facing reason, not a classifier.
+pub(crate) const NATIVE_PROCESS_LIFETIME_UNQUALIFIED: &str = "native_process_lifetime_unqualified: macOS native command execution is unavailable until descendant lifetime and settlement are qualified";
+
+/// The native backend refused before any command process existed.
+///
+/// A timeout, a dropped child, or any other sandbox failure is a different
+/// error. Those stay unknown because the command may already have run.
+#[derive(Debug)]
+pub(crate) struct NativeProcessLifetimeUnqualified;
+
+impl std::fmt::Display for NativeProcessLifetimeUnqualified {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(NATIVE_PROCESS_LIFETIME_UNQUALIFIED)
+    }
+}
+
+impl std::error::Error for NativeProcessLifetimeUnqualified {}
+
+pub(crate) fn native_process_lifetime_unqualified() -> anyhow::Error {
+    NativeProcessLifetimeUnqualified.into()
+}
+
+pub(crate) fn is_native_process_lifetime_unqualified(error: &anyhow::Error) -> bool {
+    error.is::<NativeProcessLifetimeUnqualified>()
+        || error
+            .chain()
+            .any(|cause| cause.is::<NativeProcessLifetimeUnqualified>())
 }
 struct OutputObserverAdapter {
     inner: Arc<dyn CommandOutputObserver>,
@@ -76,6 +142,20 @@ fn execution_output(output: a3s_sandbox::CommandOutput) -> SandboxExecutionOutpu
 
 #[async_trait]
 impl BashSandbox for NativeBashSandbox {
+    fn validate_execution_available(&self) -> Result<()> {
+        self.ensure_process_lifetime_qualified()
+    }
+
+    fn supports_background_execution(&self) -> bool {
+        // macOS Seatbelt preserves file/network policy across fork, but the
+        // native backend only kills the original Unix process group. A child
+        // can setsid/setpgid out of that group and write after Run settlement.
+        // Do not admit background work until descendant containment is real.
+        // Other platforms retain their existing posture; this is no claim of
+        // independent Linux/Windows lifetime qualification.
+        !cfg!(target_os = "macos")
+    }
+
     fn policy_digest(&self) -> Option<String> {
         Some(self.inner.policy_digest())
     }
@@ -89,6 +169,7 @@ impl BashSandbox for NativeBashSandbox {
     }
 
     async fn exec_command(&self, command: &str, _guest_workspace: &str) -> Result<SandboxOutput> {
+        self.ensure_process_lifetime_qualified()?;
         let output = self.inner.exec_command(command).await?;
         Ok(SandboxOutput {
             stdout: output.stdout,
@@ -98,6 +179,7 @@ impl BashSandbox for NativeBashSandbox {
     }
 
     async fn exec(&self, request: SandboxCommandRequest) -> Result<SandboxExecutionOutput> {
+        self.ensure_process_lifetime_qualified()?;
         let output_observer: Option<Arc<dyn a3s_sandbox::OutputObserver>> = request
             .output_observer
             .map(|inner| Arc::new(OutputObserverAdapter { inner }) as Arc<_>);
@@ -115,6 +197,52 @@ impl BashSandbox for NativeBashSandbox {
 
     async fn shutdown(&self) {}
 }
+
+/// Parse `host` / `host:port` origin strings into allow rules (any path).
+/// Malformed entries refuse construction — a typo must not become a
+/// silently wider origin.
+pub(crate) fn parse_network_allow_rules(
+    origins: &[String],
+) -> Result<Vec<a3s_sandbox::NetworkAllowRule>> {
+    origins
+        .iter()
+        .map(|origin| {
+            let origin = origin.trim();
+            let (host, port) = match origin.rsplit_once(':') {
+                Some((host, port)) => {
+                    let port: u16 = port.parse().map_err(|_| {
+                        anyhow::anyhow!(
+                            "sandbox network allow origin {origin:?} has a non-numeric port"
+                        )
+                    })?;
+                    (host.trim().to_string(), Some(port))
+                }
+                None => (origin.to_string(), None),
+            };
+            if host.is_empty()
+                || host
+                    .chars()
+                    .any(|character| matches!(character, '/' | ' ' | ':' | '[' | ']'))
+            {
+                anyhow::bail!(
+                    "sandbox network allow origin {origin:?} is not a bare host[:port] \
+                     (bracketed or bare IPv6 literals are not accepted yet)"
+                );
+            }
+            if port == Some(0) {
+                anyhow::bail!("sandbox network allow origin {origin:?} has port 0");
+            }
+            Ok(a3s_sandbox::NetworkAllowRule {
+                host,
+                port,
+                path_prefix: None,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod lifetime_tests;
 
 #[cfg(test)]
 mod tests {
@@ -162,8 +290,85 @@ mod tests {
         let command = "printf adapter-ready";
         #[cfg(windows)]
         let command = "[Console]::Out.Write('adapter-ready')";
-        let output = sandbox.exec_command(command, "/workspace").await.unwrap();
+        let result = sandbox.exec_command(command, "/workspace").await;
+        if cfg!(target_os = "macos") {
+            let error = result.err().expect("unqualified native lifetime refuses");
+            assert!(error
+                .to_string()
+                .contains("native_process_lifetime_unqualified"));
+            return;
+        }
+        let output = result.unwrap();
         assert_eq!(output.stdout, "adapter-ready");
         assert_eq!(output.exit_code, 0);
+    }
+
+    #[test]
+    fn deny_mode_is_the_unchanged_baseline_policy() {
+        let workspace = tempfile::tempdir().unwrap();
+        let baseline =
+            NativeBashSandbox::new(workspace.path()).expect("baseline sandbox constructs");
+        let deny = NativeBashSandbox::with_network_mode(
+            workspace.path(),
+            crate::sandbox::SandboxNetworkMode::Deny,
+            &[],
+        )
+        .expect("deny mode constructs");
+        assert_eq!(
+            baseline.inner.policy_digest(),
+            deny.inner.policy_digest(),
+            "deny must be byte-identical to the default policy"
+        );
+        assert!(!deny.network_mediation_armed());
+    }
+
+    #[test]
+    fn mediated_mode_arms_gate4_with_the_given_allowlist() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mediated = NativeBashSandbox::with_network_mode(
+            workspace.path(),
+            crate::sandbox::SandboxNetworkMode::Mediated,
+            &[
+                "registry.example".to_string(),
+                "packages.internal:8443".to_string(),
+            ],
+        )
+        .expect("mediated policy with an allowlist arms on this host");
+        assert!(mediated.network_mediation_armed());
+        let policy = mediated.inner.policy();
+        let hosts: Vec<&str> = policy
+            .network
+            .allow
+            .iter()
+            .map(|r| r.host.as_str())
+            .collect();
+        assert_eq!(hosts, vec!["registry.example", "packages.internal"]);
+        assert_eq!(policy.network.allow[1].port, Some(8443));
+
+        // An empty allowlist is refused: mediating nothing is not a posture.
+        let refusal = NativeBashSandbox::with_network_mode(
+            workspace.path(),
+            crate::sandbox::SandboxNetworkMode::Mediated,
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{refusal:#}").contains("allow"),
+            "refusal names the allowlist: {refusal:#}"
+        );
+
+        // Malformed origins refuse instead of widening into a typo —
+        // including the review's findings: a bare IPv6 literal mis-splits
+        // into host ":" port 1, a bracketed IPv6 keeps its brackets, and
+        // port 0 is not a real destination.
+        for bad in ["registry.example:notaport", "::1", "[::1]:443", "host:0"] {
+            let malformed = NativeBashSandbox::with_network_mode(
+                workspace.path(),
+                crate::sandbox::SandboxNetworkMode::Mediated,
+                &[bad.to_string()],
+            )
+            .unwrap_err();
+            assert!(!format!("{malformed:#}").is_empty(), "{bad:?} must refuse");
+        }
     }
 }

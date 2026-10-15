@@ -323,7 +323,7 @@ impl MvpAgent {
     }
     /// Resolve folder trust and load launch-dir MCP configs after `initialize` returns.
     /// The walks are synchronous and expensive in large monorepos.
-    /// They must not block the ACP response (a3s-desktop sends `initialize` immediately).
+    /// They must not block the ACP response (a3s-work sends `initialize` immediately).
     pub(super) fn spawn_initialize_launch_mcp_setup(&self) {
         let cwd = self.launch_cwd.clone();
         let compat = self.cfg.borrow().compat_resolved;
@@ -365,7 +365,7 @@ impl MvpAgent {
         self.agent_mcp_state.clone()
     }
     /// Build the launch-dir plugin registry snapshot on first use. Boot-time discovery was deferred past ACP `initialize`, leaving `plugin_registry_handle` empty.
-    /// The cwd-to-git-root and user/marketplace walks stalled a3s-desktop's first `initialize`. That shared snapshot still backs the launch-dir plugin MCP/LSP merges read in `resolve_mcp_servers` and the session LSP build.
+    /// The cwd-to-git-root and user/marketplace walks stalled a3s-work's first `initialize`. That shared snapshot still backs the launch-dir plugin MCP/LSP merges read in `resolve_mcp_servers` and the session LSP build.
     /// So populate it lazily, off the `initialize` critical path, on the first session-creating call. Runs the discovery walk once; per-session `build_for_cwd` still re-resolves project-scoped plugins for each session's own cwd.
     pub(crate) fn ensure_plugin_registry(&self) {
         if self.plugin_registry_initialized.replace(true) {
@@ -1356,7 +1356,7 @@ impl MvpAgent {
     }
     /// Build the process-lifetime local `WorkspaceOps` on first use.
     /// Deferred past ACP wiring so `initialize` can respond before folder-trust scans and `WorkspaceHandle::new_minimal` run.
-    /// This is the same boot stall as plugin discovery on a3s-desktop Windows.
+    /// This is the same boot stall as plugin discovery on a3s-work Windows.
     fn ensure_local_workspace_ops(
         &self,
     ) -> Result<a3s_code_workspace::WorkspaceOps, acp::Error> {

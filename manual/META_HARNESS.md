@@ -38,6 +38,27 @@ Session behavior does not regress when `SessionOptions.harness` is omitted.
    report once the live digest exists — that is evidence, not an `Observe`
    bypass (#160).
 
+## Resource ownership and completion
+
+A Tool's invoking Turn and its containing Run are distinct owners. A resource
+needed by later Turns must use `ToolContext::register_run_capability_effect`,
+registered before acquisition. `register_capability_effect` retains the shorter
+Turn lifetime. Neither registration grants access to a document or workspace:
+every operation must obtain and check its own live capability. Plain host-direct
+contexts and retired Turns cannot register new Run-owned effects.
+
+Send, streaming, detached execution and resume must await the admitted Run's
+scope-close report before accepting success. Failed or timed-out cleanup refuses
+successful return, `End` and a Completed Run snapshot. A cancellation arriving
+while cleanup waits also refuses the previously computed successful result.
+A primary execution failure remains visible if cleanup fails as well. Releasing
+a listener or lease does not undo a committed external write.
+
+These are live host-settlement guarantees. Durable external cleanup receipts,
+crash recovery of foreign resources, uncooperative extension containment and
+Studio document mutation admission still need their own qualification. They do
+not follow from the model's completion fact or package generation pin.
+
 ## Stock components
 
 | Part id | Role |
@@ -175,13 +196,24 @@ reads the files and fills the stock compose list:
 | `instructions.md` | `system` prompt on `HarnessComposeOptions` |
 | `agent.acl` `model` / `tool_budget` | `SessionOptions` and the `budget` part |
 | `skills/` | `skill_dirs` |
-| `tools/*.md` `kind: mcp` | `McpServerConfig` for `add_mcp_server` |
-| `tools/*.md` `kind: script` | arguments for the existing `program` tool |
-| `schedules/*.md` | prompts whose cron matches; the host calls `session.send` on `schedule:<name>` |
+| `agent.acl` `mcp_servers` | `McpServerConfig` for `add_mcp_server` — the declaration of record (CFG-YAML1) |
+| `tools/*.md` `kind: mcp` | DEPRECATED: still loads during the deprecation period with a warning; declare servers in `agent.acl`'s `mcp_servers` block instead |
+| `agent.acl` `scripts` | `program` tool wiring — path plus `allowed_tools`, the declaration of record (CFG-YAML1) |
+| `agent.acl` `schedules` | cron plus a prompt file path; the host calls `session.send` on `schedule:<name>` |
+| `tools/*.md` `kind: script` | DEPRECATED: still loads during the deprecation period (yielding to an ACL declaration of the same name); declare wiring in `agent.acl`'s `scripts` block |
+| `schedules/*.md` | DEPRECATED: still loads during the period (yielding to an ACL name); declare in `agent.acl`'s `schedules` block |
 
 The projection does not start a daemon, install a timer inside a component, or
 register a tool runtime beside `program`. A schedule that is not due produces
 no fact.
+
+## Work policy and bound goals
+
+A host-selected work policy and a bound goal live in the same fact log as
+ordinary facts: the policy fills the original `guidelines` slot and each goal
+slice is one original Run under the same permission projection and completion
+gate. Neither adds a component, driver or second log. See
+[DURABLE_ENGINEERING.md](DURABLE_ENGINEERING.md).
 
 ## Non-goals
 

@@ -20,7 +20,7 @@ impl SessionActor {
             BuiltinAction::SetYolo { enabled } => {
                 let was = self.permissions.is_yolo_mode();
                 self.permissions.set_yolo_mode(enabled);
-                // Report the ACTUAL state: the manager clamps a requested ON to OFF under the always-approve pin
+                // Report the ACTUAL state: the manager clamps a requested ON to OFF under the yolo pin
                 // Echoing `enabled` would report a turn-on (event, telemetry, and the log line) that never happened
                 let actual = self.permissions.is_yolo_mode();
                 if let Some(actual) = yolo_toggle_report(was, actual) {

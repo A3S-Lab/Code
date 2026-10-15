@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 #[allow(dead_code)]
 #[path = "durable_memory_semantic_refresh/support.rs"]
 mod refresh_support;
@@ -8,7 +10,7 @@ use a3s_code_core::embedding::{
 };
 use a3s_code_core::llm::{LlmResponse, Message, StreamEvent, ToolDefinition};
 use a3s_code_core::memory::{MemoryMaintenanceOptions, ScheduledSemanticRefresh};
-use a3s_code_core::{Agent, AgentSession, CodeConfig, LlmClient, SessionOptions};
+use a3s_code_core::{Agent, AgentSession, LlmClient, SessionOptions};
 use a3s_memory::repository::{
     InMemoryRepository, MemoryChangeSet, MemoryOperation, MemoryRepository, MemoryStatus,
     RevisionMode,
@@ -191,7 +193,9 @@ async fn unchanged_ticks_skip_embedding_but_source_or_index_drift_rebuilds() {
         ),
     );
     let schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(1)).unwrap();
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let agent_session = agent
         .session_async(
@@ -329,7 +333,9 @@ async fn a_new_schedule_owner_discards_the_previous_process_local_receipt() {
     )
     .await;
     let schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(1)).unwrap();
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
 
     let first_provider = Arc::new(CountingProvider::default());
@@ -429,7 +435,9 @@ async fn failed_cas_publication_does_not_promote_prepared_embeddings() {
         ),
     );
     let schedule = ScheduledSemanticRefresh::try_new(Duration::from_secs(1)).unwrap();
-    let agent = Agent::from_config(CodeConfig::default()).await.unwrap();
+    let agent = Agent::from_config(semantic_only_code_config())
+        .await
+        .unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let agent_session = agent
         .session_async(
@@ -490,4 +498,15 @@ async fn failed_cas_publication_does_not_promote_prepared_embeddings() {
     assert_eq!(healthy.jobs[0].failed_runs, 1);
     assert_eq!(healthy.jobs[0].total_affected_items, 4);
     agent_session.close().await;
+}
+
+// This fixture owns only the explicitly scheduled V2 refresh job.
+fn semantic_only_code_config() -> a3s_code_core::CodeConfig {
+    a3s_code_core::CodeConfig {
+        memory: Some(a3s_code_core::memory::MemoryConfig {
+            prune_policy: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }

@@ -38,13 +38,28 @@ pub(super) fn runtime_checkpoint_channel(
     Option<Arc<dyn LoopCheckpointSink>>,
     RuntimeCheckpointReceiver,
 ) {
-    let (tx, rx) = mpsc::channel(CHECKPOINT_BOUNDARY_CHANNEL_CAPACITY);
     let session_store = session.session_store.clone();
     let export_sink = session
         .runtime_session_checkpoint_export_sink
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    runtime_checkpoint_channel_owned(
+        session_store,
+        export_sink,
+        SessionPersistenceContext::from_session(session),
+    )
+}
+
+pub(super) fn runtime_checkpoint_channel_owned(
+    session_store: Option<Arc<dyn SessionStore>>,
+    export_sink: Option<Arc<dyn SessionCheckpointExportSink>>,
+    persistence: SessionPersistenceContext,
+) -> (
+    Option<Arc<dyn LoopCheckpointSink>>,
+    RuntimeCheckpointReceiver,
+) {
+    let (tx, rx) = mpsc::channel(CHECKPOINT_BOUNDARY_CHANNEL_CAPACITY);
     let enabled = session_store.is_some() || export_sink.is_some();
     let sink = enabled.then(|| {
         Arc::new(RuntimeCheckpointSender {
@@ -58,7 +73,7 @@ pub(super) fn runtime_checkpoint_channel(
             rx,
             session_store,
             export_sink,
-            persistence: SessionPersistenceContext::from_session(session),
+            persistence,
         },
     )
 }

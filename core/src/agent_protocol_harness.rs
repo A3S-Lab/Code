@@ -26,13 +26,23 @@ use tokio::sync::{Mutex, RwLock};
 /// Finite default number of conversation sessions retained by one Harness.
 pub const AGENT_PROTOCOL_HARNESS_MAX_SESSIONS: usize = 1_024;
 
-// Test-only force switch. Always compiled so `--no-cfg-coverage` does not leave
-// a dead stub diluting line coverage; production never flips this atomic.
-static TEST_FORCE_INVALID_RECOVERY_BINDING: AtomicBool = AtomicBool::new(false);
+// Test-only force switch, scoped by run id. Always compiled so
+// `--no-cfg-coverage` does not leave a dead stub diluting line coverage;
+// production never arms it. Keying by run id keeps a one-shot armed by one
+// test from being consumed by a concurrent test's recovery.
+fn forced_invalid_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static FLAGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    FLAGGED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
 
-/// Force the next recovery capability-binding check to fail as `InvalidField`.
-pub fn force_invalid_recovery_binding_for_test() {
-    TEST_FORCE_INVALID_RECOVERY_BINDING.store(true, Ordering::SeqCst);
+/// Force the next recovery capability-binding check for exactly this run to
+/// fail as `InvalidField`.
+pub fn force_invalid_recovery_binding_for_test(run_id: &str) {
+    forced_invalid_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(run_id.to_string());
 }
 
 /// Stable failures returned by the Code-owned multi-session Harness kernel.
@@ -397,15 +407,18 @@ impl AgentProtocolHarness {
             .map_err(AgentProtocolHarnessError::from)?;
         match (&logical_resume.capability_binding, capability_batch.take()) {
             (Some(expected), batch) => {
-                let binding_result =
-                    if TEST_FORCE_INVALID_RECOVERY_BINDING.swap(false, Ordering::SeqCst) {
-                        Err(crate::capability::RunCapabilityBindingError::InvalidField {
-                            field: "schema",
-                            message: "forced invalid recovery binding".into(),
-                        })
-                    } else {
-                        session.ensure_recovery_capability_binding(expected)
-                    };
+                let forced_invalid = forced_invalid_runs()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(request.identity.run_id.as_str());
+                let binding_result = if forced_invalid {
+                    Err(crate::capability::RunCapabilityBindingError::InvalidField {
+                        field: "schema",
+                        message: "forced invalid recovery binding".into(),
+                    })
+                } else {
+                    session.ensure_recovery_capability_binding(expected)
+                };
                 match binding_result {
                     Ok(()) if batch.is_none() => {}
                     Ok(()) => {

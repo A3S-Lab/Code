@@ -701,6 +701,7 @@ pub(super) fn dispatch_send_prompt_submission(
     let subagent_model_inheritance_from_app = app.subagent_model_inheritance;
     let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
+    let is_a3s_code_from_app = app.is_a3s_code;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
     let Some(agent) = app.agents.get_mut(&id) else {
         return prelude;
@@ -844,12 +845,16 @@ pub(super) fn dispatch_send_prompt_submission(
             };
 
             if let Some(invocation) = parse_invocation(trimmed) {
-                let (is_builtin, command) = {
+                let (is_builtin, command, backend_unavailable) = {
                     let reg = agent.prompt.slash_controller.registry();
                     let is_builtin = reg.is_builtin(invocation.token);
                     // Bypasses only the menu-only hide (hard gates still return `None`); see `CommandRegistry::get_for_dispatch`
                     let command = reg.get_for_dispatch(invocation.token).cloned();
-                    (is_builtin, command)
+                    (
+                        is_builtin,
+                        command,
+                        reg.is_backend_unavailable(invocation.token),
+                    )
                 };
                 {
                     use a3s_code_telemetry::events::{PagerCommandSource, PagerSlashCommand};
@@ -882,10 +887,26 @@ pub(super) fn dispatch_send_prompt_submission(
                             .map_or(invocation.args, |invocation| invocation.args);
                         command.run(&mut ctx, args)
                     }
+                } else if is_a3s_code_from_app {
+                    CommandResult::Message(if backend_unavailable {
+                        format!(
+                            "TUI command /{} is unavailable with the Code backend. Use /help for available commands.",
+                            invocation.token
+                        )
+                    } else {
+                        format!(
+                            "Unknown TUI command: /{}. Use /help for available commands.",
+                            invocation.token
+                        )
+                    })
                 } else {
                     // Unknown command: pass through to shell
                     CommandResult::PassThrough(text.clone())
                 }
+            } else if is_a3s_code_from_app {
+                CommandResult::Message(
+                    "Enter a TUI command after /. Use /help for available commands.".into(),
+                )
             } else {
                 // Bare `/` or malformed: pass through
                 CommandResult::PassThrough(text.clone())

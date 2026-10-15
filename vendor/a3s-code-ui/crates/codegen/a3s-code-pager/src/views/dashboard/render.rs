@@ -2071,7 +2071,7 @@ fn paint_dispatch_feedback_badge(
 }
 
 /// The model name renders in dim secondary text; the mode shows as a `plan` (plan accent) or
-/// `always-approve` (default) flag.
+/// `yolo` (default) flag.
 fn paint_dispatch_config_badge(
     buf: &mut Buffer,
     area: Rect,
@@ -2109,7 +2109,7 @@ fn paint_dispatch_config_badge(
             bold: false,
         }),
         DashboardDispatchMode::AlwaysApprove => flags.push(PromptFlag {
-            text: "always-approve",
+            text: "yolo",
             color: None,
             bold: false,
         }),

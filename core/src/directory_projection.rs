@@ -81,21 +81,52 @@ impl DirectoryProjection {
             bail!("instructions.md is empty");
         }
 
-        let (model, tool_budget) = load_agent_acl(&root.join("agent.acl"))?;
+        let acl = load_agent_acl(&root.join("agent.acl"))?;
         let skill_candidate = root.join("skills");
         let skill_dir =
             (skill_candidate.is_dir() && !skill_candidate.is_symlink()).then_some(skill_candidate);
 
-        let mut mcp_servers = Vec::new();
-        let mut scripts = Vec::new();
+        // ACL is the declaration of record (CFG-YAML1, ratified
+        // 2026-10-09): agent.acl's `mcp_servers`, `scripts`, and
+        // `schedules` blocks declare servers, script tools, and scheduled
+        // prompts; the markdown frontmatter shapes ride a deprecation
+        // period and yield to an ACL declaration of the same name.
+        let mut mcp_servers = acl.mcp_servers;
+        for script in &acl.scripts {
+            validate_script_path(&root, &script.name, &script.path)?;
+        }
+        let mut scripts = acl.scripts;
         load_tools(&root, &mut mcp_servers, &mut scripts)?;
 
-        let schedules = load_schedules(&root)?;
+        let mut schedules = Vec::new();
+        for declaration in acl.schedules {
+            let prompt = read_bounded(
+                &root.join(&declaration.prompt_path),
+                MAX_SCHEDULE_PROMPT_BYTES,
+                "schedule prompt",
+            )
+            .with_context(|| {
+                format!(
+                    "schedule {} prompt file {} is unreadable",
+                    declaration.name, declaration.prompt_path
+                )
+            })?;
+            let prompt = prompt.trim().to_owned();
+            if prompt.is_empty() {
+                bail!("schedule {} prompt is empty", declaration.name);
+            }
+            schedules.push(DirectorySchedule {
+                name: declaration.name,
+                prompt,
+                cron: declaration.cron,
+            });
+        }
+        load_schedules(&root, &mut schedules)?;
 
         Ok(Self {
             instructions,
-            model,
-            tool_budget,
+            model: acl.model,
+            tool_budget: acl.tool_budget,
             skill_dir,
             mcp_servers,
             scripts,
@@ -160,9 +191,33 @@ impl DirectoryScript {
     }
 }
 
-fn load_agent_acl(path: &Path) -> Result<(Option<String>, Option<u32>)> {
+/// One `schedules "name" { cron, prompt }` declaration from agent.acl;
+/// the prompt file resolves at load time.
+struct AclScheduleDeclaration {
+    name: String,
+    cron: CronExpr,
+    prompt_path: String,
+}
+
+/// The agent.acl declaration of record: model/tool_budget plus the
+/// `mcp_servers`, `scripts`, and `schedules` block families.
+struct AgentAcl {
+    model: Option<String>,
+    tool_budget: Option<u32>,
+    mcp_servers: Vec<McpServerConfig>,
+    scripts: Vec<DirectoryScript>,
+    schedules: Vec<AclScheduleDeclaration>,
+}
+
+fn load_agent_acl(path: &Path) -> Result<AgentAcl> {
     if !path.is_file() {
-        return Ok((None, None));
+        return Ok(AgentAcl {
+            model: None,
+            tool_budget: None,
+            mcp_servers: Vec::new(),
+            scripts: Vec::new(),
+            schedules: Vec::new(),
+        });
     }
     let text = read_bounded(path, MAX_MARKDOWN_BYTES, "agent.acl")?;
     let document = a3s_acl::parse_acl(&text).context("agent.acl did not parse")?;
@@ -191,7 +246,114 @@ fn load_agent_acl(path: &Path) -> Result<(Option<String>, Option<u32>)> {
             _ => bail!("agent.acl tool_budget must be a non-negative integer"),
         })
         .transpose()?;
-    Ok((model, tool_budget))
+    // The `mcp_servers` block family (the same names the config loader
+    // accepts), plus the `scripts` and `schedules` families, declare this
+    // directory's wiring in ACL — the declaration of record since
+    // CFG-YAML1. Cron validates here, fail closed; script paths and
+    // allowed_tools carry the same rules the markdown shapes enforced.
+    let mut mcp_servers = Vec::new();
+    let mut scripts = Vec::new();
+    let mut schedules = Vec::new();
+    for block in &document.blocks {
+        match block.name.as_str() {
+            "mcp_servers" | "mcpServers" | "mcp_server" => {
+                mcp_servers.push(crate::config::parse_mcp_server_block(block)?);
+            }
+            "scripts" => scripts.push(acl_script_block(block)?),
+            "schedules" => schedules.push(acl_schedule_block(block)?),
+            _ => {}
+        }
+    }
+    Ok(AgentAcl {
+        model,
+        tool_budget,
+        mcp_servers,
+        scripts,
+        schedules,
+    })
+}
+
+fn acl_string_attr(block: &a3s_acl::Block, key: &str) -> Result<String> {
+    match block.attributes.get(key) {
+        Some(a3s_acl::Value::String(text)) if !text.trim().is_empty() => Ok(text.clone()),
+        _ => bail!(
+            "agent.acl {} block requires a non-empty {key} string",
+            block.name
+        ),
+    }
+}
+
+fn acl_string_list_attr(block: &a3s_acl::Block, key: &str) -> Result<Vec<String>> {
+    match block.attributes.get(key) {
+        Some(a3s_acl::Value::List(items)) => {
+            let names = items
+                .iter()
+                .map(|item| match item {
+                    a3s_acl::Value::String(text) if !text.trim().is_empty() => Ok(text.clone()),
+                    _ => bail!(
+                        "agent.acl {} block {key} entries must be non-empty strings",
+                        block.name
+                    ),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if names.is_empty() {
+                bail!(
+                    "agent.acl {} block requires a non-empty {key} list",
+                    block.name
+                );
+            }
+            Ok(names)
+        }
+        _ => bail!(
+            "agent.acl {} block requires a non-empty {key} list",
+            block.name
+        ),
+    }
+}
+
+fn acl_block_name(block: &a3s_acl::Block) -> Result<String> {
+    match block.labels.first() {
+        Some(label) if !label.trim().is_empty() => Ok(label.clone()),
+        _ => bail!("agent.acl {} block requires a name label", block.name),
+    }
+}
+
+/// `scripts "name" { path, allowed_tools, description? }` — the script
+/// file stays content; its wiring and authority declare in ACL.
+fn acl_script_block(block: &a3s_acl::Block) -> Result<DirectoryScript> {
+    let name = acl_block_name(block)?;
+    let relative = acl_string_attr(block, "path")?;
+    // Path containment and existence validate against the root in
+    // `load()` (via `validate_script_path`), where the root is known.
+    Ok(DirectoryScript {
+        name,
+        description: block
+            .attributes
+            .get("description")
+            .and_then(|value| match value {
+                a3s_acl::Value::String(text) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        path: relative.replace('\\', "/"),
+        allowed_tools: acl_string_list_attr(block, "allowed_tools")?,
+    })
+}
+
+/// `schedules "name" { cron, prompt }` — cron validates here (fail
+/// closed, the parse error names the field); the prompt file's content
+/// is read bounded at load time.
+fn acl_schedule_block(block: &a3s_acl::Block) -> Result<AclScheduleDeclaration> {
+    let name = acl_block_name(block)?;
+    let cron_text = acl_string_attr(block, "cron")?;
+    let cron = CronExpr::parse(&cron_text)
+        .with_context(|| format!("agent.acl schedules {name} cron is invalid"))?;
+    let prompt_path = acl_string_attr(block, "prompt")?;
+    Ok(AclScheduleDeclaration {
+        name,
+        cron,
+        prompt_path,
+    })
 }
 
 fn load_tools(
@@ -216,9 +378,45 @@ fn load_tools(
         let value: serde_yaml::Value =
             serde_yaml::from_str(&front).context("tool frontmatter is not YAML")?;
         let kind = yaml_string(&value, "kind").context("tool frontmatter requires kind")?;
+        let already_declared =
+            |names: &[McpServerConfig]| names.iter().any(|server| server.name == name);
         match kind.as_str() {
-            "mcp" => mcp_servers.push(mcp_server(&name, &value)?),
-            "script" => scripts.push(script_tool(root, &name, &value, body.trim())?),
+            "mcp" => {
+                if already_declared(mcp_servers) {
+                    tracing::warn!(
+                        tool = %name,
+                        "tools/{name}.md is superseded by the agent.acl mcp_servers \
+                         declaration of the same name"
+                    );
+                    continue;
+                }
+                // CFG-YAML1 deprecation period: the shape still loads, with
+                // a warning naming the declaration of record.
+                tracing::warn!(
+                    tool = %path.display(),
+                    "tool markdown `kind: mcp` is deprecated — declare the server in \
+                     agent.acl's mcp_servers block; the markdown shape will be refused \
+                     at the end of the deprecation period"
+                );
+                mcp_servers.push(mcp_server(&name, &value)?);
+            }
+            "script" => {
+                if scripts.iter().any(|script| script.name == name) {
+                    tracing::warn!(
+                        tool = %name,
+                        "tools/{name}.md is superseded by the agent.acl scripts \
+                         declaration of the same name"
+                    );
+                    continue;
+                }
+                tracing::warn!(
+                    tool = %path.display(),
+                    "tool markdown `kind: script` is deprecated — declare the wiring in \
+                     agent.acl's scripts block (path plus allowed_tools); the markdown \
+                     shape will be refused at the end of the deprecation period"
+                );
+                scripts.push(script_tool(root, &name, &value, body.trim())?);
+            }
             other => bail!("tool {name} has unknown kind `{other}`"),
         }
     }
@@ -256,7 +454,23 @@ fn script_tool(
     description: &str,
 ) -> Result<DirectoryScript> {
     let relative = yaml_string(value, "path").context("script tool requires path")?;
-    let relative_path = Path::new(&relative);
+    let normalized = validate_script_path(root, name, &relative)?;
+    let allowed_tools =
+        yaml_string_list(value, "allowed_tools").context("script tool requires allowed_tools")?;
+    Ok(DirectoryScript {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        path: normalized,
+        allowed_tools,
+    })
+}
+
+/// A script tool's path must stay inside the agent directory, be a
+/// .js/.mjs file, and exist — the same rules for the ACL declaration
+/// and the deprecated markdown shape. Returns the normalized
+/// forward-slash relative path.
+fn validate_script_path(root: &Path, name: &str, relative: &str) -> Result<String> {
+    let relative_path = Path::new(relative);
     if relative_path.is_absolute()
         || relative_path
             .components()
@@ -273,29 +487,28 @@ fn script_tool(
     if !canonical.starts_with(root) || !canonical.is_file() {
         bail!("script tool {name} file escapes the agent directory");
     }
-    let allowed_tools =
-        yaml_string_list(value, "allowed_tools").context("script tool requires allowed_tools")?;
-    Ok(DirectoryScript {
-        name: name.to_owned(),
-        description: description.to_owned(),
-        path: relative.replace('\\', "/"),
-        allowed_tools,
-    })
+    Ok(relative.replace('\\', "/"))
 }
 
-fn load_schedules(root: &Path) -> Result<Vec<DirectorySchedule>> {
+fn load_schedules(root: &Path, schedules: &mut Vec<DirectorySchedule>) -> Result<()> {
     let dir = root.join("schedules");
     if !dir.is_dir() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let mut paths = markdown_files(&dir)?;
     if paths.len() > MAX_SCHEDULES {
         bail!("schedules/ has more than {MAX_SCHEDULES} markdown files");
     }
     paths.sort();
-    let mut schedules = Vec::with_capacity(paths.len());
     for path in paths {
         let name = file_stem(&path)?;
+        if schedules.iter().any(|schedule| schedule.name == name) {
+            tracing::warn!(
+                schedule = %name,
+                "schedules/{name}.md is superseded by the agent.acl declaration of the same name"
+            );
+            continue;
+        }
         let text = read_bounded(&path, MAX_MARKDOWN_BYTES, "schedule markdown")?;
         let (front, body) = split_frontmatter(&text)
             .with_context(|| format!("schedule {name} is missing frontmatter"))?;
@@ -309,13 +522,21 @@ fn load_schedules(root: &Path) -> Result<Vec<DirectorySchedule>> {
         if prompt.len() > MAX_SCHEDULE_PROMPT_BYTES {
             bail!("schedule {name} prompt is too large");
         }
+        // CFG-YAML1 deprecation period: the shape still loads, with a
+        // warning naming the declaration of record.
+        tracing::warn!(
+            schedule = %name,
+            "schedules/*.md frontmatter is deprecated — declare it in agent.acl's \
+             schedules block (cron plus a prompt file path); the markdown shape will \
+             be refused at the end of the deprecation period"
+        );
         schedules.push(DirectorySchedule {
             name,
             prompt,
             cron: CronExpr::parse(&cron)?,
         });
     }
-    Ok(schedules)
+    Ok(())
 }
 
 fn markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -364,17 +585,53 @@ fn read_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String> {
     Ok(text)
 }
 
-fn split_frontmatter(text: &str) -> Result<(String, String)> {
+pub(crate) fn split_frontmatter(text: &str) -> Result<(String, String)> {
+    // Fence lines accept LF, CRLF, and CR. The YAML slice is joined with LF
+    // so a Windows checkout cannot leave `\r` on `kind`, `command`, `args`,
+    // or `url` — `yaml_string` keeps the scalar bytes it parsed.
     let text = text.trim_start_matches('\u{feff}');
-    let rest = text
-        .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))
-        .context("frontmatter must start with ---")?;
-    let (front, body) = rest
-        .split_once("\n---")
-        .context("frontmatter must end with ---")?;
-    let body = body.trim_start_matches(['\r', '\n']);
-    Ok((front.to_owned(), body.to_owned()))
+    let Some((opening, mut offset)) = next_logical_line(text, 0) else {
+        bail!("frontmatter must start with ---");
+    };
+    if opening != "---" {
+        bail!("frontmatter must start with ---");
+    }
+    let mut lines = Vec::new();
+    loop {
+        let Some((line, next)) = next_logical_line(text, offset) else {
+            bail!("frontmatter must end with ---");
+        };
+        offset = next;
+        if line == "---" {
+            break;
+        }
+        lines.push(line);
+    }
+    let body = text[offset..].trim_start_matches(['\r', '\n']);
+    Ok((lines.join("\n"), body.to_owned()))
+}
+
+/// One line with its ending removed. The returned index is the next line.
+/// A final line with no ending is still a line: the file ended.
+fn next_logical_line(text: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if start >= bytes.len() {
+        return None;
+    }
+    let mut index = start;
+    while index < bytes.len() && bytes[index] != b'\n' && bytes[index] != b'\r' {
+        index += 1;
+    }
+    let line = &text[start..index];
+    if index == bytes.len() {
+        return Some((line, index));
+    }
+    let next = if bytes[index] == b'\r' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+        index + 2
+    } else {
+        index + 1
+    };
+    Some((line, next))
 }
 
 fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
@@ -553,6 +810,7 @@ fn parse_bound(text: &str, min: u32, max: u32) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn write(dir: &Path, relative: &str, body: &str) {
         let path = dir.join(relative);
@@ -694,5 +952,186 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let error = DirectoryProjection::load(dir.path()).unwrap_err();
         assert!(error.to_string().contains("instructions.md"));
+    }
+
+    #[test]
+    fn agent_acl_mcp_servers_are_the_declaration_of_record() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "instructions.md",
+            "Run the checklist and report.",
+        );
+        write(
+            dir.path(),
+            "agent.acl",
+            r#"
+agent {
+  model = "mock/checklist"
+}
+
+mcp_servers "probe" {
+  transport = "stdio"
+  command = "node"
+  args = ["probe-server.js"]
+}
+"#,
+        );
+        let projection = DirectoryProjection::load(dir.path()).expect("projection loads");
+        let servers = projection.mcp_servers();
+        assert_eq!(servers.len(), 1, "the ACL block declares the server");
+        assert_eq!(servers[0].name, "probe");
+        match &servers[0].transport {
+            McpTransportConfig::Stdio { command, args } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, &vec!["probe-server.js".to_string()]);
+            }
+            other => panic!("stdio transport expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crlf_tool_markdown_mcp_loads_command_without_carriage_return() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "instructions.md", "Run the probe.\r\n");
+        write(
+            dir.path(),
+            "agent.acl",
+            "agent { model = \"mock/probe\" }\r\n",
+        );
+        write(
+            dir.path(),
+            "tools/probe.md",
+            "---\r\nkind: mcp\r\ncommand: node\r\nargs:\r\n  - probe.js\r\n---\r\nProbe body.\r\n",
+        );
+        let projection = DirectoryProjection::load(dir.path()).expect("crlf mcp tool loads");
+        let server = projection
+            .mcp_servers()
+            .iter()
+            .find(|server| server.name == "probe")
+            .expect("probe server");
+        match &server.transport {
+            McpTransportConfig::Stdio { command, args } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, &vec!["probe.js".to_string()]);
+                assert!(!command.contains('\r'));
+                assert!(args.iter().all(|arg| !arg.contains('\r')));
+            }
+            other => panic!("stdio transport expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crlf_agent_acl_mcp_server_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "instructions.md", "Run the checklist.\r\n");
+        write(
+            dir.path(),
+            "agent.acl",
+            "agent {\r\n  model = \"mock/checklist\"\r\n}\r\n\r\nmcp_servers \"probe\" {\r\n  transport = \"stdio\"\r\n  command = \"node\"\r\n  args = [\"probe-server.js\"]\r\n}\r\n",
+        );
+        let projection = DirectoryProjection::load(dir.path()).expect("crlf agent.acl loads");
+        let server = &projection.mcp_servers()[0];
+        assert_eq!(server.name, "probe");
+        match &server.transport {
+            McpTransportConfig::Stdio { command, args } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, &vec!["probe-server.js".to_string()]);
+            }
+            other => panic!("stdio transport expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_markdown_mcp_shape_still_loads_during_the_deprecation_period() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "instructions.md", "Run the probe.");
+        write(
+            dir.path(),
+            "agent.acl",
+            "agent { model = \"mock/probe\" }\n",
+        );
+        write(
+            dir.path(),
+            "tools/probe.md",
+            "---\nkind: mcp\ncommand: node\nargs:\n  - probe.js\n---\nProbe body.\n",
+        );
+        // CFG-YAML1: the shape warns and still loads during the period;
+        // the refusal lands at its end.
+        let projection = DirectoryProjection::load(dir.path())
+            .expect("deprecated shape still loads during the period");
+        assert!(projection
+            .mcp_servers()
+            .iter()
+            .any(|server| server.name == "probe"));
+    }
+
+    #[test]
+    fn agent_acl_schedules_and_scripts_are_the_declaration_of_record() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "instructions.md", "Run the checklist.");
+        write(
+            dir.path(),
+            "agent.acl",
+            r#"
+agent { model = "mock/checklist" }
+
+schedules "daily" {
+  cron = "0 9 * * *"
+  prompt = "prompts/daily.md"
+}
+
+scripts "fmt" {
+  path = "tools/fmt.mjs"
+  allowed_tools = ["bash"]
+}
+"#,
+        );
+        write(dir.path(), "prompts/daily.md", "Run the morning checks.\n");
+        write(dir.path(), "tools/fmt.mjs", "export default 1;\n");
+        let projection = DirectoryProjection::load(dir.path()).expect("projection loads");
+        let scripts = projection.scripts();
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].name, "fmt");
+        assert_eq!(scripts[0].path, "tools/fmt.mjs");
+        assert_eq!(scripts[0].allowed_tools, vec!["bash".to_string()]);
+        // The schedule's prompt resolves from its file at load time.
+        let due = projection.due(Utc.with_ymd_and_hms(2026, 10, 10, 9, 0, 0).unwrap());
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].name, "daily");
+        assert_eq!(due[0].prompt.trim(), "Run the morning checks.");
+    }
+
+    #[test]
+    fn markdown_schedules_and_scripts_yield_to_acl_names() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "instructions.md", "Run the checklist.");
+        write(
+            dir.path(),
+            "agent.acl",
+            "agent { model = \"mock/checklist\" }\n\nschedules \"daily\" {\n  cron = \"0 9 * * *\"\n  prompt = \"prompts/daily.md\"\n}\n\nscripts \"fmt\" {\n  path = \"tools/fmt.mjs\"\n  allowed_tools = [\"bash\"]\n}\n",
+        );
+        write(dir.path(), "prompts/daily.md", "ACL morning checks.\n");
+        write(dir.path(), "tools/fmt.mjs", "export default 1;\n");
+        // The deprecated markdown shapes carry DIFFERENT payloads under
+        // the SAME names — the ACL declarations must win.
+        write(
+            dir.path(),
+            "schedules/daily.md",
+            "---\ncron: \"0 23 * * *\"\n---\nMarkdown evening checks.\n",
+        );
+        write(
+            dir.path(),
+            "tools/fmt.md",
+            "---\nkind: script\npath: fmt.mjs\ndescription: markdown shape\nallowed_tools:\n  - web_search\n---\nbody\n",
+        );
+        write(dir.path(), "fmt.mjs", "export default 2;\n");
+        let projection = DirectoryProjection::load(dir.path()).expect("projection loads");
+        let scripts = projection.scripts();
+        assert_eq!(scripts.len(), 1, "the ACL script wins the name");
+        assert_eq!(scripts[0].allowed_tools, vec!["bash".to_string()]);
+        let due = projection.due(Utc.with_ymd_and_hms(2026, 10, 10, 9, 0, 0).unwrap());
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].prompt.trim(), "ACL morning checks.");
     }
 }

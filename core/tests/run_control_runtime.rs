@@ -9,8 +9,8 @@ use a3s_code_core::llm::{
 };
 use a3s_code_core::permissions::PermissionPolicy;
 use a3s_code_core::{
-    Agent, AgentEvent, InterruptRequest, PlanningMode, RunControlOperation, RunControlReceiptState,
-    RunStatus, SessionOptions, SteerRequest,
+    Agent, AgentEvent, CodeError, InterruptRequest, PlanningMode, RunControlError,
+    RunControlOperation, RunControlReceiptState, RunStatus, SessionOptions, SteerRequest,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -313,16 +313,17 @@ async fn steer_crosses_the_public_session_boundary_at_the_next_safe_point() {
             )
         }));
     assert!(session.run_control_snapshot().await.is_none());
-    // The finished run's inbox is gone. A later steer is another user message.
-    let late = session
-        .steer(SteerRequest::new("too late"))
-        .await
-        .expect("settled steer is another user message");
-    assert_eq!(late.state, RunControlReceiptState::Applied);
+    // The finished run's inbox is gone. A later steer refuses as idle and
+    // never reaches the model; the host sends it as the next user message.
+    let late = session.steer(SteerRequest::new("too late")).await;
     assert!(
-        client.saw_user_text("too late"),
-        "late steer must reach the model as a user message"
+        matches!(
+            late,
+            Err(CodeError::RunControl(RunControlError::NoActiveRun))
+        ),
+        "{late:?}"
     );
+    assert!(!client.saw_user_text("too late"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -375,4 +376,93 @@ async fn interrupt_crosses_the_public_session_boundary_and_settles_the_run() {
     let run = session.run_snapshot(&snapshot.run_id).await.unwrap();
     assert_eq!(run.status, RunStatus::Cancelled);
     assert!(session.run_control_snapshot().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_steer_lands_on_the_log_when_interrupt_ends_the_run() {
+    // The steer-then-interrupt sequence: an accepted Steer that never
+    // reaches a fold point must land on the durable log (becoming the next
+    // conversation input) instead of being silently settled away.
+    let workspace = tempfile::tempdir().unwrap();
+    let client = Arc::new(PendingInterruptClient::default());
+    let session =
+        session_with_client(workspace.path(), client.clone(), "steer-then-interrupt").await;
+    let (mut events, worker) = session
+        .stream("Keep working until stopped.", None)
+        .await
+        .unwrap();
+
+    tokio::time::timeout(TEST_TIMEOUT, client.started.notified())
+        .await
+        .expect("pending model turn did not start");
+    let snapshot = active_snapshot(&session).await;
+    let mut steer = SteerRequest::new(STEER_INPUT)
+        .with_run_id(snapshot.run_id.clone())
+        .with_expected_turn(
+            snapshot.turn_id.clone().expect("turn id"),
+            snapshot.turn_revision,
+        );
+    steer.request_id = Some("steer-then-interrupt-request".into());
+    let accepted = session.steer(steer).await.unwrap();
+    assert_eq!(accepted.state, RunControlReceiptState::Accepted);
+
+    session
+        .interrupt(
+            InterruptRequest::new()
+                .with_reason("host requested stop")
+                .with_run_id(snapshot.run_id.clone()),
+        )
+        .await
+        .unwrap();
+
+    let mut applied = Vec::new();
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        while let Some(event) = events.recv().await {
+            if let AgentEvent::RunControlApplied { request_id, .. } = &event {
+                applied.push(request_id.clone());
+            }
+        }
+    })
+    .await
+    .expect("interrupted stream did not settle");
+    worker.await.unwrap();
+
+    assert!(
+        applied.contains(&"steer-then-interrupt-request".to_owned()),
+        "the queued steer must be applied, not settled away: {applied:?}"
+    );
+    let run = session.run_snapshot(&snapshot.run_id).await.unwrap();
+    assert_eq!(run.status, RunStatus::Cancelled);
+
+    // Ground truth: the steer text is on the durable session log, so the
+    // next run folds it in as conversation input. The fixture may pin the
+    // sessions root elsewhere, so collect every jsonl under the workspace.
+    fn collect_jsonl(root: &std::path::Path, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_jsonl(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    let mut log_text = String::new();
+    collect_jsonl(workspace.path(), &mut log_text);
+    let steer_key = a3s_code_core::content_digest::digest_json(
+        "a3s.code.steer-input.identity.v1",
+        &[
+            "steer-then-interrupt",
+            snapshot.run_id.as_str(),
+            "steer-then-interrupt-request",
+        ],
+    )
+    .unwrap();
+    assert!(
+        log_text.contains(&format!("run-steer-v1:{steer_key}")) && log_text.contains(STEER_INPUT),
+        "the interrupted run must leave the queued steer on the durable log"
+    );
 }

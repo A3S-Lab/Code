@@ -53,6 +53,12 @@ pub enum SessionEvent {
         /// `None` when unknown: a wake turn whose deltas carried no `turnStartMs` (old shells) renders without a duration instead of a fake "0.0s".
         elapsed: Option<Duration>,
     },
+    /// How the completed run closed at the agent's completion gate
+    /// (`x.ai/turn/outcome`): verified, waived, or needing attention. A clean
+    /// narrative close emits nothing — the marker line stays signal-only.
+    /// The line is pre-formatted by its single copy owner
+    /// (`turn_completion::turn_outcome_event`).
+    TurnOutcome { line: String },
     /// Agent turn was cancelled.
     TurnCancelled {
         /// `None` when unknown: do not render `0.0s`.
@@ -379,6 +385,7 @@ impl SessionEvent {
                 format!("Worked for {}", format_duration(*elapsed))
             }
             SessionEvent::TurnCompleted { elapsed: None } => "Turn completed.".to_string(),
+            SessionEvent::TurnOutcome { line } => line.clone(),
             SessionEvent::TurnCancelled {
                 elapsed: Some(elapsed),
                 cause,
@@ -1240,7 +1247,7 @@ mod tests {
                     outcome: PlanReviewOutcome::Abandoned,
                     permission: PermissionLabel::AlwaysApprove,
                 },
-                "Plan abandoned · plan mode off · active permission mode: always-approve",
+                "Plan abandoned · plan mode off · active permission mode: yolo",
             ),
         ];
         for (event, expected) in cases {

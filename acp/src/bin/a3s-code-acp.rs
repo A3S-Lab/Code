@@ -3,18 +3,72 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use a3s_code_acp::{load_launch_config, A3sCodeAgent};
+use a3s_code_acp::unattended::{Unattended, DEFAULT_EXECUTION_BUDGET_MS};
+use a3s_code_acp::{load_launch_config, A3sCodeAgent, PluginSelectionHost};
 use agent_client_protocol as acp;
 use anyhow::{Context, Result};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-fn parse_args() -> Result<(PathBuf, Option<PathBuf>, Option<String>)> {
+struct Args {
+    cwd: PathBuf,
+    config: Option<PathBuf>,
+    model: Option<String>,
+    plugin_store: Option<PathBuf>,
+    studio_documents: bool,
+    unattended: Option<Unattended>,
+}
+
+fn parse_args() -> Result<Args> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
     let mut cwd = std::env::current_dir().context("current_dir")?;
     let mut config: Option<PathBuf> = None;
     let mut model: Option<String> = None;
-    let mut args = std::env::args().skip(1);
+    let mut plugin_store = None;
+    let mut studio_documents = false;
+    let mut unattended = false;
+    let mut max_execution_ms = None;
+    let mut result_file = None;
+    let mut reasoning_effort = None;
+    let mut engineering_policy = None;
+    let mut goal_continuation = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--unattended" => unattended = true,
+            "--goal-continuation" => goal_continuation = true,
+            "--max-execution-ms" => {
+                let value = args.next().context("--max-execution-ms requires a value")?;
+                max_execution_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .context("--max-execution-ms must be an integer")?,
+                );
+            }
+            "--reasoning-effort" => {
+                reasoning_effort =
+                    Some(args.next().context("--reasoning-effort requires a level")?);
+            }
+            "--engineering-policy" => {
+                engineering_policy = Some(
+                    args.next()
+                        .context("--engineering-policy requires a policy name")?,
+                );
+            }
+            "--result-file" => {
+                result_file = Some(PathBuf::from(
+                    args.next().context("--result-file requires a path")?,
+                ));
+            }
+            // A launcher that still passes this does not exit. New Studio
+            // sessions ask in `_meta.a3sStudioDocuments` instead.
+            "--studio-documents" => studio_documents = true,
+            "--plugin-store" => {
+                plugin_store = Some(PathBuf::from(
+                    args.next().context("--plugin-store requires a path")?,
+                ));
+            }
             "--cwd" => {
                 let value = args
                     .next()
@@ -33,10 +87,16 @@ fn parse_args() -> Result<(PathBuf, Option<PathBuf>, Option<String>)> {
                     .ok_or_else(|| anyhow::anyhow!("--model requires a value"))?;
                 model = Some(value);
             }
+            "--version" | "-V" => {
+                println!("{}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 eprintln!(
-                    "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model]\n\
-                     Speaks Agent Client Protocol on stdio over a3s-code-core 9.0.0."
+                    "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model] [--plugin-store DIR]\n\
+                     \x20      a3s-code-acp --unattended [--max-execution-ms MS] [--reasoning-effort LEVEL] [--engineering-policy engineering-v1] [--goal-continuation] [--result-file FILE] [--cwd DIR] [--config FILE] [--model provider/model]\n\
+                     Speaks Agent Client Protocol on stdio over a3s-code-core {}.",
+                    env!("CARGO_PKG_VERSION")
                 );
                 std::process::exit(0);
             }
@@ -51,12 +111,62 @@ fn parse_args() -> Result<(PathBuf, Option<PathBuf>, Option<String>)> {
             config = Some(PathBuf::from(value));
         }
     }
-    Ok((cwd, config, model))
+    let unattended = if unattended {
+        if plugin_store.is_some() || studio_documents {
+            anyhow::bail!("--unattended does not combine with Studio host flags");
+        }
+        let profile = Unattended::new(
+            max_execution_ms.unwrap_or(DEFAULT_EXECUTION_BUDGET_MS),
+            result_file,
+        )?;
+        let profile = match reasoning_effort {
+            Some(level) => profile.with_reasoning_effort(&level)?,
+            None => profile,
+        };
+        let profile = match engineering_policy {
+            Some(name) => profile.with_engineering_policy(&name)?,
+            None => profile,
+        };
+        Some(if goal_continuation {
+            profile.with_goal_continuation()
+        } else {
+            profile
+        })
+    } else {
+        if max_execution_ms.is_some()
+            || result_file.is_some()
+            || reasoning_effort.is_some()
+            || engineering_policy.is_some()
+            || goal_continuation
+        {
+            anyhow::bail!(
+                "--max-execution-ms, --reasoning-effort, --engineering-policy, --goal-continuation and --result-file require --unattended"
+            );
+        }
+        None
+    };
+    Ok(Args {
+        cwd,
+        config,
+        model,
+        plugin_store,
+        studio_documents,
+        unattended,
+    })
 }
 
 fn main() -> Result<()> {
-    // Agent-side ACP uses LocalSet / spawn_local.
-    let rt = tokio::runtime::Builder::new_current_thread()
+    if let Some(arg) = std::env::args().nth(1) {
+        if arg == "--version" || arg == "-V" {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    }
+    // ACP requests stay on this LocalSet via spawn_local. The fact worker is
+    // tokio::spawn on the pool. A tool poll that does not yield must not
+    // freeze the task that reads session/cancel. Do not spawn_local from a
+    // pool thread.
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime")?;
@@ -65,20 +175,70 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    tracing_subscriber::fmt()
+    use tracing_subscriber::layer::{Layer as _, SubscriberExt};
+    use tracing_subscriber::util::SubscriberInitExt;
+    // stderr stays at the quiet default (warn); the daily file layer runs at
+    // info so hangs and failures leave an on-disk trail the terminal's
+    // scrollback cannot keep. A failed file open degrades to stderr-only.
+    let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_env_filter(
+        .with_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+        );
+    let registry = tracing_subscriber::registry().with(stderr_layer);
+    if a3s_code_acp::log_file::file_logging_enabled() {
+        registry
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(a3s_code_acp::log_file::DailyLogWriter::new())
+                    .with_filter(
+                        tracing_subscriber::EnvFilter::try_from_env("A3S_CODE_LOG_FILE")
+                            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                    ),
+            )
+            .init();
+    } else {
+        registry.init();
+    }
 
-    let (cwd, config, model) = parse_args()?;
-    if let Some(model) = model {
+    let args = parse_args()?;
+    if let Some(model) = args.model {
         std::env::set_var("A3S_DEFAULT_MODEL", model);
     }
-    let launch = load_launch_config(cwd, config).context("load A3S ACL")?;
-    let agent = Rc::new(A3sCodeAgent::new(launch));
+    let mut launch = load_launch_config(args.cwd, args.config).context("load A3S ACL")?;
+    if args.plugin_store.is_some() || args.studio_documents {
+        launch.workspace =
+            std::path::absolute(&launch.workspace).context("bind native workspace")?;
+    }
+    // A goal launch fills `goal_control` only when the ACL declares none.
+    if let (Some(unattended), None) = (&args.unattended, &launch.config.goal_control) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("host clock")?
+            .as_millis();
+        launch.config.goal_control =
+            unattended.goal_control(u64::try_from(now).context("host clock")?)?;
+    }
+    let workspace = launch.workspace.clone();
+    let mut agent = A3sCodeAgent::new(launch);
+    if let Some(unattended) = args.unattended {
+        let root = a3s_code_acp::unattended::install_state_root()?;
+        tracing::info!(state_root = %root.display(), "unattended launch");
+        agent = agent.with_unattended(unattended);
+    }
+    if let Some(root) = args.plugin_store {
+        let store =
+            a3s_use_reconcile::ReconcileStore::open(root).context("open native plugin store")?;
+        agent = agent.with_plugin_selection(
+            PluginSelectionHost::current(store, "studio-installed-plugins", &workspace).await?,
+        );
+    }
+    if args.studio_documents {
+        agent = agent.with_studio_documents();
+    }
+    let agent = Rc::new(agent);
 
     let stdin = tokio::io::stdin().compat();
     let stdout = tokio::io::stdout().compat_write();
@@ -86,6 +246,12 @@ async fn run() -> Result<()> {
         tokio::task::spawn_local(fut);
     });
     agent.set_client(Rc::new(conn));
-    io_task.await.context("ACP stdio I/O")?;
+    let result = io_task.await;
+    agent.stop_document_bridge();
+    result.context("ACP stdio I/O")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "a3s-code-acp/tests.rs"]
+mod tests;

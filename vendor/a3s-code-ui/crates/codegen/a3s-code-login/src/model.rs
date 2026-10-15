@@ -35,7 +35,7 @@ pub enum AuthMode {
     Oidc,
     /// External auth provider binary
     External,
-    /// Plain API key (e.g. from a3s-desktop login or `a3s login --api-key`)
+    /// Plain API key (e.g. from a3s-work login or `a3s login --api-key`)
     ApiKey,
 }
 

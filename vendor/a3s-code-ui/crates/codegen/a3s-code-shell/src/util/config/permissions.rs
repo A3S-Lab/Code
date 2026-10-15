@@ -6,7 +6,7 @@ pub use a3s_code_telemetry::enums::PermissionMode;
 /// The `"ask"` and `"default"` arms are explicit so a future `Default` variant is a one-line change without touching the catch-all.
 pub fn parse_permission_mode_canonical(mode_str: &str) -> PermissionMode {
     match mode_str {
-        "always-approve" => PermissionMode::AlwaysApprove,
+        "yolo" => PermissionMode::AlwaysApprove,
         "auto" => PermissionMode::Auto,
         "ask" => PermissionMode::Ask,
         "default" => PermissionMode::Ask,
@@ -19,7 +19,7 @@ pub fn parse_permission_mode_canonical(mode_str: &str) -> PermissionMode {
 /// Inverse of [`parse_permission_mode_canonical`] for the real variants, so `parse_permission_mode_canonical(permission_mode_canonical_str(m)) == m`.
 pub(crate) fn permission_mode_canonical_str(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::AlwaysApprove => "always-approve",
+        PermissionMode::AlwaysApprove => "yolo",
         PermissionMode::Auto => "auto",
         PermissionMode::Ask => "ask",
     }
@@ -45,7 +45,7 @@ pub fn permission_mode_from_ui_if_set(ui: &TomlValue) -> Option<PermissionMode> 
 
     if let Some(mode_str) = table.get("approval_mode").and_then(|v| v.as_str()) {
         return Some(match mode_str {
-            "always-approve" => PermissionMode::AlwaysApprove,
+            "yolo" => PermissionMode::AlwaysApprove,
             _ => PermissionMode::Ask,
         });
     }
@@ -63,7 +63,7 @@ pub(crate) const DEFAULT_INTERACTIVE_PERMISSION_MODE: PermissionMode = Permissio
 pub(crate) const ENV_DEFAULT_PERMISSION_MODE: &str = "GROK_DEFAULT_PERMISSION_MODE";
 
 /// Env override for [`DEFAULT_INTERACTIVE_PERMISSION_MODE`].
-/// `always-approve` and unknown values are ignored so bypass cannot inherit from the process environment.
+/// `yolo` and unknown values are ignored so bypass cannot inherit from the process environment.
 pub fn default_interactive_permission_mode() -> PermissionMode {
     match std::env::var(ENV_DEFAULT_PERMISSION_MODE).ok().as_deref() {
         Some("auto") => PermissionMode::Auto,
@@ -181,7 +181,7 @@ pub fn effective_yolo_for_launch(
     )
 }
 
-/// Whether this launch should start in auto (not always-approve).
+/// Whether this launch should start in auto (not yolo).
 /// CLI `--permission-mode auto` beats config; yolo wins if both requested.
 /// `unset_default` applies only when nothing selected a mode: Ask for headless, [`default_interactive_permission_mode`] for the TUI.
 pub fn effective_auto_for_launch(
@@ -238,7 +238,7 @@ fn resolve_effective_yolo(
 ) -> bool {
     if let Some(mode) = cli_permission_mode {
         // Only the two "always approve everything" variants produce YOLO.
-        matches!(mode, "bypassPermissions" | "always-approve")
+        matches!(mode, "bypassPermissions" | "yolo")
     } else if cli_always_approve {
         true
     } else {
@@ -269,7 +269,7 @@ fn require_plan_approval_from_layers(layers: &crate::config::ConfigLayers) -> bo
 }
 
 /// Load `[ui] require_plan_approval` from the merged config layers (overlay-free).
-/// When `true`, the plan viewer always opens for explicit user approval when the agent calls `exit_plan_mode`, even in always-approve (YOLO) mode.
+/// When `true`, the plan viewer always opens for explicit user approval when the agent calls `exit_plan_mode`, even in yolo (YOLO) mode.
 pub fn load_require_plan_approval() -> bool {
     let layers = match crate::config::ConfigLayers::load() {
         Ok(l) => l,
@@ -292,7 +292,7 @@ mod tests {
         let mut layers = crate::config::ConfigLayers::default();
         layers.campaigns.managed = vec![a3s_code_config::CampaignEntry {
             id: "c1".into(),
-            patch: toml::from_str("[ui]\npermission_mode = \"always-approve\"\n").unwrap(),
+            patch: toml::from_str("[ui]\npermission_mode = \"yolo\"\n").unwrap(),
         }];
         assert_eq!(
             permission_mode_from_layers(&layers, None),
@@ -307,7 +307,7 @@ mod tests {
             PermissionMode::Auto,
         );
         assert_eq!(
-            resolve_permission_mode(None, Some("always-approve")),
+            resolve_permission_mode(None, Some("yolo")),
             PermissionMode::AlwaysApprove,
         );
         assert_eq!(
@@ -324,7 +324,7 @@ mod tests {
     fn resolve_permission_mode_toml_wins_over_remote() {
         let root: TomlValue = toml::from_str("[ui]\npermission_mode = \"ask\"\n").unwrap();
         assert_eq!(
-            resolve_permission_mode(Some(root.get("ui").unwrap()), Some("always-approve")),
+            resolve_permission_mode(Some(root.get("ui").unwrap()), Some("yolo")),
             PermissionMode::Ask,
         );
         let yolo: TomlValue = toml::from_str("[ui]\nyolo = true\n").unwrap();
@@ -334,7 +334,7 @@ mod tests {
         );
         let yolo_off: TomlValue = toml::from_str("[ui]\nyolo = false\n").unwrap();
         assert_eq!(
-            resolve_permission_mode(Some(yolo_off.get("ui").unwrap()), Some("always-approve")),
+            resolve_permission_mode(Some(yolo_off.get("ui").unwrap()), Some("yolo")),
             PermissionMode::Ask,
         );
         let approval: TomlValue = toml::from_str("[ui]\napproval_mode = \"ask\"\n").unwrap();
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn parse_permission_mode_canonical_covers_all_canonicals_plus_fallback() {
         assert_eq!(
-            parse_permission_mode_canonical("always-approve"),
+            parse_permission_mode_canonical("yolo"),
             PermissionMode::AlwaysApprove,
         );
         assert_eq!(
@@ -399,6 +399,14 @@ mod tests {
             PermissionMode::Ask,
             "wire format is case-sensitive; 'Always-Approve' is unknown",
         );
+        assert_eq!(
+            parse_permission_mode_canonical("always-approve"),
+            PermissionMode::Ask,
+        );
+        assert_eq!(
+            parse_permission_mode_canonical("force"),
+            PermissionMode::Ask
+        );
     }
 
     /// `resolve_permission_mode` is the pure logic `load_permission_mode` delegates to.
@@ -407,9 +415,9 @@ mod tests {
         let cases: &[(&str, PermissionMode, &str)] = &[
             // Primary key, canonicalized.
             (
-                "[ui]\npermission_mode = \"always-approve\"\n",
+                "[ui]\npermission_mode = \"yolo\"\n",
                 PermissionMode::AlwaysApprove,
-                "always-approve",
+                "yolo",
             ),
             (
                 "[ui]\npermission_mode = \"auto\"\n",
@@ -428,24 +436,20 @@ mod tests {
             ),
             // Legacy keys.
             (
-                "[ui]\napproval_mode = \"always-approve\"\n",
+                "[ui]\napproval_mode = \"yolo\"\n",
                 PermissionMode::AlwaysApprove,
-                "always-approve",
+                "yolo",
             ),
             (
                 "[ui]\napproval_mode = \"ask\"\n",
                 PermissionMode::Ask,
                 "ask",
             ),
-            (
-                "[ui]\nyolo = true\n",
-                PermissionMode::AlwaysApprove,
-                "always-approve",
-            ),
+            ("[ui]\nyolo = true\n", PermissionMode::AlwaysApprove, "yolo"),
             ("[ui]\nyolo = false\n", PermissionMode::Ask, "ask"),
             // Precedence: permission_mode wins over legacy keys.
             (
-                "[ui]\npermission_mode = \"ask\"\nyolo = true\napproval_mode = \"always-approve\"\n",
+                "[ui]\npermission_mode = \"ask\"\nyolo = true\napproval_mode = \"yolo\"\n",
                 PermissionMode::Ask,
                 "ask",
             ),
@@ -535,10 +539,10 @@ mod tests {
             ),
             (
                 false,
-                Some("always-approve"),
+                Some("yolo"),
                 false,
                 true,
-                "legacy always-approve string → yolo",
+                "legacy yolo string → yolo",
             ),
             (
                 false,
@@ -586,14 +590,14 @@ mod tests {
         assert!(!effective_yolo_for_launch(false, Some("dontAsk"), None).yolo);
     }
 
-    /// The dangerous row (remote always-approve must never override an explicit CLI ask) is deterministic on any host.
+    /// The dangerous row (remote yolo must never override an explicit CLI ask) is deterministic on any host.
     /// The positive row is skipped under a host requirements pin.
     /// Pin composition is proven separately by `resolve_launch_yolo_policy_pin_neutralizes_requested_bypass`.
     #[test]
     fn effective_yolo_for_launch_cli_beats_remote() {
         assert!(
-            !effective_yolo_for_launch(false, Some("ask"), Some("always-approve")).yolo,
-            "remote always-approve must not override CLI --permission-mode ask"
+            !effective_yolo_for_launch(false, Some("ask"), Some("yolo")).yolo,
+            "remote yolo must not override CLI --permission-mode ask"
         );
         if yolo_disabled_by_policy().is_none() {
             assert!(
@@ -617,7 +621,7 @@ mod tests {
         let default_ui: TomlValue =
             toml::from_str("[ui]\npermission_mode = \"default\"\n").unwrap();
         assert_eq!(
-            resolved_display_permission_mode(default_ui.get("ui"), Some("always-approve")),
+            resolved_display_permission_mode(default_ui.get("ui"), Some("yolo")),
             "default",
             "persisted 'default' must not collapse onto 'ask' for display"
         );
@@ -644,7 +648,7 @@ mod tests {
         );
         assert!(!effective_auto_for_launch(
             false,
-            Some("always-approve"),
+            Some("yolo"),
             None,
             PermissionMode::Ask
         ));
@@ -716,7 +720,7 @@ mod tests {
             ("auto", PermissionMode::Auto),
             ("ask", PermissionMode::Ask),
             ("default", PermissionMode::Ask),
-            ("always-approve", DEFAULT_INTERACTIVE_PERMISSION_MODE),
+            ("yolo", DEFAULT_INTERACTIVE_PERMISSION_MODE),
             ("garbage", DEFAULT_INTERACTIVE_PERMISSION_MODE),
         ] {
             unsafe { std::env::set_var(ENV_DEFAULT_PERMISSION_MODE, raw) };
@@ -797,7 +801,7 @@ mod tests {
         let user_opt_out = crate::config::ConfigLayers {
             user: ui_layer("permission_mode = \"ask\"\nrequire_plan_approval = true"),
             env_overlay: Some(ui_layer(
-                "permission_mode = \"always-approve\"\nyolo = true\nrequire_plan_approval = false",
+                "permission_mode = \"yolo\"\nyolo = true\nrequire_plan_approval = false",
             )),
             ..Default::default()
         };
@@ -809,7 +813,7 @@ mod tests {
 
         let managed_opt_out = crate::config::ConfigLayers {
             managed: ui_layer("permission_mode = \"ask\""),
-            env_overlay: Some(ui_layer("permission_mode = \"always-approve\"")),
+            env_overlay: Some(ui_layer("permission_mode = \"yolo\"")),
             ..Default::default()
         };
         assert_eq!(
@@ -818,8 +822,8 @@ mod tests {
         );
 
         let requirements_clamp = crate::config::ConfigLayers {
-            user: ui_layer("permission_mode = \"always-approve\""),
-            env_overlay: Some(ui_layer("permission_mode = \"always-approve\"")),
+            user: ui_layer("permission_mode = \"yolo\""),
+            env_overlay: Some(ui_layer("permission_mode = \"yolo\"")),
             user_requirements: Some(ui_layer("permission_mode = \"ask\"")),
             ..Default::default()
         };

@@ -330,7 +330,7 @@ impl CodingDataSharingLock {
 pub struct PagerLocalSnapshot {
     /// Whether multiline input mode is active.
     pub multiline_mode: bool,
-    /// Whether YOLO mode (always-approve) is active on the active agent.
+    /// Whether YOLO mode (yolo) is active on the active agent.
     pub yolo_mode: bool,
     /// Whether Auto (LLM classifier) mode is active on the active agent.
     /// Mutually exclusive with `yolo_mode` in practice (yolo wins); `/auto` reads it so it can toggle off when already on.
@@ -702,9 +702,9 @@ pub fn current_value_for(
             crate::appearance::cache::load_render_mermaid().as_canonical(),
         )),
         // permission_mode: the live snapshot wins over the on-disk value
-        // When yolo is on the value is "always-approve"; otherwise honor ui ("auto", "default", or "ask")
+        // When yolo is on the value is "yolo"; otherwise honor ui ("auto", "default", or "ask")
         "permission_mode" => Some(SettingValue::Enum(if pager.yolo_mode {
-            "always-approve"
+            "yolo"
         } else if matches!(ui.permission_mode.as_deref(), Some("auto")) {
             "auto"
         } else if matches!(ui.permission_mode.as_deref(), Some("default")) {

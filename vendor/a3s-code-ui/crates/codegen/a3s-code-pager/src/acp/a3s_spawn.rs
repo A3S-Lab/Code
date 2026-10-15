@@ -167,9 +167,9 @@ pub async fn spawn_a3s_acp(
 
 /// True when the pager can spawn the shipped ACP agent.
 ///
-/// An explicit `A3S_ACP_AGENT_BIN` wins. Otherwise the agent is the sibling of
-/// this binary, then the local Code debug or release build. That is the same
-/// agent `a3s code` launches when the variable is unset.
+/// An explicit `A3S_ACP_AGENT_BIN` wins. Otherwise the agent is this checkout's
+/// `apps/code` debug or release build, then the sibling of this binary. That
+/// is the same agent `a3s code` launches when the variable is unset.
 pub fn a3s_acp_enabled() -> bool {
     a3s_acp_executable().is_some()
 }
@@ -184,14 +184,6 @@ pub fn a3s_acp_executable() -> Option<PathBuf> {
     } else {
         "a3s-code-acp"
     };
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(dir) = current.parent() {
-            let sibling = dir.join(name);
-            if is_executable(&sibling) {
-                return Some(sibling);
-            }
-        }
-    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for profile in ["debug", "release"] {
         let dev = manifest
@@ -200,6 +192,14 @@ pub fn a3s_acp_executable() -> Option<PathBuf> {
             .join(name);
         if is_executable(&dev) {
             return Some(dev);
+        }
+    }
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(dir) = current.parent() {
+            let sibling = dir.join(name);
+            if is_executable(&sibling) {
+                return Some(sibling);
+            }
         }
     }
     None

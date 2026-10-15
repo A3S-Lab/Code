@@ -334,6 +334,8 @@ impl ModelGenerationAdmission {
     /// while retaining this gate's local concurrency. This is used by nested
     /// workflow steps that impose a tighter local limit but must still count
     /// against the session/provider pool in the one shared scheduler actor.
+    /// Called from the `dynamic-workflow` surface.
+    #[cfg_attr(not(feature = "dynamic-workflow"), allow(dead_code))]
     pub(crate) fn with_scheduler_quota_from(
         self,
         source: &Self,
@@ -443,6 +445,10 @@ impl ModelGenerationAdmission {
 
     pub(crate) fn owns(&self, permit: &ModelGenerationPermit) -> bool {
         Arc::ptr_eq(&self.bounded, &permit.admission)
+    }
+
+    pub(crate) fn same_original_gate(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.bounded, &other.bounded)
     }
 
     #[cfg(test)]

@@ -106,7 +106,7 @@ async fn soak_http_retries_do_not_multiply_tool_execution() {
             read_request(&mut stream).await;
             let (status, body) = if index % 3 == 2 {
                 let group = index / 3;
-                if group % 2 == 0 {
+                if group.is_multiple_of(2) {
                     (200, tool_body(group))
                 } else {
                     (200, text_body())

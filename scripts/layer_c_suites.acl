@@ -1,0 +1,298 @@
+# Layer C certification contract. Every entry produces a receipt, including
+# missing targets, compilation failures and non-blocking measurements.
+# Feature suites are mandatory; failing to compile is never a skip.
+suite "test_native_sandbox_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_issue_fix_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_agent_protocol_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_harness_loop_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_fact_log_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_context_selection_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 3
+}
+suite "test_scoped_batch_read_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 2
+}
+suite "test_complex_capability_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_harness_capabilities_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_meta_harness_compose_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_deepseek_adversarial_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_update_plan_live_e2e" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_prompt_capability_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_orchestration_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_long_horizon_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_multiturn_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_structured_json_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_run_control_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_workspace_search_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_workspace_retrieval_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_workspace_index_cycle_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_workspace_hybrid_disagreement_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_context_tools_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_workflow_facade_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_auto_delegation_real_parallel" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_ultracode_discretion_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_real_config_env_integration" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_real_llm_cluster_features" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_memory_store_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_fault_recovery_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_attachment_json_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_compaction_fidelity_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 2
+}
+suite "test_tool_history_compaction_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_tool_budget_cancel_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_dual_agent_collab_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_session_review_loop_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_config_dynamic_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "live_interactive_dialogue_real_llm" {
+  package = "a3s-code-acp"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "goal_flow_probe" {
+  package = "a3s-code-acp"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "approval_learning_probe" {
+  package = "a3s-code-acp"
+  track = "mandatory"
+  minimum_tests = 1
+}
+# This target currently requires macOS. Other host profiles fail discovery
+# explicitly until their actual-TUI qualification is implemented. Positive
+# coding cases stay in the same gate as refusal recovery and read cases.
+suite "tui_913_real_llm" {
+  package = "a3s-code-acp"
+  track = "mandatory"
+  features = ["a3s-code-core/deep-live", "a3s-code-core/advanced-harness"]
+  minimum_tests = 10
+}
+suite "test_research_review_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  features = ["research"]
+  minimum_tests = 1
+}
+suite "test_extensibility_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  features = ["advanced-harness"]
+  minimum_tests = 1
+}
+# Previously omitted functional rails: background, worktree, long tasks,
+# exact checkpoint recall, multi-patch, skill/MCP decisions and task completion.
+suite "test_background_run_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_worktree_run_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_long_horizon_capabilities_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_multi_patch_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_exact_id_checkpoint_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_skill_mcp_decisions_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_task_speed_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_engineering_discipline_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 8
+}
+suite "test_durable_goal_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 1
+}
+suite "test_tool_effect_receipts_real_llm" {
+  package = "a3s-code-core"
+  track = "mandatory"
+  minimum_tests = 2
+}
+# These experiments report measured behavior; a failed experiment is visible
+# but cannot turn a complete functional campaign into a failed release gate.
+suite "test_parallel_adoption_real_llm" {
+  package = "a3s-code-core"
+  track = "measurement"
+  minimum_tests = 1
+}
+suite "test_cache_hit_rate_real_llm" {
+  package = "a3s-code-core"
+  track = "measurement"
+  minimum_tests = 1
+}
+suite "test_injection_budget_real_llm" {
+  package = "a3s-code-core"
+  track = "measurement"
+  minimum_tests = 1
+}
+suite "test_durable_engineering_paired_real_llm" {
+  package = "a3s-code-core"
+  track = "measurement"
+  minimum_tests = 5
+}

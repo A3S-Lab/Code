@@ -1,3 +1,7 @@
+// Each integration-test target includes this module separately; not every
+// helper is used by every target.
+#![allow(dead_code)]
+
 //! Layer C live E2E model binding for the monorepo Flash default.
 //!
 //! Pins `boyue/deepseek-v4-flash` when that model exists under

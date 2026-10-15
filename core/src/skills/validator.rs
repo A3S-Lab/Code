@@ -174,7 +174,12 @@ impl SkillValidator for DefaultSkillValidator {
             });
         }
 
-        // 4. Dangerous tool detection
+        // 4. Dangerous tool detection — decided on the PARSED permission set,
+        // not the raw string. `ToolPermission::parse` trims inside the
+        // parentheses, so raw-substring checks are bypassable by spacing
+        // (`"bash (*)"` parses to a bare bash wildcard while never matching
+        // the literal `"bash(*)"`). A parsed (dangerous tool, bare wildcard)
+        // pair is rejected however it was spelled.
         if let Some(ref allowed) = skill.allowed_tools {
             for pattern in &self.dangerous_tool_patterns {
                 if allowed.contains(pattern.as_str()) {
@@ -183,6 +188,29 @@ impl SkillValidator for DefaultSkillValidator {
                         message: format!(
                             "Skill requests dangerous tool permission '{}'. Use specific patterns instead of wildcards.",
                             pattern
+                        ),
+                    });
+                }
+            }
+            let dangerous_tools: HashSet<String> = self
+                .dangerous_tool_patterns
+                .iter()
+                .filter_map(|pattern| {
+                    pattern
+                        .split('(')
+                        .next()
+                        .map(|tool| tool.trim().to_lowercase())
+                })
+                .collect();
+            for permission in skill.parse_allowed_tools() {
+                if dangerous_tools.contains(&permission.tool.to_lowercase())
+                    && (permission.pattern == "*" || permission.pattern.is_empty())
+                {
+                    return Err(SkillValidationError {
+                        kind: ValidationErrorKind::DangerousTools,
+                        message: format!(
+                            "Skill requests dangerous tool permission '{}({})'. Use specific patterns instead of wildcards.",
+                            permission.tool, permission.pattern
                         ),
                     });
                 }
@@ -209,6 +237,49 @@ impl SkillValidator for DefaultSkillValidator {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Skill;
+
+    fn probe_skill(allowed: &str) -> Skill {
+        Skill::parse(&format!(
+            "---\nname: probe\ndescription: probe\nallowed-tools: {allowed}\n---\nbody"
+        ))
+        .expect("probe skill parses")
+    }
+
+    /// The spacing-bypass family: raw-substring checks miss these spellings
+    /// while `ToolPermission::parse` normalizes them into bare wildcards.
+    /// The parsed-permission check must reject every variant.
+    #[test]
+    fn dangerous_tool_spacing_variants_fail_closed() {
+        let validator = super::DefaultSkillValidator::default();
+        for allowed in [
+            "bash (*)",
+            "Bash( * )",
+            "EDIT  (  *  )",
+            "write( *)",
+            "Patch(*)",
+            "download( *  )",
+        ] {
+            let skill = probe_skill(allowed);
+            let error = validator
+                .validate(&skill)
+                .expect_err("spacing variants of bare dangerous wildcards must be rejected");
+            assert!(
+                matches!(error.kind, super::ValidationErrorKind::DangerousTools),
+                "{allowed:?}: wrong rejection kind: {:?}",
+                error.kind
+            );
+        }
+        // Scoped grants on dangerous tools and wildcards on safe tools stay
+        // admissible.
+        for allowed in ["bash(src/**)", "read(*)", "edit(docs/*.md)"] {
+            let skill = probe_skill(allowed);
+            validator
+                .validate(&skill)
+                .unwrap_or_else(|error| panic!("{allowed:?} must stay admissible: {error:?}"));
+        }
+    }
+
     use super::*;
     use crate::skills::SkillKind;
 
