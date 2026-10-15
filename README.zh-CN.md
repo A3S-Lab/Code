@@ -52,8 +52,20 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **Pager `/config`（9.1.0）。** 在 ACL 配置里编辑 provider 和 model。默认值是
   一对 `provider/model`。模型的 URL 或 key 留空时继承 provider。
 - **搜索保持快路径（9.1.0）。** 自动 `web_search` 依次是 API、HTTP、headless。
-  Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。npm、crates.io、
-  PyPI 当前包版本是 **9.1.1**。
+  Moli 优先使用已经跟 `a3s` 放在一起的二进制，然后才下载。
+- **常驻上下文与重放（9.1.2）。** 新的事实日志运行在第一次模型调用前准入常驻
+  上下文摘要。相同的运行事件游标会在写入新的链摘要前重放。权限姿态在下一次
+  事实运行准入；已经打开的运行保持打开时冻结的工具、步数上限和完成门禁。
+  npm、crates.io、PyPI 当前包版本是 **9.1.2**。
+- **模型可分页读取的工具输出制品（9.1.3，未发布）。** 工具结果被截断时，原文
+  保存为 `a3s://tool-output/...`。`read` 可以像读文件一样分页读取它，`search`
+  （`mode=grep`）可以在其中搜索，模型因此能找回被省略的部分，不必重跑命令。
+  被裁剪的结果会指向它的制品。
+- **无人值守 ACP 试验臂（9.1.3，未发布）。** `a3s-code-acp --unattended` 支持
+  `--engineering-policy NAME` 和 `--goal-continuation`（第一次尝试作为已准入的
+  单步目标切片运行）。`ultracode` 力度现在指向已注册的 `program` 工具。
+- **发布状态。** 9.1.2 是渠道发布，不是企业 GA。Terminal-Bench 4.0 通过下文的
+  无人值守 ACP 通道做诊断评测，不声明排行榜成绩。CAR 保持在范围外。
 
 ## 9.0 有什么新内容
 
@@ -128,7 +140,7 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   crates.io 也发布了 **8.5.10**，但该次 Release 的 musl 任务失败，未完成完整 Node 矩阵。
 
 文档：[a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/)（`v9.1` 文档线；
-当前包版本 **9.1.1**）。
+当前包版本 **9.1.2**）。
 
 ### 更早的版本线
 

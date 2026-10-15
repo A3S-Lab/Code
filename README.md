@@ -65,7 +65,25 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   inherits the provider.
 - **Search stays fast (9.1.0).** Automatic `web_search` is API, then HTTP,
   then headless. Moli is taken from the binary already shipped beside `a3s`
-  before any download. Current package on npm, crates.io, and PyPI: **9.1.1**.
+  before any download.
+- **Standing context and replay (9.1.2).** A new fact-log run admits a
+  standing-context digest before the first model call. An identical run-event
+  cursor is replayed before a new chain digest. A permission posture is
+  admitted on the next fact run; an open run keeps the tools, step limit, and
+  completion gate it froze at open. Current package on npm, crates.io, and
+  PyPI: **9.1.2**.
+- **Tool-output artifacts the model can page (9.1.3, unreleased).** When a
+  tool result is truncated, the original stays as `a3s://tool-output/...`.
+  `read` pages it like a file and `search` (`mode=grep`) searches it, so the
+  model recovers the omitted region instead of re-running the command. A
+  pruned result points at its artifact.
+- **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
+  --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
+  (the first attempt runs as an admitted one-step goal slice). The
+  `ultracode` effort names the registered `program` tool.
+- **Release status.** 9.1.2 is a channel release, not Enterprise GA.
+  Terminal-Bench 4.0 runs as a diagnostic through the unattended ACP lane
+  below; no leaderboard result is claimed. CAR stays out of scope.
 
 ## What's new in 9.0
 
@@ -161,7 +179,7 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   Release workflow failed musl and did not complete the full Node matrix.
 
 Docs: [a3s-lab.github.io/Code](https://a3s-lab.github.io/Code/) (`v9.1` line;
-current package **9.1.1**).
+current package **9.1.2**).
 
 ### Earlier lines
 

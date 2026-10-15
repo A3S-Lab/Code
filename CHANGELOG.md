@@ -9,7 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [9.1.3] - Unreleased
 
+### Added
+
+- `read` pages and `search` (`mode=grep`) searches a retained
+  `a3s://tool-output/...` artifact. The truncation marker says how, and a
+  pruned result points at its artifact instead of asking for a re-run. An
+  unretained artifact is refused by name.
+- `a3s-code-acp --unattended` takes `--engineering-policy NAME` and
+  `--goal-continuation`. The goal arm runs the first attempt as the admitted
+  one-step goal slice under the run deadline.
+
 ### Fixed
+
+- The `ultracode` effort guideline names the registered `program` tool instead
+  of `dynamic_workflow`, which ACP never registers.
+- A replayed or conflicting run id returns the typed `RunIdentityConflict`
+  instead of an internal error.
 
 - Non-interactive pager output is admitted before terminal or session startup.
   Unsupported and incomplete local slash commands return explicit feedback.
