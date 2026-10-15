@@ -197,9 +197,9 @@ dependencies = [
 
 [[package]]
 name = "a3s-effect"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a106c4f37a9e863ec1f15cb785c3b502f2d6510c71385eb00f87a74c536b8e2"
+checksum = "ad1fc556d25daa4231f1e6c12633a3377eec44e3fd8319c86b507c87fbe1ce50"
 dependencies = [
  "cap-fs-ext",
  "cap-std",

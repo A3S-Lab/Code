@@ -72,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Durable sessions open on Linux again. `a3s-effect` 0.2.1 sets the fact-log
+  directory mode through a handle that allows it; 0.2.0 failed every open with
+  `Bad file descriptor`.
+- Core builds on Windows: the workspace baseline digest no longer depends on
+  a Unix-only import.
 - An explicit stock `Harness.compose` keeps the session's token compaction
   (#191). Before, the recipe's config fell back to the character threshold, so
   a composed session compacted far later than the default one. A recipe that

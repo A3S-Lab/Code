@@ -9,7 +9,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(any(unix, test))]
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(any(unix, test))]

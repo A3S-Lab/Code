@@ -56,7 +56,7 @@ required-features = ["apofasi"]
 
 [dependencies]
 # Internal crates
-a3s-effect = "0.2.0"
+a3s-effect = "0.2.1"
 a3s-common = "0.1.1"
 a3s-memory = { version = "0.1.5", git = "https://github.com/A3S-Lab/Memory.git", rev = "47368a0d717e3577dd0e61ebe7b64aa5a1e958cd" }
 a3s-lane = "0.5"
