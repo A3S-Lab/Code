@@ -80,7 +80,15 @@ instead of the graded workspace, and `--result-file` writes the same
 `a3s.code.terminal-bench-result.v1` record. Without `--unattended` the agent is
 unchanged.
 
+The ACP lane builds only inside the A3S OS monorepo (`kense-labs/os`), from its
+`apps/code` submodule. `a3s-code-acp` depends on `a3s-okf` and
+`a3s-use-reconcile`, which live in that monorepo's `crates/` and are not on
+crates.io, and `run_acp_tb.sh` is the monorepo's `scripts/harbor/`. A
+standalone `A3S-Lab/Code` checkout builds `a3s-code-core` and the TUI after
+`.github/setup-workspace.sh`, which drops the `acp` member.
+
 ```bash
+# from <os checkout>/apps/code
 CARGO_TARGET_DIR=$HOME/a3s-tb-target cargo zigbuild --locked \
   --target x86_64-unknown-linux-musl --release -p a3s-code-acp --bin a3s-code-acp
 ../../scripts/harbor/run_acp_tb.sh   # A3S_TB_INCLUDE_TASK=<task> for one task

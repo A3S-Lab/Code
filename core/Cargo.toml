@@ -286,7 +286,6 @@ ci-all = ["full", "apofasi", "apofasi-infer"]
 deep-live = ["headless-search"]
 
 [dev-dependencies]
-a3s-okf = { path = "../../../crates/okf" }
 # Deterministically advance the exponential stream-retry backoff in async tests.
 tokio = { version = "1.35", features = ["test-util"] }
 # HTTP mocking for the RemoteGitBackend (and any future HTTP-backed workspace

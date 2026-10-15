@@ -68,6 +68,16 @@ for path in (Path("Cargo.toml"), Path("sdk/node/Cargo.toml"), Path("sdk/python/C
         raise SystemExit(f"expected monorepo [patch] tables in {path}")
     path.write_text(text[:start].rstrip() + "\n")
     print(f"removed monorepo path patches from {path}")
+
+# a3s-code-acp depends on a3s-okf and a3s-use-reconcile, which exist only in
+# the A3S OS monorepo. ACP builds from apps/code there (manual/TERMINAL_BENCH.md).
+root = Path("Cargo.toml")
+text = root.read_text()
+member = '    "acp",\n'
+if member not in text:
+    raise SystemExit("expected the acp workspace member in Cargo.toml")
+root.write_text(text.replace(member, "", 1))
+print("removed the monorepo-only acp member from Cargo.toml")
 PY
 
 if grep -nE 'path = "\.\./' Cargo.toml; then

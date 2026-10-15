@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Context pressure that returns within one user turn compacts again after the
   next model call (A3S-Lab/CLI#159). Before, one compaction per turn was the
   ceiling, and a long turn ran past the context window.
+- A standalone checkout passes `.github/setup-workspace.sh` and resolves its
+  workspace again (#192). The core `wiki_index` test reads a checked-in
+  `a3s-okf` page instead of a monorepo-only dev-dependency, the script drops
+  the monorepo-only `acp` member, and `manual/TERMINAL_BENCH.md` states that
+  the ACP lane builds inside the A3S OS monorepo.
 - `planning_mode = auto` plans on `send` and `stream` as documented (#190): one
   structured pre-analysis call per message, and a plan only when it returns
   `requires_planning`; the plan reuses the pre-analysis steps. `disabled`

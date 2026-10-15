@@ -291,26 +291,12 @@ async fn wiki_index_finds_a_nested_studio_note_without_waiting_on_the_caller() {
 async fn wiki_index_hits_the_compiled_sentence_and_misses_the_dropped_tail() {
     let root = tempfile::tempdir().expect("wiki root");
     let wiki = root.path();
-    let mut owned = Vec::new();
-    for index in 0..33 {
-        owned.push(format!("句子 {index} 在这一段"));
-    }
-    let passages: Vec<a3s_okf::TextPassage> = owned
-        .iter()
-        .map(|body| a3s_okf::TextPassage { heading: "", body })
-        .collect();
-    let compiled = a3s_okf::compile_concept(&a3s_okf::ConceptRequest {
-        title: "规范",
-        file_name: "规范.md",
-        content_type: "text/markdown",
-        resource: "workspace:规范.md",
-        source_generation: "gen-1",
-        passages: &passages,
-    })
-    .expect("compiled page");
-    assert!(compiled.markdown.contains("句子 0 在这一段"));
-    assert!(!compiled.markdown.contains("句子 32 在这一段"));
-    std::fs::write(wiki.join("规范.md"), &compiled.markdown).unwrap();
+    // a3s-okf's compile_concept output for 33 passages "句子 N 在这一段": it
+    // keeps 32 and marks the tail absent. a3s-okf tests that truncation itself.
+    let compiled = include_str!("wiki_index_okf_page.md");
+    assert!(compiled.contains("句子 0 在这一段"));
+    assert!(!compiled.contains("句子 32 在这一段"));
+    std::fs::write(wiki.join("规范.md"), compiled).unwrap();
     std::fs::write(wiki.join("index.md"), "---\nokf_version: \"0.2\"\n---\n").unwrap();
     let index = WikiIndex::open(wiki).expect("wiki index");
     index.hold_publication(true);
