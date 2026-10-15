@@ -56,17 +56,17 @@ required-features = ["apofasi"]
 
 [dependencies]
 # Internal crates
-a3s-effect = "0.1.0"
+a3s-effect = "0.2.0"
 a3s-common = "0.1.1"
-a3s-memory = { version = "0.1.4", git = "https://github.com/A3S-Lab/Memory.git", rev = "97a5e885d196be77dc1823ad86238e77d942ed73" }
+a3s-memory = { version = "0.1.5", git = "https://github.com/A3S-Lab/Memory.git", rev = "47368a0d717e3577dd0e61ebe7b64aa5a1e958cd" }
 a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
-a3s-search = { version = "=3.3.0", git = "https://github.com/A3S-Lab/Search.git", rev = "60468c9e8d3c3954a700f361aac2427ed8deaa01", default-features = false }
+a3s-search = { version = "=3.3.0", git = "https://github.com/A3S-Lab/Search.git", rev = "d306a8e37c7a1d4bfc68951ae9d382792877833f", default-features = false }
 # Flow engine is optional: thin coding builds do not project named workflows.
 # Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }
-a3s-sandbox = { version = "=0.2.2", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "7e948a365d8fe4d870dc90a2fa75f1b9082cc42a" }
+a3s-sandbox = { version = "=0.2.3", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "f301bf092f82f3819f4853ae9b95b703f5573f0d" }
 # Typed System-1 decisions (Apofasi). Optional so thin coding builds stay
 # ML-free; lexical/router path only unless `apofasi-infer` is enabled.
 a3s-apofasi = { version = "=0.1.1", git = "https://github.com/A3S-Lab/Apofasi.git", rev = "0bc3961d3183f9d2692c0406967765866bc914d6", default-features = false, features = ["router"], optional = true }

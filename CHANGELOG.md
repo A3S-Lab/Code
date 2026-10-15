@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results. `read` and artifact pages stop inside the budget with a
   continuation offset. A snapshot written without the field keeps the 100 KB
   head-only `conservative` policy; `SessionOptions` can still pin any policy.
+- Dependencies move to the published releases: `a3s-effect` 0.2.0,
+  `a3s-memory` 0.1.5 (Memory `47368a0`), `a3s-sandbox` 0.2.3 (Sandbox
+  `f301bf0`) and Search `d306a8e`. `a3s-code-acp` takes `a3s-okf` 0.1.0 and
+  `a3s-use-reconcile` 0.2.10 from crates.io. The workspace drops its monorepo
+  `[patch]` tables and tracks `Cargo.lock` and `vendor/a3s-code-ui/Cargo.lock`
+  again. A checkout at `apps/code` with ACL at `crates/acl` builds the ACP
+  agent and the pager with `--locked`.
 
 ### Fixed
 

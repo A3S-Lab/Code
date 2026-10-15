@@ -33,27 +33,3 @@ opt-level = 3
 
 [profile.release.package.a3s-memory]
 opt-level = 3
-
-# crates.io a3s-effect 0.1.0 predates the v9.1.2 harness fields
-# (`ModelDecision::Tool.also`, token compact, duplicate threshold).
-# The in-tree crate is 0.1.1, the same version Code tag v9.1.2 linked.
-[patch.crates-io]
-a3s-effect = { path = "../../crates/effect" }
-
-# Match the public Code pin carrying Sandbox 0.2.2's Seatbelt hardlink fix.
-# The exact version must also match the local patch; a mismatch silently
-# compiles the older Git dependency instead of the reviewed local crate.
-[patch."https://github.com/A3S-Lab/Sandbox.git"]
-a3s-sandbox = { path = "../../crates/sandbox" }
-
-# Git pin 97a5e88 predates the CJK recall bridge (query_terms bigrams for
-# unspaced scripts). Keep the pin in core/Cargo.toml and compile the local
-# crate until the upstream rev carries the fix.
-[patch."https://github.com/A3S-Lab/Memory.git"]
-a3s-memory = { path = "../../crates/memory" }
-
-# The Search git pin stays in core/Cargo.toml. This patch compiles the in-tree
-# crate, which adds the a3s provider, until that pin moves forward.
-[patch."https://github.com/A3S-Lab/Search.git"]
-a3s-search = { path = "../../crates/search" }
-
