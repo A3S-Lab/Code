@@ -1033,6 +1033,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
         let mut file_count = 0;
         let mut total_size = 0;
         let mut matched_paths = Vec::new();
+        let mut skipped_oversize = Vec::new();
         let metadata_only = request.max_output_size == 0;
 
         let candidates = request
@@ -1072,6 +1073,9 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
 
             let workspace_path = WorkspacePath::from_normalized(file.path.clone());
             let Some(content) = self.local.read_search_file(&workspace_path) else {
+                if self.local.search_file_is_oversize(&workspace_path) {
+                    skipped_oversize.push(workspace_path);
+                }
                 continue;
             };
             let lines: Vec<&str> = content.lines().collect();
@@ -1098,6 +1102,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
                             truncated: true,
                         },
                         matched_paths: Some(matched_paths),
+                        skipped_oversize,
                     });
                 }
 
@@ -1135,6 +1140,7 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
                 truncated: false,
             },
             matched_paths: Some(matched_paths),
+            skipped_oversize,
         })
     }
 }

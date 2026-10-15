@@ -236,6 +236,7 @@ impl Tool for GrepTool {
 
         let result = outcome.result;
         let matched_paths = outcome.matched_paths;
+        let skipped = outcome.skipped_oversize;
 
         if output_mode == GrepOutputMode::Summary {
             let mut content = format!(
@@ -245,12 +246,13 @@ impl Tool for GrepTool {
             if result.truncated {
                 content.push_str(" (scan truncated by backend limits)");
             }
-            return Ok(
+            return Ok(note_skipped_oversize(
                 ToolOutput::success(content).with_metadata(serde_json::json!({
                     "output_mode": output_mode.as_str(),
                     "search": grep_search_metadata(&result),
                 })),
-            );
+                &skipped,
+            ));
         }
 
         if output_mode.paginated() {
@@ -277,7 +279,8 @@ impl Tool for GrepTool {
                 &regex,
                 ctx,
             )
-            .await;
+            .await
+            .map(|output| note_skipped_oversize(output, &skipped));
         }
 
         let source_anchors = grep_source_anchors(
@@ -302,14 +305,48 @@ impl Tool for GrepTool {
             )
         };
         let output = ToolOutput::success(content);
-        if source_anchors.is_empty() {
-            Ok(output)
+        let output = if source_anchors.is_empty() {
+            output
         } else {
-            Ok(output.with_metadata(serde_json::json!({
+            output.with_metadata(serde_json::json!({
                 "source_anchors": source_anchors,
-            })))
-        }
+            }))
+        };
+        Ok(note_skipped_oversize(output, &skipped))
     }
+}
+
+/// A search that skipped files for their size says so, so "No matches" is
+/// never read as "the text is absent" when it was never searched.
+fn note_skipped_oversize(mut output: ToolOutput, skipped: &[WorkspacePath]) -> ToolOutput {
+    if skipped.is_empty() {
+        return output;
+    }
+    const SHOWN: usize = 8;
+    let mut names = skipped
+        .iter()
+        .take(SHOWN)
+        .map(WorkspacePath::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if skipped.len() > SHOWN {
+        names.push_str(&format!(", and {} more", skipped.len() - SHOWN));
+    }
+    output.content.push_str(&format!(
+        "\nNot searched: {} file(s) over the workspace text-file size limit ({names}). Search them with `bash` (for example `grep -n`).",
+        skipped.len()
+    ));
+    let paths = skipped
+        .iter()
+        .map(|path| path.as_str().to_string())
+        .collect::<Vec<_>>();
+    match output.metadata.as_mut() {
+        Some(serde_json::Value::Object(object)) => {
+            object.insert("skipped_oversize".into(), serde_json::json!(paths));
+        }
+        _ => output.metadata = Some(serde_json::json!({ "skipped_oversize": paths })),
+    }
+    output
 }
 
 async fn render_paginated_grep(
@@ -589,6 +626,47 @@ mod tests {
             result.metadata.unwrap()["source_anchors"],
             serde_json::json!(["a.txt"])
         );
+    }
+
+    #[tokio::test]
+    async fn grep_names_files_it_skipped_for_size_instead_of_a_bare_no_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut big = vec![b'a'; 16 * 1024 * 1024];
+        big.extend_from_slice(b"\nNEEDLE\n");
+        std::fs::write(temp.path().join("big.log"), big).unwrap();
+        std::fs::write(temp.path().join("small.txt"), "nothing").unwrap();
+        let ctx = ToolContext::new(temp.path().to_path_buf());
+
+        for mode in ["content", "files_with_matches", "summary"] {
+            let result = GrepTool
+                .execute(
+                    &serde_json::json!({"pattern": "NEEDLE", "output_mode": mode}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert!(result.success, "{mode}: {}", result.content);
+            assert!(
+                result.content.contains("Not searched: 1 file(s)")
+                    && result.content.contains("big.log"),
+                "{mode}: {}",
+                result.content
+            );
+            assert_eq!(
+                result.metadata.unwrap()["skipped_oversize"],
+                serde_json::json!(["big.log"]),
+                "{mode}"
+            );
+        }
+
+        let clean = GrepTool
+            .execute(
+                &serde_json::json!({"pattern": "nothing", "glob": "*.txt"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!clean.content.contains("Not searched"), "{}", clean.content);
     }
 
     #[tokio::test]

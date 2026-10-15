@@ -87,6 +87,8 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
 - **Searchable fetched pages (9.1.3, unreleased).** A long `web_fetch` page is
   kept whole as an artifact, so the model greps or pages it instead of
   fetching it again.
+- **Honest search misses (9.1.3, unreleased).** `grep` names files it skipped
+  for size instead of answering only "No matches found".
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

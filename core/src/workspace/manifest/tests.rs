@@ -276,6 +276,43 @@ async fn eager_manifest_is_active_at_construction() {
 }
 
 #[tokio::test]
+async fn manifest_grep_reports_a_file_it_skipped_for_size() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    let temp = tempfile::tempdir().unwrap();
+    let mut big = vec![b'a'; 16 * 1024 * 1024];
+    big.extend_from_slice(b"\nNEEDLE\n");
+    write(&temp.path().join("logs/big.log"), &big);
+    write(&temp.path().join("README.md"), b"hello\n");
+
+    let backend = ManifestWorkspaceBackend::new(temp.path());
+    let mut rx = backend.manifest().subscribe();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let outcome = backend
+        .grep_with_sources(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "NEEDLE".to_string(),
+            glob: None,
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 1024,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.result.match_count, 0);
+    assert_eq!(
+        outcome.skipped_oversize,
+        vec![WorkspacePath::from_normalized("logs/big.log")]
+    );
+}
+
+#[tokio::test]
 async fn manifest_credential_boundary_filters_sensitive_grep_candidates() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
     let temp = tempfile::tempdir().unwrap();

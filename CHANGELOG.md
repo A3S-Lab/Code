@@ -28,9 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text as an `a3s://tool-output/web_fetch/...` artifact. `read` pages it and
   `search` greps it without a second fetch. Each page also stops inside the
   result budget.
+- `grep` and `search` (`mode=grep`) name the files they did not search because
+  they exceed the 16 MiB text-file limit, in every output mode and in
+  `metadata.skipped_oversize`. "No matches found" no longer hides them.
 
 ### Changed
 
+- `WorkspaceGrepOutcome` has a new public field, `skipped_oversize`. A custom
+  backend that builds the struct sets it to an empty `Vec`.
 - New sessions bound each tool result to 16 KB: an exact head and tail around
   one omitted middle, with the full output kept as a pageable artifact.
   Terminal-Bench trajectories put p99 at 15 KB, so the cut touches under 1% of

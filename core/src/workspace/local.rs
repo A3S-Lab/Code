@@ -184,6 +184,10 @@ impl LocalWorkspaceBackend {
         read_search_file_at(&self.root, self.access_boundary.as_deref(), path)
     }
 
+    pub(super) fn search_file_is_oversize(&self, path: &WorkspacePath) -> bool {
+        search_file_is_oversize_at(&self.root, path)
+    }
+
     fn refuse_checkout_targets(&self, refspec: &str, force: bool) -> Result<()> {
         let mut paths = crate::git::paths_changed_between(&self.root, "HEAD", refspec)?;
         if force {
@@ -1308,6 +1312,14 @@ fn ensure_range_within_bound(path: &WorkspacePath, consumed: usize) -> Result<()
     Ok(())
 }
 
+/// True when a search skipped `path` for its size, not for being unreadable.
+fn search_file_is_oversize_at(root: &Path, path: &WorkspacePath) -> bool {
+    a3s_common::tools::resolve_path(root, path.as_str())
+        .ok()
+        .and_then(|resolved| std::fs::metadata(resolved).ok())
+        .is_some_and(|metadata| metadata.is_file() && metadata.len() > MAX_TEXT_FILE_BYTES)
+}
+
 fn read_search_file_at(
     root: &Path,
     boundary: Option<&LocalWorkspaceAccessBoundary>,
@@ -1392,6 +1404,7 @@ fn grep_walk(
     let mut file_count = 0;
     let mut total_size = 0;
     let mut matched_paths = Vec::new();
+    let mut skipped_oversize = Vec::new();
     let metadata_only = request.max_output_size == 0;
 
     for entry in builder.build().flatten() {
@@ -1406,6 +1419,9 @@ fn grep_walk(
         let workspace_path =
             pathbuf_to_workspace_path(file_path.strip_prefix(root).unwrap_or(file_path));
         let Some(content) = read_search_file_at(root, boundary, &workspace_path) else {
+            if search_file_is_oversize_at(root, &workspace_path) {
+                skipped_oversize.push(workspace_path);
+            }
             continue;
         };
 
@@ -1436,6 +1452,7 @@ fn grep_walk(
                         truncated: true,
                     },
                     matched_paths: Some(matched_paths),
+                    skipped_oversize,
                 });
             }
 
@@ -1474,6 +1491,7 @@ fn grep_walk(
             truncated: false,
         },
         matched_paths: Some(matched_paths),
+        skipped_oversize,
     })
 }
 

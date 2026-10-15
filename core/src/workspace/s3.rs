@@ -833,6 +833,7 @@ impl WorkspaceSearch for S3WorkspaceBackend {
                 truncated: output_truncated || scan_truncated,
             },
             matched_paths: Some(matched_paths),
+            skipped_oversize: Vec::new(),
         })
     }
 }

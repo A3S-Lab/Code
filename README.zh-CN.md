@@ -68,6 +68,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
   带上宿主说明，调用不被拦截。完成门禁会写出能关闭它的 `bash` 检查。
 - **可检索的抓取页面（9.1.3，未发布）。** `web_fetch` 抓到的长页面会完整保存为
   制品，模型可以搜索或分页读取，不必重新抓取。
+- **如实报告未检索的文件（9.1.3，未发布）。** `grep` 会列出因大小超限而未检索的
+  文件，不再只回答“No matches found”。
 - **无人值守 ACP 试验臂（9.1.3，未发布）。** `a3s-code-acp --unattended` 支持
   `--engineering-policy NAME` 和 `--goal-continuation`（第一次尝试作为已准入的
   单步目标切片运行）。`ultracode` 力度现在指向已注册的 `program` 工具。

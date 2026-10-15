@@ -266,6 +266,9 @@ pub struct WorkspaceGrepOutcome {
     /// Distinct paths that contributed rendered match lines, in result order.
     /// `None` denotes a legacy/custom backend with display output only.
     pub matched_paths: Option<Vec<WorkspacePath>>,
+    /// Files the backend did not search because they exceed its text-file size
+    /// bound, in walk order. Empty when none were skipped or not reported.
+    pub skipped_oversize: Vec<WorkspacePath>,
 }
 
 /// Repository status returned by a workspace Git provider.
@@ -555,6 +558,7 @@ pub trait WorkspaceSearch: Send + Sync {
         Ok(WorkspaceGrepOutcome {
             result,
             matched_paths: None,
+            skipped_oversize: Vec::new(),
         })
     }
 }
