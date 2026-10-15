@@ -362,9 +362,13 @@ async fn goal_step_oversized_original_observation_cannot_be_silently_truncated()
     let (agent, session, client) = fixture(
         root.path(),
         true,
-        options("goal-run").with_permission_policy(
-            crate::permissions::PermissionPolicy::new().allow("verify_source(*)"),
-        ),
+        options("goal-run")
+            .with_tool_result_transform_policy(
+                crate::tools::ToolResultTransformPolicyV1::conservative(),
+            )
+            .with_permission_policy(
+                crate::permissions::PermissionPolicy::new().allow("verify_source(*)"),
+            ),
     )
     .await;
     session
@@ -394,6 +398,50 @@ async fn goal_step_oversized_original_observation_cannot_be_silently_truncated()
         crate::text::truncate_utf8(envelope["text"].as_str().unwrap_or(""), 200)
     );
     assert!(!facts.iter().any(|f| f.kind == "a3s.goal.step.accepted"));
+    session.close().await;
+    agent.close().await;
+}
+
+#[tokio::test]
+async fn goal_step_judges_a_bounded_observation_that_names_its_omission() {
+    let root = tempfile::tempdir().unwrap();
+    let expected = "本次原始观察".repeat(3000);
+    std::fs::write(root.path().join("source.txt"), &expected).unwrap();
+    let (agent, session, client) = fixture(
+        root.path(),
+        true,
+        options("goal-run").with_permission_policy(
+            crate::permissions::PermissionPolicy::new().allow("verify_source(*)"),
+        ),
+    )
+    .await;
+    session
+        .register_dynamic_tool(Arc::new(VerifySource(expected)))
+        .unwrap();
+    script(
+        &client,
+        r#"{"achieved":true,"progress":1.0,"remaining_criteria":[]}"#,
+    );
+    session
+        .send("Execute the admitted current step.", None)
+        .await
+        .unwrap();
+    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+    let facts = crate::fact_control::read_workspace_facts(root.path(), "goal-run").unwrap();
+    let result = facts.iter().find(|f| f.kind == "tool.result").unwrap();
+    let receipt: a3s_effect::ToolExecutionResultV1 =
+        serde_json::from_value(result.payload["receipt"].clone()).unwrap();
+    let envelope: serde_json::Value =
+        serde_json::from_str(receipt.output.as_str().unwrap()).unwrap();
+    let text = envelope["text"].as_str().unwrap();
+    assert!(text.len() <= 32 * 1024);
+    assert!(text.contains("[tool output bounded by"), "{text:.200}");
+    assert!(text.contains("a3s://tool-output/verify_source/"));
+    assert_eq!(
+        envelope["metadata"]["verification_report"]["status"],
+        "passed"
+    );
+    assert!(facts.iter().any(|f| f.kind == "a3s.goal.step.accepted"));
     session.close().await;
     agent.close().await;
 }

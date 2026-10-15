@@ -36,6 +36,9 @@ fn session_data() -> SessionData {
             name: "checkpoint fixture".into(),
             workspace: "/workspace".into(),
             max_context_length: 128_000,
+            // The pinned digests below freeze a checkpoint written under this policy.
+            tool_result_transform_policy:
+                a3s_code_core::tools::ToolResultTransformPolicyV1::conservative(),
             ..SessionConfig::default()
         },
         state: SessionState::Active,

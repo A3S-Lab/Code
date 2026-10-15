@@ -449,7 +449,17 @@ pub(super) struct PyToolResultTransformPolicy {
 impl PyToolResultTransformPolicy {
     #[new]
     fn new() -> Self {
+        Self::from(a3s_code_core::tools::ToolResultTransformPolicyV1::default())
+    }
+
+    #[staticmethod]
+    fn conservative() -> Self {
         Self::from(a3s_code_core::tools::ToolResultTransformPolicyV1::conservative())
+    }
+
+    #[staticmethod]
+    fn context_bounded() -> Self {
+        Self::from(a3s_code_core::tools::ToolResultTransformPolicyV1::context_bounded())
     }
 
     #[staticmethod]

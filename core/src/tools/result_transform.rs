@@ -30,9 +30,15 @@ pub struct ToolResultTransformPolicyV1 {
     pub structured_sample_items: usize,
 }
 
+/// Default model-facing budget. Terminal-Bench ACP trajectories (4793 tool
+/// results) put p99 at 15 KB: a 16 KB cut touches under 1% of results and
+/// removes up to 16% of resident result bytes. The original stays pageable as a
+/// `a3s://tool-output/...` artifact.
+pub const CONTEXT_BOUNDED_MAX_OUTPUT_BYTES: usize = 16 * 1024;
+
 impl Default for ToolResultTransformPolicyV1 {
     fn default() -> Self {
-        Self::conservative()
+        Self::context_bounded()
     }
 }
 
@@ -43,6 +49,20 @@ impl ToolResultTransformPolicyV1 {
             max_output_bytes: super::MAX_OUTPUT_SIZE,
             head_bytes: super::MAX_OUTPUT_SIZE,
             tail_bytes: 0,
+            fold_repeated_lines: false,
+            repeated_line_threshold: 3,
+            structured_sample_items: 0,
+        }
+    }
+
+    /// Exact head and tail around one omitted middle; no content rewriting.
+    pub fn context_bounded() -> Self {
+        let tail_bytes = (CONTEXT_BOUNDED_MAX_OUTPUT_BYTES - MARKER_RESERVE_BYTES) / 3;
+        Self {
+            schema: TOOL_RESULT_TRANSFORM_SCHEMA_V1.to_string(),
+            max_output_bytes: CONTEXT_BOUNDED_MAX_OUTPUT_BYTES,
+            head_bytes: CONTEXT_BOUNDED_MAX_OUTPUT_BYTES - MARKER_RESERVE_BYTES - tail_bytes,
+            tail_bytes,
             fold_repeated_lines: false,
             repeated_line_threshold: 3,
             structured_sample_items: 0,
@@ -418,6 +438,27 @@ mod tests {
         let mut invalid = ToolResultTransformPolicyV1::context_efficient();
         invalid.schema = "future".into();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn the_default_keeps_an_exact_head_and_tail_inside_sixteen_kilobytes() {
+        let policy = ToolResultTransformPolicyV1::default();
+        policy.validate().unwrap();
+        assert_eq!(policy, ToolResultTransformPolicyV1::context_bounded());
+        assert_eq!(policy.max_output_bytes, CONTEXT_BOUNDED_MAX_OUTPUT_BYTES);
+
+        let output = format!("HEAD\n{}\nERROR: tail line\n", "x".repeat(40 * 1024));
+        let transformed = transform(&output, &policy);
+        assert_eq!(transformed.loss_mode, ToolResultLossModeV1::HeadTail);
+        assert!(transformed.content.len() <= policy.max_output_bytes);
+        assert!(transformed.content.starts_with("HEAD\n"));
+        assert!(transformed.content.ends_with("ERROR: tail line\n"));
+
+        let small = "y".repeat(policy.max_output_bytes);
+        assert_eq!(
+            transform(&small, &policy).loss_mode,
+            ToolResultLossModeV1::None
+        );
     }
 
     #[test]

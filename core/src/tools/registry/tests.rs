@@ -453,12 +453,13 @@ async fn test_registry_truncates_large_tool_output() {
         .await
         .unwrap();
 
+    let policy = super::super::ToolResultTransformPolicyV1::default();
     assert_eq!(result.exit_code, 0);
-    assert!(result.output.contains("[tool output truncated:"));
+    assert!(result.output.contains("[tool output bounded by"));
     assert!(result
         .output
         .contains("Full output artifact: a3s://tool-output/large_output/"));
-    assert!(result.output.len() < super::super::MAX_OUTPUT_SIZE + 512);
+    assert!(result.output.len() < policy.max_output_bytes + 512);
     let metadata = result.metadata.expect("artifact metadata");
     assert_eq!(
         metadata["artifact"]["original_bytes"],
@@ -466,7 +467,7 @@ async fn test_registry_truncates_large_tool_output() {
     );
     assert_eq!(
         metadata["artifact"]["shown_bytes"],
-        serde_json::json!(super::super::MAX_OUTPUT_SIZE)
+        serde_json::json!(policy.head_bytes + policy.tail_bytes)
     );
     assert!(metadata["artifact"]["artifact_id"]
         .as_str()
@@ -486,7 +487,7 @@ async fn test_registry_truncates_large_tool_output() {
     assert_eq!(evidence.projected_bytes, result.output.len());
     assert_eq!(
         evidence.loss_mode,
-        super::super::ToolResultLossModeV1::BoundedPreview
+        super::super::ToolResultLossModeV1::HeadTail
     );
 
     let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
@@ -496,7 +497,7 @@ async fn test_registry_truncates_large_tool_output() {
         .expect("full output artifact");
     assert_eq!(artifact.tool_name, "large_output");
     assert_eq!(artifact.original_bytes, super::super::MAX_OUTPUT_SIZE + 1);
-    assert_eq!(artifact.shown_bytes, super::super::MAX_OUTPUT_SIZE);
+    assert_eq!(artifact.shown_bytes, policy.head_bytes + policy.tail_bytes);
     assert_eq!(
         artifact.content,
         "x".repeat(super::super::MAX_OUTPUT_SIZE + 1)
@@ -528,7 +529,7 @@ async fn unknown_tool_result_still_carries_context_evidence() {
         format!("inline:{}", evidence.content_digest)
     );
     transform_binding
-        .validate_for_policy(&super::super::ToolResultTransformPolicyV1::conservative())
+        .validate_for_policy(&super::super::ToolResultTransformPolicyV1::default())
         .unwrap();
 }
 
@@ -560,7 +561,7 @@ async fn test_registry_execute_raw_stores_truncated_artifact() {
         .unwrap()
         .expect("raw output");
 
-    assert!(output.content.contains("[tool output truncated:"));
+    assert!(output.content.contains("[tool output bounded by"));
     let metadata = output.metadata.expect("artifact metadata");
     let artifact_uri = metadata["artifact"]["artifact_uri"].as_str().unwrap();
     let artifact = registry

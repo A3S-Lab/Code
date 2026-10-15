@@ -581,13 +581,11 @@ impl ToolRegistry {
             });
         };
 
-        let scoped;
-        let ctx = if ctx.artifact_store.is_none() && self.immutable_content_adapter.is_none() {
-            scoped = ctx.clone().with_artifact_store(self.artifact_store.clone());
-            &scoped
-        } else {
-            ctx
-        };
+        let mut scoped = ctx.clone().with_result_budget_bytes(policy.max_output_bytes);
+        if scoped.artifact_store.is_none() && self.immutable_content_adapter.is_none() {
+            scoped = scoped.with_artifact_store(self.artifact_store.clone());
+        }
+        let ctx = &scoped;
         let mut output = tool.execute(args, ctx).await?;
         self.compact_change_metadata(name, &mut output.metadata, ctx)
             .await?;

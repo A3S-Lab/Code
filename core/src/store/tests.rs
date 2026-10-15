@@ -1969,3 +1969,21 @@ async fn file_store_wal_rejects_intent_then_committed_for_different_session() {
         .expect_err("cross-session Intent→Committed must fail");
     assert!(err.to_string().contains("conflicts"));
 }
+
+#[test]
+fn a_config_without_a_transform_policy_keeps_the_legacy_conservative_policy() {
+    let mut value = serde_json::to_value(SessionConfig::default()).expect("config");
+    value
+        .as_object_mut()
+        .expect("object")
+        .remove("tool_result_transform_policy");
+    let legacy: SessionConfig = serde_json::from_value(value).expect("legacy config");
+    assert_eq!(
+        legacy.tool_result_transform_policy,
+        crate::tools::ToolResultTransformPolicyV1::conservative()
+    );
+    assert_eq!(
+        SessionConfig::default().tool_result_transform_policy,
+        crate::tools::ToolResultTransformPolicyV1::context_bounded()
+    );
+}

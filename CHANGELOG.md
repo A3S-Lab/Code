@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--goal-continuation`. The goal arm runs the first attempt as the admitted
   one-step goal slice under the run deadline.
 
+### Changed
+
+- New sessions bound each tool result to 16 KB: an exact head and tail around
+  one omitted middle, with the full output kept as a pageable artifact.
+  Terminal-Bench trajectories put p99 at 15 KB, so the cut touches under 1% of
+  results. `read` and artifact pages stop inside the budget with a
+  continuation offset. A snapshot written without the field keeps the 100 KB
+  head-only `conservative` policy; `SessionOptions` can still pin any policy.
+
 ### Fixed
 
 - The `ultracode` effort guideline names the registered `program` tool instead

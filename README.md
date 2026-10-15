@@ -77,6 +77,10 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   `read` pages it like a file and `search` (`mode=grep`) searches it, so the
   model recovers the omitted region instead of re-running the command. A
   pruned result points at its artifact.
+- **Head-and-tail tool results (9.1.3, unreleased).** New sessions keep the
+  first and last parts of a tool result inside 16 KB and page the rest from
+  its artifact, so a trailing error is never cut off. `read` pages stop inside
+  the same budget.
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

@@ -52,14 +52,14 @@ pub(crate) fn read_page(
         ));
     }
     let end = offset.saturating_add(limit).min(lines.len());
-    let mut output = String::new();
-    for (index, line) in lines[offset..end].iter().enumerate() {
-        output.push_str(&format!(
-            "{:>6}\t{}\n",
-            offset + index + 1,
-            super::builtin::read::display_read_line(line, byte_offset)
-        ));
-    }
+    let page = super::builtin::read::numbered_page(
+        &lines[offset..end],
+        offset,
+        byte_offset,
+        ctx.result_budget_bytes(),
+    );
+    let end = offset + page.returned;
+    let mut output = page.text;
     let next_offset = (end < lines.len()).then_some(end);
     if let Some(next) = next_offset {
         output.push_str(&format!(
@@ -132,7 +132,7 @@ pub(crate) fn grep(
         }
         printed_until = end;
         shown += 1;
-        if output.len() >= MAX_GREP_OUTPUT_BYTES {
+        if output.len() >= MAX_GREP_OUTPUT_BYTES.min(ctx.result_budget_bytes()) {
             budget_hit = true;
             break;
         }

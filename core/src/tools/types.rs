@@ -246,6 +246,9 @@ pub struct ToolContext {
     pub workspace_services: Arc<crate::workspace::WorkspaceServices>,
     /// Session tool-output artifacts that `read` and `search` may page.
     pub(crate) artifact_store: Option<super::ArtifactStore>,
+    /// Model-facing byte budget of the session result policy. Paginating
+    /// tools end a page inside it instead of being cut mid-page.
+    result_budget_bytes: Option<usize>,
     /// The Run's shared fact-log writer. Appends from Run-owned background
     /// tasks must go through this exact instance: the instance mutex is what
     /// serializes seq assignment against the actor's own appends. A second
@@ -416,6 +419,7 @@ impl ToolContext {
             command_env: None,
             workspace_services: crate::workspace::WorkspaceServices::local(workspace),
             artifact_store: None,
+            result_budget_bytes: None,
             fact_log: None,
             run_permission_checker: None,
             run_confirmation_manager: None,
@@ -574,6 +578,17 @@ impl ToolContext {
     pub(crate) fn with_artifact_store(mut self, store: super::ArtifactStore) -> Self {
         self.artifact_store = Some(store);
         self
+    }
+
+    pub(crate) fn with_result_budget_bytes(mut self, bytes: usize) -> Self {
+        self.result_budget_bytes = Some(bytes);
+        self
+    }
+
+    /// Bytes one paginated result page may use before it must stop and name
+    /// its continuation.
+    pub(crate) fn result_budget_bytes(&self) -> usize {
+        self.result_budget_bytes.unwrap_or(super::MAX_OUTPUT_SIZE)
     }
 
     pub(crate) fn with_run_governance(

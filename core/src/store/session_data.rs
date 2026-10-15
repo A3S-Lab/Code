@@ -105,7 +105,8 @@ pub struct SessionConfig {
     #[serde(default)]
     pub tool_presentation_profile: crate::tools::ToolPresentationProfileV1,
     /// Exact deterministic Tool-result projection policy pinned by the host.
-    #[serde(default)]
+    /// A snapshot written before the field existed ran under `conservative`.
+    #[serde(default = "crate::tools::ToolResultTransformPolicyV1::conservative")]
     pub tool_result_transform_policy: crate::tools::ToolResultTransformPolicyV1,
 }
 

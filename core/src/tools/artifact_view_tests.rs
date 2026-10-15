@@ -130,3 +130,51 @@ async fn an_unretained_artifact_is_refused_by_name() {
         result.output
     );
 }
+
+#[tokio::test]
+async fn a_read_page_ends_inside_the_result_budget_and_continues() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let body = (1..=2_000)
+        .map(|line| format!("line {line:04} {}\n", "z".repeat(40)))
+        .collect::<String>();
+    std::fs::write(workspace.path().join("big.txt"), &body).expect("write");
+    let executor = ToolExecutor::new(workspace.path().display().to_string());
+    let registry = executor.registry();
+    let budget = crate::tools::ToolResultTransformPolicyV1::default().max_output_bytes;
+
+    let first = registry
+        .execute("read", &serde_json::json!({"file_path": "big.txt"}))
+        .await
+        .expect("read");
+    assert_eq!(first.exit_code, 0, "{}", first.output);
+    assert!(first.output.len() <= budget, "{}", first.output.len());
+    assert!(
+        !first.output.contains("omitted"),
+        "the page must not be cut mid-page"
+    );
+    let next = first
+        .output
+        .rsplit("continue with offset=")
+        .next()
+        .expect("continuation");
+    let next: usize = next
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .expect("offset");
+    assert!(next > 100 && next < 2_000, "{next}");
+
+    let second = registry
+        .execute(
+            "read",
+            &serde_json::json!({"file_path": "big.txt", "offset": next}),
+        )
+        .await
+        .expect("read");
+    assert!(
+        second
+            .output
+            .starts_with(&format!("{:>6}\tline {:04}", next + 1, next + 1)),
+        "{}",
+        &second.output[..80]
+    );
+}

@@ -34,6 +34,40 @@ pub(crate) fn display_read_line(line: &str, byte_offset: usize) -> String {
     )
 }
 
+/// Room kept under a page budget for the continuation line.
+pub(crate) const PAGE_CONTINUATION_RESERVE_BYTES: usize = 256;
+
+pub(crate) struct NumberedPage {
+    pub text: String,
+    pub returned: usize,
+}
+
+/// Number lines from `offset` until the next line would leave the page
+/// budget. The first line is always returned so a page always advances.
+pub(crate) fn numbered_page<S: AsRef<str>>(
+    lines: &[S],
+    offset: usize,
+    byte_offset: usize,
+    budget_bytes: usize,
+) -> NumberedPage {
+    let budget = budget_bytes.saturating_sub(PAGE_CONTINUATION_RESERVE_BYTES);
+    let mut text = String::new();
+    let mut returned = 0;
+    for line in lines {
+        let entry = format!(
+            "{:>6}\t{}\n",
+            offset + returned + 1,
+            display_read_line(line.as_ref(), byte_offset)
+        );
+        if returned > 0 && text.len() + entry.len() > budget {
+            break;
+        }
+        text.push_str(&entry);
+        returned += 1;
+    }
+    NumberedPage { text, returned }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BatchReadEntry {
@@ -269,17 +303,25 @@ impl Tool for ReadTool {
                 offset, total_lines
             )));
         }
+        let page = numbered_page(&range.lines, offset, byte_offset, ctx.result_budget_bytes());
+        let budget_cut = page.returned < range.lines.len();
+        let next_offset = if budget_cut {
+            Some(offset + page.returned)
+        } else {
+            range.next_offset
+        };
         let mut metadata = serde_json::json!({
             "source_anchors": [workspace_path.as_str()],
             "range": {
                 "offset": offset,
                 "requested_limit": requested_limit,
                 "applied_limit": limit,
-                "returned_lines": range.lines.len(),
-                "next_offset": range.next_offset,
-                "eof": range.eof,
+                "returned_lines": page.returned,
+                "next_offset": next_offset,
+                "eof": range.eof && !budget_cut,
                 "total_lines": range.total_lines,
                 "limit_clamped": requested_limit != limit,
+                "budget_clamped": budget_cut,
             }
         });
         if range.lines.is_empty() && range.eof {
@@ -290,17 +332,8 @@ impl Tool for ReadTool {
             .with_metadata(metadata));
         }
 
-        let mut output = String::new();
-        for (i, line) in range.lines.iter().enumerate() {
-            let line_num = offset + i + 1; // 1-indexed
-            output.push_str(&format!(
-                "{:>6}\t{}\n",
-                line_num,
-                display_read_line(line, byte_offset)
-            ));
-        }
-
-        if let Some(next_offset) = range.next_offset {
+        let mut output = page.text;
+        if let Some(next_offset) = next_offset {
             output.push_str(&format!(
                 "\n... (more lines available; continue with offset={next_offset})\n"
             ));
@@ -361,7 +394,8 @@ async fn execute_batch_read(args: &serde_json::Value, ctx: &ToolContext) -> Resu
             }
         },
         None => DEFAULT_BATCH_READ_OUTPUT_BYTES,
-    };
+    }
+    .min(ctx.result_budget_bytes().max(MIN_BATCH_READ_OUTPUT_BYTES));
 
     let total = entries.len();
     let mut progress = entries.iter().cloned().map(Some).collect::<Vec<_>>();
