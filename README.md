@@ -81,6 +81,9 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   first and last parts of a tool result inside 16 KB and page the rest from
   its artifact, so a trailing error is never cut off. `read` pages stop inside
   the same budget.
+- **Repeat and gate feedback (9.1.3, unreleased).** A call that returns the
+  same text for the same arguments again is marked with a host note instead of
+  being blocked. The completion gate names a `bash` check that closes it.
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

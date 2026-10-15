@@ -2418,6 +2418,8 @@ struct ExecutorTools {
     targeted_paths: Option<Arc<Mutex<Vec<String>>>>,
     /// Set only by the preparation adapter after resolving input hooks once.
     pre_tool_hook_resolved: bool,
+    /// Per run: call digest -> (last result digest, identical results in a row).
+    repeats: Arc<Mutex<std::collections::HashMap<String, (String, u32)>>>,
 }
 
 #[derive(Clone)]
@@ -2629,6 +2631,7 @@ impl ToolRunner for ExecutorTools {
         let reports = self.reports.clone();
         let targeted_paths = self.targeted_paths.clone();
         let pre_tool_hook_resolved = self.pre_tool_hook_resolved;
+        let repeats = Arc::clone(&self.repeats);
         Box::pin(async move {
             let operation = agent
                 .as_ref()
@@ -2663,6 +2666,7 @@ impl ToolRunner for ExecutorTools {
                 reports,
                 targeted_paths,
                 pre_tool_hook_resolved,
+                repeats,
             };
             emit_tool_request_bound(&tools, &call).await;
             if let Some(agent) = &tools.agent {
@@ -2980,6 +2984,9 @@ impl ToolRunner for ExecutorTools {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .observe_tool(&call.name, result.exit_code, metadata.as_ref());
+            }
+            if let Some(note) = repeated_result_note(&tools.repeats, &call.name, &call.args, &output) {
+                output.push_str(&note);
             }
             tools
                 .emit(crate::agent::AgentEvent::ToolEnd {
@@ -3747,6 +3754,39 @@ fn workspace_boundary_error(message: &str) -> bool {
     message.contains("escapes workspace") || message.contains("Workspace boundary")
 }
 
+/// Mechanical feedback when a call repeats the name, arguments and output of the
+/// previous call with the same name and arguments in this run. It never blocks.
+/// A JSON result stays parseable for its consumer, so it carries no note.
+fn repeated_result_note(
+    repeats: &Mutex<std::collections::HashMap<String, (String, u32)>>,
+    name: &str,
+    args: &serde_json::Value,
+    output: &str,
+) -> Option<String> {
+    let call = crate::content_digest::digest_bytes(
+        "a3s.code.tool-repeat.call.v1",
+        format!("{name}\n{args}").as_bytes(),
+    );
+    let result =
+        crate::content_digest::digest_bytes("a3s.code.tool-repeat.result.v1", output.as_bytes());
+    let mut repeats = repeats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = repeats.entry(call).or_default();
+    if entry.0 == result {
+        entry.1 += 1;
+    } else {
+        *entry = (result, 1);
+    }
+    let structured = serde_json::from_str::<serde_json::Value>(output).is_ok();
+    (entry.1 > 1 && !structured).then(|| {
+        format!(
+            "\n\n[a3s host: `{name}` returned byte-identical output for identical arguments {} times in a row this run; it observed nothing new.]",
+            entry.1
+        )
+    })
+}
+
 fn visible_tool_output(agent: Option<&crate::agent::AgentLoop>, output: String) -> String {
     match agent {
         Some(agent) => agent.sanitize_tool_output(&output),
@@ -4018,6 +4058,7 @@ impl FactRun {
                 reports: None,
                 targeted_paths: None,
                 pre_tool_hook_resolved: false,
+                repeats: Arc::default(),
             }),
             config,
             session_id,
@@ -4304,6 +4345,7 @@ impl FactRun {
                 reports,
                 targeted_paths: Some(Arc::clone(&surface.targeted_paths)),
                 pre_tool_hook_resolved: false,
+                repeats: Arc::default(),
             }),
             step_limit,
             session_id,

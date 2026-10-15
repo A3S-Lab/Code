@@ -969,8 +969,9 @@ pub fn decide_with_observations(
         });
     }
     let paths = mutation_paths_for_gate(ledger);
+    let next = unbound_mutation_next_step(ledger);
     let message = format!(
-        "{UNBOUND_MUTATION_GATE}{digest}{paths} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest."
+        "{UNBOUND_MUTATION_GATE}{digest}{paths} has no bound Passed verification and no host waiver. Assistant text does not count. Bind a verification_report.effect_digest to this digest with required checks Passed, or obtain a host waiver for this digest.{next}"
     );
     // A host waiver is not model-grantable, and editor-authored reports are
     // rejected. Built-in bash may bind a digest only when an existence check
@@ -991,6 +992,22 @@ pub fn unbound_mutation_digest(message: &str) -> Option<&str> {
     let start = message.find(UNBOUND_MUTATION_GATE)? + UNBOUND_MUTATION_GATE.len();
     let digest = message[start..].split(' ').next()?;
     (!digest.is_empty()).then_some(digest)
+}
+
+/// The step the model can take itself. Built-in `bash` binds the digest when it
+/// exits 0 and a `test -f` segment names a changed file whose bytes the ledger
+/// recorded. Without such a file only a declared suite or a host waiver binds.
+fn unbound_mutation_next_step(ledger: &MutationLedger) -> String {
+    let Some(path) = ledger
+        .paths()
+        .filter(|path| ledger.has_content_digest(path))
+        .min()
+    else {
+        return String::new();
+    };
+    format!(
+        " Next step: run one `bash` command that exits 0 and includes `test -f {path}` with the check that proves the change, for example `test -f {path} && <test command>`."
+    )
 }
 
 /// A few ledger paths, so a failed turn names what changed. The digest stays
@@ -1228,6 +1245,46 @@ mod tests {
             }
             other => panic!("expected incomplete, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unbound_mutation_gate_names_a_bash_check_that_closes_it() {
+        let ledger = ledger_with_write();
+        let CompletionGate::Incomplete { message } = decide_completion(&ledger, &[], &[], false)
+        else {
+            panic!("expected incomplete");
+        };
+        let example = message
+            .split("for example `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .expect("example command");
+        let checks = crate::verification::existence_checks(example);
+        assert_eq!(checks.len(), 1, "{message}");
+        assert_eq!(checks[0].path, "src/lib.rs");
+        let paths = vec!["src/lib.rs".to_string()];
+        let bytes = "sha256:on-disk";
+        let report = crate::verification::host_report_for_verified_mutation_path_with_content(
+            &checks[0].segment,
+            0,
+            &paths,
+            ledger.digest(),
+            Some((bytes, bytes)),
+        )
+        .expect("report");
+        assert!(matches!(
+            decide_completion(&ledger, &[report], &[], false),
+            CompletionGate::Allow(CompletionTerminal::Verified { .. })
+        ));
+
+        let mut unrecorded = MutationLedger::default();
+        unrecorded.observe_unseen_paths(&["out.bin".to_string()]);
+        let CompletionGate::Incomplete { message } =
+            decide_completion(&unrecorded, &[], &[], false)
+        else {
+            panic!("expected incomplete");
+        };
+        assert!(!message.contains("Next step"), "{message}");
     }
 
     #[test]

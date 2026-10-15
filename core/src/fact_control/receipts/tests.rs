@@ -571,6 +571,7 @@ fn executor_tools_with(
             reports: None,
             targeted_paths: None,
             pre_tool_hook_resolved: false,
+            repeats: Arc::default(),
         }),
         count,
     )

@@ -1573,3 +1573,84 @@ async fn context_sections_are_recorded_stable_and_source_tracked() {
         "a changed source must digest differently"
     );
 }
+
+struct SettlingProbe(AtomicUsize);
+
+#[async_trait]
+impl crate::tools::Tool for SettlingProbe {
+    fn name(&self) -> &str {
+        "probe_state"
+    }
+
+    fn description(&self) -> &str {
+        "Report the probed state"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    async fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &crate::tools::ToolContext,
+    ) -> anyhow::Result<crate::tools::ToolOutput> {
+        let call = self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(crate::tools::ToolOutput::success(if call < 2 {
+            "pending"
+        } else {
+            "ready"
+        }))
+    }
+}
+
+#[tokio::test]
+async fn fact_log_identical_call_and_result_get_a_non_blocking_host_note() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = crate::Agent::from_config(test_config()).await.unwrap();
+    let session = session_for(
+        &agent,
+        workspace.path(),
+        "fact-repeat-note",
+        Arc::new(ScriptedClient {
+            seen: Arc::clone(&seen),
+            responses: std::sync::Mutex::new(vec![
+                tool_response("probe-1", "probe_state", serde_json::json!({})),
+                tool_response("probe-2", "probe_state", serde_json::json!({})),
+                tool_response("probe-3", "probe_state", serde_json::json!({})),
+                text_response("ready"),
+            ]),
+        }),
+        &crate::SessionOptions::new()
+            .with_permission_policy(crate::permissions::PermissionPolicy::new().allow("*")),
+    );
+    session
+        .register_dynamic_tool(Arc::new(SettlingProbe(AtomicUsize::new(0))))
+        .unwrap();
+    session.send("wait for the probe", None).await.unwrap();
+    let seen = seen.lock().unwrap();
+    let results: Vec<String> = seen
+        .iter()
+        .map(|request| {
+            request
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    crate::llm::ContentBlock::ToolResult { content, .. } => Some(content.as_text()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .max_by_key(Vec::len)
+        .unwrap();
+    assert_eq!(results.len(), 3, "{results:?}");
+    assert!(results[0].starts_with("pending") && !results[0].contains("a3s host"));
+    assert!(
+        results[1].contains("byte-identical output for identical arguments 2 times in a row"),
+        "{}",
+        results[1]
+    );
+    assert!(results[2].starts_with("ready") && !results[2].contains("a3s host"));
+}

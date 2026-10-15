@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `a3s-code-acp --unattended` takes `--engineering-policy NAME` and
   `--goal-continuation`. The goal arm runs the first attempt as the admitted
   one-step goal slice under the run deadline.
+- When a call repeats the name, arguments and byte-identical text output of
+  the previous such call in the run, the result carries a host note with the
+  count. The call still runs; JSON results stay unchanged.
+- The unbound-mutation completion gate names the step the model can take: one
+  passing `bash` command with `test -f PATH` for a changed file whose bytes the
+  ledger recorded.
 
 ### Changed
 

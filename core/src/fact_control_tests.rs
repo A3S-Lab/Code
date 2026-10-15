@@ -2651,3 +2651,18 @@ async fn automatic_fallback_reseals_typed_source_twice_without_trusting_summary(
     let no_source = compact_handoff(&FailingSummaryClient, &lines, 8000, None).await;
     assert!(!no_source.contains("## Durable source"));
 }
+
+#[test]
+fn repeated_result_note_counts_identical_text_and_leaves_json_parseable() {
+    let repeats = Mutex::new(std::collections::HashMap::new());
+    let args = serde_json::json!({"command": "make"});
+    assert_eq!(repeated_result_note(&repeats, "bash", &args, "fail"), None);
+    let note = repeated_result_note(&repeats, "bash", &args, "fail").unwrap();
+    assert!(note.contains("2 times in a row"), "{note}");
+    assert_eq!(repeated_result_note(&repeats, "bash", &args, "pass"), None);
+    let other = serde_json::json!({"command": "make test"});
+    assert_eq!(repeated_result_note(&repeats, "bash", &other, "pass"), None);
+    let json = r#"{"retainedForRun":true}"#;
+    assert_eq!(repeated_result_note(&repeats, "read", &args, json), None);
+    assert_eq!(repeated_result_note(&repeats, "read", &args, json), None);
+}
