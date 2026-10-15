@@ -31,9 +31,9 @@ pub struct SearchConfig {
 
     /// Preferred cascade tier order for automatic fallback.
     ///
-    /// When omitted, Code uses Headless → HTTP → API (or HTTP → API without
-    /// the `headless-search` feature). Invalid or empty lists fall back to that
-    /// default. Duplicate entries are ignored.
+    /// When omitted, A3S Search's product order applies: API → HTTP/RSS →
+    /// headless. Listed tiers run first; omitted tiers keep that order after
+    /// them. Duplicate entries are ignored.
     #[serde(
         default,
         alias = "cascade_order",
@@ -266,6 +266,14 @@ pub struct SearchEngineConfig {
     /// This does not weaken `web_fetch` / `download` SSRF checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// Doubao only: keep results Doubao rates "very authoritative".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoritative_only: Option<bool>,
+
+    /// Doubao only: let Doubao rewrite conversational questions into queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_rewrite: Option<bool>,
 }
 
 pub(crate) fn default_search_timeout() -> u64 {

@@ -1114,6 +1114,8 @@ fn search_config(endpoint: &str) -> crate::config::SearchConfig {
             api_key: None,
             project: None,
             endpoint: Some(endpoint.to_string()),
+            authoritative_only: None,
+            query_rewrite: None,
         },
     );
     crate::config::SearchConfig {
@@ -1127,25 +1129,15 @@ fn search_config(endpoint: &str) -> crate::config::SearchConfig {
 
 async fn case_web_search(commit: &str) {
     let model = pinned_completion("web_search").await;
-    let mut rejected = a3s_search::Search::new();
-    let failure = crate::tools::add_http_engine(
-        &mut rejected,
-        "tavily",
-        None,
-        Some(&search_config("http://example.com/search")),
-    )
-    .expect_err("non-loopback http");
+    let (_, failures) =
+        crate::tools::bridge_search_config(&search_config("http://example.com/search"));
+    let failure = failures.first().expect("non-loopback http");
     assert_eq!(failure.engine, "tavily");
     assert_eq!(failure.provider.as_deref(), Some("tavily"));
-    let mut accepted = a3s_search::Search::new();
-    let added = crate::tools::add_http_engine(
-        &mut accepted,
-        "tavily",
-        None,
-        Some(&search_config("https://example.com/search")),
-    )
-    .expect("https endpoint");
-    assert!(added);
+    let (accepted, failures) =
+        crate::tools::bridge_search_config(&search_config("https://example.com/search"));
+    assert!(failures.is_empty(), "https endpoint: {failures:?}");
+    assert!(accepted.provider_entry("tavily").is_some());
     row(commit, "web_search", &model, "EngineFailure-tavily");
 }
 

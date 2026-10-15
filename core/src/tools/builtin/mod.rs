@@ -42,7 +42,7 @@ pub(crate) use safe_http::{
 #[cfg(test)]
 pub(crate) use web_fetch::WebFetchTool;
 #[cfg(test)]
-pub(crate) use web_search::add_http_engine;
+pub(crate) use web_search::bridge_search_config;
 #[cfg(test)]
 pub(crate) use write::WriteTool;
 

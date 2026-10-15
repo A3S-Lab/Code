@@ -9,11 +9,11 @@ use crate::config::{BrowserBackend, HeadlessConfig};
 use crate::moli_runtime::ensure_moli;
 use crate::tools::types::{Tool, ToolContext, ToolErrorKind, ToolOutput};
 #[cfg(feature = "headless-search")]
-use a3s_search::a3s_use_browser::{BrowserPool, BrowserPoolConfig, BrowserProvider, PageRenderer};
+use a3s_search::product::PendingHeadlessRuntime;
+use a3s_search::product::{execute_cascade, CascadeControls, CascadeRequest, HeadlessBrowser};
 use a3s_search::proxy::ProxyConfig;
 use a3s_search::{
-    EngineFailure, Metrics, MetricsSnapshot, RetrievalRequirements, Search, SearchCascade,
-    SearchCoalescerSnapshot, SearchQuery, SearchResult, SearchResults,
+    EngineTierPlan, Metrics, MetricsSnapshot, SearchCoalescerSnapshot, SearchQuery, SearchResult,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -33,8 +33,8 @@ const MAX_JSON_OUTPUT_BYTES: usize = crate::tools::MAX_OUTPUT_SIZE - JSON_OUTPUT
 
 #[cfg(feature = "headless-search")]
 const WEB_SEARCH_DESCRIPTION: &str = "When saved notes are available, this tool searches them before the network. A matching note is returned and the web is not queried. Call web_search again with the same query if those passages do not answer. \
-     Search the web through a structurally gated cascade: the bundled Moli headless browser (Google, Baidu, Bing, and Brave) first, HTTP/RSS engines \
-     only when needed, and native APIs only when earlier tiers remain insufficient. \
+     Search the web through a structurally gated cascade: native APIs first, HTTP/RSS engines \
+     only when needed, and the bundled Moli headless browser only when earlier tiers remain insufficient. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
      Moli is discovered from the package or installed once in the shared A3S Code cache, then reused by all local Code processes. \
@@ -42,7 +42,7 @@ const WEB_SEARCH_DESCRIPTION: &str = "When saved notes are available, this tool 
 
 #[cfg(not(feature = "headless-search"))]
 const WEB_SEARCH_DESCRIPTION: &str = "When saved notes are available, this tool searches them before the network. A matching note is returned and the web is not queried. Call web_search again with the same query if those passages do not answer. \
-     Search the web through a structurally gated cascade of HTTP/RSS engines and native APIs. \
+     Search the web through a structurally gated cascade of native APIs and HTTP/RSS engines. \
      Unavailable engines are skipped through session-scoped circuit state, and all executed tiers \
      are deduplicated and ranked together. An explicit engines list runs only those requested tiers. \
      Supports proxy configuration for conventional search transports.";
@@ -70,55 +70,23 @@ const ENGINE_CATALOG_DESCRIPTION: &str =
      and opt-in billed providers tinyfish, bocha, aliyun, tencent, firecrawl, and a3s (named only; \
      they are not in the default cascade).";
 
-#[cfg(feature = "headless-search")]
-use engines::add_headless_engine;
 #[cfg(test)]
-pub(crate) use engines::add_http_engine;
+pub(crate) use engines::bridge_search_config;
 #[cfg(not(test))]
-use engines::add_http_engine;
-use engines::{default_engine_selection, EngineTier};
+use engines::bridge_search_config;
 use fallback::{
-    failure_metadata, failure_summary, outcome_metadata, resolved_tier_order, text_notice_note,
-    tier_timeout, tiered_engine_plan, tool_error_kind_for_failures, usable_result_count,
+    failure_metadata, failure_summary, outcome_metadata, text_notice_note,
+    tool_error_kind_for_failures, usable_result_count,
 };
+
+/// Browser render retries per request, the `BrowserFetcher` default Code used before.
+const BROWSER_MAX_RETRIES: u32 = 3;
 
 pub struct WebSearchTool;
 
 impl WebSearchTool {
     pub fn new() -> Self {
         Self
-    }
-
-    /// Create an execution-scoped legacy BrowserPool for Chrome/Lightpanda.
-    ///
-    /// A persistent pool survives a cancelled tool future and can retain the
-    /// Chrome process for the rest of the TUI session. Keeping the pool scoped
-    /// to one invocation lets the cleanup guard deterministically close it on
-    /// success, error, timeout, or caller cancellation.
-    #[cfg(feature = "headless-search")]
-    fn create_pool(config: &HeadlessConfig) -> Arc<BrowserPool> {
-        let executable = config.browser_path.as_ref().map(std::path::PathBuf::from);
-        let provider = match (config.backend, executable) {
-            // Moli is provisioned separately and never enters BrowserPool.
-            // Keep this defensive arm non-panicking for callers that construct
-            // a pool directly in diagnostics.
-            (BrowserBackend::Moli, Some(path)) => BrowserProvider::ChromeExecutable(path),
-            (BrowserBackend::Moli, None) => BrowserProvider::DiscoveredChrome,
-            (BrowserBackend::Chrome, Some(path)) => BrowserProvider::ChromeExecutable(path),
-            (BrowserBackend::Chrome, None) => BrowserProvider::DiscoveredChrome,
-            (BrowserBackend::Lightpanda, Some(path)) => BrowserProvider::LightpandaExecutable(path),
-            (BrowserBackend::Lightpanda, None) => BrowserProvider::DiscoveredLightpanda,
-        };
-
-        let pool_config = BrowserPoolConfig {
-            max_tabs: config.max_tabs,
-            headless: true,
-            provider,
-            proxy_url: config.proxy_url.clone(),
-            launch_args: config.launch_args.clone(),
-        };
-
-        Arc::new(BrowserPool::new(pool_config))
     }
 }
 
@@ -129,78 +97,10 @@ impl Default for WebSearchTool {
 }
 
 #[cfg(feature = "headless-search")]
-struct BrowserPoolCleanup {
-    pool: Option<Arc<BrowserPool>>,
-}
-
-#[cfg(feature = "headless-search")]
-impl BrowserPoolCleanup {
-    fn new(pool: Option<Arc<BrowserPool>>) -> Self {
-        Self { pool }
-    }
-
-    async fn shutdown(&mut self) {
-        if let Some(pool) = self.pool.as_ref() {
-            if tokio::time::timeout(std::time::Duration::from_secs(2), pool.shutdown())
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    "Headless browser cleanup exceeded the 2s foreground grace; continuing in background"
-                );
-                return;
-            }
-        }
-        self.pool = None;
-    }
-}
-
-#[cfg(feature = "headless-search")]
-impl Drop for BrowserPoolCleanup {
-    fn drop(&mut self) {
-        let Some(pool) = self.pool.take() else {
-            return;
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    pool.shutdown().await;
-                });
-            }
-            Err(error) => tracing::warn!(
-                "Could not schedule headless browser cleanup outside a Tokio runtime: {}",
-                error
-            ),
-        }
-    }
-}
-
-#[cfg(all(feature = "headless-search", test))]
-fn managed_headless_config_from_statuses(
-    statuses: &[crate::search_runtime::BrowserRuntimeStatus],
-) -> Option<HeadlessConfig> {
-    let status = statuses
-        .iter()
-        .find(|status| status.available && status.path.is_some())?;
-    let backend = match status.browser {
-        crate::search_runtime::ManagedBrowser::Chrome => BrowserBackend::Chrome,
-        crate::search_runtime::ManagedBrowser::Lightpanda => BrowserBackend::Lightpanda,
-    };
-    Some(HeadlessConfig {
-        backend,
-        browser_path: status
-            .path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        ..HeadlessConfig::default()
-    })
-}
-
-#[cfg(feature = "headless-search")]
 fn effective_headless_config(
     configured: Option<&HeadlessConfig>,
     proxy_url: Option<&str>,
-) -> Option<HeadlessConfig> {
+) -> HeadlessConfig {
     // Moli is the product default. Legacy managed Chrome/Lightpanda discovery
     // is still available through an explicit backend in ACL; it must not
     // silently replace the bundled/downloadable default.
@@ -208,7 +108,7 @@ fn effective_headless_config(
     if let Some(proxy_url) = proxy_url {
         config.proxy_url = Some(proxy_url.to_string());
     }
-    Some(config)
+    config
 }
 
 fn search_result_json(result: &SearchResult, full_text_bytes: Option<usize>) -> serde_json::Value {
@@ -367,106 +267,29 @@ fn search_coalescer_json(snapshot: &SearchCoalescerSnapshot) -> serde_json::Valu
     })
 }
 
-fn tier_search(ctx: &ToolContext, metrics: Arc<Metrics>) -> Search {
-    Search::new()
-        .with_metrics(metrics)
-        .with_circuit_breaker(ctx.search_circuit_breaker())
-        .with_bulkhead(ctx.search_bulkhead())
-        .with_request_coalescer(ctx.search_request_coalescer())
+fn cascade_controls(ctx: &ToolContext, metrics: Arc<Metrics>) -> CascadeControls {
+    CascadeControls {
+        circuit: ctx.search_circuit_breaker(),
+        bulkhead: ctx.search_bulkhead(),
+        coalescer: ctx.search_request_coalescer(),
+        metrics: Some(metrics),
+        retry_budget: Some(ctx.search_retry_budget()),
+        headless_runtime: None,
+        admission: Some(Arc::new(|result: &SearchResult| {
+            !safe_search_result_url(result).is_empty()
+        })),
+    }
 }
 
-fn search_error_failure(engine: &str, error: &a3s_search::SearchError) -> EngineFailure {
-    let mut failure = EngineFailure::new(engine, error.kind(), error.to_string())
-        .with_transient(error.is_transient());
-    if let Some(retry_after_seconds) = error.retry_after_seconds() {
-        failure = failure.with_retry_after(retry_after_seconds);
-    }
-    failure
-}
-
-async fn execute_search_stage(
-    mut search: Search,
-    mut results: SearchResults,
-    query: &str,
-    stage_name: &str,
-    deadline: Instant,
-    remaining_tiers: usize,
-) -> SearchResults {
-    if search.engine_count() == 0 {
-        return results;
-    }
-
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        results.add_failure(
-            EngineFailure::new(
-                stage_name,
-                "timeout",
-                "search deadline was exhausted before this tier could start",
-            )
-            .with_transient(true),
-        );
-        return results;
-    }
-
-    let stage_budget = tier_timeout(remaining, remaining_tiers);
-    let engine_budget = stage_budget
-        .saturating_sub(Duration::from_millis(100))
-        .max(Duration::from_millis(1));
-    search.set_timeout(engine_budget);
-    match tokio::time::timeout(stage_budget, search.search(SearchQuery::new(query))).await {
-        Ok(Ok(stage_results)) => results.merge(stage_results),
-        Ok(Err(error)) => results.add_failure(search_error_failure(stage_name, &error)),
-        Err(_) => results.add_failure(
-            EngineFailure::new(stage_name, "timeout", "search tier timed out").with_transient(true),
-        ),
-    }
-    results
-        .items_mut()
-        .retain(|result| !safe_search_result_url(result).is_empty());
-    results.count = results.items().len();
-    results
-}
-
-struct SearchStageContext<'a> {
-    tool_context: &'a ToolContext,
-    query: &'a str,
-    proxy_url: Option<&'a str>,
-    metrics: &'a Arc<Metrics>,
-    deadline: Instant,
-    #[cfg(feature = "headless-search")]
-    moli: Option<std::result::Result<PathBuf, String>>,
-}
-
-/// Work that may overlap earlier search tiers. Dropping it aborts the task
-/// instead of waiting, so a satisfied fast path never pays for the slow one.
+/// Aborts provisioning the cascade never awaited, so a satisfied fast path
+/// never pays for the slow one.
 #[cfg(any(test, feature = "headless-search"))]
-struct DeferredPrep<T> {
-    task: Option<tokio::task::JoinHandle<T>>,
-}
+struct AbortOnDrop(tokio::task::AbortHandle);
 
 #[cfg(any(test, feature = "headless-search"))]
-impl<T: Send + 'static> DeferredPrep<T> {
-    fn spawn<F>(future: F) -> Self
-    where
-        F: std::future::Future<Output = T> + Send + 'static,
-    {
-        Self {
-            task: Some(tokio::spawn(future)),
-        }
-    }
-
-    async fn join(&mut self) -> Option<std::result::Result<T, tokio::task::JoinError>> {
-        Some(self.task.take()?.await)
-    }
-}
-
-#[cfg(any(test, feature = "headless-search"))]
-impl<T> Drop for DeferredPrep<T> {
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        self.0.abort();
     }
 }
 
@@ -483,196 +306,56 @@ async fn prepare_moli(config: &HeadlessConfig) -> std::result::Result<PathBuf, S
     }
 }
 
-async fn execute_network_stage(
-    context: &SearchStageContext<'_>,
-    shortcuts: &[String],
-    stage_name: &str,
-    remaining_tiers: usize,
-) -> SearchResults {
-    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
-    let mut results = SearchResults::new();
-    for shortcut in shortcuts {
-        match add_http_engine(
-            &mut search,
-            shortcut,
-            context.proxy_url,
-            context.tool_context.search_config.as_deref(),
-        ) {
-            Ok(true) => {}
-            Ok(false) => results.add_failure(EngineFailure::new(
-                shortcut,
-                "unsupported_engine",
-                "engine is not available in this search tier",
-            )),
-            Err(failure) => {
-                context
-                    .metrics
-                    .record_failure(&failure.kind, failure.transient);
-                results.add_failure(failure);
-            }
-        }
-    }
-    execute_search_stage(
-        search,
-        results,
-        context.query,
-        stage_name,
-        context.deadline,
-        remaining_tiers,
-    )
-    .await
-}
-
+/// The browser backend and the runtime Code prepares for it. Moli
+/// provisioning starts now on its own budget and overlaps the earlier tiers.
 #[cfg(feature = "headless-search")]
-async fn execute_headless_stage(
-    context: &SearchStageContext<'_>,
-    shortcuts: &[String],
-    config: Option<&crate::config::SearchConfig>,
-    remaining_tiers: usize,
-) -> SearchResults {
-    let mut results = SearchResults::new();
-    if context
-        .deadline
-        .saturating_duration_since(Instant::now())
-        .is_zero()
-    {
-        results.add_failure(
-            EngineFailure::new(
-                "Headless search tier",
-                "timeout",
-                "search deadline was exhausted before the headless tier could start",
-            )
-            .with_transient(true),
-        );
-        return results;
-    }
+fn headless_runtime(
+    config: HeadlessConfig,
+    needed: bool,
+) -> (
+    HeadlessBrowser,
+    Option<PendingHeadlessRuntime>,
+    Option<AbortOnDrop>,
+) {
+    use futures::FutureExt;
 
-    let headless_config = effective_headless_config(
-        config.and_then(|config| config.headless.as_ref()),
-        context.proxy_url,
-    );
-    let Some(headless_config) = headless_config else {
-        results.add_failure(EngineFailure::new(
-            "Headless search tier",
-            "headless_unavailable",
-            "no headless browser configuration is available",
-        ));
-        return results;
+    let browser = match config.backend {
+        BrowserBackend::Moli => HeadlessBrowser::Moli,
+        BrowserBackend::Chrome => HeadlessBrowser::Chrome,
+        BrowserBackend::Lightpanda => HeadlessBrowser::Lightpanda,
     };
-
-    if headless_config.backend.is_moli() {
-        return execute_moli_stage(context, shortcuts, &headless_config, remaining_tiers).await;
+    if !needed {
+        return (browser, None, None);
     }
-
-    let pool = WebSearchTool::create_pool(&headless_config);
-    let mut cleanup = BrowserPoolCleanup::new(Some(Arc::clone(&pool)));
-    let renderer: Arc<dyn PageRenderer> = pool.clone();
-    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
-    let retry_budget = context.tool_context.search_retry_budget();
-    for shortcut in shortcuts {
-        if !add_headless_engine(
-            &mut search,
-            shortcut,
-            Arc::clone(&renderer),
-            headless_config.backend,
-            &retry_budget,
-        ) {
-            results.add_failure(EngineFailure::new(
-                shortcut,
-                "unsupported_engine",
-                "headless engine is not available",
-            ));
-        }
-    }
-    results = execute_search_stage(
-        search,
-        results,
-        context.query,
-        "Headless search tier",
-        context.deadline,
-        remaining_tiers,
-    )
-    .await;
-    cleanup.shutdown().await;
-    results
-}
-
-#[cfg(feature = "headless-search")]
-async fn execute_moli_stage(
-    context: &SearchStageContext<'_>,
-    shortcuts: &[String],
-    config: &HeadlessConfig,
-    remaining_tiers: usize,
-) -> SearchResults {
-    let mut results = SearchResults::new();
-    let executable = match context.moli.as_ref() {
-        Some(Ok(path)) => path.clone(),
-        Some(Err(error)) => {
-            results.add_failure(
-                EngineFailure::new("moli", "headless_unavailable", error.clone())
-                    .with_transient(true),
-            );
-            return results;
-        }
-        None => match prepare_moli(config).await {
-            Ok(path) => path,
-            Err(error) => {
-                results.add_failure(
-                    EngineFailure::new("moli", "headless_unavailable", error).with_transient(true),
-                );
-                return results;
-            }
-        },
-    };
-
-    let pool = Arc::new(a3s_search::MoliPool::new(a3s_search::MoliPoolConfig {
-        executable: Some(executable),
-        proxy_url: config.proxy_url.clone(),
-        max_tabs: config.max_tabs,
-        ..a3s_search::MoliPoolConfig::default()
-    }));
-    if let Err(error) = pool.warm_up() {
-        results.add_failure(
-            EngineFailure::new(
-                "moli",
-                "headless_unavailable",
-                format!("Moli runtime failed validation: {}", error.message),
-            )
-            .with_transient(true),
+    let max_tabs = Some(config.max_tabs);
+    if !config.backend.is_moli() {
+        let runtime = a3s_search::product::HeadlessRuntime {
+            executable: config.browser_path.as_ref().map(PathBuf::from),
+            max_tabs,
+            launch_args: config.launch_args.clone(),
+        };
+        return (
+            browser,
+            Some(futures::future::ready(Ok(runtime)).boxed().shared()),
+            None,
         );
-        pool.shutdown();
-        return results;
     }
-
-    let renderer: Arc<dyn PageRenderer> = pool.clone();
-    let mut search = tier_search(context.tool_context, Arc::clone(context.metrics));
-    let retry_budget = context.tool_context.search_retry_budget();
-    for shortcut in shortcuts {
-        if !add_headless_engine(
-            &mut search,
-            shortcut,
-            Arc::clone(&renderer),
-            BrowserBackend::Moli,
-            &retry_budget,
-        ) {
-            results.add_failure(EngineFailure::new(
-                shortcut,
-                "unsupported_engine",
-                "headless engine is not available",
-            ));
+    let task = tokio::spawn(async move { prepare_moli(&config).await });
+    let guard = AbortOnDrop(task.abort_handle());
+    let pending = async move {
+        match task.await {
+            Ok(Ok(path)) => Ok(a3s_search::product::HeadlessRuntime {
+                executable: Some(path),
+                max_tabs,
+                launch_args: Vec::new(),
+            }),
+            Ok(Err(error)) => Err(error),
+            Err(error) => Err(format!("Moli provisioning task failed: {error}")),
         }
     }
-    results = execute_search_stage(
-        search,
-        results,
-        context.query,
-        "Moli headless search tier",
-        context.deadline,
-        remaining_tiers,
-    )
-    .await;
-    pool.shutdown();
-    results
+    .boxed()
+    .shared();
+    (browser, Some(pending), Some(guard))
 }
 
 fn web_escalations() -> &'static std::sync::Mutex<std::collections::VecDeque<(String, String)>> {
@@ -882,34 +565,61 @@ impl Tool for WebSearchTool {
         // Get configuration from context or use defaults
         let config = ctx.search_config.as_ref();
         let default_timeout = config.map(|c| c.timeout).unwrap_or(10);
-        let (default_engines, default_engine_selection_source) =
-            default_engine_selection(config.map(Arc::as_ref));
-
-        let engine_selection_source = if args.get("engines").is_some() {
-            "request"
-        } else {
-            default_engine_selection_source
+        let (bridged_config, setup_failures) = match config {
+            Some(config) => {
+                let (bridged, failures) = bridge_search_config(config);
+                (Some(bridged), failures)
+            }
+            None => (None, Vec::new()),
         };
-        let engines: Vec<&str> = args
-            .get("engines")
-            .and_then(|v| {
-                if let Some(arr) = v.as_array() {
-                    Some(arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-                } else {
-                    // Handle comma-separated string like "baidu,ddg" or single engine like "baidu"
-                    v.as_str().map(|s| {
-                        s.split(',')
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    })
-                }
-            })
-            .unwrap_or_else(|| default_engines.clone());
-        let selected_engines = engines
-            .iter()
-            .map(|engine| engine.to_string())
-            .collect::<Vec<_>>();
+        let requested = args.get("engines").map(|value| match value.as_array() {
+            Some(items) => items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            // Comma-separated string like "baidu,ddg" or a single engine like "baidu"
+            None => value
+                .as_str()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|engine| !engine.is_empty())
+                .map(str::to_string)
+                .collect(),
+        });
+        let configured = config
+            .filter(|config| !config.engines.is_empty())
+            .map(|config| {
+                let mut names = config
+                    .engines
+                    .iter()
+                    .filter(|(_, engine)| engine.enabled)
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>();
+                names.sort_unstable();
+                names
+            });
+        let engine_selection_source = if requested.is_some() {
+            "request"
+        } else if configured.is_some() {
+            "config"
+        } else {
+            "builtin_default"
+        };
+        let selected_engines = requested.or(configured);
+        // A provider whose configuration failed to bridge must not run with its defaults.
+        let selection = selected_engines.as_ref().map(|names| {
+            names
+                .iter()
+                .filter(|name| {
+                    !setup_failures
+                        .iter()
+                        .any(|failure| failure.engine.eq_ignore_ascii_case(name.trim()))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
 
         let limit = args
             .get("limit")
@@ -924,9 +634,9 @@ impl Tool for WebSearchTool {
             .min(60);
         let total_timeout = Duration::from_secs(timeout_secs.max(1));
         let search_started = Instant::now();
-        // Moli provisioning has an independent budget. The request deadline
-        // below is used only for validation and proxy discovery; retrieval
-        // receives a fresh `total_timeout` after provisioning completes.
+        // The request deadline below bounds only validation and proxy
+        // discovery; the cascade gets a fresh `total_timeout`, and Moli
+        // provisioning runs on its own budget.
         let request_deadline = search_started + total_timeout;
 
         let output_format = args
@@ -975,117 +685,84 @@ impl Tool for WebSearchTool {
         }
 
         let search_metrics = Arc::new(Metrics::new());
-        let automatic_fallback = engine_selection_source != "request";
-        let tier_plan = tiered_engine_plan(&engines, config.map(Arc::as_ref), automatic_fallback);
-        if tier_plan.is_empty() {
-            let message = format!("No valid engines found in: {:?}", engines);
+        let tier_order = config
+            .and_then(|config| config.cascade_order.as_deref())
+            .map(engines::tier_order);
+        let plan = match EngineTierPlan::new(
+            selection.as_deref(),
+            bridged_config.as_ref(),
+            tier_order.as_deref(),
+        ) {
+            Ok(plan) => plan,
+            Err(message) => {
+                return Ok(ToolOutput::error(&message)
+                    .with_error_kind(ToolErrorKind::InvalidArgument { message }))
+            }
+        };
+        let selected_engines = selected_engines.unwrap_or_else(|| plan.shortcuts());
+        if plan.is_empty() {
+            let mut message = format!("No valid engines found in: {:?}", selected_engines);
+            let setup_summary = failure_summary(&setup_failures);
+            if !setup_summary.is_empty() {
+                message.push_str(&format!(" ({setup_summary})"));
+            }
             return Ok(ToolOutput::error(&message)
                 .with_error_kind(ToolErrorKind::InvalidArgument { message })
                 .with_metadata(serde_json::json!({
                     "status": "failed",
                     "engine_selection_source": engine_selection_source,
                     "selected_engines": &selected_engines,
+                    "engine_failures": failure_metadata(&setup_failures),
                 })));
         }
 
-        // Moli provisioning has its own budget and overlaps the API/HTTP tiers.
-        // The fast path does not wait for it. The task is joined only if the
-        // cascade still needs the headless tier, and aborted when it does not.
+        #[cfg_attr(not(feature = "headless-search"), allow(unused_mut))]
+        let mut controls = cascade_controls(ctx, Arc::clone(&search_metrics));
         #[cfg(feature = "headless-search")]
-        let mut moli_provision = if !tier_plan.headless.is_empty() {
-            effective_headless_config(
+        let (browser, _moli_provision) = {
+            let headless = effective_headless_config(
                 config.and_then(|config| config.headless.as_ref()),
                 proxy_url.as_deref(),
-            )
-            .filter(|headless| headless.backend.is_moli())
-            .map(|headless| DeferredPrep::spawn(async move { prepare_moli(&headless).await }))
-            .unwrap_or_else(|| DeferredPrep { task: None })
-        } else {
-            DeferredPrep { task: None }
+            );
+            let (browser, runtime, guard) = headless_runtime(headless, !plan.headless().is_empty());
+            controls.headless_runtime = runtime;
+            (browser, guard)
         };
-        let search_deadline = Instant::now() + total_timeout;
+        #[cfg(not(feature = "headless-search"))]
+        let browser = HeadlessBrowser::default();
 
-        let retrieval_requirements = RetrievalRequirements::for_limit(limit);
-        let mut cascade = SearchCascade::new(SearchQuery::new(query_str), retrieval_requirements);
-        #[cfg_attr(not(feature = "headless-search"), allow(unused_mut))]
-        let mut stage_context = SearchStageContext {
-            tool_context: ctx,
-            query: query_str,
-            proxy_url: proxy_url.as_deref(),
-            metrics: &search_metrics,
-            deadline: search_deadline,
-            #[cfg(feature = "headless-search")]
-            moli: None,
+        let request = CascadeRequest {
+            query: SearchQuery::new(query_str),
+            limit,
+            timeout: total_timeout,
+            proxy: proxy_url.as_deref(),
+            config: bridged_config.as_ref(),
+            browser,
+            browser_max_retries: BROWSER_MAX_RETRIES,
         };
-
-        let active_tiers = resolved_tier_order(config.map(Arc::as_ref))
-            .into_iter()
-            .filter(|tier| match tier {
-                #[cfg(feature = "headless-search")]
-                EngineTier::Headless => !tier_plan.headless.is_empty(),
-                EngineTier::Http => !tier_plan.http.is_empty(),
-                EngineTier::Api => !tier_plan.api.is_empty(),
-            })
-            .collect::<Vec<_>>();
-
-        for (index, tier) in active_tiers.iter().copied().enumerate() {
-            if !cascade.needs_next_tier() {
-                break;
+        let outcome = match execute_cascade(&plan, request, controls).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let message = format!(
+                    "web_search failed: {}",
+                    sanitize_http_urls(&error.to_string())
+                );
+                return Ok(ToolOutput::error(message).with_metadata(serde_json::json!({
+                    "status": "failed",
+                    "engine_selection_source": engine_selection_source,
+                    "selected_engines": &selected_engines,
+                })));
             }
-            let remaining_tiers = active_tiers.len().saturating_sub(index + 1);
-            #[cfg(feature = "headless-search")]
-            if tier == EngineTier::Headless {
-                stage_context.moli = match moli_provision.join().await {
-                    Some(Ok(result)) => Some(result),
-                    Some(Err(error)) => {
-                        Some(Err(format!("Moli provisioning task failed: {error}")))
-                    }
-                    None => None,
-                };
-                // Provisioning already ran on its own timer, overlapping the
-                // fast tiers. Give the browser tier a full retrieval budget.
-                stage_context.deadline = Instant::now() + total_timeout;
-            }
-            let (name, results) = match tier {
-                #[cfg(feature = "headless-search")]
-                EngineTier::Headless => (
-                    "headless",
-                    execute_headless_stage(
-                        &stage_context,
-                        &tier_plan.headless,
-                        config.map(Arc::as_ref),
-                        remaining_tiers,
-                    )
-                    .await,
-                ),
-                EngineTier::Http => (
-                    "http",
-                    execute_network_stage(
-                        &stage_context,
-                        &tier_plan.http,
-                        "HTTP search tier",
-                        remaining_tiers,
-                    )
-                    .await,
-                ),
-                EngineTier::Api => (
-                    "api",
-                    execute_network_stage(
-                        &stage_context,
-                        &tier_plan.api,
-                        "API search tier",
-                        remaining_tiers,
-                    )
-                    .await,
-                ),
-            };
-            cascade.push_tier(name, results);
+        };
+        let receipt = outcome.receipt;
+        let mut search_results = outcome.results;
+        for failure in setup_failures {
+            search_results.add_failure(failure);
         }
-
-        let retrieval_health = cascade.health();
-        let requirements_met = retrieval_requirements.is_met(&retrieval_health);
-        let tier_reports = cascade.reports().to_vec();
-        let mut search_results = cascade.into_results();
+        let retrieval_health = receipt.final_health;
+        let retrieval_requirements = receipt.retrieval_requirements;
+        let requirements_met = receipt.retrieval_requirements_met;
+        let tier_reports = receipt.executed_tiers;
         search_results
             .set_duration(u64::try_from(search_started.elapsed().as_millis()).unwrap_or(u64::MAX));
 

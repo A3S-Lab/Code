@@ -1,39 +1,9 @@
 use super::*;
 use crate::config::{SearchConfig, SearchEngineConfig};
-use a3s_search::RetrievalHealth;
+use a3s_search::{EngineFailure, RetrievalHealth, RetrievalRequirements, Search};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-#[cfg(feature = "headless-search")]
-#[tokio::test]
-async fn headless_browser_pool_is_scoped_to_one_tool_execution() {
-    let config = HeadlessConfig::default();
-    let first = WebSearchTool::create_pool(&config);
-    let second = WebSearchTool::create_pool(&config);
-
-    assert!(
-        !Arc::ptr_eq(&first, &second),
-        "parallel or cancelled tool calls must not retain one shared Chrome lifecycle"
-    );
-    first.shutdown().await;
-    second.shutdown().await;
-}
-
-#[cfg(feature = "headless-search")]
-#[tokio::test]
-async fn dropped_cleanup_guard_schedules_background_shutdown() {
-    let config = HeadlessConfig::default();
-    let pool = WebSearchTool::create_pool(&config);
-    drop(BrowserPoolCleanup::new(Some(Arc::clone(&pool))));
-
-    tokio::task::yield_now().await;
-    let error = pool.warm_up().await.unwrap_err();
-    assert!(
-        error.message.contains("shut down"),
-        "dropping a cancelled tool future must schedule pool shutdown: {error:?}"
-    );
-}
 
 #[cfg(feature = "headless-search")]
 #[test]
@@ -51,48 +21,12 @@ fn request_proxy_is_applied_to_the_headless_tier() {
     };
 
     let effective =
-        effective_headless_config(Some(&configured), Some("socks5://request.example:1080"))
-            .expect("configured headless runtime");
+        effective_headless_config(Some(&configured), Some("socks5://request.example:1080"));
 
     assert_eq!(effective.backend, BrowserBackend::Moli);
     assert_eq!(
         effective.proxy_url.as_deref(),
         Some("socks5://request.example:1080")
-    );
-}
-
-#[cfg(feature = "headless-search")]
-#[test]
-fn managed_headless_discovery_uses_lightpanda_when_chrome_is_unavailable() {
-    use crate::search_runtime::{BrowserInstallSource, BrowserRuntimeStatus, ManagedBrowser};
-
-    let statuses = [
-        BrowserRuntimeStatus {
-            browser: ManagedBrowser::Chrome,
-            available: false,
-            source: BrowserInstallSource::Missing,
-            path: None,
-            version: None,
-            cache_dir: None,
-            detail: "not installed".to_string(),
-        },
-        BrowserRuntimeStatus {
-            browser: ManagedBrowser::Lightpanda,
-            available: true,
-            source: BrowserInstallSource::System,
-            path: Some(PathBuf::from("/diagnostic/lightpanda")),
-            version: None,
-            cache_dir: None,
-            detail: "ready".to_string(),
-        },
-    ];
-
-    let config = managed_headless_config_from_statuses(&statuses)
-        .expect("Lightpanda should satisfy automatic headless discovery");
-    assert_eq!(config.backend, BrowserBackend::Lightpanda);
-    assert_eq!(
-        config.browser_path.as_deref(),
-        Some("/diagnostic/lightpanda")
     );
 }
 
@@ -165,8 +99,11 @@ impl a3s_search::Engine for CoalescingProbeEngine {
 async fn tier_searches_share_the_session_request_coalescer() {
     let context = ToolContext::new(PathBuf::from("."));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut first = tier_search(&context, Arc::new(Metrics::new()));
-    let mut second = tier_search(&context, Arc::new(Metrics::new()));
+    let [mut first, mut second] = [
+        cascade_controls(&context, Arc::new(Metrics::new())),
+        cascade_controls(&context, Arc::new(Metrics::new())),
+    ]
+    .map(|controls| Search::new().with_request_coalescer(controls.coalescer));
     for search in [&mut first, &mut second] {
         search.add_engine(CoalescingProbeEngine {
             config: a3s_search::EngineConfig {
@@ -187,6 +124,30 @@ async fn tier_searches_share_the_session_request_coalescer() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[test]
+fn search_navigation_rows_are_not_admitted_to_the_structural_gate() {
+    let context = ToolContext::new(PathBuf::from("."));
+    let admission = cascade_controls(&context, Arc::new(Metrics::new()))
+        .admission
+        .expect("Code admits only safe source URLs");
+
+    assert!(admission(&SearchResult::new(
+        "https://example.com/source",
+        "Source",
+        "Evidence"
+    )));
+    assert!(!admission(&SearchResult::new(
+        "https://search.brave.com/search?q=rust",
+        "Navigation",
+        "Not a source"
+    )));
+    assert!(!admission(&SearchResult::new(
+        "javascript:alert(1)",
+        "Unsafe",
+        "Unsafe"
+    )));
+}
+
 fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
     SearchConfig {
         timeout: 10,
@@ -198,39 +159,16 @@ fn search_config(engines: HashMap<String, SearchEngineConfig>) -> SearchConfig {
 }
 
 #[test]
-fn default_engine_selection_uses_builtin_defaults_without_engine_configuration() {
-    let (engines, source) = default_engine_selection(None);
-    assert_eq!(engines, ["anysearch", "tavily", "ddg", "wiki"]);
-    assert_eq!(source, "builtin_default");
+fn builtin_default_plan_is_api_first_and_leaves_billed_providers_out() {
+    let plan = EngineTierPlan::new(None, None, None).unwrap();
 
-    let config = search_config(HashMap::new());
-    let (engines, source) = default_engine_selection(Some(&config));
-    assert_eq!(engines, ["anysearch", "tavily", "ddg", "wiki"]);
-    assert_eq!(source, "builtin_default");
+    assert_eq!(plan.tiers()[0].0, a3s_search::EngineTier::Api);
+    assert_eq!(plan.api(), ["anysearch", "tavily"]);
+    assert!(!plan.shortcuts().iter().any(|shortcut| shortcut == "a3s"));
 }
 
 #[test]
-fn configured_default_engine_selection_can_enable_anysearch_explicitly() {
-    let config = search_config(HashMap::from([(
-        "anysearch".to_string(),
-        SearchEngineConfig {
-            enabled: true,
-            weight: 1.0,
-            timeout: None,
-            api_key: None,
-            project: None,
-            endpoint: None,
-        },
-    )]));
-
-    let (engines, source) = default_engine_selection(Some(&config));
-
-    assert_eq!(engines, ["anysearch"]);
-    assert_eq!(source, "config");
-}
-
-#[test]
-fn config_acl_controls_the_default_engine_selection() {
+fn config_acl_engines_bridge_into_the_search_plan() {
     let config = crate::config::CodeConfig::from_acl(
         r#"
 search {
@@ -239,6 +177,15 @@ search {
       enabled = true
       weight = 1.0
     }
+    duckduckgo {
+      enabled = true
+    }
+    ddg {
+      enabled = true
+    }
+    wiki {
+      enabled = false
+    }
   }
 }
 "#,
@@ -246,81 +193,33 @@ search {
     .expect("valid search config");
     let search = config.search.as_ref().expect("search config");
 
-    let (engines, source) = default_engine_selection(Some(search));
+    let (bridged, failures) = bridge_search_config(search);
+    assert!(failures.is_empty(), "{failures:?}");
+    let plan = EngineTierPlan::new(None, Some(&bridged), None).unwrap();
 
-    assert_eq!(engines, ["anysearch"]);
-    assert_eq!(source, "config");
+    assert_eq!(plan.api(), ["anysearch"]);
+    assert_eq!(plan.http_rss(), ["ddg"]);
+    assert!(plan.headless().is_empty());
 }
 
 #[test]
-fn automatic_tier_plan_is_stable_and_deduplicated() {
-    let plan = tiered_engine_plan(&["anysearch", "duckduckgo"], None, true);
+fn cascade_order_lists_tiers_first_and_keeps_the_rest_in_default_order() {
+    use crate::config::SearchCascadeTier;
+    use a3s_search::EngineTier;
 
-    assert_eq!(plan.api, ["anysearch"]);
-    assert_eq!(plan.http, ["ddg", "brave", "bing", "wiki"]);
-    #[cfg(feature = "headless-search")]
+    assert_eq!(super::engines::tier_order(&[]), EngineTier::default_order());
     assert_eq!(
-        plan.headless,
-        ["g", "baidu", "brave_browser", "bing_browser"]
+        super::engines::tier_order(&[SearchCascadeTier::Headless]),
+        [EngineTier::Headless, EngineTier::Api, EngineTier::HttpRss]
     );
-    #[cfg(not(feature = "headless-search"))]
-    assert!(plan.headless.is_empty());
-}
-
-#[cfg(feature = "headless-search")]
-#[test]
-fn automatic_search_route_tries_api_before_http_and_headless() {
-    use super::engines::EngineTier;
-    use super::fallback::automatic_tier_order;
-
     assert_eq!(
-        automatic_tier_order(),
-        [EngineTier::Api, EngineTier::Http, EngineTier::Headless]
+        super::engines::tier_order(&[
+            SearchCascadeTier::Api,
+            SearchCascadeTier::Http,
+            SearchCascadeTier::Api,
+        ]),
+        EngineTier::default_order()
     );
-}
-
-#[test]
-fn tier_plan_normalizes_aliases_and_respects_disabled_configuration() {
-    let config = search_config(HashMap::from([
-        (
-            "duckduckgo".to_string(),
-            SearchEngineConfig {
-                enabled: false,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-        (
-            "wikipedia".to_string(),
-            SearchEngineConfig {
-                enabled: false,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-    ]));
-
-    let automatic = tiered_engine_plan(&["AnySearch"], Some(&config), true);
-    assert_eq!(automatic.api, ["anysearch"]);
-    assert_eq!(automatic.http, ["brave", "bing"]);
-    #[cfg(feature = "headless-search")]
-    assert_eq!(
-        automatic.headless,
-        ["g", "baidu", "brave_browser", "bing_browser"]
-    );
-    #[cfg(not(feature = "headless-search"))]
-    assert!(automatic.headless.is_empty());
-
-    let explicit = tiered_engine_plan(&["duckduckgo", "wikipedia"], None, false);
-    assert!(explicit.api.is_empty());
-    assert_eq!(explicit.http, ["ddg", "wiki"]);
-    assert!(explicit.headless.is_empty());
 }
 
 #[test]
@@ -376,110 +275,40 @@ fn tool_error_kind_uses_structured_failure_kinds_instead_of_messages() {
     );
 }
 
-#[test]
-fn tier_timeout_preserves_a_share_for_each_remaining_tier() {
-    assert_eq!(
-        tier_timeout(Duration::from_secs(12), 0),
-        Duration::from_secs(12)
+#[tokio::test]
+async fn a_provider_with_a_rejected_endpoint_never_runs_with_its_defaults() {
+    let tool = WebSearchTool::new();
+    let ctx =
+        ToolContext::new(PathBuf::from("/tmp")).with_search_config(search_config(HashMap::from([
+            (
+                "tavily".to_string(),
+                SearchEngineConfig {
+                    enabled: true,
+                    weight: 1.0,
+                    timeout: None,
+                    api_key: None,
+                    project: None,
+                    endpoint: Some("http://example.com/search".to_string()),
+                    authoritative_only: None,
+                    query_rewrite: None,
+                },
+            ),
+        ])));
+
+    let result = tool
+        .execute(&serde_json::json!({"query": "test"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    assert!(
+        result.content.contains("No valid engines"),
+        "{}",
+        result.content
     );
-    assert_eq!(
-        tier_timeout(Duration::from_secs(12), 1),
-        Duration::from_secs(6)
-    );
-    assert_eq!(
-        tier_timeout(Duration::from_secs(12), 2),
-        Duration::from_secs(4)
-    );
-    assert_eq!(
-        tier_timeout(Duration::from_millis(2), 2),
-        Duration::from_millis(1)
-    );
-}
-
-#[test]
-fn default_engine_selection_respects_explicit_configuration() {
-    let config = search_config(HashMap::from([
-        (
-            "enabled".to_string(),
-            SearchEngineConfig {
-                enabled: true,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-        (
-            "disabled".to_string(),
-            SearchEngineConfig {
-                enabled: false,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-    ]));
-    let (engines, source) = default_engine_selection(Some(&config));
-    assert_eq!(engines, ["enabled"]);
-    assert_eq!(source, "config");
-
-    let config = search_config(HashMap::from([(
-        "disabled".to_string(),
-        SearchEngineConfig {
-            enabled: false,
-            weight: 1.0,
-            timeout: None,
-            api_key: None,
-            project: None,
-            endpoint: None,
-        },
-    )]));
-    let (engines, source) = default_engine_selection(Some(&config));
-    assert!(engines.is_empty());
-    assert_eq!(source, "config");
-}
-
-#[test]
-fn configured_default_engine_selection_deduplicates_aliases() {
-    let config = search_config(HashMap::from([
-        (
-            "ddg".to_string(),
-            SearchEngineConfig {
-                enabled: true,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-        (
-            "duckduckgo".to_string(),
-            SearchEngineConfig {
-                enabled: true,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: None,
-            },
-        ),
-    ]));
-
-    let (engines, source) = default_engine_selection(Some(&config));
-    assert_eq!(engines, ["ddg"]);
-    assert_eq!(source, "config");
-}
-
-#[test]
-fn configured_engine_aliases_are_executable() {
-    let mut search = Search::new();
-    assert!(add_http_engine(&mut search, "duckduckgo", None, None).expect("engine setup"));
-    assert!(add_http_engine(&mut search, "wikipedia", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 2);
+    let metadata = result.metadata.expect("search selection metadata");
+    assert_eq!(metadata["engine_selection_source"], "config");
+    assert_eq!(metadata["engine_failures"][0]["engine"], "tavily");
 }
 
 #[test]
@@ -556,6 +385,8 @@ async fn configured_engine_selection_is_identified_in_failure_metadata() {
                 api_key: None,
                 project: None,
                 endpoint: None,
+                authoritative_only: None,
+                query_rewrite: None,
             },
         )]),
         headless: None,
@@ -713,34 +544,14 @@ async fn real_bing_rss_search_works_without_headless_config() {
 }
 
 #[test]
-fn bing_china_is_http_only() {
-    assert_eq!(
-        super::engines::engine_tier("bing_cn"),
-        Some(super::engines::EngineTier::Http)
-    );
-    #[cfg(feature = "headless-search")]
-    assert_eq!(
-        super::engines::engine_tier("google"),
-        Some(super::engines::EngineTier::Headless)
-    );
-    #[cfg(not(feature = "headless-search"))]
-    assert_eq!(super::engines::engine_tier("google"), None);
-}
+fn explicit_selection_does_not_invent_other_tiers() {
+    let http = EngineTierPlan::new(Some(&["bing_cn".to_string()]), None, None).unwrap();
+    assert_eq!(http.http_rss(), ["bing_cn"]);
+    assert!(http.api().is_empty() && http.headless().is_empty());
 
-#[cfg(feature = "headless-search")]
-#[test]
-fn explicit_headless_selection_does_not_invent_earlier_tiers() {
-    let plan = tiered_engine_plan(&["google"], None, false);
-    assert!(plan.api.is_empty());
-    assert!(plan.http.is_empty());
-    assert_eq!(plan.headless, ["g"]);
-}
-
-#[cfg(not(feature = "headless-search"))]
-#[test]
-fn headless_selection_is_unavailable_without_the_feature() {
-    let plan = tiered_engine_plan(&["google", "baidu"], None, false);
-    assert!(plan.is_empty());
+    let headless = EngineTierPlan::new(Some(&["google".to_string()]), None, None).unwrap();
+    assert_eq!(headless.headless(), ["g"]);
+    assert!(headless.api().is_empty() && headless.http_rss().is_empty());
 }
 
 #[cfg(not(feature = "headless-search"))]
@@ -798,17 +609,10 @@ async fn headless_engine_request_does_not_spawn_moli() {
         .expect("web_search returns a typed result");
 
     assert!(!output.success);
-    assert!(
-        matches!(
-            output.error_kind,
-            Some(crate::tools::ToolErrorKind::InvalidArgument { .. })
-        ),
-        "headless engines must be a typed rejection without the feature: {output:?}"
-    );
-    assert!(
-        output.content.contains("No valid engines"),
-        "rejection must name the missing engine set: {}",
-        output.content
+    let metadata = output.metadata.as_ref().expect("search metadata");
+    assert_eq!(
+        metadata["engine_failures"][0]["kind"], "headless_unavailable",
+        "headless engines must be a typed failure without the feature: {output:?}"
     );
     let spawned = browser_process_ids()
         .difference(&before)
@@ -958,121 +762,47 @@ fn test_parse_proxy_url_empty() {
 }
 
 #[test]
-fn test_add_http_engine_valid() {
-    let mut search = Search::new();
-    assert!(add_http_engine(&mut search, "ddg", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 1);
+fn every_named_provider_bridges_from_code_config() {
+    let providers = [
+        "anysearch",
+        "tavily",
+        "tinyfish",
+        "bocha",
+        "aliyun",
+        "tencent",
+        "firecrawl",
+        "a3s",
+    ];
+    let config = search_config(
+        providers
+            .iter()
+            .map(|provider| {
+                (
+                    provider.to_string(),
+                    SearchEngineConfig {
+                        enabled: true,
+                        weight: 1.0,
+                        timeout: None,
+                        api_key: None,
+                        project: None,
+                        endpoint: None,
+                        authoritative_only: None,
+                        query_rewrite: None,
+                    },
+                )
+            })
+            .collect(),
+    );
 
-    assert!(add_http_engine(&mut search, "wiki", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 2);
+    let (bridged, failures) = bridge_search_config(&config);
 
-    assert!(add_http_engine(&mut search, "brave", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 3);
-
-    assert!(add_http_engine(&mut search, "bing", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 4);
-
-    assert!(add_http_engine(&mut search, "bing_cn", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 5);
-
-    assert!(add_http_engine(&mut search, "anysearch", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 6);
-
-    assert!(add_http_engine(&mut search, "tavily", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 7);
-
-    for provider in ["tinyfish", "bocha", "aliyun", "tencent", "firecrawl", "a3s"] {
+    assert!(failures.is_empty(), "{failures:?}");
+    for provider in providers {
         assert!(
-            add_http_engine(&mut search, provider, None, None).expect("engine setup"),
+            bridged.provider_entry(provider).is_some(),
             "{provider} must be constructible when named"
         );
     }
-    assert_eq!(search.engine_count(), 13);
-}
-
-#[test]
-fn test_add_http_engine_unknown() {
-    let mut search = Search::new();
-    assert!(!add_http_engine(&mut search, "nonexistent", None, None).expect("engine setup"));
-    assert_eq!(search.engine_count(), 0);
-}
-
-#[cfg(feature = "headless-search")]
-#[test]
-fn test_add_headless_engine_valid() {
-    let mut search = Search::new();
-    let pool_config = BrowserPoolConfig::default();
-    let pool = Arc::new(BrowserPool::new(pool_config));
-
-    let retry_budget = a3s_search::retry::RetryBudget::default();
-    assert!(add_headless_engine(
-        &mut search,
-        "google",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
-    assert_eq!(search.engine_count(), 1);
-
-    assert!(add_headless_engine(
-        &mut search,
-        "baidu",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
-    assert_eq!(search.engine_count(), 2);
-
-    assert!(!add_headless_engine(
-        &mut search,
-        "bing_cn",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
-    assert_eq!(search.engine_count(), 2);
-}
-
-#[cfg(feature = "headless-search")]
-#[test]
-fn test_add_headless_engine_aliases() {
-    let mut search = Search::new();
-    let pool_config = BrowserPoolConfig::default();
-    let pool = Arc::new(BrowserPool::new(pool_config));
-
-    let retry_budget = a3s_search::retry::RetryBudget::default();
-    assert!(add_headless_engine(
-        &mut search,
-        "g",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
-    assert_eq!(search.engine_count(), 1);
-}
-
-#[cfg(feature = "headless-search")]
-#[test]
-fn test_add_headless_engine_unknown() {
-    let mut search = Search::new();
-    let pool_config = BrowserPoolConfig::default();
-    let pool = Arc::new(BrowserPool::new(pool_config));
-
-    let retry_budget = a3s_search::retry::RetryBudget::default();
-    assert!(!add_headless_engine(
-        &mut search,
-        "ddg",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
-    assert!(!add_headless_engine(
-        &mut search,
-        "nonexistent",
-        pool.clone(),
-        BrowserBackend::Chrome,
-        &retry_budget,
-    ));
 }
 
 #[tokio::test]
@@ -1339,9 +1069,8 @@ fn search_query_urls_drop_credentials_query_and_fragment() {
 
 #[test]
 fn unconfigured_search_leaves_a3s_out_of_the_default_cascade() {
-    let (engines, source) = default_engine_selection(None);
-    assert_eq!(source, "builtin_default");
-    assert!(!engines.contains(&"a3s"));
+    let plan = EngineTierPlan::builtin_default();
+    assert!(!plan.shortcuts().iter().any(|shortcut| shortcut == "a3s"));
 }
 
 #[tokio::test]
@@ -1377,7 +1106,6 @@ async fn configured_agent_search_posts_to_the_gateway_route() {
         let _ = stream.write_all(response.as_bytes()).await;
     });
 
-    let mut search = Search::new();
     let config = SearchConfig {
         timeout: 5,
         cascade_order: None,
@@ -1391,14 +1119,20 @@ async fn configured_agent_search_posts_to_the_gateway_route() {
                 api_key: Some("caller-secret".to_string()),
                 project: None,
                 endpoint: Some(endpoint),
+                authoritative_only: None,
+                query_rewrite: None,
             },
         )]),
         headless: None,
     };
-    assert!(
-        add_http_engine(&mut search, "a3s", None, Some(&config)).expect("a3s setup"),
-        "named a3s must register against the gateway endpoint"
-    );
+    let (bridged, failures) = bridge_search_config(&config);
+    assert!(failures.is_empty(), "{failures:?}");
+    let engine = bridged
+        .create_provider_engine("a3s")
+        .expect("a3s setup")
+        .expect("named a3s must register against the gateway endpoint");
+    let mut search = Search::new();
+    search.add_engine(engine);
     let results = search
         .search(a3s_search::SearchQuery::new("rust"))
         .await
@@ -1421,27 +1155,25 @@ async fn configured_agent_search_posts_to_the_gateway_route() {
 
 #[test]
 fn configured_api_endpoint_rejects_non_loopback_http() {
-    let mut search = Search::new();
-    let config = SearchConfig {
-        timeout: 5,
-        cascade_order: None,
-        health: None,
-        engines: HashMap::from([(
-            "tavily".to_string(),
-            SearchEngineConfig {
-                enabled: true,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: Some("http://example.com/search".to_string()),
-            },
-        )]),
-        headless: None,
-    };
+    let config = search_config(HashMap::from([(
+        "tavily".to_string(),
+        SearchEngineConfig {
+            enabled: true,
+            weight: 1.0,
+            timeout: None,
+            api_key: None,
+            project: None,
+            endpoint: Some("http://example.com/search".to_string()),
+            authoritative_only: None,
+            query_rewrite: None,
+        },
+    )]));
 
-    let failure = add_http_engine(&mut search, "tavily", None, Some(&config))
-        .expect_err("non-loopback http endpoint must fail closed");
+    let (bridged, failures) = bridge_search_config(&config);
+    let failure = failures
+        .first()
+        .expect("non-loopback http endpoint must fail closed");
+    assert!(bridged.provider_entry("tavily").is_none());
     assert_eq!(failure.engine, "tavily");
     assert_eq!(failure.provider.as_deref(), Some("tavily"));
     assert!(
@@ -1451,30 +1183,48 @@ fn configured_api_endpoint_rejects_non_loopback_http() {
 }
 
 #[test]
-fn configured_api_endpoint_accepts_loopback_http() {
-    let mut search = Search::new();
-    let config = SearchConfig {
-        timeout: 5,
-        cascade_order: None,
-        health: None,
-        engines: HashMap::from([(
-            "tavily".to_string(),
-            SearchEngineConfig {
-                enabled: true,
-                weight: 1.0,
-                timeout: None,
-                api_key: None,
-                project: None,
-                endpoint: Some("http://127.0.0.1:9/search".to_string()),
-            },
-        )]),
-        headless: None,
-    };
+fn configured_doubao_engine_bridges_to_a_provider() {
+    let config = search_config(HashMap::from([(
+        "doubao".to_string(),
+        SearchEngineConfig {
+            enabled: true,
+            weight: 1.0,
+            timeout: None,
+            api_key: Some("doubao-test-key".to_string()),
+            project: None,
+            endpoint: None,
+            authoritative_only: Some(true),
+            query_rewrite: Some(true),
+        },
+    )]));
 
+    let (bridged, failures) = bridge_search_config(&config);
+    assert!(failures.is_empty(), "doubao must bridge: {failures:?}");
+    assert!(bridged.provider_entry("doubao").is_some());
+}
+
+#[test]
+fn configured_api_endpoint_accepts_loopback_http() {
+    let config = search_config(HashMap::from([(
+        "tavily".to_string(),
+        SearchEngineConfig {
+            enabled: true,
+            weight: 1.0,
+            timeout: None,
+            api_key: None,
+            project: None,
+            endpoint: Some("http://127.0.0.1:9/search".to_string()),
+            authoritative_only: None,
+            query_rewrite: None,
+        },
+    )]));
+
+    let (bridged, failures) = bridge_search_config(&config);
     assert!(
-        add_http_engine(&mut search, "tavily", None, Some(&config)).expect("loopback ok"),
-        "loopback fixture endpoint must register"
+        failures.is_empty(),
+        "loopback fixture endpoint must bridge: {failures:?}"
     );
+    assert!(bridged.provider_entry("tavily").is_some());
 }
 
 /// S-WS-01: 100 searches against a loopback Tavily fixture stay connection-
@@ -1556,6 +1306,8 @@ async fn soak_web_search_loopback_fixture_stays_connection_and_byte_capped() {
                 api_key: None,
                 project: None,
                 endpoint: Some(endpoint),
+                authoritative_only: None,
+                query_rewrite: None,
             },
         )]),
         headless: None,
@@ -1689,21 +1441,13 @@ async fn web_search_returns_saved_notes_without_searching_the_web() {
 }
 
 #[tokio::test]
-async fn deferred_prep_abort_does_not_wait_for_the_slow_task() {
-    let started = std::time::Instant::now();
-    let prep = DeferredPrep::spawn(async {
+async fn unawaited_provisioning_is_aborted_on_drop() {
+    let task = tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     });
-    drop(prep);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "an unused slow prep must be aborted instead of blocking the fast path"
-    );
-}
-
-#[tokio::test]
-async fn deferred_prep_join_returns_the_finished_value() {
-    let mut prep = DeferredPrep::spawn(async { 7_u8 });
-    let joined = prep.join().await.expect("prep task was spawned");
-    assert_eq!(joined.expect("prep task completed"), 7);
+    drop(AbortOnDrop(task.abort_handle()));
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .expect("an aborted prep must not block the fast path");
+    assert!(joined.unwrap_err().is_cancelled());
 }

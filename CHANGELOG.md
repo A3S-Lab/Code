@@ -35,8 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tokens, the cache-read share of prompt tokens, the total tool-result bytes,
   the five heaviest results, and the results that repeat an earlier tool,
   arguments and text. `/cost` prints it.
+- `search.engine.doubao` configures A3S Search's Doubao provider.
+  `authoritative_only` and `query_rewrite` pass through to it.
 
 ### Changed
+
+- `web_search` runs A3S Search's product cascade (`execute_cascade`,
+  a3s-search 3.3.0) instead of its own tier loop (#162). The order is API,
+  then HTTP/RSS, then headless; a partial `cascade_order` keeps the omitted
+  tiers after the listed ones. Configured engine weights and timeouts apply.
+  An explicit or configured engine list is not expanded with defaults, and a
+  provider whose configuration is rejected is reported and never run with its
+  defaults. The receipt names the middle tier `http_rss`. Without
+  `headless-search`, a headless engine is a `headless_unavailable` failure
+  instead of an invalid argument. Moli still provisions in parallel with the
+  earlier tiers, and its wait does not count against the headless deadline.
 
 - `CommandContext` has a new public field, `context_report`. A host that
   builds the struct sets it to `None`.

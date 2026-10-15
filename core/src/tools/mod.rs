@@ -35,7 +35,7 @@ pub use crate::dynamic_workflow::{
 pub use artifacts::{ArtifactStore, ArtifactStoreError, ArtifactStoreLimits, ToolArtifact};
 #[cfg(test)]
 pub(crate) use builtin::{
-    add_http_engine, get_with_redirects_observed, read_image_file, set_resolution_script,
+    bridge_search_config, get_with_redirects_observed, read_image_file, set_resolution_script,
     BatchTool, RedirectQueryPolicy, ResolutionScript, SafeHttpError, WebFetchTool, WriteTool,
     MAX_BATCH_INVOCATIONS,
 };

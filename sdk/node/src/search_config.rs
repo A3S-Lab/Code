@@ -25,6 +25,8 @@ impl From<SearchEngineConfig> for RustSearchEngineConfig {
             api_key: None,
             project: None,
             endpoint: None,
+            authoritative_only: None,
+            query_rewrite: None,
         }
     }
 }
