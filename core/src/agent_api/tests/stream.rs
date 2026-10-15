@@ -948,3 +948,111 @@ impl crate::llm::LlmClient for WaiverRecordingClient {
         Ok(rx)
     }
 }
+
+struct PreAnalysisClient {
+    requires_planning: bool,
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::llm::LlmClient for PreAnalysisClient {
+    async fn complete(
+        &self,
+        _messages: &[crate::llm::Message],
+        system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+    ) -> anyhow::Result<crate::llm::LlmResponse> {
+        let system = system.unwrap_or("");
+        assert!(
+            system.contains(crate::prompts::PRE_ANALYSIS_SYSTEM),
+            "only pre-analysis may call complete: {system}"
+        );
+        self.calls
+            .lock()
+            .expect("calls")
+            .push("pre-analysis".into());
+        Ok(scripted_text_response(
+            &serde_json::json!({
+                "intent": "GeneralPurpose",
+                "requires_planning": self.requires_planning,
+                "goal": {"description": "One model file", "success_criteria": ["merged"]},
+                "execution_plan": {
+                    "complexity": "Medium",
+                    "steps": [{"id": "s1", "description": "Merge the shards"}],
+                    "required_tools": []
+                },
+                "optimized_input": ""
+            })
+            .to_string(),
+        ))
+    }
+
+    async fn complete_streaming(
+        &self,
+        _messages: &[crate::llm::Message],
+        _system: Option<&str>,
+        _tools: &[crate::llm::ToolDefinition],
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::StreamEvent>> {
+        self.calls.lock().expect("calls").push("turn".into());
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(crate::llm::StreamEvent::Done(scripted_text_response(
+                    "done",
+                )))
+                .await;
+        });
+        Ok(rx)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_planning_on_the_fact_path_follows_the_pre_analysis_decision() {
+    for requires_planning in [true, false] {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let options = SessionOptions::new()
+            .with_planning_mode(crate::prompts::PlanningMode::Auto)
+            .with_verifier(false)
+            .with_continuation(false);
+        let session = agent
+            .build_session(
+                "/tmp/test-workspace-auto-planning".to_string(),
+                Arc::new(PreAnalysisClient {
+                    requires_planning,
+                    calls: Arc::clone(&calls),
+                }),
+                &options,
+            )
+            .unwrap();
+        let (mut rx, handle) = session
+            .stream(
+                "Consolidate the checkpoint shards into one model file.",
+                None,
+            )
+            .await
+            .unwrap();
+        let mut planned = None;
+        let mut started = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::PlanningStart { .. } => started = true,
+                AgentEvent::PlanningEnd { plan, .. } => planned = Some(plan),
+                AgentEvent::End { .. } | AgentEvent::Error { .. } => break,
+                _ => {}
+            }
+        }
+        handle.await.unwrap();
+        assert_eq!(started, requires_planning);
+        assert_eq!(
+            planned.map(|plan| plan.steps[0].content.clone()),
+            requires_planning.then(|| "Merge the shards".to_string())
+        );
+        assert_eq!(
+            *calls.lock().expect("calls"),
+            vec!["pre-analysis".to_string(), "turn".to_string()],
+            "the plan comes from the pre-analysis call, not a second planning call"
+        );
+    }
+}

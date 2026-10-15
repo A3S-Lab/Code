@@ -2815,9 +2815,8 @@ async fn prepare_pre_analysis(
     let Some(surface) = &parts.surface else {
         return Ok(());
     };
-    // Pre-analysis is a structured model call. The fact loop discards its
-    // result, so running it holds every prompt until that call (and its
-    // repair attempts) finish. Explicit planning still publishes below.
+    // `Auto` pays one structured pre-analysis call and plans only when it
+    // returns `requires_planning`; `Disabled` makes no call.
     surface
         .agent
         .fact_publish_plan(

@@ -288,8 +288,15 @@ pub fn admit_spec_graph(spec: MetaHarnessSpec) -> anyhow::Result<(HarnessGraph, 
         .clone()
         .into_config()
         .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(admit_spec_with_config(spec, config))
+}
+
+fn admit_spec_with_config(
+    spec: MetaHarnessSpec,
+    config: HarnessConfig,
+) -> (HarnessGraph, KernelPolicy) {
     let graph = HarnessGraph::from_spec(spec, || coding_scheduler(config.clone()));
-    Ok((graph, KernelPolicy::default().admit()))
+    (graph, KernelPolicy::default().admit())
 }
 
 /// Admit an explicit component tree under kernel policy.
@@ -332,7 +339,11 @@ pub fn admit_from_compose_with_registry(
             let (stock_parts, _) = partition_components(&refs);
             spec.parts = stock_parts;
         }
-        return admit_spec_graph(spec);
+        let spec_config = spec
+            .clone()
+            .into_config_over(&config)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        return Ok(admit_spec_with_config(spec, spec_config));
     }
     let registry = registry.ok_or_else(|| {
         anyhow::anyhow!(

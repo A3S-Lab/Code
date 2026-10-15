@@ -74,11 +74,19 @@ impl AgentLoop {
         recorded_run: (Option<&crate::run::InMemoryRunStore>, Option<&str>),
         current_goal: Option<&crate::goal_control::DurableGoalDefinitionV1>,
     ) -> Result<()> {
-        if current_goal.is_none()
-            && self.config.planning_mode != crate::prompts::PlanningMode::Enabled
-        {
-            return Ok(());
-        }
+        let analysis = match (current_goal, &self.config.planning_mode) {
+            (Some(_), _) | (None, crate::prompts::PlanningMode::Enabled) => None,
+            (None, crate::prompts::PlanningMode::Disabled) => return Ok(()),
+            (None, crate::prompts::PlanningMode::Auto) => {
+                match self
+                    .run_pre_analysis(prompt, Some(session_id), event_tx, cancel)
+                    .await?
+                {
+                    Some(analysis) if analysis.requires_planning => Some(analysis),
+                    _ => return Ok(()),
+                }
+            }
+        };
         let (run_store, run_id) = recorded_run;
         if cancel.is_cancelled() {
             anyhow::bail!("Operation cancelled by user");
@@ -94,6 +102,8 @@ impl AgentLoop {
         .await;
         let goal = if let Some(current) = current_goal {
             Some(current.goal.clone())
+        } else if let Some(analysis) = analysis.as_ref().filter(|_| self.config.goal_tracking) {
+            Some(analysis.goal.clone())
         } else if self.config.goal_tracking {
             Some(
                 self.extract_goal_scoped(prompt, Some(session_id), event_tx, cancel)
@@ -107,6 +117,8 @@ impl AgentLoop {
                 .plan
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("admitted Goal plan is absent"))?
+        } else if let Some(analysis) = analysis {
+            analysis.execution_plan
         } else {
             self.plan_scoped(prompt, Some(session_id), event_tx, cancel)
                 .await?

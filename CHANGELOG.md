@@ -52,6 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An explicit stock `Harness.compose` keeps the session's token compaction
+  (#191). Before, the recipe's config fell back to the character threshold, so
+  a composed session compacted far later than the default one. A recipe that
+  names its own character threshold still replaces token compaction.
+- Context pressure that returns within one user turn compacts again after the
+  next model call (A3S-Lab/CLI#159). Before, one compaction per turn was the
+  ceiling, and a long turn ran past the context window.
+- `planning_mode = auto` plans on `send` and `stream` as documented (#190): one
+  structured pre-analysis call per message, and a plan only when it returns
+  `requires_planning`; the plan reuses the pre-analysis steps. `disabled`
+  makes no call.
 - A `web_fetch` page with its "Full fetched text" line no longer exceeds the
   result budget. Before, the registry bounded the page again and named a
   second, page-only artifact, which a live model searched first.

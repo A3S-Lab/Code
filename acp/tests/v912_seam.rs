@@ -111,7 +111,6 @@ fn spawn_mock(write_path: &Path, deny_command: &str) -> (SocketAddr, Arc<Mutex<M
                     decide(&body, &mut guard)
                 };
                 let _ = write_http(&mut stream, &response);
-                break;
             }
         }
     });

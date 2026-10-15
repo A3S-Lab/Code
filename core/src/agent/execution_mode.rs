@@ -211,7 +211,7 @@ impl AgentLoop {
         })
     }
 
-    async fn run_pre_analysis(
+    pub(super) async fn run_pre_analysis(
         &self,
         prompt: &str,
         session_id: Option<&str>,

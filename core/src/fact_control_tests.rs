@@ -611,6 +611,26 @@ async fn auto_compact_keeps_the_latest_tool_pair_and_continues() {
 
 #[tokio::test]
 async fn auto_compact_triggers_on_provider_tokens_and_keeps_a_recent_tail() {
+    token_compact_keeps_a_recent_tail(None).await;
+}
+
+#[tokio::test]
+async fn explicit_stock_compose_keeps_token_compaction() {
+    let compose = crate::meta_harness::HarnessComposeOptions::compose(
+        ["system", "tools", "budget", "compact", "infer"]
+            .map(String::from)
+            .to_vec(),
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    token_compact_keeps_a_recent_tail(Some(&compose)).await;
+}
+
+async fn token_compact_keeps_a_recent_tail(
+    compose: Option<&crate::meta_harness::HarnessComposeOptions>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let model = Arc::new(ReportingModel {
         inner: ScriptModel {
@@ -691,12 +711,13 @@ async fn auto_compact_triggers_on_provider_tokens_and_keeps_a_recent_tail() {
     )
     .unwrap()
     .with_token_compact(100, keep);
-    let fact = FactRun::open(
+    let fact = FactRun::open_composed(
         dir.path(),
         model.clone(),
         Arc::new(IdTools),
         config,
         "token-compact",
+        compose,
     )
     .unwrap();
     let settled = fact.user_text("hi").await.unwrap();

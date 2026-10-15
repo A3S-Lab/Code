@@ -215,7 +215,8 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
     ));
     let opts = SessionOptions::new()
         .with_confirmation_manager(manager.clone())
-        .with_permission_policy(crate::permissions::PermissionPolicy::new());
+        .with_permission_policy(crate::permissions::PermissionPolicy::new())
+        .with_planning_mode(crate::prompts::PlanningMode::Disabled);
     let client = Arc::new(ScriptedStreamingClient::new(vec![
         scripted_tool_call_response(
             "tool-close-stream",

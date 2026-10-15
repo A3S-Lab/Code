@@ -111,6 +111,7 @@ async fn fixture(
                 client.clone(),
                 &super::super::SessionOptions::new()
                     .with_session_id(label)
+                    .with_planning_mode(crate::prompts::PlanningMode::Disabled)
                     .with_budget_guard(guard)
                     .with_session_store(Arc::new(crate::store::MemorySessionStore::new())),
             )
