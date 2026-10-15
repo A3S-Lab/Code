@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ACP bash `raw_output` sends `output` and `output_delta` as strings, not as a
+  JSON number per byte (4.3x the size of the string for typical text). The
+  TUI pager accepts both encodings.
 - `/cost` reported 0 tokens for every session. It now reads the recorded
   provider usage.
 - The `ultracode` effort guideline names the registered `program` tool instead

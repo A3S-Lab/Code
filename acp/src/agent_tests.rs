@@ -1011,6 +1011,13 @@ fn tool_cards_use_pager_kind_and_raw_input() {
     assert_eq!(bash["type"], "Bash");
     assert_eq!(bash["exit_code"], 0);
     assert_eq!(bash["command"], "echo hi");
+    assert_eq!(bash["output"], "hi\n");
+    assert_eq!(bash["total_bytes"], 3);
+    let delta = streaming_bash_delta("chunk");
+    assert_eq!(
+        (&delta["output"], &delta["output_delta"]),
+        (&"".into(), &"chunk".into())
+    );
 }
 
 #[test]

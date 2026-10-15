@@ -98,9 +98,7 @@ pub fn note_body(text: &str) -> Option<&str> {
         return Some(text);
     }
     loop {
-        let Some((line, next)) = next_logical_line(stripped, offset) else {
-            return None;
-        };
+        let (line, next) = next_logical_line(stripped, offset)?;
         offset = next;
         if line.trim() == "---" {
             return Some(stripped[offset..].trim_start_matches(['\r', '\n']));

@@ -4053,12 +4053,13 @@ fn edit_diff(name: &str, args: Option<&serde_json::Value>) -> Option<acp::Diff> 
 }
 
 /// Bash cards only show stdout when `raw_output` deserializes as `ToolOutput::Bash`.
+/// Output fields are strings: a byte array costs a JSON number per byte.
 /// Incremental stdout. `output` stays empty so the pager appends `output_delta`
 /// instead of replacing the card with this slice.
 fn streaming_bash_delta(delta: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "Bash",
-        "output": [],
+        "output": "",
         "output_for_prompt": "",
         "exit_code": 0,
         "command": "",
@@ -4069,7 +4070,7 @@ fn streaming_bash_delta(delta: &str) -> serde_json::Value {
         "current_dir": "",
         "output_file": "",
         "total_bytes": delta.len(),
-        "output_delta": delta.as_bytes(),
+        "output_delta": delta,
     })
 }
 
@@ -4086,10 +4087,9 @@ fn tool_raw_output(
         .and_then(|args| args.get("command"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let bytes = output.as_bytes();
     Some(serde_json::json!({
         "type": "Bash",
-        "output": bytes,
+        "output": output,
         "output_for_prompt": output,
         "exit_code": exit_code,
         "command": command,
@@ -4099,7 +4099,7 @@ fn tool_raw_output(
         "description": null,
         "current_dir": "",
         "output_file": "",
-        "total_bytes": bytes.len(),
+        "total_bytes": output.len(),
     }))
 }
 

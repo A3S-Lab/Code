@@ -73,6 +73,8 @@ server、无头搜索这些更重的能力需要显式打开。可用 Rust、Nod
 - **会话上下文视图（9.1.3，未发布）。** `/cost` 和
   `AgentSession::context_report()` 显示 token、缓存命中占比、最重的工具结果和
   重复的结果。
+- **紧凑的 ACP bash 输出（9.1.3，未发布）。** bash 的 `raw_output` 用字符串传输
+  输出，不再把每个字节编码为一个 JSON 数字。
 - **无人值守 ACP 试验臂（9.1.3，未发布）。** `a3s-code-acp --unattended` 支持
   `--engineering-policy NAME` 和 `--goal-continuation`（第一次尝试作为已准入的
   单步目标切片运行）。`ultracode` 力度现在指向已注册的 `program` 工具。

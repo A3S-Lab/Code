@@ -92,6 +92,8 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
 - **Session context view (9.1.3, unreleased).** `/cost` and
   `AgentSession::context_report()` show tokens, the cache-read share, the
   heaviest tool results and the repeated results.
+- **Compact ACP bash output (9.1.3, unreleased).** Bash `raw_output` carries
+  its output as a string instead of a JSON number per byte.
 - **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The

@@ -380,8 +380,36 @@ pub enum SearchReplaceOutput {
     /// A path component exceeds the OS filename length limit (ENAMETOOLONG)
     FilenameTooLong(String),
 }
+/// Output bytes as a JSON byte array, or as the UTF-8 string an ACP agent sends.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BytesOrText {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl From<BytesOrText> for Vec<u8> {
+    fn from(value: BytesOrText) -> Self {
+        match value {
+            BytesOrText::Text(text) => text.into_bytes(),
+            BytesOrText::Bytes(bytes) => bytes,
+        }
+    }
+}
+
+fn bytes_or_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    BytesOrText::deserialize(deserializer).map(Into::into)
+}
+
+fn optional_bytes_or_text<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<u8>>, D::Error> {
+    Option::<BytesOrText>::deserialize(deserializer).map(|value| value.map(Into::into))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BashOutput {
+    #[serde(deserialize_with = "bytes_or_text")]
     pub output: Vec<u8>,
     /// ANSI-stripped and soft-wrapped output for model prompt.
     /// Pre-baked at construction time so `to_prompt_format` is a simple read.
@@ -404,7 +432,11 @@ pub struct BashOutput {
     /// Incremental output delta (new bytes since last notification). When present, consumers should append to their
     /// accumulated buffer instead of replacing with `output`. When `Some(vec![])`, consumers should clear their accumulated
     /// buffer (reset signal). When `None`, the consumer should use `output` as the full buffer.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "optional_bytes_or_text"
+    )]
     pub output_delta: Option<Vec<u8>>,
     /// Set by the grok_build `run_terminal_cmd` implementation when the command was detected as a bare `echo "<msg>"` (or close variant: echo -n,
     /// echo -e, simple printf for literal output, etc.). Telemetry / statistics on this pattern for the grok_build backend. Potential doom-loop /
@@ -1275,6 +1307,26 @@ mod tests {
     use a3s_tool_types::KillTaskResult;
     use a3s_tool_types::TaskOutputResult;
     use serde_json::json;
+    #[test]
+    fn bash_output_reads_text_and_byte_array_output() {
+        let mut wire =
+            serde_json::to_value(ToolOutput::Bash(sample_bash(0, b"hi\n", false))).unwrap();
+        assert_eq!(wire["output"], json!([104, 105, 10]));
+        let ToolOutput::Bash(bytes) = serde_json::from_value(wire.clone()).unwrap() else {
+            panic!("bash");
+        };
+        wire["output"] = json!("hi\n");
+        wire["output_delta"] = json!("more");
+        let ToolOutput::Bash(text) = serde_json::from_value(wire).unwrap() else {
+            panic!("bash");
+        };
+        assert_eq!(
+            (bytes.output.as_slice(), text.output.as_slice()),
+            (&b"hi\n"[..], &b"hi\n"[..])
+        );
+        assert_eq!(text.output_delta.as_deref(), Some(&b"more"[..]));
+        assert_eq!(bytes.output_delta, None);
+    }
     #[test]
     fn send_subagent_message_error_classification_is_closed() {
         use crate::implementations::grok_build::send_subagent_message::SendSubagentMessageOutput::*;
