@@ -452,10 +452,15 @@ async fn a_multi_page_fetch_retains_the_full_text_for_read_and_grep() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\nNEEDLE at the end\n";
-    let range = content_range(&page, 0, DEFAULT_MAX_CHARS, 16 * 1024).unwrap();
-    assert!(range.content.len() <= 16 * 1024 + 128);
+    let budget = crate::tools::ToolResultTransformPolicyV1::default().max_output_bytes;
+    let range = content_range(&page, 0, DEFAULT_MAX_CHARS, page_byte_budget(budget)).unwrap();
     let uri = retain_full_text(&ctx, &page, &range, 0).expect("multi-page fetch retains");
     assert!(uri.starts_with("a3s://tool-output/web_fetch/"));
+    assert!(full_text_note(&uri).len() <= FULL_TEXT_NOTE_RESERVE_BYTES);
+    assert!(
+        range.content.len() + full_text_note(&uri).len() <= budget,
+        "a page with its notes must not be bounded again"
+    );
     assert_eq!(store.get(&uri).unwrap().content, page);
     assert_eq!(retain_full_text(&ctx, &page, &range, 0), Some(uri.clone()));
 

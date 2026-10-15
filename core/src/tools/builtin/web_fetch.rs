@@ -166,18 +166,14 @@ impl Tool for WebFetchTool {
             }
         };
 
-        let max_bytes = ctx
-            .result_budget_bytes()
-            .saturating_sub(super::read::PAGE_CONTINUATION_RESERVE_BYTES);
+        let max_bytes = page_byte_budget(ctx.result_budget_bytes());
         let mut range = match content_range(&page.content, offset, max_chars, max_bytes) {
             Ok(range) => range,
             Err(error) => return Ok(invalid_fetch_argument(&error)),
         };
         let artifact_uri = retain_full_text(ctx, &page.content, &range, offset);
         if let Some(uri) = &artifact_uri {
-            range.content.push_str(&format!(
-                "Full fetched text: {uri} (`read` pages it and `search` with mode=grep searches it without fetching again)\n"
-            ));
+            range.content.push_str(&full_text_note(uri));
         }
 
         let mut source_anchors = vec![request_url];
@@ -415,6 +411,22 @@ struct ContentRange {
     returned_chars: usize,
     total_chars: usize,
     next_offset: Option<usize>,
+}
+
+/// Room for the full-text line: its fixed text and a 64-hex content digest.
+const FULL_TEXT_NOTE_RESERVE_BYTES: usize = 256;
+
+/// Page bytes that leave room for the continuation note and the full-text line,
+/// so the result never exceeds the budget and gets bounded a second time.
+fn page_byte_budget(result_budget: usize) -> usize {
+    result_budget
+        .saturating_sub(super::read::PAGE_CONTINUATION_RESERVE_BYTES + FULL_TEXT_NOTE_RESERVE_BYTES)
+}
+
+fn full_text_note(uri: &str) -> String {
+    format!(
+        "Full fetched text: {uri} (`read` pages it and `search` with mode=grep searches it without fetching again)\n"
+    )
 }
 
 /// Keep the whole converted page as a content-addressed artifact when one result

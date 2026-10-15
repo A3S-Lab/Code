@@ -202,6 +202,7 @@ async fn real_llm_recovers_an_omitted_middle_from_the_artifact_and_reports_conte
 
     let dump = trace.named("dump_rows");
     assert_eq!(dump.len(), 1, "{trace:#?}");
+    assert_eq!(dump[0].exit_code, 0);
     assert!(dump[0].output.contains("[tool output bounded by"));
     assert!(dump[0].output.contains("a3s://tool-output/dump_rows/"));
     assert!(!dump[0].output.contains("NEEDLE_VALUE"));
@@ -269,6 +270,12 @@ async fn real_llm_searches_a_long_fetched_page_without_fetching_again() {
         .output
         .contains("Full fetched text: a3s://tool-output/web_fetch/"));
     assert!(!fetch[0].output.contains("Version 1.12.0"));
+    assert!(
+        !fetch[0].output.contains("Full output artifact"),
+        "the page result was bounded a second time: {}",
+        fetch[0].output
+    );
     assert!(trace.mentions("a3s://tool-output/web_fetch/"), "{trace:#?}");
     assert!(trace.text.contains("34096"), "{}", trace.text);
+    assert_eq!(trace.gate, None);
 }

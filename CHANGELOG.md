@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `web_fetch` page with its "Full fetched text" line no longer exceeds the
+  result budget. Before, the registry bounded the page again and named a
+  second, page-only artifact, which a live model searched first.
 - ACP bash `raw_output` sends `output` and `output_delta` as strings, not as a
   JSON number per byte (4.3x the size of the string for typical text). The
   TUI pager accepts both encodings.
