@@ -159,3 +159,142 @@ fn restore_env(key: &str, previous: Option<std::ffi::OsString>) {
         None => std::env::remove_var(key),
     }
 }
+
+fn pid_alive(pid: u32) -> bool {
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Dropping an in-flight `exec` is what `tokio::time::timeout` does in the
+/// bash tool. That drop kills one generation. The same sandbox must still
+/// run the next command, and `shutdown` stays sticky after that.
+#[tokio::test]
+async fn dropped_exec_cancels_one_generation_and_the_next_command_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = root.path().join("image.json");
+    std::fs::write(&manifest, "{}").unwrap();
+    let settled = format!(
+        "{{\"schema_version\":\"{GUEST_COMMAND_SCHEMA}\",\"settlement\":\"settled\",\"exit_code\":17,\"vm_entered\":true}}"
+    );
+    let shim = executable_script(
+        root.path(),
+        "shim",
+        &format!(
+            r#"#!/bin/sh
+share=
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--runtime-share" ]; then
+    share=$2
+    shift 2
+  else
+    shift
+  fi
+done
+if [ -z "$share" ]; then
+  exit 2
+fi
+script="$share/.a3s-guest-command"
+if grep -q generation-hold "$script"; then
+  echo $$ > "$share/hold.pid"
+  (sleep 0.6; touch "$share/late") &
+  touch "$share/ready"
+  sleep 30
+  exit 0
+fi
+if grep -q generation-next "$script"; then
+  touch "$share/second-ran"
+  printf '%s\n' '{settled}'
+  exit 0
+fi
+touch "$share/after-shutdown-ran"
+printf '%s\n' '{settled}'
+exit 0
+"#,
+            settled = settled
+        ),
+    );
+    let workspace = tempfile::tempdir().unwrap();
+    let sandbox = Arc::new(
+        GuestLifetimeSandbox::from_artifacts(workspace.path(), &manifest, &shim)
+            .expect("artifacts exist"),
+    );
+    let ready = workspace.path().join("ready");
+    let late = workspace.path().join("late");
+    let running = Arc::clone(&sandbox);
+    let guest_workspace = workspace.path().display().to_string();
+    // JoinHandle drop detaches the task. abort drops the exec future, which
+    // is what tokio::time::timeout does to sandbox.exec in the bash tool.
+    let hold = tokio::spawn(async move {
+        running
+            .exec(SandboxCommandRequest {
+                command: "generation-hold".into(),
+                guest_workspace,
+                timeout_ms: 30_000,
+                output_observer: None,
+                env: None,
+            })
+            .await
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if ready.exists() {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("readiness was not observed; missing readiness is a failure");
+        }
+        if hold.is_finished() {
+            panic!("hold command finished before cancel");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let pid_text = std::fs::read_to_string(workspace.path().join("hold.pid")).expect("hold pid");
+    let pid: u32 = pid_text.trim().parse().expect("hold pid integer");
+    assert!(pid_alive(pid), "hold generation was not running");
+    hold.abort();
+    match hold.await {
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => panic!("hold task ended without cancellation: {error}"),
+        Ok(Ok(output)) => panic!("hold command returned exit {}", output.exit_code),
+        Ok(Err(error)) => panic!("hold command failed before cancel: {error:#}"),
+    }
+    assert!(!pid_alive(pid), "dropped exec left the generation alive");
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert!(!late.exists(), "dropped exec performed a late write");
+
+    let observer = Arc::new(Observer(AtomicUsize::new(0)));
+    let output = sandbox
+        .exec(SandboxCommandRequest {
+            command: "generation-next".into(),
+            guest_workspace: workspace.path().display().to_string(),
+            timeout_ms: 5_000,
+            output_observer: Some(observer.clone()),
+            env: None,
+        })
+        .await;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => panic!("the next command on the same sandbox must run: {error:#}"),
+    };
+    assert_eq!(output.exit_code, 17);
+    assert!(!output.timed_out);
+    assert!(workspace.path().join("second-ran").exists());
+    assert!(observer.0.load(Ordering::SeqCst) > 0);
+
+    sandbox.shutdown().await;
+    let after = sandbox
+        .exec(SandboxCommandRequest {
+            command: "generation-after-shutdown".into(),
+            guest_workspace: workspace.path().display().to_string(),
+            timeout_ms: 5_000,
+            output_observer: None,
+            env: None,
+        })
+        .await;
+    let Err(error) = after else {
+        panic!("shutdown must stay sticky");
+    };
+    let message = error.to_string();
+    assert!(message.contains("sandbox is shut down"), "{message}");
+    assert!(!workspace.path().join("after-shutdown-ran").exists());
+}

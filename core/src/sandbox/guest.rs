@@ -40,6 +40,8 @@ const MAX_SHIM_BYTES: u64 = 64 * 1024;
 const STOP_NONE: u8 = 0;
 const STOP_TIMEOUT: u8 = 1;
 const STOP_SHUTDOWN: u8 = 2;
+/// The caller dropped this command. The next command on this sandbox clears it.
+const STOP_CANCEL: u8 = 3;
 
 /// Pure settlement. Refusal and an unknown exit do not require a guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,22 +193,30 @@ impl GuestLifetimeSandbox {
             });
         }
 
-        match self.stop.compare_exchange(
-            STOP_TIMEOUT,
-            STOP_NONE,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) | Err(STOP_NONE) => {}
-            Err(STOP_SHUTDOWN) => {
-                return Err(indeterminate(
-                    "guest command settlement is indeterminate: sandbox is shut down",
-                ));
-            }
-            Err(other) => {
-                return Err(indeterminate(format!(
-                    "guest command settlement is indeterminate: stop state {other}"
-                )));
+        // A prior command's timeout or drop must not stick. Explicit shutdown does.
+        loop {
+            let current = self.stop.load(Ordering::SeqCst);
+            match current {
+                STOP_NONE => break,
+                STOP_TIMEOUT | STOP_CANCEL => {
+                    if self
+                        .stop
+                        .compare_exchange(current, STOP_NONE, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                STOP_SHUTDOWN => {
+                    return Err(indeterminate(
+                        "guest command settlement is indeterminate: sandbox is shut down",
+                    ));
+                }
+                other => {
+                    return Err(indeterminate(format!(
+                        "guest command settlement is indeterminate: stop state {other}"
+                    )));
+                }
             }
         }
         let mut reservation = Reservation::begin(self)?;
@@ -294,8 +304,8 @@ impl GuestLifetimeSandbox {
                 recv.await
             }
         };
-        // Join without changing the stop flag. Drop sets shutdown only when
-        // the caller cancelled before the waiter finished.
+        // Join without changing the stop flag. Drop of an unfinished waiter
+        // cancels this generation only; it does not shut the sandbox down.
         waiter.finish();
 
         let (status, report_bytes, shim_stderr) = match joined {
@@ -314,7 +324,7 @@ impl GuestLifetimeSandbox {
         let shim_error = String::from_utf8_lossy(&shim_stderr);
         let stop = match self.stop.load(Ordering::SeqCst) {
             STOP_TIMEOUT => HostStop::Timeout,
-            STOP_SHUTDOWN => HostStop::Shutdown,
+            STOP_SHUTDOWN | STOP_CANCEL => HostStop::Shutdown,
             _ => HostStop::None,
         };
         let observation = observe_json(stop, report_bytes.as_slice());
@@ -464,8 +474,15 @@ impl Waiter {
 
 impl Drop for Waiter {
     fn drop(&mut self) {
-        if self.thread.is_some() && self.stop.load(Ordering::SeqCst) == STOP_NONE {
-            self.stop.store(STOP_SHUTDOWN, Ordering::SeqCst);
+        if self.thread.is_some() {
+            // Kill this generation. Do not overwrite an explicit shutdown
+            // or a deadline that is already stopping the same process.
+            let _ = self.stop.compare_exchange(
+                STOP_NONE,
+                STOP_CANCEL,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
         }
         self.finish();
     }
@@ -489,7 +506,7 @@ fn wait_shim(
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 let flag = stop.load(Ordering::SeqCst);
-                if flag == STOP_TIMEOUT || flag == STOP_SHUTDOWN {
+                if flag == STOP_TIMEOUT || flag == STOP_SHUTDOWN || flag == STOP_CANCEL {
                     kill_process_group(pid);
                     break child.wait();
                 }
