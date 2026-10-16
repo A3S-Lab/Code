@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::workspace::CommandOutputObserver;
 
+pub mod guest;
 pub mod native;
 pub mod process_host;
 

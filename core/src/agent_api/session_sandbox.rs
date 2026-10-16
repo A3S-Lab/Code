@@ -73,6 +73,19 @@ pub(crate) fn select_default_local_sandbox(
     allow_process_host: bool,
     native: anyhow::Result<crate::sandbox::native::NativeBashSandbox>,
 ) -> Arc<dyn BashSandbox> {
+    // A mediated request needs the native posture. The guest has no mediator,
+    // so it must not silently replace that request with a deny-only VM.
+    #[cfg(target_os = "macos")]
+    if matches!(requested, crate::sandbox::SandboxNetworkMode::Deny) {
+        if let Ok(guest) = crate::sandbox::guest::GuestLifetimeSandbox::discover(local_root) {
+            tracing::debug!(
+                workspace = %local_root.display(),
+                "macOS guest lifetime sandbox probed successfully"
+            );
+            return Arc::new(guest);
+        }
+    }
+
     match native {
         Ok(sandbox) => Arc::new(sandbox),
         Err(error) if allow_process_host && local_root.is_dir() => match requested {
@@ -139,6 +152,9 @@ impl BashSandbox for UnavailableDefaultSandbox {
 
     async fn shutdown(&self) {}
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod guest_lifetime_e2e;
 
 #[cfg(test)]
 mod tests {
@@ -390,5 +406,73 @@ mod tests {
             message.contains("mediated"),
             "the refusal names the posture that cannot be honored: {message}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn missing_guest_probe_keeps_both_native_apis_refused() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use crate::sandbox::guest::{GUEST_KRUN_SHIM_ENV, GUEST_SYSTEM_IMAGE_ENV};
+        use crate::sandbox::SandboxCommandRequest;
+        use crate::workspace::{CommandOutputObserver, CommandOutputSummary};
+
+        struct Observer(AtomicUsize);
+
+        #[async_trait::async_trait]
+        impl CommandOutputObserver for Observer {
+            async fn on_output_delta(&self, _delta: &str) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+
+            async fn on_output_complete(&self, _summary: &CommandOutputSummary) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let previous_image = std::env::var_os(GUEST_SYSTEM_IMAGE_ENV);
+        let previous_shim = std::env::var_os(GUEST_KRUN_SHIM_ENV);
+        std::env::remove_var(GUEST_SYSTEM_IMAGE_ENV);
+        std::env::remove_var(GUEST_KRUN_SHIM_ENV);
+
+        let workspace = tempfile::tempdir().unwrap();
+        let mut opts = SessionOptions::new().with_allow_process_host_sandbox(true);
+        install_default_local_sandbox(workspace.path(), &mut opts);
+        let sandbox = opts.sandbox_handle.as_ref().unwrap();
+        let observer = Arc::new(Observer(AtomicUsize::new(0)));
+        let sentinel = workspace.path().join("probe-sentinel");
+        let command = "printf probe-sentinel > probe-sentinel";
+        let exec_command = sandbox.exec_command(command, "/workspace").await;
+        let exec = sandbox
+            .exec(SandboxCommandRequest {
+                command: command.into(),
+                guest_workspace: "/workspace".into(),
+                timeout_ms: 0,
+                output_observer: Some(observer.clone()),
+                env: None,
+            })
+            .await;
+        match previous_image {
+            Some(value) => std::env::set_var(GUEST_SYSTEM_IMAGE_ENV, value),
+            None => std::env::remove_var(GUEST_SYSTEM_IMAGE_ENV),
+        }
+        match previous_shim {
+            Some(value) => std::env::set_var(GUEST_KRUN_SHIM_ENV, value),
+            None => std::env::remove_var(GUEST_KRUN_SHIM_ENV),
+        }
+        for error in [exec_command.err(), exec.err()] {
+            let error = error.expect("a missing guest probe must not run the command");
+            assert!(
+                error
+                    .to_string()
+                    .contains("native_process_lifetime_unqualified"),
+                "{error}"
+            );
+            assert!(crate::sandbox::native::is_native_process_lifetime_unqualified(&error));
+        }
+        assert_eq!(observer.0.load(Ordering::SeqCst), 0);
+        assert!(!sentinel.exists());
+        assert!(!sandbox.supports_background_execution());
     }
 }
