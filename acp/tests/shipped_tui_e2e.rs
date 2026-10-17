@@ -151,7 +151,6 @@ fn spawn_mock(write_path: &Path, late_path: &Path) -> (SocketAddr, Arc<Mutex<Moc
                     decide(&body, &mut guard)
                 };
                 let _ = write_http(&mut stream, &response);
-                break;
             }
         }
     });
@@ -217,6 +216,12 @@ fn decide(raw: &str, state: &mut MockState) -> String {
     if raw.contains("context-compaction engine") {
         return reply_text(COMPACT_SUMMARY, streaming);
     }
+    // The classifier call carries the user text and a tool named
+    // emit_pre_analysis. Answer it before the oracle arms, or that tool
+    // call consumes the write/bash reply the product turn still needs.
+    if raw.contains("emit_pre_analysis") || raw.contains("You are a pre-analysis assistant") {
+        return reply_text(&pre_analysis_object(), streaming);
+    }
     let tools = has_tools(&parsed);
     if raw.contains("WRITE-ORACLE") && tools {
         if state.write_tool_replies >= 1 {
@@ -246,7 +251,14 @@ fn decide(raw: &str, state: &mut MockState) -> String {
             return reply_text("ok", streaming);
         }
         state.expand_replies = state.expand_replies.saturating_add(1);
-        let args = serde_json::json!({ "command": "printf 'EXPAND-MARKER\\n'" }).to_string();
+        // Default sandbox bash never starts on macOS, so the host does not
+        // ask. Escalation is the path that parks for approval and then runs.
+        let args = serde_json::json!({
+            "command": "printf 'EXPAND-MARKER\\n'",
+            "sandbox_permissions": "require_escalated",
+            "justification": "workspace sandbox cannot start this command"
+        })
+        .to_string();
         return reply_tool("bash", &args, state, streaming);
     }
     if raw.contains("ASK-ORACLE") && tools {
@@ -303,6 +315,30 @@ fn budget_number(body: &str, marker: &str) -> Option<u64> {
     let rest = body.split_once(marker)?.1;
     let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
     digits.parse().ok()
+}
+
+fn pre_analysis_object() -> String {
+    // Empty optimized_input keeps the original user sentence on the product turn.
+    serde_json::json!({
+        "intent": "GeneralPurpose",
+        "requires_planning": false,
+        "goal": {
+            "description": "ok",
+            "success_criteria": []
+        },
+        "execution_plan": {
+            "complexity": "Simple",
+            "steps": [{
+                "id": "step-1",
+                "description": "ok",
+                "dependencies": [],
+                "success_criteria": "Complete the request"
+            }],
+            "required_tools": []
+        },
+        "optimized_input": ""
+    })
+    .to_string()
 }
 
 fn reply_text(text: &str, streaming: bool) -> String {
@@ -1639,6 +1675,37 @@ fn summary_for(home: &Path, session_id: &str) -> Option<PathBuf> {
     out
 }
 
+fn session_goal_file(workspace: &Path) -> Option<PathBuf> {
+    fn walk(dir: &Path, found: &mut Option<PathBuf>) {
+        if found.is_some() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("durable-goal.json") {
+                *found = Some(path);
+                return;
+            }
+        }
+    }
+    let mut found = None;
+    walk(&workspace.join(".a3s").join("sessions"), &mut found);
+    found
+}
+
+fn read_session_goal(workspace: &Path) -> (Option<PathBuf>, String) {
+    let Some(path) = session_goal_file(workspace) else {
+        return (None, String::new());
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    (Some(path), text)
+}
+
 fn wait_file(path: &Path, timeout: Duration) -> String {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -2293,7 +2360,7 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     // Set stores the objective and starts one model turn. Pause and clear
     // report their own result and must not start another.
     let mut product_prompts = 0u64;
-    let goal_path = workspace.join(".a3s").join("durable-goal.json");
+    let mut goal_path = workspace.join(".a3s").join("sessions");
     pty.write_bytes(b"\x15");
     pty.type_text(&format!("/goal {GOAL_OBJECTIVE}"));
     pty.enter();
@@ -2308,7 +2375,11 @@ fn shipped_tui_launch_resume_and_visible_commands() {
             .bodies
             .iter()
             .any(|body| body.contains(GOAL_OBJECTIVE));
-        stored = std::fs::read_to_string(&goal_path).unwrap_or_default();
+        let (path, text) = read_session_goal(&workspace);
+        if let Some(path) = path {
+            goal_path = path;
+        }
+        stored = text;
         if saw_goal_turn && stored.contains(GOAL_OBJECTIVE) {
             break;
         }
@@ -2329,7 +2400,10 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         paused.contains("Durable goal paused:") && paused.contains(GOAL_OBJECTIVE),
         "goal pause did not report the stored objective\n{paused}"
     );
-    let paused_file = std::fs::read_to_string(&goal_path).unwrap_or_default();
+    let (paused_path, paused_file) = read_session_goal(&workspace);
+    if let Some(path) = paused_path {
+        goal_path = path;
+    }
     assert!(
         paused_file.contains(GOAL_OBJECTIVE) && paused_file.contains("\"paused\": true"),
         "goal pause did not persist the paused objective: {paused_file}"
@@ -2352,7 +2426,11 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         saw_resume_turn = state.lock().expect("mock").bodies.iter().any(|body| {
             body.contains("Continue this durable goal") && body.contains(GOAL_OBJECTIVE)
         });
-        resumed_file = std::fs::read_to_string(&goal_path).unwrap_or_default();
+        let (path, text) = read_session_goal(&workspace);
+        if let Some(path) = path {
+            goal_path = path;
+        }
+        resumed_file = text;
         if saw_resume_turn
             && resumed_file.contains(GOAL_OBJECTIVE)
             && resumed_file.contains("\"paused\": false")
@@ -2837,10 +2915,22 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     pty.write_bytes(b"\x15");
     pty.type_text("/edit-prompt");
     pty.enter();
-    let edited = wait_file(&editor_marker, Duration::from_secs(4));
+    // The editor starts only after the frame writer drains. Leave the PTY
+    // unread and the handoff times out before the script runs.
+    let editor_deadline = Instant::now() + Duration::from_secs(8);
+    let mut edited = String::new();
+    while Instant::now() < editor_deadline {
+        pty.pump(Duration::from_millis(50));
+        if let Ok(text) = std::fs::read_to_string(&editor_marker) {
+            if !text.is_empty() {
+                edited = text;
+                break;
+            }
+        }
+    }
     assert!(
         edited.contains("edited"),
-        "edit-prompt did not launch EDITOR"
+        "edit-prompt did not launch EDITOR: {edited:?}"
     );
     oracle(PTY_TEST, "edit-prompt", "editor-ran");
 

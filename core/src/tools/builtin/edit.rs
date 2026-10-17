@@ -354,7 +354,11 @@ mod tests {
             .unwrap();
 
         assert!(!result.success, "{}", result.content);
-        assert!(result.content.contains("mixes LF and CRLF"), "{}", result.content);
+        assert!(
+            result.content.contains("mixes LF and CRLF"),
+            "{}",
+            result.content
+        );
         let content = std::fs::read_to_string(temp.path().join("test.txt")).unwrap();
         assert_eq!(content, "alpha\r\nbeta\n");
         crate::external_observation::release_session("edit-mixed");

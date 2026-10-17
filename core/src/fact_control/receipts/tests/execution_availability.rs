@@ -322,3 +322,61 @@ async fn assert_unavailable_sandbox_does_not_open_debt(initialization_failure: b
     assert!(!root.path().join("invocation-sentinel").exists());
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }
+
+#[tokio::test]
+async fn unconfirmed_ask_keeps_a_pre_spawn_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    let (base, executions) = executor_tools(root.path());
+    base.executor
+        .register_dynamic_tool(Arc::new(AvailabilityProbe(Arc::clone(&executions))));
+    let (events, _) = tokio::sync::broadcast::channel(1);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled(),
+        events,
+    ));
+    let mut tools = base.as_ref().clone();
+    tools.permission = PermissionPolicy::new();
+    tools.agent = Some(crate::agent::AgentLoop::new(
+        Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+        Arc::clone(&tools.executor),
+        tools.context.clone(),
+        crate::agent::AgentConfig {
+            confirmation_manager: Some(manager),
+            ..Default::default()
+        },
+    ));
+    let tools = Arc::new(tools);
+
+    let refused = prepare_tools(
+        Arc::clone(&tools),
+        request("unavailable-ask", json!({"unavailable": true})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let refused = execute_prepared(Arc::clone(&tools), refused).await;
+    let refused_output = refused.output.as_str().unwrap();
+    assert_eq!(refused.outcome, ToolExecutionOutcome::Denied);
+    assert!(
+        refused_output.contains("backend is unavailable"),
+        "{refused_output}"
+    );
+    assert!(!refused_output.contains("unapproved"), "{refused_output}");
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    let admitted = prepare_tools(
+        Arc::clone(&tools),
+        request("available-ask", json!({})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let admitted = execute_prepared(tools, admitted).await;
+    let admitted_output = admitted.output.as_str().unwrap();
+    assert_eq!(admitted.outcome, ToolExecutionOutcome::Denied);
+    assert!(
+        admitted_output.contains("tool_effect_effective_arguments_unapproved"),
+        "{admitted_output}"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}

@@ -24,6 +24,8 @@ pub struct StudioHost {
     pub role: String,
     pub guidelines: String,
     pub review_subagent: bool,
+    /// A fixed source snapshot is supplied by the host; no tool may be exposed.
+    pub source_review: bool,
     pub output_language: Option<String>,
     /// Absolute roots the agent rescans. The catalog array in meta is ignored.
     pub assets: Option<crate::local_assets::AssetRoots>,
@@ -59,6 +61,11 @@ pub fn studio_host_from_meta(
         .map(sanitize_limited(GUIDELINES_LIMIT))
         .unwrap_or_default();
     let review_subagent = host.get("review").and_then(|value| value.as_str()) == Some("subagent");
+    let source_review = match host.get("sourceReview") {
+        None => false,
+        Some(serde_json::Value::Bool(enabled)) => *enabled,
+        Some(_) => return Err("a3sHost.sourceReview must be a boolean".into()),
+    };
     let output_language = host
         .get("outputLanguage")
         .and_then(|value| value.as_str())
@@ -68,6 +75,7 @@ pub fn studio_host_from_meta(
         role,
         guidelines,
         review_subagent,
+        source_review,
         output_language,
         assets: crate::local_assets::parse_roots(host.get("assets")),
     })
@@ -225,6 +233,28 @@ mod tests {
             apply_turn_directives("你好", &TurnContext::default()),
             "你好"
         );
+    }
+
+    #[test]
+    fn source_review_is_an_explicit_boolean_restriction() {
+        for enabled in [false, true] {
+            let parsed = meta(serde_json::json!({"a3sHost":{"sourceReview":enabled}}));
+            assert_eq!(
+                studio_host_from_meta(Some(&parsed)).unwrap().source_review,
+                enabled
+            );
+        }
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("true"),
+            serde_json::json!(1),
+        ] {
+            let parsed = meta(serde_json::json!({"a3sHost":{"sourceReview":invalid}}));
+            assert_eq!(
+                studio_host_from_meta(Some(&parsed)).unwrap_err(),
+                "a3sHost.sourceReview must be a boolean"
+            );
+        }
     }
 
     #[test]

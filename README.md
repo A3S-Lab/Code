@@ -1784,8 +1784,9 @@ the v1 schema or claiming external Runtime certification.
 
 - Core is an embeddable runtime, not a hosted agent service or a terminal
   widget library.
-- The A3S CLI launches the full-screen Code TUI (`crates/code/tui`). Account
-  adapters, presentation policy, and optional A3S OS integration stay in the CLI.
+- The A3S CLI launches the pager binary `a3s-code-tui`
+  (`vendor/a3s-code-ui`). Account adapters, presentation policy, and optional
+  A3S OS integration stay in the CLI.
 - Hosts own user identity, credential access, deployment policy, and trust
   decisions around direct host tool calls.
 - Sandboxing, persistence, automatic compaction, goals, delegation, and graph

@@ -1,7 +1,0 @@
-default_model = "fixture/demo-model"
-providers "fixture" {
-  apiKey = "test"
-  models "demo-model" {
-    name = "Demo"
-  }
-}

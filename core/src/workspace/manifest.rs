@@ -1047,9 +1047,20 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
             request.case_insensitive,
             &search_snapshot,
         );
+        // Dirty order only moves files outside the recent window.
+        let dirty = if dirty_order_can_change(
+            &candidates,
+            &search_snapshot.snapshot.files,
+            &recent_ranks,
+            content_filter.as_ref(),
+        ) {
+            crate::git::dirty_paths(&self.local.root).unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
 
         for file_index in
-            recent_first_candidate_indices(&candidates, &search_snapshot.index, &recent_ranks)
+            order_grep_candidates(&candidates, &search_snapshot.index, &recent_ranks, &dirty)
         {
             let Some(file) = search_snapshot.snapshot.files.get(file_index) else {
                 continue;
@@ -1274,26 +1285,62 @@ fn recent_first_candidate_indices(
     index: &ManifestIndex,
     recent_ranks: &HashMap<String, usize>,
 ) -> Vec<usize> {
-    if recent_ranks.is_empty() {
-        return candidates.iter().collect();
-    }
+    order_grep_candidates(candidates, index, recent_ranks, &HashSet::new())
+}
 
-    let mut hot = recent_ranks
-        .iter()
-        .filter_map(|(path, rank)| {
-            let file_index = *index.by_path.get(path)?;
-            candidates
-                .contains(file_index)
-                .then_some((*rank, file_index))
-        })
-        .collect::<Vec<_>>();
-    hot.sort_unstable_by_key(|(rank, _)| *rank);
+fn dirty_order_can_change(
+    candidates: &CandidateIndices<'_>,
+    files: &[LocalWorkspaceFile],
+    recent_ranks: &HashMap<String, usize>,
+    content_filter: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
+    candidates.iter().any(|file_index| {
+        let Some(file) = files.get(file_index) else {
+            return false;
+        };
+        if content_filter.is_some_and(|allowed| !allowed.contains(&file.path)) {
+            return false;
+        }
+        !recent_ranks.contains_key(&file.path)
+    })
+}
 
+/// Recent files stay in heat order. Uncommitted paths come next, in candidate
+/// order. A git failure passes an empty set and leaves this order unchanged.
+fn order_grep_candidates(
+    candidates: &CandidateIndices<'_>,
+    index: &ManifestIndex,
+    recent_ranks: &HashMap<String, usize>,
+    dirty: &HashSet<String>,
+) -> Vec<usize> {
     let mut out = Vec::with_capacity(candidates.len());
-    let mut seen = HashSet::with_capacity(hot.len());
-    for (_, file_index) in hot {
-        if seen.insert(file_index) {
-            out.push(file_index);
+    let mut seen = HashSet::new();
+    if !recent_ranks.is_empty() {
+        let mut hot = recent_ranks
+            .iter()
+            .filter_map(|(path, rank)| {
+                let file_index = *index.by_path.get(path)?;
+                candidates
+                    .contains(file_index)
+                    .then_some((*rank, file_index))
+            })
+            .collect::<Vec<_>>();
+        hot.sort_unstable_by_key(|(rank, _)| *rank);
+        for (_, file_index) in hot {
+            if seen.insert(file_index) {
+                out.push(file_index);
+            }
+        }
+    }
+    if !dirty.is_empty() {
+        let dirty_indices = dirty
+            .iter()
+            .filter_map(|path| index.by_path.get(path).copied())
+            .collect::<HashSet<_>>();
+        for file_index in candidates.iter() {
+            if dirty_indices.contains(&file_index) && seen.insert(file_index) {
+                out.push(file_index);
+            }
         }
     }
     out.extend(

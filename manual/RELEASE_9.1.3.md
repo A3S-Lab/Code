@@ -7,9 +7,9 @@ qualification and its exact limits are retained in
 
 ## Candidate scope
 
-- Align Core, ACP, thin TUI, native SDKs, Python bootstrap and the actual
-  shipped pager's version metadata to 9.1.3. The independent Kernel retains
-  its own version.
+- Align Core, ACP, native SDKs, Python bootstrap and the actual
+  shipped pager's version metadata to 9.1.3. The in-process TUI scaffold
+  and the separate kernel package are not release members.
 - Preserve exact Run identity across Node, Python and Go admission, snapshots,
   cancellation and evidence reads. Policy updates apply at the next admission.
 - Project cancellation before the original terminal seal as a typed original-Run error

@@ -21,5 +21,5 @@ Apache-2.0 `LICENSE` files keep upstream copyright notices as required.
 
 ## Attribution
 
-Upstream provenance and NOTICE details live in `crates/code/tui/NOTICE` and
-`crates/code/tui/docs/FORK.md` — not in product READMEs.
+Upstream provenance is the grok-build snapshot recorded in `A3S_FORK.md`.
+Copyright notices stay in this tree's `LICENSE` files.

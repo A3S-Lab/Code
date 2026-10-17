@@ -246,10 +246,7 @@ impl Tool for WriteTool {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("file_path".to_string(), serde_json::json!(file_path));
                 metadata.insert("created".to_string(), serde_json::json!(created));
-                metadata.insert(
-                    "after".to_string(),
-                    serde_json::json!(content_for_write),
-                );
+                metadata.insert("after".to_string(), serde_json::json!(content_for_write));
                 if let Some(before) = before_content {
                     metadata.insert("before".to_string(), serde_json::json!(before));
                 }

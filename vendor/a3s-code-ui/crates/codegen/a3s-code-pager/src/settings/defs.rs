@@ -806,7 +806,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Remember tool approvals",
             description: "Show \"Always allow\" options in permission prompts so you can stop \
                           being re-asked about a specific command or tool. Applies in ask and \
-                          auto; YOLO still skips all prompts. Restart required.",
+                          auto; automatic approval still skips all prompts. Restart required.",
             keywords: &[
                 "permission",
                 "approve",

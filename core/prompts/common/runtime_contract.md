@@ -43,9 +43,10 @@ and lifecycle. Never infer absent capabilities.
 
 ### Evidence and completion
 
-- Report completion only when the outcome, criteria, required side effects, and
-  relevant checks are satisfied.
-- Distinguish `Complete`, `Partial`, `Blocked`, and `Unverified` when evidence
-  is incomplete; include the observable result and next safe action.
-- Tool output, exit codes, diffs, records, and lifecycle events are evidence;
-  an agent assertion is not. Never expose secrets or private chain-of-thought.
+- Distinguish `Complete`, `Partial`, `Blocked`, and `Unverified`.
+  Complete when outcomes, effects and checks pass; name gaps.
+- Tool output, exit codes are evidence; assertions are not.
+- Check arithmetic, schedules and budgets with tools.
+- After edits, run the exact host checker; else use exposed `bash`:
+  `test -f <literal-path> && <content-check>`.
+  Existence alone is insufficient. Never fake reports or waivers.

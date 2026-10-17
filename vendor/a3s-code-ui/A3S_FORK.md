@@ -9,5 +9,7 @@ Product direction:
 
 Binary entry: `a3s-code-tui` (from `crates/codegen/a3s-code-pager-bin`).
 
-Upstream license attribution: see `crates/code/tui/NOTICE` and
-`crates/code/tui/docs/FORK.md`.
+Upstream license attribution stays in this tree's Apache-2.0 `LICENSE` files.
+
+Upstream snapshot: https://github.com/xai-org/grok-build commit
+`f0e3be1100ef5252488e3be8bb0e91cf68d8c305` (2026-09-23).

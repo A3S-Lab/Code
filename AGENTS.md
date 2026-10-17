@@ -6,8 +6,9 @@ tree. When they disagree, the root wins.
 
 ## What this tree is
 
-The native coding-agent harness (core), its ACP process surface (acp),
-the thin TUI scaffold (tui), and the execution kernel tests (kernel).
+The native coding-agent harness (core) and its ACP process surface (acp).
+The product terminal is the pager under `vendor/a3s-code-ui`. The in-process
+TUI scaffold and the separate kernel package were removed.
 Not a bounded-contexts service: the layering rules that shape
 `apps/api` do not map one-to-one here; the equivalents are the facade
 discipline per module and the never-cross lines called out below.
@@ -18,8 +19,7 @@ discipline per module and the never-cross lines called out below.
   `cargo` inside `apps/code/` resolves it; never `+stable`.
 - This is its own cargo workspace: build from `apps/code/`, never from
   the monorepo root. `vendor/`, `website/`, and `target/` are not part
-  of review surface; `tui/vendor/*` are vendored crates — read their
-  own headers before editing.
+  of review surface.
 - Native SDK crates (`sdk/node`, `sdk/python`) are excluded from the
   default workspace (special toolchains); build them individually.
 - `--features deep-live` compiles the declaration-gated live/evidence

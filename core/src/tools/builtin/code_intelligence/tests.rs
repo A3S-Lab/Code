@@ -451,4 +451,118 @@ fn code_symbols_model_definition_has_no_top_level_union() {
     assert!(params.get("enum").is_none());
     assert!(params.get("const").is_none());
     assert!(params.get("not").is_none());
+    assert!(definition.description.contains("one declaration line"));
+    assert!(definition.description.contains("not the function body"));
+}
+
+fn write_saved(root: &std::path::Path, relative: &str, body: &str) {
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+}
+
+#[tokio::test]
+async fn search_and_navigation_include_one_saved_declaration_line() {
+    let provider = TestProvider::new(false);
+    let (temp, context) = context(Arc::clone(&provider));
+    write_saved(
+        temp.path(),
+        "src/client.rs",
+        "zero\none\nstruct WorkspaceClient {}\n",
+    );
+    write_saved(
+        temp.path(),
+        "src/implementation.rs",
+        "zero\none\nfn navigate() {}\n",
+    );
+    write_saved(temp.path(), "src/lib.rs", "zero\none\nfn unused() {}\n");
+
+    let search = CodeSymbolsTool
+        .execute(
+            &json!({"operation": "search", "query": "WorkspaceClient"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let search = output_json(&search);
+    assert_eq!(
+        search["items"][0]["declaration_line"],
+        "struct WorkspaceClient {}"
+    );
+    assert!(search["items"][0].get("detail").is_none());
+
+    let outline = CodeSymbolsTool
+        .execute(
+            &json!({"operation": "outline", "path": "src/lib.rs"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let outline = output_json(&outline);
+    assert!(outline["items"][0].get("declaration_line").is_none());
+    assert_eq!(outline["items"][0]["detail"], "struct");
+
+    let navigation = CodeNavigationTool
+        .execute(
+            &json!({
+                "operation": "definition",
+                "path": "src/lib.rs",
+                "line": 0,
+                "character": 0
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        output_json(&navigation)["items"][0]["declaration_line"],
+        "fn navigate() {}"
+    );
+
+    let diagnostics = CodeDiagnosticsTool
+        .execute(&json!({"path": "src/lib.rs"}), &context)
+        .await
+        .unwrap();
+    let diagnostic = &output_json(&diagnostics)["items"][0];
+    assert!(diagnostic.get("declaration_line").is_none());
+    assert!(diagnostic["location"].get("declaration_line").is_none());
+}
+
+#[tokio::test]
+async fn a_missing_saved_line_leaves_the_location() {
+    let provider = TestProvider::new(false);
+    let (_temp, context) = context(provider);
+    let search = CodeSymbolsTool
+        .execute(
+            &json!({"operation": "search", "query": "WorkspaceClient"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let item = &output_json(&search)["items"][0];
+    assert!(item.get("declaration_line").is_none());
+    assert_eq!(item["location"]["path"], "src/client.rs");
+}
+
+#[tokio::test]
+async fn declaration_line_stops_at_256_bytes() {
+    let provider = TestProvider::new(false);
+    let (temp, context) = context(provider);
+    let mut line = "a".repeat(255);
+    line.push('你');
+    write_saved(temp.path(), "src/client.rs", &format!("\n\n{line}\n"));
+
+    let search = CodeSymbolsTool
+        .execute(
+            &json!({"operation": "search", "query": "WorkspaceClient"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let shown = output_json(&search)["items"][0]["declaration_line"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(shown.len(), 255);
+    assert!(!shown.contains('你'));
 }

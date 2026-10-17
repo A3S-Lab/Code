@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::harness_loop::MutationLedger;
 use crate::read_only_verifier::{accept_report, ReportAuthor};
-use crate::verification::VerificationReport;
+use crate::verification::{VerificationCheck, VerificationReport, VerificationStatus};
 
 /// One mutated path with the content digest the ledger recorded for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +82,68 @@ pub fn merge_attested_report(
     reports.push(report);
 }
 
+/// Binds a Passed report when every recorded content digest equals the file
+/// on disk. Used where the admitted process checker cannot start, so a
+/// `test -f` command can never exit 0. A missing file or a different byte
+/// string leaves the gate incomplete.
+pub struct DiskContentAttestor {
+    workspace: std::path::PathBuf,
+}
+
+impl DiskContentAttestor {
+    pub fn new(workspace: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+        }
+    }
+
+    fn on_disk_digest(&self, relative: &str) -> Option<String> {
+        let relative = relative.trim_start_matches("./");
+        if relative.is_empty() || relative.contains('\0') || relative.contains("..") {
+            return None;
+        }
+        let root = self.workspace.canonicalize().ok()?;
+        let file = root.join(relative).canonicalize().ok()?;
+        if !file.starts_with(&root) {
+            return None;
+        }
+        Some(sha256::digest(std::fs::read(file).ok()?))
+    }
+}
+
+impl CompletionAttestor for DiskContentAttestor {
+    fn attest(
+        &self,
+        effect_digest: &str,
+        paths: &[MutatedPathRecord],
+    ) -> Option<VerificationReport> {
+        let required: Vec<_> = paths
+            .iter()
+            .filter(|path| !path.content_digest.is_empty())
+            .collect();
+        if required.is_empty() {
+            return None;
+        }
+        if required.iter().any(|path| {
+            self.on_disk_digest(&path.path).as_deref() != Some(path.content_digest.as_str())
+        }) {
+            return None;
+        }
+        Some(
+            VerificationReport::new(
+                "host:disk-content",
+                vec![VerificationCheck::required(
+                    "host:disk-content",
+                    "content_digest",
+                    "on-disk bytes match the recorded content digest",
+                )
+                .with_status(VerificationStatus::Passed)],
+            )
+            .with_effect_digest(effect_digest.to_string()),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +195,36 @@ mod tests {
             Some(&serde_json::json!({"file_path": path, "after": "fn main() {}"})),
         );
         ledger
+    }
+
+    #[test]
+    fn disk_attestor_passes_only_when_bytes_match() {
+        let dir = std::env::temp_dir().join(format!("a3s-disk-attest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pomodoro.html"), "timer").unwrap();
+        let ledger = ledger_with_write("pomodoro.html");
+        let digest = ledger.content_digest_for_path("pomodoro.html").unwrap();
+        // ledger_with_write records "fn main() {}", not "timer".
+        let attestor = DiskContentAttestor::new(&dir);
+        assert!(attestor.attest(ledger.digest(), &[]).is_none());
+        let mismatch = vec![MutatedPathRecord {
+            path: "pomodoro.html".to_owned(),
+            content_digest: digest.to_owned(),
+        }];
+        assert!(attestor.attest(ledger.digest(), &mismatch).is_none());
+        std::fs::write(dir.join("pomodoro.html"), "fn main() {}").unwrap();
+        let report = attestor
+            .attest(ledger.digest(), &mismatch)
+            .expect("matching bytes bind");
+        let gate = decide_with_observations(&ledger, &[report], &[], false, &[]);
+        assert!(matches!(
+            gate,
+            crate::harness_loop::CompletionGate::Allow(
+                crate::harness_loop::CompletionTerminal::Verified { .. }
+            )
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2,12 +2,13 @@
 
 `HARNESS-CONV5` already published the Cargo feature profiles on
 `a3s-code-core`. This note records their size, startup, memory, and feature
-behavior after the kernel split. It does not redefine the features.
+behavior for the core feature profiles. It does not redefine the features.
 
-`a3s-code-core` remains the compatibility facade. `a3s-code-kernel` owns
-operation identity, the logical clock, and domain-separated digests. Agent
-event adaptation, the digest-only event log, and capability projection stay
-on the facade. The other KRN-10 layer names (`a3s-code-engine`,
+`a3s-code-core` owns operation identity, the logical clock, and
+domain-separated digests in `core_identity` and `content_digest`. The
+separate `a3s-code-kernel` package was removed because nothing linked it.
+Agent event adaptation, the digest-only event log, and capability projection
+stay in core. The other KRN-10 layer names (`a3s-code-engine`,
 `a3s-code-data`, `a3s-code-evaluation`, `a3s-code-host`) stay roadmap names.
 
 Measurements below are from the local macOS tree on 2026-09-30, using
@@ -17,6 +18,10 @@ a new process-RSS or admission-latency run. Workload latency stays in
 
 ## Kernel
 
+The numbers below are the 2026-09-30 measurement of the retired
+`a3s-code-kernel` package. That package is no longer a workspace member, and
+`a3s-code-core` does not link it.
+
 Normal dependency closure, 23 packages: `a3s-code-kernel`, `serde`,
 `serde_json`, `sha2`, `thiserror`, and their build dependencies. The closure
 does not contain `a3s-search`, `a3s-vec`, `aws-sdk-s3`, `chromiumoxide`,
@@ -24,13 +29,13 @@ does not contain `a3s-search`, `a3s-vec`, `aws-sdk-s3`, `chromiumoxide`,
 
 | | |
 | --- | --- |
-| Debug rlib linked by `a3s-code-core` | 1,085,184 bytes |
+| Debug rlib of the retired package | 1,085,184 bytes |
 | Release rlib (`opt-level = z`, fat LTO, strip) | 307,136 bytes |
 | Startup | No tokio runtime, HTTP client, browser, S3 client, or vector engine. `SystemLogicalClock::now_ms` reads the system clock when called. |
 | Memory | Identity values stay inside the published ceilings: 256-byte ids, 128-byte event types, 4 MiB payload bytes, 256-byte media types, and a 4 GiB artifact size field. The kernel stores digests, not browser, S3, or zvec buffers. |
 
-The same kernel crate is linked by every facade profile. Profile features do
-not add browser, S3, or zvec dependencies to it.
+That package is not linked by any facade profile. Profile features still
+must not add browser, S3, or zvec dependencies to identity types.
 
 ## Facade profiles
 

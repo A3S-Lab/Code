@@ -7,6 +7,8 @@ use super::{
 use crate::tools::types::{Tool, ToolCapabilities, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
+use std::time::Duration;
 
 const MAX_PAGE_LIMIT: usize = 1_000;
 
@@ -55,6 +57,13 @@ pub struct SearchTool {
     read_enabled: bool,
     semantic_enabled: bool,
     persistent_backend_enabled: bool,
+    /// Live index phase. `Degraded` removes semantic modes from later definitions.
+    retrieval: Option<Arc<crate::workspace::WorkspaceRetrievalRuntime>>,
+    /// Model-facing text at registration. [`Tool::definition`] rebuilds it from
+    /// the live phase so a later `Degraded` index is not still advertised.
+    description: String,
+    /// Passed into the fuzzy widen the grep path already runs.
+    fuzzy_budget: Duration,
 }
 
 impl SearchTool {
@@ -64,16 +73,41 @@ impl SearchTool {
             read_enabled,
             semantic_enabled: false,
             persistent_backend_enabled: false,
+            retrieval: None,
+            description: String::new(),
+            fuzzy_budget: super::search_fallback::FUZZY_TIME_BUDGET,
         }
+        .sync_description()
+    }
+
+    /// Test seam for an already-spent widen budget. Production keeps [`Self::new`].
+    #[cfg(test)]
+    pub fn with_fuzzy_budget(mut self, budget: Duration) -> Self {
+        self.fuzzy_budget = budget;
+        self
     }
 
     pub fn with_backend_search(mut self, enabled: bool) -> Self {
         self.backend_search_enabled = enabled;
-        self
+        self.sync_description()
     }
 
     pub fn with_semantic(mut self, enabled: bool) -> Self {
         self.semantic_enabled = enabled;
+        self.sync_description()
+    }
+
+    /// Observe the session index so a failed build stops advertising semantic modes.
+    pub fn with_retrieval_runtime(
+        mut self,
+        runtime: Arc<crate::workspace::WorkspaceRetrievalRuntime>,
+    ) -> Self {
+        self.retrieval = Some(runtime);
+        self
+    }
+
+    fn sync_description(mut self) -> Self {
+        self.description = describe_modes(&self.modes());
         self
     }
 
@@ -92,10 +126,31 @@ impl SearchTool {
         if self.backend_search_enabled && self.read_enabled {
             modes.push("bm25");
         }
-        if self.semantic_enabled {
+        if self.semantic_advertised() {
             modes.extend(["semantic", "hybrid"]);
         }
         modes
+    }
+
+    fn semantic_advertised(&self) -> bool {
+        if !self.semantic_enabled {
+            return false;
+        }
+        match &self.retrieval {
+            Some(runtime) => {
+                runtime.status().phase != crate::workspace::WorkspaceRetrievalPhase::Degraded
+            }
+            None => true,
+        }
+    }
+
+    fn mode_schema_description(&self) -> String {
+        let listed = describe_modes(&self.modes());
+        if self.modes().contains(&"bm25") {
+            format!("{listed} A bm25 request may use the durable local index automatically.")
+        } else {
+            listed
+        }
     }
 
     fn adapted_args(
@@ -198,7 +253,17 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the workspace with one model-selected mode. Use grep for exact text or regular expressions, glob for path discovery, bm25 for ranked lexical matches, semantic for concept similarity, and hybrid when both exact and conceptual evidence matter."
+        &self.description
+    }
+
+    fn definition(&self) -> crate::llm::ToolDefinition {
+        // The cached description is fixed at registration. The index can fail
+        // afterwards, and the next model-facing definition must follow that phase.
+        crate::llm::ToolDefinition {
+            name: self.name().to_string(),
+            description: describe_modes(&self.modes()),
+            parameters: self.parameters(),
+        }
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -225,7 +290,7 @@ impl Tool for SearchTool {
                 "limit": 8
             }));
         }
-        if self.semantic_enabled {
+        if modes.contains(&"semantic") {
             examples.push(serde_json::json!({
                 "mode": "hybrid",
                 "query": "where session shutdown releases temporary indexes",
@@ -239,6 +304,9 @@ impl Tool for SearchTool {
                 "limit": 8
             }));
         }
+        let mode_description = self.mode_schema_description();
+        let query_description = query_schema_description(&modes);
+        let limit_description = limit_schema_description(&modes);
         let grep_output_modes = if self.backend_search_enabled && self.read_enabled {
             vec!["content", "files_with_matches", "count", "summary"]
         } else {
@@ -251,12 +319,12 @@ impl Tool for SearchTool {
                 "mode": {
                     "type": "string",
                     "enum": modes,
-                    "description": "Required. Choose based on the task: grep for an exact string or regex, glob for file names/paths, bm25 for known terms or multi-term relevance, semantic for a concept or paraphrase, and hybrid when the answer needs both exact identifiers and conceptual evidence. A bm25 request may use the durable local index automatically."
+                    "description": mode_description
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required. A regular expression in grep mode, a glob pattern in glob mode, or a plain-text relevance query in bm25/semantic/hybrid mode."
+                    "description": query_description
                 },
                 "path": {
                     "type": "string",
@@ -264,7 +332,7 @@ impl Tool for SearchTool {
                 },
                 "include": {
                     "type": "string",
-                    "description": "Optional for grep/bm25/semantic/hybrid. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
+                    "description": "Optional. Glob pattern used to filter candidate files, for example '*.rs' or '*.{ts,tsx}'."
                 },
                 "context": {
                     "type": "integer",
@@ -284,7 +352,7 @@ impl Tool for SearchTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MAX_PAGE_LIMIT,
-                    "description": "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for bm25/semantic/hybrid (default 10, maximum 25)."
+                    "description": limit_description
                 },
                 "cursor": {
                     "type": "string",
@@ -336,13 +404,115 @@ impl Tool for SearchTool {
             Err(error) => return Ok(ToolOutput::error(error)),
         };
         let output = match mode {
-            SearchMode::Grep => GrepTool.execute(&adapted, ctx).await?,
+            SearchMode::Grep => {
+                let exact = GrepTool.execute(&adapted, ctx).await?;
+                widen_literal_grep(args, &adapted, exact, ctx, self.fuzzy_budget).await
+            }
             SearchMode::Glob => GlobTool.execute(&adapted, ctx).await?,
             SearchMode::Bm25 => Bm25Tool.execute(&adapted, ctx).await?,
             SearchMode::Semantic => SemanticSearchTool.execute(&adapted, ctx).await?,
             SearchMode::Hybrid => HybridSearchTool.execute(&adapted, ctx).await?,
         };
         Ok(with_search_mode(output, mode))
+    }
+}
+
+async fn widen_literal_grep(
+    args: &serde_json::Value,
+    adapted: &serde_json::Value,
+    exact: ToolOutput,
+    ctx: &ToolContext,
+    budget: Duration,
+) -> ToolOutput {
+    let Some(query) = args.get("query").and_then(serde_json::Value::as_str) else {
+        return exact;
+    };
+    if !exact.success
+        || !super::search_fallback::is_literal_query(query)
+        || !super::search_fallback::grep_is_empty(&exact.content, matching_lines(&exact))
+    {
+        return exact;
+    }
+    let case_sensitive = args
+        .get("case_sensitive")
+        .and_then(serde_json::Value::as_bool);
+    let already_insensitive = adapted.get("-i").and_then(serde_json::Value::as_bool) == Some(true);
+    let mut current = exact;
+    if !query.chars().any(|ch| ch.is_uppercase())
+        && case_sensitive != Some(true)
+        && !already_insensitive
+    {
+        let mut folded = match adapted.as_object().cloned() {
+            Some(map) => map,
+            None => return current,
+        };
+        folded.insert("-i".to_owned(), serde_json::Value::Bool(true));
+        let second = match GrepTool
+            .execute(&serde_json::Value::Object(folded), ctx)
+            .await
+        {
+            Ok(output) => output,
+            Err(_) => return current,
+        };
+        if second.success
+            && !super::search_fallback::grep_is_empty(&second.content, matching_lines(&second))
+        {
+            let mut second = second;
+            stamp_match(&mut second, "case_insensitive");
+            return second;
+        }
+        if second.success {
+            current = second;
+        }
+    }
+    let root = ctx.workspace.clone();
+    let path = adapted
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let glob = adapted
+        .get("glob")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let needle = query.to_owned();
+    let insensitive = case_sensitive != Some(true);
+    let scanned = tokio::task::spawn_blocking(move || {
+        let base = super::search_fallback::search_base(&root, path.as_deref())?;
+        super::search_fallback::fuzzy_scan(
+            &root,
+            &base,
+            glob.as_deref(),
+            &needle,
+            insensitive,
+            budget,
+        )
+    })
+    .await;
+    match scanned {
+        Ok(Some(content)) => {
+            let mut output = ToolOutput::success(content);
+            // A budget stop with no hit line is an unfinished scan, not a fuzzy match.
+            if output.content.lines().any(|line| line.starts_with('>')) {
+                stamp_match(&mut output, "fuzzy");
+            }
+            output
+        }
+        _ => current,
+    }
+}
+
+fn matching_lines(output: &ToolOutput) -> Option<u64> {
+    output
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/search/matching_lines"))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn stamp_match(output: &mut ToolOutput, kind: &str) {
+    let metadata = output.metadata.get_or_insert_with(|| serde_json::json!({}));
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("match".to_owned(), serde_json::json!(kind));
     }
 }
 
@@ -396,6 +566,53 @@ fn copy_if_present(
     }
 }
 
+fn describe_modes(modes: &[&str]) -> String {
+    if modes.is_empty() {
+        return "Workspace search has no available mode in this session.".to_string();
+    }
+    let hints = modes
+        .iter()
+        .map(|mode| match *mode {
+            "grep" => "grep for an exact string or regex",
+            "glob" => "glob for file names",
+            "bm25" => "bm25 for ranked lexical matches",
+            "semantic" => "semantic for concept similarity",
+            "hybrid" => "hybrid when exact and conceptual evidence both matter",
+            other => other,
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "Search the workspace with one model-selected mode. Use {}.",
+        hints.join(", ")
+    )
+}
+
+fn query_schema_description(modes: &[&str]) -> String {
+    if modes.is_empty() {
+        return "Required. No search mode is available in this session.".to_string();
+    }
+    format!(
+        "Required. Query text for the selected mode. Available modes: {}.",
+        modes.join(", ")
+    )
+}
+
+fn limit_schema_description(modes: &[&str]) -> String {
+    let ranked = modes
+        .iter()
+        .copied()
+        .filter(|mode| matches!(*mode, "bm25" | "semantic" | "hybrid"))
+        .collect::<Vec<_>>();
+    if ranked.is_empty() {
+        return "Optional. Page size for glob or paginated grep (default 200, maximum 1000)."
+            .to_string();
+    }
+    format!(
+        "Optional. Page size for glob or paginated grep (default 200, maximum 1000), or result count for {} (default 10, maximum 25).",
+        ranked.join("/")
+    )
+}
+
 fn with_search_mode(mut output: ToolOutput, mode: SearchMode) -> ToolOutput {
     match output.metadata.as_mut() {
         Some(serde_json::Value::Object(metadata)) => {
@@ -424,6 +641,26 @@ fn with_search_mode(mut output: ToolOutput, mode: SearchMode) -> ToolOutput {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn search_tool_description_lists_only_enabled_modes() {
+        let lexical = SearchTool::new(true);
+        assert!(lexical.description().contains("bm25"));
+        assert!(!lexical.description().contains("semantic"));
+        assert!(!lexical.description().contains("hybrid"));
+        let schema = lexical.parameters().to_string();
+        assert!(schema.contains("bm25"));
+        assert!(!schema.contains("semantic"));
+        assert!(!schema.contains("hybrid"));
+
+        let semantic = SearchTool::new(true).with_semantic(true);
+        assert!(semantic.description().contains("semantic"));
+        assert!(semantic.description().contains("hybrid"));
+        let schema = semantic.parameters();
+        let modes = schema["properties"]["mode"]["enum"].as_array().unwrap();
+        assert!(modes.iter().any(|mode| mode == "semantic"));
+        assert!(modes.iter().any(|mode| mode == "hybrid"));
+    }
 
     #[test]
     fn schema_exposes_only_supported_modes() {

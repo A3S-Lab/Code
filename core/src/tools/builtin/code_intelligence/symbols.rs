@@ -68,7 +68,7 @@ impl Tool for CodeSymbolsTool {
     }
 
     fn description(&self) -> &str {
-        "Query semantic symbols from saved workspace files. Use operation='outline' for a document hierarchy or operation='search' for workspace symbols. Returns symbol metadata and locations, not source code; use read when source text is needed."
+        "Query semantic symbols from saved workspace files. Use operation='outline' for a document hierarchy or operation='search' for workspace symbols. A search result includes one declaration line and not the function body; use read when the full body is needed."
     }
 
     fn parameters(&self) -> Value {
@@ -158,7 +158,15 @@ impl Tool for CodeSymbolsTool {
                 .search_symbols(query, limit, ctx.cancellation_token())
                 .await
             {
-                Ok(result) => Ok(structured_success(format::workspace_symbols(result))),
+                Ok(result) => {
+                    let locations = result
+                        .items
+                        .iter()
+                        .map(|item| (item.location.path.clone(), item.location.range.start.line))
+                        .collect();
+                    let lines = format::saved_declaration_lines(ctx, locations).await;
+                    Ok(structured_success(format::workspace_symbols(result, lines)))
+                }
                 Err(error) => Ok(code_intelligence_error(operation, error)),
             }
         }

@@ -36,6 +36,18 @@ impl AgentLoop {
         self.config.confirmation_manager.clone()
     }
 
+    /// `Some` when this call is refused before any process exists.
+    pub(crate) fn execution_unavailable(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Option<String> {
+        let tool = self.tool_executor.registry().get(name)?;
+        tool.validate_execution_available(args, &self.tool_context)
+            .err()
+            .map(|error| error.to_string())
+    }
+
     pub(crate) fn sanitize_tool_output(&self, text: &str) -> String {
         match self.config.security_provider.as_ref() {
             Some(provider) => provider.sanitize_output(text),

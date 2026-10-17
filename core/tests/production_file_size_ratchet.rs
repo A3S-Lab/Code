@@ -19,9 +19,14 @@ const CAP_SLACK: usize = 250;
 
 /// Files over `LIMIT`, with the line count they may not exceed.
 const OVERSIZE: &[(&str, usize)] = &[
-    ("acp/src/agent.rs", 4524),
     ("core/src/fact_control.rs", 4861),
 ];
+
+/// ACP-SPLIT1: the ACP protocol file keeps the `acp::Agent` surface and the
+/// session state. Session opening, turns, asks, rendering, and host extension
+/// methods live in `acp/src/agent/`.
+const PROTOCOL_FILE: &str = "acp/src/agent.rs";
+const PROTOCOL_FILE_LIMIT: usize = 1500;
 
 fn line_count(source: &str) -> usize {
     source.lines().count()
@@ -65,5 +70,19 @@ fn production_files_stay_under_the_line_limit() {
         "production file size ratchet ({} files):\n{}",
         sizes.len(),
         problems.join("\n")
+    );
+}
+
+#[test]
+fn the_acp_protocol_file_stays_under_its_split_limit() {
+    let files = production_graph::production_files();
+    let file = files
+        .get(PROTOCOL_FILE)
+        .unwrap_or_else(|| panic!("{PROTOCOL_FILE} is not production code"));
+    let lines = line_count(&file.source);
+    assert!(
+        lines < PROTOCOL_FILE_LIMIT,
+        "{PROTOCOL_FILE}: {lines} lines, the split limit is {PROTOCOL_FILE_LIMIT}; \
+         move the behaviour into a module under acp/src/agent/"
     );
 }

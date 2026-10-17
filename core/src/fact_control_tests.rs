@@ -4,6 +4,28 @@ use super::*;
 
 use std::sync::Mutex;
 
+#[test]
+fn prepared_context_does_not_replace_a_later_answer_or_steer() {
+    let mut request = CompletionRequest {
+        system: vec![],
+        tools: vec![],
+        summary: String::new(),
+        messages: vec!["user\n请选择文档".into()],
+    };
+    let prepared = PreparedPrompt::capture(&request, "请选择文档\n宿主材料".into()).unwrap();
+    request
+        .messages
+        .extend(["assistant\nA 还是 B？".into(), "user\nB".into()]);
+    assert_eq!(prepared.source_index(&request), Some(0));
+    request.messages.push("user\n改为 C".into());
+    assert_eq!(prepared.source_index(&request), Some(0));
+    request.messages = vec!["user\nB".into()];
+    assert_eq!(prepared.source_index(&request), None);
+    request.messages = vec!["user\n请选择文档".into()];
+    request.summary = "原始任务已经被压缩".into();
+    assert_eq!(prepared.source_index(&request), None);
+}
+
 struct ScriptModel {
     decisions: Mutex<Vec<Result<ModelDecision, ActorError>>>,
     calls: Arc<AtomicUsize>,
@@ -2686,4 +2708,123 @@ fn repeated_result_note_counts_identical_text_and_leaves_json_parseable() {
     let json = r#"{"retainedForRun":true}"#;
     assert_eq!(repeated_result_note(&repeats, "read", &args, json), None);
     assert_eq!(repeated_result_note(&repeats, "read", &args, json), None);
+}
+
+struct RefuseBeforeSpawn;
+
+#[async_trait::async_trait]
+impl crate::sandbox::BashSandbox for RefuseBeforeSpawn {
+    fn validate_execution_available(&self) -> anyhow::Result<()> {
+        Err(crate::sandbox::native::native_process_lifetime_unqualified())
+    }
+
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<crate::sandbox::SandboxOutput> {
+        anyhow::bail!("spawned")
+    }
+
+    async fn shutdown(&self) {}
+}
+
+struct AdmitSpawn;
+
+#[async_trait::async_trait]
+impl crate::sandbox::BashSandbox for AdmitSpawn {
+    async fn exec_command(
+        &self,
+        _command: &str,
+        _guest_workspace: &str,
+    ) -> anyhow::Result<crate::sandbox::SandboxOutput> {
+        anyhow::bail!("spawned")
+    }
+
+    async fn shutdown(&self) {}
+}
+
+fn bash_confirmation_surface(
+    root: &std::path::Path,
+    sandbox: Arc<dyn crate::sandbox::BashSandbox>,
+) -> SessionSurface {
+    let executor = Arc::new(crate::tools::ToolExecutor::new(
+        root.to_string_lossy().into_owned(),
+    ));
+    let (events, _) = tokio::sync::broadcast::channel(1);
+    let manager = Arc::new(crate::hitl::ConfirmationManager::new(
+        crate::hitl::ConfirmationPolicy::enabled(),
+        events,
+    ));
+    let provider = Arc::clone(&manager) as Arc<dyn crate::hitl::ConfirmationProvider>;
+    let agent = crate::agent::AgentLoop::new(
+        Arc::new(crate::agent::tests::MockLlmClient::new(Vec::new())),
+        executor,
+        crate::tools::ToolContext::new(root.to_path_buf()).with_sandbox(sandbox),
+        crate::agent::AgentConfig {
+            confirmation_manager: Some(Arc::clone(&provider)),
+            planning_mode: crate::prompts::PlanningMode::Disabled,
+            ..Default::default()
+        },
+    );
+    SessionSurface {
+        agent,
+        fact_log: Default::default(),
+        session_id: "bash-unavailable".into(),
+        checkpoint: None,
+        events: None,
+        pending_memory_telemetry: Arc::new(Mutex::new(Vec::new())),
+        streamed_text: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        forced_stop: Arc::new(Mutex::new(None)),
+        cancel: tokio_util::sync::CancellationToken::new(),
+        transcript: Arc::new(Mutex::new(Vec::new())),
+        targeted_paths: Arc::new(Mutex::new(Vec::new())),
+        usage: Arc::new(Mutex::new(crate::llm::TokenUsage::default())),
+        confirmation: Some(provider),
+        run_store: None,
+        run_id: None,
+        goal_tick: None,
+        ledger: Arc::new(Mutex::new(crate::harness_loop::MutationLedger::default())),
+        reports: Arc::new(Mutex::new(Vec::new())),
+        run_control: None,
+        harness: None,
+        host_harness_registry: None,
+        host_harness_assembler: None,
+    }
+}
+
+#[tokio::test]
+async fn bash_that_cannot_spawn_does_not_park_for_confirmation() {
+    let root = tempfile::tempdir().unwrap();
+    let policy = PermissionPolicy::new();
+    let args = serde_json::json!({"command": "ls"});
+    let refused = bash_confirmation_surface(root.path(), Arc::new(RefuseBeforeSpawn));
+    assert!(!confirmation_parked(&policy, Some(&refused), "bash", &args).await);
+    let admitted = bash_confirmation_surface(root.path(), Arc::new(AdmitSpawn));
+    assert!(confirmation_parked(&policy, Some(&admitted), "bash", &args).await);
+    let escalated = serde_json::json!({
+        "command": "ls",
+        "sandbox_permissions": "require_escalated"
+    });
+    assert!(confirmation_parked(&policy, Some(&refused), "bash", &escalated).await);
+}
+
+#[tokio::test]
+async fn malformed_batch_does_not_park_for_confirmation() {
+    let root = tempfile::tempdir().unwrap();
+    let policy = PermissionPolicy::new();
+    let surface = bash_confirmation_surface(root.path(), Arc::new(AdmitSpawn));
+    let malformed = serde_json::json!({
+        "invocations": [
+            {"tool": "read", "args": {"file_path": "note.md"}},
+            {"args": {"query": "marker"}}
+        ]
+    });
+    assert!(!confirmation_parked(&policy, Some(&surface), "batch", &malformed).await);
+    let dispatchable = serde_json::json!({
+        "invocations": [
+            {"tool": "read", "args": {"file_path": "note.md"}}
+        ]
+    });
+    assert!(confirmation_parked(&policy, Some(&surface), "batch", &dispatchable).await);
 }

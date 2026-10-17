@@ -7,6 +7,7 @@
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -683,6 +684,35 @@ pub fn get_status(repo_path: &Path) -> Result<RepoStatus> {
         is_dirty,
         dirty_count,
     })
+}
+
+/// Paths with uncommitted changes. A missing repository or git executable is an error.
+/// Callers that only reorder search results treat that error as an empty set.
+pub fn dirty_paths(repo_path: &Path) -> Result<HashSet<String>> {
+    let (ok, stdout, _) = run_git(
+        repo_path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
+    if !ok {
+        return Err(anyhow!("git status is unavailable"));
+    }
+    let mut paths = HashSet::new();
+    for line in stdout.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let raw = if let Some((_, renamed)) = line[3..].rsplit_once(" -> ") {
+            renamed
+        } else {
+            &line[3..]
+        };
+        let path = raw.trim().trim_matches('"').replace('\\', "/");
+        if path.is_empty() || path.split('/').any(|part| part == "..") {
+            continue;
+        }
+        paths.insert(path);
+    }
+    Ok(paths)
 }
 
 /// Commit information for log display.

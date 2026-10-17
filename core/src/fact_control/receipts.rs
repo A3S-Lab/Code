@@ -86,12 +86,14 @@ pub(super) async fn prepare_tools(
     // A host backend may be unavailable before execution starts. Freeze that
     // refusal before a hook or workspace observer can create uncertainty; do
     // not infer non-execution from a later error message.
+    let mut execution_unavailable = false;
     if denial.is_none() && argument_error.is_none() && !cancel.is_cancelled() {
         if let Some(tool) = tools.executor.registry().get(&request.call.name) {
             if let Err(error) =
                 tool.validate_execution_available(&request.call.args, &tools.context)
             {
                 denial = Some(error.to_string());
+                execution_unavailable = true;
             }
         }
     }
@@ -188,6 +190,7 @@ pub(super) async fn prepare_tools(
             {
                 denial = Some(error.to_string());
                 availability_rejected_after_hook = hook_evaluated;
+                execution_unavailable = true;
             }
         }
     }
@@ -234,9 +237,12 @@ pub(super) async fn prepare_tools(
         } else {
             false
         };
-    if effective_permission == PermissionDecision::Deny
-        || (effective_permission == PermissionDecision::Ask
-            && (effective_digest != original_digest || unconfirmed_ask))
+    // Keep a pre-spawn refusal. Replacing it with "unapproved" would hide
+    // that the command cannot start, and the body still does not run.
+    if !execution_unavailable
+        && (effective_permission == PermissionDecision::Deny
+            || (effective_permission == PermissionDecision::Ask
+                && (effective_digest != original_digest || unconfirmed_ask)))
     {
         denial = Some("tool_effect_effective_arguments_unapproved: resolved input is not approved by the frozen permission policy".into());
     }

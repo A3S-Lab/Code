@@ -17,7 +17,7 @@
 
 `apps/code/acp/tests/shipped_tui_e2e.rs` 的 `tui_binary()` 使用 `A3S_CODE_TUI_BIN`，否则使用上面的分页器调试二进制，代理使用 `CARGO_BIN_EXE_a3s-code-acp`。这就是本方案的 PTY 启动路径。
 
-薄 Hybrid 脚手架是 Cargo 包 `apps/code/tui`（包名也叫 `a3s-code-tui`）。`apps/code/tui/src/session.rs:34` 用 `with_session_id("tui-turn")` 固定它的会话号，会话号是 `tui-turn`。字符串 `tui-session` 只出现在 `assert_ne!` 里：`acp/src/agent.rs`、`acp/tests/v912_seam.rs`、`core/src/fact_control.rs`、`core/src/agent_api/tests/fact_log.rs`。本方案不编译这个包、不启动它、不用它的测试当通过证据。产品二进制只来自 `a3s-code-pager-bin` 的 `a3s-code-tui`。
+进程内 Hybrid 脚手架（包 `a3s-code-tui`，二进制 `a3s-code-tui-hybrid`，会话号 `tui-turn`）已从工作区删除。字符串 `tui-session` 只出现在 `assert_ne!` 里：`acp/src/agent.rs`、`acp/tests/v912_seam.rs`、`core/src/fact_control.rs`、`core/src/agent_api/tests/fact_log.rs`。产品二进制只来自 `a3s-code-pager-bin` 的 `a3s-code-tui`。
 
 2026-10-04 那次会话状态栏仍显示 `always-approve`，是因为当时的二进制早于这次改名。PTY 检查对着本树编出的分页器，不对着那个旧进程。
 
@@ -56,7 +56,7 @@
 
 | ID | 层 | 入口 | 通过观察 |
 | --- | --- | --- | --- |
-| L0 | hermetic-core | `select_launch_binary` 与 `bundled_acp_executable`（`apps/cli/src/code_pager.rs`），测试 `v912_resolver_skips_a_9_1_1_binary`、`bundled_acp_uses_the_pager_sibling`。cargo 包名 `a3s`，工作目录 `apps/cli`，target 是 `apps/cli/target` | 候选里版本号为 `9.1.1` 的二进制被跳过，选中的是打印 `9.1.2` 的那个。工作区 `apps/code/target/debug/a3s-code-acp` 存在时优先于分页器旁边的发布副本；工作区文件不存在时，代理路径等于分页器同目录的 `a3s-code-acp`。CLI 的 `Cargo.toml` 不含 `a3s-code-pager`，交互式 `a3s code` 启动外部进程。本方案的 PTY 把 `A3S_CODE_TUI_BIN` 定在包 `a3s-code-pager-bin` 的产物 `apps/code/vendor/a3s-code-ui/target/debug/a3s-code-tui`，代理是 `a3s-code-acp`。`code_tui_candidates()` 的最后一项 `apps/code/target/debug/a3s-code-tui` 也是薄包 `apps/code/tui` 的默认产物路径；本方案不编译、不启动那个包，也不把它的二进制当作被测产品 |
+| L0 | hermetic-core | `select_launch_binary` 与 `bundled_acp_executable`（`apps/cli/src/code_pager.rs`），测试 `v912_resolver_skips_a_9_1_1_binary`、`bundled_acp_uses_the_pager_sibling`。cargo 包名 `a3s`，工作目录 `apps/cli`，target 是 `apps/cli/target` | 候选里版本号为 `9.1.1` 的二进制被跳过，选中的是打印 `9.1.2` 的那个。工作区 `apps/code/target/debug/a3s-code-acp` 存在时优先于分页器旁边的发布副本；工作区文件不存在时，代理路径等于分页器同目录的 `a3s-code-acp`。CLI 的 `Cargo.toml` 不含 `a3s-code-pager`，交互式 `a3s code` 启动外部进程。本方案的 PTY 把 `A3S_CODE_TUI_BIN` 定在包 `a3s-code-pager-bin` 的产物 `apps/code/vendor/a3s-code-ui/target/debug/a3s-code-tui`，代理是 `a3s-code-acp`。`code_tui_candidates()` 在环境变量、当前可执行文件旁边的 `a3s-code-tui`、以及分页器调试产物之后结束，不再包含 `apps/code/target/debug/a3s-code-tui` |
 
 ### 4.1 自动批准只叫 yolo，而且不豁免完成门
 

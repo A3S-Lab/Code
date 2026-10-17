@@ -1,20 +1,79 @@
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 
 use crate::code_intelligence::{
     CodeDiagnostic, CodeDiagnosticSeverity, CodeLocation, CodePosition, CodeQueryResult, CodeRange,
     CodeSymbolKind, DocumentSnapshot, DocumentSymbol, SymbolInformation,
 };
+use crate::tools::ToolContext;
+use crate::workspace::{WorkspacePath, WorkspaceTextReader};
+
+const DECLARATION_LINE_BYTES: usize = 256;
 
 pub(super) fn document_symbols(result: CodeQueryResult<DocumentSymbol>) -> Value {
     query_result(result, document_symbol)
 }
 
-pub(super) fn workspace_symbols(result: CodeQueryResult<SymbolInformation>) -> Value {
-    query_result(result, symbol_information)
+pub(super) fn workspace_symbols(
+    result: CodeQueryResult<SymbolInformation>,
+    declaration_lines: Vec<Option<String>>,
+) -> Value {
+    let mut declaration_lines = declaration_lines.into_iter();
+    query_result(result, |symbol| {
+        symbol_information(symbol, declaration_lines.next().flatten())
+    })
 }
 
-pub(super) fn locations(result: CodeQueryResult<CodeLocation>) -> Value {
-    query_result(result, location)
+pub(super) fn locations(
+    result: CodeQueryResult<CodeLocation>,
+    declaration_lines: Vec<Option<String>>,
+) -> Value {
+    let mut declaration_lines = declaration_lines.into_iter();
+    query_result(result, |item| {
+        located(item, declaration_lines.next().flatten())
+    })
+}
+
+pub(super) async fn saved_declaration_lines(
+    ctx: &ToolContext,
+    locations: Vec<(WorkspacePath, u32)>,
+) -> Vec<Option<String>> {
+    let Some(reader) = ctx.workspace_services.text_reader() else {
+        return locations.into_iter().map(|_| None).collect();
+    };
+    let mut lines = Vec::new();
+    for (path, line) in locations {
+        lines.push(one_saved_line(&reader, &path, line).await);
+    }
+    lines
+}
+
+async fn one_saved_line(
+    reader: &Arc<dyn WorkspaceTextReader>,
+    path: &WorkspacePath,
+    line: u32,
+) -> Option<String> {
+    let range = reader
+        .read_text_range(path, usize::try_from(line).ok()?, 1)
+        .await
+        .ok()?;
+    range
+        .lines
+        .into_iter()
+        .next()
+        .map(|text| truncate_to_bytes(&text, DECLARATION_LINE_BYTES))
+}
+
+fn truncate_to_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
 }
 
 pub(super) fn diagnostics(result: CodeQueryResult<CodeDiagnostic>) -> Value {
@@ -49,13 +108,25 @@ fn document_symbol(symbol: DocumentSymbol) -> Value {
     })
 }
 
-fn symbol_information(symbol: SymbolInformation) -> Value {
-    json!({
+fn symbol_information(symbol: SymbolInformation, declaration_line: Option<String>) -> Value {
+    let mut value = json!({
         "name": symbol.name,
         "kind": symbol_kind(symbol.kind),
         "location": location(symbol.location),
         "container_name": symbol.container_name,
-    })
+    });
+    if let Some(line) = declaration_line {
+        value["declaration_line"] = Value::String(line);
+    }
+    value
+}
+
+fn located(item: CodeLocation, declaration_line: Option<String>) -> Value {
+    let mut value = location(item);
+    if let Some(line) = declaration_line {
+        value["declaration_line"] = Value::String(line);
+    }
+    value
 }
 
 fn diagnostic(diagnostic: CodeDiagnostic) -> Value {

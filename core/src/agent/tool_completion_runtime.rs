@@ -178,6 +178,17 @@ impl AgentLoop {
             }
         }
 
+        let gate = crate::harness_loop::decide_with_observations(
+            &state.mutations,
+            &state.verification_reports,
+            &self.config.completion_waivers,
+            false,
+            &state.open_observations,
+        );
+        if let Some(context) = crate::harness_loop::model_verification_context(gate) {
+            model_output.push_str("\n\n");
+            model_output.push_str(&context);
+        }
         push_tool_result_message(
             state,
             &tool_call.id,

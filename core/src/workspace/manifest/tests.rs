@@ -126,6 +126,93 @@ fn recent_files_are_bounded_and_ranked_by_heat() {
     assert_eq!(entries[0].touch_count, 2);
 }
 
+fn grep_candidate_order(paths: &[&str], recent: &[(&str, usize)], dirty: &[&str]) -> Vec<usize> {
+    let files = paths.iter().copied().map(test_file).collect::<Vec<_>>();
+    let index = ManifestIndex::build(&files);
+    let candidates = CandidateIndices::Indexed(&index.all);
+    let recent_ranks = recent
+        .iter()
+        .map(|(path, rank)| ((*path).to_string(), *rank))
+        .collect();
+    let dirty = dirty.iter().map(|path| (*path).to_string()).collect();
+    order_grep_candidates(&candidates, &index, &recent_ranks, &dirty)
+}
+
+#[test]
+fn recent_files_stay_ahead_of_uncommitted_files() {
+    assert_eq!(
+        grep_candidate_order(&["a.rs", "b.rs", "c.rs"], &[("a.rs", 0)], &["c.rs"]),
+        vec![0, 2, 1]
+    );
+    assert_eq!(
+        grep_candidate_order(&["a.rs", "b.rs", "c.rs"], &[("a.rs", 0)], &["a.rs", "c.rs"]),
+        vec![0, 2, 1]
+    );
+}
+
+#[test]
+fn recent_window_empty_puts_uncommitted_files_first() {
+    assert_eq!(
+        grep_candidate_order(&["a.rs", "b.rs", "c.rs"], &[], &["c.rs", "b.rs"]),
+        vec![1, 2, 0]
+    );
+}
+
+#[test]
+fn recent_order_is_unchanged_without_uncommitted_files() {
+    assert_eq!(
+        grep_candidate_order(&["a.rs", "b.rs", "c.rs"], &[("a.rs", 0)], &[]),
+        vec![0, 1, 2]
+    );
+}
+
+#[test]
+fn recent_order_stays_when_git_status_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(crate::git::dirty_paths(temp.path()).is_err());
+    assert_eq!(
+        grep_candidate_order(&["a.rs", "b.rs", "c.rs"], &[("a.rs", 0)], &[]),
+        vec![0, 1, 2]
+    );
+}
+
+fn dirty_order_changes(paths: &[&str], recent: &[&str], allowed: Option<&[&str]>) -> bool {
+    let files = paths.iter().copied().map(test_file).collect::<Vec<_>>();
+    let index = ManifestIndex::build(&files);
+    let candidates = CandidateIndices::Indexed(&index.all);
+    let recent_ranks = recent
+        .iter()
+        .enumerate()
+        .map(|(rank, path)| ((*path).to_string(), rank))
+        .collect();
+    let allowed: Option<std::collections::BTreeSet<String>> =
+        allowed.map(|paths| paths.iter().map(|path| (*path).to_string()).collect());
+    dirty_order_can_change(&candidates, &files, &recent_ranks, allowed.as_ref())
+}
+
+#[test]
+fn dirty_order_is_skipped_when_every_candidate_is_recent() {
+    assert!(!dirty_order_changes(
+        &["a.rs", "b.rs"],
+        &["a.rs", "b.rs"],
+        None
+    ));
+}
+
+#[test]
+fn dirty_order_runs_when_a_candidate_is_outside_the_recent_window() {
+    assert!(dirty_order_changes(&["a.rs", "b.rs"], &["a.rs"], None));
+}
+
+#[test]
+fn dirty_order_is_skipped_when_the_cold_candidate_is_filtered_out() {
+    assert!(!dirty_order_changes(
+        &["a.rs", "b.rs"],
+        &["a.rs"],
+        Some(&["a.rs"])
+    ));
+}
+
 #[tokio::test]
 async fn manifest_search_matches_glob_and_grep() {
     let _permit = crate::test_support::resource_intensive_test_permit().await;
@@ -537,6 +624,69 @@ async fn manifest_grep_prioritizes_recent_matches_when_truncated() {
     .unwrap();
 
     backend.manifest().touch_file("src/z.rs");
+    let grep = backend
+        .grep(WorkspaceGrepRequest {
+            base: WorkspacePath::root(),
+            pattern: "HIT".to_string(),
+            glob: Some("**/*.rs".to_string()),
+            context_lines: 0,
+            case_insensitive: false,
+            max_output_size: 1,
+        })
+        .await
+        .unwrap();
+
+    assert!(grep.truncated);
+    assert!(grep.output.starts_with(">src/z.rs:"), "{}", grep.output);
+}
+
+#[tokio::test]
+async fn manifest_grep_prioritizes_a_cold_dirty_file_when_truncated() {
+    let _permit = crate::test_support::resource_intensive_test_permit().await;
+    if !git_available() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    run_git(temp.path(), &["init"]);
+    run_git(temp.path(), &["config", "core.autocrlf", "false"]);
+    write(
+        &temp.path().join("src/a.rs"),
+        b"pub const HIT: &str = \"a\";\n",
+    );
+    write(
+        &temp.path().join("src/z.rs"),
+        b"pub const HIT: &str = \"z\";\n",
+    );
+    run_git(temp.path(), &["add", "src/a.rs", "src/z.rs"]);
+    run_git(
+        temp.path(),
+        &[
+            "-c",
+            "user.email=a3s@example.com",
+            "-c",
+            "user.name=a3s",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "add both",
+        ],
+    );
+    write(
+        &temp.path().join("src/z.rs"),
+        b"pub const HIT: &str = \"dirty\";\n",
+    );
+
+    let backend = ManifestWorkspaceBackend::new(temp.path());
+    let mut rx = backend.manifest().subscribe();
+    tokio::time::timeout(
+        crate::test_support::external_resource_start_timeout(Duration::from_secs(5)),
+        rx.recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
     let grep = backend
         .grep(WorkspaceGrepRequest {
             base: WorkspacePath::root(),

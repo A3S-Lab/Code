@@ -196,6 +196,7 @@ fn studio_host_keeps_the_budget_line_in_the_session_options() {
         role: String::new(),
         guidelines: "每次都带上".to_string(),
         review_subagent: true,
+        source_review: false,
         output_language: Some("zh-CN".to_string()),
         assets: None,
     };
@@ -929,6 +930,10 @@ fn question_permission_requests_carry_the_question_meta() {
                 .and_then(|value| value.as_bool()),
             Some(allow_free_text)
         );
+        assert_eq!(
+            marker.get("hasChoices").and_then(|value| value.as_bool()),
+            Some(true)
+        );
         assert!(
             request
                 .options
@@ -972,6 +977,10 @@ fn free_text_only_questions_get_one_carrying_row_when_allowed() {
     let request =
         question_permission_request(&session_id, "q", "which?", &[" ".into()], true).expect("row");
     assert_eq!(request.options.len(), 1);
+    assert_eq!(
+        request.meta.as_ref().unwrap()[QUESTION_META_KEY]["hasChoices"],
+        false
+    );
     assert_eq!(
         request.options[0].kind,
         acp::PermissionOptionKind::RejectOnce

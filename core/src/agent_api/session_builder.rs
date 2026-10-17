@@ -360,6 +360,8 @@ fn finish_agent_session(
         config.path_injection_budget = Some(budget);
     }
     config.verifier_enabled = opts.verifier_enabled;
+    // A host attestor is explicit. Re-reading a file this turn just wrote is
+    // not a Passed check, including when the guest sandbox image is absent.
     if opts.completion_attestor.is_some() {
         config.completion_attestor = opts.completion_attestor.clone();
     }

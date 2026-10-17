@@ -21,7 +21,7 @@ impl Tool for CodeNavigationTool {
     }
 
     fn description(&self) -> &str {
-        "Navigate saved workspace code by language semantics. Resolves definitions, declarations, references, or implementations from a zero-based UTF-16 position. Returns locations only, not source code."
+        "Navigate saved workspace code by language semantics. Resolves definitions, declarations, references, or implementations from a zero-based UTF-16 position. Each result includes one declaration line and not the function body; use read when the full body is needed."
     }
 
     fn parameters(&self) -> Value {
@@ -112,7 +112,15 @@ impl Tool for CodeNavigationTool {
             )
             .await
         {
-            Ok(result) => Ok(structured_success(format::locations(result))),
+            Ok(result) => {
+                let locations = result
+                    .items
+                    .iter()
+                    .map(|item| (item.path.clone(), item.range.start.line))
+                    .collect();
+                let lines = format::saved_declaration_lines(ctx, locations).await;
+                Ok(structured_success(format::locations(result, lines)))
+            }
             Err(error) => Ok(code_intelligence_error(operation, error)),
         }
     }

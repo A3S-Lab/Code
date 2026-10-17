@@ -192,6 +192,32 @@ pub(crate) struct CheckpointEmit {
     pub(crate) capability_binding: Option<crate::capability::RunCapabilityBindingV1>,
 }
 
+#[derive(Clone)]
+struct PreparedPrompt {
+    prefix: Vec<String>,
+    summary: String,
+    text: String,
+}
+
+impl PreparedPrompt {
+    fn capture(request: &CompletionRequest, text: String) -> Option<Self> {
+        let source = request
+            .messages
+            .iter()
+            .rposition(|line| line.starts_with("user\n"))?;
+        Some(Self {
+            prefix: request.messages[..=source].to_vec(),
+            summary: request.summary.clone(),
+            text,
+        })
+    }
+
+    fn source_index(&self, request: &CompletionRequest) -> Option<usize> {
+        (request.summary == self.summary && request.messages.starts_with(&self.prefix))
+            .then_some(self.prefix.len().saturating_sub(1))
+    }
+}
+
 pub struct LiveCompletion {
     client: Arc<dyn LlmClient>,
     calls: Arc<AtomicUsize>,
@@ -204,7 +230,7 @@ pub struct LiveCompletion {
     surface: Option<SessionSurface>,
     context_ready: Arc<AtomicBool>,
     cached_system: Arc<Mutex<Option<String>>>,
-    cached_prompt: Arc<Mutex<Option<String>>>,
+    cached_prompt: Arc<Mutex<Option<Arc<PreparedPrompt>>>>,
     prompt_tokens: Arc<AtomicU64>,
     standing_system: Option<String>,
     goal_context: Option<String>,
@@ -1771,6 +1797,13 @@ async fn confirmation_parked(
     if execution_permission(policy, checker, name, args) != PermissionDecision::Ask {
         return false;
     }
+    // A command the sandbox will not start cannot be authorized by waiting.
+    if surface
+        .and_then(|surface| surface.agent.execution_unavailable(name, args))
+        .is_some()
+    {
+        return false;
+    }
     match surface.and_then(|surface| surface.confirmation.as_ref()) {
         Some(manager) => manager.requires_confirmation_for(name, args).await,
         // A bare fact run still parks on Ask. A session with no confirmation
@@ -1949,7 +1982,8 @@ impl Completion for LiveCompletion {
                         let prompt = latest_user_text(&request.messages);
                         let (effective, augmented) =
                             model_context(surface, &prompt, request.messages.len()).await?;
-                        prompt_override = Some(effective);
+                        prompt_override =
+                            PreparedPrompt::capture(&request, effective).map(Arc::new);
                         if let Some(augmented) = augmented.filter(|text| !text.is_empty()) {
                             let base = surface.agent.admitted_system_prompt();
                             let extras = augmented
@@ -1994,7 +2028,7 @@ impl Completion for LiveCompletion {
                     let prompt = latest_user_text(&request.messages);
                     let (effective, augmented) =
                         model_context(surface, &prompt, request.messages.len()).await?;
-                    prompt_override = Some(effective);
+                    prompt_override = PreparedPrompt::capture(&request, effective).map(Arc::new);
                     if let Some(augmented) = augmented.filter(|text| !text.is_empty()) {
                         system = Some(match system {
                             Some(base) => format!("{base}\n{augmented}"),
@@ -2034,6 +2068,24 @@ impl Completion for LiveCompletion {
                     Some(base) if !base.is_empty() => format!("{base}\n\n{components}"),
                     _ => components,
                 });
+            }
+            if let Some(surface) = &surface {
+                let ledger = surface
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let reports = surface
+                    .reports
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let gate = surface.agent.decide_fact_completion_gate(&ledger, &reports);
+                if let Some(context) = crate::harness_loop::model_verification_context(gate) {
+                    let system = system.get_or_insert_with(String::new);
+                    system.push_str("\n\n");
+                    system.push_str(&context);
+                }
             }
             if !request.summary.is_empty() {
                 if let Some(surface) = &surface {
@@ -2092,13 +2144,10 @@ impl Completion for LiveCompletion {
                 }
             }
             let summary_offset = usize::from(!request.summary.is_empty());
-            // A retained tail can start with an assistant or a tool result.
-            // Only the original latest human line may receive its prepared
-            // context; never replace a summary or a retained result body.
-            let prompt_index = request
-                .messages
-                .iter()
-                .rposition(|line| line.starts_with("user\n"))
+            // Cached context belongs to its original user-line prefix, not a later answer or steer.
+            let prompt_index = prompt_override
+                .as_ref()
+                .and_then(|prepared| prepared.source_index(&request))
                 .map(|index| index + summary_offset);
             let (kept_len, mut user_images) = surface
                 .as_ref()
@@ -2131,7 +2180,10 @@ impl Completion for LiveCompletion {
                 }
                 let (role, body) = split_folded_message(text);
                 let body = if Some(index) == prompt_index {
-                    prompt_override.clone().unwrap_or(body)
+                    prompt_override
+                        .as_ref()
+                        .map(|prepared| prepared.text.clone())
+                        .unwrap_or(body)
                 } else {
                     body
                 };

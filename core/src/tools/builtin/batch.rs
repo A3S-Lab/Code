@@ -123,7 +123,20 @@ impl Tool for BatchTool {
         })
     }
 
+    fn validate_execution_available(
+        &self,
+        args: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<()> {
+        refuse_undispatchable_batch(args)
+    }
+
     async fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        // A batch that cannot be dispatched must not run the members that do
+        // parse. Waiting for confirmation cannot repair a missing tool name.
+        if let Err(error) = refuse_undispatchable_batch(args) {
+            return Ok(ToolOutput::error(error.to_string()));
+        }
         let invocations = match args.get("invocations").and_then(|v| v.as_array()) {
             Some(arr) if !arr.is_empty() => arr.clone(),
             Some(_) => return Ok(ToolOutput::error("invocations array must not be empty")),
@@ -359,6 +372,69 @@ impl Tool for BatchTool {
                 .with_metadata(metadata))
         }
     }
+}
+
+/// Refuse a batch before any member runs.
+///
+/// The schema requires every invocation to name a tool and an arguments
+/// object. A missing field is not a risk a person can approve into a safe
+/// call: the members that did parse would still run.
+fn refuse_undispatchable_batch(args: &Value) -> Result<()> {
+    let Some(invocations) = args.get("invocations").and_then(Value::as_array) else {
+        anyhow::bail!("invocations parameter is required");
+    };
+    if invocations.is_empty() {
+        anyhow::bail!("invocations array must not be empty");
+    }
+    if invocations.len() > MAX_BATCH_INVOCATIONS {
+        anyhow::bail!("batch accepts at most {MAX_BATCH_INVOCATIONS} invocations");
+    }
+    if let Some(value) = args.get("max_concurrency") {
+        let admitted = value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .is_some_and(|value| value > 0);
+        if !admitted {
+            anyhow::bail!("max_concurrency must be a positive integer");
+        }
+    }
+    let mut ids = BTreeSet::new();
+    for (index, invocation) in invocations.iter().enumerate() {
+        let Some(invocation) = invocation.as_object() else {
+            anyhow::bail!("batch invocation {} must be an object", index + 1);
+        };
+        let tool = invocation
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if tool.is_empty() {
+            anyhow::bail!("batch invocation {} is missing tool", index + 1);
+        }
+        if tool.eq_ignore_ascii_case("batch") {
+            anyhow::bail!("nested batch calls are not allowed");
+        }
+        if !invocation.get("args").is_some_and(Value::is_object) {
+            anyhow::bail!("batch invocation {} args must be an object", index + 1);
+        }
+        if let Some(value) = invocation.get("step") {
+            let step = value.as_u64().and_then(|value| usize::try_from(value).ok());
+            if step.is_none_or(|step| step == 0 || step > MAX_BATCH_STEPS) {
+                anyhow::bail!(
+                    "batch invocation {} step must be a positive integer",
+                    index + 1
+                );
+            }
+        }
+        if let Some(id) = invocation.get("id") {
+            let Some(id) = id.as_str().filter(|id| !id.trim().is_empty()) else {
+                anyhow::bail!("batch invocation id must not be empty");
+            };
+            if !ids.insert(id.to_string()) {
+                anyhow::bail!("batch invocation id '{id}' is duplicated");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_prepared_invocations(invocations: &[PreparedInvocation]) -> Result<()> {
@@ -1221,6 +1297,33 @@ mod tests {
         );
         assert!(result.content.contains("unavailable"));
         assert_eq!(result.metadata.unwrap()["status"], "partial_failure");
+    }
+
+    #[tokio::test]
+    async fn test_execute_rejects_missing_tool_before_side_effects() {
+        let tool = BatchTool::new(make_registry());
+        let args = serde_json::json!({
+            "invocations": [
+                {"id": "kept", "tool": "echo", "args": {"msg": "should-not-run"}},
+                {"args": {"mode": "grep", "path": "notes", "query": "marker"}}
+            ]
+        });
+        let refused = tool
+            .validate_execution_available(&args, &make_ctx())
+            .expect_err("a batch member without a tool cannot be dispatched");
+        assert!(refused.to_string().contains("missing tool"));
+        tool.validate_execution_available(
+            &serde_json::json!({
+                "invocations": [{"tool": "echo", "args": {"msg": "ok"}}]
+            }),
+            &make_ctx(),
+        )
+        .expect("a complete invocation stays dispatchable");
+        let result = tool.execute(&args, &make_ctx()).await.unwrap();
+        assert!(!result.success);
+        assert!(result.content.contains("missing tool"));
+        assert!(!result.content.contains("should-not-run"));
+        assert!(!result.content.contains("--- ["));
     }
 
     #[tokio::test]

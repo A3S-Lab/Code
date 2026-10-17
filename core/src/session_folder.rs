@@ -232,7 +232,26 @@ fn write_session_json(
     set_mode(&temporary, 0o600)?;
     let marker = dir.join("session.json");
     std::fs::rename(&temporary, &marker).with_context(|| format!("rename {}", marker.display()))?;
+    // A session with no facts yet still has the log the marker names.
+    // Resume admission reads that file; a missing log is not an empty session.
+    create_empty_effect_log(&dir, folder_id)?;
     Ok(())
+}
+
+fn create_empty_effect_log(dir: &Path, folder_id: &str) -> Result<()> {
+    let log = dir.join(format!("{folder_id}.jsonl"));
+    match std::fs::symlink_metadata(&log) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!("refusing to follow a symlink at {}", log.display());
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(&log, b"").with_context(|| format!("write {}", log.display()))?;
+            set_mode(&log, 0o600)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(unix)]
@@ -294,7 +313,14 @@ mod tests {
                 & 0o777;
             assert_eq!(dir_mode, 0o700);
             assert_eq!(file_mode, 0o600);
+            let log_mode = std::fs::symlink_metadata(dir.join(format!("{ID}.jsonl")))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(log_mode, 0o600);
         }
+        assert_eq!(std::fs::read(dir.join(format!("{ID}.jsonl"))).unwrap(), b"");
     }
 
     #[test]
