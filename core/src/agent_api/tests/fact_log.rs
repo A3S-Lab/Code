@@ -21,6 +21,7 @@ mod host_contract_prompt;
 mod host_reports;
 mod loop_source;
 mod navigation;
+mod nested_governance;
 mod work_policy;
 
 struct CountingText {

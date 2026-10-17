@@ -48,6 +48,7 @@ mod conversation_runtime;
 pub(crate) use agent_sessions::create_session;
 #[cfg(test)]
 pub(crate) use conversation_runtime::exact_run_replay;
+pub(crate) use conversation_runtime::ChildRun;
 pub(crate) use conversation_runtime::GoalTickOrigin;
 pub(crate) use conversation_runtime::{
     ExactRecoveryError, ExactRecoveryPreparation, PreparedExactRecovery,

@@ -492,18 +492,27 @@ A skill that declares allowed-tools runs inside this call with only those tools,
         // cancellation reaches every provider/tool call without allowing the
         // child to cancel its parent.
         let watch = crate::porcelain::Watch::start(&ctx.workspace).await;
-        let execution = agent_loop
-            .execute_with_session(
-                &[],
-                &prompt,
-                ctx.session_id.as_deref(),
-                None,
-                Some(&cancellation),
-            )
-            .await;
+        let child_id = format!("skill-run-{}", uuid::Uuid::new_v4());
+        let _child_claims =
+            crate::external_observation::ChildWriteClaimGuard::new(child_id.clone());
+        let execution = crate::agent_api::ChildRun {
+            agent: agent_loop,
+            child_id: child_id.clone(),
+            budget_session: ctx.session_id.clone(),
+            events: None,
+            cancel: cancellation.clone(),
+        }
+        .run(&prompt)
+        .await;
         let cancelled = cancellation.is_cancelled();
         let close = close_skill_capability_subtask(capability_subtask.as_ref()).await;
         let changed = watch.finish(&ctx.workspace).await;
+        crate::external_observation::settle_child_write_claims(
+            ctx.session_id.as_deref(),
+            &child_id,
+            ctx.workspace.as_path(),
+            &changed,
+        );
         let result = match (execution, close) {
             (Ok(result), Ok(())) => result,
             (Ok(_), Err(close_error)) => {

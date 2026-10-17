@@ -3,7 +3,7 @@ use super::{AgentEvent, AgentLoop};
 use crate::llm::{Message, ToolCall};
 use tokio::sync::mpsc;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Handles pre-execution guards that feed an immediate tool result back to the LLM.
     ///
     /// Returns `true` when the tool call has been fully handled and should not continue

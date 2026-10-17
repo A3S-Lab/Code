@@ -5,7 +5,7 @@ use crate::session_lane_queue::SessionLaneQueue;
 use crate::tools::{ToolContext, ToolExecutor};
 use std::sync::Arc;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(crate) fn llm_api_timeout(&self) -> Option<std::time::Duration> {
         self.config
             .llm_api_timeout_ms
@@ -120,7 +120,19 @@ impl AgentLoop {
             checkpoint_capability_binding: None,
             bound_invocation: None,
             capability_runtime: None,
+            fact_turn: Arc::new(tokio::sync::Mutex::new(None)),
+            child_run: false,
         }
+    }
+
+    /// Mark this loop as the engine of a `task` or `skill` child run.
+    pub(crate) fn into_child_run(mut self) -> Self {
+        self.child_run = true;
+        self
+    }
+
+    pub(crate) fn is_child_run(&self) -> bool {
+        self.child_run
     }
 
     /// Reuse the provider admission gate owned by the surrounding session.
@@ -243,6 +255,37 @@ impl AgentLoop {
     /// mutable Session-level reference so policy cannot change mid-run.
     pub(crate) fn hook_executor(&self) -> Option<Arc<dyn crate::hooks::HookExecutor>> {
         self.config.hook_engine.clone()
+    }
+
+    /// Permission policy, yolo lanes and round limit a fact run admits for this loop.
+    pub(crate) fn fact_execution_policy(
+        &self,
+    ) -> (
+        crate::permissions::PermissionPolicy,
+        Vec<crate::queue::SessionLane>,
+        usize,
+    ) {
+        let lanes = self
+            .config
+            .confirmation_policy
+            .as_ref()
+            .map(|policy| policy.yolo_lanes.iter().copied().collect())
+            .unwrap_or_default();
+        (
+            self.config.permission_policy.clone().unwrap_or_default(),
+            lanes,
+            self.config.max_tool_rounds,
+        )
+    }
+
+    /// Continuation injection the legacy loop applied to an incomplete reply.
+    /// `(enabled, max extra turns, tool-round ceiling)`.
+    pub(crate) fn continuation_policy(&self) -> (bool, u32, usize) {
+        (
+            self.config.continuation_enabled,
+            self.config.max_continuation_turns,
+            self.config.max_tool_rounds,
+        )
     }
 
     pub(crate) fn tool_executor_handle(&self) -> Arc<ToolExecutor> {

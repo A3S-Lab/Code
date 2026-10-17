@@ -71,9 +71,10 @@ pub(super) async fn prepare_tools(
         .as_ref()
         .and_then(|agent| skill_denial(agent, &request.call.name))
         .map(|(output, _reason)| output);
-    let original_permission = execution_permission(
+    let original_permission = run_permission(
         &tools.permission,
         tools.checker.as_deref(),
+        tools.agent.as_ref(),
         &request.call.name,
         &request.call.args,
     );
@@ -194,9 +195,10 @@ pub(super) async fn prepare_tools(
             }
         }
     }
-    let effective_permission = execution_permission(
+    let effective_permission = run_permission(
         &tools.permission,
         tools.checker.as_deref(),
+        tools.agent.as_ref(),
         &request.call.name,
         &request.call.args,
     );

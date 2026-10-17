@@ -13,7 +13,7 @@ struct ExecutionRoute {
     pre_analysis: Option<PreAnalysis>,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) fn preserve_original_prompt_for_execution(
         original_prompt: &str,
         optimized_input: &str,

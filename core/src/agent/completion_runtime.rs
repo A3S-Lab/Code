@@ -35,7 +35,7 @@ pub(super) enum CompletionFlow {
     Blocked(String),
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(crate) fn requires_assistant_final_response(&self) -> bool {
         self.config.require_assistant_final_response
     }
@@ -86,6 +86,11 @@ impl AgentLoop {
     /// a schema-coercion model that could fabricate a result from no evidence.
     pub(crate) fn is_synthetic_failure_output(text: &str) -> bool {
         matches!(text.trim(), REASONING_ONLY_FALLBACK | NO_PROGRESS_FALLBACK)
+    }
+
+    /// Terminal text the loop publishes when the same incomplete reply repeats.
+    pub(crate) fn no_progress_failure_text() -> &'static str {
+        NO_PROGRESS_FALLBACK
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -386,7 +391,7 @@ impl AgentLoop {
     /// - Response ends with a colon or ellipsis (mid-thought)
     /// - Response contains phrases that signal incomplete work
     /// - Response is very short (< 80 chars) and doesn't look like a summary
-    pub(super) fn looks_incomplete(text: &str) -> bool {
+    pub(crate) fn looks_incomplete(text: &str) -> bool {
         let t = text.trim();
         if t.is_empty() {
             return true;

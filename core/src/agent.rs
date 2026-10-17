@@ -1140,12 +1140,13 @@ impl SessionCommand for ToolCommand {
 }
 
 // ============================================================================
-// AgentLoop
+// TurnEngine
 // ============================================================================
 
-/// Internal agent loop executor.
+/// Inner turn engine. Session sends and child runs enter through `FactRun`;
+/// this type only supplies the configuration, tools and model port a run borrows.
 #[derive(Clone)]
-pub(crate) struct AgentLoop {
+pub(crate) struct TurnEngine {
     llm_client: Arc<dyn LlmClient>,
     model_generation_admission: crate::llm::ModelGenerationAdmission,
     /// Whether the surrounding session explicitly owns this admission gate.
@@ -1180,7 +1181,18 @@ pub(crate) struct AgentLoop {
     /// Weak capability parent used to create and close one real Turn scope per
     /// provider/tool iteration. It never extends the admitted Run lease.
     capability_runtime: Option<crate::capability::AgentCapabilityRuntime>,
+    /// The capability turn of the current fact-run tool round. The next model
+    /// call closes it, so that call sees a closed turn while run-owned effects
+    /// stay on the run scope.
+    pub(crate) fact_turn:
+        Arc<tokio::sync::Mutex<Option<crate::capability::AgentCapabilityOperation>>>,
+    /// Set for a `task` or `skill` child run: its composed permission checker
+    /// holds the parent boundary and decides alone.
+    child_run: bool,
 }
+
+/// Previous name of [`TurnEngine`]. Call sites still use it; it is the same type.
+pub(crate) type AgentLoop = TurnEngine;
 
 #[cfg(test)]
 pub(crate) mod tests;

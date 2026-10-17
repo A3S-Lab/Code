@@ -37,7 +37,7 @@ pub(crate) struct FactModelContext {
     pub(crate) section_digests: Vec<(String, String)>,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// System prompt and hook-adjusted prompt for one fact-log model call.
     ///
     /// PrePrompt and context providers run here. They do not choose whether
@@ -522,12 +522,28 @@ impl AgentLoop {
 /// template that would serve stale data.
 fn render_env_block(workspace: &std::path::Path) -> String {
     format!(
-        "<env>\nWorking directory: {}\nPlatform: {} ({})\nToday's date: {}\n</env>",
+        "<env>\nWorking directory: {}\nPlatform: {} ({})\n{}Today's date: {}\n</env>",
         workspace.display(),
         std::env::consts::OS,
         std::env::consts::ARCH,
+        host_shell_line(workspace),
         chrono::Local::now().format("%Y-%m-%d"),
     )
+}
+
+/// The `bash` tool is PowerShell on Windows; without this line models write bash.
+#[cfg(windows)]
+fn host_shell_line(workspace: &std::path::Path) -> String {
+    let shell = crate::tools::builtin::bash::windows_host_powershell(workspace).ok();
+    format!(
+        "{}\n",
+        crate::tools::builtin::bash::windows_shell::windows_shell_guidance(shell.as_deref())
+    )
+}
+
+#[cfg(not(windows))]
+fn host_shell_line(_workspace: &std::path::Path) -> String {
+    String::new()
 }
 
 #[cfg(test)]

@@ -144,6 +144,18 @@ pub fn effect_log_dir(workspace: &Path, session_id: &str) -> PathBuf {
     legacy_effect_log_dir(workspace)
 }
 
+/// Directory a `task` or `skill` child run writes its own fact log to.
+///
+/// Each child gets its own directory because the log's writer lock is per
+/// directory, and a parallel fan-out must not contend on one lock.
+pub(crate) fn child_effect_log_dir(workspace: &Path, child_id: &str) -> Result<PathBuf> {
+    let id = folder_component(child_id)?;
+    let root = crate::state_root::workspace_state_dir(workspace).join("child-runs");
+    ensure_owner_dir(&crate::state_root::workspace_state_dir(workspace))?;
+    ensure_owner_dir(&root)?;
+    Ok(root.join(id))
+}
+
 pub fn legacy_effect_log_dir(workspace: &Path) -> PathBuf {
     crate::state_root::workspace_state_dir(workspace).join("effect-log")
 }

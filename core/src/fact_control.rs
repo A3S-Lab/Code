@@ -53,10 +53,12 @@ pub use fact_reads::{phase_name, project_needs_confirmation, read_workspace_fact
 pub(crate) use goal_evidence::{
     assess_goal_step, commit_goal_step, evidence_for_goal_step, settle_goal_slice,
 };
+#[cfg(test)]
+use history_seed::recorded_tool_calls;
 pub(crate) use history_seed::seed_history;
 use history_seed::{
     attachments_from_user_payload, emit_tool_request_bound, folded_message_with_images,
-    images_for_user_line, recorded_call_from, recorded_tool_calls, recorded_tool_messages,
+    images_for_user_line, recorded_call_from, recorded_tool_calls_in, recorded_tool_messages,
     repeat_note_prefix, repeated_result_note, scheduler_tool_record_indexes, user_attachment_plan,
     user_message_fact, user_message_with_images, visible_tool_output, workspace_boundary_error,
     RecordedCall,
@@ -71,20 +73,20 @@ use model_wait::{
 };
 pub use tool_results::admit_tool_call;
 pub(crate) use tool_results::exposed_tool_specs;
-#[cfg(test)]
-use tool_results::read_only_evidence_exhausted;
 use tool_results::{
     confirmation_parked, decision_from_response, decode_fact_tool_result, definitions_for,
-    execution_permission, fact_tool_runner_value, latest_user_text, message_from_folded_tool,
-    read_only_evidence_exhausted_with_calls, skill_denial, split_folded_message,
+    fact_tool_runner_value, latest_user_text, message_from_folded_tool,
+    read_only_evidence_exhausted_with_calls, run_permission, skill_denial, split_folded_message,
     verified_turn_text, FACT_TOOL_RESULT_KIND,
 };
+#[cfg(test)]
+use tool_results::{execution_permission, read_only_evidence_exhausted};
 #[cfg(test)]
 use turn_facts::append_steer_input;
 pub use turn_facts::TURN_COMPLETE_FACT_KIND;
 use turn_facts::{
     append_context_sections_fact, apply_run_controls, replay_unsettled_mutations_from_facts,
-    surface_fact_log,
+    surface_fact_log, surface_thread_facts,
 };
 pub(crate) use turn_facts::{
     append_turn_complete_fact, has_unsettled_effects, replay_unsettled_mutations,
@@ -152,6 +154,16 @@ pub struct FactRunHostMounts<'a> {
     pub registry: Option<&'a dyn crate::meta_harness::HostHarnessRegistry>,
     pub assembler: Option<&'a dyn crate::meta_harness::HostHarnessAssembler>,
     pub compactor: Option<Arc<dyn Compactor>>,
+}
+
+/// Who drives a projected run.
+pub(crate) enum RunOwner {
+    /// A session send, optionally on the original admitted worker.
+    Session(Option<crate::agent_api::OriginalModelCallPort>),
+    /// A `task` or `skill` child inside a tool call of an admitted parent run.
+    /// It writes its own log in `effect_dir`, inherits the parent's bound work
+    /// policy, and cannot carry a goal.
+    Child { effect_dir: PathBuf },
 }
 
 struct CappedCompletion {
@@ -383,6 +395,16 @@ impl Completion for LiveCompletion {
         let original_model = self.original_model.clone();
         let started_at = self.started_at;
         Box::pin(async move {
+            // Close the previous tool round's turn before this inference: the
+            // model call checks that the turn which registered a run effect no
+            // longer authorizes work.
+            if let Some(surface) = &surface {
+                if let Some(turn) = surface.agent.fact_turn.lock().await.take() {
+                    turn.close()
+                        .await
+                        .map_err(|error| ActorError::Defect(error.to_string()))?;
+                }
+            }
             prompt_tokens.store(0, Ordering::SeqCst);
             if let Some(surface) = &surface {
                 if let Some(checkpoint) = &checkpoint {
@@ -603,22 +625,19 @@ impl Completion for LiveCompletion {
                 .as_ref()
                 .and_then(|prepared| prepared.source_index(&request))
                 .map(|index| index + summary_offset);
-            let (kept_len, mut user_images) = surface
-                .as_ref()
-                .map(|surface| {
-                    user_attachment_plan(
-                        &surface.agent.tool_context_handle().workspace,
-                        &thread_for_session(&surface.session_id),
-                    )
-                })
-                .unwrap_or_else(|| (0, std::collections::VecDeque::new()));
-            let recorded_calls = surface
-                .as_ref()
-                .map(|surface| {
-                    recorded_tool_calls(
-                        &surface.agent.tool_context_handle().workspace,
-                        &thread_for_session(&surface.session_id),
-                    )
+            let thread_facts = surface.as_ref().map(surface_thread_facts);
+            let (kept_len, mut user_images) = match &thread_facts {
+                Some(Ok(facts)) => user_attachment_plan(facts),
+                _ => (0, std::collections::VecDeque::new()),
+            };
+            let recorded_calls = thread_facts
+                .map(|facts| {
+                    facts
+                        .map_err(|error| ActorError::Handler {
+                            key: "model-input-tool-history".into(),
+                            message: format!("cannot read original tool-call facts: {error}"),
+                        })
+                        .and_then(recorded_tool_calls_in)
                 })
                 .transpose()?
                 .unwrap_or_default();
@@ -1173,6 +1192,34 @@ impl FactRun {
         surface: SessionSurface,
         original_model: Option<crate::agent_api::OriginalModelCallPort>,
     ) -> Result<Self> {
+        Self::open_projected_for(
+            workspace,
+            session_id,
+            client,
+            executor,
+            execution_policy,
+            surface,
+            RunOwner::Session(original_model),
+        )
+    }
+
+    pub(crate) fn open_projected_for(
+        workspace: &Path,
+        session_id: &str,
+        client: Arc<dyn LlmClient>,
+        executor: Arc<ToolExecutor>,
+        execution_policy: (PermissionPolicy, &[SessionLane], usize),
+        surface: SessionSurface,
+        owner: RunOwner,
+    ) -> Result<Self> {
+        let (effect_dir, original_model, child) = match owner {
+            RunOwner::Session(original_model) => (
+                crate::session_folder::effect_log_dir(workspace, session_id),
+                original_model,
+                false,
+            ),
+            RunOwner::Child { effect_dir } => (effect_dir, None, true),
+        };
         let (permission, yolo_lanes, max_tool_rounds) = execution_policy;
         let mut surface = surface;
         let catalog = executor.definitions();
@@ -1247,6 +1294,7 @@ impl FactRun {
             anyhow::bail!("goal.host_driver_conflict: goal execution requires the actual original Run and log");
         }
         if policy.policy.is_some()
+            && !child
             && !original_model
                 .as_ref()
                 .is_some_and(|original| original.admits_original_log(&shared_log, session_id))
@@ -1267,9 +1315,13 @@ impl FactRun {
         let ledger = Some(Arc::clone(&surface.ledger));
         let reports = Some(Arc::clone(&surface.reports));
         let agent = surface.agent.clone();
+        // Every call this run executes is model-requested. A host-direct
+        // policy on the borrowed context belongs to the caller that started
+        // the child, not to the tools its model asks for.
         let context = surface
             .agent
             .tool_context_handle()
+            .without_host_direct_policy()
             .with_cancellation(surface.cancel.clone());
         let completion = completion
             .with_surface(surface.clone())
@@ -1299,7 +1351,6 @@ impl FactRun {
             },
         )?;
         let agent_system = agent.admitted_system_prompt();
-        let effect_dir = crate::session_folder::effect_log_dir(workspace, session_id);
         // One shared writer for the actor and any Run-owned background
         // readers this run admits (WC-BG1); see `FactRun::log`.
         let context = context.with_fact_log(Arc::clone(&shared_log));

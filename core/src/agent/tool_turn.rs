@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) async fn execute_tool_turn(
         &self,
         tool_calls: Vec<ToolCall>,

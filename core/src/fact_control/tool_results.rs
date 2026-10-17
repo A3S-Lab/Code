@@ -366,6 +366,30 @@ pub(super) fn execution_permission(
     }
 }
 
+/// The decision for one call in the run driven by `agent`.
+///
+/// A `task` or `skill` child decides through its composed checker alone: it
+/// already holds the parent boundary and the child's own narrowing, so the
+/// child's policy cannot widen it. An Ask there with no confirmation
+/// provider is a denial (`deny_on_ask`), never a silent run.
+pub(super) fn run_permission(
+    policy: &PermissionPolicy,
+    checker: Option<&dyn crate::permissions::PermissionChecker>,
+    agent: Option<&crate::agent::AgentLoop>,
+    name: &str,
+    args: &serde_json::Value,
+) -> PermissionDecision {
+    let Some(agent) = agent.filter(|agent| agent.is_child_run()) else {
+        return execution_permission(policy, checker, name, args);
+    };
+    match checker.map_or(PermissionDecision::Ask, |checker| checker.check(name, args)) {
+        PermissionDecision::Ask if agent.confirmation_provider().is_none() => {
+            PermissionDecision::Deny
+        }
+        decision => decision,
+    }
+}
+
 /// Commands and file changes. A guardrail that allows "routine" calls must
 /// not skip the confirmation the posture already asked for.
 pub(super) fn side_effect_tool(name: &str) -> bool {
@@ -406,7 +430,8 @@ pub(super) async fn confirmation_parked(
     }
     let checker = surface.and_then(|surface| surface.agent.permission_checker());
     let checker = checker.as_deref();
-    if execution_permission(policy, checker, name, args) != PermissionDecision::Ask {
+    let agent = surface.map(|surface| &surface.agent);
+    if run_permission(policy, checker, agent, name, args) != PermissionDecision::Ask {
         return false;
     }
     // A command the sandbox will not start cannot be authorized by waiting.

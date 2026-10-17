@@ -79,7 +79,7 @@ fn is_budget_exhausted(error: &anyhow::Error) -> bool {
         .is_some_and(|error| matches!(error, crate::error::CodeError::BudgetExhausted { .. }))
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Wall-clock budget of one run (`SessionOptions::max_execution_time_ms`).
     pub(crate) fn max_execution_time(&self) -> Option<Duration> {
         self.config.max_execution_time_ms.map(Duration::from_millis)

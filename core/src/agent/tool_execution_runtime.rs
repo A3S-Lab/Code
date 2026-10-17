@@ -84,7 +84,7 @@ pub(super) async fn execute_tool_with_deadline(
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) async fn execute_delegated_plan_tool(
         &self,
         tool_name: &str,

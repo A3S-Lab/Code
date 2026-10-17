@@ -423,7 +423,7 @@ impl InvocationContext {
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(crate) fn invocation_context(
         &self,
         run_id: impl Into<Arc<str>>,

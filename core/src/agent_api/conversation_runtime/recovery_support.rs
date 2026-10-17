@@ -34,12 +34,21 @@ pub(super) fn pre_analysis_error(error: anyhow::Error) -> anyhow::Error {
 
 pub(super) async fn settle_confirmations(
     run: &crate::fact_control::FactRun,
-    mut settled: a3s_effect::Settlement<a3s_effect::CodingView>,
+    settled: a3s_effect::Settlement<a3s_effect::CodingView>,
     parts: &FactSession,
 ) -> anyhow::Result<a3s_effect::Settlement<a3s_effect::CodingView>> {
-    let Some(surface) = &parts.surface else {
-        return Ok(settled);
-    };
+    match &parts.surface {
+        Some(surface) => settle_host_input(run, settled, surface).await,
+        None => Ok(settled),
+    }
+}
+
+/// Answer pending confirmations and questions until the run leaves both phases.
+pub(crate) async fn settle_host_input(
+    run: &crate::fact_control::FactRun,
+    mut settled: a3s_effect::Settlement<a3s_effect::CodingView>,
+    surface: &crate::fact_control::SessionSurface,
+) -> anyhow::Result<a3s_effect::Settlement<a3s_effect::CodingView>> {
     while settled.view.phase == a3s_effect::CodingPhase::Confirm {
         let Some(pending) = settled.view.pending_confirmation.clone() else {
             break;

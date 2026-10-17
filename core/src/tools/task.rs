@@ -806,6 +806,11 @@ impl TaskExecutor {
         };
 
         let session_id = format!("task-run-{}", task_id);
+        // Drop releases claims if this function returns early or the future
+        // is cancelled after the child has written. The caller adopts the
+        // paths it observed after a normal return.
+        let _child_claims =
+            crate::external_observation::ChildWriteClaimGuard::new(session_id.clone());
         let started_ms = epoch_ms();
         let output_schema = params.output_schema.clone();
 
@@ -1091,18 +1096,31 @@ impl TaskExecutor {
                 Err(error) => (format!("Task failed: {error}"), false, None),
             }
         } else {
-            match agent_loop
-                .execute_with_session(
-                    &[],
-                    execution_prompt,
-                    Some(&session_id),
-                    child_event_tx.clone(),
-                    Some(&cancel_token),
-                )
-                .await
+            // The delegated task is a child fact run on its own log. The
+            // parent context has no session id; the shared budget guard is
+            // the fan-out ledger, and this child's scope stays `task-run-*`.
+            match (crate::agent_api::ChildRun {
+                agent: agent_loop.clone(),
+                child_id: session_id.clone(),
+                budget_session: Some(session_id.clone()),
+                events: child_event_tx.clone(),
+                cancel: cancel_token.clone(),
+            }
+            .run(execution_prompt)
+            .await)
             {
                 Ok(_) if cancel_token.is_cancelled() => {
                     ("Task cancelled by caller".to_string(), false, None)
+                }
+                Ok(result)
+                    if result.forced_stop == Some(crate::harness_loop::ForcedStop::ToolBudget) =>
+                {
+                    let (_, _, rounds) = agent_loop.fact_execution_policy();
+                    (
+                        format!("Task failed: Max tool rounds ({rounds}) exceeded"),
+                        false,
+                        None,
+                    )
                 }
                 Ok(result) if result.text.trim().is_empty() => (
                     "Task failed: child agent returned no final output".to_string(),
@@ -1392,14 +1410,14 @@ impl TaskExecutor {
             }
             crate::porcelain::settle_workspace_child_guard(&mut workspace_child, &workspace_root)
                 .await;
-            if let Some(paths) = crate::porcelain::peek_settled_workspace_child(&observed_task_id) {
-                adopt_dirtied_paths(
-                    parent_session_id.as_deref(),
-                    &child_session_id,
-                    &workspace_root,
-                    &paths,
-                );
-            }
+            let paths = crate::porcelain::peek_settled_workspace_child(&observed_task_id)
+                .unwrap_or_default();
+            adopt_dirtied_paths(
+                parent_session_id.as_deref(),
+                &child_session_id,
+                &workspace_root,
+                &paths,
+            );
         };
         let mut running = true;
         if let Some(run) = capability_run {
@@ -1869,14 +1887,12 @@ fn adopt_dirtied_paths(
     workspace: &std::path::Path,
     paths: &[String],
 ) {
-    let owner = parent_session
-        .map(str::trim)
-        .filter(|session| !session.is_empty())
-        .unwrap_or(child_session);
-    for path in paths {
-        let _ =
-            crate::external_observation::adopt_write_claim(child_session, owner, workspace, path);
-    }
+    crate::external_observation::settle_child_write_claims(
+        parent_session,
+        child_session,
+        workspace,
+        paths,
+    );
 }
 
 fn invalid_delegation_argument(message: String) -> ToolOutput {

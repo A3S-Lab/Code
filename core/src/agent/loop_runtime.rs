@@ -12,7 +12,7 @@ const TOOL_BUDGET_FINALIZATION: &str = "Tool-use budget reached. Stop gathering 
 const REPEATED_TOOL_FINALIZATION: &str = "Repeated identical tool calls have no new evidence. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
 pub(crate) const READ_ONLY_EVIDENCE_FINALIZATION: &str = "Read-only evidence gathering has no further effect on the task. Stop gathering evidence and return the best complete final answer now using only the tool results already present. Do not call any tool.";
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Core execution loop (without planning routing).
     ///
     /// This is the inner loop that runs LLM calls and tool executions.

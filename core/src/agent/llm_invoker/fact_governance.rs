@@ -280,7 +280,7 @@ fn original_request(
     })
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(crate) fn prepare_fact_model_call(
         &self,
         expected_session_id: &str,

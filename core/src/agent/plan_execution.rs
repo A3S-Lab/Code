@@ -117,7 +117,7 @@ fn accumulate_failure_accounting(
     *tool_calls_count = (*tool_calls_count).saturating_add(failure.tool_calls_count());
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) fn normalized_plan_tool(step: &Task) -> Option<&str> {
         step.tool
             .as_deref()

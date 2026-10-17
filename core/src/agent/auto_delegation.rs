@@ -28,7 +28,7 @@ pub(super) struct AutoDelegationOutcome {
     pub completions: Vec<crate::harness_loop::CompletionTerminal>,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Tool arguments for a host-planned delegation. The fact log still decides
     /// when that tool runs.
     pub(crate) fn fact_auto_delegation_args(&self, prompt: &str) -> Option<serde_json::Value> {

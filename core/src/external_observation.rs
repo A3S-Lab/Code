@@ -364,6 +364,29 @@ pub fn release_session(session_id: &str) {
         .retain(|_, owner| owner != session_id);
 }
 
+/// Releases every write claim for `session_id` when the child future ends,
+/// including cancellation and an early `?` after the child has already
+/// claimed a path. Observed paths are transferred to the parent before this
+/// guard drops, or adopted again after it drops; a second release does not
+/// remove the parent's claim.
+pub(crate) struct ChildWriteClaimGuard {
+    session_id: String,
+}
+
+impl ChildWriteClaimGuard {
+    pub(crate) fn new(session_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+        }
+    }
+}
+
+impl Drop for ChildWriteClaimGuard {
+    fn drop(&mut self) {
+        release_session(&self.session_id);
+    }
+}
+
 pub fn observation_from_value(value: &Value) -> Option<ExternalObservationV1> {
     serde_json::from_value(value.clone()).ok()
 }
@@ -498,6 +521,23 @@ mod tests {
         let blocked = refuse_foreign_workspace_owner(Some("parent"), root.path()).unwrap_err();
         assert!(blocked.contains("task-run-child"));
         settle_child_write_claims(Some("parent"), "task-run-child", root.path(), &[]);
+        assert!(refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok());
+        release_session("parent");
+    }
+
+    #[test]
+    fn a_dropped_child_guard_releases_claims_and_a_later_adopt_keeps_the_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let live = root.path().join("live.txt");
+        std::fs::write(&live, "y").unwrap();
+        claim_write("task-run-child", root.path(), "live.txt").unwrap();
+        {
+            let _guard = ChildWriteClaimGuard::new("task-run-child");
+            claim_write("task-run-child", root.path(), "live.txt").unwrap();
+        }
+        assert!(refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok());
+        adopt_write_claim("task-run-child", "parent", root.path(), "live.txt").unwrap();
+        assert!(session_owns_write("parent", root.path(), "live.txt"));
         assert!(refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok());
         release_session("parent");
     }

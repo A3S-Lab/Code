@@ -2456,7 +2456,8 @@ fn user_attachment_plan_restores_png_bytes_after_compaction() {
         )
         .payload,
     );
-    let (kept_len, mut images) = user_attachment_plan(workspace.path(), THREAD);
+    let facts = read_workspace_facts(workspace.path(), THREAD).unwrap();
+    let (kept_len, mut images) = user_attachment_plan(&facts);
     assert_eq!(kept_len, 2);
     assert!(images_for_user_line(0, 1, kept_len, &mut images).is_empty());
     assert!(images_for_user_line(1, 1, kept_len, &mut images).is_empty());

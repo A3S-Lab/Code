@@ -101,11 +101,15 @@ pub(super) async fn model_response(
     let Some(surface) = surface else {
         return complete_detached(client, &messages, system.as_deref(), &tools, host_cancel).await;
     };
-    surface
-        .agent
-        .fact_budget_gate(&surface.session_id, &surface.cancel)
-        .await
-        .map_err(|error| ActorError::Defect(error.to_string()))?;
+    // A child run's scoped client admits each call against the parent
+    // session's budget.
+    if !surface.agent.is_child_run() {
+        surface
+            .agent
+            .fact_budget_gate(&surface.session_id, &surface.cancel)
+            .await
+            .map_err(|error| ActorError::Defect(error.to_string()))?;
+    }
     if surface.cancel.is_cancelled() {
         return Ok(interrupted_response());
     }
@@ -393,6 +397,17 @@ pub(super) async fn read_model_response(
         .await;
     for event in evidence_events {
         record_run_event(surface, event).await;
+    }
+    // A child run nobody listens to does not stream: a refused stream setup
+    // would admit the same call twice through the fallback.
+    if surface.agent.is_child_run() && surface.events.is_none() {
+        let response = client
+            .complete(messages, system, tools)
+            .await
+            .map_err(model_error)?;
+        record_usage(surface, &response);
+        record_model_usage_event(surface, usage_binding.as_ref(), &response).await;
+        return Ok(response);
     }
     match client
         .complete_streaming(messages, system, tools, attempt.clone())

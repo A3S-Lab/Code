@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) fn preserve_plan_goal_context(
         mut plan: ExecutionPlan,
         execution_prompt: &str,

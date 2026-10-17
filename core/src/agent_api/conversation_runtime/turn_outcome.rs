@@ -9,6 +9,15 @@ pub(super) async fn settle_owned_capability_run(
         .surface
         .as_ref()
         .is_some_and(|surface| surface.cancel.is_cancelled());
+    // The last tool round's turn is a child of this run. Close it first so
+    // the run's cleanup is not waiting on a scope this slot still holds.
+    if let Some(surface) = &pinned.parts.surface {
+        if let Some(turn) = surface.agent.fact_turn.lock().await.take() {
+            if let Err(error) = turn.close().await {
+                tracing::warn!(error = %error, "fact turn close failed before run close");
+            }
+        }
+    }
     let closed = pinned.guard.close().await;
     if let Err(error) = pinned
         .original
@@ -155,12 +164,21 @@ pub(super) fn combine_retention_failure(
 
 pub(super) fn gate_result(
     parts: &FactSession,
+    result: AgentResult,
+    goal_attestation: Option<&[crate::verification::VerificationReport]>,
+) -> std::result::Result<AgentResult, anyhow::Error> {
+    match &parts.surface {
+        Some(surface) => gate_surface_result(surface, result, goal_attestation),
+        None => Ok(result),
+    }
+}
+
+/// Close a settled run through the completion gate of its surface.
+pub(crate) fn gate_surface_result(
+    surface: &crate::fact_control::SessionSurface,
     mut result: AgentResult,
     goal_attestation: Option<&[crate::verification::VerificationReport]>,
 ) -> std::result::Result<AgentResult, anyhow::Error> {
-    let Some(surface) = &parts.surface else {
-        return Ok(result);
-    };
     let ledger = surface
         .ledger
         .lock()
@@ -190,9 +208,7 @@ pub(super) fn gate_result(
             // The run closed accountable: mark the log position so the next
             // send's ledger replay starts here instead of inheriting this
             // run's already-verified mutations.
-            if let Some(surface) = &parts.surface {
-                crate::fact_control::append_turn_complete_fact(surface, &terminal)?;
-            }
+            crate::fact_control::append_turn_complete_fact(surface, &terminal)?;
             result.completion = terminal;
             Ok(result)
         }

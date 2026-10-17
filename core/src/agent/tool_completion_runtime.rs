@@ -23,7 +23,7 @@ pub(super) struct ToolCompletionInput<'a> {
     pub(super) normalized: NormalizedToolResult,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) async fn complete_tool_call(
         &self,
         state: &mut ExecutionLoopState,

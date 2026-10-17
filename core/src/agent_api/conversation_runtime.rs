@@ -24,12 +24,14 @@ use crate::session_checkpoint::{SessionCheckpointError, SessionLogicalResumeEvid
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+mod child_run;
 mod host_events;
 mod owned_fact;
 mod owned_launch;
 mod owned_worker;
 mod recovery_support;
 mod turn_outcome;
+pub(crate) use child_run::ChildRun;
 use host_events::*;
 use owned_fact::*;
 use owned_launch::*;

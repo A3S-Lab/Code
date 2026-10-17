@@ -426,10 +426,11 @@ async fn runtime_budget_guard_refreshes_the_registered_skill_tool() {
         version: None,
     }));
 
+    let workspace = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
         .build_session(
-            "/tmp/test-runtime-budget-skill".into(),
+            workspace.path().display().to_string(),
             Arc::new(StaticStreamingClient::new("must not reach the provider")),
             &SessionOptions::new().with_skill_registry(skills),
         )

@@ -23,7 +23,9 @@ use tokio::sync::mpsc;
 struct ScopedToolInvoker {
     agent: AgentLoop,
     session_id: String,
-    event_tx: Option<mpsc::Sender<AgentEvent>>,
+    /// Weak so a tool context retained after the call cannot keep the host
+    /// channel open. The run's own senders keep it alive while the call runs.
+    event_tx: Option<mpsc::WeakSender<AgentEvent>>,
 }
 
 impl ScopedToolInvoker {
@@ -32,11 +34,19 @@ impl ScopedToolInvoker {
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
     ) -> Self {
+        let mut agent = agent.clone();
+        // The clone carried the run's host sender. Drop that strong ref; the
+        // run still owns the channel.
+        agent.retire_fact_host_events();
         Self {
-            agent: agent.clone(),
+            agent,
             session_id: session_id.unwrap_or("").to_string(),
-            event_tx: event_tx.clone(),
+            event_tx: event_tx.as_ref().map(mpsc::Sender::downgrade),
         }
+    }
+
+    fn events(&self) -> Option<mpsc::Sender<AgentEvent>> {
+        self.event_tx.as_ref().and_then(mpsc::WeakSender::upgrade)
     }
 
     fn canonicalize_invocation_name(invocation: &mut ToolInvocation) {
@@ -121,7 +131,7 @@ impl ScopedToolInvoker {
             idempotency_key = identity.key(),
             "Tool request identity bound at the governed value boundary"
         );
-        let Some(tx) = &self.event_tx else {
+        let Some(tx) = self.events() else {
             return Ok(());
         };
         let origin = match invocation.origin {
@@ -225,8 +235,8 @@ impl ScopedToolInvoker {
                 let confirmation = if let Some(manager) =
                     self.agent.config.confirmation_manager.as_ref()
                 {
-                    let runtime =
-                        ToolConfirmationRuntime::new(manager.as_ref(), self.event_tx.as_ref());
+                    let events = self.events();
+                    let runtime = ToolConfirmationRuntime::new(manager.as_ref(), events.as_ref());
                     runtime
                         .resolve_with_cancellation(
                             ToolConfirmationRequest {
@@ -278,7 +288,7 @@ impl ScopedToolInvoker {
 
         debug_assert!(lifecycle.transition(ToolInvocationState::Running).is_ok());
 
-        if let Some(tx) = &self.event_tx {
+        if let Some(tx) = self.events() {
             tx.send(AgentEvent::ToolExecutionStart {
                 id: invocation.id.clone(),
                 name: invocation.name.clone(),
@@ -297,9 +307,10 @@ impl ScopedToolInvoker {
         // facade consumes it for the first underlying generation, then
         // releases it before any structured repair call can acquire again.
         let preadmitted = ctx.model_generation_permit(&model_generation_admission);
+        let events = self.events();
         let llm_client = self.agent.scoped_llm_client_for_tool_context(
             (!self.session_id.is_empty()).then_some(self.session_id.as_str()),
-            &self.event_tx,
+            &events,
             &ctx.cancellation_token(),
             model_generation_admission.clone(),
             preadmitted,
@@ -311,7 +322,7 @@ impl ScopedToolInvoker {
             .with_model_generation_admission(model_generation_admission);
         let stream_ctx = self.agent.streaming_tool_context(
             &governed_ctx,
-            &self.event_tx,
+            &events,
             &invocation.id,
             &invocation.name,
         );
@@ -359,7 +370,7 @@ impl ScopedToolInvoker {
     }
 
     async fn emit_permission_denied(&self, invocation: &ToolInvocation, reason: String) {
-        if let Some(tx) = &self.event_tx {
+        if let Some(tx) = self.events() {
             tx.send(AgentEvent::PermissionDenied {
                 tool_id: invocation.id.clone(),
                 tool_name: invocation.name.clone(),
@@ -379,7 +390,7 @@ impl ScopedToolInvoker {
         limit: f64,
         message: Option<String>,
     ) {
-        if let Some(tx) = &self.event_tx {
+        if let Some(tx) = self.events() {
             tx.send(AgentEvent::BudgetThresholdHit {
                 resource,
                 kind: kind.to_string(),
@@ -396,7 +407,7 @@ impl ScopedToolInvoker {
         if !invocation.origin.is_nested() {
             return;
         }
-        if let Some(tx) = &self.event_tx {
+        if let Some(tx) = self.events() {
             tx.send(AgentEvent::ToolEnd {
                 id: invocation.id.clone(),
                 name: invocation.name.clone(),
@@ -589,8 +600,8 @@ impl ToolInvoker for ScopedToolInvoker {
     }
 }
 
-impl AgentLoop {
-    pub(super) fn scoped_tool_invoker(
+impl crate::agent::TurnEngine {
+    pub(crate) fn scoped_tool_invoker(
         &self,
         session_id: Option<&str>,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,

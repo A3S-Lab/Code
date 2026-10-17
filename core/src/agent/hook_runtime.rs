@@ -21,7 +21,7 @@ pub(super) enum PermissionHookDecision {
     Deny(String),
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Fire PreToolUse hook event before tool execution.
     /// Returns structured denial feedback when a hook gates the tool call.
     pub(crate) async fn fire_pre_tool_use(

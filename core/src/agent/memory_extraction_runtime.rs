@@ -133,7 +133,7 @@ pub(super) struct TurnMemoryExtractionSchedule<'a> {
     pub(super) task_context: &'a ToolContext,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Register one extraction before the first terminal publication.
     ///
     /// Session close only waits for tickets that already exist. The model call

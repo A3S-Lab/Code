@@ -1,6 +1,6 @@
 use super::*;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) async fn recall_memory_context(
         &self,
         effective_prompt: &str,

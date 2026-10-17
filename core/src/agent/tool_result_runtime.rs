@@ -124,7 +124,7 @@ impl NormalizedToolResult {
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(crate) fn collect_verification_report(
         reports: &mut Vec<VerificationReport>,
         metadata: &Option<Value>,

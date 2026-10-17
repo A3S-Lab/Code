@@ -8,6 +8,13 @@ use super::*;
 /// gate inherits them (see [`replay_unsettled_mutations`]).
 pub const TURN_COMPLETE_FACT_KIND: &str = "turn.complete";
 
+/// This run's thread, read through the run's own log handle.
+pub(super) fn surface_thread_facts(
+    surface: &SessionSurface,
+) -> Result<Vec<a3s_effect::Fact>, ActorError> {
+    surface_fact_log(surface)?.read(&thread_for_session(&surface.session_id))
+}
+
 pub(super) fn surface_fact_log(surface: &SessionSurface) -> Result<Arc<FileLog>, ActorError> {
     let mut shared = surface
         .fact_log
@@ -107,9 +114,8 @@ pub(crate) fn restore_checkpoint_mutation_cache(
     surface: &SessionSurface,
     checkpoint: &crate::loop_checkpoint::LoopCheckpoint,
 ) -> CheckpointMutationCacheCoverage {
-    let workspace = surface.agent.tool_context_handle().workspace.clone();
     let thread = thread_for_session(&surface.session_id);
-    let facts = read_workspace_facts(&workspace, &thread);
+    let facts = surface_thread_facts(surface);
     let covered = facts.as_ref().is_ok_and(|facts| {
         checkpoint_mutation_cache_covered(facts, checkpoint, &thread, &surface.session_id)
     });
@@ -304,8 +310,7 @@ pub(super) fn checkpoint_mutation_cache_covered(
 }
 
 pub(crate) fn replay_unsettled_mutations(surface: &SessionSurface) {
-    let workspace = surface.agent.tool_context_handle().workspace.clone();
-    let facts = match read_workspace_facts(&workspace, &thread_for_session(&surface.session_id)) {
+    let facts = match surface_thread_facts(surface) {
         Ok(facts) => facts,
         Err(error) => {
             let mut unresolved = std::collections::BTreeSet::new();

@@ -6,7 +6,7 @@ use anyhow::Result;
 #[cfg(test)]
 use tokio::sync::mpsc;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Execute the agent loop for a prompt
     ///
     /// Takes the conversation history and a new user prompt.

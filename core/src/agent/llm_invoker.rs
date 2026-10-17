@@ -970,7 +970,7 @@ impl LlmClient for LlmInvoker {
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Retire the completed fact host lane without constructing another scope.
     /// Callers must also drop their completed model facade before a memory tail
     /// can outlive the host channel.
@@ -1192,7 +1192,7 @@ impl AgentLoop {
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Deny the model call when the admitted run's budget guard says so.
     /// The fact log still chooses the next transition.
     pub(crate) async fn fact_budget_gate(
@@ -1346,7 +1346,7 @@ async fn record_after_llm(
     }
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Record the same capability, presentation, and input evidence the
     /// provider gateway records, for a fact-log completion that does not go
     /// through that gateway. The usage event is emitted after the provider

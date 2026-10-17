@@ -276,12 +276,8 @@ pub(super) fn attachments_from_user_payload(payload: &serde_json::Value) -> Vec<
 /// compaction. `kept` lines are already in the scheduler transcript and are
 /// not paired with these facts.
 pub(super) fn user_attachment_plan(
-    workspace: &Path,
-    thread: &str,
+    facts: &[a3s_effect::Fact],
 ) -> (usize, std::collections::VecDeque<Vec<Attachment>>) {
-    let Ok(facts) = read_workspace_facts(workspace, thread) else {
-        return (0, std::collections::VecDeque::new());
-    };
     let start = facts
         .iter()
         .rposition(|fact| fact.kind == "compaction.done")
@@ -385,6 +381,7 @@ pub(super) fn user_message_with_images(body: &str, images: Vec<Attachment>) -> M
 /// `split_compact_tail` keeps an ordered suffix, including tool results. Keep
 /// the corresponding suffix of original calls and verify its result bytes;
 /// never fabricate an identity when the original facts cannot be read/paired.
+#[cfg(test)]
 pub(super) fn recorded_tool_calls(
     workspace: &Path,
     thread: &str,
@@ -393,6 +390,12 @@ pub(super) fn recorded_tool_calls(
         key: "model-input-tool-history".into(),
         message: format!("cannot read original tool-call facts: {error}"),
     })?;
+    recorded_tool_calls_in(facts)
+}
+
+pub(super) fn recorded_tool_calls_in(
+    facts: Vec<a3s_effect::Fact>,
+) -> Result<Vec<RecordedCall>, ActorError> {
     let mut pending = std::collections::VecDeque::new();
     let mut completed: Vec<(RecordedCall, String)> = Vec::new();
     for fact in facts {

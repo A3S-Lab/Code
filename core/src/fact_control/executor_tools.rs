@@ -208,6 +208,30 @@ pub(super) fn record_targeted_path(
     }
 }
 
+/// Open the capability turn for a model round, closing the previous round's
+/// turn first so its run-owned effects settle before the next inference.
+/// Open the round's capability turn on the first tool call and reuse it for
+/// the rest of the round. The next model call closes it.
+async fn capability_turn(
+    agent: &Option<crate::agent::AgentLoop>,
+    host_cancel: &tokio_util::sync::CancellationToken,
+    context: crate::tools::ToolContext,
+) -> Result<crate::tools::ToolContext, ActorError> {
+    let Some(agent) = agent else {
+        return Ok(context);
+    };
+    let mut held = agent.fact_turn.lock().await;
+    if let Some(operation) = held.as_ref() {
+        return Ok(operation.bind_tool_context(context));
+    }
+    let operation = agent
+        .begin_capability_operation(0, host_cancel, "fact model round")
+        .map_err(|error| ActorError::Defect(error.to_string()))?;
+    let context = operation.bind_tool_context(context);
+    *held = Some(operation);
+    Ok(context)
+}
+
 impl ToolRunner for ExecutorTools {
     fn prepare(
         self: Arc<Self>,
@@ -222,7 +246,6 @@ impl ToolRunner for ExecutorTools {
         call: ToolCall,
         host_cancel: tokio_util::sync::CancellationToken,
     ) -> a3s_effect::coding::BoxFuture<Result<serde_json::Value, ActorError>> {
-        let logical_turn = self.calls.fetch_add(1, Ordering::SeqCst);
         record_targeted_path(&call.args, self.targeted_paths.as_ref());
         let executor = Arc::clone(&self.executor);
         let context = self.context.clone();
@@ -239,25 +262,21 @@ impl ToolRunner for ExecutorTools {
         let pre_tool_hook_resolved = self.pre_tool_hook_resolved;
         let repeats = Arc::clone(&self.repeats);
         Box::pin(async move {
-            let operation = agent
-                .as_ref()
-                .map(|agent| {
-                    agent.begin_capability_operation(
-                        logical_turn,
-                        &host_cancel,
-                        "fact Tool invocation",
-                    )
-                })
-                .transpose()
-                .map_err(|error| ActorError::Defect(error.to_string()))?
-                .map(Arc::new);
-            let context = match &operation {
-                Some(operation) => operation.bind_tool_context(context),
+            let context = capability_turn(&agent, &host_cancel, context).await?;
+            // A `batch` or `program` call dispatches its nested calls through
+            // the context's invoker. Without the run's own governed invoker
+            // they fall back to the bare registry and skip the permission,
+            // budget and hook gates the top-level call crossed.
+            let context = match &agent {
+                Some(agent) => {
+                    let invoker = agent.scoped_tool_invoker(context.session_id.as_deref(), &events);
+                    context.with_tool_invoker(invoker)
+                }
                 None => context,
             };
             let result = async {
             let tools = ExecutorTools {
-                capability_operation: operation.clone(),
+                capability_operation: None,
                 executor,
                 calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint,
@@ -289,9 +308,10 @@ impl ToolRunner for ExecutorTools {
                     return Ok(serde_json::Value::String(output));
                 }
             }
-            if execution_permission(
+            if run_permission(
                 &tools.permission,
                 tools.checker.as_deref(),
+                tools.agent.as_ref(),
                 &call.name,
                 &call.args,
             ) == PermissionDecision::Deny
@@ -616,12 +636,8 @@ impl ToolRunner for ExecutorTools {
                 metadata.as_ref(),
             ))
             }.await;
-            if let Some(operation) = operation {
-                operation
-                    .close()
-                    .await
-                    .map_err(|error| ActorError::Defect(error.to_string()))?;
-            }
+            // The turn stays open: a run-owned effect closes with the run,
+            // not with the tool call that registered it.
             result
         })
     }

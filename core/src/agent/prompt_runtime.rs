@@ -6,7 +6,7 @@ pub(super) struct PromptMode {
     pub(super) system_prompt: String,
 }
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     /// Get the assembled system prompt from slots.
     #[allow(dead_code)]
     pub(super) fn system_prompt(&self) -> String {

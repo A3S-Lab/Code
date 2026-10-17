@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-impl AgentLoop {
+impl crate::agent::TurnEngine {
     pub(super) async fn execute_parallel_write_batch(
         &self,
         tool_calls: &[ToolCall],
