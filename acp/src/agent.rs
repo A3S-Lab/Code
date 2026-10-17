@@ -16,6 +16,9 @@ use crate::config::LaunchConfig;
 
 mod client_fs;
 mod commands;
+mod permission_ask;
+#[cfg(test)]
+use permission_ask::tool_permission_request;
 mod resume;
 mod session_catalog;
 mod unattended_turn;
@@ -1412,7 +1415,13 @@ impl A3sCodeAgent {
             tracing::debug!(tool = tool_name, "tool call approved by a learned rule");
             return true;
         }
-        let request = tool_permission_request(session_id, tool_id, tool_name, args);
+        let request = permission_ask::tool_permission_ask(
+            session_id,
+            tool_id,
+            tool_name,
+            args,
+            Some(workspace),
+        );
         let client = self.client.borrow().clone();
         let Some(client) = client else {
             return false;
@@ -4213,48 +4222,6 @@ fn worker_join_failure(join_error: tokio::task::JoinError) -> String {
         Err(join_error) => format!("worker aborted: {join_error}"),
     };
     format!("turn worker died: {detail}")
-}
-
-fn tool_permission_request(
-    session_id: &acp::SessionId,
-    tool_id: &str,
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> acp::RequestPermissionRequest {
-    let raw_input = prepared_raw_input(tool_name, args);
-    let mut fields = acp::ToolCallUpdateFields::new()
-        .title(tool_title(tool_name))
-        .kind(tool_kind_for(tool_name))
-        .status(acp::ToolCallStatus::Pending);
-    if let Some(raw_input) = raw_input {
-        fields = fields.raw_input(raw_input);
-    }
-    let mut options = vec![acp::PermissionOption::new(
-        acp::PermissionOptionId::new("allow-once"),
-        "Yes, proceed",
-        acp::PermissionOptionKind::AllowOnce,
-    )];
-    let learnable = (tool_name == "bash")
-        .then(|| args.get("command").and_then(serde_json::Value::as_str))
-        .flatten()
-        .and_then(crate::approval_learning::learnable_rule);
-    if let Some(rule) = learnable {
-        options.push(acp::PermissionOption::new(
-            acp::PermissionOptionId::new("allow-always"),
-            format!("Yes, and don't ask again for `{rule}` in this workspace"),
-            acp::PermissionOptionKind::AllowAlways,
-        ));
-    }
-    options.push(acp::PermissionOption::new(
-        acp::PermissionOptionId::new("reject-once"),
-        "No",
-        acp::PermissionOptionKind::RejectOnce,
-    ));
-    acp::RequestPermissionRequest::new(
-        session_id.clone(),
-        acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_id.to_string()), fields),
-        options,
-    )
 }
 
 fn question_permission_request(

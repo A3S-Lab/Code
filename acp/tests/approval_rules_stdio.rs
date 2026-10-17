@@ -5,7 +5,9 @@
 //!   `.a3s/approvals.acl` is not honoured;
 //! - `allow-always` learns the program + subcommand rule in the user state
 //!   root, and a relaunched agent skips the ask for that rule only;
-//! - a chained command or another target still asks.
+//! - a chained command or another target still asks;
+//! - every ask says why it needs approval, and in a scripted dev loop
+//!   allow-always cuts the asks by at least 30% (UX-APPROVAL1).
 //!
 //! `make` is used because core already admits read-only commands such as
 //! `git status` without an ask. On macOS the native backend refuses every
@@ -200,6 +202,7 @@ fn decide(raw: &str) -> String {
 /// One permission ask as the client saw it.
 #[derive(Clone, Debug)]
 struct Ask {
+    why: String,
     options: Vec<(String, acp::PermissionOptionKind, String)>,
 }
 
@@ -214,7 +217,23 @@ impl acp::Client for TestClient {
         &self,
         args: acp::RequestPermissionRequest,
     ) -> Result<acp::RequestPermissionResponse, acp::Error> {
+        let why = args
+            .tool_call
+            .fields
+            .content
+            .iter()
+            .flatten()
+            .filter_map(|content| match content {
+                acp::ToolCallContent::Content(content) => match &content.content {
+                    acp::ContentBlock::Text(text) => Some(text.text.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         self.asks.borrow_mut().push(Ask {
+            why,
             options: args
                 .options
                 .iter()
@@ -463,6 +482,54 @@ async fn allow_always_learns_one_rule_in_user_state_and_nothing_else_skips_the_a
                 !fixture.workspace.join("pwned").exists(),
                 "a rejected command ran"
             );
+        })
+        .await;
+}
+
+const DEV_LOOP: [&str; 10] = [
+    "make check",
+    "make check -j2",
+    "make test",
+    "make check -k",
+    "make test -v",
+    "make lint",
+    "make test",
+    "make lint -q",
+    "make check",
+    "make lint",
+];
+
+async fn dev_loop_asks(answer: &str) -> Vec<Ask> {
+    let fixture = Fixture::new(spawn_mock());
+    let agent = spawn_agent(&fixture).await;
+    let mut asks = Vec::new();
+    for command in DEV_LOOP {
+        asks.extend(run(&agent, &fixture.workspace, command, answer).await);
+    }
+    asks
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_ask_says_why_and_allow_always_cuts_dev_loop_asks_by_thirty_percent() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let once = dev_loop_asks("allow-once").await;
+            let always = dev_loop_asks("allow-always").await;
+            assert_eq!(once.len(), DEV_LOOP.len(), "allow-once asks every time");
+            for ask in once.iter().chain(&always) {
+                assert!(ask.why.starts_with("Needs approval ("), "{ask:?}");
+                assert!(!ask.why.contains("permission policy asks"), "{ask:?}");
+            }
+            let reduction = 100 * (once.len() - always.len()) / once.len();
+            println!(
+                "dev loop of {} commands: allow-once {} asks, allow-always {} asks, {reduction}% fewer",
+                DEV_LOOP.len(),
+                once.len(),
+                always.len()
+            );
+            println!("first ask: {}", once[0].why);
+            assert_eq!(always.len(), 3, "one ask per distinct rule: {always:?}");
+            assert!(reduction >= 30, "{reduction}%");
         })
         .await;
 }
