@@ -2,7 +2,6 @@
 //! 2026-10-17). Rows may only go down; a file not listed must have none.
 
 pub const BASELINE: &[(&str, usize)] = &[
-    ("acp/src/agent.rs", 1),
     ("core/src/agent/memory_extraction_runtime.rs", 5),
     ("core/src/agent_api/project_instructions.rs", 1),
     ("core/src/ask_user.rs", 3),

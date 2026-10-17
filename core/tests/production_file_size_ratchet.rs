@@ -19,7 +19,6 @@ const CAP_SLACK: usize = 250;
 
 /// Files over `LIMIT`, with the line count they may not exceed.
 const OVERSIZE: &[(&str, usize)] = &[
-    ("core/src/fact_control.rs", 4861),
 ];
 
 /// ACP-SPLIT1: the ACP protocol file keeps the `acp::Agent` surface and the

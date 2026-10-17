@@ -417,7 +417,6 @@ impl A3sCodeAgent {
             painted_tools: HashSet::new(),
         };
         let session_key = session_id.0.to_string();
-        let mut turn_permit = Some(turn_permit);
         let drain_started = std::time::Instant::now();
         loop {
             // Register before the map read. `notify_waiters` stores no permit.
@@ -430,7 +429,7 @@ impl A3sCodeAgent {
                         &mut state,
                         &mut rx,
                         join,
-                        turn_permit.take().expect("turn permit"),
+                        turn_permit,
                     )
                     .await;
             }
