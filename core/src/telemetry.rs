@@ -452,6 +452,8 @@ pub fn record_llm_metrics(
 // Tests
 // ============================================================================
 
+pub(crate) mod gen_ai;
+
 #[cfg(test)]
 mod tests {
     use super::*;

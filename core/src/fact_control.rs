@@ -2222,6 +2222,7 @@ impl Completion for LiveCompletion {
             if let Some(surface) = &surface {
                 record_run_event(surface, crate::agent::AgentEvent::TurnStart { turn }).await;
             }
+            let chat = crate::telemetry::gen_ai::chat_span();
             let call = model_response(
                 Arc::clone(&client),
                 messages.clone(),
@@ -2231,12 +2232,14 @@ impl Completion for LiveCompletion {
                 cancel.clone(),
                 original_model.clone(),
             );
+            let call = tracing::Instrument::instrument(call, chat.clone());
             let response = match time_left {
                 Some(left) => tokio::time::timeout(left, call)
                     .await
                     .unwrap_or_else(|_| Err(execution_timeout(started_at, execution_limit))),
                 None => call.await,
             };
+            crate::telemetry::gen_ai::record_chat_outcome(&chat, &response);
             let response = match response {
                 Ok(response) => {
                     if let Some(surface) = &surface {

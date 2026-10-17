@@ -437,6 +437,19 @@ impl AgentLoop {
         request: &LlmCallRequest<'_>,
         attempt_cancel: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<LlmResponse> {
+        let chat = crate::telemetry::gen_ai::chat_span();
+        let call = self.call_llm_within_deadline(llm_client, request, attempt_cancel);
+        let response = tracing::Instrument::instrument(call, chat.clone()).await;
+        crate::telemetry::gen_ai::record_chat_outcome(&chat, &response);
+        response
+    }
+
+    async fn call_llm_within_deadline(
+        &self,
+        llm_client: &std::sync::Arc<dyn crate::llm::LlmClient>,
+        request: &LlmCallRequest<'_>,
+        attempt_cancel: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<LlmResponse> {
         let call = self.call_llm(
             llm_client,
             request.messages,
