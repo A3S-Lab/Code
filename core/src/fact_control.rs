@@ -27,6 +27,7 @@ const THREAD: &str = "thread-1";
 mod checkpoints;
 mod goal_evidence;
 mod model_wait;
+mod tool_batch;
 pub(crate) use goal_evidence::{
     assess_goal_step, commit_goal_step, evidence_for_goal_step, settle_goal_slice,
 };
@@ -2971,11 +2972,11 @@ impl ToolRunner for ExecutorTools {
             .agent
             .as_ref()
             .is_some_and(|agent| agent.hook_executor().is_some())
-            && !calls.iter().all(|call| is_parallel_safe_read(&call.name))
+            && !calls.iter().all(|c| tool_batch::parallel_read(&self.executor, c, calls.len()))
         {
             return false;
         }
-        batch_can_run_in_parallel(calls)
+        tool_batch::all_parallel_reads(&self.executor, calls) || batch_can_run_in_parallel(calls)
     }
 }
 
