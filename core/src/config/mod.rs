@@ -36,7 +36,7 @@ pub use search::{
 };
 pub use verification_contract::WorkspaceVerificationContract;
 pub use workspace_trust::{
-    admit_untrusted_layers, workspace_mcp_server_id, workspace_mcp_trust_path,
+    admit_untrusted_layers, code_state_dir, workspace_mcp_server_id, workspace_mcp_trust_path,
     WorkspaceLayerAdmission, WorkspaceMcpDeclaration, WorkspaceMcpTrust, WORKSPACE_MCP_TRUST_FILE,
 };
 

@@ -1401,12 +1401,10 @@ impl A3sCodeAgent {
         if self.unattended.is_some() {
             return true;
         }
-        // Approval learning: a prefix the user approved in an earlier
-        // session of this workspace skips the round-trip entirely. The
-        // learned set is conservative (plain executable names only, a
-        // never-learn floor, bounded) — see approval_learning.
+        // A rule the user chose "don't ask again" for in this workspace
+        // skips the round-trip; see approval_learning for what can match.
         if crate::approval_learning::is_previously_approved(workspace, tool_name, args) {
-            tracing::debug!(tool = tool_name, "tool call approved by a learned prefix");
+            tracing::debug!(tool = tool_name, "tool call approved by a learned rule");
             return true;
         }
         let request = tool_permission_request(session_id, tool_id, tool_name, args);
@@ -1431,18 +1429,21 @@ impl A3sCodeAgent {
         match response {
             Ok(response) => {
                 let approved = permission_response_approved(&response);
-                if approved && tool_name == "bash" {
+                if approved && permission_response_always(&response) && tool_name == "bash" {
                     let command = args
                         .get("command")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default();
-                    if let Some(prefix) =
-                        crate::approval_learning::record_approved_bash(workspace, command)
-                    {
-                        tracing::info!(
-                            prefix = %prefix,
-                            "learned an approved bash prefix for this workspace"
-                        );
+                    match crate::approval_learning::record_always_allowed_bash(workspace, command) {
+                        Ok(Some(rule)) => tracing::info!(
+                            rule = %rule,
+                            "learned a bash rule for this workspace"
+                        ),
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "could not persist the allow-always rule; it applies to this call only"
+                        ),
                     }
                 }
                 approved
@@ -4139,11 +4140,20 @@ fn permission_response_approved(response: &acp::RequestPermissionResponse) -> bo
     match &response.outcome {
         acp::RequestPermissionOutcome::Selected(selected) => {
             // YOLO picks the first AllowOnce (`allow-once`). RejectOnce / cancel stay false.
-            selected.option_id.0.as_ref() == "allow-once"
+            matches!(selected.option_id.0.as_ref(), "allow-once" | "allow-always")
         }
         acp::RequestPermissionOutcome::Cancelled => false,
         _ => false,
     }
+}
+
+/// Whether the user answered "don't ask again". Only this answer learns.
+fn permission_response_always(response: &acp::RequestPermissionResponse) -> bool {
+    matches!(
+        &response.outcome,
+        acp::RequestPermissionOutcome::Selected(selected)
+            if selected.option_id.0.as_ref() == "allow-always"
+    )
 }
 
 /// Meta key marking a `request_permission` as an agent question riding the
@@ -4219,21 +4229,31 @@ fn tool_permission_request(
     if let Some(raw_input) = raw_input {
         fields = fields.raw_input(raw_input);
     }
+    let mut options = vec![acp::PermissionOption::new(
+        acp::PermissionOptionId::new("allow-once"),
+        "Yes, proceed",
+        acp::PermissionOptionKind::AllowOnce,
+    )];
+    let learnable = (tool_name == "bash")
+        .then(|| args.get("command").and_then(serde_json::Value::as_str))
+        .flatten()
+        .and_then(crate::approval_learning::learnable_rule);
+    if let Some(rule) = learnable {
+        options.push(acp::PermissionOption::new(
+            acp::PermissionOptionId::new("allow-always"),
+            format!("Yes, and don't ask again for `{rule}` in this workspace"),
+            acp::PermissionOptionKind::AllowAlways,
+        ));
+    }
+    options.push(acp::PermissionOption::new(
+        acp::PermissionOptionId::new("reject-once"),
+        "No",
+        acp::PermissionOptionKind::RejectOnce,
+    ));
     acp::RequestPermissionRequest::new(
         session_id.clone(),
         acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_id.to_string()), fields),
-        vec![
-            acp::PermissionOption::new(
-                acp::PermissionOptionId::new("allow-once"),
-                "Yes, proceed",
-                acp::PermissionOptionKind::AllowOnce,
-            ),
-            acp::PermissionOption::new(
-                acp::PermissionOptionId::new("reject-once"),
-                "No",
-                acp::PermissionOptionKind::RejectOnce,
-            ),
-        ],
+        options,
     )
 }
 

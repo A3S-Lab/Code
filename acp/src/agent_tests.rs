@@ -2823,3 +2823,54 @@ async fn set_session_model_keeps_the_sessions_mcp_contribution_alive() {
         "the remodeled session's servers survive the next union sync: {configs:?}"
     );
 }
+
+#[test]
+fn only_a_learnable_bash_command_offers_allow_always_and_only_it_learns() {
+    let session_id = acp::SessionId::new("s");
+    let learnable = tool_permission_request(
+        &session_id,
+        "tool-1",
+        "bash",
+        &serde_json::json!({"command": "git status --short"}),
+    );
+    let kinds = learnable
+        .options
+        .iter()
+        .map(|option| option.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            acp::PermissionOptionKind::AllowOnce,
+            acp::PermissionOptionKind::AllowAlways,
+            acp::PermissionOptionKind::RejectOnce,
+        ]
+    );
+    assert!(learnable.options[1].name.contains("`git status`"));
+    for (tool, command) in [("bash", "git status; rm -rf /"), ("write", "ls")] {
+        let request = tool_permission_request(
+            &session_id,
+            "tool-2",
+            tool,
+            &serde_json::json!({"command": command}),
+        );
+        assert!(
+            request
+                .options
+                .iter()
+                .all(|option| option.kind != acp::PermissionOptionKind::AllowAlways),
+            "{tool} {command}"
+        );
+    }
+    let answer = |id: &str| {
+        acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Selected(
+            acp::SelectedPermissionOutcome::new(acp::PermissionOptionId::new(id.to_string())),
+        ))
+    };
+    assert!(permission_response_approved(&answer("allow-once")));
+    assert!(!permission_response_always(&answer("allow-once")));
+    assert!(permission_response_approved(&answer("allow-always")));
+    assert!(permission_response_always(&answer("allow-always")));
+    assert!(!permission_response_approved(&answer("reject-once")));
+    assert!(!permission_response_always(&answer("reject-once")));
+}

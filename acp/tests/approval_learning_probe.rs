@@ -1,18 +1,17 @@
 //! Approval-learning probe over the REAL pager path: an in-process
 //! ClientSideConnection (the pager's exact transport role) drives the
 //! A3sCodeAgent backend across cross-wired duplexes, with a client that
-//! counts every permission round-trip and approves by selecting the
-//! allow option.
+//! counts every permission round-trip and answers `allow-always`.
 //!
 //! Contracts asserted:
-//! 1. A turn whose model call runs `git --version` asks the client
-//!    exactly once; approving it persists the learned `git` prefix to
-//!    `<workspace>/.a3s/approvals.acl` (parseable ACL, entry present).
-//! 2. A NEW session in the SAME workspace runs the same command family
-//!    with ZERO further permission round-trips (the learned prefix
-//!    admits the call before the client is consulted).
-//! 3. The second session's stream carries the command's real output
-//!    (`git version`), so "no round-trip" cannot pass vacuously — the
+//! 1. A turn whose model call runs `make check` asks the client exactly
+//!    once; the `allow-always` answer persists the `make check` rule to
+//!    `<A3S_STATE_HOME>/code/approvals.acl` (parseable ACL, entry present)
+//!    and writes nothing into the workspace `.a3s`.
+//! 2. A NEW session in the SAME workspace runs the same rule with ZERO
+//!    further permission round-trips.
+//! 3. The second session's stream carries the target's real output
+//!    (`make-check-ran`), so "no round-trip" cannot pass vacuously — the
 //!    tool provably ran.
 //!
 //! A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
@@ -50,12 +49,16 @@ impl acp::Client for ApprovingClient {
     ) -> Result<acp::RequestPermissionResponse, acp::Error> {
         self.permission_requests
             .set(self.permission_requests.get() + 1);
-        let allow = args
+        let ids: Vec<String> = args
             .options
             .iter()
             .map(|option| option.option_id.0.to_string())
-            .find(|id| id.contains("allow"))
-            .unwrap_or_else(|| "cancel".to_string());
+            .collect();
+        let allow = ["allow-always", "allow-once"]
+            .into_iter()
+            .find(|id| ids.iter().any(|offered| offered == id))
+            .unwrap_or("cancel")
+            .to_string();
         if allow == "cancel" {
             return Ok(acp::RequestPermissionResponse::new(
                 acp::RequestPermissionOutcome::Cancelled,
@@ -75,7 +78,7 @@ impl acp::Client for ApprovingClient {
             }
         }
         // Tool output may also stream; capture it so the probe can see the
-        // real `git version` line even when the model paraphrases.
+        // real `make-check-ran` line even when the model paraphrases.
         if let acp::SessionUpdate::ToolCallUpdate(update) = &args.update {
             for block in update.fields.content.iter().flatten() {
                 if let acp::ToolCallContent::Content(content) = block {
@@ -102,7 +105,7 @@ async fn assert_eventually_contains(client: &ApprovingClient, marker: &str, what
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires the model configured in .a3s/config.acl"]
-async fn approved_bash_prefix_skips_confirmation_in_later_sessions() {
+async fn allow_always_rule_skips_confirmation_in_later_sessions() {
     tokio::task::LocalSet::new()
         .run_until(async move {
             let config_path = std::env::var_os("A3S_CONFIG_FILE").map(PathBuf::from);
@@ -110,6 +113,14 @@ async fn approved_bash_prefix_skips_confirmation_in_later_sessions() {
                 std::env::temp_dir().join(format!("a3s-approval-probe-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&workspace);
             std::fs::create_dir_all(&workspace).expect("workspace");
+            std::fs::write(
+                workspace.join("Makefile"),
+                "check:\n\t@echo make-check-ran\n",
+            )
+            .expect("Makefile");
+            let state = workspace.with_extension("state");
+            let _ = std::fs::remove_dir_all(&state);
+            std::env::set_var("A3S_STATE_HOME", &state);
 
             let mut launch =
                 load_launch_config(workspace.clone(), config_path).expect("launch config");
@@ -169,7 +180,7 @@ async fn approved_bash_prefix_skips_confirmation_in_later_sessions() {
                 .map_err(|error| acp::Error::internal_error().data(format!("{error:?}")))
             }
 
-            // Session 1: the approval that teaches the prefix.
+            // Session 1: the allow-always answer that teaches the rule.
             let created = acp::Agent::new_session(
                 &client_conn,
                 acp::NewSessionRequest::new(workspace.clone()),
@@ -180,27 +191,31 @@ async fn approved_bash_prefix_skips_confirmation_in_later_sessions() {
             run_turn(
                 &client_conn,
                 &first,
-                "Use the bash tool to run exactly this command: git --version. \
+                "Use the bash tool to run exactly this command: make check. \
                  Then report the command's output verbatim.",
             )
             .await
             .expect("first turn");
-            assert_eventually_contains(&client, "git version", "first turn output").await;
+            assert_eventually_contains(&client, "make-check-ran", "first turn output").await;
             assert_eq!(
                 client.permission_requests.get(),
                 1,
                 "the first session's bash call must ask the client exactly once"
             );
 
-            // The approval persisted as an ACL document with the git prefix.
-            let approvals = workspace.join(".a3s").join("approvals.acl");
+            // The allow-always answer persisted the rule in the user state root.
+            let approvals = state.join("code").join("approvals.acl");
             let raw = std::fs::read_to_string(&approvals)
-                .unwrap_or_else(|e| panic!("approvals.acl must exist after an approval: {e}"));
-            assert!(raw.contains("learned_approvals"), "raw: {raw}");
-            assert!(raw.contains("git"), "raw: {raw}");
+                .unwrap_or_else(|e| panic!("approvals.acl must exist after allow-always: {e}"));
+            assert!(a3s_acl::parse_acl(&raw).is_ok(), "raw: {raw}");
+            assert!(raw.contains("\"make check\""), "raw: {raw}");
+            assert!(
+                !workspace.join(".a3s").join("approvals.acl").exists(),
+                "approvals must not be written into the workspace"
+            );
 
             // Session 2 (same workspace, same agent process): the learned
-            // prefix admits the call before the client is consulted.
+            // rule admits the call before the client is consulted.
             let created2 = acp::Agent::new_session(
                 &client_conn,
                 acp::NewSessionRequest::new(workspace.clone()),
@@ -211,16 +226,16 @@ async fn approved_bash_prefix_skips_confirmation_in_later_sessions() {
             run_turn(
                 &client_conn,
                 &second,
-                "Use the bash tool to run exactly this command: git --version. \
+                "Use the bash tool to run exactly this command: make check. \
                  Then report the command's output verbatim.",
             )
             .await
             .expect("second turn");
-            assert_eventually_contains(&client, "git version", "second turn output").await;
+            assert_eventually_contains(&client, "make-check-ran", "second turn output").await;
             assert_eq!(
                 client.permission_requests.get(),
                 1,
-                "the second session's git call must skip the round-trip via the learned prefix"
+                "the second session's make call must skip the round-trip via the learned rule"
             );
 
             println!(

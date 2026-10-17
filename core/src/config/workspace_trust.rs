@@ -37,12 +37,18 @@ const TRUST_STORE_VERSION: u32 = 1;
 /// the CLI `ComponentPaths` state root: `A3S_STATE_HOME`, else the platform
 /// state directory.
 pub fn workspace_mcp_trust_path(directory: &Path) -> anyhow::Result<PathBuf> {
+    Ok(code_state_dir(directory)?.join(WORKSPACE_MCP_TRUST_FILE))
+}
+
+/// `<state root>/code`: user-owned Code state that repository content must
+/// never be able to write or pre-seed.
+pub fn code_state_dir(directory: &Path) -> anyhow::Result<PathBuf> {
     let root = match nonempty_env("A3S_STATE_HOME") {
         Some(value) if value.is_absolute() => value,
         Some(value) => directory.join(value),
         None => platform_state_root(directory)?,
     };
-    Ok(root.join("code").join(WORKSPACE_MCP_TRUST_FILE))
+    Ok(root.join("code"))
 }
 
 #[cfg(target_os = "macos")]

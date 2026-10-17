@@ -1,274 +1,415 @@
-//! Persistent approval learning for interactive sessions.
+//! Persistent "don't ask again" approvals for interactive sessions.
 //!
-//! When the pager approves a `bash` tool call, the command's leading
-//! executable token is learned as an approved prefix and persisted in an
-//! ACL document at `<workspace>/.a3s/approvals.acl`. Later sessions skip
-//! the confirmation round-trip for commands with the same prefix.
+//! Only an explicit `allow-always` answer learns. The learned unit is a
+//! command rule — the program plus the subcommand that decides its risk
+//! (`git status`, `cargo test`, `npm run lint`), never a bare first token —
+//! taken from a closed allowlist. A later `bash` call skips the ask only when
+//! it parses to the same rule.
 //!
-//! Safety contract: only the first whitespace token is learned, validated
-//! as a plain executable name (no path, no metacharacters, no shell
-//! syntax); a never-learn floor excludes destructive or
-//! interpreter/interpreter-like executables; denials are never recorded;
-//! the list is capped and oldest-first evicted. The document is A3S ACL
-//! (parsed with `a3s-acl`) — no second configuration format.
+//! Safety contract:
+//! - a command carrying shell control syntax (`; & | $ \` < > ( ) { } \`,
+//!   newline, control characters) is never learnable and never matches, so
+//!   a learned rule cannot be chained into another command;
+//! - per-program argument refusals keep a learned rule from reaching
+//!   argument-level execution (`rg --pre`, `git grep -O`, `cargo --config`);
+//! - rules live in the user state root (`<state root>/code/approvals.acl`),
+//!   keyed by the canonical workspace path. A repository cannot ship or
+//!   pre-seed approvals; the old `<workspace>/.a3s/approvals.acl` is
+//!   ignored;
+//! - the per-workspace list is capped and oldest-first evicted, and the
+//!   document is A3S ACL parsed with `a3s-acl`.
 
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-const MAX_LEARNED_PREFIXES: usize = 64;
-const MAX_PREFIX_LEN: usize = 64;
-/// Executables that must always keep their confirmation, whatever the user
-/// approved once: destructive tools, privilege escalation, interpreters
-/// (they make the "prefix" meaningless), and network fetchers (their
-/// arguments are the risk, not the token).
-const NEVER_LEARN: &[&str] = &[
-    "rm",
-    "rmdir",
-    "sudo",
-    "doas",
-    "su",
-    "dd",
-    "mkfs",
-    "fdisk",
-    "reboot",
-    "shutdown",
-    "halt",
-    "kill",
-    "killall",
-    "pkill",
-    "chmod",
-    "chown",
-    "chflags",
-    "mount",
-    "umount",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "dash",
-    "ksh",
-    "env",
-    "exec",
-    "eval",
-    "source",
-    "xargs",
-    "tee",
-    "curl",
-    "wget",
-    "nc",
-    "ncat",
-    "ssh",
-    "scp",
-    "rsync",
-    "git-push",
-    "git-push-force",
+const APPROVALS_FILE: &str = "approvals.acl";
+const LOCK_FILE: &str = "approvals.lock";
+const MAX_RULES_PER_WORKSPACE: usize = 64;
+const MAX_COMMAND_LEN: usize = 4096;
+const MAX_TOKEN_LEN: usize = 64;
+const MAX_STORE_BYTES: u64 = 1024 * 1024;
+
+/// Shell syntax that can chain, substitute, redirect or group commands.
+const SHELL_CONTROL: &[char] = &[
+    ';', '&', '|', '$', '`', '<', '>', '(', ')', '{', '}', '\\', '\n', '\r',
 ];
 
-pub fn approvals_path(workspace: &Path) -> PathBuf {
-    workspace.join(".a3s").join("approvals.acl")
+/// How a program's rule is formed.
+enum Shape {
+    /// The program alone; any (checked) arguments.
+    Bare,
+    /// The program plus one of these subcommands.
+    Subcommand(&'static [&'static str]),
+    /// The program plus a named target (`just test`, `make lint`).
+    Target,
+    /// The program plus `test`, or `run <script>`.
+    PackageScript,
 }
 
-/// The learnable prefix of one command: its first whitespace token, when it
-/// is a plain executable name outside the never-learn floor.
-fn learnable_prefix(command: &str) -> Option<String> {
-    let token = command.split_whitespace().next()?;
-    if token.is_empty() || token.len() > MAX_PREFIX_LEN {
+/// The closed set of learnable programs. Anything else always asks.
+const LEARNABLE: &[(&str, Shape)] = &[
+    ("ls", Shape::Bare),
+    ("pwd", Shape::Bare),
+    ("cat", Shape::Bare),
+    ("head", Shape::Bare),
+    ("tail", Shape::Bare),
+    ("wc", Shape::Bare),
+    ("grep", Shape::Bare),
+    ("rg", Shape::Bare),
+    ("which", Shape::Bare),
+    ("file", Shape::Bare),
+    ("stat", Shape::Bare),
+    ("du", Shape::Bare),
+    ("df", Shape::Bare),
+    ("tree", Shape::Bare),
+    ("diff", Shape::Bare),
+    ("pytest", Shape::Bare),
+    (
+        "git",
+        Shape::Subcommand(&[
+            "status",
+            "diff",
+            "log",
+            "show",
+            "rev-parse",
+            "ls-files",
+            "blame",
+            "grep",
+            "shortlog",
+            "describe",
+        ]),
+    ),
+    (
+        "cargo",
+        Shape::Subcommand(&[
+            "build", "check", "test", "clippy", "fmt", "doc", "tree", "metadata", "bench",
+        ]),
+    ),
+    (
+        "go",
+        Shape::Subcommand(&["build", "test", "vet", "fmt", "list"]),
+    ),
+    ("npm", Shape::PackageScript),
+    ("pnpm", Shape::PackageScript),
+    ("yarn", Shape::PackageScript),
+    ("bun", Shape::PackageScript),
+    ("just", Shape::Target),
+    ("make", Shape::Target),
+];
+
+/// Arguments that turn a learnable program into an arbitrary executor or
+/// writer outside the user's approval.
+fn refuses_argument(program: &str, argument: &str) -> bool {
+    let refused: &[&str] = match program {
+        "rg" => &["--pre"],
+        "git" => &[
+            "--output",
+            "--ext-diff",
+            "-O",
+            "--open-files-in-pager",
+            "--textconv",
+        ],
+        "cargo" => &["--config", "-Z"],
+        "make" => &["-f", "--file", "--makefile", "-C", "--directory", "--eval"],
+        "just" => &["-f", "--justfile", "-d", "--working-directory"],
+        _ => &[],
+    };
+    refused.iter().any(|prefix| argument.starts_with(prefix))
+}
+
+fn is_plain_name(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= MAX_TOKEN_LEN
+        && !token.starts_with(['.', '-'])
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+}
+
+/// Split a command that carries no shell control syntax. Only quoting is
+/// left to honour; an unterminated quote is not a command we learn.
+fn split_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => current.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            None if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            None => {
+                current.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if quote.is_some() {
         return None;
     }
-    if !token
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    if in_word {
+        words.push(current);
+    }
+    Some(words)
+}
+
+/// The rule one command would learn or match, or `None` when it must
+/// always ask.
+pub fn learnable_rule(command: &str) -> Option<String> {
+    let command = command.trim();
+    if command.is_empty()
+        || command.len() > MAX_COMMAND_LEN
+        || command
+            .chars()
+            .any(|c| SHELL_CONTROL.contains(&c) || c.is_control())
     {
         return None;
     }
-    if token.starts_with('.') {
+    let words = split_words(command)?;
+    let (program, rest) = words.split_first()?;
+    if !is_plain_name(program) {
         return None;
     }
-    if NEVER_LEARN.contains(&token.to_ascii_lowercase().as_str()) {
-        return None;
-    }
-    Some(token.to_owned())
-}
-
-fn render_document(prefixes: &[String]) -> String {
-    let body = prefixes
+    let (_, shape) = LEARNABLE.iter().find(|(name, _)| *name == program)?;
+    if rest
         .iter()
-        .map(|prefix| format!("\"{prefix}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("learned_approvals = [{body}]\n")
-}
-
-fn parse_prefixes(text: &str) -> Option<Vec<String>> {
-    let document = a3s_acl::parse_acl(text).ok()?;
-    let block = document.blocks.first()?;
-    let value = block.attributes.get("learned_approvals")?;
-    let items = match value {
-        a3s_acl::ast::Value::List(items) => items,
-        _ => return None,
+        .any(|argument| refuses_argument(program, argument))
+    {
+        return None;
+    }
+    let rule_words = match shape {
+        Shape::Bare => vec![program.as_str()],
+        Shape::Subcommand(allowed) => {
+            let subcommand = rest.first()?;
+            if !allowed.contains(&subcommand.as_str()) {
+                return None;
+            }
+            vec![program.as_str(), subcommand.as_str()]
+        }
+        Shape::Target => {
+            let target = rest.first()?;
+            if !is_plain_name(target) {
+                return None;
+            }
+            vec![program.as_str(), target.as_str()]
+        }
+        Shape::PackageScript => match rest.first().map(String::as_str) {
+            Some("test") => vec![program.as_str(), "test"],
+            Some("run") => {
+                let script = rest.get(1)?;
+                if !is_plain_name(script) {
+                    return None;
+                }
+                vec![program.as_str(), "run", script.as_str()]
+            }
+            _ => return None,
+        },
     };
-    Some(
-        items
+    Some(rule_words.join(" "))
+}
+
+/// `<state root>/code/approvals.acl`.
+pub fn approvals_store_path(workspace: &Path) -> anyhow::Result<PathBuf> {
+    Ok(a3s_code_core::config::code_state_dir(workspace)?.join(APPROVALS_FILE))
+}
+
+/// The repository-controlled location earlier releases read. It is never
+/// consulted now.
+fn legacy_workspace_store(workspace: &Path) -> PathBuf {
+    workspace.join(".a3s").join(APPROVALS_FILE)
+}
+
+fn workspace_key(workspace: &Path) -> String {
+    std::fs::canonicalize(workspace)
+        .unwrap_or_else(|_| workspace.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+type Store = BTreeMap<String, Vec<String>>;
+
+fn render_store(store: &Store) -> String {
+    let mut document = String::new();
+    for (workspace, rules) in store {
+        let rules = rules
             .iter()
-            .filter_map(|item| match item {
-                a3s_acl::ast::Value::String(prefix) => Some(prefix.clone()),
-                _ => None,
+            .map(|rule| format!("\"{rule}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        document.push_str(&format!(
+            "workspace \"{workspace}\" {{\n  rules = [{rules}]\n}}\n"
+        ));
+    }
+    document
+}
+
+fn parse_store(text: &str) -> anyhow::Result<Store> {
+    let document = a3s_acl::parse_acl(text)
+        .map_err(|error| anyhow::anyhow!("approvals store is not valid ACL: {error}"))?;
+    let mut store = Store::new();
+    for block in &document.blocks {
+        if block.name != "workspace" {
+            anyhow::bail!("approvals store has an unknown block `{}`", block.name);
+        }
+        let [workspace] = block.labels.as_slice() else {
+            anyhow::bail!("approvals store workspace block needs exactly one label");
+        };
+        let Some(a3s_acl::ast::Value::List(items)) = block.attributes.get("rules") else {
+            anyhow::bail!("approvals store workspace block needs a `rules` list");
+        };
+        let rules = items
+            .iter()
+            .map(|item| match item {
+                a3s_acl::ast::Value::String(rule)
+                    if learnable_rule(rule).as_ref() == Some(rule) =>
+                {
+                    Ok(rule.clone())
+                }
+                _ => Err(anyhow::anyhow!(
+                    "approvals store holds a rule that is not learnable"
+                )),
             })
-            .collect(),
-    )
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        store.insert(workspace.clone(), rules);
+    }
+    Ok(store)
 }
 
-/// Load the learned prefixes; a missing or malformed document learns nothing.
-pub fn load_approved_prefixes(workspace: &Path) -> Vec<String> {
-    std::fs::read_to_string(approvals_path(workspace))
-        .ok()
-        .and_then(|text| parse_prefixes(&text))
-        .unwrap_or_default()
+fn read_store(path: &Path) -> anyhow::Result<Store> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Store::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_file() {
+        anyhow::bail!("approvals store {} is not a regular file", path.display());
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(MAX_STORE_BYTES + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_STORE_BYTES {
+        anyhow::bail!("approvals store {} is too large", path.display());
+    }
+    parse_store(&text)
 }
 
-/// Whether a tool call was already learned as approved (bash prefixes only).
+fn warn_legacy_store_once(workspace: &Path) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let legacy = legacy_workspace_store(workspace);
+    if legacy.exists() {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                path = %legacy.display(),
+                "ignoring repository-controlled approvals; learned approvals now live in the user state root"
+            );
+        });
+    }
+}
+
+/// The rules learned for one workspace. An unreadable store learns nothing.
+pub fn load_rules(workspace: &Path) -> Vec<String> {
+    match approvals_store_path(workspace) {
+        Ok(store) => load_rules_in(&store, workspace),
+        Err(error) => {
+            tracing::warn!(%error, "learned approvals are unavailable; every command asks");
+            Vec::new()
+        }
+    }
+}
+
+fn load_rules_in(store: &Path, workspace: &Path) -> Vec<String> {
+    match read_store(store) {
+        Ok(mut store) => store.remove(&workspace_key(workspace)).unwrap_or_default(),
+        Err(error) => {
+            tracing::warn!(%error, "learned approvals are unavailable; every command asks");
+            Vec::new()
+        }
+    }
+}
+
+/// Whether a tool call matches a rule the user chose "don't ask again" for.
 pub fn is_previously_approved(workspace: &Path, tool_name: &str, args: &serde_json::Value) -> bool {
     if tool_name != "bash" {
         return false;
     }
-    let Some(command) = args.get("command").and_then(|value| value.as_str()) else {
-        return false;
-    };
-    let Some(prefix) = learnable_prefix(command) else {
-        return false;
-    };
-    load_approved_prefixes(workspace).contains(&prefix)
+    warn_legacy_store_once(workspace);
+    command_rule(args).is_some_and(|rule| load_rules(workspace).contains(&rule))
 }
 
-/// Record one approved bash command. Returns the learned prefix when the
-/// decision was persisted, `None` when the command is not learnable, is
-/// already known, or the document cannot be written.
-pub fn record_approved_bash(workspace: &Path, command: &str) -> Option<String> {
-    let prefix = learnable_prefix(command)?;
-    let path = approvals_path(workspace);
-    let mut prefixes = load_approved_prefixes(workspace);
-    if prefixes.contains(&prefix) {
-        return None;
+fn command_rule(args: &serde_json::Value) -> Option<String> {
+    args.get("command")
+        .and_then(serde_json::Value::as_str)
+        .and_then(learnable_rule)
+}
+
+/// Persist the rule of one command the user answered `allow-always` for.
+/// Returns the learned rule; `Ok(None)` when it is not learnable or already
+/// known.
+pub fn record_always_allowed_bash(
+    workspace: &Path,
+    command: &str,
+) -> anyhow::Result<Option<String>> {
+    record_in(&approvals_store_path(workspace)?, workspace, command)
+}
+
+fn record_in(path: &Path, workspace: &Path, command: &str) -> anyhow::Result<Option<String>> {
+    let Some(rule) = learnable_rule(command) else {
+        return Ok(None);
+    };
+    let Some(parent) = path.parent() else {
+        anyhow::bail!("approvals store {} has no parent", path.display());
+    };
+    std::fs::create_dir_all(parent)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(parent.join(LOCK_FILE))?;
+    lock.lock()?;
+    let mut store = read_store(path)?;
+    let rules = store.entry(workspace_key(workspace)).or_default();
+    if rules.contains(&rule) {
+        return Ok(None);
     }
-    prefixes.push(prefix.clone());
-    let overflow = prefixes.len().saturating_sub(MAX_LEARNED_PREFIXES);
-    if overflow > 0 {
-        prefixes.drain(..overflow);
+    rules.push(rule.clone());
+    let overflow = rules.len().saturating_sub(MAX_RULES_PER_WORKSPACE);
+    rules.drain(..overflow);
+    let document = render_store(&store);
+    // A workspace path a3s-acl cannot round-trip is refused instead of
+    // written as a store that would later fail to load.
+    if parse_store(&document)? != store {
+        anyhow::bail!("approvals store would not round-trip for this workspace path");
     }
-    let document = render_document(&prefixes);
-    // The write must be a document a3s-acl can read back; validate before
-    // touching disk so a rendering bug can never corrupt learned state.
-    let reparsed = parse_prefixes(&document)?;
-    if reparsed != prefixes {
-        return None;
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok()?;
-    }
-    let temporary = path.with_extension("acl.tmp");
+    write_private(path, document.as_bytes())?;
+    Ok(Some(rule))
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let temporary = path.with_extension(format!("acl.{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
     {
-        let mut file = std::fs::File::create(&temporary).ok()?;
-        file.write_all(document.as_bytes()).ok()?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
     }
-    std::fs::rename(&temporary, &path).ok()?;
-    Some(prefix)
+    let mut file = options.open(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(command: &str) -> serde_json::Value {
-        serde_json::json!({ "command": command })
-    }
-
-    #[test]
-    fn learns_plain_prefixes_and_round_trips_through_acl() {
-        let workspace = tempfile::tempdir().unwrap();
-        let learned = record_approved_bash(workspace.path(), "git status --short").unwrap();
-        assert_eq!(learned, "git");
-        let learned = record_approved_bash(workspace.path(), "cargo test -p a3s-code-acp").unwrap();
-        assert_eq!(learned, "cargo");
-        let loaded = load_approved_prefixes(workspace.path());
-        assert_eq!(loaded, vec!["git".to_owned(), "cargo".to_owned()]);
-        // The document on disk is ACL and parses.
-        let text = std::fs::read_to_string(approvals_path(workspace.path())).unwrap();
-        assert!(a3s_acl::parse_acl(&text).is_ok());
-        assert!(is_previously_approved(
-            workspace.path(),
-            "bash",
-            &args("git diff")
-        ));
-    }
-
-    #[test]
-    fn never_learns_floor_paths_or_metacharacters() {
-        let workspace = tempfile::tempdir().unwrap();
-        for command in [
-            "rm -rf /",
-            "sudo reboot",
-            "sh -c 'anything'",
-            "/usr/bin/git status",
-            "./scripts/deploy.sh",
-            "git;rm -rf /",
-            "$(reboot)",
-            "",
-        ] {
-            assert!(
-                record_approved_bash(workspace.path(), command).is_none(),
-                "must refuse to learn {command:?}"
-            );
-        }
-        assert!(load_approved_prefixes(workspace.path()).is_empty());
-        assert!(!is_previously_approved(
-            workspace.path(),
-            "bash",
-            &args("rm -rf x")
-        ));
-    }
-
-    #[test]
-    fn non_bash_tools_and_denials_never_consult_or_record() {
-        let workspace = tempfile::tempdir().unwrap();
-        assert!(!is_previously_approved(
-            workspace.path(),
-            "write",
-            &serde_json::json!({"path": "x"})
-        ));
-        record_approved_bash(workspace.path(), "git push").unwrap();
-        assert!(!is_previously_approved(
-            workspace.path(),
-            "bash",
-            &args("write x")
-        ));
-    }
-
-    #[test]
-    fn caps_the_list_oldest_first() {
-        let workspace = tempfile::tempdir().unwrap();
-        for index in 0..(MAX_LEARNED_PREFIXES + 8) {
-            record_approved_bash(workspace.path(), &format!("exe{index:03} run")).unwrap();
-        }
-        let loaded = load_approved_prefixes(workspace.path());
-        assert_eq!(loaded.len(), MAX_LEARNED_PREFIXES);
-        assert_eq!(loaded.first().map(String::as_str), Some("exe008"));
-        assert_eq!(
-            loaded.last().map(String::as_str),
-            Some(format!("exe{:03}", MAX_LEARNED_PREFIXES + 7).as_str())
-        );
-    }
-
-    #[test]
-    fn malformed_document_learns_nothing() {
-        let workspace = tempfile::tempdir().unwrap();
-        let path = approvals_path(workspace.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "not = [acl").unwrap();
-        assert!(load_approved_prefixes(workspace.path()).is_empty());
-        assert!(!is_previously_approved(
-            workspace.path(),
-            "bash",
-            &args("git status")
-        ));
-    }
-}
+mod tests;
