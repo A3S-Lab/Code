@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A ratchet test counts production `unwrap` / `expect` per file (90
   sites) and fails when a count grows.
+- `a3s-code-core` documents 133 crate-root names instead of 777. They are
+  the names that ACP, the SDKs and the pager import.
+
+### Deprecated
+
+- 644 crate-root re-exports are `#[doc(hidden)]` aliases. They still
+  compile. Import them from their module path; the aliases are removed no
+  earlier than 10.0.
 
 ## [9.1.3] - 2026-10-15
 

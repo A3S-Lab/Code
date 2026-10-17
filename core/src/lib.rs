@@ -88,6 +88,7 @@ pub mod code_intelligence;
 pub mod cognitive_context;
 pub mod commands;
 pub(crate) mod compaction;
+#[doc(hidden)]
 pub use compaction::{compaction_system_prompt, render_message_for_summary};
 pub(crate) mod compaction_carry;
 pub mod completion_attestor;
@@ -205,18 +206,23 @@ pub mod verification;
 mod work_policy;
 pub mod workspace;
 
-// Re-export key types at crate root for ergonomic usage
-pub use agent::{
-    context_window_for_model, documented_context_tokens, AgentEvent, AgentExecutionFailure,
-    AgentResult, ModelMiddlewareHealthSnapshot,
-};
+// Re-export key types at crate root for ergonomic usage. A
+// `#[doc(hidden)]` re-export is a deprecated alias: import it from its
+// module path. Aliases are removed no earlier than 10.0 and may only shrink
+// (`tests/crate_root_surface.rs`).
+#[doc(hidden)]
+pub use agent::{context_window_for_model, documented_context_tokens, AgentExecutionFailure};
+pub use agent::{AgentEvent, AgentResult, ModelMiddlewareHealthSnapshot};
 #[cfg(feature = "dynamic-workflow")]
+#[doc(hidden)]
 pub use agent_api::ProjectedFlowHandle;
 pub use agent_api::{
     Agent, AgentRunSpawn, AgentRunStream, AgentSession, GoalTickAdmission, GoalTickStream,
-    HeavyToolResult, ProjectedUiHandle, ReadFileOptions, SessionBuilder, SessionContextReport,
-    SessionOptions, ToolCallResult,
+    ReadFileOptions, SessionOptions, ToolCallResult,
 };
+#[doc(hidden)]
+pub use agent_api::{HeavyToolResult, ProjectedUiHandle, SessionBuilder, SessionContextReport};
+#[doc(hidden)]
 pub use agent_protocol::{
     AgentProtocolChangeSetRequestV1, AgentProtocolChangeSetV1, AgentProtocolCommandActionV1,
     AgentProtocolCommandReceiptV1, AgentProtocolCommandV1, AgentProtocolError,
@@ -232,13 +238,16 @@ pub use agent_protocol::{
     AGENT_PROTOCOL_MAX_EVENT_TYPE_BYTES, AGENT_PROTOCOL_MAX_ID_BYTES,
     AGENT_PROTOCOL_MAX_PROMPT_BYTES, AGENT_PROTOCOL_MAX_REASON_BYTES, AGENT_PROTOCOL_V1,
 };
+#[doc(hidden)]
 pub use agent_protocol_harness::{
     force_invalid_recovery_binding_for_test, AgentProtocolCheckpointRecoveryError,
     AgentProtocolHarness, AgentProtocolHarnessError, AGENT_PROTOCOL_HARNESS_MAX_SESSIONS,
 };
+#[doc(hidden)]
 pub use agent_protocol_host::{
     AgentProtocolExactRecoveryError, AgentProtocolHost, AgentProtocolHostError,
 };
+#[doc(hidden)]
 pub use code_intelligence::{
     CodeDiagnostic, CodeDiagnosticSeverity, CodeIntelligenceCapabilities, CodeIntelligenceError,
     CodeIntelligenceLanguageStatus, CodeIntelligenceResult, CodeIntelligenceState,
@@ -246,6 +255,7 @@ pub use code_intelligence::{
     DocumentRevision, DocumentSnapshot, DocumentSymbol, LanguageId, LocalCodeIntelligence,
     NavigationKind, SymbolInformation, WorkspaceCodeIntelligence,
 };
+#[doc(hidden)]
 pub use cognitive_context::{
     CognitiveContextDocumentV1, CognitiveContextError, CognitiveContextLimits,
     CognitiveContextProvider, CognitiveContextRequestV1, CognitiveContextResponseV1,
@@ -256,25 +266,33 @@ pub use cognitive_context::{
     COGNITIVE_PACKAGE_BINDING_SCHEMA, OKF_KNOWLEDGE_CITATION_SCHEMA,
     OKF_KNOWLEDGE_READ_REQUEST_SCHEMA, OKF_KNOWLEDGE_SEARCH_REQUEST_SCHEMA,
 };
+#[doc(hidden)]
 pub use completion_attestor::{merge_attested_report, CompletionAttestor, MutatedPathRecord};
+#[doc(hidden)]
+pub use config::OsConfig;
 pub use config::{
     AutoDelegationConfig, CodeConfig, ModelConfig, ModelCost, ModelLimit, ModelModalities,
-    OsConfig, ProviderConfig,
+    ProviderConfig,
 };
 pub use content_digest::{digest_bytes, digest_json, validate_digest};
+pub use core_event_log::CoreEventLog;
+#[doc(hidden)]
 pub use core_event_log::{
-    CoreEventLog, CoreEventLogError, CoreLogAppendOutcomeV1, CoreLogEntryV1, CoreLogPageV1,
+    CoreEventLogError, CoreLogAppendOutcomeV1, CoreLogEntryV1, CoreLogPageV1,
     CoreLogVerificationV1, CORE_LOG_ENTRY_DIGEST_DOMAIN_V1, CORE_LOG_ENTRY_SCHEMA_V1,
     CORE_LOG_GENESIS_PREVIOUS_DIGEST,
 };
+#[doc(hidden)]
 pub use core_identity::{
-    ArtifactRef, CapabilityStamp, CoreEventIdentity, CoreIdentity, CoreIdentityError,
-    EvidenceCursor, LogicalClock, ManualLogicalClock, OperationId, SourceRevision,
-    SystemLogicalClock, CORE_EVENT_IDENTITY_DIGEST_DOMAIN_V1, CORE_EVENT_IDENTITY_SCHEMA_V1,
-    CORE_EVENT_PAYLOAD_DIGEST_DOMAIN_V1, CORE_IDENTITY_MAX_ARTIFACT_BYTES,
-    CORE_IDENTITY_MAX_EVENT_TYPE_BYTES, CORE_IDENTITY_MAX_ID_BYTES,
-    CORE_IDENTITY_MAX_MEDIA_TYPE_BYTES, CORE_IDENTITY_MAX_PAYLOAD_BYTES, CORE_IDENTITY_SCHEMA_V1,
+    ArtifactRef, CoreEventIdentity, CoreIdentity, CoreIdentityError, EvidenceCursor, LogicalClock,
+    ManualLogicalClock, SystemLogicalClock, CORE_EVENT_IDENTITY_DIGEST_DOMAIN_V1,
+    CORE_EVENT_IDENTITY_SCHEMA_V1, CORE_EVENT_PAYLOAD_DIGEST_DOMAIN_V1,
+    CORE_IDENTITY_MAX_ARTIFACT_BYTES, CORE_IDENTITY_MAX_EVENT_TYPE_BYTES,
+    CORE_IDENTITY_MAX_ID_BYTES, CORE_IDENTITY_MAX_MEDIA_TYPE_BYTES,
+    CORE_IDENTITY_MAX_PAYLOAD_BYTES, CORE_IDENTITY_SCHEMA_V1,
 };
+pub use core_identity::{CapabilityStamp, OperationId, SourceRevision};
+#[doc(hidden)]
 pub use durable_memory::{
     DurableMemoryActivation, DurableMemoryBindingV1, DurableMemoryMode, DurableMemoryRecallChannel,
     DurableMemoryRecallHit, DurableMemoryRecallPolicy, DurableMemoryRecallPreview,
@@ -289,6 +307,7 @@ pub use durable_memory::{
     DURABLE_MEMORY_SEMANTIC_REFRESH_PROFILE_V1,
 };
 #[cfg(feature = "dynamic-workflow")]
+#[doc(hidden)]
 pub use dynamic_workflow::{
     dynamic_workflow_claim_identity, dynamic_workflow_continuation_identity,
     dynamic_workflow_execution_plan, dynamic_workflow_step_identity, dynamic_workflow_store_path,
@@ -299,15 +318,21 @@ pub use dynamic_workflow::{
     DynamicWorkflowScriptLimits, DynamicWorkflowTool, DYNAMIC_WORKFLOW_RUNTIME_BUILD_ID,
     DYNAMIC_WORKFLOW_STORE_RELATIVE_PATH,
 };
+pub use embedding::EmbeddingProvider;
+#[doc(hidden)]
 pub use embedding::{
     EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingError, EmbeddingExecution,
     EmbeddingExecutor, EmbeddingExecutorConfig, EmbeddingFailureKind, EmbeddingInput,
-    EmbeddingNormalization, EmbeddingProvider, EmbeddingProviderDescriptor, EmbeddingProviderError,
-    EmbeddingResult, EmbeddingVector,
+    EmbeddingNormalization, EmbeddingProviderDescriptor, EmbeddingProviderError, EmbeddingResult,
+    EmbeddingVector,
 };
+pub use error::CodeError;
+#[doc(hidden)]
+pub use error::Result;
+#[doc(hidden)]
 pub use error::SessionBuildResource;
-pub use error::{CodeError, Result};
 #[cfg(feature = "evaluation")]
+#[doc(hidden)]
 pub use evaluation::{
     AuxiliaryCapabilityProfileV1, AuxiliaryExecutor, AuxiliaryModeV1, AuxiliaryRunContextV1,
     AuxiliaryRunError, AuxiliaryRunHandle, AuxiliaryRunOutputV1, AuxiliaryRunService,
@@ -339,11 +364,14 @@ pub use evaluation::{
     EVIDENCE_MAX_RESULT_BYTES, EVIDENCE_SNAPSHOT_SCHEMA_V1, EXECUTION_FACT_SCHEMA_V1,
     EXECUTION_FRAME_SCHEMA_V1, EXECUTION_TARGET_SCHEMA_V1,
 };
+#[doc(hidden)]
+pub use event_protocol::AgentEventTypeV1;
 pub use event_protocol::{
-    run_event_envelope_v1, AgentEventProjectionV1, AgentEventTypeV1, EventEnvelopeV1,
-    EventProtocolError, AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
+    run_event_envelope_v1, AgentEventProjectionV1, EventEnvelopeV1, EventProtocolError,
+    AGENT_EVENT_TYPES_V1, EVENT_ENVELOPE_V1_VERSION,
 };
 #[cfg(feature = "dynamic-workflow")]
+#[doc(hidden)]
 pub use flow_graph::{
     run_object_id as flow_run_object_id, step_object_id as flow_step_object_id,
     FileFlowDecisionLedger, FlowDecision, FlowDecisionClaimOutcome, FlowDecisionClaimState,
@@ -352,6 +380,7 @@ pub use flow_graph::{
     FlowDecisionStep, FlowGraphHealthSnapshot, FlowGraphHealthStatus, FlowGraphObserver,
     MemoryFlowDecisionLedger, FLOW_GRAPH_SOURCE,
 };
+#[doc(hidden)]
 pub use harness_evidence::{
     HarnessEvidenceError, ModelInputKindV1, ModelInputSnapshotV1, ModelPresentationApplicationV1,
     ModelPresentationSnapshotV1, ModelUsageSnapshotV1, RunCapabilitySnapshotV1,
@@ -361,37 +390,50 @@ pub use harness_evidence::{
     MODEL_PRESENTATION_SNAPSHOT_V1_SCHEMA, MODEL_USAGE_SNAPSHOT_V1_SCHEMA,
     RUN_CAPABILITY_SNAPSHOT_V1_SCHEMA, TOOL_REQUEST_SNAPSHOT_V1_SCHEMA,
 };
+#[doc(hidden)]
 pub use llm::{
     clear_http_metrics_callback, set_http_metrics_callback, strip_leaked_tool_protocol,
-    AnthropicClient, Attachment, ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource,
-    LlmClient, LlmResponse, Message, ModelGenerationAdmission, ModelGenerationAdmissionError,
-    ModelGenerationConcurrency, ModelGenerationPermit, ModelGenerationPool,
-    ModelGenerationPoolError, ModelGenerationPoolHealthSnapshot, OpenAiClient, TokenUsage,
+    AnthropicClient, ContentBlock, HttpMetricsCallback, HttpMetricsRecord, ImageSource,
+    ModelGenerationAdmission, ModelGenerationAdmissionError, ModelGenerationConcurrency,
+    ModelGenerationPermit, ModelGenerationPool, ModelGenerationPoolError, OpenAiClient,
+};
+pub use llm::{
+    Attachment, LlmClient, LlmResponse, Message, ModelGenerationPoolHealthSnapshot, TokenUsage,
+};
+#[doc(hidden)]
+pub use meta_harness::{
+    admit_component_tree, admit_default_graph, admit_from_compose, admit_spec_graph,
+    parse_harness_components, parse_harness_part, parse_harness_parts, HarnessComponentRef,
+    HostHarnessAssembler, HostHarnessRegistry, KernelPolicy, INTENT_STAMP_MARKER,
 };
 pub use meta_harness::{
-    admit_component_tree, admit_default_graph, admit_from_compose,
-    admit_from_compose_with_registry, admit_spec_graph, host_component_id, parse_harness_component,
-    parse_harness_components, parse_harness_part, parse_harness_parts, BuiltinHostHarnessRegistry,
-    HarnessComponentRef, HarnessComposeOptions, HarnessConfig, HarnessPartId, HostHarnessAssembler,
-    HostHarnessRegistry, KernelPolicy, INTENT_STAMP_MARKER,
+    admit_from_compose_with_registry, host_component_id, parse_harness_component,
+    BuiltinHostHarnessRegistry, HarnessComposeOptions, HarnessConfig, HarnessPartId,
 };
 #[cfg(feature = "headless-search")]
+#[doc(hidden)]
+pub use moli_runtime::packaged_moli;
+#[cfg(feature = "headless-search")]
 pub use moli_runtime::{
-    default_moli_version, ensure_moli, moli_runtime_info, packaged_moli, MoliRuntimeInfo,
+    default_moli_version, ensure_moli, moli_runtime_info, MoliRuntimeInfo,
     MOLI_RUNTIME_INFO_SCHEMA_V1,
 };
+#[doc(hidden)]
 pub use orchestration::{
-    execute_loop, execute_pipeline, execute_steps_parallel, execute_steps_parallel_resumable,
-    workflow_step_execution_identity, workflow_step_result_receipt, AgentExecutor, AgentStepSpec,
-    BudgetSnapshot, LoopDecision, PipelineStage, StepOutcome, Workflow, WorkflowBudget,
-    WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent, WorkflowStepRecord,
-    WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
+    execute_loop, execute_pipeline, execute_steps_parallel, workflow_step_execution_identity,
+    workflow_step_result_receipt, AgentExecutor, BudgetSnapshot, LoopDecision, PipelineStage,
+    StepOutcome, Workflow, WorkflowBudget, WorkflowBuilder, WorkflowCheckpoint, WorkflowEvent,
+    WorkflowStepRecord, WORKFLOW_CHECKPOINT_SCHEMA_VERSION,
 };
+pub use orchestration::{execute_steps_parallel_resumable, AgentStepSpec};
+#[doc(hidden)]
 pub use prompts::{
     infer_user_reply_language, output_language_contract, resolve_product_output_language,
-    AgentStyle, DetectionConfidence, PlanningMode, SystemPromptSlots,
+    DetectionConfidence,
 };
+pub use prompts::{AgentStyle, PlanningMode, SystemPromptSlots};
 #[cfg(feature = "research")]
+#[doc(hidden)]
 pub use research::{
     ResearchArtifactKindV1, ResearchCitationV1, ResearchClaimStatusV1, ResearchClaimV1,
     ResearchContractError, ResearchEventV1, ResearchEvidenceCompletenessV1,
@@ -412,25 +454,36 @@ pub use research::{
     RESEARCH_REVIEW_FINDING_SCHEMA_V1, RESEARCH_RUN_SCHEMA_V1, RESEARCH_WIRE_KIND_DESCRIPTORS_V1,
     RESEARCH_WORKFLOW_PLAN_SCHEMA_V1, RESEARCH_WORKFLOW_STEP_SCHEMA_V1,
 };
-pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode, RlTrajectoryRecorder};
+#[doc(hidden)]
+pub use rl_trajectory::RlTrajectoryRecorder;
+pub use rl_trajectory::{RlTrajectoryConfig, RlTrajectoryMode};
+#[doc(hidden)]
 pub use run::{
-    ActiveToolSnapshot, InMemoryRunStore, RunEventRecord, RunHandle, RunRecord, RunReservation,
-    RunSnapshot, RunStatus, RunWorkspaceChangeSet, RunWorkspaceChangeSetError,
+    ActiveToolSnapshot, InMemoryRunStore, RunRecord, RunReservation, RunSnapshot, RunStatus,
+    RunWorkspaceChangeSet, RunWorkspaceChangeSetError,
 };
+pub use run::{RunEventRecord, RunHandle};
+pub use run_control::{InterruptRequest, SteerRequest};
+#[doc(hidden)]
 pub use run_control::{
-    InterruptRequest, RunControlCommand, RunControlError, RunControlErrorInfo, RunControlOperation,
-    RunControlReceipt, RunControlReceiptState, RunControlRequest, RunControlSnapshot, SteerRequest,
+    RunControlCommand, RunControlError, RunControlErrorInfo, RunControlOperation,
+    RunControlReceipt, RunControlReceiptState, RunControlRequest, RunControlSnapshot,
     RUN_CONTROL_MAX_ID_BYTES, RUN_CONTROL_MAX_INPUT_BYTES, RUN_CONTROL_MAX_QUEUE,
     RUN_CONTROL_MAX_REASON_BYTES, RUN_CONTROL_MAX_SEEN_REQUESTS, RUN_CONTROL_RECEIPT_SCHEMA_V1,
     RUN_CONTROL_REQUEST_SCHEMA_V1,
 };
+#[doc(hidden)]
+pub use sdk_capabilities::{sdk_baseline_capabilities, SDK_CAPABILITIES_SCHEMA_V2};
 pub use sdk_capabilities::{
-    sdk_baseline_capabilities, sdk_capabilities, sdk_capabilities_schema, CapabilityTier,
-    SdkCapability, SDK_CAPABILITIES_SCHEMA_V1, SDK_CAPABILITIES_SCHEMA_V2,
+    sdk_capabilities, sdk_capabilities_schema, CapabilityTier, SdkCapability,
+    SDK_CAPABILITIES_SCHEMA_V1,
 };
 pub use session_checkpoint::{
-    SdkSessionCheckpointExportV1, SessionCheckpointDescriptorV1, SessionCheckpointError,
-    SessionCheckpointExportSink, SessionCheckpointExportV1, SessionCheckpointPayloadV1,
+    SdkSessionCheckpointExportV1, SessionCheckpointExportSink, SessionCheckpointExportV1,
+};
+#[doc(hidden)]
+pub use session_checkpoint::{
+    SessionCheckpointDescriptorV1, SessionCheckpointError, SessionCheckpointPayloadV1,
     SessionLogicalResumeEvidenceV1, SessionSnapshotEvidenceV1,
     SESSION_CHECKPOINT_DESCRIPTOR_SCHEMA_V1, SESSION_CHECKPOINT_ENCODING_V1,
     SESSION_CHECKPOINT_FORMAT_V1, SESSION_CHECKPOINT_LOGICAL_RESUME_SEMANTICS_V1,
@@ -438,46 +491,64 @@ pub use session_checkpoint::{
     SESSION_CHECKPOINT_PAYLOAD_SCHEMA_V1, SESSION_LOGICAL_RESUME_EVIDENCE_SCHEMA_V1,
     SESSION_SNAPSHOT_EVIDENCE_SCHEMA_V1,
 };
+pub use session_review::SessionReviewFindingV1;
+#[doc(hidden)]
 pub use session_review::{
-    SessionReviewAnchorV1, SessionReviewFindingV1, SessionReviewSeverityV1, SessionReviewStatusV1,
-    SessionReviewStoreV1, SCENARIO_REPLY_TRANSCRIPT, SESSION_REVIEW_FINDING_SCHEMA_V1,
-    SESSION_REVIEW_STORE_SCHEMA_V1,
+    SessionReviewAnchorV1, SessionReviewSeverityV1, SessionReviewStatusV1, SessionReviewStoreV1,
+    SCENARIO_REPLY_TRANSCRIPT, SESSION_REVIEW_FINDING_SCHEMA_V1, SESSION_REVIEW_STORE_SCHEMA_V1,
+};
+#[cfg(feature = "state-graph")]
+#[doc(hidden)]
+pub use state_graph::{
+    graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, FileGraphEventStore,
+    FnBehavior, GraphDiff, GraphEventStore, GraphObject, GraphRelation, GraphSaveOutcome,
+    MemoryGraphEventStore, ObjectId, PatchOperation, RelationId, StateGraph,
+    GRAPH_EVENT_SCHEMA_VERSION,
 };
 #[cfg(feature = "state-graph")]
 pub use state_graph::{
-    graph_event_head, Behavior, BehaviorContext, BehaviorError, EventFilter, ExternalEvent,
-    ExternalProjectionOutcome, FileGraphEventStore, FnBehavior, GraphDiff, GraphEvent,
-    GraphEventRecord, GraphEventStore, GraphObject, GraphPatch, GraphRelation, GraphRuntime,
-    GraphSaveOutcome, MemoryGraphEventStore, ObjectId, PatchOperation, RelationId, ReplayError,
-    RuntimeError as GraphRuntimeError, RuntimeLimits, StateGraph, GRAPH_EVENT_SCHEMA_VERSION,
+    ExternalEvent, ExternalProjectionOutcome, GraphEvent, GraphEventRecord, GraphPatch,
+    GraphRuntime, ReplayError, RuntimeError as GraphRuntimeError, RuntimeLimits,
 };
 pub use subagent::{
-    AgentDefinition, AgentRegistry, CattleAgentKind, CattleAgentSpec, ConfirmationInheritance,
-    WorkerAgentKind, WorkerAgentSpec,
+    AgentDefinition, AgentRegistry, ConfirmationInheritance, WorkerAgentKind, WorkerAgentSpec,
 };
+#[doc(hidden)]
+pub use subagent::{CattleAgentKind, CattleAgentSpec};
+#[doc(hidden)]
 pub use subagent_task_tracker::{
     InMemorySubagentTaskTracker, SubagentProgressEntry, SubagentStatus, SubagentTaskSnapshot,
 };
+#[doc(hidden)]
 pub use task_scheduler::{
-    TaskLease, TaskPriority, TaskPriorityCounts, TaskScheduler, TaskSchedulerConfig,
-    TaskSchedulerError, TaskSchedulerHealthSnapshot, TaskSchedulerQuota,
-    TaskSchedulerQuotaHealthSnapshot, TaskSchedulerQuotaSnapshot, TaskSchedulerStats,
+    TaskLease, TaskScheduler, TaskSchedulerConfig, TaskSchedulerQuota, TaskSchedulerQuotaSnapshot,
     TASK_SCHEDULER_MAX_QUOTAS, TASK_SCHEDULER_MAX_SCOPE_BYTES,
     TASK_SCHEDULER_QUOTA_HEALTH_RETENTION,
 };
+pub use task_scheduler::{
+    TaskPriority, TaskPriorityCounts, TaskSchedulerError, TaskSchedulerHealthSnapshot,
+    TaskSchedulerQuotaHealthSnapshot, TaskSchedulerStats,
+};
+pub use tools::ToolErrorKind;
 pub use tools::{
     ImmutableContentAdapter, ImmutableContentAdapterBindingV1, ImmutableContentAdapterSession,
-    ImmutableContentDescriptorV1, ImmutableContentError, ImmutableContentKindV1,
-    ImmutableContentReferenceV1, ImmutableContentResult, ImmutableContentWriteRequestV1,
-    SdkImmutableContentWriteRequestV1, ToolPresentationError, ToolPresentationModeV1,
-    ToolPresentationProfileV1, IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1,
+    ImmutableContentError, ImmutableContentReferenceV1, ImmutableContentResult,
+    ImmutableContentWriteRequestV1, SdkImmutableContentWriteRequestV1,
+};
+#[doc(hidden)]
+pub use tools::{
+    ImmutableContentDescriptorV1, ImmutableContentKindV1, ToolPresentationError,
+    ToolPresentationModeV1, ToolPresentationProfileV1, IMMUTABLE_CONTENT_ADAPTER_BINDING_SCHEMA_V1,
     IMMUTABLE_CONTENT_DESCRIPTOR_SCHEMA_V1, IMMUTABLE_CONTENT_REFERENCE_SCHEMA_V1,
     TOOL_PRESENTATION_PROFILE_V1_SCHEMA, TOOL_RESULT_CONTENT_MEDIA_TYPE,
 };
-pub use tools::{ToolCapabilities, ToolErrorKind, ToolOutputKind, ToolResultTrustV1};
+#[doc(hidden)]
+pub use tools::{ToolCapabilities, ToolOutputKind, ToolResultTrustV1};
 #[cfg(feature = "apofasi")]
+#[doc(hidden)]
 pub use typed_decision::TokenUsage as ApofasiTokenUsage;
 #[cfg(feature = "apofasi")]
+#[doc(hidden)]
 pub use typed_decision::{
     admit_goal_achievement, admit_planning_pre_analysis, analyse, build_typed_decision_receipt,
     compose_host_decision, enforce_ineligible, gate_answer, gate_system_one_response,
@@ -489,6 +560,7 @@ pub use typed_decision::{
     TypedDecisionReceiptV1, TypedDecisionResult, TypedDecisionService, APOFASI_VERSION,
     TYPED_DECISION_RECEIPT_SCHEMA_V1,
 };
+#[doc(hidden)]
 pub use use_runtime_tasks::{
     UsePlanScope, UsePlanScopeKind, UseProjectedLifecycleIdentity, UseRuntimeTaskDispatcher,
     UseRuntimeTaskError, UseRuntimeTaskExecutionV1, UseRuntimeTaskProjectionAdapter,
@@ -497,46 +569,52 @@ pub use use_runtime_tasks::{
     MAX_USE_RUNTIME_TASK_OUTPUT_BYTES, MAX_USE_RUNTIME_TASK_TIMEOUT_MS,
     USE_RUNTIME_TASK_REQUEST_SCHEMA, USE_RUNTIME_TASK_RESULT_SCHEMA,
 };
-pub use work_policy::{
-    WorkPolicyError, WorkPolicyRefusal, WorkPolicyRefusalParseError, WorkPolicyV1,
-};
-pub use workspace::{
-    ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CommandOutput, CommandOutputObserver,
-    CommandOutputSummary, CommandRequest, CustomWorkspaceChunkingStrategy,
-    FixedWindowChunkingOptions, GrepCandidateIndex, GrepCandidateSelection, LexicalSearchHit,
-    LexicalSearchRequest, LexicalSearchResult, LocalWorkspaceAccessPolicy, LocalWorkspaceBackend,
-    LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
-    LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
-    RecursiveChunkingOptions, RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict,
-    SharedGrepCandidateIndex, UnconstrainedGrepCandidateIndex, VirtualPathResolver,
-    WorkspaceCapabilities, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceChunkId,
-    WorkspaceChunkRange, WorkspaceChunkingError, WorkspaceChunkingInput, WorkspaceChunkingStrategy,
-    WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceEligibilityPolicy,
-    WorkspaceEmbeddingBatchMetrics, WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind,
-    WorkspaceFileSystem, WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit,
-    WorkspaceGitBranch, WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest,
-    WorkspaceGitCommit, WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest,
-    WorkspaceGitDiffRequest, WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest,
-    WorkspaceGitStash, WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus,
-    WorkspaceGitWorktree, WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider,
-    WorkspaceGlobRequest, WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest,
-    WorkspaceGrepResult, WorkspaceHybridChannelRank, WorkspaceHybridChannelStatus,
-    WorkspaceHybridFallbackReason, WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest,
-    WorkspaceHybridSearchResult, WorkspaceIndexError, WorkspaceLexicalEngine, WorkspacePath,
-    WorkspacePathResolver, WorkspacePersistentIndex, WorkspacePersistentIndexPhase,
-    WorkspacePersistentIndexStatus, WorkspaceRef, WorkspaceRerankAlgorithm,
-    WorkspaceRerankFallbackReason, WorkspaceRerankMode, WorkspaceRerankOptions,
-    WorkspaceRerankStatus, WorkspaceResult, WorkspaceRetrievalChannel, WorkspaceRetrievalError,
-    WorkspaceRetrievalOptions, WorkspaceRetrievalPhase, WorkspaceRetrievalResult,
-    WorkspaceRetrievalRuntime, WorkspaceRetrievalStatus, WorkspaceSearch,
-    WorkspaceSemanticFallbackReason, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
-    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceServices,
-    WorkspaceServicesBuilder, WorkspaceTextRange, WorkspaceTextReader, WorkspaceVersionConflict,
-    WorkspaceWriteOutcome,
-};
+pub use work_policy::WorkPolicyV1;
+#[doc(hidden)]
+pub use work_policy::{WorkPolicyError, WorkPolicyRefusal, WorkPolicyRefusalParseError};
 #[cfg(feature = "s3")]
-pub use workspace::{S3BackendConfig, S3WorkspaceBackend};
+pub use workspace::S3BackendConfig;
+#[cfg(feature = "s3")]
+#[doc(hidden)]
+pub use workspace::S3WorkspaceBackend;
+pub use workspace::{
+    ChunkCatalogLimits, ChunkingConfig, FixedWindowChunkingOptions, RecursiveChunkingOptions,
+    RemoteGitBackendConfig, WorkspaceChunk, WorkspaceChunkCatalog, WorkspaceChunkingError,
+    WorkspaceChunkingStrategy, WorkspaceEmbeddingBatchMetrics, WorkspaceHybridChannelRank,
+    WorkspaceHybridChannelStatus, WorkspaceHybridSearchHit, WorkspaceHybridSearchRequest,
+    WorkspaceHybridSearchResult, WorkspaceLexicalEngine, WorkspacePath, WorkspaceRerankAlgorithm,
+    WorkspaceRerankFallbackReason, WorkspaceRerankMode, WorkspaceRerankOptions,
+    WorkspaceRerankStatus, WorkspaceRetrievalError, WorkspaceRetrievalOptions,
+    WorkspaceRetrievalStatus, WorkspaceSemanticIndexLimits, WorkspaceSemanticSearchHit,
+    WorkspaceSemanticSearchRequest, WorkspaceSemanticSearchResult, WorkspaceServices,
+};
+#[doc(hidden)]
+pub use workspace::{
+    ChunkCatalogSnapshot, CommandOutput, CommandOutputObserver, CommandOutputSummary,
+    CommandRequest, CustomWorkspaceChunkingStrategy, GrepCandidateIndex, GrepCandidateSelection,
+    LexicalSearchHit, LexicalSearchRequest, LexicalSearchResult, LocalWorkspaceAccessPolicy,
+    LocalWorkspaceBackend, LocalWorkspaceFile, LocalWorkspaceFileStatus, LocalWorkspaceManifest,
+    LocalWorkspaceManifestSnapshot, ManifestWorkspaceBackend, RecentWorkspaceFile,
+    RemoteGitBackend, RemoteGitConflict, SharedGrepCandidateIndex, UnconstrainedGrepCandidateIndex,
+    VirtualPathResolver, WorkspaceCapabilities, WorkspaceChunkId, WorkspaceChunkRange,
+    WorkspaceChunkingInput, WorkspaceCommandRunner, WorkspaceDirEntry, WorkspaceEligibilityPolicy,
+    WorkspaceError, WorkspaceFileChange, WorkspaceFileChangeKind, WorkspaceFileSystem,
+    WorkspaceFileSystemExt, WorkspaceFileType, WorkspaceGit, WorkspaceGitBranch,
+    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
+    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
+    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
+    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
+    WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
+    WorkspaceHybridFallbackReason, WorkspaceIndexError, WorkspacePathResolver,
+    WorkspacePersistentIndex, WorkspacePersistentIndexPhase, WorkspacePersistentIndexStatus,
+    WorkspaceRef, WorkspaceResult, WorkspaceRetrievalChannel, WorkspaceRetrievalPhase,
+    WorkspaceRetrievalResult, WorkspaceRetrievalRuntime, WorkspaceSearch,
+    WorkspaceSemanticFallbackReason, WorkspaceServicesBuilder, WorkspaceTextRange,
+    WorkspaceTextReader, WorkspaceVersionConflict, WorkspaceWriteOutcome,
+};
 #[cfg(feature = "grep-trigram")]
+#[doc(hidden)]
 pub use workspace::{
     TrigramGrepCandidateIndex, TrigramGrepCandidateIndexError, AUTO_GREP_TRIGRAM_MAX_FILES,
     GREP_TRIGRAM_INDEX_RELATIVE_DIR,
