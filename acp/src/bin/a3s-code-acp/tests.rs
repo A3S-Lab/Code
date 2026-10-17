@@ -94,3 +94,21 @@ fn unattended_options_are_refused_without_the_flag_or_beside_studio_flags() {
     assert!(parse(&["--unattended", "--studio-documents"]).is_err());
     assert!(parse(&["--unattended", "--plugin-store", "/tmp/store"]).is_err());
 }
+
+#[test]
+fn workspace_mcp_review_flags_parse_and_trust_requires_a_selector() {
+    assert_eq!(parse(&[]).expect("args").workspace_mcp, None);
+    assert_eq!(
+        parse(&["--list-workspace-mcp"])
+            .expect("args")
+            .workspace_mcp,
+        Some(WorkspaceMcpCommand::List)
+    );
+    assert_eq!(
+        parse(&["--trust-workspace-mcp", "3fa9"])
+            .expect("args")
+            .workspace_mcp,
+        Some(WorkspaceMcpCommand::Trust("3fa9".to_string()))
+    );
+    assert!(parse(&["--trust-workspace-mcp"]).is_err());
+}

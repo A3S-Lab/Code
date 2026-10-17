@@ -40,6 +40,15 @@ discipline per module and the never-cross lines called out below.
   `manual/HOST_GOAL_CONTROL.md`) is enforced at the
   `withhold_workspace_host_authoritative_blocks` choke point in
   `acp/src/config.rs`. Extending that set is a platform decision.
+  SEC-WSTRUST1 extended it with host paths and executables (`search`,
+  `sessions_dir`, `memory_dir`, `user_instructions_dir`,
+  `global_instructions_dir`, `storage_backend`, `storage_url`, `os`).
+- A workspace `mcp_servers` declaration stays inert until the user trusts
+  its exact digest (`a3s-code-acp --trust-workspace-mcp <id|all>`); the
+  digest binds the repository root and the whole declaration, and the
+  store lives in the user state root, never in the repository. Workspace
+  `skill_dirs`/`agent_dirs` entries that escape the repository root are
+  dropped. Mechanism: `config::admit_untrusted_layers` in core.
 - The process-host sandbox fallback (`A3S_CODE_ALLOW_PROCESS_HOST_SANDBOX`)
   only serves a deny request — never a mediated one.
 

@@ -331,6 +331,8 @@ pub struct A3sCodeAgent {
         RefCell<Option<tokio::sync::mpsc::Receiver<crate::sampling_consent::SamplingConsentAsk>>>,
     /// `--unattended` only. `None` for every interactive host.
     unattended: Option<crate::unattended::Unattended>,
+    /// What the untrusted workspace layer was refused or left pending.
+    workspace_admission: a3s_code_core::config::WorkspaceLayerAdmission,
 }
 
 fn model_picker_label(provider_name: &str, display_name: &str) -> String {
@@ -380,7 +382,35 @@ impl A3sCodeAgent {
             consent_tx: RefCell::new(Some(consent_tx)),
             consent_rx: RefCell::new(Some(consent_rx)),
             unattended: None,
+            workspace_admission: Default::default(),
         }
+    }
+
+    /// Report the launch's workspace-layer admission to the client.
+    pub fn with_workspace_admission(
+        mut self,
+        admission: a3s_code_core::config::WorkspaceLayerAdmission,
+    ) -> Self {
+        self.workspace_admission = admission;
+        self
+    }
+
+    fn workspace_admission_meta(&self) -> serde_json::Value {
+        let admission = &self.workspace_admission;
+        serde_json::json!({
+            "workspaceMcp": {
+                "pending": admission.pending_mcp().collect::<Vec<_>>(),
+                "trusted": admission
+                    .workspace_mcp
+                    .iter()
+                    .filter(|server| server.trusted)
+                    .map(|server| server.name.as_str())
+                    .collect::<Vec<_>>(),
+                "trustCommand": "a3s-code-acp --trust-workspace-mcp <id|all>",
+            },
+            "withheldBlocks": admission.withheld_blocks,
+            "droppedDirs": admission.dropped_dirs,
+        })
     }
 
     /// Run every prompt unattended. Only the `--unattended` launch calls this.
@@ -3020,6 +3050,7 @@ impl acp::Agent for A3sCodeAgent {
                     "cancelRewind": false,
                     "sessionRecap": false,
                     "feedbackTraceOffer": false,
+                    "a3s": self.workspace_admission_meta(),
                 })
                 .as_object()
                 .cloned(),

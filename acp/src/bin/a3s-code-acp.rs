@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use a3s_code_acp::unattended::{Unattended, DEFAULT_EXECUTION_BUDGET_MS};
-use a3s_code_acp::{load_launch_config, A3sCodeAgent, PluginSelectionHost};
+use a3s_code_acp::{load_launch_config_with_admission, A3sCodeAgent, PluginSelectionHost};
 use agent_client_protocol as acp;
 use anyhow::{Context, Result};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -16,6 +16,14 @@ struct Args {
     plugin_store: Option<PathBuf>,
     studio_documents: bool,
     unattended: Option<Unattended>,
+    workspace_mcp: Option<WorkspaceMcpCommand>,
+}
+
+/// Review or trust the repository-declared MCP servers, then exit.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkspaceMcpCommand {
+    List,
+    Trust(String),
 }
 
 fn parse_args() -> Result<Args> {
@@ -34,9 +42,17 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
     let mut reasoning_effort = None;
     let mut engineering_policy = None;
     let mut goal_continuation = false;
+    let mut workspace_mcp = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--unattended" => unattended = true,
+            "--list-workspace-mcp" => workspace_mcp = Some(WorkspaceMcpCommand::List),
+            "--trust-workspace-mcp" => {
+                workspace_mcp = Some(WorkspaceMcpCommand::Trust(
+                    args.next()
+                        .context("--trust-workspace-mcp requires an id prefix or `all`")?,
+                ));
+            }
             "--goal-continuation" => goal_continuation = true,
             "--max-execution-ms" => {
                 let value = args.next().context("--max-execution-ms requires a value")?;
@@ -94,6 +110,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
             "--help" | "-h" => {
                 eprintln!(
                     "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model] [--plugin-store DIR]\n\
+                     \x20      a3s-code-acp --list-workspace-mcp | --trust-workspace-mcp <ID|all> [--cwd DIR]\n\
                      \x20      a3s-code-acp --unattended [--max-execution-ms MS] [--reasoning-effort LEVEL] [--engineering-policy engineering-v1] [--goal-continuation] [--result-file FILE] [--cwd DIR] [--config FILE] [--model provider/model]\n\
                      Speaks Agent Client Protocol on stdio over a3s-code-core {}.",
                     env!("CARGO_PKG_VERSION")
@@ -152,7 +169,36 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
         plugin_store,
         studio_documents,
         unattended,
+        workspace_mcp,
     })
+}
+
+fn run_workspace_mcp_command(args: &Args, command: &WorkspaceMcpCommand) -> Result<()> {
+    let config = args.config.as_deref();
+    let declarations = match command {
+        WorkspaceMcpCommand::List => a3s_code_acp::workspace_mcp_declarations(&args.cwd, config)?,
+        WorkspaceMcpCommand::Trust(selector) => {
+            a3s_code_acp::trust_workspace_mcp(&args.cwd, config, selector)?
+        }
+    };
+    if declarations.is_empty() {
+        println!("No workspace MCP servers to review.");
+    }
+    for declaration in declarations {
+        let state = match (command, declaration.trusted) {
+            (WorkspaceMcpCommand::Trust(_), _) => "trusted",
+            (_, true) => "trusted",
+            (_, false) => "pending",
+        };
+        println!(
+            "{}  {:8} {}  {}",
+            declaration.short_id(),
+            state,
+            declaration.name,
+            declaration.summary
+        );
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -204,10 +250,14 @@ async fn run() -> Result<()> {
     }
 
     let args = parse_args()?;
+    if let Some(command) = &args.workspace_mcp {
+        return run_workspace_mcp_command(&args, command);
+    }
     if let Some(model) = args.model {
         std::env::set_var("A3S_DEFAULT_MODEL", model);
     }
-    let mut launch = load_launch_config(args.cwd, args.config).context("load A3S ACL")?;
+    let (mut launch, admission) =
+        load_launch_config_with_admission(args.cwd, args.config).context("load A3S ACL")?;
     if args.plugin_store.is_some() || args.studio_documents {
         launch.workspace =
             std::path::absolute(&launch.workspace).context("bind native workspace")?;
@@ -222,7 +272,7 @@ async fn run() -> Result<()> {
             unattended.goal_control(u64::try_from(now).context("host clock")?)?;
     }
     let workspace = launch.workspace.clone();
-    let mut agent = A3sCodeAgent::new(launch);
+    let mut agent = A3sCodeAgent::new(launch).with_workspace_admission(admission);
     if let Some(unattended) = args.unattended {
         let root = a3s_code_acp::unattended::install_state_root()?;
         tracing::info!(state_root = %root.display(), "unattended launch");

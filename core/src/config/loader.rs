@@ -563,7 +563,13 @@ const KNOWN_CONFIG_BLOCKS: &[&str] = &[
 /// traffic and credentials to endpoints of its choosing. A workspace-scoped
 /// `verification_contract` grants suite evidence, so it is also host-owned
 /// (decision: manual/HOST_VERIFICATION_CONTRACT.md, 2026-10-12). Finite
-/// `goal_control` bounds are host-owned (manual/HOST_GOAL_CONTROL.md). Extending this
+/// `goal_control` bounds are host-owned (manual/HOST_GOAL_CONTROL.md).
+/// Settings that start a host executable (`search` carries the headless
+/// `browser_path`), redirect host state or account traffic outside the
+/// repository (`sessions_dir`, `memory_dir`, `user_instructions_dir`,
+/// `storage_*`, `os`) are host-owned since SEC-WSTRUST1 (2026-10-17).
+/// Repository `mcp_servers` are not in this set: they are admitted per
+/// declaration through [`super::admit_untrusted_layers`]. Extending this
 /// set is a platform decision, not a per-feature one (the `providers`
 /// extension was ratified 2026-10-09).
 pub const HOST_AUTHORITATIVE_BLOCKS: &[&str] = &[
@@ -571,6 +577,17 @@ pub const HOST_AUTHORITATIVE_BLOCKS: &[&str] = &[
     "providers",
     "verification_contract",
     "goal_control",
+    "search",
+    "sessions_dir",
+    "memory_dir",
+    "memoryDir",
+    "user_instructions_dir",
+    "userInstructionsDir",
+    "global_instructions_dir",
+    "globalInstructionsDir",
+    "storage_backend",
+    "storage_url",
+    "os",
 ];
 
 /// The first host-authoritative top-level block an ACL document declares,
@@ -578,13 +595,25 @@ pub const HOST_AUTHORITATIVE_BLOCKS: &[&str] = &[
 /// spells the block name is not a declaration, and only top-level blocks
 /// count — nested blocks never reach the loader's dispatch arms.
 pub fn host_authoritative_block(acl: &str) -> Option<&'static str> {
-    let document = a3s_acl::parse_acl(acl).ok()?;
-    HOST_AUTHORITATIVE_BLOCKS.iter().copied().find(|name| {
-        document
-            .blocks
-            .iter()
-            .any(|block| block.name.as_str() == *name)
-    })
+    host_authoritative_blocks(acl).into_iter().next()
+}
+
+/// Every host-authoritative top-level block an ACL document declares, in
+/// [`HOST_AUTHORITATIVE_BLOCKS`] order.
+fn host_authoritative_blocks(acl: &str) -> Vec<&'static str> {
+    let Ok(document) = a3s_acl::parse_acl(acl) else {
+        return Vec::new();
+    };
+    HOST_AUTHORITATIVE_BLOCKS
+        .iter()
+        .copied()
+        .filter(|name| {
+            document
+                .blocks
+                .iter()
+                .any(|block| block.name.as_str() == *name)
+        })
+        .collect()
 }
 
 /// One configuration layer's ACL text with its trust classification.
@@ -613,7 +642,7 @@ pub fn withhold_untrusted_host_authoritative_blocks(
     let mut withheld: Vec<&'static str> = layers
         .iter()
         .filter(|layer| !layer.trusted)
-        .filter_map(|layer| host_authoritative_block(&layer.acl))
+        .flat_map(|layer| host_authoritative_blocks(&layer.acl))
         .collect();
     if withheld.is_empty() {
         return withheld;
@@ -630,6 +659,13 @@ pub fn withhold_untrusted_host_authoritative_blocks(
     config.providers = trusted.providers;
     config.verification_contracts = trusted.verification_contracts;
     config.goal_control = trusted.goal_control;
+    config.search = trusted.search;
+    config.sessions_dir = trusted.sessions_dir;
+    config.memory_dir = trusted.memory_dir;
+    config.user_instructions_dir = trusted.user_instructions_dir;
+    config.storage_backend = trusted.storage_backend;
+    config.storage_url = trusted.storage_url;
+    config.os = trusted.os;
     withheld.sort_unstable();
     withheld.dedup();
     withheld

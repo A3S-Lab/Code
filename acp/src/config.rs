@@ -14,6 +14,7 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
+use a3s_code_core::config::{WorkspaceLayerAdmission, WorkspaceMcpDeclaration};
 use a3s_code_core::CodeConfig;
 use anyhow::{anyhow, Context, Result};
 
@@ -36,7 +37,17 @@ pub fn load_launch_config(
     workspace: PathBuf,
     explicit_config: Option<PathBuf>,
 ) -> Result<LaunchConfig> {
+    load_launch_config_with_admission(workspace, explicit_config).map(|(launch, _)| launch)
+}
+
+/// [`load_launch_config`] plus what the untrusted workspace layer was
+/// refused or left pending (SEC-WSTRUST1).
+pub fn load_launch_config_with_admission(
+    workspace: PathBuf,
+    explicit_config: Option<PathBuf>,
+) -> Result<(LaunchConfig, WorkspaceLayerAdmission)> {
     let mut withheld_orphan = None;
+    let mut admission = WorkspaceLayerAdmission::default();
     let mut config = match layer_sources(&workspace, explicit_config.as_deref()) {
         Ok(layers) => {
             let layer_acls = layers
@@ -50,7 +61,7 @@ pub fn load_launch_config(
             // of shadowing it — otherwise a workspace default_model silently
             // runs on the user layer's credentials.
             config.overlay_duplicate_providers();
-            withhold_workspace_host_authoritative_blocks(&mut config, &layers);
+            admission = admit_workspace_layer(&mut config, &layers, &workspace)?;
             // A default that names only a withheld workspace provider is
             // missing. Account imports then apply their missing-default
             // rule. A default the trusted catalog declares stays. ACL
@@ -136,11 +147,130 @@ pub fn load_launch_config(
         "ACP launch model catalog ready"
     );
 
-    Ok(LaunchConfig {
-        workspace,
-        model_id,
+    Ok((
+        LaunchConfig {
+            workspace,
+            model_id,
+            config,
+        },
+        admission,
+    ))
+}
+
+/// The untrusted workspace layer's MCP declarations with their trust state;
+/// empty when the launch has no workspace layer.
+pub fn workspace_mcp_declarations(
+    workspace: &Path,
+    explicit_config: Option<&Path>,
+) -> Result<Vec<WorkspaceMcpDeclaration>> {
+    let layers = layer_sources(workspace, explicit_config)?;
+    let acls: Vec<&str> = layers.iter().map(|layer| layer.acl.as_str()).collect();
+    let mut config = CodeConfig::from_acl_layers(&acls)
+        .map_err(|error| anyhow!("failed to parse merged A3S ACL: {error}"))?;
+    Ok(admit_workspace_layer(&mut config, &layers, workspace)?.workspace_mcp)
+}
+
+/// Trust the pending workspace MCP declarations whose id starts with
+/// `selector` (`all` trusts every pending one). Returns the trusted
+/// declarations. An unknown or ambiguous prefix refuses.
+pub fn trust_workspace_mcp(
+    workspace: &Path,
+    explicit_config: Option<&Path>,
+    selector: &str,
+) -> Result<Vec<WorkspaceMcpDeclaration>> {
+    let declarations = workspace_mcp_declarations(workspace, explicit_config)?;
+    let pending: Vec<_> = declarations
+        .into_iter()
+        .filter(|declaration| !declaration.trusted)
+        .collect();
+    let selected: Vec<_> = if selector.eq_ignore_ascii_case("all") {
+        pending
+    } else {
+        let matches: Vec<_> = pending
+            .into_iter()
+            .filter(|declaration| !selector.is_empty() && declaration.id.starts_with(selector))
+            .collect();
+        match matches.len() {
+            0 => anyhow::bail!("no pending workspace MCP server id starts with {selector:?}"),
+            1 => matches,
+            _ => anyhow::bail!("workspace MCP server id prefix {selector:?} is ambiguous"),
+        }
+    };
+    let ids: Vec<String> = selected.iter().map(|d| d.id.clone()).collect();
+    if !ids.is_empty() {
+        a3s_code_core::config::WorkspaceMcpTrust::trust(&trust_store_path(workspace)?, &ids)?;
+    }
+    Ok(selected)
+}
+
+fn trust_store_path(workspace: &Path) -> Result<PathBuf> {
+    a3s_code_core::config::workspace_mcp_trust_path(workspace)
+}
+
+/// The one place an untrusted workspace layer is admitted: host-authoritative
+/// blocks are withheld, repository MCP declarations wait for trust, and
+/// repository skill/agent directories stay inside the repository.
+fn admit_workspace_layer(
+    config: &mut CodeConfig,
+    layers: &[LayerSource],
+    workspace: &Path,
+) -> Result<WorkspaceLayerAdmission> {
+    let Some(repository_root) = layers
+        .iter()
+        .find(|layer| !layer.kind.is_trusted())
+        .and_then(|layer| layer.path.parent()?.parent().map(Path::to_path_buf))
+    else {
+        return Ok(WorkspaceLayerAdmission::default());
+    };
+    // A store that cannot be read grants nothing; the pending list still
+    // names every declaration so the user can see what was held back.
+    let trust = match trust_store_path(workspace)
+        .and_then(|path| a3s_code_core::config::WorkspaceMcpTrust::load(&path))
+    {
+        Ok(trust) => trust,
+        Err(error) => {
+            tracing::warn!(%error, "workspace MCP trust store unreadable; trusting none");
+            Default::default()
+        }
+    };
+    let layer_acls: Vec<a3s_code_core::config::LayerAcl> = layers
+        .iter()
+        .map(|layer| a3s_code_core::config::LayerAcl {
+            trusted: layer.kind.is_trusted(),
+            acl: layer.acl.clone(),
+        })
+        .collect();
+    let admission = a3s_code_core::config::admit_untrusted_layers(
         config,
-    })
+        &layer_acls,
+        &repository_root,
+        &trust,
+    )?;
+    if !admission.withheld_blocks.is_empty() {
+        tracing::warn!(
+            withheld_blocks = ?admission.withheld_blocks,
+            "workspace configuration layer sets a host-authoritative block; \
+             host-authoritative settings stay with the host layer \
+             (~/.a3s/config.acl or --config)"
+        );
+    }
+    for declaration in admission.pending_mcp() {
+        tracing::warn!(
+            id = declaration.short_id(),
+            server = %declaration.name,
+            command = %declaration.summary,
+            "workspace MCP server is not trusted and was not started; \
+             review it, then run `a3s-code-acp --trust-workspace-mcp {}`",
+            declaration.short_id()
+        );
+    }
+    if !admission.dropped_dirs.is_empty() {
+        tracing::warn!(
+            dropped = ?admission.dropped_dirs,
+            "workspace skill/agent directories outside the repository were ignored"
+        );
+    }
+    Ok(admission)
 }
 
 fn layer_sources(workspace: &Path, explicit: Option<&Path>) -> Result<Vec<LayerSource>> {

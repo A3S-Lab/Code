@@ -21,6 +21,7 @@ mod search;
 #[cfg(test)]
 mod tests;
 mod verification_contract;
+mod workspace_trust;
 
 pub use editor::{rewrite_acl_sections, ConfigSection};
 pub(crate) use loader::parse_mcp_server_block;
@@ -34,6 +35,10 @@ pub use search::{
     SearchConfig, SearchEngineConfig, SearchHealthConfig,
 };
 pub use verification_contract::WorkspaceVerificationContract;
+pub use workspace_trust::{
+    admit_untrusted_layers, workspace_mcp_server_id, workspace_mcp_trust_path,
+    WorkspaceLayerAdmission, WorkspaceMcpDeclaration, WorkspaceMcpTrust, WORKSPACE_MCP_TRUST_FILE,
+};
 
 use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};

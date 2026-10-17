@@ -675,7 +675,7 @@ fn hvf_available() -> bool {
                 0,
             )
         };
-        return rc == 0 && value == 1;
+        rc == 0 && value == 1
     }
     #[cfg(not(target_os = "macos"))]
     {

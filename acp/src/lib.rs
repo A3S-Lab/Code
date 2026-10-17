@@ -28,7 +28,10 @@ pub mod unattended;
 mod wiki_search;
 
 pub use agent::A3sCodeAgent;
-pub use config::{load_launch_config, LaunchConfig};
+pub use config::{
+    load_launch_config, load_launch_config_with_admission, trust_workspace_mcp,
+    workspace_mcp_declarations, LaunchConfig,
+};
 pub use plugin_selection::PluginSelectionHost;
 
 /// Project one tool through the posture the next admission freezes.
