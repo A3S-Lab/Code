@@ -1183,6 +1183,35 @@ fn configured_api_endpoint_rejects_non_loopback_http() {
 }
 
 #[test]
+fn configured_deepseek_engine_bridges_to_a_provider() {
+    let config = search_config(HashMap::from([(
+        "deepseek".to_string(),
+        SearchEngineConfig {
+            enabled: true,
+            weight: 1.0,
+            timeout: None,
+            api_key: Some("deepseek-test-key".to_string()),
+            project: None,
+            endpoint: None,
+            authoritative_only: None,
+            query_rewrite: None,
+        },
+    )]));
+
+    let (bridged, failures) = bridge_search_config(&config);
+    assert!(failures.is_empty(), "deepseek must bridge: {failures:?}");
+    let entry = bridged
+        .provider_entry("deepseek")
+        .expect("deepseek provider");
+    assert!(entry.enabled);
+    let engine = entry.create_engine().expect("deepseek engine");
+    assert!(matches!(
+        engine.readiness(),
+        a3s_search::providers::ProviderReadiness::Ready { .. }
+    ));
+}
+
+#[test]
 fn configured_doubao_engine_bridges_to_a_provider() {
     let config = search_config(HashMap::from([(
         "doubao".to_string(),

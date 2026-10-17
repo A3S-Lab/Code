@@ -3,7 +3,7 @@
 use crate::config::SearchCascadeTier;
 use a3s_search::providers::{
     A3sConfig, AliyunConfig, AnySearchConfig, BochaConfig, BuiltinProvider, CredentialSource,
-    DoubaoConfig, FirecrawlConfig, TavilyConfig, TencentConfig, TinyFishConfig,
+    DeepSeekConfig, DoubaoConfig, FirecrawlConfig, TavilyConfig, TencentConfig, TinyFishConfig,
 };
 use a3s_search::{
     EngineEntry, EngineFailure, EngineTier, HealthEntry, ProviderEntry, ProviderSettings,
@@ -183,6 +183,11 @@ fn provider_settings(
             }
             Ok(ProviderSettings::Doubao(provider_config))
         }
+        BuiltinProvider::DeepSeek => Ok(ProviderSettings::DeepSeek(with_api_key(
+            DeepSeekConfig::new()?,
+            api_key,
+            DeepSeekConfig::with_api_key,
+        ))),
         BuiltinProvider::A3s => {
             let mut provider_config = A3sConfig::new()?;
             if let Some(endpoint) = endpoint {

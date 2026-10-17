@@ -62,7 +62,7 @@ a3s-memory = { version = "0.1.5", git = "https://github.com/A3S-Lab/Memory.git",
 a3s-lane = "0.5"
 # Pin the Search release so the browser-engine and Moli adapter APIs cannot
 # drift underneath the Code runtime manager.
-a3s-search = { version = "=3.3.0", git = "https://github.com/A3S-Lab/Search.git", rev = "d306a8e37c7a1d4bfc68951ae9d382792877833f", default-features = false }
+a3s-search = { version = "=3.4.0", git = "https://github.com/A3S-Lab/Search.git", rev = "e09b62b9e918875315c3cd3c7e14b5a9f9180367", default-features = false }
 # Flow engine is optional: thin coding builds do not project named workflows.
 # Enabled by `dynamic-workflow` (and therefore `advanced-harness`).
 a3s-flow = { version = "=1.1.0", git = "https://github.com/A3S-Lab/Flow.git", rev = "2948ad51a1395177764766c3ddf7e44338f9e374", default-features = false, optional = true }

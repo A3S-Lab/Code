@@ -277,8 +277,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "3.3.0"
-source = "git+https://github.com/A3S-Lab/Search.git?rev=d306a8e37c7a1d4bfc68951ae9d382792877833f#d306a8e37c7a1d4bfc68951ae9d382792877833f"
+version = "3.4.0"
+source = "git+https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9e918875315c3cd3c7e14b5a9f9180367"
 dependencies = [
  "a3s-acl 0.2.2",
  "a3s-updater",
