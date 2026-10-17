@@ -463,6 +463,18 @@ publish:
 publish-dry:
     cargo publish -p a3s-code-core --dry-run
 
+# One real ACP turn (manual/RELEASE_CADENCE.md). Needs A3S_RELEASE_SMOKE_CONFIG;
+# A3S_RELEASE_SMOKE_MODEL and A3S_RELEASE_SMOKE_BIN are optional.
+release-smoke:
+    cargo test -p a3s-code-acp --test release_smoke -- --ignored --nocapture
+
+# Release-train gate (manual/RELEASE_CADENCE.md): every step must pass.
+release-gate:
+    bash scripts/check_release_versions.sh
+    just ci
+    cargo publish -p a3s-code-core -p a3s-code-acp --dry-run
+    just release-smoke
+
 # Show current version of all packages
 version:
     #!/usr/bin/env bash
