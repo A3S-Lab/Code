@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::LaunchConfig;
 
+mod commands;
 mod resume;
 mod session_catalog;
 mod unattended_turn;
@@ -3041,13 +3042,7 @@ impl acp::Agent for A3sCodeAgent {
                     "agentVersion": env!("CARGO_PKG_VERSION"),
                     "currentWorkingDirectory": cwd,
                     "modelState": model_state,
-                    "availableCommands": [{
-                        "name": "goal",
-                        "description": "Set, pause, resume, or clear a durable goal",
-                        "input": {
-                            "hint": "<objective> | status | pause | resume | clear"
-                        },
-                    }],
+                    "availableCommands": commands::available_commands(),
                     "cancelRewind": false,
                     "sessionRecap": false,
                     "feedbackTraceOffer": false,
@@ -3136,6 +3131,7 @@ impl acp::Agent for A3sCodeAgent {
         self.reapply_active_goal(&session_id).await;
 
         let config_options = Self::model_config_options(&models);
+        self.announce_commands(&session_id);
         Ok(
             acp::NewSessionResponse::new(acp::SessionId::new(session_id))
                 .models(models)
@@ -3212,6 +3208,7 @@ impl acp::Agent for A3sCodeAgent {
         self.replay_loaded_transcript(&args.session_id, &transcript)
             .await;
         let config_options = Self::model_config_options(&models);
+        self.announce_commands(&session_id);
         Ok(acp::LoadSessionResponse::new()
             .models(models)
             .config_options(config_options))
@@ -3616,9 +3613,7 @@ impl acp::Agent for A3sCodeAgent {
         if args.method.as_ref() == "x.ai/permission_posture" {
             return self.handle_permission_posture(&args).await;
         }
-        Ok(acp::ExtResponse::new(
-            serde_json::value::RawValue::NULL.to_owned().into(),
-        ))
+        Err(acp::Error::method_not_found().data(args.method.to_string()))
     }
 
     async fn cancel(&self, args: acp::CancelNotification) -> acp::Result<()> {
