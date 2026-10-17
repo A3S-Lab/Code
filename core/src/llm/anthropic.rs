@@ -261,12 +261,21 @@ impl AnthropicClient {
     ///
     /// Anthropic supports forced tool choice (`tool_choice`) but has no
     /// `response_format`, so only `force_tool` is honored.
+    ///
+    /// Extended thinking accepts only `auto` / `none` tool choice, so a forced
+    /// tool turns thinking off for that request. It is disabled explicitly:
+    /// compatible gateways (Qwen) think by default when the field is absent.
+    /// GLM-5.2/5.3 refuse thinking off and keep their request unchanged.
     fn apply_directive(
+        &self,
         request: &mut serde_json::Value,
         directive: &structured::StructuredDirective,
     ) {
         if let Some(tool) = &directive.force_tool {
             request["tool_choice"] = serde_json::json!({ "type": "tool", "name": tool });
+            if !glm_reasoning_model(&self.model) {
+                request["thinking"] = serde_json::json!({ "type": "disabled" });
+            }
         }
     }
 
@@ -427,7 +436,7 @@ impl LlmClient for AnthropicClient {
         directive: &structured::StructuredDirective,
     ) -> Result<LlmResponse> {
         let mut request_body = self.build_request(messages, system, tools);
-        Self::apply_directive(&mut request_body, directive);
+        self.apply_directive(&mut request_body, directive);
         self.send_request(request_body).await
     }
 
@@ -459,7 +468,7 @@ impl LlmClient for AnthropicClient {
         cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
         let mut request_body = self.build_request(messages, system, tools);
-        Self::apply_directive(&mut request_body, directive);
+        self.apply_directive(&mut request_body, directive);
         self.send_streaming(request_body, cancel_token).await
     }
 }
@@ -1132,9 +1141,38 @@ mod tests {
             response_format: None,
             validation_schema: None,
         };
-        AnthropicClient::apply_directive(&mut req, &directive);
+        make_client().apply_directive(&mut req, &directive);
         assert_eq!(req["tool_choice"]["type"], "tool");
         assert_eq!(req["tool_choice"]["name"], "emit_person");
+    }
+
+    #[test]
+    fn a_forced_tool_turns_thinking_off_except_for_always_reasoning_glm() {
+        let directive = structured::StructuredDirective {
+            force_tool: Some("emit_person".to_string()),
+            response_format: None,
+            validation_schema: None,
+        };
+        let claude = AnthropicClient::new("k".to_string(), "claude-sonnet-4".to_string())
+            .with_reasoning_effort("high");
+        let mut req = claude.build_request(&[Message::user("x")], None, &[]);
+        assert_eq!(req["thinking"]["type"], "adaptive");
+        claude.apply_directive(&mut req, &directive);
+        assert_eq!(
+            req["thinking"]["type"], "disabled",
+            "thinking with a forced tool_choice is refused"
+        );
+        assert_eq!(req["tool_choice"]["name"], "emit_person");
+
+        let unforced = claude.build_request(&[Message::user("x")], None, &[]);
+        let mut kept = unforced.clone();
+        claude.apply_directive(&mut kept, &structured::StructuredDirective::default());
+        assert_eq!(kept, unforced, "no forced tool, no change");
+
+        let glm = AnthropicClient::new("k".to_string(), "glm-5.3".to_string());
+        let mut req = glm.build_request(&[Message::user("x")], None, &[]);
+        glm.apply_directive(&mut req, &directive);
+        assert_eq!(req["thinking"]["type"], "enabled");
     }
 
     #[test]
@@ -1142,7 +1180,7 @@ mod tests {
         // Anthropic has no response_format; both a response_format-only and an
         // empty directive must be no-ops.
         let mut req = serde_json::json!({ "model": "m" });
-        AnthropicClient::apply_directive(
+        make_client().apply_directive(
             &mut req,
             &structured::StructuredDirective {
                 force_tool: None,
