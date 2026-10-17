@@ -251,6 +251,31 @@ fn prepare_workspace_services(
                 .to_owned(),
         });
     }
+    let prepared = prepare_backend_services(input, write_root, retrieval_options)?;
+    let overlay = input
+        .opts
+        .workspace_read_overlay
+        .as_ref()
+        .filter(|_| !input.opts.effect_isolation);
+    Ok(match (prepared, overlay) {
+        (prepared, None) => prepared,
+        (PreparedWorkspace::Host(services), Some(overlay)) => {
+            PreparedWorkspace::Host(services.with_read_overlay(Arc::clone(overlay)))
+        }
+        (PreparedWorkspace::Fresh { services, backend }, Some(overlay)) => {
+            PreparedWorkspace::Fresh {
+                services: services.with_read_overlay(Arc::clone(overlay)),
+                backend,
+            }
+        }
+    })
+}
+
+fn prepare_backend_services(
+    input: &SessionCapabilityInput<'_>,
+    write_root: &Path,
+    retrieval_options: Option<&crate::workspace::WorkspaceRetrievalOptions>,
+) -> Result<PreparedWorkspace> {
     // Session-bound Code Intelligence rides the same manifest backend the
     // default services construct, so the CI tools, retrieval, and file
     // watching share one scanner and change stream.

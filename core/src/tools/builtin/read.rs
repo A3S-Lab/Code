@@ -884,25 +884,7 @@ async fn read_range(
         .workspace_services
         .run_with_timeout("read_text", async move { fs.read_text(&path).await })
         .await?;
-    let lines = content.lines().collect::<Vec<_>>();
-    if offset >= lines.len() {
-        return Ok(WorkspaceTextRange {
-            lines: Vec::new(),
-            next_offset: None,
-            eof: true,
-            total_lines: Some(lines.len()),
-        });
-    }
-    let end = offset.saturating_add(limit).min(lines.len());
-    Ok(WorkspaceTextRange {
-        lines: lines[offset..end]
-            .iter()
-            .map(|line| (*line).to_string())
-            .collect(),
-        next_offset: (end < lines.len()).then_some(end),
-        eof: end == lines.len(),
-        total_lines: Some(lines.len()),
-    })
+    Ok(WorkspaceTextRange::from_text(&content, offset, limit))
 }
 
 #[cfg(test)]

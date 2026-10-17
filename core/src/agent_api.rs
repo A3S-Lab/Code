@@ -476,6 +476,10 @@ pub struct SessionOptions {
     /// server-local filesystem. This is the primary extension point for DFS,
     /// browser, container, and remote workspace deployments.
     pub workspace_services: Option<Arc<crate::workspace::WorkspaceServices>>,
+    /// Client-held file text served to text reads before the workspace
+    /// backend (for example an editor's unsaved buffers). Ignored when
+    /// effect isolation runs the session on a copied tree.
+    pub workspace_read_overlay: Option<Arc<dyn crate::workspace::WorkspaceReadOverlay>>,
     /// Optional session-owned semantic workspace retrieval configuration.
     ///
     /// Construction is asynchronous and ephemeral. Source chunks stay in the

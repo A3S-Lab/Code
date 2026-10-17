@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::LaunchConfig;
 
+mod client_fs;
 mod commands;
 mod resume;
 mod session_catalog;
@@ -334,6 +335,7 @@ pub struct A3sCodeAgent {
     unattended: Option<crate::unattended::Unattended>,
     /// What the untrusted workspace layer was refused or left pending.
     workspace_admission: a3s_code_core::config::WorkspaceLayerAdmission,
+    client_reads_files: std::cell::Cell<bool>,
 }
 
 fn model_picker_label(provider_name: &str, display_name: &str) -> String {
@@ -384,6 +386,7 @@ impl A3sCodeAgent {
             consent_rx: RefCell::new(Some(consent_rx)),
             unattended: None,
             workspace_admission: Default::default(),
+            client_reads_files: std::cell::Cell::new(false),
         }
     }
 
@@ -807,7 +810,7 @@ impl A3sCodeAgent {
         setup: &SessionSetup<'_>,
         session_store_dir: &std::path::Path,
     ) -> acp::Result<SessionOptions> {
-        match &self.unattended {
+        let options = match &self.unattended {
             Some(unattended) => unattended
                 .session_options(
                     session_id,
@@ -821,7 +824,8 @@ impl A3sCodeAgent {
                 &self.launch.config,
                 session_store_dir,
             ),
-        }
+        }?;
+        Ok(self.with_client_reads(options, session_id, &setup.workspace))
     }
 
     async fn open_core_session(
@@ -3022,8 +3026,9 @@ fn acp_mcp_to_config(server: &acp::McpServer) -> Option<a3s_code_core::mcp::McpS
 impl acp::Agent for A3sCodeAgent {
     async fn initialize(
         &self,
-        _args: acp::InitializeRequest,
+        args: acp::InitializeRequest,
     ) -> acp::Result<acp::InitializeResponse> {
+        self.client_reads_files.set(args.client_capabilities.fs.read_text_file);
         let cwd = self.launch.workspace.to_string_lossy().to_string();
         let current = self.model_id.lock().await.clone();
         let effort_token = self.effort.lock().await.map(|limits| limits.token);

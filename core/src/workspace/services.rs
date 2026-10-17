@@ -542,6 +542,49 @@ impl WorkspaceServices {
         }))
     }
 
+    /// Serve text reads from `overlay` first and from this bundle's backend
+    /// when the overlay has no text. Writes, listings, search, git, and
+    /// versioned edit reads ([`Self::read_for_edit`] with an
+    /// [`Self::fs_ext`]) keep using the backend.
+    pub fn with_read_overlay(
+        &self,
+        overlay: Arc<dyn super::read_overlay::WorkspaceReadOverlay>,
+    ) -> Arc<Self> {
+        let file_system: Arc<dyn WorkspaceFileSystem> =
+            Arc::new(super::read_overlay::OverlayFileSystem {
+                overlay: Arc::clone(&overlay),
+                inner: Arc::clone(&self.file_system),
+            });
+        let text_reader: Arc<dyn WorkspaceTextReader> =
+            Arc::new(super::read_overlay::OverlayTextReader {
+                overlay,
+                inner: self.text_reader.clone(),
+                fs: Arc::clone(&self.file_system),
+            });
+        Arc::new(Self {
+            workspace_ref: self.workspace_ref.clone(),
+            capabilities: self.capabilities,
+            path_resolver: Arc::clone(&self.path_resolver),
+            file_system,
+            file_system_ext: self.file_system_ext.clone(),
+            text_reader: Some(text_reader),
+            command_runner: self.command_runner.clone(),
+            search: self.search.clone(),
+            code_intelligence: self.code_intelligence.clone(),
+            chunk_catalog: self.chunk_catalog.clone(),
+            persistent_index: self.persistent_index.clone(),
+            lazy_lexical_backend: self.lazy_lexical_backend.clone(),
+            lazy_lexical: Arc::clone(&self.lazy_lexical),
+            workspace_retrieval: self.workspace_retrieval.clone(),
+            git: self.git.clone(),
+            git_stash: self.git_stash.clone(),
+            git_worktree: self.git_worktree.clone(),
+            operation_timeout: self.operation_timeout,
+            local_root: self.local_root.clone(),
+            direct_write_guard: self.direct_write_guard.clone(),
+        })
+    }
+
     /// Attach a semantic code query provider while preserving every existing
     /// workspace capability and backend.
     pub fn with_code_intelligence(

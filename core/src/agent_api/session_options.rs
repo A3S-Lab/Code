@@ -85,6 +85,10 @@ impl std::fmt::Debug for SessionOptions {
                 &self.allow_process_host_sandbox,
             )
             .field("workspace_services", &self.workspace_services.is_some())
+            .field(
+                "workspace_read_overlay",
+                &self.workspace_read_overlay.is_some(),
+            )
             .field("workspace_retrieval", &self.workspace_retrieval)
             .field("auto_compact", &self.auto_compact)
             .field("auto_compact_threshold", &self.auto_compact_threshold)
@@ -697,6 +701,16 @@ impl SessionOptions {
         services: Arc<crate::workspace::WorkspaceServices>,
     ) -> Self {
         self.workspace_services = Some(services);
+        self
+    }
+
+    /// Serve text reads from client-held file text before the workspace
+    /// backend. See [`crate::workspace::WorkspaceReadOverlay`].
+    pub fn with_workspace_read_overlay(
+        mut self,
+        overlay: Arc<dyn crate::workspace::WorkspaceReadOverlay>,
+    ) -> Self {
+        self.workspace_read_overlay = Some(overlay);
         self
     }
 

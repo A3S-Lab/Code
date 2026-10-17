@@ -15,6 +15,7 @@ mod local;
 mod local_access;
 mod manifest;
 mod path;
+mod read_overlay;
 mod remote_git;
 pub(crate) mod retrieval;
 #[cfg(feature = "s3")]
@@ -50,6 +51,7 @@ pub use manifest::{
     WorkspaceFileChange, WorkspaceFileChangeKind,
 };
 pub use path::VirtualPathResolver;
+pub use read_overlay::WorkspaceReadOverlay;
 use path::{
     default_path_input, has_windows_path_prefix, normalize_relative_path, pathbuf_to_workspace_path,
 };
