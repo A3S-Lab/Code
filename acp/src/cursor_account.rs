@@ -1,8 +1,9 @@
 //! Import models from the Cursor account already logged in on this machine.
 //!
 //! The catalog is the CLI model list (`agent models`). The bearer stays in the
-//! in-memory provider API key. Nothing here rewrites ACL. Disable with
-//! `A3S_DISABLE_CURSOR_ACCOUNT=1`. Prefer the account as the default model
+//! in-memory provider API key. Nothing here rewrites ACL. Runs only when the
+//! host opts in (`import_accounts = ["cursor"]` or `--import-accounts cursor`);
+//! `A3S_DISABLE_CURSOR_ACCOUNT=1` still turns it off. Prefer the account as the default model
 //! with `A3S_PREFER_CURSOR=1` (same missing-default rule as the Grok import).
 //!
 //! Fixture tests set `A3S_CURSOR_HOME`, `A3S_CURSOR_TOKEN_FILE`, and
@@ -1221,8 +1222,12 @@ mod tests {
             // Launch from the process workspace so ancestor ACL layers are
             // the ones `a3s code` reads. A temp directory has none of them.
             let workspace = std::env::current_dir().expect("cwd");
-            let launch =
-                crate::config::load_launch_config(workspace, None).expect("shipped launch");
+            let (launch, _) = crate::config::load_launch_config_with_imports(
+                workspace,
+                None,
+                &[a3s_code_core::config::AccountImport::Cursor],
+            )
+            .expect("shipped launch");
             println!("launch ok {}", launch.model_id);
             let config = launch.config;
             let provider = config

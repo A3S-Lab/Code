@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use a3s_code_acp::unattended::{Unattended, DEFAULT_EXECUTION_BUDGET_MS};
-use a3s_code_acp::{load_launch_config_with_admission, A3sCodeAgent, PluginSelectionHost};
+use a3s_code_acp::{load_launch_config_with_imports, A3sCodeAgent, PluginSelectionHost};
+use a3s_code_core::config::AccountImport;
 use agent_client_protocol as acp;
 use anyhow::{Context, Result};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -13,6 +14,7 @@ struct Args {
     cwd: PathBuf,
     config: Option<PathBuf>,
     model: Option<String>,
+    import_accounts: Vec<AccountImport>,
     plugin_store: Option<PathBuf>,
     studio_documents: bool,
     unattended: Option<Unattended>,
@@ -34,6 +36,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
     let mut cwd = std::env::current_dir().context("current_dir")?;
     let mut config: Option<PathBuf> = None;
     let mut model: Option<String> = None;
+    let mut import_accounts = Vec::new();
     let mut plugin_store = None;
     let mut studio_documents = false;
     let mut unattended = false;
@@ -97,6 +100,16 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
                     .ok_or_else(|| anyhow::anyhow!("--config requires a path"))?;
                 config = Some(PathBuf::from(value));
             }
+            "--import-accounts" => {
+                let value = args
+                    .next()
+                    .context("--import-accounts requires a list such as cursor,grok")?;
+                for import in AccountImport::parse_list(&value).map_err(anyhow::Error::msg)? {
+                    if !import_accounts.contains(&import) {
+                        import_accounts.push(import);
+                    }
+                }
+            }
             "--model" | "-m" => {
                 let value = args
                     .next()
@@ -109,7 +122,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
             }
             "--help" | "-h" => {
                 eprintln!(
-                    "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model] [--plugin-store DIR]\n\
+                    "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model] [--import-accounts cc-switch,grok,cursor] [--plugin-store DIR]\n\
                      \x20      a3s-code-acp --list-workspace-mcp | --trust-workspace-mcp <ID|all> [--cwd DIR]\n\
                      \x20      a3s-code-acp --unattended [--max-execution-ms MS] [--reasoning-effort LEVEL] [--engineering-policy engineering-v1] [--goal-continuation] [--result-file FILE] [--cwd DIR] [--config FILE] [--model provider/model]\n\
                      Speaks Agent Client Protocol on stdio over a3s-code-core {}.",
@@ -166,6 +179,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
         cwd,
         config,
         model,
+        import_accounts,
         plugin_store,
         studio_documents,
         unattended,
@@ -257,7 +271,8 @@ async fn run() -> Result<()> {
         std::env::set_var("A3S_DEFAULT_MODEL", model);
     }
     let (mut launch, admission) =
-        load_launch_config_with_admission(args.cwd, args.config).context("load A3S ACL")?;
+        load_launch_config_with_imports(args.cwd, args.config, &args.import_accounts)
+            .context("load A3S ACL")?;
     if args.plugin_store.is_some() || args.studio_documents {
         launch.workspace =
             std::path::absolute(&launch.workspace).context("bind native workspace")?;

@@ -29,8 +29,8 @@ mod wiki_search;
 
 pub use agent::A3sCodeAgent;
 pub use config::{
-    load_launch_config, load_launch_config_with_admission, trust_workspace_mcp,
-    workspace_mcp_declarations, LaunchConfig,
+    load_launch_config, load_launch_config_with_admission, load_launch_config_with_imports,
+    trust_workspace_mcp, workspace_mcp_declarations, LaunchConfig,
 };
 pub use plugin_selection::PluginSelectionHost;
 

@@ -10,6 +10,7 @@
 //! Existing `.acl` config filenames are still accepted for compatibility.
 //! JSON support has been removed.
 
+mod account_import;
 mod acl_render;
 mod editor;
 mod goal_control;
@@ -23,6 +24,7 @@ mod tests;
 mod verification_contract;
 mod workspace_trust;
 
+pub use account_import::AccountImport;
 pub use editor::{rewrite_acl_sections, ConfigSection};
 pub(crate) use loader::parse_mcp_server_block;
 pub use loader::{
@@ -180,6 +182,10 @@ pub struct CodeConfig {
     /// Provider configurations
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    /// Local account logins the host opted into importing. Empty reads none.
+    /// Workspace-discovered ACL cannot supply this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_accounts: Vec<AccountImport>,
     /// Parsed `workspace_retrieval` block, when declared.
     #[serde(default)]
     pub workspace_retrieval: Option<WorkspaceRetrievalConfig>,

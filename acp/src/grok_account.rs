@@ -8,7 +8,9 @@
 //! provider contract; override it with an explicit provider block and
 //! `A3S_DISABLE_GROK_ACCOUNT=1`).
 //!
-//! Secrets are never logged. Disable with `A3S_DISABLE_GROK_ACCOUNT=1`.
+//! Runs only when the host opts in (`import_accounts = ["grok"]` or
+//! `--import-accounts grok`). Secrets are never logged.
+//! `A3S_DISABLE_GROK_ACCOUNT=1` still turns it off.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

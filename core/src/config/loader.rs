@@ -295,6 +295,24 @@ fn acl_string_list_attr(block: &a3s_acl::Block, keys: &[&str]) -> Option<Vec<Str
     }
 }
 
+fn parse_import_accounts(block: &a3s_acl::Block) -> Result<Vec<super::AccountImport>> {
+    let refuse = |detail: String| {
+        CodeError::Config(format!(
+            "import_accounts must be a list of source names: {detail}"
+        ))
+    };
+    let Some(a3s_acl::Value::List(items)) = acl_attr(block, &["import_accounts"]) else {
+        return Err(refuse("expected [\"cursor\", ...]".into()));
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            a3s_acl::Value::String(name) => super::AccountImport::parse(name).map_err(refuse),
+            other => Err(refuse(format!("{other:?} is not a string literal"))),
+        })
+        .collect()
+}
+
 fn snake_to_camel(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut uppercase_next = false;
@@ -526,6 +544,7 @@ const KNOWN_CONFIG_BLOCKS: &[&str] = &[
     "default_model",
     "goal_control",
     "document_parser",
+    "import_accounts",
     "llm_api_timeout_ms",
     "max_parallel_tasks",
     "max_tool_rounds",
@@ -568,6 +587,8 @@ const KNOWN_CONFIG_BLOCKS: &[&str] = &[
 /// `browser_path`), redirect host state or account traffic outside the
 /// repository (`sessions_dir`, `memory_dir`, `user_instructions_dir`,
 /// `storage_*`, `os`) are host-owned since SEC-WSTRUST1 (2026-10-17).
+/// `import_accounts` reads another product's local credentials, so it is
+/// host-owned (SEC-ACCOUNT1, 2026-10-17).
 /// Repository `mcp_servers` are not in this set: they are admitted per
 /// declaration through [`super::admit_untrusted_layers`]. Extending this
 /// set is a platform decision, not a per-feature one (the `providers`
@@ -588,6 +609,7 @@ pub const HOST_AUTHORITATIVE_BLOCKS: &[&str] = &[
     "storage_backend",
     "storage_url",
     "os",
+    "import_accounts",
 ];
 
 /// The first host-authoritative top-level block an ACL document declares,
@@ -666,6 +688,7 @@ pub fn withhold_untrusted_host_authoritative_blocks(
     config.storage_backend = trusted.storage_backend;
     config.storage_url = trusted.storage_url;
     config.os = trusted.os;
+    config.import_accounts = trusted.import_accounts;
     withheld.sort_unstable();
     withheld.dedup();
     withheld
@@ -951,6 +974,13 @@ impl CodeConfig {
                             if !config.skill_dirs.contains(&path) {
                                 config.skill_dirs.push(path);
                             }
+                        }
+                    }
+                }
+                "import_accounts" => {
+                    for import in parse_import_accounts(&block)? {
+                        if !config.import_accounts.contains(&import) {
+                            config.import_accounts.push(import);
                         }
                     }
                 }

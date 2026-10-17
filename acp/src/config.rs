@@ -1,9 +1,13 @@
 //! Resolve ACL layers the same way `a3s code` / the thin TUI scaffold does.
 //!
-//! Also merges:
+//! When the host opts in (`import_accounts` in a trusted layer, or
+//! `--import-accounts`), also merges:
 //! - the current Claude provider from a local CC Switch database
 //! - models from a logged-in Grok CLI account (`~/.grok`)
 //! - models from a logged-in Cursor account on this machine
+//!
+//! Without the opt-in, no other product's login, keychain item or database
+//! is read.
 //!
 //! Layer authority: only a layer the host consented to (`--config`,
 //! `A3S_CONFIG`, or `~/.a3s/config.acl`) may set host-authoritative posture
@@ -14,7 +18,7 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use a3s_code_core::config::{WorkspaceLayerAdmission, WorkspaceMcpDeclaration};
+use a3s_code_core::config::{AccountImport, WorkspaceLayerAdmission, WorkspaceMcpDeclaration};
 use a3s_code_core::CodeConfig;
 use anyhow::{anyhow, Context, Result};
 
@@ -32,7 +36,7 @@ pub struct LaunchConfig {
 
 /// Load ACL from `--config`, else `~/.a3s/config.acl` + workspace `.a3s/config.acl`.
 ///
-/// When no ACL is found, CC Switch and/or a logged-in Grok account alone can launch.
+/// Imports no local account; see [`load_launch_config_with_imports`].
 pub fn load_launch_config(
     workspace: PathBuf,
     explicit_config: Option<PathBuf>,
@@ -45,6 +49,18 @@ pub fn load_launch_config(
 pub fn load_launch_config_with_admission(
     workspace: PathBuf,
     explicit_config: Option<PathBuf>,
+) -> Result<(LaunchConfig, WorkspaceLayerAdmission)> {
+    load_launch_config_with_imports(workspace, explicit_config, &[])
+}
+
+/// [`load_launch_config_with_admission`] that also imports the local
+/// accounts the launcher names (`--import-accounts`). The trusted ACL's
+/// `import_accounts` adds to that list. Nothing else imports an account
+/// (SEC-ACCOUNT1).
+pub fn load_launch_config_with_imports(
+    workspace: PathBuf,
+    explicit_config: Option<PathBuf>,
+    requested: &[AccountImport],
 ) -> Result<(LaunchConfig, WorkspaceLayerAdmission)> {
     let mut withheld_orphan = None;
     let mut admission = WorkspaceLayerAdmission::default();
@@ -71,29 +87,7 @@ pub fn load_launch_config_with_admission(
         }
         Err(error) => {
             let mut empty = CodeConfig::default();
-            let mut imported = false;
-            match cc_switch::merge_into_config(&mut empty) {
-                Ok(true) => imported = true,
-                Ok(false) => {}
-                Err(merge_error) => {
-                    tracing::warn!(error = %merge_error, "CC Switch bootstrap skipped");
-                }
-            }
-            match grok_account::merge_into_config(&mut empty) {
-                Ok(true) => imported = true,
-                Ok(false) => {}
-                Err(merge_error) => {
-                    tracing::warn!(error = %merge_error, "Grok account bootstrap skipped");
-                }
-            }
-            match cursor_account::merge_into_config(&mut empty) {
-                Ok(true) => imported = true,
-                Ok(false) => {}
-                Err(merge_error) => {
-                    tracing::warn!(error = %merge_error, "Cursor account bootstrap skipped");
-                }
-            }
-            if imported {
+            if merge_account_imports(&mut empty, requested) {
                 empty
             } else {
                 return Err(error);
@@ -101,15 +95,9 @@ pub fn load_launch_config_with_admission(
         }
     };
 
-    if let Err(error) = cc_switch::merge_into_config(&mut config) {
-        tracing::warn!(error = %error, "CC Switch import skipped");
-    }
-    if let Err(error) = grok_account::merge_into_config(&mut config) {
-        tracing::warn!(error = %error, "Grok account import skipped");
-    }
-    if let Err(error) = cursor_account::merge_into_config(&mut config) {
-        tracing::warn!(error = %error, "Cursor account import skipped");
-    }
+    let mut selected = config.import_accounts.clone();
+    selected.extend(requested.iter().copied());
+    merge_account_imports(&mut config, &selected);
     apply_default_model_env(&mut config)?;
 
     let model_id = config
@@ -122,7 +110,9 @@ pub fn load_launch_config_with_admission(
             }
             anyhow!(
                 "default_model must be set in provider/model format \
-                 (configure .a3s/config.acl, CC Switch, or log in with Grok CLI)"
+                 (configure ~/.a3s/config.acl, or opt into a local account with \
+                 `import_accounts = [\"cursor\"]` there or `--import-accounts cursor`; \
+                 sources: cc-switch, grok, cursor)"
             )
         })?;
     if !model_id.contains('/') {
@@ -201,6 +191,29 @@ pub fn trust_workspace_mcp(
         a3s_code_core::config::WorkspaceMcpTrust::trust(&trust_store_path(workspace)?, &ids)?;
     }
     Ok(selected)
+}
+
+/// Run only the selected account imports. Returns whether one merged a
+/// provider. A failed import is logged and does not stop the launch.
+fn merge_account_imports(config: &mut CodeConfig, selected: &[AccountImport]) -> bool {
+    let mut imported = false;
+    for import in AccountImport::ALL {
+        if !selected.contains(&import) {
+            continue;
+        }
+        let merged = match import {
+            AccountImport::CcSwitch => cc_switch::merge_into_config(config),
+            AccountImport::Grok => grok_account::merge_into_config(config),
+            AccountImport::Cursor => cursor_account::merge_into_config(config),
+        };
+        match merged {
+            Ok(merged) => imported |= merged,
+            Err(error) => {
+                tracing::warn!(source = import.as_str(), %error, "account import skipped");
+            }
+        }
+    }
+    imported
 }
 
 fn trust_store_path(workspace: &Path) -> Result<PathBuf> {
@@ -378,9 +391,9 @@ fn read_layer_bounded(path: &Path) -> Result<String> {
 /// overwritten from a trusted-only parse at this single choke point, so
 /// every later consumer reads the host's values no matter which
 /// attribute spelling carried the attempt — the same authority split
-/// the CLI pins as `EffectiveConfig::trusted_host_config`. Account
-/// imports (CC Switch, Grok) run after this and remain the trusted
-/// bootstrap path for providers when no trusted ACL layer declares any.
+/// the CLI pins as `EffectiveConfig::trusted_host_config`. Opted-in
+/// account imports run after this and remain the trusted bootstrap path
+/// for providers when no trusted ACL layer declares any.
 fn withhold_workspace_host_authoritative_blocks(config: &mut CodeConfig, layers: &[LayerSource]) {
     let withheld: Vec<(&Path, &str)> = layers
         .iter()
@@ -922,7 +935,8 @@ sandbox {
         env_locked(|| {
             let root = tempfile::tempdir().unwrap();
             let _cursor = cursor_fixture(root.path());
-            let user_acl = "default_model = \"boyue/deepseek-v4-flash\"\n";
+            let user_acl =
+                "default_model = \"boyue/deepseek-v4-flash\"\nimport_accounts = [\"cursor\"]\n";
             let workspace_acl = r#"
 default_model = "boyue/deepseek-v4-flash"
 providers "boyue" {
@@ -975,6 +989,7 @@ providers "mock" {
   models "m1" { name = "M1" }
 }
 default_model = "mock/m1"
+import_accounts = ["cursor"]
 "#,
                 r#"
 providers "attacker" {
@@ -1006,6 +1021,97 @@ default_model = "attacker/m"
                 .unwrap();
             assert_eq!(mock.api_key.as_deref(), Some("user-key"));
             let _ = user;
+        });
+    }
+
+    const MOCK_USER_ACL: &str = r#"
+providers "mock" {
+  api_key = "user-key"
+  models "m1" { name = "M1" }
+}
+default_model = "mock/m1"
+"#;
+
+    fn has_provider(launch: &LaunchConfig, name: &str) -> bool {
+        launch
+            .config
+            .providers
+            .iter()
+            .any(|provider| provider.name == name)
+    }
+
+    #[test]
+    fn a_logged_in_account_is_not_imported_without_a_host_opt_in() {
+        env_locked(|| {
+            let root = tempfile::tempdir().unwrap();
+            let _cursor = cursor_fixture(root.path());
+            let (_user, workspace) = write_user_and_workspace_layers(MOCK_USER_ACL, "");
+            let launch = load_launch_config(workspace.path().to_path_buf(), None).unwrap();
+            assert!(!has_provider(&launch, "cursor"));
+            assert_eq!(launch.model_id, "mock/m1");
+        });
+    }
+
+    #[test]
+    fn the_host_opts_in_through_trusted_acl_or_the_launcher_list() {
+        env_locked(|| {
+            let root = tempfile::tempdir().unwrap();
+            let _cursor = cursor_fixture(root.path());
+            let (_user, workspace) = write_user_and_workspace_layers(
+                &format!("{MOCK_USER_ACL}import_accounts = [\"cursor\"]\n"),
+                "",
+            );
+            let launch = load_launch_config(workspace.path().to_path_buf(), None).unwrap();
+            assert!(has_provider(&launch, "cursor"));
+            assert_eq!(
+                launch.model_id, "mock/m1",
+                "an opt-in does not replace a declared default"
+            );
+
+            let (_user, workspace) = write_user_and_workspace_layers(MOCK_USER_ACL, "");
+            let (launch, _) = load_launch_config_with_imports(
+                workspace.path().to_path_buf(),
+                None,
+                &[AccountImport::Cursor],
+            )
+            .unwrap();
+            assert!(has_provider(&launch, "cursor"));
+        });
+    }
+
+    #[test]
+    fn a_workspace_layer_cannot_opt_the_host_into_an_account_import() {
+        env_locked(|| {
+            let root = tempfile::tempdir().unwrap();
+            let _cursor = cursor_fixture(root.path());
+            let (_user, workspace) =
+                write_user_and_workspace_layers(MOCK_USER_ACL, "import_accounts = [\"cursor\"]\n");
+            let launch = load_launch_config(workspace.path().to_path_buf(), None).unwrap();
+            assert!(!has_provider(&launch, "cursor"));
+            assert!(launch.config.import_accounts.is_empty());
+        });
+    }
+
+    #[test]
+    fn without_any_acl_only_the_launcher_list_can_bootstrap_an_account() {
+        env_locked(|| {
+            let root = tempfile::tempdir().unwrap();
+            let _cursor = cursor_fixture(root.path());
+            let home = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            std::env::set_var("HOME", home.path());
+            let error = load_launch_config(workspace.path().to_path_buf(), None)
+                .expect_err("no ACL and no opt-in must refuse");
+            assert!(error
+                .to_string()
+                .contains("A3S ACL configuration was not found"));
+            let (launch, _) = load_launch_config_with_imports(
+                workspace.path().to_path_buf(),
+                None,
+                &[AccountImport::Cursor],
+            )
+            .unwrap();
+            assert_eq!(launch.model_id, "cursor/composer-2.5");
         });
     }
 }

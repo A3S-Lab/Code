@@ -5,7 +5,9 @@
 //! merges that catalog as provider `cc-switch` so the TUI model picker can use
 //! the same upstreams without duplicating keys in `~/.a3s/config.acl`.
 //!
-//! Secrets are never logged. Disable with `A3S_DISABLE_CC_SWITCH=1`.
+//! Runs only when the host opts in (`import_accounts = ["cc-switch"]` or
+//! `--import-accounts cc-switch`). Secrets are never logged.
+//! `A3S_DISABLE_CC_SWITCH=1` still turns it off.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

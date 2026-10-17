@@ -525,6 +525,12 @@ shutdown notifications use separate control paths so cancellation, dropped
 callers, and shutdown always make progress even when the admission queue is
 full.
 
+`a3s-code-acp` reads no other product's login by default. To reuse a local
+CC Switch, Grok CLI or Cursor login, list it in `~/.a3s/config.acl`
+(`import_accounts = ["cursor"]`, closed set `cc-switch`, `grok`, `cursor`) or
+pass `--import-accounts cursor`. A repository `.a3s/config.acl` cannot set
+this list.
+
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
 resolved before the first turn.

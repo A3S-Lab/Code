@@ -112,3 +112,22 @@ fn workspace_mcp_review_flags_parse_and_trust_requires_a_selector() {
     );
     assert!(parse(&["--trust-workspace-mcp"]).is_err());
 }
+
+#[test]
+fn account_imports_are_off_unless_named_from_the_closed_set() {
+    assert!(parse(&[]).expect("args").import_accounts.is_empty());
+    assert_eq!(
+        parse(&[
+            "--import-accounts",
+            "cursor,grok",
+            "--import-accounts",
+            "cursor"
+        ])
+        .expect("args")
+        .import_accounts,
+        vec![AccountImport::Cursor, AccountImport::Grok]
+    );
+    assert!(parse(&["--import-accounts"]).is_err());
+    assert!(parse(&["--import-accounts", "keychain"]).is_err());
+    assert!(parse(&["--import-accounts", ""]).is_err());
+}
