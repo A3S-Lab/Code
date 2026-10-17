@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [9.1.3] - Unreleased
+## [9.1.4] - Unreleased
+
+### Security
+
+- A repository `.a3s/config.acl` no longer starts its `mcp_servers` until
+  the user trusts each declaration (`a3s-code-acp --list-workspace-mcp`,
+  `--trust-workspace-mcp ID`). An edited declaration loses its trust.
+  Settings that redirect host state or start a host program stay with
+  `~/.a3s/config.acl`.
+- "Don't ask again" for `bash` is an explicit `allow-always` answer and
+  learns one rule (the program plus the subcommand or target that carries
+  the risk) from a closed allowlist. Rules live in
+  `<state root>/code/approvals.acl` keyed by workspace. A repository
+  `.a3s/approvals.acl` is ignored.
+- `PermissionPolicy.enabled = false` no longer skips deny rules. Use
+  `enforcement = "unrestricted"` (closed set `enforced`, `unrestricted`);
+  the retired `enabled = false` is refused with an error that names it.
+  Go, Node and Python accept `enforcement`.
+- `a3s-code-acp` reads no other product's login by default. CC Switch,
+  Grok CLI and Cursor imports run only when `~/.a3s/config.acl` lists
+  them in `import_accounts` or the launcher passes `--import-accounts`.
+
+### Fixed
+
+- A dropped guest command no longer shuts the sandbox down, and macOS
+  command lifetime qualifies inside a guest PID namespace.
+- A structured call that forces a tool sends `thinking` disabled.
+  Thinking-mode Anthropic-compatible models (for example qwen3.8-flash)
+  refused the first ACP turn with HTTP 400 on `tool_choice`.
+
+### Changed
+
+- A ratchet test counts production `unwrap` / `expect` per file (90
+  sites) and fails when a count grows.
+
+## [9.1.3] - 2026-10-15
 
 ### Added
 

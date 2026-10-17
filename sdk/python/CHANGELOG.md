@@ -4,6 +4,13 @@ All notable changes to the A3S Code Python SDK will be documented in this file.
 
 ## [Unreleased]
 
+## [9.1.4] - Unreleased
+
+- `PermissionPolicy(enforcement="unrestricted")` replaces
+  `enabled=False`, which is now refused because it skipped deny rules.
+  Deny rules apply in both modes.
+- Align the native package, bootstrap and bundled Core candidate at 9.1.4.
+
 ## [9.1.3] - Unreleased
 
 - Expose original admitted Run handles, bounded evaluation evidence, policy

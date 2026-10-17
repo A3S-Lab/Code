@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "a3s-code-version"
-version = "9.1.3"
+version = "9.1.4"
 edition.workspace = true
 description = "Lockstepped grok CLI version."
 
