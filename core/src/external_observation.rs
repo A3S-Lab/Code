@@ -204,7 +204,24 @@ fn normalize_existing_prefix(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Interpreter build products are not cross-session write locks. A deleted
+/// `__pycache__` entry must not refuse every later command.
+pub fn is_interpreter_build_artifact(relative: &str) -> bool {
+    let path = Path::new(relative);
+    let bytecode = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension == "pyc" || extension == "pyo");
+    bytecode
+        || path
+            .components()
+            .any(|component| component.as_os_str() == "__pycache__")
+}
+
 pub fn claim_write(session_id: &str, workspace: &Path, relative: &str) -> Result<(), String> {
+    if is_interpreter_build_artifact(relative) {
+        return Ok(());
+    }
     let path = claim_identity(workspace, relative)?;
     let mut guard = dirty().lock().expect("dirty paths");
     if let Some(owner) = guard.get(&path) {
@@ -240,7 +257,20 @@ pub fn refuse_foreign_workspace_owner(
 ) -> Result<(), String> {
     let session_id = session_id.unwrap_or("").trim();
     let workspace = canonical_root(workspace);
-    let guard = dirty().lock().expect("dirty paths");
+    let mut guard = dirty().lock().expect("dirty paths");
+    let gone: Vec<PathBuf> = guard
+        .iter()
+        .filter(|(path, owner)| {
+            !owner.is_empty()
+                && owner.as_str() != session_id
+                && path.starts_with(&workspace)
+                && !path.exists()
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    for path in gone {
+        guard.remove(&path);
+    }
     if let Some((path, owner)) = guard.iter().find(|(path, owner)| {
         !owner.is_empty() && owner.as_str() != session_id && path.starts_with(&workspace)
     }) {
@@ -305,6 +335,28 @@ pub fn release_write_claim(session_id: &str, workspace: &Path, relative: &str) {
     }
 }
 
+/// Move the paths the parent actually observed onto the parent, then drop
+/// every claim the finished child still holds. A deleted build product that
+/// never entered the observed set cannot keep refusing the parent.
+pub fn settle_child_write_claims(
+    parent_session: Option<&str>,
+    child_session: &str,
+    workspace: &Path,
+    paths: &[String],
+) {
+    let Some(parent) = parent_session
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
+    else {
+        release_session(child_session);
+        return;
+    };
+    for path in paths {
+        let _ = adopt_write_claim(child_session, parent, workspace, path);
+    }
+    release_session(child_session);
+}
+
 pub fn release_session(session_id: &str) {
     dirty()
         .lock()
@@ -355,6 +407,8 @@ mod tests {
     #[test]
     fn second_session_cannot_silently_win_a_dirty_path() {
         let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "fn main() {}").unwrap();
         claim_write("one", root.path(), "src/lib.rs").unwrap();
         let error = claim_write("two", root.path(), "src/lib.rs").unwrap_err();
         assert!(error.contains("already owned"));
@@ -410,6 +464,42 @@ mod tests {
         release_session("task-parent");
         release_session("task-run-child");
         release_session("other-live");
+    }
+
+    #[test]
+    fn interpreter_artifacts_are_not_write_claims() {
+        let root = tempfile::tempdir().unwrap();
+        claim_write(
+            "task-run-child",
+            root.path(),
+            "pkg/__pycache__/mod.cpython-312.pyc",
+        )
+        .unwrap();
+        claim_write("task-run-child", root.path(), "pkg/mod.pyo").unwrap();
+        assert!(refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok());
+        release_session("task-run-child");
+    }
+
+    #[test]
+    fn a_deleted_claim_does_not_refuse_and_the_finished_child_releases_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("kept.txt");
+        std::fs::write(&file, "x").unwrap();
+        claim_write("task-run-child", root.path(), "kept.txt").unwrap();
+        claim_write("task-run-child", root.path(), "gone.txt").unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok(),
+            "a claim whose path is gone must not refuse"
+        );
+        let live = root.path().join("live.txt");
+        std::fs::write(&live, "y").unwrap();
+        claim_write("task-run-child", root.path(), "live.txt").unwrap();
+        let blocked = refuse_foreign_workspace_owner(Some("parent"), root.path()).unwrap_err();
+        assert!(blocked.contains("task-run-child"));
+        settle_child_write_claims(Some("parent"), "task-run-child", root.path(), &[]);
+        assert!(refuse_foreign_workspace_owner(Some("parent"), root.path()).is_ok());
+        release_session("parent");
     }
 
     #[test]

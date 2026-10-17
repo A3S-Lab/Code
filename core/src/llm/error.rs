@@ -31,10 +31,15 @@ impl NonRetryableLlmError {
     /// provider gateways may return arbitrarily large diagnostic payloads.
     pub fn from_status(provider: impl Into<String>, status: u16, body: impl Into<String>) -> Self {
         let provider = provider.into();
-        let mut error = Self::new(format!(
-            "{provider} API returned HTTP {status}: {}",
-            body.into()
-        ));
+        let body = body.into();
+        // Boyue reports an empty account as HTTP 401 "Invalid token". That is
+        // no balance, not a missing child credential.
+        let message = if boyue_account_has_no_balance(&provider, status, &body) {
+            format!("{provider} API account has no balance (HTTP {status})")
+        } else {
+            format!("{provider} API returned HTTP {status}: {body}")
+        };
+        let mut error = Self::new(message);
         error.provider = Some(provider);
         error.status = Some(status);
         error
@@ -49,6 +54,20 @@ impl NonRetryableLlmError {
     pub fn status(&self) -> Option<u16> {
         self.status
     }
+}
+
+fn boyue_account_has_no_balance(provider: &str, status: u16, body: &str) -> bool {
+    if !provider.to_ascii_lowercase().contains("boyue") {
+        return false;
+    }
+    if !matches!(status, 401 | 402 | 403) {
+        return false;
+    }
+    let body = body.to_ascii_lowercase();
+    body.contains("invalid token")
+        || body.contains("insufficient balance")
+        || body.contains("no balance")
+        || body.contains("quota")
 }
 
 fn bound_message(message: String) -> String {
@@ -88,6 +107,23 @@ mod tests {
             non_retryable_llm_error_message(&error),
             Some("quota exhausted")
         );
+    }
+
+    #[test]
+    fn boyue_invalid_token_means_the_account_has_no_balance() {
+        let error = NonRetryableLlmError::from_status("boyue", 401, "Invalid token");
+        assert_eq!(error.provider(), Some("boyue"));
+        assert_eq!(error.status(), Some(401));
+        let message = error.to_string();
+        assert!(message.contains("no balance"), "{message}");
+        assert!(!message.to_ascii_lowercase().contains("invalid token"));
+    }
+
+    #[test]
+    fn another_provider_invalid_token_stays_an_auth_error() {
+        let error = NonRetryableLlmError::from_status("openai", 401, "Invalid token");
+        assert!(error.to_string().contains("Invalid token"));
+        assert!(!error.to_string().contains("no balance"));
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub struct DailyLog {
     day: String,
     file: Option<File>,
     size_capped: bool,
+    max_bytes: u64,
+    cap_note_pending: bool,
 }
 
 impl DailyLog {
@@ -61,7 +63,16 @@ impl DailyLog {
             day,
             file,
             size_capped: false,
+            max_bytes: 16 * 1024 * 1024,
+            cap_note_pending: false,
         }
+    }
+
+    #[cfg(test)]
+    fn with_cap(dir: PathBuf, max_bytes: u64) -> Self {
+        let mut log = Self::create(dir);
+        log.max_bytes = max_bytes;
+        log
     }
 
     #[cfg(test)]
@@ -78,6 +89,7 @@ impl DailyLog {
         self.file = open_today(&self.dir, &day);
         self.day = day;
         self.size_capped = false;
+        self.cap_note_pending = false;
         prune_old_logs(&self.dir);
     }
 
@@ -95,7 +107,6 @@ impl DailyLog {
     /// Bound in-day growth: past the cap the file takes one final note and
     /// then receives nothing until the next rotation.
     fn enforce_size_cap(&mut self) {
-        const MAX_BYTES: u64 = 16 * 1024 * 1024;
         if self.size_capped {
             return;
         }
@@ -103,14 +114,23 @@ impl DailyLog {
             .file
             .as_ref()
             .and_then(|file| file.metadata().ok())
-            .is_some_and(|meta| meta.len() >= MAX_BYTES);
+            .is_some_and(|meta| meta.len() >= self.max_bytes);
         if over {
             self.size_capped = true;
             if let Some(file) = self.file.as_mut() {
                 let _ = writeln!(file, "-- log size cap reached; stopping for today --");
             }
-            tracing::warn!("agent log file reached the size cap; stopping writes for today");
+            // The warning is emitted after this lock is released. A
+            // `tracing` event here would re-enter `DailyLogWriter::write`
+            // on the same `Mutex` and freeze the process.
+            self.cap_note_pending = true;
         }
+    }
+
+    fn take_cap_note(&mut self) -> bool {
+        let pending = self.cap_note_pending;
+        self.cap_note_pending = false;
+        pending
     }
 }
 
@@ -153,6 +173,13 @@ impl DailyLogWriter {
             inner: std::sync::Arc::new(Mutex::new(DailyLog::create(log_dir()))),
         }
     }
+
+    #[cfg(test)]
+    fn from_log(log: DailyLog) -> Self {
+        Self {
+            inner: std::sync::Arc::new(Mutex::new(log)),
+        }
+    }
 }
 
 impl Default for DailyLogWriter {
@@ -170,8 +197,14 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DailyLogWriter {
 
 impl std::io::Write for DailyLogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if let Ok(mut log) = self.inner.lock() {
+        let announce = if let Ok(mut log) = self.inner.lock() {
             log.write_line(String::from_utf8_lossy(buf).trim_end());
+            log.take_cap_note()
+        } else {
+            false
+        };
+        if announce {
+            eprintln!("agent log file reached the size cap; stopping writes for today");
         }
         Ok(buf.len())
     }
@@ -242,6 +275,43 @@ mod tests {
             let body = std::fs::read_to_string(dir.path().join(format!("a3s-code-acp.{day}.log")))
                 .unwrap_or_default();
             assert!(body.contains("routed line"), "got {body:?}");
+        })
+    }
+
+    #[test]
+    fn size_cap_warns_on_stderr_without_reentering_the_log_lock() {
+        env_locked(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let log = DailyLog::with_cap(dir.path().to_path_buf(), 64);
+            let writer = DailyLogWriter::from_log(log);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_writer(writer)
+                .with_ansi(false)
+                .finish();
+            let handle = std::thread::spawn(move || {
+                tracing::subscriber::with_default(subscriber, || {
+                    for _ in 0..2_000 {
+                        tracing::info!(target: "perf_probe", len = 2, preview = "x", "chunk_emit");
+                    }
+                });
+                let _ = done_tx.send(());
+            });
+            let completed = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+            if completed.is_err() {
+                // The worker is stuck on the log mutex. Detach it; failing the
+                // assertion is the signal. The process may keep the thread.
+                panic!("daily log size cap re-entered its mutex and stalled");
+            }
+            handle.join().expect("log writer thread");
+            let body =
+                std::fs::read_to_string(dir.path().join(format!("a3s-code-acp.{}.log", today())))
+                    .unwrap_or_default();
+            assert!(
+                body.contains("-- log size cap reached; stopping for today --"),
+                "got {body:?}"
+            );
         })
     }
 

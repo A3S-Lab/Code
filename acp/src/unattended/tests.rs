@@ -293,3 +293,28 @@ fn events_count_into_the_record_and_the_gate_digest_is_read_back() {
     assert!(other.failed);
     assert_eq!(other.gate_digest, None);
 }
+
+#[test]
+fn a_failed_tool_that_reports_http_401_is_a_provider_rejection() {
+    let mut progress = RunProgress::new();
+    let mut attempt = AttemptFacts::default();
+    note_event(
+        &mut progress,
+        &mut attempt,
+        &AgentEvent::ToolEnd {
+            id: "task-1".into(),
+            name: "task".into(),
+            output: "boyue API account has no balance (HTTP 401)".into(),
+            exit_code: 1,
+            metadata: None,
+            error_kind: None,
+            args: None,
+        },
+    );
+    assert!(attempt.failed);
+    assert_eq!(progress.successful_tool_calls, 0);
+    assert_eq!(progress.provider_status, Some(401));
+    let error = anyhow::anyhow!("A3S Code stream ended without a terminal event");
+    let (_, reason) = result::classify_failure(&progress, &error);
+    assert!(matches!(reason, result::TerminalReason::ProviderRejected));
+}

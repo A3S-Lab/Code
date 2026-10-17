@@ -18,6 +18,9 @@ const MAX_REPORTED_ERROR_BYTES: usize = 4 * 1024;
 pub(crate) enum TerminalReason {
     AgentEnd,
     StreamClosedWithoutTerminalEvent,
+    /// The worker joined successfully and produced no error and no end event.
+    /// This is not sixteen silent retries of the generic stream-closed text.
+    WorkerExitedWithoutTerminalEvent,
     WorkerJoinFailed,
     StartupFailed,
     ExecutionFailed,
@@ -69,6 +72,7 @@ pub(crate) struct RunProgress {
     pub(crate) provider_status: Option<u16>,
     pub(crate) terminal_event: bool,
     pub(crate) stream_closed_without_terminal_event: bool,
+    pub(crate) worker_exited_without_terminal_event: bool,
     pub(crate) evidence_missing: bool,
     last_error: Option<String>,
 }
@@ -87,6 +91,7 @@ impl RunProgress {
             provider_status: None,
             terminal_event: false,
             stream_closed_without_terminal_event: false,
+            worker_exited_without_terminal_event: false,
             evidence_missing: false,
             last_error: None,
         }
@@ -100,7 +105,24 @@ impl RunProgress {
     }
 
     pub(crate) fn remember_error(&mut self, error: impl std::fmt::Display) {
-        self.last_error = Some(bound_error(error.to_string()));
+        let next = bound_error(error.to_string());
+        match self.last_error.as_deref() {
+            None => self.last_error = Some(next),
+            Some(current)
+                if is_generic_stream_close(current) && !is_generic_stream_close(&next) =>
+            {
+                self.last_error = Some(next);
+            }
+            Some(_) => {}
+        }
+    }
+
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub(crate) fn mark_worker_exited_without_terminal_event(&mut self) {
+        self.worker_exited_without_terminal_event = true;
     }
 
     pub(crate) fn remember_failure(&mut self, error: &anyhow::Error) {
@@ -151,6 +173,41 @@ impl RunProgress {
             provider_status: self.provider_status,
             last_error: self.last_error.clone(),
         }
+    }
+}
+
+pub(crate) fn is_provider_rejection(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("http 401")
+        || text.contains("http 402")
+        || text.contains("http 403")
+        || text.contains("insufficient balance")
+        || text.contains("no balance")
+}
+
+pub(crate) fn is_generic_stream_close(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("stream ended without a terminal event")
+        || text.contains("stream closed without terminal event")
+}
+
+fn provider_status_code(text: &str) -> Option<u16> {
+    let lower = text.to_ascii_lowercase();
+    for status in [401, 402, 403] {
+        if lower.contains(&format!("http {status}")) {
+            return Some(status);
+        }
+    }
+    None
+}
+
+pub(crate) fn note_provider_rejection(progress: &mut RunProgress, text: &str) {
+    if !is_provider_rejection(text) {
+        return;
+    }
+    progress.remember_error(text);
+    if progress.provider_status.is_none() {
+        progress.provider_status = provider_status_code(text);
     }
 }
 
@@ -241,27 +298,24 @@ pub(crate) fn classify_failure(
             TerminalReason::ProviderExhausted,
         );
     }
-    let message = error.to_string().to_ascii_lowercase();
-    let remembered = progress
-        .last_error
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+    let remembered = progress.last_error.as_deref().unwrap_or("");
     // Stream may close without End after a rendered provider rejection (for
-    // example DeepSeek HTTP 402). Prefer provider_rejected over the generic
-    // stream-closed class so TB diagnostics do not hide quota/auth failures.
-    if remembered.contains("http 401")
-        || remembered.contains("http 402")
-        || remembered.contains("http 403")
-        || remembered.contains("insufficient balance")
-        || message.contains("http 401")
-        || message.contains("http 402")
-        || message.contains("http 403")
-        || message.contains("insufficient balance")
-    {
+    // example DeepSeek HTTP 402, or Boyue reporting an empty account as
+    // HTTP 401). Prefer
+    // provider_rejected over the generic stream-closed class so TB
+    // diagnostics do not hide quota/auth failures.
+    if is_provider_rejection(remembered) || is_provider_rejection(&message) {
         return (
             ExecutionResultOutcomeV1::Failed,
             TerminalReason::ProviderRejected,
+        );
+    }
+    if progress.worker_exited_without_terminal_event {
+        return (
+            ExecutionResultOutcomeV1::Failed,
+            TerminalReason::WorkerExitedWithoutTerminalEvent,
         );
     }
     if progress.stream_closed_without_terminal_event {
@@ -270,7 +324,7 @@ pub(crate) fn classify_failure(
             TerminalReason::StreamClosedWithoutTerminalEvent,
         );
     }
-    if message.contains("deadline") || message.contains("execution timeout") {
+    if lower.contains("deadline") || lower.contains("execution timeout") {
         return (
             ExecutionResultOutcomeV1::TimedOut,
             TerminalReason::DeadlineExceeded,
@@ -279,13 +333,13 @@ pub(crate) fn classify_failure(
     // Older Agent paths may have rendered the typed exhaustion into a plain
     // anyhow message. Keep the narrow prefix fallback for those records while
     // preferring the public typed projection above whenever it survives.
-    if message.contains("llm api request failed after") {
+    if lower.contains("llm api request failed after") {
         return (
             ExecutionResultOutcomeV1::Failed,
             TerminalReason::ProviderExhausted,
         );
     }
-    if message.contains("circuit breaker") || message.contains("provider") {
+    if lower.contains("circuit breaker") || lower.contains("provider") {
         return (
             ExecutionResultOutcomeV1::Failed,
             TerminalReason::ProviderExhausted,

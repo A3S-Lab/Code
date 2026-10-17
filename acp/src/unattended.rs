@@ -357,6 +357,7 @@ pub(crate) fn note_event(progress: &mut RunProgress, facts: &mut AttemptFacts, e
         AgentEvent::ToolEnd {
             exit_code,
             metadata,
+            output,
             ..
         } => {
             progress.tool_calls += 1;
@@ -366,6 +367,10 @@ pub(crate) fn note_event(progress: &mut RunProgress, facts: &mut AttemptFacts, e
                 if let Some(metadata) = metadata {
                     progress.artifact_evidence_count += count_artifact_evidence(metadata);
                 }
+            } else if result::is_provider_rejection(output) {
+                result::note_provider_rejection(progress, output);
+                facts.failed = true;
+                facts.last_error = Some(output.clone());
             }
         }
         AgentEvent::Error { message } => {

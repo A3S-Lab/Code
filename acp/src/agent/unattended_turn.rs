@@ -76,6 +76,21 @@ impl A3sCodeAgent {
         }
         match failure {
             None => Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+            // These outcomes are recorded in the result file. Returning a
+            // JSON-RPC internal error makes Harbor's summary say only
+            // "Internal error" and hides the reason.
+            Some(_)
+                if matches!(
+                    reason,
+                    TerminalReason::ProviderRejected
+                        | TerminalReason::WorkerExitedWithoutTerminalEvent
+                        | TerminalReason::StreamClosedWithoutTerminalEvent
+                        | TerminalReason::DeadlineExceeded
+                        | TerminalReason::EvidenceMissing
+                ) =>
+            {
+                Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+            }
             Some(error) => Err(agent_failure_error(&format!("{error:#}"))),
         }
     }
@@ -195,14 +210,43 @@ impl A3sCodeAgent {
                     prompt = first_prompt(task);
                 }
                 HostAdmissionStep::RetryNonTerminal => {
+                    let remembered = facts
+                        .last_error
+                        .clone()
+                        .or_else(|| progress.last_error().map(str::to_owned));
+                    if remembered
+                        .as_deref()
+                        .is_some_and(crate::unattended::result::is_provider_rejection)
+                    {
+                        bail!(
+                            "{}",
+                            remembered.unwrap_or_else(|| "provider rejected the request".into())
+                        );
+                    }
+                    let only_generic =
+                        |text: &str| crate::unattended::result::is_generic_stream_close(text);
+                    let no_concrete = remembered.as_deref().is_none_or(only_generic)
+                        && progress.last_error().is_none_or(only_generic);
+                    // A joined worker with no concrete failure and no end event
+                    // is its own outcome. Retrying it sixteen times only
+                    // overwrites the record with the generic stream-closed text.
+                    if join_failure.is_none() && no_concrete {
+                        progress.mark_worker_exited_without_terminal_event();
+                        bail!("A3S Code worker exited without a terminal event");
+                    }
                     let detail = join_failure
                         .or(facts.last_error)
                         .unwrap_or_else(|| "stream closed without terminal event".to_string());
                     prompt = non_terminal_continuation(&detail);
                 }
                 HostAdmissionStep::NonTerminalExhausted => {
-                    if let Some(failure) = join_failure {
-                        bail!("join A3S Code stream: {failure}");
+                    if let Some(failure) = join_failure.or_else(|| {
+                        progress.last_error().and_then(|text| {
+                            (!crate::unattended::result::is_generic_stream_close(text))
+                                .then(|| text.to_owned())
+                        })
+                    }) {
+                        bail!("{failure}");
                     }
                     progress.stream_closed_without_terminal_event = true;
                     bail!("A3S Code stream ended without a terminal event");

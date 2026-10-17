@@ -51,6 +51,46 @@ fn stream_eof_is_reported_as_a_failed_terminal_reason() {
 }
 
 #[test]
+fn a_child_tool_http_401_outranks_stream_closed_class() {
+    let mut progress = RunProgress::new();
+    progress.stream_closed_without_terminal_event = true;
+    progress.tool_calls = 1;
+    note_provider_rejection(&mut progress, "boyue API account has no balance (HTTP 401)");
+    progress.remember_error("A3S Code stream ended without a terminal event");
+    let error = anyhow::anyhow!("A3S Code stream ended without a terminal event");
+    let (outcome, reason) = classify_failure(&progress, &error);
+    assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+    assert!(matches!(reason, TerminalReason::ProviderRejected));
+    assert_eq!(
+        progress.last_error(),
+        Some("boyue API account has no balance (HTTP 401)")
+    );
+}
+
+#[test]
+fn a_historical_boyue_invalid_token_line_is_still_provider_rejected() {
+    let mut progress = RunProgress::new();
+    progress.stream_closed_without_terminal_event = true;
+    note_provider_rejection(&mut progress, "boyue API returned HTTP 401: Invalid token");
+    let error = anyhow::anyhow!("A3S Code stream ended without a terminal event");
+    let (_, reason) = classify_failure(&progress, &error);
+    assert!(matches!(reason, TerminalReason::ProviderRejected));
+}
+
+#[test]
+fn a_clean_worker_exit_is_not_the_generic_stream_closed_reason() {
+    let mut progress = RunProgress::new();
+    progress.mark_worker_exited_without_terminal_event();
+    let error = anyhow::anyhow!("A3S Code worker exited without a terminal event");
+    let (outcome, reason) = classify_failure(&progress, &error);
+    assert!(matches!(outcome, ExecutionResultOutcomeV1::Failed));
+    assert!(matches!(
+        reason,
+        TerminalReason::WorkerExitedWithoutTerminalEvent
+    ));
+}
+
+#[test]
 fn remembered_http_402_outranks_stream_closed_class() {
     let mut progress = RunProgress::new();
     progress.stream_closed_without_terminal_event = true;
