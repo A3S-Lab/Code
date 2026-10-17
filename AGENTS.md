@@ -55,8 +55,9 @@ discipline per module and the never-cross lines called out below.
 ## Error handling
 
 - No `unwrap()`/`expect()` on production paths without the
-  construction-level argument comment (the standing audit row tracks
-  the 115-site legacy; new slices add zero).
+  construction-level argument comment. `core/tests/production_unwrap_ratchet.rs`
+  counts the legacy per file from the core and ACP module graphs (90
+  sites on 2026-10-17); a row may only go down and a new file adds zero.
 - Closed sets carry `parse()`/`as_str()` and the parse error names the
   set (`SandboxNetworkMode`, `InteractiveApprovalMode` are the
   reference shapes). Never coerce an unknown value to a default.

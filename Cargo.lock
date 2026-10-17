@@ -116,6 +116,7 @@ dependencies = [
  "sha256",
  "shell-words",
  "similar",
+ "syn 2.0.119",
  "tar",
  "tempfile",
  "thiserror 1.0.69",

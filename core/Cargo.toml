@@ -295,3 +295,5 @@ wiremock = "0.6"
 # not depend on rcgen.
 rcgen = "0.13"
 async-trait = "0.1"
+# Parses the core and ACP module graphs for the production unwrap ratchet.
+syn = { version = "2", features = ["full", "visit"] }
