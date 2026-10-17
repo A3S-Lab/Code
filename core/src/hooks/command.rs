@@ -93,7 +93,7 @@ fn state_root_without_override(
     {
         let _ = (directory, xdg_state_home, local_app_data);
         let home = home.context("A3S_STATE_HOME is not set and no home directory is available")?;
-        return Ok(home.join("Library/Application Support/A3S/State"));
+        Ok(home.join("Library/Application Support/A3S/State"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -107,14 +107,14 @@ fn state_root_without_override(
             return Ok(base.join("a3s"));
         }
         let home = home.context("A3S_STATE_HOME is not set and no home directory is available")?;
-        return Ok(home.join(".local/state/a3s"));
+        Ok(home.join(".local/state/a3s"))
     }
     #[cfg(windows)]
     {
         let _ = (directory, home, xdg_state_home);
         let local = local_app_data
             .context("A3S_STATE_HOME is not set and no home directory is available")?;
-        return Ok(local.join("A3S/State"));
+        Ok(local.join("A3S/State"))
     }
 }
 

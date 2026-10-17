@@ -737,6 +737,7 @@ impl A3sCodeAgent {
         *self.client.borrow_mut() = Some(conn);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn host_session_options_with_hook_roots(
         options: SessionOptions,
         slots: &mut a3s_code_core::SystemPromptSlots,

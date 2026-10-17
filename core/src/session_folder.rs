@@ -234,7 +234,7 @@ fn write_session_json(
     std::fs::rename(&temporary, &marker).with_context(|| format!("rename {}", marker.display()))?;
     // A session with no facts yet still has the log the marker names.
     // Resume admission reads that file; a missing log is not an empty session.
-    create_empty_effect_log(&dir, folder_id)?;
+    create_empty_effect_log(dir, folder_id)?;
     Ok(())
 }
 
