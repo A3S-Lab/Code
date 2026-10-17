@@ -112,11 +112,8 @@ fn looks_mutating(args: &serde_json::Value) -> bool {
         .get("command")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    command.contains('>')
-        || command.contains("rm ")
-        || command.contains("mv ")
-        || command.contains("tee ")
-        || args.get("changed_paths").is_some()
+    args.get("changed_paths").is_some()
+        || crate::permissions::shell::analyze(command).writes_files()
 }
 
 pub fn failed_report(digest: &str) -> VerificationReport {

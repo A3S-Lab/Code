@@ -163,6 +163,19 @@ fn split_words(command: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
+/// The shared shell classifier sees exactly one top-level command: no
+/// nesting, opaque construct, wrapper, assignment, redirect, or hard denial.
+fn parses_as_one_simple_command(command: &str) -> bool {
+    let analysis = a3s_code_core::permissions::shell::analyze(command);
+    !analysis.is_opaque()
+        && !analysis.risk().is_hard_denial()
+        && matches!(analysis.commands(), [parsed]
+            if parsed.depth() == 0
+                && !parsed.is_wrapped()
+                && !parsed.has_assignments()
+                && !parsed.has_redirects())
+}
+
 /// The rule one command would learn or match, or `None` when it must
 /// always ask.
 pub fn learnable_rule(command: &str) -> Option<String> {
@@ -173,6 +186,9 @@ pub fn learnable_rule(command: &str) -> Option<String> {
             .chars()
             .any(|c| SHELL_CONTROL.contains(&c) || c.is_control())
     {
+        return None;
+    }
+    if !parses_as_one_simple_command(command) {
         return None;
     }
     let words = split_words(command)?;

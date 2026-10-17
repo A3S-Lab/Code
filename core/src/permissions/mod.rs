@@ -13,6 +13,7 @@ mod policy;
 mod read_batch;
 mod risk;
 mod rule;
+pub mod shell;
 mod style_specialty;
 
 #[cfg(test)]

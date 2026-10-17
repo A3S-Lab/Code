@@ -10,8 +10,9 @@ mod assessment;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EnvironmentSensitivity, ImpactScope, OperationTarget, PermissionChecker, PermissionDecision,
-    Reversibility, ToolRiskAction, ToolRiskAssessment, ToolRiskLevel, ToolRiskReason,
+    shell, EnvironmentSensitivity, ImpactScope, OperationTarget, PermissionChecker,
+    PermissionDecision, Reversibility, ToolRiskAction, ToolRiskAssessment, ToolRiskLevel,
+    ToolRiskReason,
 };
 use assessment::{assess_tool, assessment_permission, critical_assessment, tool_risk_type};
 
@@ -143,7 +144,7 @@ impl InteractiveToolGuardrail {
     /// boundary, while destructive system commands remain denied in every
     /// execution mode.
     pub fn is_catastrophic_bash_command(command: &str) -> bool {
-        is_catastrophic_bash_command(command)
+        shell::analyze(command).risk().is_hard_denial()
     }
 
     /// Assess an invocation, including workspace path and symlink boundary checks.
@@ -578,107 +579,41 @@ fn classify_bash(
     if command.is_empty() {
         return PermissionDecision::Ask;
     }
-    if is_catastrophic_bash_command(command) {
+    let analysis = shell::analyze(command);
+    if analysis.risk().is_hard_denial() {
         PermissionDecision::Deny
-    } else if is_read_only_bash_command(command, workspace) {
+    } else if is_read_only_bash_command(command, &analysis, workspace) {
         PermissionDecision::Allow
     } else {
         PermissionDecision::Ask
     }
 }
 
-fn is_catastrophic_bash_command(command: &str) -> bool {
-    let lower = normalize_shell(command).to_ascii_lowercase();
-    if lower == "sudo"
-        || lower.starts_with("sudo ")
-        || lower.starts_with("doas ")
-        || lower == "su"
-        || lower.starts_with("su ")
-        || lower.starts_with("su -")
-    {
-        return true;
-    }
-    if shell_invokes_mkfs(command)
-        || lower.contains("diskutil erase")
-        || lower.contains(":(){")
-        || lower.contains("kill -9 -1")
-        || lower.starts_with("shutdown")
-        || lower.starts_with("reboot")
-    {
-        return true;
-    }
-    if (lower.contains("curl ") || lower.contains("wget "))
-        && ["| sh", "|sh", "| bash", "|bash", "| zsh", "|zsh"]
-            .iter()
-            .any(|pipe| lower.contains(pipe))
-    {
-        return true;
-    }
-    if (lower.starts_with("dd ") || lower.contains(" dd "))
-        && (lower.contains(" of=/dev/") || lower.contains("of=/dev/"))
-    {
-        return true;
-    }
-
-    lower.contains("rm -rf /")
-        || lower.contains("rm -fr /")
-        || lower.contains("rm -rf ~")
-        || lower.contains("rm -fr ~")
-        || lower.contains("rm -rf $home")
-        || lower.contains("rm -fr $home")
-        || lower.contains("rm -rf *")
-        || lower.contains("rm -fr *")
-        || lower == "rm -rf ."
-        || lower == "rm -fr ."
-}
-
-fn shell_invokes_mkfs(command: &str) -> bool {
-    command
-        .split(['|', ';', '&'])
-        .filter_map(|segment| segment.split_whitespace().next())
-        .map(clean_shell_token)
-        .filter_map(|executable| executable.rsplit('/').next())
-        .any(|executable| executable == "mkfs" || executable.starts_with("mkfs."))
-}
-
-fn is_read_only_bash_command(command: &str, workspace: Option<&std::path::Path>) -> bool {
-    // The allow-list intentionally rejects shell quoting, expansion, globs, and
-    // non-space control whitespace. A tokenizer-aware sandbox can broaden this
-    // later; a string heuristic must fail closed.
-    if command
-        .chars()
-        .any(|character| character.is_whitespace() && character != ' ')
-        || command.contains(['\'', '"', '*', '?', '[', ']', '{', '}'])
-        || contains_unsafe_shell_syntax(command, workspace)
-    {
-        return false;
-    }
-    command
-        .split('|')
-        .all(|segment| is_read_only_bash_segment(segment.trim()))
-}
-
-fn contains_unsafe_shell_syntax(command: &str, workspace: Option<&std::path::Path>) -> bool {
-    command.contains("&&")
-        || command.contains("||")
-        || command.contains(';')
-        || command.contains('>')
-        || command.contains('<')
-        || command.contains('`')
-        || command.contains("$(")
-        || command.contains('&')
-        || command.contains('\n')
-        || command.contains('\r')
-        || command.contains('$')
-        || has_unscoped_path_token(command, workspace)
-}
-
-fn has_unscoped_path_token(command: &str, workspace: Option<&std::path::Path>) -> bool {
-    command
-        .split_whitespace()
-        .map(clean_shell_token)
-        .filter(|token| !token.is_empty())
-        .any(|token| path_is_outside_workspace(token, workspace))
+/// The silent subset stays the lexical one: a pipeline of allowlisted
+/// programs written with literal words only, no quoting, expansion, glob,
+/// redirect, wrapper, nesting, or control whitespace, and no path outside the
+/// workspace.
+fn is_read_only_bash_command(
+    command: &str,
+    analysis: &shell::ShellAnalysis,
+    workspace: Option<&std::path::Path>,
+) -> bool {
+    analysis.risk() == shell::ShellRisk::ReadOnly
+        && analysis.has_only_pipes()
+        && !command
+            .chars()
+            .any(|character| character.is_whitespace() && character != ' ')
+        && analysis.commands().iter().all(|command| {
+            command.depth() == 0
+                && command.has_plain_words()
+                && !command.has_redirects()
+                && !command.has_assignments()
+                && !command.is_wrapped()
+                && !command
+                    .argv()
+                    .iter()
+                    .any(|word| path_is_outside_workspace(clean_shell_token(word), workspace))
+        })
 }
 
 fn clean_shell_token(token: &str) -> &str {
@@ -811,193 +746,6 @@ fn normalize_abs_lexical(path: &std::path::Path) -> Result<std::path::PathBuf, (
     }
 }
 
-fn is_read_only_bash_segment(segment: &str) -> bool {
-    let tokens: Vec<&str> = segment.split_whitespace().collect();
-    let Some(command) = tokens.first().copied().map(clean_shell_token) else {
-        return false;
-    };
-    let lower = segment.to_ascii_lowercase();
-
-    match command {
-        "pwd" | "cat" | "head" | "tail" | "wc" | "stat" | "file" | "cut" | "tr" | "whoami" => {
-            tokens
-                .iter()
-                .skip(1)
-                .all(|value| !option_executes_or_writes(value))
-        }
-        "ls" => tokens.iter().skip(1).all(|value| {
-            !option_executes_or_writes(value)
-                && !short_option_contains(value, 'L')
-                && !short_option_contains(value, 'R')
-                && !matches!(*value, "--dereference" | "--recursive")
-        }),
-        "rg" => tokens.iter().skip(1).all(|value| {
-            !option_executes_or_writes(value)
-                && !matches!(*value, "--pre" | "--hostname-bin" | "-L" | "--follow")
-                && !value.starts_with("--pre=")
-                && !value.starts_with("--hostname-bin=")
-        }),
-        "grep" => tokens.iter().skip(1).all(|value| {
-            !option_executes_or_writes(value)
-                && !short_option_contains(value, 'f')
-                && !matches!(
-                    *value,
-                    "-R" | "-r"
-                        | "--recursive"
-                        | "--dereference-recursive"
-                        | "--include"
-                        | "--exclude-from"
-                        | "--file"
-                )
-                && !value.starts_with("--exclude-from=")
-                && !value.starts_with("--file=")
-        }),
-        "du" => tokens.iter().skip(1).all(|value| {
-            !short_option_contains(value, 'L')
-                && !matches!(*value, "--dereference")
-                && !option_executes_or_writes(value)
-        }),
-        "df" => tokens
-            .iter()
-            .skip(1)
-            .all(|value| !option_executes_or_writes(value)),
-        "date" => tokens.iter().skip(1).all(|value| {
-            !matches!(*value, "-s" | "--set")
-                && !short_option_contains(value, 's')
-                && !value.starts_with("--set=")
-                && !option_executes_or_writes(value)
-        }),
-        "uname" => tokens
-            .iter()
-            .skip(1)
-            .all(|value| !option_executes_or_writes(value)),
-        "sort" => tokens.iter().skip(1).all(|value| {
-            !matches!(
-                *value,
-                "-o" | "-T" | "--output" | "--temporary-directory" | "--compress-program"
-            ) && !short_option_contains(value, 'o')
-                && !short_option_contains(value, 'T')
-                && !value.starts_with("--output=")
-                && !value.starts_with("--temporary-directory=")
-                && !value.starts_with("--compress-program=")
-                && !option_executes_or_writes(value)
-        }),
-        // uniq writes when a second positional operand is present. Conservatively
-        // allow only options and at most one positional input.
-        "uniq" => positional_argument_count(&tokens[1..]) <= 1,
-        // Keep only plain formatting output in the silent subset. Shell
-        // builtins can still carry surprising option semantics, so options ask.
-        "printf" | "echo" => tokens.iter().skip(1).all(|value| !value.starts_with('-')),
-        "find" => {
-            !tokens
-                .iter()
-                .skip(1)
-                .any(|value| matches!(*value, "-L" | "-H"))
-                && ![
-                    " -delete",
-                    " -exec",
-                    " -execdir",
-                    " -ok",
-                    " -okdir",
-                    " -fprint",
-                    " -fprint0",
-                    " -fprintf",
-                    " -fls",
-                    " -follow",
-                    " -lname",
-                ]
-                .iter()
-                .any(|action| lower.contains(action))
-        }
-        // Sed scripts can write files (`w`) or execute commands (`e`) without
-        // an option-level signal. Keep them behind HITL until a real parser can
-        // prove the script is read-only.
-        "sed" => false,
-        "git" => is_read_only_git_segment(&tokens),
-        _ => false,
-    }
-}
-
-fn short_option_contains(value: &str, flag: char) -> bool {
-    value.starts_with('-')
-        && !value.starts_with("--")
-        && value.chars().skip(1).any(|candidate| candidate == flag)
-}
-
-fn option_executes_or_writes(value: &str) -> bool {
-    matches!(
-        value,
-        "--output" | "--exec" | "--command" | "--config" | "--files-from"
-    ) || value.starts_with("--output=")
-        || value.starts_with("--exec=")
-        || value.starts_with("--command=")
-        || value.starts_with("--config=")
-        || value.starts_with("--files-from=")
-}
-
-fn positional_argument_count(tokens: &[&str]) -> usize {
-    tokens
-        .iter()
-        .filter(|value| !value.starts_with('-'))
-        .count()
-}
-
-fn is_read_only_git_segment(tokens: &[&str]) -> bool {
-    if tokens.first().copied() != Some("git") {
-        return false;
-    }
-    let mut index = 1;
-    while index < tokens.len() {
-        match tokens[index] {
-            "--no-pager" | "-P" | "--no-optional-locks" => index += 1,
-            // `-C` changes the filesystem boundary and is therefore never in
-            // the silent allow-list. Other global config/execution options are
-            // likewise left to confirmation.
-            value if value.starts_with('-') => return false,
-            _ => break,
-        }
-    }
-
-    let Some(subcommand) = tokens.get(index).copied() else {
-        return false;
-    };
-    let args = &tokens[index + 1..];
-    if args.iter().any(|value| {
-        matches!(
-            *value,
-            "--ext-diff" | "--textconv" | "--exec-path" | "--config-env"
-        ) || value.starts_with("--exec-path=")
-            || value.starts_with("--config-env=")
-    }) {
-        return false;
-    }
-
-    match subcommand {
-        "status" | "diff" | "log" | "show" | "blame" | "grep" | "ls-files" | "rev-parse" => {
-            !args.iter().any(|value| {
-                option_executes_or_writes(value)
-                    || matches!(*value, "--paginate" | "-p" | "--ext-diff" | "--textconv")
-                    || value.starts_with("--format=") && value.contains("%(rest)")
-            })
-        }
-        "remote" => match args.first() {
-            Some(value) => matches!(*value, "-v" | "show"),
-            None => true,
-        },
-        "branch" => args.iter().all(|value| {
-            matches!(
-                *value,
-                "--all" | "-a" | "--list" | "--show-current" | "--verbose" | "-v" | "-vv"
-            )
-        }),
-        _ => false,
-    }
-}
-
-fn normalize_shell(command: &str) -> String {
-    command.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
@@ -1014,36 +762,34 @@ mod coverage_tests {
             PermissionDecision::Ask
         );
 
-        assert!(!is_read_only_bash_segment(""));
-        assert!(!is_read_only_bash_segment("ls -R"));
-        assert!(!is_read_only_bash_segment("ls --recursive"));
-        assert!(!is_read_only_bash_segment("ls --dereference"));
-        assert!(!is_read_only_bash_segment("grep --exclude-from=x pattern"));
-        assert!(!is_read_only_bash_segment("grep --file=x pattern"));
-        assert!(!is_read_only_bash_segment("grep --recursive pattern"));
-        assert!(!is_read_only_bash_segment("du -L ."));
-        assert!(!is_read_only_bash_segment("du --dereference ."));
-        assert!(is_read_only_bash_segment("df -h"));
-        assert!(is_read_only_bash_segment("uname -a"));
-        assert!(!is_read_only_bash_segment("cat --output=x"));
-        assert!(option_executes_or_writes("--files-from"));
-        assert!(option_executes_or_writes("--output=/tmp/x"));
+        let read_only = |segment: &str| {
+            let words: Vec<&str> = segment.split_whitespace().collect();
+            words
+                .split_first()
+                .is_some_and(|(program, args)| shell::read_only_program(program, args))
+        };
+        assert!(!read_only(""));
+        assert!(!read_only("ls -R"));
+        assert!(!read_only("ls --recursive"));
+        assert!(!read_only("ls --dereference"));
+        assert!(!read_only("grep --exclude-from=x pattern"));
+        assert!(!read_only("grep --file=x pattern"));
+        assert!(!read_only("grep --recursive pattern"));
+        assert!(!read_only("du -L ."));
+        assert!(!read_only("du --dereference ."));
+        assert!(read_only("df -h"));
+        assert!(read_only("uname -a"));
+        assert!(!read_only("cat --output=x"));
+        assert!(!read_only("cat --files-from=x"));
 
-        assert!(!is_read_only_git_segment(&["status"]));
-        assert!(!is_read_only_git_segment(&["git"]));
-        assert!(is_read_only_git_segment(&["git", "--no-pager", "status"]));
-        assert!(!is_read_only_git_segment(&["git", "-C", "/tmp", "status"]));
-        assert!(!is_read_only_git_segment(&["git", "diff", "--ext-diff"]));
-        assert!(is_read_only_git_segment(&["git", "remote", "-v"]));
-        assert!(is_read_only_git_segment(&["git", "remote"]));
-        assert!(is_read_only_git_segment(&[
-            "git",
-            "branch",
-            "--show-current"
-        ]));
-        assert!(!is_read_only_git_segment(&[
-            "git", "branch", "--delete", "x"
-        ]));
+        assert!(!read_only("git"));
+        assert!(read_only("git --no-pager status"));
+        assert!(!read_only("git -C /tmp status"));
+        assert!(!read_only("git diff --ext-diff"));
+        assert!(read_only("git remote -v"));
+        assert!(read_only("git remote"));
+        assert!(read_only("git branch --show-current"));
+        assert!(!read_only("git branch --delete x"));
     }
 
     #[test]

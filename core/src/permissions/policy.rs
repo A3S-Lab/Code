@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::{MatchingRules, PermissionChecker, PermissionDecision, PermissionRule};
+use super::{
+    canonical_tool_name, MatchingRules, PermissionChecker, PermissionDecision, PermissionRule,
+};
 use crate::queue::SessionLane;
 
 /// Policy the next run admission freezes.
@@ -126,7 +128,8 @@ impl TryFrom<PermissionPolicyWire> for PermissionPolicy {
 /// 4. Default - falls back to default_decision
 ///
 /// Under [`PermissionEnforcement::Unrestricted`] steps 2-4 become Allow;
-/// step 1 still applies.
+/// step 1 still applies, and so does the catastrophic shell floor
+/// ([`super::shell::ShellRisk::Catastrophic`] is denied under every allow).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "PermissionPolicyWire")]
 pub struct PermissionPolicy {
@@ -249,6 +252,11 @@ impl PermissionPolicy {
         {
             return decision;
         }
+        if canonical_tool_name(tool_name).eq_ignore_ascii_case("bash") {
+            if let Some(command) = args.get("command").and_then(serde_json::Value::as_str) {
+                return self.check_bash(tool_name, args, command);
+            }
+        }
 
         // 1. Check deny rules first
         for rule in &self.deny {
@@ -277,6 +285,62 @@ impl PermissionPolicy {
         }
 
         // 4. Fall back to default
+        self.default_decision
+    }
+
+    /// Shell commands are matched per parsed simple command, nested ones
+    /// included, and the parse can only narrow the raw-string rules:
+    ///
+    /// - a Deny or Ask rule matching the raw text OR any simple command
+    ///   (as written, or with wrappers removed) applies;
+    /// - a catastrophic command is denied under every allow rule, YOLO lane,
+    ///   and unrestricted enforcement;
+    /// - an argument-scoped Allow rule applies only when the line has no
+    ///   opaque construct and every simple command, written as-is without a
+    ///   file redirect, matches some Allow rule.
+    fn check_bash(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        command: &str,
+    ) -> PermissionDecision {
+        let analysis = super::shell::analyze(command);
+        let any_command_matches = |rule: &PermissionRule| {
+            rule.matches(tool_name, args)
+                || analysis.commands().iter().any(|parsed| {
+                    rule.matches_shell_command(tool_name, &parsed.literal_text())
+                        || rule.matches_shell_command(tool_name, &parsed.effective_text())
+                })
+        };
+        if self.deny.iter().any(any_command_matches) {
+            return PermissionDecision::Deny;
+        }
+        if analysis.risk() == super::shell::ShellRisk::Catastrophic {
+            return PermissionDecision::Deny;
+        }
+        if self.enforcement == PermissionEnforcement::Unrestricted {
+            return PermissionDecision::Allow;
+        }
+        let lane_rule = yolo_lane_rule(SessionLane::from_tool_name(tool_name));
+        if self.allow.iter().any(|rule| {
+            rule.rule == lane_rule || rule.matches_tool(tool_name) && rule.matches_all_args()
+        }) {
+            return PermissionDecision::Allow;
+        }
+        let every_command_allowed = !analysis.is_opaque()
+            && analysis.commands().iter().all(|parsed| {
+                !parsed.writes_file()
+                    && self
+                        .allow
+                        .iter()
+                        .any(|rule| rule.matches_shell_command(tool_name, &parsed.literal_text()))
+            });
+        if every_command_allowed {
+            return PermissionDecision::Allow;
+        }
+        if self.ask.iter().any(any_command_matches) {
+            return PermissionDecision::Ask;
+        }
         self.default_decision
     }
 

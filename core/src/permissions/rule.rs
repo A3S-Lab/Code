@@ -124,6 +124,25 @@ impl PermissionRule {
             .is_some_and(|rule_tool| self.matches_tool_name(rule_tool, tool_name))
     }
 
+    /// Match one parsed simple command against a `Bash(...)` pattern.
+    ///
+    /// A `prefix:*` pattern matches the prefix only at a word boundary, so
+    /// `Bash(git status:*)` does not match `git statusx`.
+    pub(super) fn matches_shell_command(&self, tool_name: &str, command: &str) -> bool {
+        if !self.matches_tool(tool_name) {
+            return false;
+        }
+        match self.arg_pattern.as_deref() {
+            None | Some("*") => true,
+            Some(pattern) => match pattern.strip_suffix(":*") {
+                Some(prefix) => command
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' ')),
+                None => self.glob_match(pattern, command),
+            },
+        }
+    }
+
     /// Whether a matching tool name is denied for every possible argument.
     pub(super) fn matches_all_args(&self) -> bool {
         self.arg_pattern
