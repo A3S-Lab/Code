@@ -33,7 +33,7 @@ persist admission before model use.
 ## Versioned fixture
 
 The source is
-[`evaluation.json`](../core/tests/fixtures/durable-memory-semantic-v1/evaluation.json).
+[`evaluation.json`](../../../core/tests/fixtures/durable-memory-semantic-v1/evaluation.json).
 It declares:
 
 - four English Active procedural memories;
@@ -78,7 +78,7 @@ The retained marker is:
 ```
 
 The companion
-[`durable_memory_semantic`](../core/tests/durable_memory_semantic.rs) contract
+[`durable_memory_semantic`](../../../core/tests/durable_memory_semantic.rs) contract
 tests also lock hybrid de-duplication, byte-for-byte lexical fallback after an
 embedding failure, Candidate rejection during index replacement, stale
 revision filtering, namespace and same-namespace generation partition
@@ -87,7 +87,7 @@ tests reject drift in provider/model
 identity, authority digest, vector budgets, semantic policy, and embedding
 execution policy.
 
-The separate [semantic refresh gate](DURABLE_MEMORY_SEMANTIC_REFRESH.md) covers
+The separate [semantic refresh gate](../../../manual/DURABLE_MEMORY_SEMANTIC_REFRESH.md) covers
 complete dual-budget repository snapshots, explicit atomic rebuild, source
 drift cleanup, serialized live-generation mutation, shared-index revision CAS,
 refresh receipts, owned scheduling, and verified suppression of redundant

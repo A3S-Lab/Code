@@ -1,7 +1,7 @@
 //! `DM-PROD1` (`HARNESS-CONV7`) host qualification harness.
 //!
 //! Produces a reproducible host report pack for the production-qualification
-//! overlay in `manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md`. Unlike the
+//! overlay in `docs/evidence/evaluations/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md`. Unlike the
 //! hermetic `DURABLE_MEMORY_*` gates, every backend here is real: a Boyue
 //! OpenAI-compatible embedding endpoint, a Redis-backed `VectorIndex` with
 //! index-revision CAS, and a Redis `SET NX EX` lease.

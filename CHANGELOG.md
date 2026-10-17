@@ -382,7 +382,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index-revision CAS, fenced `SET NX EX` lease, restart, failover, and drift
   measured against a real OpenAI-compatible embedding provider. Not part of any
   release profile. Runbook:
-  [DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](manual/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md).
+  [DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md](docs/evidence/evaluations/DURABLE_MEMORY_PRODUCTION_QUALIFICATION.md).
 
 ### Fixed
 

@@ -12,7 +12,7 @@ claim.
 ## Versioned contract
 
 The fixture is
-[`core/tests/fixtures/durable-memory-multilingual-v1/evaluation.json`](../core/tests/fixtures/durable-memory-multilingual-v1/evaluation.json).
+[`core/tests/fixtures/durable-memory-multilingual-v1/evaluation.json`](../../../core/tests/fixtures/durable-memory-multilingual-v1/evaluation.json).
 It declares schema version `1`, the exact
 `a3s.memory.lexical.word-cjk-bigram.v1` retrieval profile, serving policy,
 labeled queries, negative queries, and thresholds before the report is

@@ -1202,13 +1202,13 @@ CAS、故障转移和生产节奏仍然是主机资格。
 激活后服务、访问历史重放和存储库发布
 锁定会话拆卸。参见
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) 和
-[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
-[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md),
-[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md),
-[Durable Memory Semantic Evaluation](manual/DURABLE_MEMORY_SEMANTIC_EVAL.md),
+[Durable Memory Retrieval Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
+[Durable Memory Product Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_PRODUCT_EVAL.md),
+[Durable Memory Multilingual Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_MULTILINGUAL_EVAL.md),
+[Durable Memory Semantic Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_SEMANTIC_EVAL.md),
 [Durable Memory Semantic Refresh](manual/DURABLE_MEMORY_SEMANTIC_REFRESH.md),
-[Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md)，以及
-[Durable Memory Restart Endurance Evaluation](manual/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+[Durable Memory Multi-Agent Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_MULTI_AGENT_EVAL.md)，以及
+[Durable Memory Restart Endurance Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
 所有权、持久性、迁移规则、检索配置文件、向量
 决策、端到端指标和声明的评估限制。
 
@@ -1747,9 +1747,9 @@ v1 架构或声明外部运行时认证。
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md) |语言运行时、能力边界、生命周期和验证 |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md) |架构、质量预算、生命周期和对抗性信任边界 |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md) |发布测试、独立预言机、性能证据和 DeepSeek E2E 范围 |
-| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md) |一种用于自主搜索模式选择和透明a3s-vec 加速的有界 ACL 模型门 |
+| [Workspace Search Real-Model Qualification](docs/evidence/evaluations/WORKSPACE_SEARCH_REAL_LLM.md) |一种用于自主搜索模式选择和透明a3s-vec 加速的有界 ACL 模型门 |
 | [Workspace Search Production Qualification](manual/WORKSPACE_SEARCH_PRODUCTION.md) |确定性的本机/便携式测试加上真正的清单支持的规模、并发性、重建、清理和重新启动门 |
-| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) |配对任务/重新排序消融、内置块矩阵、跨 SDK 真实模型奇偶校验、自定义负控制、非文本边界、指标和批处理跟进 |
+| [Workspace Retrieval DeepSeek Evaluation](docs/evidence/evaluations/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md) |配对任务/重新排序消融、内置块矩阵、跨 SDK 真实模型奇偶校验、自定义负控制、非文本边界、指标和批处理跟进 |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md) |内置/自定义策略、验证、异步生命周期、非文本边界和重新排序计划 |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md) |生产 SLO、遥测、状态响应、生成门和仅配置回滚 |
 | [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md) | a3s-vec 词法索引、内存语义向量、资源边界、打包和回滚 |

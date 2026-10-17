@@ -9,7 +9,7 @@ deterministic clients.
 **In progress** until host reports cover the items below without weakening
 namespace, evidence, history, admission, or lifecycle invariants.
 
-Evidence templates live in [HARNESS_CONVERGENCE.md](HARNESS_CONVERGENCE.md).
+Evidence templates live in [HARNESS_CONVERGENCE.md](../../../manual/HARNESS_CONVERGENCE.md).
 
 ## Required host report dimensions
 

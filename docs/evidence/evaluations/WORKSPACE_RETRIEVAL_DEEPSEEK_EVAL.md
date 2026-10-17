@@ -14,7 +14,7 @@ gate passed again.
 
 This report records the reproducible real-chat-model ablation for A3S Code's
 session-bound, in-memory Workspace Retrieval. It complements the deterministic
-[release qualification](WORKSPACE_RETRIEVAL_QA.md); it does not replace its
+[release qualification](../../../manual/WORKSPACE_RETRIEVAL_QA.md); it does not replace its
 independent relevance and security oracles.
 
 ## Decision: chunk text, reject non-text
@@ -310,7 +310,7 @@ exact completions and one-Search protocols with Precision@5 0.2,
 returned-result precision 0.4286, Recall@5 1.0, MRR 0.5, nDCG@5 0.6309, 1.0x
 document-request amplification, zero non-text inputs, and complete release.
 The normalized report, latency/token values, rejected prompt ambiguity, and
-commands are in the [cross-SDK contract](../sdk/evaluation/README.md). These
+commands are in the [cross-SDK contract](../../../sdk/evaluation/README.md). These
 three-task arms close `WSR-EVAL2` for API parity, not for a default change.
 
 ### v7.0.1 post-release rerun
@@ -563,7 +563,7 @@ artifact schema are documented in the CLI
 [local CPU guide](https://github.com/A3S-Lab/CLI/blob/main/docs/local-cpu-workspace-embedding.md).
 
 The Node.js, Python, and Go runners and their hermetic fixture commands are
-listed in [`sdk/evaluation/README.md`](../sdk/evaluation/README.md). Each live
+listed in [`sdk/evaluation/README.md`](../../../sdk/evaluation/README.md). Each live
 runner prints one normalized `WSR_SDK_DEEPSEEK_EVAL=<json>` record.
 
 `a3s-test capabilities --json` succeeded during the review. The optional Web

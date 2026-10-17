@@ -20,12 +20,12 @@ hermetic product-contract gate, not a real-model quality claim.
 ## Versioned inputs
 
 The product fixture is
-[`core/tests/fixtures/durable-memory-product-v1/evaluation.json`](../core/tests/fixtures/durable-memory-product-v1/evaluation.json).
+[`core/tests/fixtures/durable-memory-product-v1/evaluation.json`](../../../core/tests/fixtures/durable-memory-product-v1/evaluation.json).
 It reuses the independently labeled
-[`durable-memory-retrieval-v1`](../core/tests/fixtures/durable-memory-retrieval-v1/corpus.json)
+[`durable-memory-retrieval-v1`](../../../core/tests/fixtures/durable-memory-retrieval-v1/corpus.json)
 corpus instead of defining a second retrieval truth set. The deterministic
 model harness is isolated in
-[`core/tests/durable_memory_product_eval/model.rs`](../core/tests/durable_memory_product_eval/model.rs).
+[`core/tests/durable_memory_product_eval/model.rs`](../../../core/tests/durable_memory_product_eval/model.rs).
 
 The capture case presents three proposals:
 
@@ -64,7 +64,7 @@ nominal input and output rates; it is not a provider invoice. The broad p95
 ceiling catches hangs and accidental extra work, but does not qualify a
 production latency SLO. Release performance claims still require the profile,
 machine metadata, warmups, sample count, and retained artifact defined by
-[Capability Verification](CAPABILITY_VERIFICATION.md).
+[Capability Verification](../../../manual/CAPABILITY_VERIFICATION.md).
 
 ## Current deterministic result
 

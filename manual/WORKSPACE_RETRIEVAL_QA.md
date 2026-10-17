@@ -381,7 +381,7 @@ vectors were released after close. The pre-`CODE-B2` run exposed 30 document
 provider requests for 31 chunks. The final schema-v2 rerun sends one request
 against the same one-request lower bound, for 1.0x amplification. Full
 methodology, latency, resource, token, chunking, and follow-up gates are in the
-[DeepSeek evaluation report](WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
+[DeepSeek evaluation report](../docs/evidence/evaluations/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md).
 
 ### Real ACL-host strategy and rerank execution
 

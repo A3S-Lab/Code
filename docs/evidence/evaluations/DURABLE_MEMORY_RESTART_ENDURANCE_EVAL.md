@@ -6,7 +6,7 @@ run-ID reuse slice of `DM-PROD1`. It exercises the real `AgentSession`,
 the Memory kernel's journal, revision, or concurrency contract tests.
 
 The fixture is
-[`core/tests/fixtures/durable-memory-restart-endurance-v1/evaluation.json`](../core/tests/fixtures/durable-memory-restart-endurance-v1/evaluation.json).
+[`core/tests/fixtures/durable-memory-restart-endurance-v1/evaluation.json`](../../../core/tests/fixtures/durable-memory-restart-endurance-v1/evaluation.json).
 It fixes the corpus, process epochs, agent count, retention limit, binding
 schema, identity profile, and pass thresholds before execution.
 

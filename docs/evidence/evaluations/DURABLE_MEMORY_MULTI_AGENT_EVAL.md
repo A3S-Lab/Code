@@ -11,7 +11,7 @@ or production providers are fully qualified.
 ## Authority and identity contract
 
 The fixture is
-[`core/tests/fixtures/durable-memory-multi-agent-v1/evaluation.json`](../core/tests/fixtures/durable-memory-multi-agent-v1/evaluation.json).
+[`core/tests/fixtures/durable-memory-multi-agent-v1/evaluation.json`](../../../core/tests/fixtures/durable-memory-multi-agent-v1/evaluation.json).
 It declares schema version `1`, the exact context identity profile, corpus,
 agent session identities, and thresholds before the report is calculated.
 

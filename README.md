@@ -1264,13 +1264,13 @@ file-repository test also proves candidate isolation before activation,
 post-activation serving, access-history replay, and release of the repository
 lock at session teardown. See
 [Durable Memory Integration](manual/DURABLE_MEMORY.md) and
-[Durable Memory Retrieval Evaluation](manual/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
-[Durable Memory Product Evaluation](manual/DURABLE_MEMORY_PRODUCT_EVAL.md),
-[Durable Memory Multilingual Evaluation](manual/DURABLE_MEMORY_MULTILINGUAL_EVAL.md),
-[Durable Memory Semantic Evaluation](manual/DURABLE_MEMORY_SEMANTIC_EVAL.md),
+[Durable Memory Retrieval Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_RETRIEVAL_EVAL.md),
+[Durable Memory Product Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_PRODUCT_EVAL.md),
+[Durable Memory Multilingual Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_MULTILINGUAL_EVAL.md),
+[Durable Memory Semantic Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_SEMANTIC_EVAL.md),
 [Durable Memory Semantic Refresh](manual/DURABLE_MEMORY_SEMANTIC_REFRESH.md),
-[Durable Memory Multi-Agent Evaluation](manual/DURABLE_MEMORY_MULTI_AGENT_EVAL.md), and
-[Durable Memory Restart Endurance Evaluation](manual/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+[Durable Memory Multi-Agent Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_MULTI_AGENT_EVAL.md), and
+[Durable Memory Restart Endurance Evaluation](docs/evidence/evaluations/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
 for ownership, durability, migration rules, retrieval profiles, the vector
 decision, end-to-end metrics, and declared evaluation limits.
 
@@ -1814,9 +1814,9 @@ the v1 schema or claiming external Runtime certification.
 | [Code Intelligence Design](manual/CODE_INTELLIGENCE_DESIGN.md)                                                       | Language runtime, capability boundary, lifecycle, and verification                                                                                            |
 | [Workspace Retrieval Baseline](manual/WORKSPACE_RETRIEVAL_BASELINE.md)                                               | Architecture, quality budgets, lifecycle, and adversarial trust boundaries                                                                                    |
 | [Workspace Retrieval Qualification](manual/WORKSPACE_RETRIEVAL_QA.md)                                                | Release tests, independent oracles, performance evidence, and DeepSeek E2E scope                                                                              |
-| [Workspace Search Real-Model Qualification](manual/WORKSPACE_SEARCH_REAL_LLM.md)                                   | One bounded ACL-model gate for autonomous search-mode selection and transparent a3s-vec acceleration                                                     |
+| [Workspace Search Real-Model Qualification](docs/evidence/evaluations/WORKSPACE_SEARCH_REAL_LLM.md)                                   | One bounded ACL-model gate for autonomous search-mode selection and transparent a3s-vec acceleration                                                     |
 | [Workspace Search Production Qualification](manual/WORKSPACE_SEARCH_PRODUCTION.md)                               | Deterministic native/portable tests plus a real manifest-backed scale, concurrency, rebuild, cleanup, and restart gate                              |
-| [Workspace Retrieval DeepSeek Evaluation](manual/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
+| [Workspace Retrieval DeepSeek Evaluation](docs/evidence/evaluations/WORKSPACE_RETRIEVAL_DEEPSEEK_EVAL.md)                               | Paired task/rerank ablations, built-in chunk matrix, cross-SDK real-model parity, custom negative control, non-text boundary, metrics, and batching follow-up |
 | [Workspace Retrieval Chunking](manual/WORKSPACE_RETRIEVAL_CHUNKING.md)                                               | Built-in/custom strategies, validation, async lifecycle, non-text boundary, and rerank plan                                                                   |
 | [Workspace Retrieval Operations](manual/WORKSPACE_RETRIEVAL_OPERATIONS.md)                                           | Production SLOs, telemetry, state response, generation gates, and configuration-only rollback                                                                 |
 | [Workspace Retrieval Backends](manual/WORKSPACE_RETRIEVAL_BACKENDS.md)                                              | a3s-vec lexical indexing, Memory semantic vectors, resource bounds, packaging, and rollback                                                                       |

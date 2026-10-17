@@ -23,7 +23,7 @@ coverage `0.40`, and eight exact relation-target reads. The corpus contains:
   a foreign namespace.
 
 The source is
-[`core/tests/fixtures/durable-memory-retrieval-v1/corpus.json`](../core/tests/fixtures/durable-memory-retrieval-v1/corpus.json).
+[`core/tests/fixtures/durable-memory-retrieval-v1/corpus.json`](../../../core/tests/fixtures/durable-memory-retrieval-v1/corpus.json).
 
 ## Metrics
 

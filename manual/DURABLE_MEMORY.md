@@ -293,9 +293,9 @@ reservation: collision with a still-retained run returns
 This correlation value is not an authentication token. Namespace authority
 still comes from the exact host-injected binding, and repository fencing and
 globally meaningful session assignment remain host responsibilities. See
-[Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
+[Durable Memory Multi-Agent Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 the executable sharing contract and
-[Durable Memory Restart Endurance Evaluation](DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+[Durable Memory Restart Endurance Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
 for cross-process reuse, retention, revision, and repeated-restart evidence.
 
 The `durable_memory_restart` integration test uses real
@@ -550,21 +550,21 @@ Code never chooses that path or silently enables the backend.
      generator, revise the Active node, and require all 24 contexts plus exact
     current-revision and namespace isolation after final journal replay.
 
-See [Durable Memory Retrieval Evaluation](DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
+See [Durable Memory Retrieval Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_RETRIEVAL_EVAL.md) for
 the retrieval metric definitions and vector decision. See
-[Durable Memory Product Evaluation](DURABLE_MEMORY_PRODUCT_EVAL.md) for the
+[Durable Memory Product Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_PRODUCT_EVAL.md) for the
 end-to-end serving, capture, cost, and consolidation evidence. See
-[Durable Memory Multilingual Evaluation](DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
+[Durable Memory Multilingual Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_MULTILINGUAL_EVAL.md)
 for the query-profile contract, CJK gate, and its limits. See
-[Durable Memory Semantic Evaluation](DURABLE_MEMORY_SEMANTIC_EVAL.md) for the
+[Durable Memory Semantic Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_SEMANTIC_EVAL.md) for the
 typed hybrid serving, current-revision verification, and cross-language gate.
 See [Durable Memory Semantic Refresh](DURABLE_MEMORY_SEMANTIC_REFRESH.md) for
 complete snapshot rebuild, drift cleanup, shared-index revision CAS, and
 owned schedule, refresh-receipt, and checkpoint-recovery semantics.
 See
-[Durable Memory Multi-Agent Evaluation](DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
+[Durable Memory Multi-Agent Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_MULTI_AGENT_EVAL.md) for
 explicit sharing and context-identity semantics. See
-[Durable Memory Restart Endurance Evaluation](DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
+[Durable Memory Restart Endurance Evaluation](../docs/evidence/evaluations/DURABLE_MEMORY_RESTART_ENDURANCE_EVAL.md)
 for the bounded repeated-restart production slice.
 
 ## Verification
