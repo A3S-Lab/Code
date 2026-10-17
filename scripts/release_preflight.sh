@@ -64,19 +64,19 @@ if [[ "$TARGET_ROOT" != /* ]]; then
   TARGET_ROOT="$WORKSPACE/$TARGET_ROOT"
 fi
 
-echo "[1/15] Checking patch hygiene"
+echo "[1/16] Checking patch hygiene"
 git diff --check
 
-echo "[2/15] Checking release version consistency"
+echo "[2/16] Checking release version consistency"
 scripts/check_release_versions.sh
 
-echo "[3/15] Checking formatting"
+echo "[3/16] Checking formatting"
 cargo fmt --all --check
 
-echo "[4/15] Checking strict Rust lints"
+echo "[4/16] Checking strict Rust lints"
 rustup run 1.97.1 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-echo "[5/15] Checking SDK API alignment"
+echo "[5/16] Checking SDK API alignment"
 node scripts/generate_event_protocol_artifacts.mjs --check
 node scripts/generate_evaluation_protocol_artifacts.mjs --check
 node scripts/check_evaluation_protocol_artifacts.mjs
@@ -85,29 +85,35 @@ python3 scripts/check_capability_verification.py
 node scripts/sdk_api_alignment_check.mjs
 node sdk/node/scripts/patch-loader.mjs --check
 
-echo "[6/15] Checking rustdoc warnings"
+echo "[6/16] Checking rustdoc warnings"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 
-echo "[7/15] Running default Rust test suite"
+echo "[7/16] Running default Rust test suite"
 cargo test --workspace
 
-echo "[8/15] Running feature-gated library tests"
+echo "[8/16] Writing the ACP v1 conformance report"
+release_evidence_dir="${A3S_RELEASE_EVIDENCE_DIR:-target/release-evidence}"
+A3S_ACP_CONFORMANCE_REPORT="$release_evidence_dir/acp-conformance.md" \
+  cargo test -p a3s-code-acp --test acp_conformance_stdio
+echo "attach $release_evidence_dir/acp-conformance.md to the release"
+
+echo "[9/16] Running feature-gated library tests"
 cargo test --workspace --all-features --lib
 
-echo "[9/15] Building and testing Node SDK"
+echo "[10/16] Building and testing Node SDK"
 (
   unset A3S_CONFIG_FILE A3S_OPENAI_API_KEY A3S_OPENAI_BASE_URL MINIMAX_API_KEY MINIMAX_BASE_URL
   cd sdk/node && npm run build:debug && npm test && npm run test:helpers
 )
 
-echo "[10/15] Type-checking Node examples"
+echo "[11/16] Type-checking Node examples"
 (cd sdk/node/examples && npm run typecheck)
 
-echo "[11/15] Compiling Python SDK shim"
+echo "[12/16] Compiling Python SDK shim"
 PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/private/tmp/a3s-code-pycache}" \
   python3 -m compileall sdk/python/python >/dev/null
 
-echo "[12/15] Running Go SDK bridge integration"
+echo "[13/16] Running Go SDK bridge integration"
 cargo build --package a3s-code-go-bridge --bin a3s-code-go-bridge --features advanced-harness,server
 BRIDGE_BINARY="$TARGET_ROOT/debug/a3s-code-go-bridge"
 if [ -f "$BRIDGE_BINARY.exe" ]; then
@@ -122,10 +128,10 @@ fi
     go test -race -tags=release_contract ./...
 )
 
-echo "[13/15] Checking ACL env injection dry run"
+echo "[14/16] Checking ACL env injection dry run"
 A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh --dry-run
 
-echo "[14/15] Checking real-provider ACL env smoke availability"
+echo "[15/16] Checking real-provider ACL env smoke availability"
 CONFIG_HAS_DEFAULT_PROVIDER_CREDS=0
 if [ -f "$CONFIG_FILE" ]; then
   CONFIG_HAS_DEFAULT_PROVIDER_CREDS="$(bash scripts/with_acl_env.sh check "$CONFIG_FILE")"
@@ -137,17 +143,17 @@ if [ "${SKIP_REAL_PROVIDER:-0}" = "1" ]; then
     exit 2
   fi
   echo "skipped real-provider smoke by explicit SKIP_REAL_PROVIDER=1" >&2
-  echo "[15/15] Skipping SDK real-provider smoke"
+  echo "[16/16] Skipping SDK real-provider smoke"
 elif [ "$CONFIG_HAS_DEFAULT_PROVIDER_CREDS" = "1" ]; then
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/real_config_env_integration.sh
-  echo "[15/15] Running SDK real-provider smoke"
+  echo "[16/16] Running SDK real-provider smoke"
   A3S_CONFIG_FILE="$CONFIG_FILE" scripts/sdk_real_config_env_integration.sh
 elif [ "${REQUIRE_REAL_PROVIDER:-0}" = "1" ]; then
   echo "missing credentials for the configured default provider; real-provider smoke is required" >&2
   exit 2
 else
   echo "skipped real-provider smoke; configure credentials for the default provider before tagging" >&2
-  echo "[15/15] Skipping SDK real-provider smoke"
+  echo "[16/16] Skipping SDK real-provider smoke"
 fi
 
 echo "release preflight completed"
