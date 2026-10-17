@@ -29,6 +29,94 @@ fn yolo_lane_rule(lane: SessionLane) -> String {
     }
 }
 
+/// Whether a policy's allow/ask rules are evaluated (closed set).
+///
+/// `unrestricted` allows every call that no deny rule matches; deny rules
+/// always win. There is no setting that skips deny rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionEnforcement {
+    #[default]
+    Enforced,
+    Unrestricted,
+}
+
+impl PermissionEnforcement {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "enforced" => Ok(Self::Enforced),
+            "unrestricted" => Ok(Self::Unrestricted),
+            other => Err(format!(
+                "unknown permission enforcement `{other}`; expected one of: enforced, unrestricted"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforced => "enforced",
+            Self::Unrestricted => "unrestricted",
+        }
+    }
+    /// Resolve an explicit enforcement against the retired `enabled`
+    /// switch. `enabled = false` without `unrestricted` is refused, never
+    /// read as "allow everything".
+    pub fn resolve(enforcement: Option<Self>, enabled: Option<bool>) -> Result<Self, String> {
+        if enabled.is_some() {
+            tracing::warn!(
+                "permission policy `enabled` is deprecated; use `enforcement` (enforced, unrestricted)"
+            );
+        }
+        match (enforcement, enabled) {
+            (Some(Self::Enforced), Some(false)) => Err(
+                "permission policy sets `enabled = false` and `enforcement = \"enforced\"`"
+                    .to_string(),
+            ),
+            (Some(enforcement), _) => Ok(enforcement),
+            (None, Some(false)) => {
+                Err("permission policy `enabled = false` no longer disables \
+                 checks; set `enforcement = \"unrestricted\"` (closed set: enforced, unrestricted)"
+                    .to_string())
+            }
+            (None, _) => Ok(Self::Enforced),
+        }
+    }
+}
+
+/// Serialized form. `enabled` is the retired switch: `true` is accepted as
+/// `enforced`; `false` without `enforcement = "unrestricted"` is refused
+/// instead of silently allowing every call.
+#[derive(Deserialize)]
+struct PermissionPolicyWire {
+    #[serde(default)]
+    deny: Vec<PermissionRule>,
+    #[serde(default)]
+    allow: Vec<PermissionRule>,
+    #[serde(default)]
+    ask: Vec<PermissionRule>,
+    #[serde(default = "default_decision")]
+    default_decision: PermissionDecision,
+    #[serde(default)]
+    enforcement: Option<PermissionEnforcement>,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+impl TryFrom<PermissionPolicyWire> for PermissionPolicy {
+    type Error = String;
+
+    fn try_from(wire: PermissionPolicyWire) -> Result<Self, Self::Error> {
+        let enforcement = PermissionEnforcement::resolve(wire.enforcement, wire.enabled)?;
+        Ok(Self {
+            deny: wire.deny,
+            allow: wire.allow,
+            ask: wire.ask,
+            default_decision: wire.default_decision,
+            enforcement,
+        })
+    }
+}
+
 /// Permission policy configuration
 ///
 /// Evaluation order:
@@ -36,7 +124,11 @@ fn yolo_lane_rule(lane: SessionLane) -> String {
 /// 2. Allow rules - any match results in auto-approval
 /// 3. Ask rules - any match requires user confirmation
 /// 4. Default - falls back to default_decision
+///
+/// Under [`PermissionEnforcement::Unrestricted`] steps 2-4 become Allow;
+/// step 1 still applies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "PermissionPolicyWire")]
 pub struct PermissionPolicy {
     /// Rules that always deny (checked first)
     #[serde(default)]
@@ -54,17 +146,12 @@ pub struct PermissionPolicy {
     #[serde(default = "default_decision")]
     pub default_decision: PermissionDecision,
 
-    /// Whether the permission system is enabled
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+    /// Whether allow/ask rules are evaluated. Deny rules always are.
+    pub enforcement: PermissionEnforcement,
 }
 
 fn default_decision() -> PermissionDecision {
     PermissionDecision::Ask
-}
-
-fn default_enabled() -> bool {
-    true
 }
 
 impl Default for PermissionPolicy {
@@ -74,7 +161,7 @@ impl Default for PermissionPolicy {
             allow: Vec::new(),
             ask: Vec::new(),
             default_decision: PermissionDecision::Ask,
-            enabled: true,
+            enforcement: PermissionEnforcement::Enforced,
         }
     }
 }
@@ -92,7 +179,7 @@ impl PermissionPolicy {
             allow: Vec::new(),
             ask: Vec::new(),
             default_decision: PermissionDecision::Ask,
-            enabled: true,
+            enforcement: PermissionEnforcement::Enforced,
         }
     }
 
@@ -155,10 +242,6 @@ impl PermissionPolicy {
     /// 3. Ask rules (any match = Ask)
     /// 4. Default decision
     pub fn check(&self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
-        if !self.enabled {
-            return PermissionDecision::Allow;
-        }
-
         // Reuse the scalar policy for every path. A matching Allow for one
         // file cannot grant access to another member of the same read batch.
         if let Some(decision) =
@@ -172,6 +255,9 @@ impl PermissionPolicy {
             if rule.matches(tool_name, args) {
                 return PermissionDecision::Deny;
             }
+        }
+        if self.enforcement == PermissionEnforcement::Unrestricted {
+            return PermissionDecision::Allow;
         }
 
         // 2. Check allow rules. A YOLO lane rule is Allow for every tool in
@@ -251,10 +337,6 @@ impl PermissionPolicy {
 
 impl PermissionChecker for PermissionPolicy {
     fn expose_to_model(&self, tool_name: &str) -> bool {
-        if !self.enabled {
-            return true;
-        }
-
         // A deny that covers every argument makes the entire capability
         // unavailable. Argument-scoped denies keep the tool visible so an
         // allowed invocation can still be formed and checked at execution.
@@ -266,7 +348,9 @@ impl PermissionChecker for PermissionPolicy {
             return false;
         }
 
-        if self.default_decision != PermissionDecision::Deny {
+        if self.enforcement == PermissionEnforcement::Unrestricted
+            || self.default_decision != PermissionDecision::Deny
+        {
             return true;
         }
 

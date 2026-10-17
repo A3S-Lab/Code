@@ -363,7 +363,12 @@ export interface PermissionPolicy {
   ask?: Array<string>
   /** Default decision when no rule matches: "allow", "deny", or "ask". */
   defaultDecision?: string
-  /** Whether this policy is enabled. Defaults to true. */
+  /**
+   * "enforced" (default) or "unrestricted". Unrestricted allows every
+   * call no deny rule matches; deny rules always apply.
+   */
+  enforcement?: string
+  /** Deprecated. `false` is refused unless `enforcement` is "unrestricted". */
   enabled?: boolean
 }
 /**

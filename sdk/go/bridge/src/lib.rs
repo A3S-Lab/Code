@@ -4164,7 +4164,7 @@ fn agent_definition_value(definition: a3s_code_core::AgentDefinition) -> Value {
             "allow": permissions.allow.into_iter().map(|rule| rule.rule).collect::<Vec<_>>(),
             "ask": permissions.ask.into_iter().map(|rule| rule.rule).collect::<Vec<_>>(),
             "default_decision": permissions.default_decision,
-            "enabled": permissions.enabled,
+            "enforcement": permissions.enforcement.as_str(),
         },
         "model": definition.model.map(|model| model.model_ref()),
         "prompt": definition.prompt,
@@ -4518,6 +4518,78 @@ mod tests {
         .unwrap();
         assert_ne!(governed["exit_code"], Value::from(0));
         assert!(!workspace.path().join("denied-governed-write.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn retired_disabled_policy_is_refused_and_unrestricted_keeps_deny_rules() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = BridgeState::new();
+        let created = dispatch_boxed(
+            &state,
+            &request("agent_create", json!({ "config_source": test_acl() })),
+        )
+        .await
+        .unwrap();
+        let agent_id = created["agent_id"].as_str().unwrap();
+        let session = |id: &str, policy: Value| {
+            request(
+                "session_create",
+                json!({
+                    "agent_id": agent_id,
+                    "workspace": workspace.path(),
+                    "options": { "session_id": id, "permission_policy": policy }
+                }),
+            )
+        };
+
+        let refused = dispatch_boxed(
+            &state,
+            &session(
+                "go-disabled-policy",
+                json!({ "deny": ["write"], "enabled": false }),
+            ),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "`enabled = false` must not open a session that skips deny rules"
+        );
+
+        let created = dispatch_boxed(
+            &state,
+            &session(
+                "go-unrestricted-policy",
+                json!({ "deny": ["write"], "enforcement": "unrestricted" }),
+            ),
+        )
+        .await
+        .unwrap();
+        let session_handle = created["session_handle"].as_str().unwrap();
+        let governed = |name: &str, args: Value| {
+            request(
+                "session_governed_tool",
+                json!({ "session_handle": session_handle, "name": name, "args": args }),
+            )
+        };
+        std::fs::write(workspace.path().join("seen.txt"), "seen\n").unwrap();
+        let denied = dispatch_boxed(
+            &state,
+            &governed(
+                "write",
+                json!({ "file_path": "unrestricted-write.txt", "content": "must not exist" }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_ne!(denied["exit_code"], Value::from(0));
+        assert!(!workspace.path().join("unrestricted-write.txt").exists());
+        let allowed = dispatch_boxed(
+            &state,
+            &governed("read", json!({ "file_path": "seen.txt" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(allowed["exit_code"], Value::from(0), "{allowed}");
     }
 
     #[tokio::test]

@@ -14,7 +14,10 @@ pub struct PermissionPolicy {
     pub ask: Option<Vec<String>>,
     /// Default decision when no rule matches: "allow", "deny", or "ask".
     pub default_decision: Option<String>,
-    /// Whether this policy is enabled. Defaults to true.
+    /// "enforced" (default) or "unrestricted". Unrestricted allows every
+    /// call no deny rule matches; deny rules always apply.
+    pub enforcement: Option<String>,
+    /// Deprecated. `false` is refused unless `enforcement` is "unrestricted".
     pub enabled: Option<bool>,
 }
 
@@ -1351,7 +1354,16 @@ pub(super) fn js_permission_policy_to_rust(
             .map(|rule| RustPermissionRule::new(&rule))
             .collect(),
         default_decision: parse_permission_decision(policy.default_decision)?,
-        enabled: policy.enabled.unwrap_or(true),
+        enforcement: RustPermissionEnforcement::resolve(
+            policy
+                .enforcement
+                .as_deref()
+                .map(RustPermissionEnforcement::parse)
+                .transpose()
+                .map_err(napi::Error::from_reason)?,
+            policy.enabled,
+        )
+        .map_err(napi::Error::from_reason)?,
     })
 }
 

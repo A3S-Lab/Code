@@ -816,7 +816,11 @@ type PermissionPolicy struct {
 	Allow           []string `json:"allow,omitempty"`
 	Ask             []string `json:"ask,omitempty"`
 	DefaultDecision string   `json:"default_decision,omitempty"`
-	Enabled         *bool    `json:"enabled,omitempty"`
+	// Enforcement is "enforced" (default) or "unrestricted". Unrestricted
+	// allows every call no deny rule matches; deny rules always apply.
+	Enforcement string `json:"enforcement,omitempty"`
+	// Deprecated: false is refused unless Enforcement is "unrestricted".
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type ConfirmationPolicy struct {

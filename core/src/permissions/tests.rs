@@ -1084,7 +1084,7 @@ fn test_rule_case_insensitive() {
 #[test]
 fn test_policy_default() {
     let policy = PermissionPolicy::default();
-    assert!(policy.enabled);
+    assert_eq!(policy.enforcement, PermissionEnforcement::Enforced);
     assert_eq!(policy.default_decision, PermissionDecision::Ask);
     assert!(policy.allow.is_empty());
     assert!(policy.deny.is_empty());
@@ -1180,13 +1180,68 @@ fn test_policy_allow_wins_over_ask() {
 }
 
 #[test]
-fn test_policy_disabled() {
+fn unrestricted_enforcement_allows_everything_except_deny_rules() {
     let mut policy = PermissionPolicy::new().deny("Bash(rm:*)").ask("Bash(*)");
-    policy.enabled = false;
+    policy.enforcement = PermissionEnforcement::Unrestricted;
 
-    // When disabled, everything is allowed
-    let decision = policy.check("Bash", &json!({"command": "rm -rf /"}));
-    assert_eq!(decision, PermissionDecision::Allow);
+    assert_eq!(
+        policy.check("Bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny,
+        "no enforcement setting skips a deny rule"
+    );
+    assert_eq!(
+        policy.check("Bash", &json!({"command": "cargo test"})),
+        PermissionDecision::Allow
+    );
+    assert!(policy.expose_to_model("write"));
+    policy.deny.push(PermissionRule::new("write"));
+    assert!(!policy.expose_to_model("write"));
+}
+
+#[test]
+fn retired_enabled_false_is_refused_instead_of_allowing_everything() {
+    let refused = serde_json::from_value::<PermissionPolicy>(json!({
+        "deny": ["Bash(rm:*)"],
+        "enabled": false
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("enforced, unrestricted"), "{refused}");
+    assert!(serde_json::from_value::<PermissionPolicy>(json!({
+        "enabled": false,
+        "enforcement": "enforced"
+    }))
+    .is_err());
+    assert!(serde_json::from_value::<PermissionPolicy>(json!({
+        "enforcement": "off"
+    }))
+    .is_err());
+
+    let legacy_on: PermissionPolicy =
+        serde_json::from_value(json!({"enabled": true, "ask": ["Bash(*)"]})).unwrap();
+    assert_eq!(legacy_on.enforcement, PermissionEnforcement::Enforced);
+    let explicit: PermissionPolicy = serde_json::from_value(json!({
+        "enabled": false,
+        "enforcement": "unrestricted",
+        "deny": ["Bash(rm:*)"]
+    }))
+    .unwrap();
+    assert_eq!(explicit.enforcement, PermissionEnforcement::Unrestricted);
+    assert_eq!(
+        explicit.check("Bash", &json!({"command": "rm -rf /"})),
+        PermissionDecision::Deny
+    );
+
+    let round_trip: PermissionPolicy =
+        serde_json::from_value(serde_json::to_value(&explicit).unwrap()).unwrap();
+    assert_eq!(round_trip.enforcement, PermissionEnforcement::Unrestricted);
+    assert_eq!(
+        PermissionEnforcement::parse("Unrestricted"),
+        Ok(PermissionEnforcement::Unrestricted)
+    );
+    assert!(PermissionEnforcement::parse("disabled")
+        .unwrap_err()
+        .contains("enforced, unrestricted"));
 }
 
 #[test]

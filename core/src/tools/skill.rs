@@ -15,7 +15,9 @@
 
 use crate::agent::{AgentConfig, AgentLoop};
 use crate::llm::LlmClient;
-use crate::permissions::{PermissionDecision, PermissionPolicy, PermissionRule};
+use crate::permissions::{
+    PermissionDecision, PermissionEnforcement, PermissionPolicy, PermissionRule,
+};
 use crate::skills::{Skill, SkillRegistry};
 use crate::tools::{Tool, ToolContext, ToolExecutor, ToolOutput};
 use anyhow::{anyhow, Result};
@@ -324,7 +326,7 @@ impl SkillTool {
                 allow: Vec::new(),
                 ask: Vec::new(),
                 default_decision: PermissionDecision::Deny,
-                enabled: true,
+                enforcement: PermissionEnforcement::Enforced,
             };
         }
 
@@ -345,7 +347,7 @@ impl SkillTool {
             allow: allow_rules,
             ask: Vec::new(),
             default_decision: PermissionDecision::Deny, // Deny by default - only allow what skill specifies
-            enabled: true,
+            enforcement: PermissionEnforcement::Enforced,
         }
     }
 }

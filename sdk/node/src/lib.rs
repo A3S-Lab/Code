@@ -63,7 +63,8 @@ use a3s_code_core::orchestration::{
     StepOutcome as RustStepOutcome, ToolSourceAnchor as RustToolSourceAnchor,
 };
 use a3s_code_core::permissions::{
-    PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
+    PermissionDecision as RustPermissionDecision,
+    PermissionEnforcement as RustPermissionEnforcement, PermissionPolicy as RustPermissionPolicy,
     PermissionRule as RustPermissionRule,
 };
 use a3s_code_core::queue::{

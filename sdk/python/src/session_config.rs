@@ -3,7 +3,8 @@ use a3s_code_core::hitl::{
     ConfirmationPolicy as RustConfirmationPolicy, TimeoutAction as RustTimeoutAction,
 };
 use a3s_code_core::permissions::{
-    PermissionDecision as RustPermissionDecision, PermissionPolicy as RustPermissionPolicy,
+    PermissionDecision as RustPermissionDecision,
+    PermissionEnforcement as RustPermissionEnforcement, PermissionPolicy as RustPermissionPolicy,
     PermissionRule as RustPermissionRule,
 };
 use a3s_code_core::subagent::{
@@ -235,38 +236,44 @@ pub(super) struct PyPermissionPolicy {
     ask: Vec<String>,
     #[pyo3(get, set)]
     default_decision: String,
+    /// "enforced" or "unrestricted"; deny rules always apply.
     #[pyo3(get, set)]
-    enabled: bool,
+    enforcement: Option<String>,
+    /// Deprecated. `False` is refused unless `enforcement` is "unrestricted".
+    #[pyo3(get, set)]
+    enabled: Option<bool>,
 }
 
 #[pymethods]
 impl PyPermissionPolicy {
     #[new]
-    #[pyo3(signature = (allow=None, deny=None, ask=None, default_decision=None, enabled=true))]
+    #[pyo3(signature = (allow=None, deny=None, ask=None, default_decision=None, enforcement=None, enabled=None))]
     pub(super) fn new(
         allow: Option<Vec<String>>,
         deny: Option<Vec<String>>,
         ask: Option<Vec<String>>,
         default_decision: Option<String>,
-        enabled: bool,
+        enforcement: Option<String>,
+        enabled: Option<bool>,
     ) -> Self {
         Self {
             deny: deny.unwrap_or_default(),
             allow: allow.unwrap_or_default(),
             ask: ask.unwrap_or_default(),
             default_decision: default_decision.unwrap_or_else(|| "ask".to_string()),
+            enforcement,
             enabled,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "PermissionPolicy(allow={}, deny={}, ask={}, default_decision={:?}, enabled={})",
+            "PermissionPolicy(allow={}, deny={}, ask={}, default_decision={:?}, enforcement={:?})",
             self.allow.len(),
             self.deny.len(),
             self.ask.len(),
             self.default_decision,
-            self.enabled
+            self.enforcement.as_deref().unwrap_or("enforced")
         )
     }
 }
@@ -302,7 +309,16 @@ pub(super) fn py_permission_policy_to_rust(
             .map(|rule| RustPermissionRule::new(&rule))
             .collect(),
         default_decision: parse_py_permission_decision(&policy.default_decision)?,
-        enabled: policy.enabled,
+        enforcement: RustPermissionEnforcement::resolve(
+            policy
+                .enforcement
+                .as_deref()
+                .map(RustPermissionEnforcement::parse)
+                .transpose()
+                .map_err(PyValueError::new_err)?,
+            policy.enabled,
+        )
+        .map_err(PyValueError::new_err)?,
     })
 }
 
