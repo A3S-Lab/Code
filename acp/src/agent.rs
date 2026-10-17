@@ -34,7 +34,7 @@ mod workspace_scope;
 use emit::{context_usage, note_child_progress};
 #[cfg(test)]
 use emit::{progress_duration_ms, progress_tokens_used, subagent_finished_update};
-use extensions::answer_wiki_search;
+use extensions::{answer_wiki_search, product_prompt_turns};
 #[cfg(test)]
 use extensions::{parse_interject_params, recorded_session_homes, remove_recorded_session_under};
 use host_methods::HostMethod;
