@@ -88,8 +88,10 @@ are still explicit host calls; no driver runs in the background.
   so strict completion is 0 in every arm. Positives stay pending native
   qualification (HC-ACCEPT1, HC-EVAL1).
 
-**Automatic goal mode: not enabled in the product.**
-- ACP and the pager run one slice per explicit `/goal resume`.
+**Automatic goal mode: host-bounded, inside the turn that woke it.**
+- `/goal resume` keeps admitting the next original Run while the trusted
+  host policy's next decision is Advance. It stops on Complete, NeedsInput,
+  Wait, Paused, BudgetExhausted, or Reconcile. No background driver is added.
 
 **Disable and rollback:**
 - To disable, stop selecting the policy, drop `goal_control`, or both. New

@@ -222,8 +222,9 @@ fn control_command(
 }
 
 /// Bound sessions use the original Core facts, never the legacy workspace file.
-/// `resume` is the only wake: it asks Core for one slice, which Core still
-/// gates on the trusted `goal_control` policy.
+/// `resume` is the only wake. It keeps asking Core for the next slice while
+/// that slice is allowed to advance. Core still gates each slice on the
+/// trusted `goal_control` policy.
 pub(crate) async fn apply_bound_goal(
     session: &a3s_code_core::AgentSession,
     op: &GoalOp,
@@ -303,6 +304,35 @@ pub(crate) async fn bound_status(
         ));
     }
     Ok(lines.join("\n"))
+}
+
+/// What the host should do with a bound goal after a slice, or before the
+/// first one. `Advance` carries a fresh tick command. A preview does not
+/// admit a Run.
+pub(crate) enum BoundGoalStep {
+    Advance(GoalControlCommandV1),
+    Finished,
+    Stopped(&'static str),
+}
+
+pub(crate) async fn bound_goal_step(
+    session: &a3s_code_core::AgentSession,
+) -> anyhow::Result<BoundGoalStep> {
+    let Some(current) = session.goal_definition()? else {
+        return Ok(BoundGoalStep::Finished);
+    };
+    if matches!(current.state, GoalState::Completed | GoalState::Cancelled) {
+        return Ok(BoundGoalStep::Finished);
+    }
+    let Some(command) = bound_tick_command(session)? else {
+        return Ok(BoundGoalStep::Finished);
+    };
+    let decision = session.preview_goal_tick(&command).await?;
+    Ok(match decision {
+        a3s_code_core::goal_control::GoalTickDecisionV1::Advance => BoundGoalStep::Advance(command),
+        a3s_code_core::goal_control::GoalTickDecisionV1::Complete => BoundGoalStep::Finished,
+        other => BoundGoalStep::Stopped(other.as_str()),
+    })
 }
 
 /// The tick for one user `/goal resume`, under a fresh operation id.

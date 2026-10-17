@@ -138,3 +138,14 @@ fn a_new_policy_is_capped_at_1000_slices_and_30_days_but_replay_is_not() {
     ));
     assert!(limits.check_admission(2).is_ok());
 }
+
+#[test]
+fn a_deadline_horizon_does_not_stop_after_one_unfinished_slice() {
+    let horizon =
+        GoalContinuationPolicyV1::until_deadline(NonZeroU64::new(5_000).unwrap()).expect("horizon");
+    assert!(horizon.automatic_enabled);
+    assert_eq!(horizon.max_slices.get(), MAX_GOAL_SLICES);
+    assert_eq!(horizon.max_no_progress_slices.get(), MAX_GOAL_SLICES);
+    assert_eq!(horizon.deadline_unix_ms.get(), 5_000);
+    assert!(horizon.check_limits(1, 1, 1).is_ok());
+}

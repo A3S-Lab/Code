@@ -170,6 +170,42 @@ impl A3sCodeAgent {
                 } => (turn_permit, facts, join_failure),
             };
             turn_permit = permit;
+            if unattended.goal_continuation {
+                if facts
+                    .last_error
+                    .as_deref()
+                    .is_some_and(crate::unattended::result::is_provider_rejection)
+                    || progress
+                        .last_error()
+                        .is_some_and(crate::unattended::result::is_provider_rejection)
+                {
+                    let detail = facts
+                        .last_error
+                        .clone()
+                        .or_else(|| progress.last_error().map(str::to_owned))
+                        .unwrap_or_else(|| "provider rejected the request".into());
+                    bail!("{detail}");
+                }
+                if let Some(failure) = join_failure {
+                    bail!("join A3S Code stream: {failure}");
+                }
+                // The next slice is another original Run. A freeform prompt
+                // here would leave the goal unfinished and settle it as
+                // interrupted.
+                match crate::goal::bound_goal_step(session)
+                    .await
+                    .context("next goal slice")?
+                {
+                    crate::goal::BoundGoalStep::Advance(tick) => {
+                        goal_tick = Some(tick);
+                        continue;
+                    }
+                    crate::goal::BoundGoalStep::Finished => return Ok(None),
+                    crate::goal::BoundGoalStep::Stopped(reason) => {
+                        bail!("the bound task goal stopped before it was finished: {reason}")
+                    }
+                }
+            }
             let step = host_admission_step(
                 &mut bound_digests,
                 &mut budget,

@@ -87,27 +87,25 @@ impl Unattended {
         })
     }
 
-    /// Bind each task as a durable goal and run its first attempt as a slice.
+    /// Bind each task as a durable goal and keep admitting slices until the
+    /// goal is finished or the host policy stops it.
     pub fn with_goal_continuation(mut self) -> Self {
         self.goal_continuation = true;
         self
     }
 
     /// The `goal_control` policy a goal launch needs when the ACL declares
-    /// none: one automatic slice, ending at the run deadline.
+    /// none. Slices continue until the run deadline. One unfinished slice
+    /// does not exhaust the goal.
     pub fn goal_control(&self, now_unix_ms: u64) -> Result<Option<GoalContinuationPolicyV1>> {
         if !self.goal_continuation {
             return Ok(None);
         }
-        let one = NonZeroU64::MIN;
         let deadline = NonZeroU64::new(now_unix_ms.saturating_add(self.max_execution_ms))
             .context("goal deadline needs a positive host clock")?;
-        Ok(Some(GoalContinuationPolicyV1 {
-            automatic_enabled: true,
-            max_slices: one,
-            max_no_progress_slices: one,
-            deadline_unix_ms: deadline,
-        }))
+        GoalContinuationPolicyV1::until_deadline(deadline)
+            .map(Some)
+            .map_err(anyhow::Error::from)
     }
 
     /// Run every session under a named engineering policy (`engineering-v1`).

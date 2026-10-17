@@ -58,59 +58,100 @@ impl A3sCodeAgent {
         {
             self.goals.lock().await.remove(&key);
             self.emit_text(session_id, &bound.reply).await;
-            let command = match crate::goal::bound_tick_command(session).map_err(invalid)? {
-                Some(command) if bound.tick => command,
-                _ => {
-                    drop(turn_permit);
-                    return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
-                }
-            };
-            let (head, run_id, response) = match session
-                .stream_goal_tick(&command)
-                .await
-                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
-            {
-                a3s_code_core::GoalTickStream::Decided(decision) => {
-                    drop(turn_permit);
-                    let head = format!("Durable goal tick: {}", decision.as_str());
-                    (
-                        Some(head),
-                        None,
-                        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
-                    )
-                }
-                a3s_code_core::GoalTickStream::Replayed(snapshot) => {
-                    drop(turn_permit);
-                    let ok = Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
-                    (None, Some(snapshot.id), ok)
-                }
-                a3s_code_core::GoalTickStream::Started(stream) => {
-                    self.emit_text(session_id, "\n\n").await;
-                    let run_id = stream.run.as_ref().map(|run| run.id().to_string());
-                    let response = self
-                        .drain_turn(
+            if !bound.tick {
+                drop(turn_permit);
+                return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+            }
+            let mut turn_permit = Some(turn_permit);
+            loop {
+                let command = match crate::goal::bound_goal_step(session)
+                    .await
+                    .map_err(invalid)?
+                {
+                    crate::goal::BoundGoalStep::Advance(command) => command,
+                    crate::goal::BoundGoalStep::Finished => {
+                        drop(turn_permit.take());
+                        self.emit_text(session_id, "\n\nDurable goal finished\n")
+                            .await;
+                        return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                    }
+                    crate::goal::BoundGoalStep::Stopped(decision) => {
+                        drop(turn_permit.take());
+                        self.emit_text(session_id, &format!("\n\nDurable goal tick: {decision}\n"))
+                            .await;
+                        return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                    }
+                };
+                let permit = match turn_permit.take() {
+                    Some(permit) => permit,
+                    None => {
+                        return Err(
+                            acp::Error::invalid_params().data("goal slice lost its turn permit")
+                        );
+                    }
+                };
+                let (run_id, response) = match session
+                    .stream_goal_tick(&command)
+                    .await
+                    .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?
+                {
+                    a3s_code_core::GoalTickStream::Decided(decision) => {
+                        drop(permit);
+                        self.emit_text(
                             session_id,
-                            session,
-                            stream,
-                            None,
-                            generation,
-                            turn_permit,
-                            observation,
+                            &format!("\n\nDurable goal tick: {}\n", decision.as_str()),
                         )
                         .await;
-                    (None, run_id, response)
+                        return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                    }
+                    a3s_code_core::GoalTickStream::Replayed(snapshot) => {
+                        drop(permit);
+                        let report = crate::goal::bound_slice_report(session, Some(&snapshot.id))
+                            .await
+                            .map_err(invalid)?;
+                        self.emit_text(session_id, &format!("\n\n{report}")).await;
+                        return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+                    }
+                    a3s_code_core::GoalTickStream::Started(stream) => {
+                        self.emit_text(session_id, "\n\n").await;
+                        let run_id = stream.run.as_ref().map(|run| run.id().to_string());
+                        let response = self
+                            .drain_turn(
+                                session_id,
+                                session,
+                                stream,
+                                None,
+                                generation,
+                                permit,
+                                observation,
+                            )
+                            .await;
+                        (run_id, response)
+                    }
+                };
+                let report = crate::goal::bound_slice_report(session, run_id.as_deref())
+                    .await
+                    .map_err(invalid)?;
+                self.emit_text(session_id, &format!("\n\n{report}")).await;
+                if response.is_err() {
+                    return response;
                 }
-            };
-            let report = crate::goal::bound_slice_report(session, run_id.as_deref())
-                .await
-                .map_err(invalid)?;
-            let text = head
-                .into_iter()
-                .chain([report])
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            self.emit_text(session_id, &format!("\n\n{text}")).await;
-            return response;
+                let queue = self
+                    .sessions
+                    .lock()
+                    .await
+                    .get(&key)
+                    .map(|live| Arc::clone(&live.turn_queue));
+                let Some(queue) = queue else {
+                    return response;
+                };
+                turn_permit = Some(
+                    queue
+                        .acquire_owned()
+                        .await
+                        .ok_or_else(|| acp::Error::invalid_params().data("goal queue is full"))?,
+                );
+            }
         }
         let applied = crate::goal::apply_session_goal(session, op)
             .await
