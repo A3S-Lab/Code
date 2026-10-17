@@ -26,8 +26,13 @@ const THREAD: &str = "thread-1";
 
 mod checkpoints;
 mod goal_evidence;
+mod model_wait;
 pub(crate) use goal_evidence::{
     assess_goal_step, commit_goal_step, evidence_for_goal_step, settle_goal_slice,
+};
+use model_wait::{
+    await_model_task_with_idle, execution_time_left, execution_timeout, llm_idle_timeout_error,
+    model_idle_sleep, AbortOnDrop,
 };
 mod receipts;
 mod recovery_unproved;
@@ -205,6 +210,9 @@ pub struct LiveCompletion {
     checkpoint: Option<CheckpointState>,
     checkpoint_attempted_seq: Arc<AtomicU64>,
     original_model: Option<crate::agent_api::OriginalModelCallPort>,
+    /// One completion serves one run, so every continuation segment of the
+    /// run spends the session's `max_execution_time_ms` from this instant.
+    started_at: std::time::Instant,
 }
 
 impl LiveCompletion {
@@ -232,6 +240,7 @@ impl LiveCompletion {
                 checkpoint: None,
                 checkpoint_attempted_seq: Arc::new(AtomicU64::new(0)),
                 original_model: None,
+                started_at: std::time::Instant::now(),
             },
             calls,
         )
@@ -350,22 +359,6 @@ pub(crate) fn model_error(error: anyhow::Error) -> ActorError {
     }
 }
 
-fn llm_idle_timeout_error(idle: std::time::Duration) -> ActorError {
-    ActorError::Handler {
-        key: "infer".into(),
-        message: format!("LLM call timed out after {} ms", idle.as_millis()),
-    }
-}
-
-/// Sleep for one quiet gap. `None` never completes, so the caller's other
-/// branches stay the only way out.
-async fn model_idle_sleep(limit: Option<std::time::Duration>) {
-    match limit {
-        Some(limit) => tokio::time::sleep(limit).await,
-        None => std::future::pending::<()>().await,
-    }
-}
-
 async fn model_response(
     client: Arc<dyn LlmClient>,
     messages: Vec<Message>,
@@ -418,6 +411,9 @@ async fn model_response(
         )
         .await
     });
+    // A caller may drop this future (the run deadline does); the provider
+    // read must not outlive it.
+    let _abort_on_drop = AbortOnDrop(handle.abort_handle());
     await_model_task_with_idle(handle, &cancel, &attempt, activity.as_ref(), idle).await
 }
 
@@ -656,71 +652,6 @@ async fn record_run_event_observed(
             .output = FactOutputObservation::NotConfigured;
     }
     Ok(())
-}
-
-async fn await_model_task(
-    mut handle: tokio::task::JoinHandle<Result<crate::llm::LlmResponse, ActorError>>,
-    cancel: &tokio_util::sync::CancellationToken,
-) -> Result<crate::llm::LlmResponse, ActorError> {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {
-            handle.abort();
-            let _ = handle.await;
-            Ok(interrupted_response())
-        }
-        joined = &mut handle => flatten_model_task(joined),
-    }
-}
-
-/// Wait for the model task. `idle` is the quiet gap: each `activity` notice
-/// starts it over. A gap with no notice aborts the worker and cancels the
-/// provider attempt. Host cancellation is not that failure.
-async fn await_model_task_with_idle(
-    mut handle: tokio::task::JoinHandle<Result<crate::llm::LlmResponse, ActorError>>,
-    cancel: &tokio_util::sync::CancellationToken,
-    attempt: &tokio_util::sync::CancellationToken,
-    activity: &tokio::sync::Notify,
-    idle: Option<std::time::Duration>,
-) -> Result<crate::llm::LlmResponse, ActorError> {
-    let Some(idle) = idle else {
-        return await_model_task(handle, cancel).await;
-    };
-    let sleep = tokio::time::sleep(idle);
-    tokio::pin!(sleep);
-    loop {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                handle.abort();
-                let _ = handle.await;
-                return Ok(interrupted_response());
-            }
-            joined = &mut handle => return flatten_model_task(joined),
-            _ = activity.notified() => {
-                sleep.as_mut().reset(tokio::time::Instant::now() + idle);
-            }
-            _ = &mut sleep => {
-                attempt.cancel();
-                handle.abort();
-                let _ = handle.await;
-                return Err(llm_idle_timeout_error(idle));
-            }
-        }
-    }
-}
-
-fn flatten_model_task(
-    joined: Result<Result<crate::llm::LlmResponse, ActorError>, tokio::task::JoinError>,
-) -> Result<crate::llm::LlmResponse, ActorError> {
-    match joined {
-        Ok(result) => result,
-        Err(error) if error.is_cancelled() => Err(ActorError::Handler {
-            key: "infer".into(),
-            message: "LLM call timed out".into(),
-        }),
-        Err(error) => Err(ActorError::Defect(format!("model task failed: {error}"))),
-    }
 }
 
 async fn read_model_response(
@@ -1962,6 +1893,7 @@ impl Completion for LiveCompletion {
         let checkpoint = self.checkpoint.clone();
         let checkpoint_attempted_seq = Arc::clone(&self.checkpoint_attempted_seq);
         let original_model = self.original_model.clone();
+        let started_at = self.started_at;
         Box::pin(async move {
             prompt_tokens.store(0, Ordering::SeqCst);
             if let Some(surface) = &surface {
@@ -2282,11 +2214,15 @@ impl Completion for LiveCompletion {
                     .filter(|tool| visibility.expose_to_model(&tool.name))
                     .collect()
             };
+            let execution_limit = surface
+                .as_ref()
+                .and_then(|surface| surface.agent.max_execution_time());
+            let time_left = execution_time_left(started_at, execution_limit)?;
             let turn = model_turns.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             if let Some(surface) = &surface {
                 record_run_event(surface, crate::agent::AgentEvent::TurnStart { turn }).await;
             }
-            let response = match model_response(
+            let call = model_response(
                 Arc::clone(&client),
                 messages.clone(),
                 system.clone(),
@@ -2294,9 +2230,14 @@ impl Completion for LiveCompletion {
                 surface.clone(),
                 cancel.clone(),
                 original_model.clone(),
-            )
-            .await
-            {
+            );
+            let response = match time_left {
+                Some(left) => tokio::time::timeout(left, call)
+                    .await
+                    .unwrap_or_else(|_| Err(execution_timeout(started_at, execution_limit))),
+                None => call.await,
+            };
+            let response = match response {
                 Ok(response) => {
                     if let Some(surface) = &surface {
                         record_run_event(

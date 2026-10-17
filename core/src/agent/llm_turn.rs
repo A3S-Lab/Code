@@ -80,6 +80,11 @@ fn is_budget_exhausted(error: &anyhow::Error) -> bool {
 }
 
 impl AgentLoop {
+    /// Wall-clock budget of one run (`SessionOptions::max_execution_time_ms`).
+    pub(crate) fn max_execution_time(&self) -> Option<Duration> {
+        self.config.max_execution_time_ms.map(Duration::from_millis)
+    }
+
     pub(super) async fn execute_llm_turn(
         &self,
         state: &mut ExecutionLoopState,
