@@ -1,6 +1,24 @@
+#![cfg(test)]
+
 use super::{
     observe_json, settle, CommandSettlement, GuestObservation, HostStop, GUEST_COMMAND_SCHEMA,
 };
+
+#[test]
+fn legacy_worker_status_cannot_be_accepted_as_payload_exit() {
+    for exit_code in [0, 7, 127] {
+        let legacy = serde_json::json!({
+            "schema_version": "a3s.oci.guest-command.v1",
+            "settlement": "settled",
+            "exit_code": exit_code,
+            "vm_entered": true,
+        });
+        assert_eq!(
+            observe_json(HostStop::None, &serde_json::to_vec(&legacy).unwrap()),
+            GuestObservation::MissingStatus,
+        );
+    }
+}
 
 #[test]
 fn settlement_matches_the_observation_and_never_promotes_an_unknown_exit() {

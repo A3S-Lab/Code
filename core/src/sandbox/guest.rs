@@ -31,7 +31,7 @@ pub const GUEST_SYSTEM_IMAGE_ENV: &str = "A3S_CODE_GUEST_SYSTEM_IMAGE";
 /// Signed `a3s-oci-krun-shim` that implements `guest-command`.
 pub const GUEST_KRUN_SHIM_ENV: &str = "A3S_CODE_KRUN_SHIM";
 
-const GUEST_COMMAND_SCHEMA: &str = "a3s.oci.guest-command.v1";
+const GUEST_COMMAND_SCHEMA: &str = "a3s.oci.guest-command.v2";
 const GUEST_SCRIPT_NAME: &str = ".a3s-guest-command";
 const TIMEOUT_EXIT_CODE: i32 = 124;
 const EXEC_COMMAND_TIMEOUT_MS: u64 = 600_000;
