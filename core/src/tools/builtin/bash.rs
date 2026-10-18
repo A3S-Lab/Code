@@ -725,11 +725,10 @@ impl Tool for BashTool {
                 .await
                 {
                     Ok(Err(error))
-                        if crate::sandbox::native::is_native_process_lifetime_unqualified(
-                            &error,
-                        ) || crate::sandbox::process_host::is_process_host_spawn_refused(
-                            &error,
-                        ) =>
+                        if crate::sandbox::native::is_native_execution_unavailable(&error)
+                            || crate::sandbox::process_host::is_process_host_spawn_refused(
+                                &error,
+                            ) =>
                     {
                         // The process does not exist. A later string wrap would
                         // drop this type and the receipt would book Unknown.

@@ -1,0 +1,6 @@
+
+running 2 tests
+test the_acp_protocol_file_stays_under_its_split_limit ... ok
+test production_files_stay_under_the_line_limit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.97s

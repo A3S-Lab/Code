@@ -120,6 +120,8 @@ dependencies = [
 [[package]]
 name = "a3s-effect"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad1fc556d25daa4231f1e6c12633a3377eec44e3fd8319c86b507c87fbe1ce50"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -176,6 +178,7 @@ dependencies = [
 [[package]]
 name = "a3s-memory"
 version = "0.1.5"
+source = "git+https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d717e3577dd0e61ebe7b64aa5a1e958cd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -190,7 +193,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-sandbox"
-version = "0.2.3"
+version = "0.3.0"
+source = "git+https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -207,7 +211,8 @@ dependencies = [
 
 [[package]]
 name = "a3s-search"
-version = "3.3.0"
+version = "3.4.0"
+source = "git+https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9e918875315c3cd3c7e14b5a9f9180367"
 dependencies = [
  "a3s-acl 0.2.2",
  "a3s-updater",

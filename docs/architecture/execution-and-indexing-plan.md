@@ -1,8 +1,9 @@
 # 执行可用性与工作区索引优化计划
 
-状态：R0 的只读结算修复和 I1 首批异步线程解阻塞已实现，相关 257 项测试本地通过；
-整体验收仍未完成，基线格式/Clippy 门禁待修复；索引仍需改为后台增量构建。
-其余阶段尚未实施。2026-10-18。
+状态：R0、I1 首批异步线程解阻塞，以及 E1 首批能力声明消费和宿主状态上下文已实现。
+当前相关测试 479 项通过，另行运行的路由 soak 和 4 项代码约束检查通过；
+Node 默认/进阶与 Python SDK 编译通过。完整门禁仍受基线格式、Clippy 和 CI 初始化
+问题阻塞；可交付执行后端、后台增量索引及产品端到端验收仍未完成。2026-10-18。
 
 目标：授权任务能在符合所需隔离能力的后端完成；索引只提供加速，
 不成为执行任务、文件搜索、取消或关闭会话的前置条件。
@@ -12,9 +13,10 @@
 
 | 位置 | 当前证据 | 影响 |
 | --- | --- | --- |
-| `core/src/sandbox/native.rs` | `ensure_process_lifetime_qualified` 在 macOS 启动命令前统一拒绝；不是按 Bash 命令内容判断 | 简单的 Python、文本检索和安装命令也不能启动 |
+| `core/src/sandbox/native.rs` | 规划基线按 macOS 统一拒绝；E1 首批改为消费 Sandbox 声明的进程树和宿主退出清理能力，前台和后台使用同一准入判断 | macOS 和 Windows 的缺失能力仍保持拒绝；更换命令名或启动探测成功都不能补足缺项 |
 | `core/src/agent_api/session_sandbox.rs` | 构造原生后端成功即可被选中；macOS Guest 只服务 deny 网络模式，需要额外 shim、镜像和 HVF | “能构造”与“能完成本次任务”脱节；需要联网的安装不能由 deny-only Guest 替代 |
-| Code 依赖 | 本规划基线 `f0977158` 仍固定 Sandbox `0.2.3` / `f301bf0` | 已发布的 Sandbox 0.3.0 能力报告尚未接入该消费端 |
+| Code 依赖 | 规划基线固定 `0.2.3` / `f301bf0`；E1 首批固定 `0.3.0` 发布提交 `0f2bb18d`，Core/Node/Python 元数据证明使用同一依赖来源；SDK 不再静默覆盖为本机源码 | typed report 已可读取；运行时启动探测缓存、结构化宿主诊断和后端完整资格仍待交付 |
+| 模型可见状态 | E1 首批将宿主 `validate_execution_available` 的拒绝加入每轮必需上下文；真实会话测试证明首个模型请求可见、后端恢复后旧提示消失 | 不再让模型只能通过一次 Bash 失败发现后端缺失；实际模型是否停止无效重试仍需真实任务验收 |
 | `tools/skill.rs`、`generate_object.rs` 与调用账本 | 基线中的 `SearchSkillsTool` 和 `GenerateObjectTool` 没有声明只读 capabilities；真实会话技能查询成功返回但 effects 为 incomplete。修复后，两者的大文件工作区会话测试均通过 | 消除这两种只读调用因工作区观察预算失败而产生的虚假欠账；真实未知写入仍保持未结算，执行型 Skill 保留原有保守声明 |
 | `workspace/manifest.rs` | 规划基线在查询 Future 内同步构建全工作区 trigram 索引；I1 首批已移到每后端单个 worker，按 manifest 版本整体失效的机制仍在 | 异步线程可以响应其他读取和 deadline；查询仍等待构建，限定范围和增量索引尚待修复 |
 | `grep_candidates/trigram_index.rs` | 全文件读取，先按字节产生 Vec，再收集 HashSet；现有文件数上限不能限制单文件和总内存 | 大文件会放大 CPU、内存和取消延迟 |
@@ -32,6 +34,12 @@ I1 首批将候选选择、构建和精确扫描移出异步线程，取消请�
 并让实际 worker 在退出前持有并发名额。同步提供器、原有索引构造器和阻塞 I/O
 尚不能中途停止，不能宣称后台 worker 已达到停止时延门禁。见
 [搜索响应性证据](../evidence/workspace/20261018-manifest-grep-responsiveness/OUTCOME.md)。
+
+E1 首批及 SDK 来源对齐见
+[能力准入证据](../evidence/workspace/20261018-native-capability-admission/OUTCOME.md)。
+宿主状态查询只读取现有准入判断，不启动探测命令。Sandbox 的真实 `probe()` 会创建
+`.a3s/loops`，因此后续启动探测必须明确安排初始化与副作用记账，不能当作无副作用查询。
+当前没有宣称已经实现一次性启动探测、探测缓存或 ACP/TUI 的结构化诊断投影。
 
 Sandbox 发布提交有三平台成功记录，但同源后续 CI 的 macOS 单独 CONNECT
 用例再次出现 `PermissionError: Operation not permitted`。网络能力的稳定性仍需

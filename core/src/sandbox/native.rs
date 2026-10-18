@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use a3s_sandbox::NATIVE_SANDBOX_BACKEND;
 pub(crate) use a3s_sandbox::{
     hard_link_count, hard_link_count_for_open_file, sensitive_paths,
     should_skip_workspace_scan_directory, workspace_hardlink_paths, workspace_sensitive_paths,
 };
+pub use a3s_sandbox::{CapabilityReport, ExecutionUnavailable, NATIVE_SANDBOX_BACKEND};
 
 /// Fail-closed native sandbox implementation for the A3S Code bash contract.
 #[derive(Debug)]
@@ -67,21 +67,65 @@ impl NativeBashSandbox {
     }
 
     pub async fn probe(&self) -> Result<()> {
+        self.probe_capabilities().await.map(|_| ())
+    }
+
+    pub fn capability_report(&self) -> CapabilityReport {
+        self.inner.capability_report()
+    }
+
+    pub async fn probe_capabilities(&self) -> Result<CapabilityReport> {
         self.inner.probe().await
     }
 
     fn ensure_process_lifetime_qualified(&self) -> Result<()> {
-        if cfg!(target_os = "macos") {
-            return Err(native_process_lifetime_unqualified());
-        }
-        Ok(())
+        ensure_lifetime_capabilities(&self.capability_report())
     }
 }
 
-/// Stable reason carried by [`NativeProcessLifetimeUnqualified`].
-///
-/// Callers identify the refusal by downcasting that type. This text is the
-/// operator-facing reason, not a classifier.
+fn ensure_lifetime_capabilities(report: &CapabilityReport) -> Result<()> {
+    let reason = if !report.capabilities.process_tree_cleanup {
+        ExecutionUnavailable::ProcessTreeCleanup
+    } else if !report.capabilities.host_exit_cleanup {
+        ExecutionUnavailable::HostExitCleanup
+    } else {
+        return Ok(());
+    };
+    Err(NativeCapabilityUnavailable {
+        backend: report.backend,
+        reason,
+    }
+    .into())
+}
+
+#[derive(Debug)]
+struct NativeCapabilityUnavailable {
+    backend: &'static str,
+    reason: ExecutionUnavailable,
+}
+
+impl std::fmt::Display for NativeCapabilityUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.backend == "macos-seatbelt"
+            && self.reason == ExecutionUnavailable::ProcessTreeCleanup
+        {
+            return formatter.write_str(NATIVE_PROCESS_LIFETIME_UNQUALIFIED);
+        }
+        write!(
+            formatter,
+            "native_execution_unavailable: {}: {}",
+            self.backend, self.reason
+        )
+    }
+}
+
+impl std::error::Error for NativeCapabilityUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.reason)
+    }
+}
+
+/// Compatibility reason for unqualified macOS descendant cleanup.
 pub(crate) const NATIVE_PROCESS_LIFETIME_UNQUALIFIED: &str = "native_process_lifetime_unqualified: macOS native command execution is unavailable until descendant lifetime and settlement are qualified";
 
 /// The native backend refused before any command process existed.
@@ -103,11 +147,20 @@ pub(crate) fn native_process_lifetime_unqualified() -> anyhow::Error {
     NativeProcessLifetimeUnqualified.into()
 }
 
+#[cfg(test)]
 pub(crate) fn is_native_process_lifetime_unqualified(error: &anyhow::Error) -> bool {
-    error.is::<NativeProcessLifetimeUnqualified>()
-        || error
-            .chain()
-            .any(|cause| cause.is::<NativeProcessLifetimeUnqualified>())
+    error.chain().any(|cause| {
+        cause.is::<NativeProcessLifetimeUnqualified>()
+            || cause
+                .downcast_ref::<NativeCapabilityUnavailable>()
+                .is_some_and(|failure| failure.reason == ExecutionUnavailable::ProcessTreeCleanup)
+    })
+}
+
+pub(crate) fn is_native_execution_unavailable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.is::<NativeProcessLifetimeUnqualified>() || cause.is::<NativeCapabilityUnavailable>()
+    })
 }
 struct OutputObserverAdapter {
     inner: Arc<dyn CommandOutputObserver>,
@@ -147,13 +200,7 @@ impl BashSandbox for NativeBashSandbox {
     }
 
     fn supports_background_execution(&self) -> bool {
-        // macOS Seatbelt preserves file/network policy across fork, but the
-        // native backend only kills the original Unix process group. A child
-        // can setsid/setpgid out of that group and write after Run settlement.
-        // Do not admit background work until descendant containment is real.
-        // Other platforms retain their existing posture; this is no claim of
-        // independent Linux/Windows lifetime qualification.
-        !cfg!(target_os = "macos")
+        self.ensure_process_lifetime_qualified().is_ok()
     }
 
     fn policy_digest(&self) -> Option<String> {
@@ -241,6 +288,8 @@ pub(crate) fn parse_network_allow_rules(
         .collect()
 }
 
+#[cfg(test)]
+mod capability_tests;
 #[cfg(test)]
 mod lifetime_tests;
 

@@ -1,0 +1,5 @@
+    Updating crates.io index
+    Updating git repository `https://github.com/A3S-Lab/Sandbox.git`
+      Adding a3s-sandbox v0.3.0 (https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18d)
+    Removing a3s-sandbox v0.2.3 (https://github.com/A3S-Lab/Sandbox.git?rev=f301bf092f82f3819f4853ae9b95b703f5573f0d#f301bf09)
+note: pass `--verbose` to see 138 unchanged dependencies behind latest

@@ -33,16 +33,3 @@ server = ["s3"]
 advanced-harness = ["a3s-code-core/advanced-harness"]
 extension-module = ["pyo3/extension-module", "pyo3/abi3-py310"]
 a3s-vec-fts = ["a3s-code-core/a3s-vec-fts"]
-
-# Match the Code workspace dependency implementations for local SDK builds.
-[patch.crates-io]
-a3s-effect = { path = "../../../../crates/effect" }
-
-[patch."https://github.com/A3S-Lab/Sandbox.git"]
-a3s-sandbox = { path = "../../../../crates/sandbox" }
-
-[patch."https://github.com/A3S-Lab/Memory.git"]
-a3s-memory = { path = "../../../../crates/memory" }
-
-[patch."https://github.com/A3S-Lab/Search.git"]
-a3s-search = { path = "../../../../crates/search" }

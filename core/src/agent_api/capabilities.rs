@@ -598,6 +598,11 @@ fn build_context_providers(
     if let Some(cognitive_context) = &opts.cognitive_context {
         providers.push(Arc::new(cognitive_context.clone()));
     }
+    if let Some(sandbox) = &opts.sandbox_handle {
+        providers.push(Arc::new(crate::context::SandboxContextProvider::new(
+            Arc::clone(sandbox),
+        )));
+    }
     push_agents_md_context(&mut providers, code_config, workspace);
     push_skill_catalog_context(&mut providers, skill_registry);
     providers

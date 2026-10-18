@@ -163,9 +163,12 @@ impl Session {
             .set_permission_posture(posture)
             .map_err(node_code_error)
     }
+}
 
+#[cfg(feature = "advanced-harness")]
+#[napi]
+impl Session {
     /// Bounded read of this session's original Run/artifact evidence.
-    #[cfg(feature = "advanced-harness")]
     #[napi]
     pub async fn read_evaluation_evidence(
         &self,

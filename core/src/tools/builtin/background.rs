@@ -895,7 +895,7 @@ async fn execute_background(
     let refused_before_start = matches!(
         &result,
         Some(Err(error))
-            if crate::sandbox::native::is_native_process_lifetime_unqualified(error)
+            if crate::sandbox::native::is_native_execution_unavailable(error)
     );
     let (status, exit_code, timed_out, disposition) = match result {
         Some(Ok(output)) => {

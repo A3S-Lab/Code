@@ -1,0 +1,14 @@
+
+running 1 test
+
+thread 'agent_api::tests::fact_log::sandbox_availability::the_first_model_request_names_an_unavailable_command_backend' (43431676) panicked at core/src/agent_api/tests/fact_log/sandbox_availability.rs:42:5:
+the model must know execution is unavailable before requesting Bash
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test agent_api::tests::fact_log::sandbox_availability::the_first_model_request_names_an_unavailable_command_backend ... FAILED
+
+failures:
+
+failures:
+    agent_api::tests::fact_log::sandbox_availability::the_first_model_request_names_an_unavailable_command_backend
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5051 filtered out; finished in 0.07s

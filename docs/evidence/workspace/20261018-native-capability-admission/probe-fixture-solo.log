@@ -1,0 +1,16 @@
+
+running 1 test
+
+thread 'sandbox::native::capability_tests::a_real_launcher_probe_does_not_waive_missing_lifetime_capabilities' (43450233) panicked at core/src/sandbox/native/capability_tests.rs:83:5:
+assertion `left == right` failed
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sandbox::native::capability_tests::a_real_launcher_probe_does_not_waive_missing_lifetime_capabilities ... FAILED
+
+failures:
+
+failures:
+    sandbox::native::capability_tests::a_real_launcher_probe_does_not_waive_missing_lifetime_capabilities
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5055 filtered out; finished in 0.04s

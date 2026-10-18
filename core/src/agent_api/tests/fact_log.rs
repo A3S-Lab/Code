@@ -23,6 +23,7 @@ mod loop_source;
 mod navigation;
 mod nested_governance;
 mod read_only_settlement;
+mod sandbox_availability;
 mod work_policy;
 
 struct CountingText {
@@ -1551,8 +1552,18 @@ async fn context_sections_are_recorded_stable_and_source_tracked() {
         "the context record precedes the model call it describes"
     );
     let first = last_context_sections(&facts);
-    assert_eq!(first.len(), 1, "one provider, one section: {first:?}");
-    assert_eq!(first[0].0, "probe");
+    assert_eq!(
+        first
+            .iter()
+            .filter(|(provider, _)| provider == "probe")
+            .count(),
+        1,
+        "each provider contributes one section: {first:?}"
+    );
+    let first_probe = first
+        .iter()
+        .find(|(provider, _)| provider == "probe")
+        .unwrap();
 
     // Unchanged sources: the next turn assembles the same section bytes,
     // and the recorded digest proves the stability.
@@ -1569,9 +1580,12 @@ async fn context_sections_are_recorded_stable_and_source_tracked() {
     session.send("third turn", None).await.unwrap();
     let facts = read_workspace_facts(workspace.path(), "fact-ctx-sections").unwrap();
     let third = last_context_sections(&facts);
-    assert_eq!(third[0].0, "probe");
+    let third_probe = third
+        .iter()
+        .find(|(provider, _)| provider == "probe")
+        .unwrap();
     assert_ne!(
-        third[0].1, first[0].1,
+        third_probe.1, first_probe.1,
         "a changed source must digest differently"
     );
 }

@@ -1,0 +1,11 @@
+    Updating crates.io index
+    Updating git repository `https://github.com/A3S-Lab/Memory.git`
+    Updating git repository `https://github.com/A3S-Lab/Sandbox.git`
+    Updating git repository `https://github.com/A3S-Lab/Search.git`
+    Blocking waiting for file lock on package cache
+     Locking 4 packages to latest compatible versions
+      Adding a3s-effect v0.2.1
+      Adding a3s-memory v0.1.5 (https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d)
+      Adding a3s-sandbox v0.3.0 (https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18d)
+      Adding a3s-search v3.4.0 (https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9)
+    Blocking waiting for file lock on package cache

@@ -1,0 +1,85 @@
+{
+  "core": {
+    "a3s_effect": {
+      "name": "a3s-effect",
+      "version": "0.2.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "manifest_path": "/Users/roylin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/a3s-effect-0.2.1/Cargo.toml"
+    },
+    "a3s_memory": {
+      "name": "a3s-memory",
+      "version": "0.1.5",
+      "source": "git+https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d717e3577dd0e61ebe7b64aa5a1e958cd",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/memory-9e14b32b8b5c322e/47368a0/Cargo.toml"
+    },
+    "a3s_sandbox": {
+      "name": "a3s-sandbox",
+      "version": "0.3.0",
+      "source": "git+https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/sandbox-71f58585c445dbc0/0f2bb18/Cargo.toml"
+    },
+    "a3s_search": {
+      "name": "a3s-search",
+      "version": "3.4.0",
+      "source": "git+https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9e918875315c3cd3c7e14b5a9f9180367",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/search-8a3d36c4c58b1b0e/e09b62b/Cargo.toml"
+    }
+  },
+  "node": {
+    "a3s_effect": {
+      "name": "a3s-effect",
+      "version": "0.2.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "manifest_path": "/Users/roylin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/a3s-effect-0.2.1/Cargo.toml"
+    },
+    "a3s_memory": {
+      "name": "a3s-memory",
+      "version": "0.1.5",
+      "source": "git+https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d717e3577dd0e61ebe7b64aa5a1e958cd",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/memory-9e14b32b8b5c322e/47368a0/Cargo.toml"
+    },
+    "a3s_sandbox": {
+      "name": "a3s-sandbox",
+      "version": "0.3.0",
+      "source": "git+https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/sandbox-71f58585c445dbc0/0f2bb18/Cargo.toml"
+    },
+    "a3s_search": {
+      "name": "a3s-search",
+      "version": "3.4.0",
+      "source": "git+https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9e918875315c3cd3c7e14b5a9f9180367",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/search-8a3d36c4c58b1b0e/e09b62b/Cargo.toml"
+    }
+  },
+  "python": {
+    "a3s_effect": {
+      "name": "a3s-effect",
+      "version": "0.2.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "manifest_path": "/Users/roylin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/a3s-effect-0.2.1/Cargo.toml"
+    },
+    "a3s_memory": {
+      "name": "a3s-memory",
+      "version": "0.1.5",
+      "source": "git+https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d717e3577dd0e61ebe7b64aa5a1e958cd",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/memory-9e14b32b8b5c322e/47368a0/Cargo.toml"
+    },
+    "a3s_sandbox": {
+      "name": "a3s-sandbox",
+      "version": "0.3.0",
+      "source": "git+https://github.com/A3S-Lab/Sandbox.git?rev=0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05#0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/sandbox-71f58585c445dbc0/0f2bb18/Cargo.toml"
+    },
+    "a3s_search": {
+      "name": "a3s-search",
+      "version": "3.4.0",
+      "source": "git+https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9e918875315c3cd3c7e14b5a9f9180367",
+      "manifest_path": "/Users/roylin/.cargo/git/checkouts/search-8a3d36c4c58b1b0e/e09b62b/Cargo.toml"
+    }
+  },
+  "sandbox_checkout": {
+    "revision": "0f2bb18dc4f16a1ebe12bc282db5c1499ad5fe05",
+    "tracked_status": "",
+    "lib_rs_sha256": "93b013d989c748edd533c188b388c8a1c3e4c8ae7501c27902591b7bcfbc23e0"
+  }
+}

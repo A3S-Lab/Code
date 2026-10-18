@@ -1,0 +1,16 @@
+
+running 1 test
+
+thread 'agent_api::tests::fact_log::context_sections_are_recorded_stable_and_source_tracked' (43475901) panicked at core/src/agent_api/tests/fact_log.rs:1555:5:
+assertion `left == right` failed: one provider, one section: [("probe", "sha256:521d428c832af320350c2d1b9bd803f1d65387ff000d297016f521f45098dc7f"), ("sandbox_availability", "sha256:80f5f382d0681ad32124f7bf9b6129d2f1bee189b109334bbc20b1b04ab1c1ae")]
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test agent_api::tests::fact_log::context_sections_are_recorded_stable_and_source_tracked ... FAILED
+
+failures:
+
+failures:
+    agent_api::tests::fact_log::context_sections_are_recorded_stable_and_source_tracked
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5055 filtered out; finished in 0.08s
