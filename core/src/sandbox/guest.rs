@@ -227,8 +227,7 @@ impl GuestLifetimeSandbox {
         }
 
         let script_path = self.workspace.join(GUEST_SCRIPT_NAME);
-        write_guest_script(&script_path, &request.command, request.env.as_deref())?;
-        let _script = ScriptFile(script_path);
+        let _script = write_guest_script(&script_path, &request.command, request.env.as_deref())?;
 
         let console_dir = tempfile::tempdir().map_err(|error| {
             indeterminate(format!(
@@ -241,6 +240,8 @@ impl GuestLifetimeSandbox {
         let mut command = Command::new(&self.shim);
         command
             .arg("guest-command")
+            .arg("--owner-pid")
+            .arg(std::process::id().to_string())
             .arg("--system-image-manifest")
             .arg(&self.manifest)
             .arg("--runtime-share")
@@ -559,7 +560,7 @@ fn write_guest_script(
     path: &Path,
     command: &str,
     env: Option<&HashMap<String, String>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ScriptFile> {
     if let Some(env) = env {
         for key in env.keys() {
             if !portable_env_name(key) {
@@ -586,15 +587,16 @@ fn write_guest_script(
         body.push('\n');
     }
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o700);
     }
     let mut file = options.open(path)?;
+    let script = ScriptFile(path.to_path_buf());
     std::io::Write::write_all(&mut file, body.as_bytes())?;
-    Ok(())
+    Ok(script)
 }
 
 fn portable_env_name(name: &str) -> bool {

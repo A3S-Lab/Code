@@ -1,0 +1,7 @@
+{
+  "producer_revision": "3189636cbf903aaee01300f541d1af5ee7fc61a0",
+  "source": {
+    "core/src/sandbox/guest.rs": "b7fba50e1a05fd4cba5a5131a7c5d68931a14d352ade989b3517bc8165f5344f",
+    "core/src/sandbox/guest/fail_closed_tests.rs": "b24513da7a53baeed58c8a4d5f0abe9f59c19c9b1e9f3fad4eac890de257bcff"
+  }
+}

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -11,6 +13,30 @@ use crate::sandbox::native::{
 use crate::workspace::{CommandOutputObserver, CommandOutputSummary};
 
 struct Observer(AtomicUsize);
+
+#[test]
+fn guest_control_script_never_overwrites_existing_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = root.path().join("keep");
+    std::fs::write(&outside, "keep").unwrap();
+    for kind in ["regular", "symlink", "hardlink"] {
+        let workspace = root.path().join(kind);
+        std::fs::create_dir(&workspace).unwrap();
+        let script = workspace.join(super::GUEST_SCRIPT_NAME);
+        match kind {
+            "regular" => std::fs::write(&script, "keep").unwrap(),
+            "symlink" => std::os::unix::fs::symlink(&outside, &script).unwrap(),
+            "hardlink" => std::fs::hard_link(&outside, &script).unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(
+            super::write_guest_script(&script, "overwrite", None).is_err(),
+            "the {kind} entry must refuse the command before its script is written"
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), "keep");
+    }
+}
 
 #[async_trait]
 impl CommandOutputObserver for Observer {
