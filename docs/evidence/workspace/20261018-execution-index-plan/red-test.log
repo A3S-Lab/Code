@@ -1,0 +1,558 @@
+   Compiling unicode-ident v1.0.24
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling smallvec v1.16.0
+   Compiling serde v1.0.229
+   Compiling scopeguard v1.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling memchr v2.8.3
+   Compiling siphasher v1.0.3
+   Compiling version_check v0.9.5
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling stable_deref_trait v1.2.1
+   Compiling once_cell v1.21.4
+   Compiling log v0.4.34
+   Compiling lock_api v0.4.14
+   Compiling bytes v1.12.1
+   Compiling typenum v1.20.1
+   Compiling foldhash v0.2.0
+   Compiling futures-core v0.3.34
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling allocator-api2 v0.2.21
+   Compiling new_debug_unreachable v1.0.6
+   Compiling equivalent v1.0.2
+   Compiling generic-array v0.14.7
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.1
+   Compiling futures-sink v0.3.34
+   Compiling precomputed-hash v0.1.1
+   Compiling zmij v1.0.23
+   Compiling phf_shared v0.11.3
+   Compiling futures-task v0.3.34
+   Compiling phf_generator v0.13.1
+   Compiling hashbrown v0.17.1
+   Compiling futures-channel v0.3.34
+   Compiling shlex v2.0.1
+   Compiling serde_json v1.0.151
+   Compiling futures-io v0.3.34
+   Compiling num-traits v0.2.19
+   Compiling slab v0.4.12
+   Compiling find-msvc-tools v0.1.12
+   Compiling rand_core v0.6.4
+   Compiling phf_codegen v0.13.1
+   Compiling percent-encoding v2.3.2
+   Compiling litemap v0.8.3
+   Compiling rand v0.8.8
+   Compiling cc v1.4.5
+   Compiling writeable v0.6.4
+   Compiling tracing-core v0.1.36
+   Compiling utf8_iter v1.0.4
+   Compiling indexmap v2.14.2
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling rustix v1.1.4
+   Compiling crossbeam-utils v0.8.23
+   Compiling phf_generator v0.11.3
+   Compiling regex-syntax v0.8.11
+   Compiling http v1.5.0
+   Compiling tendril v0.5.1
+   Compiling aho-corasick v1.1.5
+   Compiling crc32fast v1.5.1
+   Compiling subtle v2.6.1
+   Compiling zerocopy v0.8.56
+   Compiling syn v3.0.5
+   Compiling syn v2.0.119
+   Compiling string_cache_codegen v0.6.1
+   Compiling ring v0.17.14
+   Compiling web_atoms v0.2.6
+   Compiling regex-automata v0.4.18
+   Compiling num-conv v0.2.2
+   Compiling rand_core v0.10.1
+   Compiling zeroize v1.9.0
+   Compiling ipnet v2.12.2
+   Compiling getrandom v0.4.3
+   Compiling time-core v0.1.9
+   Compiling time-macros v0.2.32
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling parking_lot v0.12.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling synstructure v0.13.2
+   Compiling crypto-common v0.1.7
+   Compiling cpufeatures v0.2.17
+   Compiling block-buffer v0.10.4
+   Compiling rustls-pki-types v1.15.1
+   Compiling http-body v1.1.0
+   Compiling digest v0.10.7
+   Compiling phf_codegen v0.11.3
+   Compiling adler2 v2.0.1
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling dtoa v1.0.11
+   Compiling simd-adler32 v0.3.10
+   Compiling httparse v1.10.1
+   Compiling untrusted v0.9.0
+   Compiling powerfmt v0.2.0
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling zerovec-derive v0.11.6
+   Compiling futures-macro v0.3.34
+   Compiling displaydoc v0.2.7
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling phf_macros v0.13.1
+   Compiling tokio v1.53.1
+   Compiling tracing-attributes v0.1.31
+   Compiling futures-util v0.3.34
+   Compiling phf_macros v0.11.3
+   Compiling deranged v0.5.8
+   Compiling miniz_oxide v0.9.1
+   Compiling phf v0.13.1
+   Compiling dtoa-short v0.3.5
+   Compiling zerofrom v0.1.8
+   Compiling alloc-stdlib v0.2.4
+   Compiling phf v0.11.3
+   Compiling block-padding v0.3.3
+   Compiling form_urlencoded v1.2.2
+   Compiling base64 v0.22.1
+   Compiling time v0.3.55
+   Compiling tracing v0.1.44
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling thiserror v1.0.69
+   Compiling crossbeam-epoch v0.9.21
+   Compiling byteorder v1.5.0
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling want v0.3.1
+   Compiling flate2 v1.1.10
+   Compiling inout v0.1.4
+   Compiling brotli-decompressor v5.0.3
+   Compiling thiserror-impl v1.0.69
+   Compiling async-trait v0.1.92
+   Compiling sha2 v0.10.9
+   Compiling crossbeam-deque v0.8.8
+   Compiling core-foundation-sys v0.8.7
+   Compiling thiserror v2.0.20
+   Compiling io-lifetimes v3.0.1
+   Compiling io-lifetimes v2.0.4
+   Compiling lazy_static v1.5.0
+   Compiling httpdate v1.0.3
+   Compiling rustls v0.23.44
+   Compiling iana-time-zone v0.1.65
+   Compiling brotli v8.0.4
+   Compiling rustls-webpki v0.103.15
+   Compiling cipher v0.4.4
+   Compiling num-integer v0.1.47
+   Compiling thiserror-impl v2.0.20
+   Compiling string_cache_codegen v0.5.4
+   Compiling cookie v0.18.2
+   Compiling servo_arc v0.4.3
+   Compiling io-extras v0.19.0
+   Compiling bit-vec v0.8.0
+   Compiling option-ext v0.2.0
+   Compiling anyhow v1.0.104
+   Compiling rustversion v1.0.23
+   Compiling mac v0.1.1
+   Compiling compression-core v0.4.33
+   Compiling futf v0.1.5
+   Compiling compression-codecs v0.4.40
+   Compiling bit-set v0.8.0
+   Compiling yoke v0.8.3
+   Compiling markup5ever v0.14.1
+   Compiling futures-executor v0.3.34
+   Compiling tokio-util v0.7.19
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling http-body-util v0.1.5
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling h2 v0.4.19
+   Compiling litrs v1.0.0
+   Compiling psl-types v2.0.11
+   Compiling ryu v1.0.23
+   Compiling tower-layer v0.3.3
+   Compiling paste v1.0.15
+   Compiling cap-primitives v4.0.3
+   Compiling ref-cast v1.0.27
+   Compiling utf8parse v0.2.2
+   Compiling getrandom v0.3.4
+   Compiling tinyvec_macros v0.1.1
+   Compiling rayon-core v1.12.1
+   Compiling utf-8 v0.7.6
+   Compiling tendril v0.4.3
+   Compiling tinyvec v1.13.2
+   Compiling hyper v1.11.1
+   Compiling anstyle-parse v1.0.0
+   Compiling string_cache v0.9.0
+   Compiling chrono v0.4.45
+   Compiling string_cache v0.8.9
+   Compiling hyper-util v0.1.20
+   Compiling markup5ever v0.38.0
+   Compiling markup5ever v0.39.0
+   Compiling document-features v0.2.12
+   Compiling tower v0.5.3
+   Compiling cssparser v0.37.0
+   Compiling derive_more v2.1.1
+   Compiling fs-set-times v0.20.3
+   Compiling async-compression v0.4.45
+   Compiling num-bigint v0.4.8
+   Compiling ppv-lite86 v0.2.21
+   Compiling cssparser-macros v0.6.1
+   Compiling ref-cast-impl v1.0.27
+   Compiling selectors v0.26.0
+   Compiling webpki-roots v1.0.9
+   Compiling fs2 v0.4.3
+   Compiling rquickjs-sys v0.11.0
+   Compiling nom v8.0.0
+   Compiling ahash v0.8.12
+   Compiling event-listener v5.4.2
+   Compiling unicode-width v0.2.0
+   Compiling winnow v0.7.15
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling urlencoding v2.1.3
+   Compiling tokio-rustls v0.26.5
+   Compiling maybe-owned v0.3.4
+   Compiling ambient-authority v0.0.2
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling cap-std v4.0.2
+   Compiling unicode-general-category v1.1.0
+   Compiling rustc-hash v2.1.3
+   Compiling colorchoice v1.0.5
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling anstream v1.0.0
+   Compiling hyper-rustls v0.27.9
+   Compiling encoding_rs v0.8.40
+   Compiling event-listener-strategy v0.5.4
+   Compiling cssparser v0.34.0
+   Compiling rand_chacha v0.3.1
+   Compiling num-rational v0.4.2
+   Compiling html5ever v0.39.0
+   Compiling html5ever v0.38.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling unicode-normalization v0.1.24
+   Compiling num-iter v0.1.46
+   Compiling uuid v1.26.0
+   Compiling xattr v1.6.1
+   Compiling fxhash v0.2.1
+   Compiling num-complex v0.4.6
+   Compiling derive_more v0.99.20
+   Compiling match_token v0.1.0
+   Compiling regex v1.13.1
+   Compiling universal-hash v0.5.1
+   Compiling filetime v0.2.29
+   Compiling num_cpus v1.17.0
+   Compiling either v1.18.0
+   Compiling same-file v1.0.6
+   Compiling clap_lex v1.1.0
+   Compiling strsim v0.11.1
+   Compiling heck v0.5.0
+   Compiling cap-fs-ext v4.0.2
+   Compiling borrow-or-share v0.2.4
+   Compiling opaque-debug v0.3.1
+   Compiling bitmaps v3.1.0
+   Compiling clap_derive v4.6.4
+   Compiling clap_builder v4.6.6
+   Compiling polyval v0.6.2
+   Compiling imbl-sized-chunks v0.1.3
+   Compiling walkdir v2.5.0
+   Compiling rayon v1.10.0
+   Compiling dom_query v0.28.0
+   Compiling tar v0.4.46
+   Compiling html5ever v0.29.1
+   Compiling num v0.4.3
+   Compiling rmp v0.8.14
+   Compiling opentelemetry v0.21.0
+   Compiling async-lock v3.4.2
+   Compiling getopts v0.2.24
+   Compiling xml5ever v0.38.0
+   Compiling tracing-serde v0.2.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling tokio-stream v0.1.19
+   Compiling futures v0.3.34
+   Compiling dirs-sys v0.4.1
+   Compiling dirs-sys v0.5.0
+   Compiling aes v0.8.4
+   Compiling sharded-slab v0.1.7
+   Compiling crossbeam-channel v0.5.17
+   Compiling ordered-float v4.6.0
+   Compiling matchers v0.2.0
+   Compiling rand_xoshiro v0.6.0
+   Compiling chacha20 v0.10.2
+   Compiling tracing-log v0.2.0
+   Compiling hashbrown v0.16.1
+   Compiling bstr v1.13.1
+   Compiling thread_local v1.1.10
+   Compiling ego-tree v0.10.0
+   Compiling multiversion_no_op v1.0.0
+   Compiling semver v1.0.28
+   Compiling unicode-segmentation v1.13.3
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling unicode-bidi v0.3.18
+   Compiling micromap v0.3.0
+   Compiling jiff-core v0.1.0
+   Compiling simdutf8 v0.1.5
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling flagset v0.4.7
+   Compiling vsimd v0.8.0
+   Compiling bytemuck v1.25.2
+   Compiling hashbrown v0.14.5
+   Compiling toml_write v0.1.2
+   Compiling bitflags v1.3.2
+   Compiling outref v0.5.2
+   Compiling html-escape v0.2.15
+   Compiling nu-ansi-term v0.50.3
+   Compiling gjson v0.8.1
+   Compiling deadpool-runtime v0.1.4
+   Compiling unicode-properties v0.1.4
+   Compiling glob v0.3.4
+   Compiling icu_provider v2.3.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling deadpool v0.12.3
+   Compiling stringprep v0.1.5
+   Compiling uuid-simd v0.8.0
+   Compiling dom_smoothie v0.18.1
+   Compiling opentelemetry_sdk v0.21.2
+   Compiling dashmap v6.2.1
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling jiff v0.2.35
+   Compiling fluent-uri v0.1.4
+   Compiling toml_edit v0.22.27
+   Compiling roaring v0.11.1
+   Compiling globset v0.4.20
+   Compiling rand v0.10.2
+   Compiling imbl v3.0.0
+   Compiling idna_adapter v1.2.2
+   Compiling dirs v6.0.0
+   Compiling dirs v5.0.1
+   Compiling markup5ever_rcdom v0.38.0+unofficial
+   Compiling idna v1.1.0
+   Compiling fraction v0.15.4
+   Compiling clap v4.6.6
+   Compiling ghash v0.5.1
+   Compiling tempfile v3.27.0
+   Compiling url v2.5.8
+   Compiling publicsuffix v2.3.0
+   Compiling cron v0.17.0
+   Compiling email_address v0.2.9
+   Compiling assert-json-diff v2.0.2
+   Compiling rust-stemmers v1.2.0
+   Compiling bincode v1.3.3
+   Compiling cookie_store v0.22.1
+   Compiling tower-http v0.6.11
+   Compiling quick-xml v0.38.4
+   Compiling yasna v0.5.2
+   Compiling fancy-regex v0.18.0
+   Compiling rquickjs-core v0.11.0
+   Compiling ctr v0.9.2
+   Compiling fluent-uri v0.4.1
+   Compiling ecb v0.1.2
+   Compiling cbc v0.1.2
+   Compiling pem v3.0.6
+   Compiling async-stream-impl v0.3.6
+   Compiling serde_repr v0.1.21
+   Compiling md-5 v0.10.6
+   Compiling aead v0.5.2
+   Compiling referencing v0.47.0
+   Compiling fsevent-sys v4.1.0
+   Compiling memmap2 v0.9.11
+   Compiling jsonschema-regex v0.47.0
+   Compiling notify-types v2.1.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling weezl v0.1.12
+   Compiling ryu-js v1.0.3
+   Compiling bytecount v0.6.9
+   Compiling rangemap v1.8.0
+   Compiling data-encoding v2.11.1
+   Compiling hex v0.4.3
+   Compiling a3s-acl v0.2.2
+   Compiling ttf-parser v0.25.1
+   Compiling num-cmp v0.1.0
+   Compiling a3s-acl v0.3.0
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling sha256 v1.6.0
+   Compiling jsonschema v0.47.0
+   Compiling rquickjs v0.11.0
+   Compiling notify v8.2.0
+   Compiling lsp-types v0.97.0
+   Compiling async-stream v0.3.6
+   Compiling a3s-effect v0.2.1
+   Compiling aes-gcm v0.10.3
+   Compiling rcgen v0.13.2
+   Compiling wiremock v0.6.5
+   Compiling a3s-sandbox v0.2.3 (https://github.com/A3S-Lab/Sandbox.git?rev=f301bf092f82f3819f4853ae9b95b703f5573f0d#f301bf09)
+   Compiling toml v0.8.23
+   Compiling htmd v0.5.5
+   Compiling ignore v0.4.33
+   Compiling a3s-common v0.1.1
+   Compiling rmp-serde v1.3.0
+   Compiling a3s-memory v0.1.5 (https://github.com/A3S-Lab/Memory.git?rev=47368a0d717e3577dd0e61ebe7b64aa5a1e958cd#47368a0d)
+   Compiling html2text v0.16.7
+   Compiling a3s-vec v0.1.8
+   Compiling base64 v0.21.7
+   Compiling shell-words v1.1.1
+   Compiling similar v2.7.0
+   Compiling a3s-lane v0.5.1
+   Compiling reqwest v0.12.28
+   Compiling scraper v0.22.0
+   Compiling a3s-updater v0.2.0
+   Compiling a3s-search v3.4.0 (https://github.com/A3S-Lab/Search.git?rev=e09b62b9e918875315c3cd3c7e14b5a9f9180367#e09b62b9)
+   Compiling lopdf v0.42.0
+   Compiling a3s-code-core v9.1.4 (/Users/roylin/code/a3s/.claude/worktrees/code-indexing/core)
+warning: unused import: `AgentLoop`
+ --> core/src/agent/auto_delegation.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/completion_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/execution_entry.rs:3:13
+  |
+3 | use super::{AgentLoop, AgentResult, InvocationContext};
+  |             ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/execution_mode.rs:1:48
+  |
+1 | use super::{AgentEvent, AgentExecutionFailure, AgentLoop, AgentResult, InvocationContext};
+  |                                                ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/hook_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/llm_turn.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/loop_builder.rs:1:26
+  |
+1 | use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
+  |                          ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/loop_runtime.rs:5:25
+  |
+5 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/memory_extraction_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/parallel_tool_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/planning_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/prompt_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/telemetry_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_execution_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, ToolCommand};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_guard_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/tool_result_runtime.rs:2:5
+  |
+2 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_turn.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/turn_context.rs:1:62
+  |
+1 | use super::{context_perception, project_context, AgentEvent, AgentLoop};
+  |                                                              ^^^^^^^^^
+
+warning: field `calls` is never read
+ --> core/src/fact_control/executor_tools.rs:9:16
+  |
+6 | pub(super) struct ExecutorTools {
+  |                   ------------- field in this struct
+...
+9 |     pub(super) calls: Arc<AtomicUsize>,
+  |                ^^^^^
+  |
+  = note: `ExecutorTools` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `a3s-code-core` (lib test) generated 20 warnings (run `cargo fix --lib -p a3s-code-core --tests` to apply 18 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 1m 43s
+     Running unittests src/lib.rs (/tmp/a3s-idx-target/debug/deps/a3s_code_core-72a400686c50f27a)
+
+running 1 test
+
+thread 'workspace::manifest::tests::grep_keeps_the_runtime_available_while_a_candidate_provider_is_slow' (43294138) panicked at core/src/workspace/manifest/tests.rs:987:5:
+search blocked the runtime: timers and cancellation could not run
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workspace::manifest::tests::grep_keeps_the_runtime_available_while_a_candidate_provider_is_slow ... FAILED
+
+failures:
+
+failures:
+    workspace::manifest::tests::grep_keeps_the_runtime_available_while_a_candidate_provider_is_slow
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5046 filtered out; finished in 0.39s
+
+error: test failed, to rerun pass `-p a3s-code-core --lib`

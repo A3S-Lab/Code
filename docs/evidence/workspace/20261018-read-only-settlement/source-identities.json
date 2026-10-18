@@ -1,0 +1,33 @@
+{
+  "base": "f097715883f7abc13b7862fbe28fad46d6a4940e",
+  "rust_toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "sources_sha256": {
+    "core/src/tools/skill.rs": "4689f0eb0235fd6c975e4bb6f43a377987ff770ac0b3906e0c209791a77b6850",
+    "core/src/tools/builtin/generate_object.rs": "692c75e8260be42e7cc8a60884ee977429fb1e12d89e60a451a5ed4e5ba186ef",
+    "core/src/agent_api/tests/fact_log.rs": "682bc65f36eb3dc08401da860b7ec5eb50175454659a8113ed301595bfcea2a6",
+    "core/src/agent_api/tests/fact_log/read_only_settlement.rs": "143aeb6a5d8cd39e458d04c9cb13f55d3ec9712fe045597569c96bedb327d10c",
+    "core/src/fact_control/receipts/tests.rs": "528fa75d6f3a845becf62315d81acc81ae6a4597603360bb1ad1d44bdb2ef5ef",
+    "core/src/fact_control/receipts/tests/skill_lookup.rs": "6d1944752996b5535861855decabfb3f5cad979674c7e9c83fd1b8b6f763d473"
+  },
+  "logs_sha256": {
+    "baseline-contracts.log": "569403013478d059c9f2d2abbcc9b0596022f8a996c1fdda37377b289d97c831",
+    "fixed-family.log": "3387a4250f5043fa10ff14c28b7b3617bea8894ce01b523630e2df5dfa452920",
+    "test-compile.log": "abd303b51612994f08a6ddce28cd703a55f022ea9ece83d4730af829e80bb012",
+    "whole-format.log": "9035484f5602d4aef464720d0431cce8f42bc75d0b2498a5b51fc62317cf1173",
+    "baseline-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "fixed-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "diagnostics-comparison.txt": "6d932dfc4e6276abea169ee217ca725871a58ecb58a6b666551b87087948bed0",
+    "ratchets.log": "3a5451ec1447cdc6dc1457d29144b4141df871f1f4cb5e1ab9e67dcf1217a564"
+  },
+  "raw_logs_sha256": {
+    "baseline-contracts.log": "569403013478d059c9f2d2abbcc9b0596022f8a996c1fdda37377b289d97c831",
+    "fixed-family.log": "5b056cf5ccf4a403bb654c219dc8aa1bf1e2f4af471847a8bfa0be07141ce570",
+    "test-compile.log": "abd303b51612994f08a6ddce28cd703a55f022ea9ece83d4730af829e80bb012",
+    "whole-format.log": "ad938fd2d1d62979b607bcbc644040605fb601155e1600d10e7bfd120eeb4b92",
+    "baseline-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "fixed-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "diagnostics-comparison.txt": "6d932dfc4e6276abea169ee217ca725871a58ecb58a6b666551b87087948bed0",
+    "ratchets.log": "004f080f95753f9de15078f65bc5b2f4cecdbdad2d3945e270b31fdb933e46df"
+  },
+  "log_normalization": "Trailing whitespace removed; one final newline. Raw /tmp log hashes retained separately."
+}

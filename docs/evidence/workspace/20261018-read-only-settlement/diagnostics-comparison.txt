@@ -1,0 +1,54 @@
+Baseline unique diagnostic/location pairs: 48
+Fixed unique diagnostic/location pairs: 48
+Introduced: 0
+Resolved: 0
+
+Identical diagnostics:
+core/src/agent/plan_execution.rs:31:12: associated function `build_envelope` is never used
+core/src/agent/hook_runtime.rs:159:25: associated items `fire_pre_planning`, `fire_post_planning`, and `planning_strategy_for_plan` are never used
+core/src/agent/planning_runtime.rs:9:19: associated items `preserve_plan_goal_context`, `emit_task_updated`, `execute_with_planning`, and `check_goal_achievement_scoped` are never used
+core/src/prompts.rs:112:11: constant `PLAN_EXECUTE_GOAL` is never used
+core/src/prompts.rs:115:11: constant `PLAN_EXECUTE_STEP` is never used
+core/src/agent/auto_delegation.rs:8:7: constant `SYNTHESIS_CONTINUATION_MARKER` is never used
+core/src/fact_control/executor_tools.rs:9:16: field `calls` is never read
+core/src/agent/auto_delegation.rs:21:5: field `reason` is never read
+core/src/agent/plan_execution.rs:108:4: function `accumulate_failure_accounting` is never used
+core/src/agent/plan_execution.rs:46:4: function `accumulate_result_accounting` is never used
+core/src/agent/hook_runtime.rs:392:4: function `apply_pre_planning_modifications` is never used
+core/src/agent/plan_execution.rs:80:15: function `delegated_mutation_without_closure` is never used
+core/src/agent/hook_runtime.rs:437:4: function `first_string` is never used
+core/src/agent/hook_runtime.rs:451:4: function `planning_hints` is never used
+core/src/agent/auto_delegation.rs:179:4: function `prompt_allows_auto_delegation` is never used
+core/src/agent/plan_execution.rs:57:15: function `push_published_completions` is never used
+core/src/agent/plan_execution.rs:102:4: function `remember_completion_gate` is never used
+core/src/agent.rs:1031:19: method `add_tool_calls` is never used
+core/src/agent/tool_execution_runtime.rs:88:25: method `execute_delegated_plan_tool` is never used
+core/src/agent/loop_runtime.rs:22:25: method `execute_loop` is never used
+core/src/agent/auto_delegation.rs:66:25: method `maybe_apply_auto_delegation` is never used
+core/src/agent/execution_mode.rs:17:19: multiple associated items are never used
+core/src/agent/plan_execution.rs:121:19: multiple associated items are never used
+core/src/agent/auto_delegation.rs:24:19: struct `AutoDelegationOutcome` is never constructed
+core/src/agent/plan_execution.rs:40:8: struct `DelegatedParallelChildResult` is never constructed
+core/src/agent/execution_mode.rs:9:8: struct `ExecutionRoute` is never constructed
+core/src/agent/plan_execution.rs:15:19: struct `ParallelStepResult` is never constructed
+core/src/llm/error.rs:63:26: this OR pattern can be rewritten using a range
+core/src/agent/auto_delegation.rs:1:25: unused import: `AgentLoop`
+core/src/agent/completion_runtime.rs:3:25: unused import: `AgentLoop`
+core/src/agent/execution_entry.rs:3:13: unused import: `AgentLoop`
+core/src/agent/execution_mode.rs:1:48: unused import: `AgentLoop`
+core/src/agent/llm_turn.rs:2:25: unused import: `AgentLoop`
+core/src/agent/loop_builder.rs:1:26: unused import: `AgentLoop`
+core/src/agent/loop_runtime.rs:5:25: unused import: `AgentLoop`
+core/src/agent/memory_extraction_runtime.rs:2:25: unused import: `AgentLoop`
+core/src/agent/parallel_tool_runtime.rs:3:25: unused import: `AgentLoop`
+core/src/agent/plan_execution.rs:1:25: unused import: `AgentLoop`
+core/src/agent/planning_runtime.rs:1:25: unused import: `AgentLoop`
+core/src/agent/prompt_runtime.rs:1:25: unused import: `AgentLoop`
+core/src/agent/tool_completion_runtime.rs:3:25: unused import: `AgentLoop`
+core/src/agent/tool_execution_runtime.rs:1:25: unused import: `AgentLoop`
+core/src/agent/tool_guard_runtime.rs:2:25: unused import: `AgentLoop`
+core/src/agent/tool_turn.rs:3:25: unused import: `AgentLoop`
+core/src/agent/turn_context.rs:1:62: unused import: `AgentLoop`
+core/src/agent/hook_runtime.rs:1:5: unused import: `super::AgentLoop`
+core/src/agent/telemetry_runtime.rs:1:5: unused import: `super::AgentLoop`
+core/src/agent/tool_result_runtime.rs:2:5: unused import: `super::AgentLoop`

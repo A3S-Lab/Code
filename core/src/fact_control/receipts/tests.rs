@@ -11,6 +11,7 @@ mod cache_proof;
 mod cache_provenance;
 mod execution_availability;
 mod pre_spawn;
+mod skill_lookup;
 mod tool_budget;
 mod tool_budget_cancel;
 mod workspace_boundary;

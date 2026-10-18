@@ -1,0 +1,45 @@
+diff --git a/core/src/workspace/manifest/tests.rs b/core/src/workspace/manifest/tests.rs
+index d9929871..41b53251 100644
+--- a/core/src/workspace/manifest/tests.rs
++++ b/core/src/workspace/manifest/tests.rs
+@@ -1,3 +1,5 @@
++#![cfg(test)]
++
+ use super::watcher::normalize_file_changes;
+ use super::*;
+ use notify::{
+@@ -954,3 +956,34 @@ async fn navigation_snapshot_shares_original_generation_and_filters_deleted_rece
+     assert_eq!(manifest.recent_file_paths(12), vec!["keep/lib.rs"]);
+     assert!(!manifest.is_active());
+ }
++
++
++#[tokio::test(flavor = "current_thread")]
++async fn grep_keeps_the_runtime_available_while_a_candidate_provider_is_slow() {
++    struct SlowCandidates;
++    impl crate::workspace::GrepCandidateIndex for SlowCandidates {
++        fn select_paths(&self, _: &str, _: bool) -> crate::workspace::GrepCandidateSelection {
++            std::thread::sleep(Duration::from_millis(250));
++            crate::workspace::GrepCandidateSelection::Unconstrained
++        }
++    }
++    let root = tempfile::tempdir().unwrap();
++    write(&root.path().join("hit.rs"), b"responsive_token\n");
++    let backend = ManifestWorkspaceBackend::new(root.path());
++    let mut changes = backend.manifest().subscribe();
++    tokio::time::timeout(Duration::from_secs(5), changes.recv()).await.unwrap().unwrap();
++    backend.configure_grep_candidate_index(Arc::new(SlowCandidates)).unwrap();
++    let heartbeat = Arc::new(AtomicBool::new(false));
++    let observed = Arc::clone(&heartbeat);
++    let timer = tokio::spawn(async move {
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        observed.store(true, Ordering::Release);
++    });
++    let result = backend.grep(WorkspaceGrepRequest {
++        base: WorkspacePath::root(), pattern: "responsive_token".into(), glob: None,
++        context_lines: 0, case_insensitive: false, max_output_size: 1024,
++    }).await.unwrap();
++    assert_eq!(result.match_count, 1);
++    assert!(heartbeat.load(Ordering::Acquire), "search blocked the runtime: timers and cancellation could not run");
++    timer.await.unwrap();
++}

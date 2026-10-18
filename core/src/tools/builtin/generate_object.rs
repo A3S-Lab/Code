@@ -142,6 +142,13 @@ impl Tool for GenerateObjectTool {
         })
     }
 
+    fn capabilities(&self, _args: &Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities {
+            read_only: true,
+            ..crate::tools::ToolCapabilities::conservative()
+        }
+    }
+
     async fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let params: GenerateObjectParams = match serde_json::from_value(args.clone()) {
             Ok(params) => params,

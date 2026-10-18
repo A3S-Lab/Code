@@ -185,6 +185,10 @@ Use this before invoking Skill when specialized instructions may help."
         })
     }
 
+    fn capabilities(&self, _args: &Value) -> crate::tools::ToolCapabilities {
+        crate::tools::ToolCapabilities::parallel_safe_read(1)
+    }
+
     async fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let args = SearchSkillsArgs::from_tool_args(args)?;
         // A package can land after the catalog prompt was built.
