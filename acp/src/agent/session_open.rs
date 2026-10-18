@@ -8,7 +8,17 @@ impl A3sCodeAgent {
         if guard.is_some() {
             return Ok(());
         }
-        let agent = Agent::from_config(self.launch.config.clone())
+        let mut config = self.launch.config.clone();
+        if config.goal_control.is_none() {
+            let now = crate::goal::host_clock_ms()
+                .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+            config.goal_control = match &self.unattended {
+                Some(profile) => profile.goal_control(now),
+                None => crate::goal::default_continuation_policy(now).map(Some),
+            }
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
+        }
+        let agent = Agent::from_config(config)
             .await
             .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
         // SEC-SAMPLE1 wiring: arm per-server sampling behind all three
@@ -167,7 +177,6 @@ impl A3sCodeAgent {
         };
         let options = crate::harness_assemble::apply(options, setup.components)
             .map_err(|error| acp::Error::invalid_params().data(error))?;
-        let engineering = options.work_policy.is_some();
         let stored = if restore {
             Self::resume_snapshot_store(&store_dir, session_id, &setup.workspace).await?
         } else {
@@ -186,7 +195,11 @@ impl A3sCodeAgent {
             }
         }
         .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
-        if engineering {
+        if session
+            .work_policy_digest()
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
+            .is_some()
+        {
             crate::engineering::register_scenarios(&session)
                 .map_err(|error| acp::Error::internal_error().data(error))?;
         }
@@ -291,6 +304,14 @@ impl A3sCodeAgent {
                 .await
                 .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
         };
+        if session
+            .work_policy_digest()
+            .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
+            .is_some()
+        {
+            crate::engineering::register_scenarios(&session)
+                .map_err(|error| acp::Error::internal_error().data(error))?;
+        }
         let asset_denies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if Self::attach_local_assets(&session, &setup.host, &asset_denies, self.document_bridge())?
         {

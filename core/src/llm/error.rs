@@ -60,7 +60,7 @@ fn boyue_account_has_no_balance(provider: &str, status: u16, body: &str) -> bool
     if !provider.to_ascii_lowercase().contains("boyue") {
         return false;
     }
-    if !matches!(status, 401 | 402 | 403) {
+    if !matches!(status, 401..=403) {
         return false;
     }
     let body = body.to_ascii_lowercase();

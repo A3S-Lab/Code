@@ -1,5 +1,5 @@
 use super::execution_state::ExecutionLoopState;
-use super::{AgentEvent, AgentLoop};
+use super::AgentEvent;
 use crate::llm::{Message, ToolCall};
 use tokio::sync::mpsc;
 

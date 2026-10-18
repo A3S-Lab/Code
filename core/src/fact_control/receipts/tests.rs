@@ -556,13 +556,13 @@ fn executor_tools_with(
         Arc::new(ExecutorTools {
             executor,
             capability_operation: None,
-            calls: Arc::new(AtomicUsize::new(0)),
             checkpoint: None,
             events: None,
             context,
             permission: PermissionPolicy::new().allow("*"),
             checker: None,
             agent: None,
+            execution_started: None,
             run_store: None,
             run_id: None,
             ledger: Some(Arc::new(Mutex::new(

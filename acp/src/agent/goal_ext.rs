@@ -133,8 +133,9 @@ impl A3sCodeAgent {
                     .await
                     .map_err(invalid)?;
                 self.emit_text(session_id, &format!("\n\n{report}")).await;
-                if response.is_err() {
-                    return response;
+                let response = response?;
+                if response.stop_reason == acp::StopReason::Cancelled {
+                    return Ok(response);
                 }
                 let queue = self
                     .sessions
@@ -143,7 +144,7 @@ impl A3sCodeAgent {
                     .get(&key)
                     .map(|live| Arc::clone(&live.turn_queue));
                 let Some(queue) = queue else {
-                    return response;
+                    return Ok(response);
                 };
                 turn_permit = Some(
                     queue

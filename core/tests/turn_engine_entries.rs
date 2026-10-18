@@ -3,7 +3,7 @@
 //! Session runs drive model turns through `FactRun` (`fact_control.rs`).
 //! `TurnEngine` (still named `AgentLoop` at call sites) is crate-private.
 //! `skill` and `task` children enter through `ChildRun` / `FactRun`.
-//! Plan steps stay inside the engine. This
+//! The old standalone/planning routes are test-only. This
 //! test pins every production site that builds an `AgentLoop` or enters its
 //! loop. The list may only shrink: a new site fails, and a site that moved
 //! to `FactRun` must leave the list. Test-only code is not scanned.
@@ -27,14 +27,6 @@ const ENTRY_METHODS: &[&str] = &[
 const ALLOWED: &[(&str, &str)] = &[
     // The engine's own plumbing.
     ("core/src/agent/execution_entry.rs", ".execute_loop_inner"),
-    ("core/src/agent/execution_mode.rs", ".execute_loop"),
-    (
-        "core/src/agent/execution_mode.rs",
-        ".execute_with_invocation",
-    ),
-    ("core/src/agent/execution_mode.rs", ".execute_with_planning"),
-    ("core/src/agent/loop_runtime.rs", ".execute_loop_inner"),
-    ("core/src/agent/plan_execution.rs", ".execute_loop"),
     // The session's loop: FactRun borrows its configuration and tools.
     ("core/src/agent_api/agent_loop_runtime.rs", "AgentLoop::new"),
     // Child runs build an engine the fact run borrows. They do not enter it.

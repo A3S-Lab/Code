@@ -1,7 +1,49 @@
+#![cfg(test)]
+
 use super::super::WorkspaceServices;
 use super::*;
 
 struct Buffers;
+
+#[tokio::test]
+async fn sdk_snapshot_normalizes_paths_and_preserves_backend_fallback() {
+    let snapshot = WorkspaceReadOverlaySnapshot::new(HashMap::from([(
+        "./dir/open.txt".into(),
+        "unsaved\n".into(),
+    )]))
+    .unwrap();
+    assert_eq!(
+        snapshot
+            .read_text(&WorkspacePath::from_normalized("dir/open.txt"))
+            .await
+            .as_deref(),
+        Some("unsaved\n")
+    );
+    assert!(snapshot
+        .read_text(&WorkspacePath::from_normalized("other.txt"))
+        .await
+        .is_none());
+}
+
+#[test]
+fn sdk_snapshot_refuses_escaping_duplicate_root_and_oversized_files() {
+    for path in ["../outside.txt", "/outside.txt", "C:\\outside.txt", "."] {
+        assert!(
+            WorkspaceReadOverlaySnapshot::new(HashMap::from([(path.into(), "x".into())])).is_err(),
+            "{path}"
+        );
+    }
+    assert!(WorkspaceReadOverlaySnapshot::new(HashMap::from([
+        ("a.txt".into(), "a".into()),
+        ("./a.txt".into(), "b".into()),
+    ]))
+    .is_err());
+    assert!(WorkspaceReadOverlaySnapshot::new(HashMap::from([(
+        "large.txt".into(),
+        "x".repeat(super::super::local::MAX_TEXT_FILE_BYTES as usize + 1)
+    ),]))
+    .is_err());
+}
 
 #[async_trait]
 impl WorkspaceReadOverlay for Buffers {

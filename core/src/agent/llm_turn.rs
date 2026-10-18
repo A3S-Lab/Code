@@ -1,5 +1,5 @@
 use super::execution_state::ExecutionLoopState;
-use super::{AgentEvent, AgentLoop};
+use super::AgentEvent;
 use crate::hooks::{
     ErrorType, GenerateEndEvent, GenerateStartEvent, HookEvent, TokenUsageInfo, ToolCallInfo,
 };
@@ -883,7 +883,7 @@ impl crate::agent::TurnEngine {
     }
 
     /// Fire GenerateStart hook event before an LLM call.
-    async fn fire_generate_start(
+    pub(crate) async fn fire_generate_start(
         &self,
         session_id: &str,
         prompt: &str,

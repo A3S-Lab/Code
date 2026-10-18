@@ -177,7 +177,14 @@ async fn snapshot_resume_keeps_usage_and_refuses_foreign_or_corrupt_snapshot() {
     launch.workspace = root.path().to_owned();
     let host = A3sCodeAgent::new(launch.clone());
     let id = host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap()
         .session_id;

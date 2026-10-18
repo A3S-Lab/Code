@@ -1,4 +1,4 @@
-use super::{AgentEvent, AgentLoop};
+use super::AgentEvent;
 use crate::prompts::AgentStyle;
 use tokio::sync::mpsc;
 

@@ -639,6 +639,11 @@ export interface SessionOptions {
    */
   workspaceBackend?: JsWorkspaceBackend
   /**
+   * Immutable client text by workspace-relative file path. Text reads prefer
+   * this snapshot; writes use the backend. Ignored with effect isolation.
+   */
+  workspaceReadOverlay?: Record<string, string>
+  /**
    * Session-bound asynchronous semantic workspace retrieval.
    *
    * Pass `new WorkspaceRetrievalOptions(provider)`. Index construction
@@ -1641,6 +1646,8 @@ export declare class Harness {
 }
 /** Workspace-bound session. All LLM and tool operations happen here. */
 export declare class Session {
+  /** Tokens, cache usage and tool-result weight from the original session. */
+  contextReport(): any
   /**
    * Return current occupancy of the Agent-wide priority scheduler shared by
    * this session and its siblings.
@@ -2161,6 +2168,30 @@ export declare class Session {
   semanticSearch(request: WorkspaceSearchRequest): Promise<WorkspaceSemanticSearchResultObject>
   /** Fuse exact, BM25, symbol, and optional semantic evidence in Rust Core. */
   hybridSearch(request: WorkspaceSearchRequest): Promise<WorkspaceHybridSearchResultObject>
+  /** Admit a create/revise Goal definition; starts no Run. */
+  applyGoalDefinition(commandJson: any): any
+  /** Propose or explicitly accept a plan; accepts no step result. */
+  applyGoalPlan(commandJson: any): any
+  /** Record pause/resume/cancel on an idle session. */
+  applyGoalControl(commandJson: any): any
+  /** Pause/cancel even while a goal slice runs: the original RunControl settles it first. */
+  controlGoal(commandJson: any, graceMs: number): Promise<any>
+  /** Declare or observe a step wait; returns `{ recorded, definition }`. */
+  applyGoalWait(commandJson: any): any
+  /** The bound Goal read from its original facts, or null. */
+  goalDefinition(): any
+  /** Digest of the work policy a Run admitted, or null. */
+  workPolicyDigest(): string | null
+  /** Refuse unless the step and Run are the bound Goal's current ones. */
+  checkGoalStepRun(goalId: string, goalRevision: number, planRevision: number, stepId: string, runId: string): void
+  /** Close stopped goal slices without replay; returns appended fact count. */
+  reconcileGoalSlices(): number
+  /** Inspect a tick decision without reserving or running anything. */
+  previewGoalTick(commandJson: any): Promise<string>
+  /** Admit at most one original Run: `{ decision }` or `{ run: { snapshot, replayed } }`. */
+  tickGoal(commandJson: any): Promise<any>
+  /** Admit host-bound review drafts, all or nothing; returns newly admitted count. */
+  admitSessionReviewDrafts(scenarioId: string, sourceReviewId: string, observedAtMs: number, draftsJson: any): number
   /** Check if this session has an advanced lane queue configured. */
   hasQueue(): boolean
   /**
@@ -2220,30 +2251,6 @@ export declare class Session {
    * @returns Object with `counters`, `gauges`, and `histograms` maps, or null
    */
   queueMetrics(): Promise<any>
-  /** Admit a create/revise Goal definition; starts no Run. */
-  applyGoalDefinition(commandJson: any): any
-  /** Propose or explicitly accept a plan; accepts no step result. */
-  applyGoalPlan(commandJson: any): any
-  /** Record pause/resume/cancel on an idle session. */
-  applyGoalControl(commandJson: any): any
-  /** Pause/cancel even while a goal slice runs: the original RunControl settles it first. */
-  controlGoal(commandJson: any, graceMs: number): Promise<any>
-  /** Declare or observe a step wait; returns `{ recorded, definition }`. */
-  applyGoalWait(commandJson: any): any
-  /** The bound Goal read from its original facts, or null. */
-  goalDefinition(): any
-  /** Digest of the work policy a Run admitted, or null. */
-  workPolicyDigest(): string | null
-  /** Refuse unless the step and Run are the bound Goal's current ones. */
-  checkGoalStepRun(goalId: string, goalRevision: number, planRevision: number, stepId: string, runId: string): void
-  /** Close stopped goal slices without replay; returns appended fact count. */
-  reconcileGoalSlices(): number
-  /** Inspect a tick decision without reserving or running anything. */
-  previewGoalTick(commandJson: any): Promise<string>
-  /** Admit at most one original Run: `{ decision }` or `{ run: { snapshot, replayed } }`. */
-  tickGoal(commandJson: any): Promise<any>
-  /** Admit host-bound review drafts, all or nothing; returns newly admitted count. */
-  admitSessionReviewDrafts(scenarioId: string, sourceReviewId: string, observedAtMs: number, draftsJson: any): number
   /** Current durable session-review store. */
   sessionReviewStore(): any
   /** Registered scenario ids, sorted. */

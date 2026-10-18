@@ -328,7 +328,12 @@ impl ScopedToolInvoker {
         );
         let result = NormalizedToolResult::from_execution(
             self.agent
-                .execute_tool_queued_or_direct(&invocation.name, &invocation.args, &stream_ctx)
+                .execute_tool_queued_or_direct(
+                    &self.agent.tool_executor,
+                    &invocation.name,
+                    &invocation.args,
+                    &stream_ctx,
+                )
                 .await,
         );
         let terminal = if ctx.is_cancelled() {

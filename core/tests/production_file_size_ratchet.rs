@@ -18,8 +18,7 @@ const LIMIT: usize = 2000;
 const CAP_SLACK: usize = 250;
 
 /// Files over `LIMIT`, with the line count they may not exceed.
-const OVERSIZE: &[(&str, usize)] = &[
-];
+const OVERSIZE: &[(&str, usize)] = &[];
 
 /// ACP-SPLIT1: the ACP protocol file keeps the `acp::Agent` surface and the
 /// session state. Session opening, turns, asks, rendering, and host extension

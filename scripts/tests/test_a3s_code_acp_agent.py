@@ -107,6 +107,16 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertNotIn("--engineering-policy", script)
         self.assertNotIn("--goal-continuation", script)
 
+    def test_explicit_off_arms_override_the_product_defaults(self):
+        script = self.launcher(self.agent(
+            A3S_CODE_ACP_ENGINEERING_POLICY="none",
+            A3S_CODE_ACP_GOAL_CONTINUATION="0",
+        ))
+        self.assertIn("--engineering-policy none", script)
+        self.assertIn("--no-goal-continuation", script)
+        with self.assertRaisesRegex(ValueError, "requires 0 or 1"):
+            self.launcher(self.agent(A3S_CODE_ACP_GOAL_CONTINUATION="2"))
+
     def test_launcher_omits_the_budget_flag_when_unset(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(adapter.A3SCodeAcpAgent.EXECUTION_BUDGET_ENV, None)

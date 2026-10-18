@@ -438,7 +438,8 @@ async fn workspace_replaced_during_read_cannot_accept_old_host_observation() {
                 .unwrap();
             assert!(
                 result.is_err(),
-                "a replaced fact-log directory must refuse completion"
+                "a replaced fact-log directory must refuse completion: result={result:?}, output={:?}, model={:?}",
+                observed.lock().unwrap(), model.result.lock().unwrap()
             );
             let output = observed.lock().unwrap().clone().unwrap();
             assert!(output.contains("workspace is not admitted"), "{output}");

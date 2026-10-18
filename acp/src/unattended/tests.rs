@@ -181,7 +181,7 @@ fn the_profile_answers_for_itself_with_every_capability_on() {
     assert!(delegation.enabled && delegation.auto_parallel && delegation.allow_manual_delegation);
     assert_eq!(options.max_parallel_tasks, Some(MAX_PARALLEL_TASKS));
     assert!(options.session_store.is_none());
-    assert_eq!(options.planning_mode, PlanningMode::Disabled);
+    assert_eq!(options.planning_mode, PlanningMode::Enabled);
     assert_eq!(options.reasoning_effort.as_deref(), Some("max"));
     assert_eq!(options.llm_api_timeout_ms, Some(LLM_TIMEOUT_MS));
     assert_eq!(options.max_tool_rounds, Some(MAX_TOOL_ROUNDS));
@@ -190,7 +190,7 @@ fn the_profile_answers_for_itself_with_every_capability_on() {
     let slots = options.prompt_slots.expect("prompt slots");
     assert_eq!(slots.style, Some(AgentStyle::GeneralPurpose));
     assert_eq!(slots.extra.as_deref(), Some(TASK_PROOF_NOTE));
-    assert!(options.work_policy.is_none());
+    assert_eq!(options.work_policy.unwrap().id(), "engineering-v1");
     assert!(Unattended::new(0, None).is_err());
 }
 
@@ -211,9 +211,7 @@ fn an_engineering_launch_puts_the_named_policy_on_every_session() {
 
 #[test]
 fn a_goal_launch_continues_until_the_run_deadline() {
-    let plain = Unattended::new(1_000, None).expect("profile");
-    assert_eq!(plain.goal_control(5_000).expect("policy"), None);
-    let goal = plain.with_goal_continuation();
+    let goal = Unattended::new(1_000, None).expect("profile");
     let policy = goal.goal_control(5_000).expect("policy").expect("goal");
     assert!(policy.automatic_enabled);
     assert_eq!(policy.max_slices.get(), 1_000);
@@ -224,6 +222,14 @@ fn a_goal_launch_continues_until_the_run_deadline() {
         .session_options("sid", "m", Vec::new())
         .expect("options");
     assert_eq!(options.planning_mode, PlanningMode::Enabled);
+    let disabled = goal
+        .without_goal_continuation()
+        .with_engineering_policy("none")
+        .unwrap();
+    assert!(disabled.goal_control(5_000).unwrap().is_none());
+    let options = disabled.session_options("sid", "m", vec![]).unwrap();
+    assert!(options.work_policy.is_none());
+    assert_eq!(options.planning_mode, PlanningMode::Disabled);
 }
 
 #[tokio::test]

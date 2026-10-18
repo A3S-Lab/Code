@@ -1,11 +1,18 @@
-use super::{AgentEvent, AgentExecutionFailure, AgentLoop, AgentResult, InvocationContext};
+use super::AgentEvent;
+#[cfg(test)]
+use super::{AgentExecutionFailure, AgentResult, InvocationContext};
+#[cfg(test)]
 use crate::hooks::ErrorType;
+#[cfg(test)]
 use crate::llm::Message;
 use crate::planning::{LlmPlanner, PreAnalysis};
-use crate::prompts::{AgentStyle, PlanningMode};
+#[cfg(test)]
+use crate::prompts::AgentStyle;
+use crate::prompts::PlanningMode;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
+#[cfg(test)]
 struct ExecutionRoute {
     style: AgentStyle,
     use_planning: bool,
@@ -14,6 +21,7 @@ struct ExecutionRoute {
 }
 
 impl crate::agent::TurnEngine {
+    #[cfg(test)]
     pub(super) fn preserve_original_prompt_for_execution(
         original_prompt: &str,
         optimized_input: &str,
@@ -55,6 +63,7 @@ impl crate::agent::TurnEngine {
     ///
     /// Takes the conversation history, user prompt, and optional session ID.
     /// When session_id is provided, context providers can use it for session-specific context.
+    #[cfg(test)]
     pub async fn execute_with_session(
         &self,
         history: &[Message],
@@ -76,6 +85,7 @@ impl crate::agent::TurnEngine {
 
     /// Execute using one immutable per-run context shared by routing, model,
     /// planning, and tool paths.
+    #[cfg(test)]
     pub(crate) async fn execute_with_invocation(
         &self,
         history: &[Message],
@@ -184,6 +194,7 @@ impl crate::agent::TurnEngine {
         result
     }
 
+    #[cfg(test)]
     async fn resolve_execution_route(
         &self,
         prompt: &str,
@@ -259,6 +270,7 @@ impl crate::agent::TurnEngine {
         }
     }
 
+    #[cfg(test)]
     fn resolve_execution_style(
         &self,
         prompt: &str,
@@ -294,6 +306,7 @@ impl crate::agent::TurnEngine {
         AgentStyle::GeneralPurpose
     }
 
+    #[cfg(test)]
     pub(super) fn resolve_planning_decision(
         &self,
         _style: AgentStyle,
@@ -308,6 +321,7 @@ impl crate::agent::TurnEngine {
         }
     }
 
+    #[cfg(test)]
     async fn record_execution_result(
         &self,
         session_id: Option<&str>,

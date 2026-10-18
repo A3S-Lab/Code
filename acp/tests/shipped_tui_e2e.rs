@@ -24,10 +24,9 @@ const COMPACT_SUMMARY: &str = "COMPACT-SUMMARY-7f3a";
 const DURABLE_TOKEN: &str = "DURABLE-TOKEN-42";
 const GOAL_OBJECTIVE: &str = "pty-goal-7b2e";
 const WIRE_TEST: &str = "shipped_agent_session_wire";
-/// Mirrors a3s-code-core's READ_ONLY_EVIDENCE_LIMIT: eight read-only tool
-/// results with an empty mutation ledger end evidence gathering, independent
-/// of the advertised tool-round budget.
-const READ_ONLY_EVIDENCE_STOP: usize = 8;
+/// Repeating one read consumes the per-request churn cap (twice the
+/// twelve-distinct-evidence limit), bounded by the configured tool budget.
+const READ_ONLY_EVIDENCE_STOP: usize = 24;
 const PTY_TEST: &str = "shipped_tui_launch_resume_and_visible_commands";
 
 fn oracle(test: &str, name: &str, detail: &str) {
@@ -115,8 +114,6 @@ const FULLSCREEN_PALETTE: &[(&str, &str)] = &[
 
 struct MockState {
     bodies: Vec<String>,
-    smallest_rounds: Option<u64>,
-    larger_tool_replies: u64,
     tool_seq: u64,
     write_tool_replies: u64,
     expand_replies: u64,
@@ -130,8 +127,6 @@ fn spawn_mock(write_path: &Path, late_path: &Path) -> (SocketAddr, Arc<Mutex<Moc
     let addr = listener.local_addr().expect("mock addr");
     let state = Arc::new(Mutex::new(MockState {
         bodies: Vec::new(),
-        smallest_rounds: None,
-        larger_tool_replies: 0,
         tool_seq: 0,
         write_tool_replies: 0,
         expand_replies: 0,
@@ -278,26 +273,17 @@ fn decide(raw: &str, state: &mut MockState) -> String {
             "sleep 4; printf LATE > '{}'",
             state.late_path.replace('\'', "")
         );
-        let args = serde_json::json!({ "command": command }).to_string();
+        let args = serde_json::json!({
+            "command": command,
+            "sandbox_permissions": "require_escalated",
+            "justification": "Explicitly approved host command cancellation fixture"
+        })
+        .to_string();
         return reply_tool("bash", &args, state, streaming);
     }
     if raw.contains("LIST-FILES") {
         if !tools {
             return reply_text("listed", streaming);
-        }
-        if let Some(rounds) = budget_number(raw, "tool_rounds=") {
-            match state.smallest_rounds {
-                Some(smallest) if rounds > smallest => {
-                    if state.larger_tool_replies >= smallest.saturating_add(1) {
-                        return reply_text("high-stopped", streaming);
-                    }
-                    state.larger_tool_replies = state.larger_tool_replies.saturating_add(1);
-                }
-                Some(smallest) => {
-                    state.smallest_rounds = Some(smallest.min(rounds));
-                }
-                None => state.smallest_rounds = Some(rounds),
-            }
         }
         let args = serde_json::json!({ "path": "." }).to_string();
         return reply_tool("ls", &args, state, streaming);
@@ -535,7 +521,7 @@ default_model = "{MODEL_ID}"
 
 async fn spawn_agent(workspace: &Path, config: &Path, home: &Path) -> AgentProc {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_a3s-code-acp"));
-    let stderr_path = workspace.join("acp.stderr");
+    let stderr_path = home.join("acp.stderr");
     let stderr = std::fs::File::create(&stderr_path).expect("acp stderr");
     let mut child = tokio::process::Command::new(bin)
         .arg("--cwd")
@@ -670,6 +656,16 @@ fn bodies_since(state: &MockState, start: usize) -> Vec<String> {
     state.bodies.iter().skip(start).cloned().collect()
 }
 
+fn first_tool_request(bodies: &[String]) -> &str {
+    bodies
+        .iter()
+        .find(|body| {
+            serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| has_tools(&value))
+        })
+        .map(String::as_str)
+        .expect("actual tool-bearing model request")
+}
+
 async fn answer_gate(agent: &mut AgentProc, option_id: &str) {
     let gate = tokio::time::timeout(Duration::from_secs(30), agent.gates.recv())
         .await
@@ -768,13 +764,16 @@ async fn shipped_agent_session_wire() {
                 "completed turn still reports no token usage: {info}"
             );
             let low_bodies = bodies_since(&state.lock().expect("mock"), start);
+            assert_eq!(first_tool_request(&low_bodies).matches("Engineering discipline").count(), 1,
+                "the actual model request must carry the default policy exactly once");
+            oracle(WIRE_TEST, "engineering-default", "policy present once without selection metadata");
             assert!(
                 !low_bodies.is_empty(),
                 "low effort produced no model request"
             );
-            let low_thinking = budget_number(&low_bodies[0], "thinking_budget=")
+            let low_thinking = budget_number(first_tool_request(&low_bodies), "thinking_budget=")
                 .expect("thinking budget in the request the model receives");
-            let low_rounds = budget_number(&low_bodies[0], "tool_rounds=")
+            let low_rounds = budget_number(first_tool_request(&low_bodies), "tool_rounds=")
                 .expect("tool rounds in the request the model receives");
             assert!(
                 turn_index < low_rounds,
@@ -793,16 +792,12 @@ async fn shipped_agent_session_wire() {
                     .is_some_and(|parsed| has_tools(&parsed))
             });
             let tool_request_count = tool_requests.count();
-            // The advertised budget is a ceiling, and a second safety stop
-            // binds first on this fixture: eight read-only tool results with
-            // an empty mutation ledger end evidence gathering (the core's
-            // READ_ONLY_EVIDENCE_LIMIT), so an `ls`-only loop stops below the
-            // advertised 16. The none-effort phase below stops exactly at its
-            // advertised 4 — the pair proves the enforced stop tracks the
-            // request's budget instead of one hardcoded cap.
+            // Repeated ls calls spend the current request's churn cap. The
+            // smaller none-effort budget below still binds first.
             assert_eq!(
-                tool_request_count, READ_ONLY_EVIDENCE_STOP,
-                "a read-only loop must stop at the evidence limit before the advertised {low_rounds}"
+                tool_request_count,
+                READ_ONLY_EVIDENCE_STOP.min(low_rounds as usize),
+                "a repeated read loop must obey the churn cap and the advertised {low_rounds}"
             );
             assert!(
                 low_bodies.iter().any(|body| {
@@ -846,9 +841,10 @@ async fn shipped_agent_session_wire() {
             let high = high.await.expect("join").expect("high prompt");
             assert_eq!(high.stop_reason, acp::StopReason::EndTurn);
             let high_bodies = bodies_since(&state.lock().expect("mock"), start);
-            let high_thinking =
-                budget_number(&high_bodies[0], "thinking_budget=").expect("high thinking");
-            let high_rounds = budget_number(&high_bodies[0], "tool_rounds=").expect("high rounds");
+            let high_thinking = budget_number(first_tool_request(&high_bodies), "thinking_budget=")
+                .expect("high thinking");
+            let high_rounds = budget_number(first_tool_request(&high_bodies), "tool_rounds=")
+                .expect("high rounds");
             assert!(high_thinking > low_thinking);
             assert!(high_rounds > low_rounds);
             let high_tool_requests = high_bodies
@@ -859,15 +855,12 @@ async fn shipped_agent_session_wire() {
                         .is_some_and(|parsed| has_tools(&parsed))
                 })
                 .count();
-            // The evidence stop is conversation-scoped, not per turn: the
-            // eight read-only results from the low turn are still in the
-            // window, so the follow-up read-only prompt is asked to finish
-            // immediately even though the advertised ceiling rose to
-            // {high_rounds}. A fresh session (the none phase below) re-arms
-            // the counter.
+            // A new human request re-arms evidence gathering, while its
+            // larger budget still cannot exceed the repeated-read churn cap.
             assert_eq!(
-                high_tool_requests, 0,
-                "a read-only follow-up on the same session must not resume tool looping"
+                high_tool_requests,
+                READ_ONLY_EVIDENCE_STOP.min(high_rounds as usize),
+                "a new request must re-arm evidence gathering within the churn cap"
             );
             oracle(
                 WIRE_TEST,
@@ -907,7 +900,8 @@ async fn shipped_agent_session_wire() {
             let budgeted = budgeted.await.expect("join").expect("none prompt");
             assert_eq!(budgeted.stop_reason, acp::StopReason::EndTurn);
             let none_bodies = bodies_since(&state.lock().expect("mock"), start);
-            let none_rounds = budget_number(&none_bodies[0], "tool_rounds=").expect("none rounds");
+            let none_rounds = budget_number(first_tool_request(&none_bodies), "tool_rounds=")
+                .expect("none rounds");
             assert_eq!(none_rounds, 4, "effort none advertises four tool rounds");
             let none_tool_requests = none_bodies
                 .iter()
@@ -1058,7 +1052,7 @@ async fn shipped_agent_session_wire() {
                 async move {
                     acp::Agent::prompt(
                         conn.as_ref(),
-                        user_prompt(&cancel_session, "CANCEL-ORACLE run the slow command"),
+                        user_prompt(&cancel_session, "/goal CANCEL-ORACLE run the slow command"),
                     )
                     .await
                 }
@@ -1092,6 +1086,10 @@ async fn shipped_agent_session_wire() {
                 .expect("cancel result");
             assert_eq!(cancelled.stop_reason, acp::StopReason::Cancelled);
             tokio::time::sleep(Duration::from_secs(5)).await;
+            let cancel_thread = a3s_code_core::fact_control::thread_for_session(cancel_session.0.as_ref());
+            let cancel_facts = a3s_code_core::fact_control::read_workspace_facts(&workspace, &cancel_thread).expect("cancel facts");
+            assert_eq!(cancel_facts.iter().filter(|fact| fact.kind == "a3s.goal.slice.admitted").count(), 1,
+                "cancelling the goal wake must not admit another slice");
             assert!(
                 !late_path.exists(),
                 "cancelled turn wrote the late side-effect file"
@@ -1165,14 +1163,25 @@ async fn shipped_agent_session_wire() {
             )
             .await
             .expect("goal set");
-            let goal_file =
-                std::fs::read_to_string(workspace.join(".a3s").join("durable-goal.json"))
-                    .expect("durable goal");
-            assert!(goal_file.contains("ship the durable objective"));
+            let goal_folder = a3s_code_core::session_folder::find_session_dir(
+                &workspace,
+                goal_session.0.as_ref(),
+            )
+            .expect("session folder lookup")
+            .expect("goal session folder");
+            let bound = goal_state(&agent, &goal_session).await;
+            assert_eq!(bound["definition"]["goal"]["description"], "ship the durable objective");
+            assert_eq!(bound["definition"]["plan_accepted"], true);
+            assert!(bound["work_policy_digest"].is_string());
+            assert!(!goal_folder.join("durable-goal.json").exists(), "new goals use original facts");
+            assert!(
+                !workspace.join(".a3s/durable-goal.json").exists(),
+                "a session goal must not become workspace-wide state"
+            );
             oracle(
                 WIRE_TEST,
-                "goal-file-and-quiet-verbs",
-                "status/pause/clear added 0 bodies; set stored the objective",
+                "goal-binding-and-quiet-verbs",
+                "status/pause/clear added 0 bodies; set bound the objective and policy in original facts",
             );
 
             // Two live sessions must stamp their own prompt ids. A shared
@@ -1289,6 +1298,109 @@ async fn shipped_agent_session_wire() {
             let _ = std::fs::remove_dir_all(&home);
         })
         .await;
+}
+
+#[test]
+fn shipped_tui_reports_an_exited_agent_before_the_connect_budget() {
+    let root = tempfile::tempdir().expect("fixture");
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let config = home.join("host.acl");
+    std::fs::write(&config, "default_model = \"missing/model\"\n").expect("host ACL");
+    let binary = tui_binary();
+    let home_text = home.to_string_lossy().to_string();
+    let config_text = config.to_string_lossy().to_string();
+    let env = [
+        ("HOME", home_text.as_str()),
+        ("A3S_HOME", home_text.as_str()),
+        ("A3S_CONFIG", config_text.as_str()),
+        ("A3S_ACP_AGENT_BIN", env!("CARGO_BIN_EXE_a3s-code-acp")),
+        ("A3S_CODE_CONNECT_TIMEOUT_SECS", "60"),
+    ];
+    let started = Instant::now();
+    let mut pty = open_pty_cleared(&binary, &[], &env, &workspace);
+    let status = loop {
+        if let Some(status) = pty.child.try_wait().expect("child status") {
+            break status;
+        }
+        if started.elapsed() >= Duration::from_secs(15) {
+            let screen = pty.screen();
+            let _ = pty.child.kill();
+            let _ = pty.child.wait();
+            panic!("an exited ACP agent must not consume the connect budget\n{screen}");
+        }
+        pty.pump(Duration::from_millis(40));
+    };
+    pty.drain();
+    let raw = String::from_utf8_lossy(&pty.raw);
+    assert!(!status.success(), "an invalid host catalog cannot start");
+    assert!(
+        raw.contains("agent connection closed before initialization"),
+        "{raw}"
+    );
+    assert!(
+        raw.contains("trusted ACL") && raw.contains("--config"),
+        "{raw}"
+    );
+    assert!(!raw.contains("startup timed out"), "{raw}");
+    oracle(
+        "shipped_tui_reports_an_exited_agent_before_the_connect_budget",
+        "agent-exit",
+        "configuration refusal closes startup with trusted-ACL guidance before the connect budget",
+    );
+}
+
+#[test]
+fn shipped_tui_keeps_a_bounded_wait_for_a_running_unresponsive_agent() {
+    let root = tempfile::tempdir().expect("fixture");
+    let agent = root.path().join("unresponsive-acp");
+    std::fs::write(&agent, "#!/bin/sh\nexec /bin/sleep 30\n").expect("agent fixture");
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    let agent_text = agent.to_string_lossy().to_string();
+    let binary = tui_binary();
+    for variable in [
+        "A3S_CODE_CONNECT_TIMEOUT_SECS",
+        "GROK_CONNECT_UI_TIMEOUT_SECS",
+    ] {
+        let home = root.path().join(variable);
+        std::fs::create_dir_all(&home).expect("home");
+        let home_text = home.to_string_lossy().to_string();
+        let env = [
+            ("HOME", home_text.as_str()),
+            ("A3S_HOME", home_text.as_str()),
+            ("A3S_ACP_AGENT_BIN", agent_text.as_str()),
+            (variable, "1"),
+        ];
+        let started = Instant::now();
+        let mut pty = open_pty_cleared(&binary, &[], &env, root.path());
+        let status = loop {
+            if let Some(status) = pty.child.try_wait().expect("child status") {
+                break status;
+            }
+            if started.elapsed() >= Duration::from_secs(22) {
+                let screen = pty.screen();
+                let _ = pty.child.kill();
+                let _ = pty.child.wait();
+                panic!("{variable} must retain the bounded startup wait\n{screen}");
+            }
+            pty.pump(Duration::from_millis(40));
+        };
+        pty.drain();
+        let raw = String::from_utf8_lossy(&pty.raw);
+        assert!(!status.success(), "an unresponsive agent cannot start");
+        assert!(raw.contains("startup timed out"), "{raw}");
+        assert!(
+            raw.contains("A3S_CODE_CONNECT_TIMEOUT_SECS=60 a3s code"),
+            "{raw}"
+        );
+    }
+    oracle(
+        "shipped_tui_keeps_a_bounded_wait_for_a_running_unresponsive_agent",
+        "live-agent-timeout",
+        "native and legacy overrides preserve the timeout and show the native retry command",
+    );
 }
 
 struct PtySession {
@@ -1675,35 +1787,19 @@ fn summary_for(home: &Path, session_id: &str) -> Option<PathBuf> {
     out
 }
 
-fn session_goal_file(workspace: &Path) -> Option<PathBuf> {
-    fn walk(dir: &Path, found: &mut Option<PathBuf>) {
-        if found.is_some() {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, found);
-            } else if path.file_name().and_then(|name| name.to_str()) == Some("durable-goal.json") {
-                *found = Some(path);
-                return;
-            }
+fn wait_goal_fact(pty: &mut PtySession, workspace: &Path, kind: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        pty.pump(Duration::from_millis(100));
+        if let Some(fact) = log_text(workspace)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|fact| fact["type"] == kind)
+        {
+            return fact;
         }
     }
-    let mut found = None;
-    walk(&workspace.join(".a3s").join("sessions"), &mut found);
-    found
-}
-
-fn read_session_goal(workspace: &Path) -> (Option<PathBuf>, String) {
-    let Some(path) = session_goal_file(workspace) else {
-        return (None, String::new());
-    };
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    (Some(path), text)
+    panic!("missing {kind} in original goal facts\n{}", pty.screen());
 }
 
 fn wait_file(path: &Path, timeout: Duration) -> String {
@@ -1720,10 +1816,15 @@ fn wait_file(path: &Path, timeout: Duration) -> String {
 }
 
 fn wait_body(state: &Arc<Mutex<MockState>>, needle: &str, timeout: Duration) -> String {
-    wait_body_all(state, &[needle], timeout)
+    wait_body_all(state, &[needle], timeout, false)
 }
 
-fn wait_body_all(state: &Arc<Mutex<MockState>>, needles: &[&str], timeout: Duration) -> String {
+fn wait_body_all(
+    state: &Arc<Mutex<MockState>>,
+    needles: &[&str],
+    timeout: Duration,
+    tools_only: bool,
+) -> String {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Some(body) = state
@@ -1732,7 +1833,12 @@ fn wait_body_all(state: &Arc<Mutex<MockState>>, needles: &[&str], timeout: Durat
             .bodies
             .iter()
             .rev()
-            .find(|body| needles.iter().all(|needle| body.contains(needle)))
+            .find(|body| {
+                needles.iter().all(|needle| body.contains(needle))
+                    && (!tools_only
+                        || serde_json::from_str::<serde_json::Value>(body)
+                            .is_ok_and(|value| has_tools(&value)))
+            })
         {
             return body.clone();
         }
@@ -1747,6 +1853,31 @@ fn wait_body_all(state: &Arc<Mutex<MockState>>, needles: &[&str], timeout: Durat
         .unwrap_or_default();
     let excerpt: String = last.chars().take(400).collect();
     panic!("no model request contained {needles:?}\nlast body: {excerpt}");
+}
+
+fn wait_prompt_response(pty: &mut PtySession, trace: &Path, prompt: &str) {
+    let digest =
+        a3s_code_core::content_digest::digest_bytes("a3s.test.tui-prompt.v1", prompt.as_bytes());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(trace) {
+            for row in text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            {
+                if row["kind"] == "prompt-response" && row["prompt_digest"] == digest {
+                    assert!(row["error_code"].is_null(), "prompt failed: {row}");
+                    assert_eq!(
+                        row["stop_reason"], "end_turn",
+                        "prompt did not settle: {row}"
+                    );
+                    return;
+                }
+            }
+        }
+        pty.pump(Duration::from_millis(50));
+    }
+    panic!("no original ACP response for {prompt}: {}", pty.screen());
 }
 
 fn looks_like_session_id(token: &str) -> bool {
@@ -2269,6 +2400,34 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     );
     exercise_marker_navigation(&env, &resume_ws, &seeded_id, resume_marker, &state);
 
+    let proxy =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/tui_913_real_llm/acp_trace_proxy.py");
+    let relay = home.join("interactive-acp-relay");
+    std::fs::write(
+        &relay,
+        format!(
+            "#!/bin/sh\nexec /usr/bin/python3 '{}' \"$@\"\n",
+            proxy.display().to_string().replace('\'', "'\\''")
+        ),
+    )
+    .expect("trace relay");
+    std::fs::set_permissions(&relay, std::fs::Permissions::from_mode(0o755))
+        .expect("relay executable");
+    let trace = home.join("interactive-acp-trace.jsonl");
+    let mut interactive_owned = owned.clone();
+    interactive_owned.retain(|(key, _)| key != "A3S_ACP_AGENT_BIN");
+    interactive_owned.extend([
+        ("A3S_ACP_AGENT_BIN".into(), relay.display().to_string()),
+        ("A3S_CODE_TUI_TEST_ACP_REAL".into(), acp_bin.into()),
+        (
+            "A3S_CODE_TUI_TEST_ACP_TRACE".into(),
+            trace.display().to_string(),
+        ),
+    ]);
+    let env: Vec<(&str, &str)> = interactive_owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
     let args = vec!["--cwd", workspace.to_str().expect("cwd")];
     let mut pty = open_pty(&binary, &args, &env, &workspace);
     pty.wait_for_frame(Duration::from_secs(45));
@@ -2357,123 +2516,88 @@ fn shipped_tui_launch_resume_and_visible_commands() {
     );
     oracle(PTY_TEST, "compact-empty", "Nothing to compact yet");
 
-    // Set stores the objective and starts one model turn. Pause and clear
-    // report their own result and must not start another.
-    let mut product_prompts = 0u64;
-    let mut goal_path = workspace.join(".a3s").join("sessions");
+    // A new explicit goal uses Core facts and the default bounded driver.
     pty.write_bytes(b"\x15");
     pty.type_text(&format!("/goal {GOAL_OBJECTIVE}"));
     pty.enter();
-    let goal_deadline = Instant::now() + Duration::from_secs(25);
-    let mut stored = String::new();
-    let mut saw_goal_turn = false;
-    while Instant::now() < goal_deadline {
-        pty.pump(Duration::from_millis(100));
-        saw_goal_turn = state
-            .lock()
-            .expect("mock")
-            .bodies
-            .iter()
-            .any(|body| body.contains(GOAL_OBJECTIVE));
-        let (path, text) = read_session_goal(&workspace);
-        if let Some(path) = path {
-            goal_path = path;
-        }
-        stored = text;
-        if saw_goal_turn && stored.contains(GOAL_OBJECTIVE) {
-            break;
-        }
-    }
+    let created = wait_goal_fact(&mut pty, &workspace, "a3s.goal.created");
+    assert!(created.to_string().contains(GOAL_OBJECTIVE));
+    let stopped = pty.wait_for("Durable goal tick: needs_input", Duration::from_secs(30));
     assert!(
-        saw_goal_turn && stored.contains(GOAL_OBJECTIVE) && stored.contains("\"paused\": false"),
-        "goal set did not store the objective or start its turn: {stored:?}"
+        stopped.contains("Durable goal tick: needs_input"),
+        "{stopped}"
     );
-    pty.pump(Duration::from_millis(800));
-    product_prompts += 1;
-    oracle(PTY_TEST, "goal-set", GOAL_OBJECTIVE);
+    let first_goal_body = wait_body(&state, GOAL_OBJECTIVE, Duration::from_secs(5));
+    assert!(first_goal_body.contains("Engineering discipline"));
+    oracle(
+        PTY_TEST,
+        "goal-set",
+        "default policy and native goal; stopped at the no-progress bound",
+    );
+
     let bodies_before_pause = state.lock().expect("mock").bodies.len();
     pty.write_bytes(b"\x15");
     pty.type_text("/goal pause");
     pty.enter();
+    wait_goal_fact(&mut pty, &workspace, "a3s.goal.paused");
     let paused = pty.wait_for("Durable goal paused:", Duration::from_secs(8));
-    assert!(
-        paused.contains("Durable goal paused:") && paused.contains(GOAL_OBJECTIVE),
-        "goal pause did not report the stored objective\n{paused}"
+    assert!(paused.contains(GOAL_OBJECTIVE), "{paused}");
+    assert_eq!(
+        state.lock().expect("mock").bodies.len(),
+        bodies_before_pause
     );
-    let (paused_path, paused_file) = read_session_goal(&workspace);
-    if let Some(path) = paused_path {
-        goal_path = path;
-    }
+    oracle(
+        PTY_TEST,
+        "goal-pause",
+        "persisted pause, zero model requests",
+    );
+
+    pty.write_bytes(b"\x15");
+    pty.type_text("/goal resume");
+    pty.enter();
+    wait_goal_fact(&mut pty, &workspace, "a3s.goal.resumed");
+    let resumed = pty.wait_for("Durable goal tick: needs_input", Duration::from_secs(8));
     assert!(
-        paused_file.contains(GOAL_OBJECTIVE) && paused_file.contains("\"paused\": true"),
-        "goal pause did not persist the paused objective: {paused_file}"
+        resumed.contains("Durable goal tick: needs_input"),
+        "{resumed}"
     );
     assert_eq!(
         state.lock().expect("mock").bodies.len(),
         bodies_before_pause,
-        "/goal pause started a model turn"
+        "resume must not reset the no-progress count"
     );
-    oracle(PTY_TEST, "goal-pause", "paused=true, zero model requests");
-    let bodies_before_resume = state.lock().expect("mock").bodies.len();
-    pty.write_bytes(b"\x15");
-    pty.type_text("/goal resume");
-    pty.enter();
-    let resume_deadline = Instant::now() + Duration::from_secs(25);
-    let mut resumed_file = String::new();
-    let mut saw_resume_turn = false;
-    while Instant::now() < resume_deadline {
-        pty.pump(Duration::from_millis(100));
-        saw_resume_turn = state.lock().expect("mock").bodies.iter().any(|body| {
-            body.contains("Continue this durable goal") && body.contains(GOAL_OBJECTIVE)
-        });
-        let (path, text) = read_session_goal(&workspace);
-        if let Some(path) = path {
-            goal_path = path;
-        }
-        resumed_file = text;
-        if saw_resume_turn
-            && resumed_file.contains(GOAL_OBJECTIVE)
-            && resumed_file.contains("\"paused\": false")
-        {
-            break;
-        }
-    }
-    assert!(
-        saw_resume_turn
-            && resumed_file.contains(GOAL_OBJECTIVE)
-            && resumed_file.contains("\"paused\": false"),
-        "goal resume did not clear paused or continue the objective: {resumed_file:?}"
+    oracle(
+        PTY_TEST,
+        "goal-resume",
+        "resumed posture; the existing no-progress bound still stops execution",
     );
-    assert!(
-        state.lock().expect("mock").bodies.len() > bodies_before_resume,
-        "/goal resume did not send the continuation prompt"
-    );
-    product_prompts += 1;
-    oracle(PTY_TEST, "goal-resume", "paused=false continuation-sent");
-    let bodies_before_clear = state.lock().expect("mock").bodies.len();
+
     pty.write_bytes(b"\x15");
     pty.type_text("/goal clear");
     pty.enter();
-    let cleared = pty.wait_for("Cleared the durable goal.", Duration::from_secs(8));
-    assert!(
-        cleared.contains("Cleared the durable goal."),
-        "goal clear did not report\n{cleared}"
-    );
-    let clear_deadline = Instant::now() + Duration::from_secs(4);
-    while goal_path.exists() && Instant::now() < clear_deadline {
-        pty.pump(Duration::from_millis(80));
-    }
-    assert!(
-        !goal_path.exists(),
-        "goal clear left {}",
-        goal_path.display()
-    );
+    wait_goal_fact(&mut pty, &workspace, "a3s.goal.cancelled");
+    let cleared = pty.wait_for("Durable goal cancelled:", Duration::from_secs(8));
+    assert!(cleared.contains(GOAL_OBJECTIVE), "{cleared}");
     assert_eq!(
         state.lock().expect("mock").bodies.len(),
-        bodies_before_clear,
-        "/goal clear started a model turn"
+        bodies_before_pause
     );
-    oracle(PTY_TEST, "goal-clear", "file removed, zero model requests");
+    assert!(
+        log_text(&workspace).contains("a3s.goal.created"),
+        "clear retains the original history"
+    );
+    oracle(
+        PTY_TEST,
+        "goal-clear",
+        "cancelled in original facts; history retained, zero model requests",
+    );
+
+    // A terminal bound goal stays bound; ordinary work starts in a fresh session.
+    pty.write_bytes(b"\x15");
+    pty.type_text("/new");
+    pty.enter();
+    pty.pump(Duration::from_millis(600));
+    let mut product_prompts = 0u64;
 
     // Export skips system chrome. A user turn has to exist or the command
     // reports an empty transcript and writes nothing. This stays before
@@ -2782,9 +2906,11 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         &state,
         &["EFFORT-LOW-PROBE", "thinking_budget=", COMPACT_SUMMARY],
         Duration::from_secs(20),
+        true,
     );
     let low_thinking = budget_number(&low_body, "thinking_budget=").expect("tui low thinking");
     let low_rounds = budget_number(&low_body, "tool_rounds=").expect("tui low rounds");
+    wait_prompt_response(&mut pty, &trace, "EFFORT-LOW-PROBE");
     pty.write_bytes(b"\x15");
     pty.type_text("/effort high");
     pty.enter();
@@ -2796,12 +2922,14 @@ fn shipped_tui_launch_resume_and_visible_commands() {
         &state,
         &["EFFORT-HIGH-PROBE", "thinking_budget="],
         Duration::from_secs(20),
+        true,
     );
     let high_thinking = budget_number(&high_body, "thinking_budget=").expect("tui high thinking");
     let high_rounds = budget_number(&high_body, "tool_rounds=").expect("tui high rounds");
+    wait_prompt_response(&mut pty, &trace, "EFFORT-HIGH-PROBE");
     assert!(
         high_thinking > low_thinking,
-        "tui effort did not change thinking budget"
+        "tui effort did not change thinking budget: low={low_thinking}/{low_rounds}, high={high_thinking}/{high_rounds}"
     );
     assert!(
         high_rounds > low_rounds,

@@ -1,10 +1,12 @@
-use super::AgentLoop;
 use crate::hooks::{
-    ErrorType, HookEvent, HookOutcome, OnErrorEvent, PermissionRequestEvent, PlanningStrategy,
-    PostCompactEvent, PostPlanningEvent, PostResponseEvent, PostToolUseEvent, PreCompactEvent,
-    PrePlanningEvent, PreToolUseEvent, TokenUsageInfo, ToolResultData,
+    ErrorType, HookEvent, HookOutcome, OnErrorEvent, PermissionRequestEvent, PostCompactEvent,
+    PostResponseEvent, PostToolUseEvent, PreCompactEvent, PreToolUseEvent, TokenUsageInfo,
+    ToolResultData,
 };
+#[cfg(test)]
+use crate::hooks::{PlanningStrategy, PostPlanningEvent, PrePlanningEvent};
 use crate::llm::TokenUsage;
+#[cfg(test)]
 use crate::planning::ExecutionPlan;
 use crate::safety_gate::HookDenialFeedback;
 use anyhow::{bail, Result};
@@ -156,6 +158,7 @@ impl crate::agent::TurnEngine {
     ///
     /// This is a blocking hook point: policy engines can stop planning before
     /// PlanningStart is emitted and before the planning phase chooses a plan.
+    #[cfg(test)]
     pub(super) async fn fire_pre_planning(
         &self,
         session_id: &str,
@@ -207,6 +210,7 @@ impl crate::agent::TurnEngine {
     }
 
     /// Fire PostPlanning hook after a plan has been generated or failed.
+    #[cfg(test)]
     pub(super) async fn fire_post_planning(
         &self,
         session_id: &str,
@@ -236,6 +240,7 @@ impl crate::agent::TurnEngine {
         }
     }
 
+    #[cfg(test)]
     fn planning_strategy_for_plan(plan: &ExecutionPlan) -> PlanningStrategy {
         if plan.steps.iter().any(|step| !step.dependencies.is_empty()) {
             PlanningStrategy::GraphPlanning
@@ -389,6 +394,7 @@ fn normalize_permission_outcome(outcome: HookOutcome) -> PermissionHookDecision 
     }
 }
 
+#[cfg(test)]
 fn apply_pre_planning_modifications(
     task_description: &str,
     modified: Option<serde_json::Value>,
@@ -434,6 +440,7 @@ fn apply_pre_planning_modifications(
     sections.join("\n\n")
 }
 
+#[cfg(test)]
 fn first_string(
     object: &serde_json::Map<String, serde_json::Value>,
     keys: &[&str],
@@ -448,6 +455,7 @@ fn first_string(
     })
 }
 
+#[cfg(test)]
 fn planning_hints(value: Option<&serde_json::Value>) -> Option<String> {
     match value? {
         serde_json::Value::String(value) if !value.trim().is_empty() => {

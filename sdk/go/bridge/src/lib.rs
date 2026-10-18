@@ -82,6 +82,7 @@ pub const BRIDGE_OPERATIONS: &[&str] = &[
     "session_task_scheduler_health",
     "session_model_generation_pool_health",
     "session_model_middleware_health",
+    "session_context_report",
     "session_memory_maintenance_health",
     "session_workspace_retrieval_status",
     "session_semantic_search",
@@ -1120,6 +1121,11 @@ impl BridgeState {
                     .model_middleware_health();
                 encode(health)
             }
+            "session_context_report" => encode(
+                self.request_session(&request.params)
+                    .await?
+                    .context_report()?,
+            ),
             "session_memory_maintenance_health" => {
                 let health = self
                     .request_session(&request.params)
@@ -3464,6 +3470,7 @@ struct BridgeSessionOptions {
     security_provider: Option<BridgeDefaultSecurityProvider>,
     default_security: Option<bool>,
     workspace_backend: Option<BridgeWorkspaceBackend>,
+    workspace_read_overlay: Option<HashMap<String, String>>,
     remote_git: Option<BridgeRemoteGitConfig>,
     workspace_retrieval: Option<BridgeWorkspaceRetrievalOptions>,
     immutable_content_adapter: Option<BridgeImmutableContentAdapterOptions>,
@@ -3671,6 +3678,11 @@ impl BridgeSessionOptions {
         }
         if self.security_provider.is_some() || self.default_security.unwrap_or(false) {
             options = options.with_default_security();
+        }
+        if let Some(files) = self.workspace_read_overlay {
+            let snapshot = a3s_code_core::workspace::WorkspaceReadOverlaySnapshot::new(files)
+                .map_err(|error| BridgeFailure::new("INVALID_REQUEST", error.to_string()))?;
+            options = options.with_workspace_read_overlay(Arc::new(snapshot));
         }
         if let Some(value) = self.workspace_backend {
             let services = match value.kind.trim().to_ascii_lowercase().as_str() {

@@ -1,4 +1,4 @@
-use super::{context_perception, project_context, AgentEvent, AgentLoop};
+use super::{context_perception, project_context, AgentEvent};
 use crate::context::{
     ContextAssembler, ContextAssembly, ContextItem, ContextProviderFailureMode, ContextQuery,
     ContextResult, ContextType,

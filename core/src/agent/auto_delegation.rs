@@ -1,10 +1,15 @@
-use super::{AgentEvent, AgentLoop};
+#[cfg(test)]
+use super::AgentEvent;
 use crate::subagent::{AgentDefinition, AgentRegistry};
+#[cfg(test)]
 use anyhow::Result;
 use serde_json::{json, Value};
+#[cfg(test)]
 use tokio::sync::mpsc;
+#[cfg(test)]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
 const SYNTHESIS_CONTINUATION_MARKER: &str = "[synthesis]";
 
 #[derive(Debug, Clone)]
@@ -18,9 +23,11 @@ struct AutoDelegationTask {
 #[derive(Debug, Clone)]
 struct AutoDelegationPlan {
     tasks: Vec<AutoDelegationTask>,
+    #[cfg(test)]
     reason: String,
 }
 
+#[cfg(test)]
 pub(super) struct AutoDelegationOutcome {
     pub prompt: String,
     pub tool_calls_count: usize,
@@ -58,11 +65,13 @@ impl crate::agent::TurnEngine {
             .get(&target)
             .and_then(|agent| score_agent_for_prompt(&agent, prompt, Some(&target)))?;
         Some(AutoDelegationPlan {
+            #[cfg(test)]
             reason: "explicit agent named in the request".to_string(),
             tasks: vec![task],
         })
     }
 
+    #[cfg(test)]
     pub(super) async fn maybe_apply_auto_delegation(
         &self,
         prompt: &str,
@@ -166,6 +175,7 @@ impl crate::agent::TurnEngine {
             return None;
         }
         Some(AutoDelegationPlan {
+            #[cfg(test)]
             reason: if candidates.len() > 1 {
                 "multiple high-confidence independent specialist matches".to_string()
             } else {
@@ -176,6 +186,7 @@ impl crate::agent::TurnEngine {
     }
 }
 
+#[cfg(test)]
 fn prompt_allows_auto_delegation(prompt: &str) -> bool {
     !prompt
         .trim_start()

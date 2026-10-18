@@ -1,5 +1,4 @@
 use super::execution_state::ExecutionLoopState;
-use super::AgentLoop;
 use crate::llm::{Attachment, Message, ToolResultTrustV1};
 use crate::tools::{ToolErrorKind, ToolResult};
 use crate::verification::VerificationReport;

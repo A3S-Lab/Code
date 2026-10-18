@@ -285,8 +285,13 @@ class A3SCodeAcpAgent(AcpAgent):
                 value = self._get_env(env)
                 if value:
                     args += [flag, value]
-            if self._get_env(self.GOAL_CONTINUATION_ENV) == "1":
+            goal = self._get_env(self.GOAL_CONTINUATION_ENV)
+            if goal == "1":
                 args.append("--goal-continuation")
+            elif goal == "0":
+                args.append("--no-goal-continuation")
+            elif goal:
+                raise ValueError(f"{self.GOAL_CONTINUATION_ENV} requires 0 or 1")
             target = target.model_copy(update={"args": args})
         return super()._build_launcher_script(kind, target)
 

@@ -929,8 +929,18 @@ impl acp::Agent for A3sCodeAgent {
         &self,
         args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
-        let host = crate::host_context::studio_host_from_meta(args.meta.as_ref())
+        let mut host = crate::host_context::studio_host_from_meta(args.meta.as_ref())
             .map_err(|error| acp::Error::invalid_params().data(error))?;
+        if !args
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta.contains_key("a3sEngineering"))
+        {
+            host.work_policy = Some(
+                crate::engineering::named_policy("engineering-v1")
+                    .map_err(|error| acp::Error::internal_error().data(error))?,
+            );
+        }
         self.validate_plugin_selection(args.meta.as_ref(), &args.mcp_servers)?;
         self.admit_studio_documents(args.meta.as_ref());
         let session_id = uuid::Uuid::new_v4().to_string();

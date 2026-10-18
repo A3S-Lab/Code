@@ -6,6 +6,11 @@ use serde_json::json;
 #[test]
 fn explicit_policy_is_validated_and_omission_keeps_defaults() {
     assert!(policy_from_meta(None).unwrap().is_none());
+    assert!(
+        policy_from_meta(json!({"a3sEngineering":{"policy":"none"}}).as_object())
+            .unwrap()
+            .is_none()
+    );
     assert!(policy_from_meta(json!({"unrelated":true}).as_object())
         .unwrap()
         .is_none());

@@ -77,8 +77,15 @@ func TestRustBridgeGoalSurface(t *testing.T) {
 			t.Fatalf("policy %v: %v", policy, err)
 		}
 		digest, err := session.WorkPolicyDigest(ctx)
-		if err != nil || digest != nil {
-			t.Fatalf("unadmitted policy digest = %v, %v", digest, err)
+		if err != nil || (policy == nil && digest != nil) || (policy != nil && (digest == nil || *digest == "")) {
+			t.Fatalf("session-admitted policy digest = %v, %v", digest, err)
+		}
+		again, err := session.WorkPolicyDigest(ctx)
+		if err != nil || (digest == nil) != (again == nil) || (digest != nil && *digest != *again) {
+			t.Fatalf("policy digest changed without a Run: %v, %v", again, err)
+		}
+		if run, err := session.CurrentRun(ctx); err != nil || run != nil {
+			t.Fatalf("policy admission started a Run: %#v, %v", run, err)
 		}
 		if err := session.Close(ctx); err != nil {
 			t.Fatal(err)

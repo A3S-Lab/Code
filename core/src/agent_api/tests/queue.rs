@@ -206,6 +206,7 @@ async fn session_close_rejects_and_clears_every_pending_confirmation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn session_close_settles_a_stream_blocked_on_confirmation() {
+    let workspace = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let (event_tx, _) = tokio::sync::broadcast::channel(8);
     let manager = Arc::new(crate::hitl::ConfirmationManager::new(
@@ -220,24 +221,30 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
     let client = Arc::new(ScriptedStreamingClient::new(vec![
         scripted_tool_call_response(
             "tool-close-stream",
-            "bash",
-            serde_json::json!({"command": "echo must-not-run"}),
+            "write",
+            serde_json::json!({"file_path": "must-not-write.txt", "content": "denied"}),
         ),
         scripted_text_response("must not continue"),
     ]));
     let responses = client.responses.clone();
     let session = agent
-        .build_session("/tmp/test-close-stream-confirmation".into(), client, &opts)
+        .build_session(workspace.path().display().to_string(), client, &opts)
         .unwrap();
 
     let (mut rx, handle) = session.stream("run a command", None).await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while manager.pending_count().await != 1 {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .expect("the tool confirmation must become pending");
+    .await;
+    if pending.is_err() {
+        let mut observed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            observed.push(event);
+        }
+        panic!("the tool confirmation must become pending: {observed:?}");
+    }
     let run_id = session.current_run().await.unwrap().id().to_string();
     session.close().await;
     tokio::time::timeout(std::time::Duration::from_secs(1), handle)
@@ -260,7 +267,7 @@ async fn session_close_settles_a_stream_blocked_on_confirmation() {
             tool_id,
             tool_name,
             ..
-        } if tool_id == "tool-close-stream" && tool_name == "bash"
+        } if tool_id == "tool-close-stream" && tool_name == "write"
     )));
     // A cancelled full host FIFO preserves its queued prefix. The exact
     // confirmation result remains observable through this original Run.

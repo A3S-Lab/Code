@@ -286,7 +286,7 @@ async fn admitted_findings_are_saved_and_a_new_host_reregisters_explicit_scenari
     drop(host);
 
     for (with_policy, expected) in [
-        (false, vec![]),
+        (false, vec!["a-1".to_string(), "a-2".to_string()]),
         (true, vec!["a-1".to_string(), "a-2".to_string()]),
     ] {
         let next = A3sCodeAgent::new(launch.clone());
@@ -343,7 +343,14 @@ async fn review_admission_binds_session_policy_and_current_target_bytes_without_
     .await
     .unwrap();
     let plain = host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap()
         .session_id;

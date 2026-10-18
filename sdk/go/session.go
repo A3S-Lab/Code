@@ -153,6 +153,17 @@ func (session *Session) Info(ctx context.Context) (SessionInfo, error) {
 	return result, err
 }
 
+// ContextReport returns the original session's provider usage and tool-result weights.
+func (session *Session) ContextReport(ctx context.Context) (SessionContextReport, error) {
+	const op = "session_context_report"
+	if err := validateSession(session, ctx, op); err != nil {
+		return SessionContextReport{}, err
+	}
+	var result SessionContextReport
+	err := session.runtime.Request(ctx, op, session.params(), &result)
+	return result, err
+}
+
 // TaskSchedulerStats returns current occupancy of the Agent-wide priority
 // scheduler shared by this session and its siblings.
 func (session *Session) TaskSchedulerStats(ctx context.Context) (TaskSchedulerStats, error) {

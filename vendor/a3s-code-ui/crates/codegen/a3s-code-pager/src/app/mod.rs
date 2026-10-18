@@ -1018,7 +1018,9 @@ pub async fn run(
     if let Some(ref t) = session_title {
         set_terminal_title(t);
     }
-    let connect_ui_timeout_env = std::env::var(connect_timeout::CONNECT_UI_TIMEOUT_ENV).ok();
+    let connect_ui_timeout_env = std::env::var(connect_timeout::CONNECT_UI_TIMEOUT_ENV)
+        .or_else(|_| std::env::var(connect_timeout::LEGACY_CONNECT_UI_TIMEOUT_ENV))
+        .ok();
     let connect_ui_timeout = connect_timeout::resolve(
         connect_ui_timeout_env.as_deref(),
         a3s_code_shell::managed_config::startup_profile(),

@@ -1,86 +1,30 @@
 #!/bin/bash
-# Setup for building the Code workspace standalone in CI.
-# Replaces path dependencies with crates.io versions so we don't need
-# the full monorepo.
-
+# Remove SDK-only monorepo patches; keep the published workspace intact.
 set -euo pipefail
 
-echo "Replacing path dependencies with crates.io versions..."
-
-# core/Cargo.toml — internal crate deps
-sed -i.bak \
-  -e 's|a3s-common = { version = "0.1.1", path = "../../common" }|a3s-common = "0.1.1"|' \
-  -e 's|a3s-common = { version = "0.1", path = "../../common" }|a3s-common = "0.1.1"|' \
-  -e 's|a3s-memory = { version = "0.1.2", path = "../../memory" }|a3s-memory = "0.1.2"|' \
-  -e 's|a3s-memory = { version = "0.1.1", path = "../../memory" }|a3s-memory = "0.1.1"|' \
-  -e 's|a3s-lane = { version = "0.5", path = "../../lane" }|a3s-lane = "0.5"|' \
-  -e 's|a3s-lane = { version = "0.4", path = "../../lane" }|a3s-lane = "0.4"|' \
-  -e 's|a3s-search = { version = "2.1.2", path = "../../search", default-features = false }|a3s-search = { version = "2.1.2", default-features = false }|' \
-  -e 's|a3s-search = { version = "2.1.0", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "2.1.0", default-features = false, features = ["lightpanda"] }|' \
-  -e 's|a3s-search = { version = "1.4.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.4.3", default-features = false, features = ["lightpanda"] }|' \
-  -e 's|a3s-search = { version = "1.3.0", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.3.0", default-features = false, features = ["lightpanda"] }|' \
-  -e 's|a3s-search = { version = "1.2.3", path = "../../search", default-features = false, features = \["lightpanda"\] }|a3s-search = { version = "1.2.3", default-features = false, features = ["lightpanda"] }|' \
-  -e 's|a3s-flow = { version = "0.4.3", path = "../../flow" }|a3s-flow = "0.4.3"|' \
-  -e 's|a3s-flow = { version = "0.4.2", path = "../../flow" }|a3s-flow = "0.4.2"|' \
-  -e 's|a3s-effect = "0.1.0"|a3s-effect = { version = "0.1.1", git = "https://github.com/A3S-Lab/Effect.git", rev = "08a11f782190cf8f83e034064dd018a3f99ec9e1" }|' \
-  -e 's|a3s-box-sdk = { version = "0.7", path = "../../box/src/sdk", optional = true }|a3s-box-sdk = { version = "0.7", optional = true }|' \
-  -e 's|a3s-sandbox = { version = "=0.1.3", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.3", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "b8440ba0eae2647813d42de2b295b2f0c0ff3ec1" }|' \
-  -e 's|a3s-sandbox = { version = "0.1.3", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.3", git = "https://github.com/A3S-Lab/Sandbox.git", rev = "b8440ba0eae2647813d42de2b295b2f0c0ff3ec1" }|' \
-  -e 's|a3s-sandbox = { version = "=0.1.2", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.2" }|' \
-  -e 's|a3s-sandbox = { version = "0.1.2", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.2" }|' \
-  -e 's|a3s-sandbox = { version = "=0.1.1", path = "../../sandbox" }|a3s-sandbox = { version = "=0.1.1" }|' \
-  -e 's|a3s-sandbox = { version = "0.1.1", path = "../../sandbox" }|a3s-sandbox = { version = "0.1.1" }|' \
-  core/Cargo.toml
-rm -f core/Cargo.toml.bak
-
-# sdk/go/bridge — same a3s-effect treatment: the published 0.1.0 predates the
-# 9.1.0 trait surface that core (and therefore this bridge) compiles against.
-sed -i.bak \
-  -e 's|a3s-effect = "0.1.0"|a3s-effect = { version = "0.1.1", git = "https://github.com/A3S-Lab/Effect.git", rev = "08a11f782190cf8f83e034064dd018a3f99ec9e1" }|' \
-  sdk/go/bridge/Cargo.toml
-rm -f sdk/go/bridge/Cargo.toml.bak
-
-if grep -nE 'a3s-effect = "0.1.0"' core/Cargo.toml sdk/go/bridge/Cargo.toml; then
-  echo "setup-workspace left an unpatched a3s-effect 0.1.0 dependency" >&2
-  exit 1
-fi
-
-# Fail closed if any monorepo-sibling path deps remain. Standalone CI checkouts
-# do not include crates next to Code, so unresolved path deps break fmt/clippy.
-if grep -nE 'path = "\.\./\.\./[^"]+"' core/Cargo.toml; then
-  echo "setup-workspace left monorepo path dependencies in core/Cargo.toml" >&2
-  exit 1
-fi
-
-echo "Path dependencies replaced. Ready to build."
-
-# Workspace [patch] tables point at monorepo siblings (../apofasi, ../sandbox,
-# ../vec). This checkout does not have those directories. Drop the tables so
-# Cargo uses the git and crates.io dependencies declared in core/Cargo.toml.
-python3 - <<'PY'
+python3 - <<'PYTHON'
+import re
 from pathlib import Path
 
-for path in (Path("Cargo.toml"), Path("sdk/node/Cargo.toml"), Path("sdk/python/Cargo.toml")):
-    text = path.read_text()
-    marker = "\n[patch."
-    start = text.find(marker)
-    if start == -1:
-        raise SystemExit(f"expected monorepo [patch] tables in {path}")
-    path.write_text(text[:start].rstrip() + "\n")
-    print(f"removed monorepo path patches from {path}")
-
-# a3s-code-acp depends on a3s-okf and a3s-use-reconcile, which exist only in
-# the A3S OS monorepo. ACP builds from apps/code there (manual/TERMINAL_BENCH.md).
-root = Path("Cargo.toml")
-text = root.read_text()
-member = '    "acp",\n'
-if member not in text:
-    raise SystemExit("expected the acp workspace member in Cargo.toml")
-root.write_text(text.replace(member, "", 1))
-print("removed the monorepo-only acp member from Cargo.toml")
-PY
-
-if grep -nE 'path = "\.\./' Cargo.toml; then
-  echo "setup-workspace left a sibling path in Cargo.toml" >&2
-  exit 1
-fi
+root = Path.cwd().resolve()
+for relative in ("Cargo.toml", "core/Cargo.toml", "acp/Cargo.toml",
+                 "sdk/go/bridge/Cargo.toml", "sdk/node/Cargo.toml", "sdk/python/Cargo.toml"):
+    path = Path(relative)
+    original = path.read_text()
+    kept = []
+    dropping = False
+    for line in original.splitlines(keepends=True):
+        if line.lstrip().startswith("["):
+            dropping = line.lstrip().startswith("[patch.")
+        if not dropping:
+            kept.append(line)
+    text = "".join(kept)
+    for source in re.findall(r'\bpath\s*=\s*"([^"\n]+)"', text):
+        resolved = (path.parent / source).resolve()
+        if resolved != root and root not in resolved.parents:
+            raise SystemExit(f"{relative}: dependency path escapes standalone workspace: {source}")
+    if text != original:
+        path.write_text(text)
+        print(f"removed monorepo patches from {relative}")
+print("standalone workspace keeps Core, ACP and the Go bridge")
+PYTHON

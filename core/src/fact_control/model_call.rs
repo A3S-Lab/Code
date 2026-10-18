@@ -494,8 +494,9 @@ pub(super) async fn read_model_response(
             if surface.cancel.is_cancelled() {
                 return Ok(interrupted_response());
             }
-            if crate::llm::non_retryable_llm_error_message(&error).is_some() {
-                return Err(model_error(error));
+            let failure = model_error(error);
+            if matches!(failure, ActorError::Defect(_)) {
+                return Err(failure);
             }
             let response = client
                 .complete(messages, system, tools)

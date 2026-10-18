@@ -11,6 +11,69 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[tokio::test]
+async fn new_sessions_default_to_engineering_and_reopen_preserves_selection() {
+    for disabled in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut launch = super::test_launch(Some(root.path().join("store")));
+        launch.workspace = root.path().into();
+        let host = A3sCodeAgent::new(launch.clone());
+        let mut request = acp::NewSessionRequest::new(root.path());
+        if disabled {
+            request = request.meta(
+                serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        }
+        let id = host.new_session(request).await.unwrap().session_id;
+        let session = host
+            .sessions
+            .lock()
+            .await
+            .get(id.0.as_ref())
+            .unwrap()
+            .session
+            .clone();
+        let expected = if disabled {
+            None
+        } else {
+            Some(
+                crate::engineering::named_policy("engineering-v1")
+                    .unwrap()
+                    .digest()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(session.work_policy_digest().unwrap(), expected);
+        assert!(
+            session.goal_definition().unwrap().is_none(),
+            "an ordinary session creates no goal"
+        );
+        session.save().await.unwrap();
+        session.close().await;
+        drop(session);
+        drop(host);
+        let reopened = A3sCodeAgent::new(launch);
+        reopened
+            .load_session(acp::LoadSessionRequest::new(id.clone(), root.path()))
+            .await
+            .unwrap();
+        let session = reopened
+            .sessions
+            .lock()
+            .await
+            .get(id.0.as_ref())
+            .unwrap()
+            .session
+            .clone();
+        assert_eq!(session.work_policy_digest().unwrap(), expected);
+        assert!(session.goal_definition().unwrap().is_none());
+        session.close().await;
+    }
+}
+
 fn selected_meta() -> acp::Meta {
     serde_json::json!({"a3sEngineering":{"policy":"engineering-v1"},
         "a3sHost":{"role":"ENGINEERING-HOST-ROLE","guidelines":"KEEP-HOST-GUIDANCE","outputLanguage":"zh-CN"}})

@@ -434,8 +434,8 @@ mod session_queue_api;
 
 mod session_capabilities;
 
-mod session_host_contract;
 mod session_goal;
+mod session_host_contract;
 mod session_options_release;
 mod session_release_contract;
 

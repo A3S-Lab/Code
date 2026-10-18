@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::tests::test_config;
 use super::*;
 use crate::store::MemorySessionStore;
@@ -11,33 +13,48 @@ fn replacement_options(store: Arc<MemorySessionStore>, model: &str) -> SessionOp
 
 #[tokio::test]
 async fn replacement_is_atomic_and_keeps_the_session_id() {
-    let agent = Agent::from_config(test_config()).await.unwrap();
-    let store = Arc::new(MemorySessionStore::new());
-    let session_id = "atomic-session-replacement";
-    let current = agent
-        .session_async(
-            "/tmp/atomic-session-replacement",
-            Some(
-                replacement_options(Arc::clone(&store), "anthropic/claude-sonnet-4-20250514")
-                    .with_session_id(session_id),
-            ),
-        )
-        .await
-        .unwrap();
+    for with_policy in [false, true] {
+        let agent = Agent::from_config(test_config()).await.unwrap();
+        let store = Arc::new(MemorySessionStore::new());
+        let session_id = "atomic-session-replacement";
+        let root = tempfile::tempdir().unwrap();
+        let policy =
+            crate::WorkPolicyV1::new("engineering-test", 1, "Reuse the existing implementation.")
+                .unwrap();
+        let mut options =
+            replacement_options(Arc::clone(&store), "anthropic/claude-sonnet-4-20250514")
+                .with_session_id(session_id);
+        if with_policy {
+            options = options.with_work_policy(policy.clone());
+        }
+        let current = agent
+            .session_async(root.path().to_string_lossy(), Some(options))
+            .await
+            .unwrap();
 
-    let replacement = agent
-        .replace_session_async(
-            &current,
-            replacement_options(Arc::clone(&store), "openai/gpt-4o"),
-        )
-        .await
-        .unwrap();
+        let replacement = agent
+            .replace_session_async(
+                &current,
+                replacement_options(Arc::clone(&store), "openai/gpt-4o"),
+            )
+            .await
+            .unwrap();
 
-    assert!(current.is_closed());
-    assert!(!replacement.is_closed());
-    assert_eq!(replacement.session_id(), session_id);
-    assert_eq!(replacement.model_name, "openai/gpt-4o");
-    assert_eq!(agent.list_sessions().await, vec![session_id.to_string()]);
+        assert!(current.is_closed());
+        assert!(!replacement.is_closed());
+        assert_eq!(replacement.session_id(), session_id);
+        assert_eq!(replacement.model_name, "openai/gpt-4o");
+        assert_eq!(agent.list_sessions().await, vec![session_id.to_string()]);
+        assert_eq!(
+            replacement.work_policy_digest().unwrap(),
+            if with_policy {
+                Some(policy.digest().unwrap())
+            } else {
+                None
+            }
+        );
+        replacement.close().await;
+    }
 }
 
 #[tokio::test]

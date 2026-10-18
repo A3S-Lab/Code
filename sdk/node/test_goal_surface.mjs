@@ -24,7 +24,11 @@ assert.throws(
 )
 for (const workPolicy of [undefined, { id: 'eng', revision: 1, instructions: 'Make the smallest complete change.' }]) {
   const session = agent.session(workspace(), { workPolicy })
-  assert.equal(session.workPolicyDigest(), null, 'no Run admitted the policy yet')
+  const digest = session.workPolicyDigest()
+  if (workPolicy === undefined) assert.equal(digest, null)
+  else assert.ok(typeof digest === 'string' && digest.length > 0, 'policy is admitted at session build')
+  assert.equal(session.workPolicyDigest(), digest)
+  assert.equal(await session.currentRun(), null, 'policy admission starts no Run')
   session.close()
 }
 

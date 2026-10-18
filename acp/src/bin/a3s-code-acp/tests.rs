@@ -83,6 +83,23 @@ fn goal_continuation_is_unattended_only() {
         Some(base().with_goal_continuation())
     );
     assert!(parse(&["--goal-continuation"]).is_err());
+    let disabled = parse(&[
+        "--unattended",
+        "--no-goal-continuation",
+        "--engineering-policy",
+        "none",
+    ])
+    .expect("disabled")
+    .unattended
+    .unwrap();
+    assert_eq!(
+        disabled,
+        base()
+            .without_goal_continuation()
+            .with_engineering_policy("none")
+            .unwrap()
+    );
+    assert!(parse(&["--no-goal-continuation"]).is_err());
 }
 
 #[test]

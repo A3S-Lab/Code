@@ -54,6 +54,7 @@ mod loop_builder;
 mod loop_runtime;
 mod memory_extraction_runtime;
 mod parallel_tool_runtime;
+#[cfg(test)]
 mod plan_execution;
 mod planning_runtime;
 mod project_context;
@@ -62,6 +63,7 @@ mod queue_forwarder;
 mod telemetry_runtime;
 mod tool_completion_runtime;
 mod tool_execution_runtime;
+pub(crate) use tool_execution_runtime::execute_tool_with_deadline;
 mod tool_guard_runtime;
 mod tool_invoker;
 mod tool_result_runtime;
@@ -1028,6 +1030,7 @@ impl AgentExecutionFailure {
         self.tool_calls_count
     }
 
+    #[cfg(test)]
     pub(crate) fn add_tool_calls(&mut self, count: usize) {
         self.tool_calls_count = self.tool_calls_count.saturating_add(count);
     }

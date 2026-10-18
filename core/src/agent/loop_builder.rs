@@ -1,4 +1,4 @@
-use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
+use super::{AgentConfig, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
 use crate::llm::{LlmClient, ModelGenerationAdmission};
 use crate::loop_checkpoint::LoopCheckpointSink;
 use crate::session_lane_queue::SessionLaneQueue;

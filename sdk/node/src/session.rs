@@ -22,6 +22,13 @@ pub struct RecordedUsageTokens {
 
 #[napi]
 impl Session {
+    /// Tokens, cache usage and tool-result weight from the original session.
+    #[napi]
+    pub fn context_report(&self) -> napi::Result<serde_json::Value> {
+        let report = self.inner.context_report().map_err(node_code_error)?;
+        serde_json::to_value(report).map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
     /// Return current occupancy of the Agent-wide priority scheduler shared by
     /// this session and its siblings.
     #[napi]

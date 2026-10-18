@@ -109,9 +109,11 @@ pub const PRE_ANALYSIS_SYSTEM: &str = include_str!("../prompts/analysis/pre_anal
 // ============================================================================
 
 /// Template for initial plan execution message
+#[cfg(test)]
 pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/planning/plan_execute_goal.md");
 
 /// Template for per-step execution prompt
+#[cfg(test)]
 pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/planning/plan_execute_step.md");
 
 /// Skill catalog header injected before listing available skill names/descriptions.

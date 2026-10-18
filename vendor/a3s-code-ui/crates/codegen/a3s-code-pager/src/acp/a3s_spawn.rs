@@ -144,15 +144,27 @@ pub async fn spawn_a3s_acp(
                     },
                 );
                 let gw_rx = AcpGatewayReceiver::new(agent_channel.rx, conn).with_tracing(true);
-                tokio::task::spawn_local(handle_io);
-                tokio::task::spawn_local(gw_rx.run());
+                let mut io_task = tokio::task::spawn_local(handle_io);
+                let gateway_task = tokio::task::spawn_local(gw_rx.run());
                 tokio::task::yield_now().await;
 
-                bridge_cancel.cancelled().await;
+                let outcome = tokio::select! {
+                    biased;
+                    _ = bridge_cancel.cancelled() => Ok(()),
+                    status = child.wait() => {
+                        Err(anyhow!("A3S Code ACP exited: {}", status.context("wait for ACP agent")?))
+                    }
+                    result = &mut io_task => {
+                        result.context("ACP transport task")??;
+                        Err(anyhow!("A3S Code ACP transport closed"))
+                    }
+                };
                 reader_task.abort();
                 writer_task.abort();
+                io_task.abort();
+                gateway_task.abort();
                 let _ = child.kill().await;
-                Ok(())
+                outcome
             })
         })
         .context("failed to start a3s ACP bridge thread")?;

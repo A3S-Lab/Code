@@ -36,6 +36,18 @@ async function drain(stream) { for await (const _ of stream) {} }
 try {
   await assert.rejects(agent.sessionAsync(root, { sandboxNetwork: 'invalid' }), /sandbox network mode/)
   await assert.rejects(agent.sessionAsync(root, { pathInjectionBudget: 0 }), /budget/)
+  await assert.rejects(agent.sessionAsync(root, { workspaceReadOverlay: { '../outside.txt': 'refuse' } }), /boundary/)
+  fs.writeFileSync(path.join(root, 'buffer.txt'), 'saved\n')
+  fs.writeFileSync(path.join(root, 'disk.txt'), 'disk\n')
+  const overlay = await agent.sessionAsync(root, {
+    workspaceReadOverlay: { './buffer.txt': 'unsaved\n' },
+    permissionPolicy: { defaultDecision: 'allow' },
+  })
+  try {
+    assert.match(await overlay.readFile('buffer.txt'), /unsaved/)
+    assert.match(await overlay.readFile('disk.txt'), /disk/)
+    assert.equal(fs.readFileSync(path.join(root, 'buffer.txt'), 'utf8'), 'saved\n')
+  } finally { await overlay.closeAsync() }
   await assert.rejects(agent.sessionAsync(root, { pathInjectionBudget: 1.5 }), /integer/)
   await assert.rejects(agent.sessionAsync(root, { verificationContracts: [{ id: '', command: '', covers: [] }] }), /contract/)
   session = await agent.sessionAsync(root, {
@@ -62,6 +74,11 @@ try {
   await drain(second.stream)
   assert.equal((await second.run.snapshot()).status, 'completed')
   assert.equal(requests, 2)
+  const context = session.contextReport()
+  assert.equal(context.usage.prompt_tokens, 20)
+  assert.equal(context.usage.completion_tokens, 6)
+  assert.equal(context.tool_results, 0)
+  assert.deepEqual(context.heaviest, [])
   const evidence = await session.readEvaluationEvidence({ target: {
     schema: 'a3s.code.execution-target.v1', session_id: session.sessionId, run_id: second.run.id,
   } })

@@ -341,6 +341,14 @@ impl AgentSession {
         let Some(requested) = self.config.work_policy.as_ref() else {
             return Ok(());
         };
+        let thread = crate::fact_control::thread_for_session(&self.session_id);
+        // Replacement already holds the idle fence; an admitted immutable policy needs no write lease.
+        if !crate::work_policy::prepare_policy(&self.goal_facts()?, &thread, Some(requested))
+            .map_err(goal_error)?
+            .is_pending()
+        {
+            return Ok(());
+        }
         self.close_handle.mutate_immediate(|| {
             let lease = self.run_admission.try_acquire(&self.session_id)?;
             let log = lease.nonexecuting_fact_log(&self.run_admission, &self.session_id)?;

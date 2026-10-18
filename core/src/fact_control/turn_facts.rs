@@ -5,7 +5,7 @@ use super::*;
 /// The fact appended when a run's completion gate Allows. Mutating tool
 /// results after the last marker belong to runs that never settled
 /// accountable — an interrupted or gate-refused run — and the next send's
-/// gate inherits them (see [`replay_unsettled_mutations`]).
+/// gate inherits them (see the internal `replay_unsettled_mutations` fold).
 pub const TURN_COMPLETE_FACT_KIND: &str = "turn.complete";
 
 /// This run's thread, read through the run's own log handle.

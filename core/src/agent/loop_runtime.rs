@@ -2,7 +2,7 @@ use super::completion_runtime::CompletionFlow;
 use super::execution_state::ExecutionLoopState;
 use super::llm_turn::LlmTurnRequest;
 use super::queue_forwarder::QueueEventForwarder;
-use super::{AgentEvent, AgentLoop, AgentResult};
+use super::{AgentEvent, AgentResult};
 use crate::llm::{ContentBlock, Message};
 use crate::prompts::AgentStyle;
 use anyhow::Result;
@@ -19,6 +19,7 @@ impl crate::agent::TurnEngine {
     /// Called directly by `execute_with_session` (after planning check)
     /// and by `execute_plan` (for individual steps, bypassing planning).
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) async fn execute_loop(
         &self,
         history: &[Message],

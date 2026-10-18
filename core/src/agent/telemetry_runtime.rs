@@ -1,5 +1,3 @@
-use super::AgentLoop;
-
 impl crate::agent::TurnEngine {
     /// Track a tool call result in the current telemetry span.
     pub(super) fn track_tool_result(

@@ -1,6 +1,6 @@
 use super::execution_state::ExecutionLoopState;
 use super::tool_completion_runtime::ToolCompletionInput;
-use super::{AgentEvent, AgentLoop};
+use super::AgentEvent;
 use crate::llm::{ContentBlock, Message, ToolCall};
 use crate::tools::ToolContext;
 use crate::tools::ToolInvocation;

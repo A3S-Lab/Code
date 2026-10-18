@@ -8,7 +8,7 @@ use crate::llm::TokenUsage;
 const HEAVIEST_SHOWN: usize = 5;
 
 /// One of the heaviest tool results the model received in this session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HeavyToolResult {
     pub tool: String,
     pub tool_call_id: String,
@@ -16,7 +16,7 @@ pub struct HeavyToolResult {
 }
 
 /// Tokens, cache share and tool-result weight for one session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionContextReport {
     pub usage: TokenUsage,
     pub tool_results: usize,

@@ -359,6 +359,7 @@ async fn test_agent_executor_created_before_close_rejects_new_steps() {
 
 #[tokio::test]
 async fn runtime_budget_guard_refreshes_the_registered_task_tool() {
+    let workspace = tempfile::tempdir().unwrap();
     let agent = Agent::from_config(test_config()).await.unwrap();
     let opts = SessionOptions::new().with_worker_agent(crate::subagent::WorkerAgentSpec::planner(
         "budgeted-child",
@@ -366,7 +367,7 @@ async fn runtime_budget_guard_refreshes_the_registered_task_tool() {
     ));
     let session = agent
         .build_session(
-            "/tmp/test-runtime-budget-delegation".into(),
+            workspace.path().display().to_string(),
             Arc::new(StaticStreamingClient::new("must not reach the provider")),
             &opts,
         )
@@ -396,7 +397,8 @@ async fn runtime_budget_guard_refreshes_the_registered_task_tool() {
             .checks
             .load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "the runtime-installed guard must govern the child provider attempt"
+        "the runtime-installed guard must govern the child provider attempt: {}",
+        result.output
     );
     assert_eq!(
         runtime_budget

@@ -21,7 +21,13 @@ IMAGE="a3s-code-linux-lane:node22"
 TARGET="aarch64-unknown-linux-musl"
 mkdir -p "$LOG_DIR"
 
-case "$MODE" in lib|tests|t028|t029|all) ;; *) echo "mode must be lib, tests, t028, t029 or all" >&2; exit 2 ;; esac
+case "$MODE" in
+  lib) TEST_TARGETS=(--lib) ;;
+  tests|all) TEST_TARGETS=(--tests) ;;
+  t028) TEST_TARGETS=(--test test_engineering_discipline_real_llm) ;;
+  t029) TEST_TARGETS=(--test test_durable_goal_real_llm) ;;
+  *) echo "mode must be lib, tests, t028, t029 or all" >&2; exit 2 ;;
+esac
 [[ "$(docker info --format '{{.Architecture}}')" == "aarch64" ]] || { echo "needs an arm64 Docker host" >&2; exit 2; }
 
 docker build -q -t "$IMAGE" - >/dev/null <<'EOF'
@@ -29,8 +35,8 @@ FROM node:22-alpine
 RUN apk add --no-cache bash bubblewrap curl git coreutils findutils grep diffutils python3 rust
 EOF
 
-(cd "$CODE" && rustup run 1.97.1 cargo-zigbuild test -p a3s-code-core --target "$TARGET" \
-  --tests --no-run --message-format=json-render-diagnostics >"$LOG_DIR/build.json" 2>"$LOG_DIR/build.log")
+(cd "$CODE" && rustup run 1.97.1 cargo-zigbuild test --locked -p a3s-code-core --target "$TARGET" \
+  "${TEST_TARGETS[@]}" --no-run --message-format=json-render-diagnostics >"$LOG_DIR/build.json" 2>"$LOG_DIR/build.log")
 
 binary() {
   python3 - "$LOG_DIR/build.json" "$1" <<'EOF'
@@ -70,6 +76,7 @@ if [[ -f "$REPO/scripts/harbor/.env" ]]; then
     "$REPO/scripts/harbor/.env" | sed "s/=[\"']\(.*\)[\"']$/=\1/" >"$ENV_FILE"
 fi
 
+lane_result=0
 run() { # run <log> <binary> <args...>
   local log="$1"; shift
   set +e
@@ -79,9 +86,12 @@ run() { # run <log> <binary> <args...>
     --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined \
     -e A3S_CONFIG_FILE="$REPO/scripts/harbor/native-tb.acl" -e RUST_BACKTRACE=1 \
     -v "$REPO:$REPO:ro" -w "$CODE/core" "$IMAGE" "$@" >"$LOG_DIR/$log" 2>&1
-  local status=$?
+  local run_status=$?
   set -e
-  echo "$log exit=$status" | tee -a "$LOG_DIR/summary.txt"
+  echo "$log exit=$run_status" | tee -a "$LOG_DIR/summary.txt"
+  if [[ "$run_status" != 0 ]]; then
+    lane_result=1
+  fi
 }
 
 real_suite() { # real_suite <test-target> <prefix>
@@ -110,3 +120,4 @@ if [[ "$MODE" == t029 || "$MODE" == all ]]; then
   real_suite test_durable_goal_real_llm t029
 fi
 echo "logs: $LOG_DIR"
+exit "$lane_result"

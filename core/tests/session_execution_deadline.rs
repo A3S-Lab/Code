@@ -58,6 +58,46 @@ fn offline_config() -> CodeConfig {
 struct EndlessToolClient {
     calls: AtomicUsize,
     hang: bool,
+    slow_tool: bool,
+}
+
+struct WaitingTool(Arc<std::sync::atomic::AtomicBool>);
+
+#[async_trait]
+impl a3s_code_core::tools::Tool for WaitingTool {
+    fn name(&self) -> &str {
+        "wait_forever"
+    }
+    fn description(&self) -> &str {
+        "Wait for cancellation"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+    async fn execute(
+        &self,
+        _: &serde_json::Value,
+        ctx: &a3s_code_core::tools::ToolContext,
+    ) -> Result<a3s_code_core::tools::ToolOutput> {
+        ctx.cancellation_token().cancelled().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        self.0.store(true, Ordering::SeqCst);
+        Ok(a3s_code_core::tools::ToolOutput::success("settled"))
+    }
+}
+
+impl EndlessToolClient {
+    fn response(&self, call: usize) -> LlmResponse {
+        let mut response = tool_response(call);
+        if self.slow_tool {
+            response.message.content = vec![ContentBlock::ToolUse {
+                id: format!("wait-{call}"),
+                name: "wait_forever".into(),
+                input: serde_json::json!({}),
+            }];
+        }
+        response
+    }
 }
 
 fn tool_response(call: usize) -> LlmResponse {
@@ -102,7 +142,7 @@ impl LlmClient for EndlessToolClient {
             std::future::pending::<()>().await;
         }
         tokio::time::sleep(MODEL_LATENCY).await;
-        Ok(tool_response(call))
+        Ok(self.response(call))
     }
 
     async fn complete_streaming(
@@ -119,10 +159,11 @@ impl LlmClient for EndlessToolClient {
         } else {
             MODEL_LATENCY
         };
+        let response = self.response(call);
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(latency) => {
-                    let _ = tx.send(StreamEvent::Done(tool_response(call))).await;
+                    let _ = tx.send(StreamEvent::Done(response)).await;
                 }
                 _ = cancel_token.cancelled() => {}
             }
@@ -135,18 +176,24 @@ struct Outcome {
     elapsed: Duration,
     model_calls: usize,
     errors: Vec<String>,
+    tool_timeouts: usize,
 }
 
-async fn run(options: SessionOptions, hang: bool) -> Outcome {
+async fn run(options: SessionOptions, hang: bool, slow_tool: bool) -> Outcome {
     let workspace = tempfile::tempdir().unwrap();
     let client = Arc::new(EndlessToolClient {
         calls: AtomicUsize::new(0),
         hang,
+        slow_tool,
     });
     let agent = Agent::from_config(offline_config()).await.unwrap();
     let mut options = options
         .with_llm_client(client.clone())
-        .with_permission_policy(PermissionPolicy::new().allow("write(*)"))
+        .with_permission_policy(
+            PermissionPolicy::new()
+                .allow("write(*)")
+                .allow("wait_forever(*)"),
+        )
         .with_planning_mode(PlanningMode::Disabled)
         .with_auto_delegation_enabled(false)
         .with_manual_delegation_enabled(false)
@@ -157,11 +204,26 @@ async fn run(options: SessionOptions, hang: bool) -> Outcome {
         .await
         .unwrap();
 
+    let settled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    session
+        .register_dynamic_tool(Arc::new(WaitingTool(settled.clone())))
+        .unwrap();
+
     let started = Instant::now();
     let (mut events, worker) = session.stream("write the files", None).await.unwrap();
     let mut errors = Vec::new();
+    let mut tool_timeouts = 0;
     let drained = tokio::time::timeout(Duration::from_secs(20), async {
         while let Some(event) = events.recv().await {
+            if matches!(
+                &event,
+                AgentEvent::ToolEnd {
+                    error_kind: Some(a3s_code_core::tools::ToolErrorKind::Timeout { .. }),
+                    ..
+                }
+            ) {
+                tool_timeouts += 1;
+            }
             if let AgentEvent::Error { message } = event {
                 errors.push(message);
             }
@@ -176,10 +238,17 @@ async fn run(options: SessionOptions, hang: bool) -> Outcome {
         drained.is_ok(),
         "the run outlived its {BUDGET_MS} ms budget by 20 s ({model_calls} model calls)"
     );
+    if slow_tool {
+        assert!(
+            settled.load(Ordering::SeqCst),
+            "the tool must receive cancellation and settle before the run retires"
+        );
+    }
     Outcome {
         elapsed,
         model_calls,
         errors,
+        tool_timeouts,
     }
 }
 
@@ -202,7 +271,7 @@ fn assert_bounded(outcome: &Outcome) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_budget_stops_an_endless_tool_loop() {
-    let outcome = run(SessionOptions::new().with_continuation(false), false).await;
+    let outcome = run(SessionOptions::new().with_continuation(false), false, false).await;
     assert_bounded(&outcome);
 }
 
@@ -213,6 +282,7 @@ async fn continuation_segments_share_one_budget() {
             .with_continuation(true)
             .with_max_continuation_turns(32),
         false,
+        false,
     )
     .await;
     assert_bounded(&outcome);
@@ -220,7 +290,35 @@ async fn continuation_segments_share_one_budget() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_budget_cuts_a_model_call_that_never_returns() {
-    let outcome = run(SessionOptions::new().with_continuation(false), true).await;
+    let outcome = run(SessionOptions::new().with_continuation(false), true, false).await;
     assert_bounded(&outcome);
     assert_eq!(outcome.model_calls, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_run_budget_cancels_and_settles_a_tool_that_never_returns() {
+    let outcome = run(SessionOptions::new().with_continuation(false), false, true).await;
+    assert_bounded(&outcome);
+    assert_eq!(outcome.model_calls, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn per_tool_timeout_settles_the_tool_and_preserves_the_run_budget() {
+    let outcome = run(
+        SessionOptions::new()
+            .with_continuation(false)
+            .with_tool_timeout(80),
+        false,
+        true,
+    )
+    .await;
+    assert_bounded(&outcome);
+    assert!(
+        outcome.tool_timeouts > 0,
+        "the model must receive the typed tool timeout"
+    );
+    assert!(
+        outcome.model_calls > 1,
+        "a tool timeout must let the model continue within the original Run budget"
+    );
 }

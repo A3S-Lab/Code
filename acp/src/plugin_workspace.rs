@@ -63,3 +63,18 @@ impl WorkspaceBinding {
         self.validate(&self.requested)
     }
 }
+
+#[async_trait::async_trait]
+impl a3s_code_core::capability::CapabilityEffect for WorkspaceBinding {
+    fn name(&self) -> &str {
+        "native.workspace.binding"
+    }
+
+    async fn close(
+        self: Box<Self>,
+    ) -> std::result::Result<(), a3s_code_core::capability::CapabilityEffectError> {
+        self.validate_current().map_err(|error| {
+            a3s_code_core::capability::CapabilityEffectError::new(error.to_string())
+        })
+    }
+}

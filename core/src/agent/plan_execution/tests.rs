@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::tests::MockLlmClient;
+use crate::agent::AgentLoop;
 use crate::planning::Complexity;
 use crate::tools::{ToolContext, ToolExecutor};
 use std::sync::Arc;

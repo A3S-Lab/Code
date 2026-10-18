@@ -51,11 +51,11 @@ pub use manifest::{
     WorkspaceFileChange, WorkspaceFileChangeKind,
 };
 pub use path::VirtualPathResolver;
-pub use read_overlay::WorkspaceReadOverlay;
 use path::{
     default_path_input, has_windows_path_prefix, normalize_relative_path, pathbuf_to_workspace_path,
 };
 pub(crate) use path::{escape_control_chars_for_display, validate_relative_pattern};
+pub use read_overlay::{WorkspaceReadOverlay, WorkspaceReadOverlaySnapshot};
 pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
 pub use retrieval::{
     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CustomWorkspaceChunkingStrategy,

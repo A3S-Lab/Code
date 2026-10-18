@@ -2361,6 +2361,7 @@ async fn test_queued_tool_result_preserves_metadata() {
 
     let result = agent
         .execute_tool_queued_or_direct(
+            &agent.tool_executor,
             "metadata_tool",
             &serde_json::json!({}),
             &ToolContext::new(hermetic_root.clone()),

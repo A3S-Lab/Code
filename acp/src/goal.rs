@@ -23,6 +23,36 @@ pub(crate) use import::{commit_import, preview_import, GoalImportPreviewRequest}
 mod persistence;
 pub(crate) use persistence::{apply_session_goal, load_goal, retire_achieved_durable_goal};
 
+pub(crate) fn host_clock_ms() -> anyhow::Result<u64> {
+    use anyhow::Context;
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("host clock")?
+            .as_millis(),
+    )
+    .context("host clock overflow")
+}
+
+/// Product-host bounds; a trusted ACL declaration, including disabled, wins.
+pub(crate) fn default_continuation_policy(
+    now_ms: u64,
+) -> anyhow::Result<a3s_code_core::goal_control::GoalContinuationPolicyV1> {
+    use anyhow::Context;
+    use std::num::NonZeroU64;
+    let deadline = now_ms
+        .checked_add(24 * 60 * 60 * 1_000)
+        .context("goal deadline overflow")?;
+    let policy = a3s_code_core::goal_control::GoalContinuationPolicyV1 {
+        automatic_enabled: true,
+        max_slices: NonZeroU64::new(8).context("goal slice bound")?,
+        max_no_progress_slices: NonZeroU64::new(2).context("goal progress bound")?,
+        deadline_unix_ms: NonZeroU64::new(deadline).context("goal deadline")?,
+    };
+    policy.check_admission(now_ms)?;
+    Ok(policy)
+}
+
 /// What the user asked `/goal` to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GoalOp {
@@ -197,7 +227,7 @@ pub(crate) struct GoalStateRequest {
     pub session_id: String,
 }
 
-/// A bound `/goal` reply, and whether the user asked Core for one goal slice.
+/// A bound `/goal` reply, and whether this operation wakes bounded execution.
 pub(crate) struct BoundGoalReply {
     pub reply: String,
     pub tick: bool,
@@ -222,13 +252,26 @@ fn control_command(
 }
 
 /// Bound sessions use the original Core facts, never the legacy workspace file.
-/// `resume` is the only wake. It keeps asking Core for the next slice while
-/// that slice is allowed to advance. Core still gates each slice on the
-/// trusted `goal_control` policy.
+/// A first `set` binds the exact explicit task; `set` and `resume` wake the
+/// original bounded driver. Core gates each slice on the trusted host policy.
 pub(crate) async fn apply_bound_goal(
     session: &a3s_code_core::AgentSession,
     op: &GoalOp,
 ) -> anyhow::Result<Option<BoundGoalReply>> {
+    let created = if let GoalOp::Set(task) = op {
+        if session.goal_definition()?.is_none()
+            && load_goal(session.workspace(), session.session_id())
+                .await?
+                .is_none()
+        {
+            bind_task_goal(session, task)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let Some(mut current) = session.goal_definition()? else {
         return Ok(None);
     };
@@ -253,6 +296,7 @@ pub(crate) async fn apply_bound_goal(
             current = control(&current, GoalCommandKindV1::Cancel)?;
         }
         GoalOp::Clear => {}
+        GoalOp::Set(_) if created => tick = true,
         GoalOp::Set(_) => {
             return Err(GoalControlError::Refused {
                 refusal: GoalRefusal::ConditionUnsupported,
@@ -261,10 +305,11 @@ pub(crate) async fn apply_bound_goal(
             .into());
         }
     }
-    Ok(Some(BoundGoalReply {
-        reply: bound_status(session, &current).await?,
-        tick,
-    }))
+    let mut reply = bound_status(session, &current).await?;
+    if matches!(op, GoalOp::Clear) {
+        reply.push_str("\nUse /new to start a different goal or ordinary work.");
+    }
+    Ok(Some(BoundGoalReply { reply, tick }))
 }
 
 /// State, accepted plan progress and the next decision Core would take.
@@ -335,8 +380,7 @@ pub(crate) async fn bound_goal_step(
     })
 }
 
-/// The tick for one user `/goal resume`, under a fresh operation id.
-/// Bind an unattended task as a durable goal with one accepted step, then
+/// Bind an explicit task as a durable goal with one accepted step, then
 /// return the tick for that step. The task text is the goal, the step and its
 /// criterion; nothing is derived from it.
 pub(crate) fn bind_task_goal(
@@ -433,6 +477,21 @@ an unrelated question needs only a normal reply — do not start executing the g
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn product_default_bounds_are_finite_and_explicit() {
+        let policy = super::default_continuation_policy(5_000).unwrap();
+        assert!(policy.automatic_enabled);
+        assert_eq!(policy.max_slices.get(), 8);
+        assert_eq!(policy.max_no_progress_slices.get(), 2);
+        assert_eq!(policy.deadline_unix_ms.get(), 5_000 + 24 * 60 * 60 * 1_000);
+        assert!(policy.check_limits(5_000, 8, 0).is_err());
+        assert!(policy.check_limits(5_000, 0, 2).is_err());
+        assert!(policy
+            .check_limits(policy.deadline_unix_ms.get(), 0, 0)
+            .is_err());
+        assert!(super::default_continuation_policy(u64::MAX).is_err());
+    }
+
     use super::*;
 
     #[test]

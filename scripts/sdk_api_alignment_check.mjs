@@ -666,6 +666,7 @@ assertContainsAll('Go Agent', goAgent, [
   'Close',
 ]);
 assertContainsAll('Go Session', goSession, [
+  'ContextReport',
   'Run',
   'Send',
   'SessionID',

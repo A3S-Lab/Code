@@ -11,14 +11,16 @@ const INSTRUCTIONS: &str = include_str!("../prompts/engineering.md");
 
 enum EngineeringPolicy {
     V1,
+    Disabled,
 }
 
 impl EngineeringPolicy {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "engineering-v1" => Ok(Self::V1),
+            "none" => Ok(Self::Disabled),
             _ => Err(format!(
-                "unknown EngineeringPolicy {value:?}; expected engineering-v1"
+                "unknown EngineeringPolicy {value:?}; expected engineering-v1 or none"
             )),
         }
     }
@@ -26,6 +28,7 @@ impl EngineeringPolicy {
     fn as_str(&self) -> &'static str {
         match self {
             Self::V1 => "engineering-v1",
+            Self::Disabled => "none",
         }
     }
 }
@@ -44,12 +47,21 @@ pub(crate) fn policy_from_meta(
     };
     let input =
         Selection::deserialize(value).map_err(|error| format!("a3sEngineering: {error}"))?;
+    if matches!(
+        EngineeringPolicy::parse(&input.policy)?,
+        EngineeringPolicy::Disabled
+    ) {
+        return Ok(None);
+    }
     named_policy(&input.policy).map(Some)
 }
 
 /// The engineering policy a host selects by name (`_meta` or a launch flag).
 pub(crate) fn named_policy(name: &str) -> Result<WorkPolicyV1, String> {
     let selected = EngineeringPolicy::parse(name)?;
+    if matches!(selected, EngineeringPolicy::Disabled) {
+        return Err("EngineeringPolicy none has no instruction body".into());
+    }
     WorkPolicyV1::new(selected.as_str(), 1, INSTRUCTIONS).map_err(|error| error.to_string())
 }
 

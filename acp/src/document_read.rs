@@ -255,6 +255,8 @@ impl Tool for DocumentReadTool {
             let path = if input.is_absolute() { input } else { self.workspace.root().join(input) };
             anyhow::ensure!(path.starts_with(self.workspace.root()), "document not found");
             let path = path.to_str().context("invalid document path")?;
+            // A replaced root must stop this Turn before another model observes its result.
+            ctx.register_capability_effect(self.workspace.clone())?;
             let run = if retain_for_run { Some(self.bridge.retain_run(ctx, &self.session)?) } else { None };
             let mut params = json!({"sessionId":self.session,"path":path});
             if let Some(run) = &run { params["runId"] = json!(run); }

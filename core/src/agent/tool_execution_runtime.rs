@@ -1,8 +1,9 @@
-use super::{AgentEvent, AgentLoop, ToolCommand};
+use super::{AgentEvent, ToolCommand};
+#[cfg(test)]
 use crate::llm::ToolCall;
-use crate::tools::{
-    ToolContext, ToolErrorKind, ToolExecutor, ToolInvocation, ToolResult, ToolStreamEvent,
-};
+#[cfg(test)]
+use crate::tools::ToolInvocation;
+use crate::tools::{ToolContext, ToolErrorKind, ToolExecutor, ToolResult, ToolStreamEvent};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde_json::Value;
@@ -12,7 +13,7 @@ use tokio::sync::mpsc;
 
 const TOOL_CANCELLATION_SETTLE_GRACE: Duration = Duration::from_millis(500);
 
-pub(super) async fn execute_tool_with_deadline(
+pub(crate) async fn execute_tool_with_deadline(
     tool_executor: &ToolExecutor,
     name: &str,
     args: &serde_json::Value,
@@ -47,7 +48,7 @@ pub(super) async fn execute_tool_with_deadline(
             tokio::select! {
                 biased;
                 result = &mut execution => return result,
-                _ = parent_cancellation.cancelled() => Stop::Cancelled,
+                _ = invocation_cancellation.cancelled() => Stop::Cancelled,
                 _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
                     Stop::TimedOut(timeout_ms)
                 }
@@ -57,7 +58,7 @@ pub(super) async fn execute_tool_with_deadline(
             tokio::select! {
                 biased;
                 result = &mut execution => return result,
-                _ = parent_cancellation.cancelled() => Stop::Cancelled,
+                _ = invocation_cancellation.cancelled() => Stop::Cancelled,
             }
         }
     };
@@ -85,6 +86,7 @@ pub(super) async fn execute_tool_with_deadline(
 }
 
 impl crate::agent::TurnEngine {
+    #[cfg(test)]
     pub(super) async fn execute_delegated_plan_tool(
         &self,
         tool_name: &str,
@@ -214,34 +216,18 @@ impl crate::agent::TurnEngine {
     /// message that is fed back to the LLM.
     async fn execute_tool_timed(
         &self,
+        executor: &ToolExecutor,
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<crate::tools::ToolResult> {
-        execute_tool_with_deadline(
-            self.tool_executor.as_ref(),
-            name,
-            args,
-            ctx,
-            self.config.tool_timeout_ms,
-        )
-        .await
+        execute_tool_with_deadline(executor, name, args, ctx, self.config.tool_timeout_ms).await
     }
 
     /// Execute a tool through the lane queue (if configured) or directly.
-    pub(super) async fn execute_tool_queued_or_direct(
+    pub(crate) async fn execute_tool_queued_or_direct(
         &self,
-        name: &str,
-        args: &serde_json::Value,
-        ctx: &ToolContext,
-    ) -> anyhow::Result<crate::tools::ToolResult> {
-        self.execute_tool_queued_or_direct_inner(name, args, ctx)
-            .await
-    }
-
-    /// Inner execution without task lifecycle wrapping.
-    async fn execute_tool_queued_or_direct_inner(
-        &self,
+        executor: &Arc<ToolExecutor>,
         name: &str,
         args: &serde_json::Value,
         ctx: &ToolContext,
@@ -256,12 +242,12 @@ impl crate::agent::TurnEngine {
         // pass through ToolInvoker before reaching this backend, so hooks,
         // budget, timeout, cancellation, and sanitization remain in force.
         if ctx.is_inside_tool_queue() {
-            return self.execute_tool_timed(name, args, ctx).await;
+            return self.execute_tool_timed(executor, name, args, ctx).await;
         }
 
         if let Some(ref queue) = self.command_queue {
             let command = ToolCommand::new(
-                Arc::clone(&self.tool_executor),
+                Arc::clone(executor),
                 name.to_string(),
                 args.clone(),
                 ctx.clone().with_tool_queue_scope(),
@@ -370,7 +356,7 @@ impl crate::agent::TurnEngine {
                 }
             }
         }
-        self.execute_tool_timed(name, args, ctx).await
+        self.execute_tool_timed(executor, name, args, ctx).await
     }
     /// Create a tool context with streaming support.
     ///

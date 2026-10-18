@@ -378,6 +378,9 @@ pub struct SessionOptions {
     /// agent.session('/repo', { workspaceBackend: new LocalWorkspaceBackend('/repo') });
     /// ```
     pub workspace_backend: Option<JsWorkspaceBackend>,
+    /// Immutable client text by workspace-relative file path. Text reads prefer
+    /// this snapshot; writes use the backend. Ignored with effect isolation.
+    pub workspace_read_overlay: Option<std::collections::HashMap<String, String>>,
     /// Session-bound asynchronous semantic workspace retrieval.
     ///
     /// Pass `new WorkspaceRetrievalOptions(provider)`. Index construction
@@ -1000,6 +1003,11 @@ pub(super) fn js_session_options_to_rust(
             ));
         }
         opts = opts.with_default_security();
+    }
+    if let Some(files) = o.workspace_read_overlay {
+        let snapshot = a3s_code_core::workspace::WorkspaceReadOverlaySnapshot::new(files)
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        opts = opts.with_workspace_read_overlay(std::sync::Arc::new(snapshot));
     }
     if let Some(ref backend) = o.workspace_backend {
         let services: std::sync::Arc<a3s_code_core::WorkspaceServices> = match backend.kind.as_str()

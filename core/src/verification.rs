@@ -1252,7 +1252,7 @@ pub struct VerificationContractV1 {
     /// mask their exit status, so they never inherit this declaration.
     pub command: String,
     /// Workspace paths a passing run verifies: exact workspace-relative
-    /// paths or `dir/**` directory coverage (see [`contract_covers_path`]).
+    /// paths or `dir/**` directory coverage (the internal `contract_covers_path` matcher).
     #[serde(default)]
     pub covers: Vec<String>,
 }

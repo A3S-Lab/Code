@@ -7,7 +7,12 @@ Automatically discovered workspace ACL cannot enable, increase, disable,
 or replace the host's policy. The existing host-layer filter enforces this
 for ACP and the local TUI scaffold.
 
-The declaration is optional. When absent, automatic continuation is disabled.
+The declaration is optional. Core and SDK hosts disable automatic continuation
+when absent. ACP/Code TUI instead supply product-host bounds: 8 slices, 2
+successive slices without accepted progress, and a 24-hour deadline from host
+initialization. They still require an explicit goal/wake and retain original
+historical counts. A trusted declaration overrides these defaults, including
+an explicit disabled policy. Workspace declarations remain withheld.
 When present, all four fields are required, including when disabled:
 
 ```acl

@@ -9,6 +9,13 @@ This tree is the **A3S Code** interactive TUI UI — rebranded and wired to
 | Agent binary | `a3s-code-acp` (`crates/code/acp`) |
 | Launch | `just code` (sets `A3S_CODE_TUI_BIN` + `A3S_ACP_AGENT_BIN`) |
 
+The pager reports an exited ACP process immediately instead of waiting for the
+startup deadline. An automatically discovered workspace ACL cannot provide
+trusted model providers; select a trusted file explicitly with
+`a3s --config /path/to/config.acl code` or declare providers in `~/.a3s/config.acl`.
+`A3S_CODE_CONNECT_TIMEOUT_SECS=60 a3s code` raises the connection budget for a
+slow, running agent. The previous timeout environment variable remains accepted.
+
 ## Branding
 
 User-visible strings, docs, and comments in this tree use **A3S Code** / **A3S Lab**

@@ -18,8 +18,8 @@ flowchart LR
     FactLog -->|resume, checkpoints,<br/>goal and policy state| FactRun
     FactRun -->|record_run_event| RunStore["Run store<br/>run.rs (projection)"]
     FactRun -->|AgentEvent stream| Host
-    Tools -->|"skill / task child runs"| AgentLoop["AgentLoop<br/>(legacy engine)"]
-    AgentLoop --> Gate
+    Tools -->|"skill / task child runs"| FactRun
+    Engine["TurnEngine<br/>configuration, tools, model port"] -.-> FactRun
 ```
 
 ## Authority table
@@ -28,7 +28,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | A run is complete | `harness_loop::decide_completion` / `decide_with_observations`, the only producer of `CompletionGate::Allow` | Verification reports, the mutation ledger and completion waivers are evidence. `goal_control` and `planning` never decide; they read a verdict. `AgentEvent::GoalAchieved` is emitted only after a gated plan (`agent/planning_runtime.rs`) and redacted in `security/mod.rs`. Durable goal evidence (`fact_control/goal_evidence.rs`) asks `should_emit_goal_achieved*` only after the gate allowed. | `core/tests/completion_authority.rs` |
 | Run history | The fact log: `a3s_effect` facts in the session `FileLog` (`fact_control.rs`, `log_dir`) | Resume, checkpoints, work policy and goal state are folded from it (`validate_durable_source`, `checkpoints`, `work_policy::prepare_policy`, `goal_control::prepare_run`). The run store (`run::InMemoryRunStore`, the "run journal") is a bounded, FIFO-evicted projection fed by `record_run_event`. The `AgentEvent` stream is the live projection. `CoreEventLog` (`core_event_log.rs`) is an optional digest-only chain for hosts; production session runs do not write it. | Fact-log replay tests in `fact_control_tests.rs` |
-| Model turns | `FactRun` for every session run | `AgentLoop` still drives child runs of the `skill` and `task` tools and plan steps. It is crate-private, and its production entry sites are pinned. | `core/tests/turn_engine_entries.rs` (shrink-only) |
+| Model turns | `FactRun` for sessions and `skill` / `task` child runs | `TurnEngine` supplies the admitted configuration, tools and model port. The old standalone/planning routes are test-only; remaining crate-private legacy entry sites are pinned. | `core/tests/turn_engine_entries.rs` (shrink-only) |
 | Permission for a shell command | `permissions::shell::analyze` (one parsed classifier) | Policy rules, the interactive guardrail, the verifier turn and ACP approval learning all read its analysis. | `core/tests/shell_bypass_corpus.rs` |
 
 ## Budgets

@@ -1,4 +1,6 @@
-//! Hermetic PTY cases for the shipped 9.1.3 pager and ACP agent.
+#![cfg(test)]
+
+//! Hermetic PTY cases for the shipped pager and ACP agent.
 //!
 //! The map of cases lives in `tui_913_inventory.md`. Nothing here calls a
 //! live provider. The model is a local OpenAI-compatible server, except
@@ -851,11 +853,15 @@ fn version_line(binary: &Path) -> String {
 }
 
 #[test]
-fn shipped_binaries_report_9_1_3() {
+fn shipped_binaries_report_current_version() {
     let tui = version_line(&require_tui());
     let acp = version_line(&PathBuf::from(env!("CARGO_BIN_EXE_a3s-code-acp")));
-    assert!(tui.contains("9.1.3"), "pager version {tui}");
-    assert!(acp.contains("9.1.3"), "acp version {acp}");
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        tui.split_whitespace().any(|part| part == version),
+        "pager version {tui}"
+    );
+    assert_eq!(acp, version, "acp version {acp}");
     eprintln!("VERSION tui={tui}");
     eprintln!("VERSION acp={acp}");
 }

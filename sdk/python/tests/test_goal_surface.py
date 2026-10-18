@@ -49,7 +49,13 @@ def test_work_policy_option_is_validated_by_core() -> None:
         options.work_policy = policy
         assert options.work_policy == policy
         session = agent.session(tempfile.mkdtemp(), options)
-        assert session.work_policy_digest() is None, "no Run admitted the policy yet"
+        digest = session.work_policy_digest()
+        if policy is None:
+            assert digest is None
+        else:
+            assert isinstance(digest, str) and digest, "policy is admitted at session build"
+        assert session.work_policy_digest() == digest
+        assert session.current_run() is None, "policy admission starts no Run"
         session.close()
 
 

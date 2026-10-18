@@ -1,7 +1,7 @@
-# TUI 9.1.3 case inventory
+# Shipped TUI case inventory
 
 The interactive session is `a3s-code-tui` speaking ACP to `a3s-code-acp`.
-Both binaries report `9.1.3`. Hermetic rows use a local OpenAI-compatible
+Both binaries must report the current ACP package version. Hermetic rows use a local OpenAI-compatible
 server and do not call a live provider. The real-LLM row is a separate
 test binary so a missing provider cannot hide a launch failure.
 
@@ -16,8 +16,11 @@ test binary so a missing provider cannot hide a launch failure.
 | one real-LLM turn | `real_llm_tui_turn_shows_assistant_text` | `tui_913_real_llm` |
 | real-LLM 轮次 | `real_llm_tui_turns_fix_the_diagnosed_bug` | `tui_913_real_llm` |
 | real-LLM 长程任务 | `real_llm_tui_long_task_repairs_and_quotes_the_check` | `tui_913_real_llm` |
+| Cursor account text and picker | `picker_shows_the_cursor_account_and_a_turn_returns_stub_text` | `cursor_account_tui_e2e` |
+| Cursor real model read/write and host byte verification | `live_cursor_tools_read_write_and_verify_actual_workspace_bytes` (explicit `--ignored`; fixture-only disk content attestor) | `cursor_account_tui_e2e` |
+| Cursor real TUI reads, writes and refuses unverified completion | `tests/e2e/cursor_tools.acl` (prepared isolated Cursor config/workspace; assert output bytes after run) | `a3s-test` |
 
-`shipped_binaries_report_9_1_3` in the hermetic binary checks the two
+`shipped_binaries_report_current_version` in the hermetic binary checks the two
 version lines. The real-LLM tests run only when `A3S_CONFIG_FILE` is
 set; they are not `#[ignore]`. Each points `A3S_CONFIG` at that same file
 and does not rewrite it.
@@ -64,5 +67,5 @@ does not write that file. The checker source does not mention
 `GATE_SKIP_LOG`. The 轮次 and 长程任务 tests panic when
 `A3S_CONFIG_FILE` is unset. The one-turn test still returns early.
 
-The CLI crate stays on its git pin of core 9.1.2 (`apps/cli`). This
-inventory does not move that pin.
+The CLI crate pins Core 9.1.4 (`apps/cli`). Its release pager and ACP use the
+same publicly fetchable Code revision; local development builds can be newer.

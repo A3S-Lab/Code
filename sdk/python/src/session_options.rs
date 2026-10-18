@@ -41,6 +41,7 @@ pub(super) struct PySessionOptions {
     pub(super) security_provider: Option<pyo3::PyObject>,
     /// Workspace backend. Set to ``LocalWorkspaceBackend`` to use local filesystem tools explicitly.
     pub(super) workspace_backend: Option<pyo3::PyObject>,
+    pub(super) workspace_read_overlay: Option<std::collections::HashMap<String, String>>,
     /// Session-bound ephemeral semantic retrieval options.
     pub(super) workspace_retrieval: Option<PyWorkspaceRetrievalOptions>,
     /// Optional remote git provider. When set, the session attaches a
@@ -255,6 +256,7 @@ impl Clone for PySessionOptions {
             workspace_backend: pyo3::Python::with_gil(|py| {
                 self.workspace_backend.as_ref().map(|o| o.clone_ref(py))
             }),
+            workspace_read_overlay: self.workspace_read_overlay.clone(),
             workspace_retrieval: self.workspace_retrieval.clone(),
             remote_git: self.remote_git.clone(),
             role: self.role.clone(),
@@ -367,6 +369,7 @@ impl PySessionOptions {
             session_store: None,
             security_provider: None,
             workspace_backend: None,
+            workspace_read_overlay: None,
             workspace_retrieval: None,
             remote_git: None,
             role: None,
@@ -709,6 +712,20 @@ impl PySessionOptions {
     #[setter]
     fn set_workspace_backend(&mut self, value: Option<pyo3::PyObject>) {
         self.workspace_backend = value;
+    }
+
+    /// Immutable client text by workspace-relative file path; ignored with effect isolation.
+    #[getter]
+    fn get_workspace_read_overlay(&self) -> Option<std::collections::HashMap<String, String>> {
+        self.workspace_read_overlay.clone()
+    }
+
+    #[setter]
+    fn set_workspace_read_overlay(
+        &mut self,
+        value: Option<std::collections::HashMap<String, String>>,
+    ) {
+        self.workspace_read_overlay = value;
     }
 
     /// Typed, session-bound ephemeral workspace retrieval configuration.

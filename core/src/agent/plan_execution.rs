@@ -1,4 +1,6 @@
-use super::{AgentEvent, AgentLoop};
+#![cfg(test)]
+
+use super::AgentEvent;
 use crate::agent::{AgentExecutionFailure, AgentResult};
 use crate::llm::{Message, TokenUsage};
 use crate::planning::{ExecutionPlan, Task, TaskStatus};

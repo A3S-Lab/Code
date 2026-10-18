@@ -749,15 +749,29 @@ impl Completion for LiveCompletion {
                 record_run_event(surface, crate::agent::AgentEvent::TurnStart { turn }).await;
             }
             let chat = crate::telemetry::gen_ai::chat_span();
-            let call = model_response(
-                Arc::clone(&client),
-                messages.clone(),
-                system.clone(),
-                tools,
-                surface.clone(),
-                cancel.clone(),
-                original_model.clone(),
-            );
+            let prompt = request
+                .messages
+                .first()
+                .map(|text| split_folded_message(text).1)
+                .unwrap_or_default();
+            let call = async {
+                if let Some(surface) = &surface {
+                    surface
+                        .agent
+                        .fire_generate_start(&surface.session_id, &prompt, &system, &tools)
+                        .await;
+                }
+                model_response(
+                    Arc::clone(&client),
+                    messages.clone(),
+                    system.clone(),
+                    tools,
+                    surface.clone(),
+                    cancel.clone(),
+                    original_model.clone(),
+                )
+                .await
+            };
             let call = tracing::Instrument::instrument(call, chat.clone());
             let response = match time_left {
                 Some(left) => tokio::time::timeout(left, call)
@@ -807,11 +821,6 @@ impl Completion for LiveCompletion {
                         text: text.to_string(),
                     });
                 }
-                let prompt = request
-                    .messages
-                    .first()
-                    .map(|text| split_folded_message(text).1)
-                    .unwrap_or_default();
                 let prompt = prompt.as_str();
                 surface
                     .agent
@@ -1102,13 +1111,13 @@ impl FactRun {
             Arc::new(ExecutorTools {
                 capability_operation: None,
                 executor,
-                calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint: None,
                 events: None,
                 context,
                 permission: permission.clone(),
                 checker: None,
                 agent: None,
+                execution_started: None,
                 run_store: None,
                 run_id: None,
                 ledger: None,
@@ -1403,6 +1412,7 @@ impl FactRun {
             turns: Arc::new(AtomicUsize::new(0)),
         });
         let completion = completion.with_checkpoint(checkpoint.clone());
+        let execution_started = Some(completion.started_at);
         let prompt_tokens = Arc::new(AtomicU64::new(0));
         let completion = Arc::new(UsageStamp {
             inner: Arc::new(completion),
@@ -1421,13 +1431,13 @@ impl FactRun {
             Arc::new(ExecutorTools {
                 capability_operation: None,
                 executor,
-                calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint,
                 events,
                 context,
                 permission,
                 checker,
                 agent: Some(agent),
+                execution_started,
                 run_store,
                 run_id,
                 ledger,

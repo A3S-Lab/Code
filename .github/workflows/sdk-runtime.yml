@@ -48,6 +48,9 @@ jobs:
           node scripts/generate_research_protocol_artifacts.mjs --check
           node scripts/check_research_protocol_artifacts.mjs
 
+      - name: Check Node SDK default features
+        run: cargo check --locked --manifest-path sdk/node/Cargo.toml
+
       - name: Build Node SDK native module
         run: npm run build:debug
         working-directory: sdk/node

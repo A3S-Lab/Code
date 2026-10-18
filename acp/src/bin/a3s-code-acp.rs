@@ -44,7 +44,7 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
     let mut result_file = None;
     let mut reasoning_effort = None;
     let mut engineering_policy = None;
-    let mut goal_continuation = false;
+    let mut goal_continuation = None;
     let mut workspace_mcp = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -56,7 +56,8 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
                         .context("--trust-workspace-mcp requires an id prefix or `all`")?,
                 ));
             }
-            "--goal-continuation" => goal_continuation = true,
+            "--goal-continuation" => goal_continuation = Some(true),
+            "--no-goal-continuation" => goal_continuation = Some(false),
             "--max-execution-ms" => {
                 let value = args.next().context("--max-execution-ms requires a value")?;
                 max_execution_ms = Some(
@@ -124,7 +125,8 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
                 eprintln!(
                     "Usage: a3s-code-acp [--cwd DIR] [--config FILE] [--model provider/model] [--import-accounts cc-switch,grok,cursor] [--plugin-store DIR]\n\
                      \x20      a3s-code-acp --list-workspace-mcp | --trust-workspace-mcp <ID|all> [--cwd DIR]\n\
-                     \x20      a3s-code-acp --unattended [--max-execution-ms MS] [--reasoning-effort LEVEL] [--engineering-policy engineering-v1] [--goal-continuation] [--result-file FILE] [--cwd DIR] [--config FILE] [--model provider/model]\n\
+                     \x20      a3s-code-acp --unattended [--max-execution-ms MS] [--reasoning-effort LEVEL] [--engineering-policy engineering-v1|none] [--goal-continuation|--no-goal-continuation] [--result-file FILE] [--cwd DIR] [--config FILE] [--model provider/model]\n\
+                     New sessions use engineering-v1 by default. Explicit goals use bounded continuation.\n\
                      Speaks Agent Client Protocol on stdio over a3s-code-core {}.",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -157,20 +159,20 @@ fn parse_args_from(mut args: impl Iterator<Item = String>) -> Result<Args> {
             Some(name) => profile.with_engineering_policy(&name)?,
             None => profile,
         };
-        Some(if goal_continuation {
-            profile.with_goal_continuation()
-        } else {
-            profile
+        Some(match goal_continuation {
+            Some(true) => profile.with_goal_continuation(),
+            Some(false) => profile.without_goal_continuation(),
+            None => profile,
         })
     } else {
         if max_execution_ms.is_some()
             || result_file.is_some()
             || reasoning_effort.is_some()
             || engineering_policy.is_some()
-            || goal_continuation
+            || goal_continuation.is_some()
         {
             anyhow::bail!(
-                "--max-execution-ms, --reasoning-effort, --engineering-policy, --goal-continuation and --result-file require --unattended"
+                "--max-execution-ms, --reasoning-effort, --engineering-policy, --goal-continuation, --no-goal-continuation and --result-file require --unattended"
             );
         }
         None

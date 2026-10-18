@@ -226,9 +226,7 @@ pub(crate) fn js_workspace_retrieval_to_rust(
             WorkspaceLexicalEngineOption::Portable => {
                 a3s_code_core::WorkspaceLexicalEngine::Portable
             }
-            WorkspaceLexicalEngineOption::A3sVec => {
-                a3s_code_core::WorkspaceLexicalEngine::A3sVec
-            }
+            WorkspaceLexicalEngineOption::A3sVec => a3s_code_core::WorkspaceLexicalEngine::A3sVec,
         },
     );
     if let Some(reranker) = reranker {

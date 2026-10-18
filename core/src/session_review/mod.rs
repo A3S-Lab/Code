@@ -21,7 +21,7 @@
 //!   own rubrics and evidence collection. Core never matches on scenario
 //!   business rules beyond registry lookup.
 //!
-//! Distinct from [`crate::research`] review contracts: those bind research
+//! Distinct from the optional `research` review contracts: those bind research
 //! artifacts and digests.
 
 mod error;

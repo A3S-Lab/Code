@@ -459,7 +459,7 @@ pub struct SessionOptions {
     pub allow_process_host_sandbox: bool,
     /// Network posture of the default local sandbox.
     ///
-    /// Default [`SandboxNetworkMode::Deny`] (fail-closed baseline: no
+    /// Default [`crate::sandbox::SandboxNetworkMode::Deny`] (fail-closed baseline: no
     /// network). `Mediated` arms the Gate 4 forced-proxy stack — an
     /// explicit host opt-in, because it makes in-sandbox egress
     /// AVAILABLE through mediation where it was denied before.

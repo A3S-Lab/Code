@@ -1083,8 +1083,8 @@ pub use workspace_retrieval::*;
 mod immutable_content;
 pub use immutable_content::*;
 
-mod session_governance;
 mod session_goal;
+mod session_governance;
 
 mod session_host_contract;
 mod session_release_contract;

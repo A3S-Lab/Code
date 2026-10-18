@@ -6,13 +6,14 @@ use super::*;
 pub(super) struct ExecutorTools {
     pub(super) executor: Arc<ToolExecutor>,
     pub(super) capability_operation: Option<Arc<crate::capability::AgentCapabilityOperation>>,
-    pub(super) calls: Arc<AtomicUsize>,
     pub(super) checkpoint: Option<CheckpointState>,
     pub(super) events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
     pub(super) context: crate::tools::ToolContext,
     pub(super) permission: PermissionPolicy,
     pub(super) checker: Option<Arc<dyn crate::permissions::PermissionChecker>>,
     pub(super) agent: Option<crate::agent::AgentLoop>,
+    /// The model and tools spend the same original Run wall-clock budget.
+    pub(super) execution_started: Option<std::time::Instant>,
     pub(super) run_store: Option<Arc<crate::run::InMemoryRunStore>>,
     pub(super) run_id: Option<String>,
     pub(super) ledger: Option<Arc<Mutex<crate::harness_loop::MutationLedger>>>,
@@ -253,6 +254,7 @@ impl ToolRunner for ExecutorTools {
         let permission = self.permission.clone();
         let checker = self.checker.clone();
         let agent = self.agent.clone();
+        let execution_started = self.execution_started;
         let checkpoint = self.checkpoint.clone();
         let run_store = self.run_store.clone();
         let run_id = self.run_id.clone();
@@ -278,13 +280,13 @@ impl ToolRunner for ExecutorTools {
             let tools = ExecutorTools {
                 capability_operation: None,
                 executor,
-                calls: Arc::new(AtomicUsize::new(0)),
                 checkpoint,
                 events,
                 context,
                 permission,
                 checker,
                 agent,
+                execution_started,
                 run_store,
                 run_id,
                 ledger,
@@ -469,57 +471,64 @@ impl ToolRunner for ExecutorTools {
             let cancel = tools.context.cancellation_token();
             let host_cancel = host_cancel.clone();
             let started = std::time::Instant::now();
-            let execution = tools
-                .executor
-                .execute_with_context(&call.name, &args, &tools.context);
+            let execution_limit = tools.agent.as_ref().and_then(|agent| agent.max_execution_time());
+            let remaining = tools.execution_started
+                .map(|started| execution_time_left(started, execution_limit))
+                .transpose()?.flatten();
+            let deadline = async {
+                match remaining {
+                    Some(left) => tokio::time::sleep(left).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::pin!(deadline);
+            let invocation_cancel = cancel.child_token();
+            let invocation_context = tools.context.clone().with_cancellation(invocation_cancel.clone());
+            let execution = async {
+                match &tools.agent {
+                    Some(agent) => agent.execute_tool_queued_or_direct(&tools.executor, &call.name, &args, &invocation_context).await,
+                    None => crate::agent::execute_tool_with_deadline(&tools.executor, &call.name, &args, &invocation_context, None).await,
+                }
+            };
             tokio::pin!(execution);
             // Forward host events while the tool runs: a tool that waits on the
             // host (ask_user_form) needs its question delivered before it returns.
+            let mut interrupted = false;
             let executed = loop {
                 tokio::select! {
                     biased;
                     result = &mut execution => break result,
-                    _ = cancel.cancelled() => {
-                        let message = "cancelled".to_string();
-                        tools
-                            .emit(crate::agent::AgentEvent::ToolEnd {
-                                id: call.id.clone(),
-                                name: call.name.clone(),
-                                args: Some(args.clone()),
-                                output: message.clone(),
-                                exit_code: 1,
-                                metadata: None,
-                                error_kind: None,
-                            })
-                            .await;
-                        return Ok(if tools.pre_tool_hook_resolved {
-                            receipts::runner_interrupted_value(&message)
-                        } else {
-                            serde_json::Value::String(message)
-                        });
+                    _ = &mut deadline => {
+                        invocation_cancel.cancel();
+                        let _ = (&mut execution).await;
+                        return Err(execution_timeout(tools.execution_started.unwrap_or(started), execution_limit));
                     }
-                    _ = host_cancel.cancelled() => {
-                        let message = "cancelled".to_string();
-                        tools
-                            .emit(crate::agent::AgentEvent::ToolEnd {
-                                id: call.id.clone(),
-                                name: call.name.clone(),
-                                args: Some(args.clone()),
-                                output: message.clone(),
-                                exit_code: 1,
-                                metadata: None,
-                                error_kind: None,
-                            })
-                            .await;
-                        return Ok(if tools.pre_tool_hook_resolved {
-                            receipts::runner_interrupted_value(&message)
-                        } else {
-                            serde_json::Value::String(message)
-                        });
+                    _ = async {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {},
+                            _ = host_cancel.cancelled() => {},
+                        }
+                    } => {
+                        invocation_cancel.cancel();
+                        interrupted = true;
+                        break (&mut execution).await;
                     }
                     event = next_host_event(&mut bridged) => tools.emit(event).await,
                 }
             };
+            if interrupted || executed.as_ref().is_ok_and(|result| matches!(result.error_kind, Some(crate::tools::ToolErrorKind::Cancelled { .. }))) {
+                let message = "cancelled".to_string();
+                tools.emit(crate::agent::AgentEvent::ToolEnd {
+                    id: call.id.clone(), name: call.name.clone(), args: Some(args.clone()),
+                    output: message.clone(), exit_code: 1, metadata: None,
+                    error_kind: Some(crate::tools::ToolErrorKind::Cancelled { op: call.name.clone() }),
+                }).await;
+                return Ok(if tools.pre_tool_hook_resolved {
+                    receipts::runner_interrupted_value(&message)
+                } else {
+                    serde_json::Value::String(message)
+                });
+            }
             tools.forward_host_events(&mut bridged).await;
             let result = match executed {
                 Ok(result) => result,

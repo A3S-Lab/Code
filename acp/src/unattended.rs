@@ -82,8 +82,8 @@ impl Unattended {
             max_execution_ms,
             result_file,
             reasoning_effort: DEFAULT_REASONING_EFFORT,
-            engineering_policy: None,
-            goal_continuation: false,
+            engineering_policy: Some("engineering-v1".into()),
+            goal_continuation: true,
         })
     }
 
@@ -91,6 +91,11 @@ impl Unattended {
     /// goal is finished or the host policy stops it.
     pub fn with_goal_continuation(mut self) -> Self {
         self.goal_continuation = true;
+        self
+    }
+
+    pub fn without_goal_continuation(mut self) -> Self {
+        self.goal_continuation = false;
         self
     }
 
@@ -110,6 +115,10 @@ impl Unattended {
 
     /// Run every session under a named engineering policy (`engineering-v1`).
     pub fn with_engineering_policy(mut self, name: &str) -> Result<Self> {
+        if name == "none" {
+            self.engineering_policy = None;
+            return Ok(self);
+        }
         crate::engineering::named_policy(name).map_err(anyhow::Error::msg)?;
         self.engineering_policy = Some(name.to_string());
         Ok(self)

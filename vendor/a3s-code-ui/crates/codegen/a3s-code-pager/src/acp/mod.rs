@@ -519,7 +519,15 @@ async fn initialize(tx: &AcpAgentTx, flags: &ConnectFlags) -> Result<Initialized
         .meta(meta);
     let resp: acp::InitializeResponse = {
         let _timer = a3s_code_telemetry::instrumentation::timer("acp_init.initialize_roundtrip");
-        acp_send(req, tx).await?
+        acp_send(req, tx).await.map_err(|error| {
+            let closed = a3s_acp_lib::acp_channel_failure(&error).is_some();
+            let error = anyhow::Error::from(error);
+            if closed {
+                error.context("The agent connection closed before initialization. Check default_model and providers in the trusted ACL configuration, or select a file with `a3s --config /path/to/config.acl code`.")
+            } else {
+                error
+            }
+        })?
     };
     let is_grok_shell = resp
         .meta

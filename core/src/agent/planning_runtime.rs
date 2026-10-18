@@ -1,11 +1,17 @@
-use super::{AgentEvent, AgentLoop, AgentResult};
+use super::AgentEvent;
+#[cfg(test)]
+use super::AgentResult;
+#[cfg(test)]
 use crate::llm::Message;
-use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner, PreAnalysis};
+#[cfg(test)]
+use crate::planning::PreAnalysis;
+use crate::planning::{AgentGoal, ExecutionPlan, LlmPlanner};
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 impl crate::agent::TurnEngine {
+    #[cfg(test)]
     pub(super) fn preserve_plan_goal_context(
         mut plan: ExecutionPlan,
         execution_prompt: &str,
@@ -45,6 +51,7 @@ impl crate::agent::TurnEngine {
         )
     }
 
+    #[cfg(test)]
     pub(super) async fn emit_task_updated(
         &self,
         event_tx: &Option<mpsc::Sender<AgentEvent>>,
@@ -215,6 +222,7 @@ impl crate::agent::TurnEngine {
     /// `execute_with_session`), the goal and plan are already available and no
     /// additional LLM calls are needed for planning. Otherwise, falls back to
     /// calling `extract_goal` and `plan` individually.
+    #[cfg(test)]
     pub async fn execute_with_planning(
         &self,
         history: &[Message],
@@ -456,6 +464,7 @@ impl crate::agent::TurnEngine {
         Ok(result)
     }
 
+    #[cfg(test)]
     async fn check_goal_achievement_scoped(
         &self,
         goal: &AgentGoal,

@@ -23,6 +23,7 @@ struct Script {
     asked: bool,
     searches: usize,
     written: bool,
+    verified: bool,
     bashed: bool,
     skilled: bool,
     tool_seq: u64,
@@ -232,12 +233,44 @@ fn decide(raw: &str, script: &mut Script) -> String {
         .flatten()
         .filter_map(|tool| tool["function"]["name"].as_str())
         .collect();
+    let judgment = serde_json::json!({"achieved": script.written && script.verified,
+        "progress": if script.verified { 1.0 } else { 0.0 }, "remaining_criteria": []});
+    if tool_names.contains(&"emit_goal_achievement") {
+        script.tool_seq += 1;
+        return reply_tool(
+            "emit_goal_achievement",
+            judgment,
+            script.tool_seq,
+            streaming,
+        );
+    }
+    if parsed["response_format"]["json_schema"]["name"] == "goal_achievement" {
+        return reply_text(&judgment.to_string(), streaming);
+    }
+    if parsed["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"].as_str().is_some_and(|text| {
+                    text.starts_with("You are an evaluation assistant. Given a goal with success criteria and the current state, evaluate progress.")
+                })
+        })
+    }) {
+        return reply_text(&judgment.to_string(), streaming);
+    }
     if !raw.contains("UNATTENDED-TASK") || tool_names.is_empty() {
         return reply_text("ok", streaming);
     }
     // The read-only explorer automatic delegation starts before the parent.
     if !tool_names.contains(&"write") {
         return reply_text("explored: notes.md holds the answer", streaming);
+    }
+    let last_role = parsed["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|message| message["role"].as_str())
+        .unwrap_or("");
+    if last_role == "user" {
+        script.verified = false;
     }
     if raw.contains("SLOW-TASK") {
         return reply_text("still thinking", streaming);
@@ -290,11 +323,19 @@ fn decide(raw: &str, script: &mut Script) -> String {
             streaming,
         );
     }
-    let last_role = parsed["messages"]
-        .as_array()
-        .and_then(|messages| messages.last())
-        .and_then(|message| message["role"].as_str())
-        .unwrap_or("");
+    if !script.verified && raw.contains("Execute only the current admitted step `task`") {
+        script.verified = true;
+        return reply_tool(
+            "bash",
+            serde_json::json!({
+                "command": "test -f answer.txt && test \"$(cat answer.txt)\" = 42",
+                "sandbox_permissions": "require_escalated",
+                "justification": "Verify the private fixture through approved host execution"
+            }),
+            seq,
+            streaming,
+        );
+    }
     if last_role == "tool" {
         return reply_text("verified", streaming);
     }
@@ -444,6 +485,7 @@ async fn unattended_prompt_binds_proves_and_records_without_touching_the_workspa
                 &tmp,
                 &[
                     "--unattended",
+                    "--no-goal-continuation",
                     "--max-execution-ms",
                     "170000",
                     "--result-file",
@@ -605,7 +647,12 @@ async fn a_continuation_attempt_never_outlives_the_run_deadline() {
             let started = std::time::Instant::now();
             let response = say(&agent, &session, "SLOW-TASK UNATTENDED-TASK think").await;
             let elapsed = started.elapsed();
-            assert!(response.is_err(), "a deadline run is not a success");
+            assert_eq!(
+                response
+                    .expect("recorded timeout has a normal protocol response")
+                    .stop_reason,
+                acp::StopReason::EndTurn
+            );
             assert!(
                 elapsed < Duration::from_millis(6000),
                 "the run outlived its 4 s deadline: {elapsed:?}"
@@ -751,7 +798,6 @@ async fn a_goal_launch_runs_the_first_attempt_as_the_bound_task_slice() {
                 &tmp,
                 &[
                     "--unattended",
-                    "--goal-continuation",
                     "--max-execution-ms",
                     "170000",
                     "--result-file",
@@ -769,8 +815,9 @@ async fn a_goal_launch_runs_the_first_attempt_as_the_bound_task_slice() {
             assert!(
                 bodies.iter().any(|body| body
                     .contains("Execute only the current admitted step `task`")
-                    && body.contains("UNATTENDED-TASK")),
-                "the first attempt was not the bound task slice"
+                    && body.contains("UNATTENDED-TASK")
+                    && body.matches("Engineering discipline").count() == 1),
+                "the default first attempt must carry the bound task and engineering policy"
             );
             assert!(response.is_ok(), "{record}");
             assert_eq!(record["outcome"], "succeeded", "{record}");

@@ -39,7 +39,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 /// every colocated workload. 16 MiB matches the artifact-store content
 /// bound and sits far beyond what any consumer — model context, edit
 /// diff, chunked index — processes in one piece.
-const MAX_TEXT_FILE_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_TEXT_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Local filesystem-backed workspace implementation.
 #[derive(Debug)]

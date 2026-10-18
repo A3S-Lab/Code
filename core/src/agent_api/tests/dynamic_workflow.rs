@@ -520,11 +520,12 @@ async fn test_session_workflow_parent_permission_can_deny_scoped_host_tool() {
 
 #[tokio::test]
 async fn test_session_workflow_inherits_runtime_budget_guard() {
+    let workspace = tempfile::tempdir().unwrap();
     let runtime_budget = Arc::new(DenyingBudgetGuard::default());
     let agent = Agent::from_config(test_config()).await.unwrap();
     let session = agent
         .build_session(
-            "/tmp/test-workflow-runtime-budget".into(),
+            workspace.path().display().to_string(),
             Arc::new(StaticStreamingClient::new("must not reach the provider")),
             &SessionOptions::new(),
         )
@@ -545,7 +546,11 @@ async fn test_session_workflow_inherits_runtime_budget_guard() {
         ))
         .await;
 
-    assert!(!outcome.success, "runtime budget must deny workflow child");
+    assert!(
+        !outcome.success,
+        "runtime budget must deny workflow child: {}",
+        outcome.output
+    );
     assert_eq!(
         runtime_budget
             .checks

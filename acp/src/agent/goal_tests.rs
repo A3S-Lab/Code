@@ -7,6 +7,62 @@ use a3s_code_core::goal_control::{
 use a3s_code_core::workspace::WorkspaceServices;
 use agent_client_protocol::{self as acp, Agent as _};
 
+#[tokio::test]
+async fn explicit_new_goals_use_default_bounds_and_trusted_disable_wins() {
+    for disabled in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut launch = test_launch(Some(root.path().join("store")));
+        launch.workspace = root.path().into();
+        if disabled {
+            let mut policy =
+                crate::goal::default_continuation_policy(crate::goal::host_clock_ms().unwrap())
+                    .unwrap();
+            policy.automatic_enabled = false;
+            launch.config.goal_control = Some(policy);
+        }
+        let host = A3sCodeAgent::new(launch);
+        let id = host
+            .new_session(acp::NewSessionRequest::new(root.path()))
+            .await
+            .unwrap()
+            .session_id;
+        let session = host
+            .sessions
+            .lock()
+            .await
+            .get(id.0.as_ref())
+            .unwrap()
+            .session
+            .clone();
+        assert!(session.goal_definition().unwrap().is_none());
+        let reply = crate::goal::apply_bound_goal(
+            &session,
+            &crate::goal::GoalOp::Set("Explicit user outcome".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(reply.tick);
+        let view = session.goal_definition().unwrap().unwrap();
+        assert_eq!(view.goal.description, "Explicit user outcome");
+        assert!(view.plan_accepted);
+        assert_eq!(
+            view.binding.work_policy_digest,
+            session.work_policy_digest().unwrap()
+        );
+        match crate::goal::bound_goal_step(&session).await.unwrap() {
+            crate::goal::BoundGoalStep::Advance(_) => assert!(!disabled),
+            crate::goal::BoundGoalStep::Stopped("budget_exhausted") => assert!(disabled),
+            _ => panic!("unexpected default goal decision"),
+        }
+        let thread = a3s_code_core::fact_control::thread_for_session(session.session_id());
+        let facts =
+            a3s_code_core::fact_control::read_workspace_facts(root.path(), &thread).unwrap();
+        assert!(!facts.iter().any(|fact| fact.kind == "model.turn"));
+        session.close().await;
+    }
+}
+
 async fn prompt(
     agent: &A3sCodeAgent,
     id: &acp::SessionId,
@@ -70,14 +126,24 @@ fn goal_ref(kind: &str, operation_id: &str, view: &serde_json::Value) -> serde_j
 }
 
 #[tokio::test]
-async fn bound_goal_verbs_and_typed_commands_share_core_and_never_wake_without_goal_control() {
+async fn bound_goal_verbs_and_typed_commands_share_core_and_respect_host_disable() {
     let root = tempfile::tempdir().unwrap();
     let mut launch = test_launch(Some(root.path().join("sessions")));
     launch.workspace = root.path().to_owned();
-    assert!(launch.config.goal_control.is_none());
+    let mut policy =
+        crate::goal::default_continuation_policy(crate::goal::host_clock_ms().unwrap()).unwrap();
+    policy.automatic_enabled = false;
+    launch.config.goal_control = Some(policy);
     let host = A3sCodeAgent::new(launch);
     let id = host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap()
         .session_id;
@@ -280,7 +346,14 @@ async fn prove_bound_clear(real_model: bool) {
     let original_file = std::fs::read(&path).unwrap();
     let host = A3sCodeAgent::new(launch.clone());
     let opened = host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap();
     let id = opened.session_id;
@@ -558,7 +631,14 @@ async fn unowned_workspace_goal_is_not_automatically_claimed_by_new_sessions() {
     let host = A3sCodeAgent::new(launch);
     for _ in 0..2 {
         let id = host
-            .new_session(acp::NewSessionRequest::new(root.path()))
+            .new_session(
+                acp::NewSessionRequest::new(root.path()).meta(
+                    serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
             .await
             .unwrap()
             .session_id;
@@ -586,7 +666,14 @@ async fn same_session_other_host_cannot_write_or_retire_legacy_goal_after_import
     launch.workspace = root.path().to_owned();
     let first_host = A3sCodeAgent::new(launch.clone());
     let id = first_host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap()
         .session_id;
@@ -711,7 +798,14 @@ async fn session_scoped_legacy_goal_reaches_real_model_after_new_host_reopen() {
     launch.config.sessions_dir = Some(root.path().join("sessions"));
     let first_host = A3sCodeAgent::new(launch.clone());
     let id = first_host
-        .new_session(acp::NewSessionRequest::new(root.path()))
+        .new_session(
+            acp::NewSessionRequest::new(root.path()).meta(
+                serde_json::json!({"a3sEngineering":{"policy":"none"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap()
         .session_id;

@@ -134,6 +134,39 @@ providers "openai" {
 	}
 }
 
+func TestReleaseWorkspaceReadOverlay(t *testing.T) {
+	const config = `default_model = "openai/fixture"
+providers "openai" {
+  api_key = "fixture-unused"
+  models "fixture" { name = "Fixture" }
+}`
+	agent, ctx := releaseAgent(t, config)
+	root := t.TempDir()
+	if _, err := agent.Session(ctx, root, &SessionOptions{WorkspaceReadOverlay: map[string]string{"../outside.txt": "refuse"}}); err == nil {
+		t.Fatal("escaping overlay path must be refused")
+	}
+	for name, text := range map[string]string{"buffer.txt": "saved\n", "disk.txt": "disk\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := agent.Session(ctx, root, &SessionOptions{WorkspaceReadOverlay: map[string]string{"./buffer.txt": "unsaved\n"}, PermissionPolicy: &PermissionPolicy{DefaultDecision: "allow"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(ctx)
+	for name, want := range map[string]string{"buffer.txt": "unsaved", "disk.txt": "disk"} {
+		text, err := session.ReadFile(ctx, name, nil)
+		if err != nil || !strings.Contains(text, want) {
+			t.Fatalf("%s: %q %v", name, text, err)
+		}
+	}
+	text, err := os.ReadFile(filepath.Join(root, "buffer.txt"))
+	if err != nil || string(text) != "saved\n" {
+		t.Fatalf("overlay mutated backend: %q %v", text, err)
+	}
+}
+
 func TestReleaseOriginalRunStream(t *testing.T) {
 	var requests atomic.Int64
 	releasePartial := make(chan struct{})
@@ -214,6 +247,10 @@ memory { llm_extraction = false }`, server.URL))
 	snapshot, err := second.Run.Snapshot(ctx)
 	if err != nil || snapshot == nil || snapshot.Status != "completed" {
 		t.Fatalf("second snapshot: %#v %v", snapshot, err)
+	}
+	contextReport, err := session.ContextReport(ctx)
+	if err != nil || contextReport.Usage.PromptTokens != 20 || contextReport.Usage.CompletionTokens != 6 || contextReport.ToolResults != 0 || len(contextReport.Heaviest) != 0 {
+		t.Fatalf("context report: %#v %v", contextReport, err)
 	}
 	if err = session.SetPermissionPosture(ctx, "invalid"); err == nil {
 		t.Fatal("unknown posture accepted")

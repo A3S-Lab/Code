@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::AgentEvent;
-use super::{AgentLoop, AgentResult, InvocationContext};
+use super::{AgentResult, InvocationContext};
 use crate::llm::Message;
 use anyhow::Result;
 #[cfg(test)]

@@ -72,9 +72,12 @@ async fn tool_context_cancellation_stops_the_actual_descendant() {
     let context = ToolContext::new(fixture.0.clone());
     let cancellation: CancellationToken = context.cancellation_token();
     let tool = fixture.tool();
-    let invocation =
+    let mut invocation =
         tokio::spawn(async move { tool.execute(&serde_json::json!({}), &context).await });
-    fixture.wait_for_start().await;
+    tokio::select! {
+        _ = fixture.wait_for_start() => {},
+        result = &mut invocation => panic!("plugin returned before its descendant started: {result:?}"),
+    }
     cancellation.cancel();
     let output = invocation.await.unwrap().unwrap();
     assert!(!output.success);

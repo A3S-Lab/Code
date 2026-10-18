@@ -25,7 +25,7 @@ import re
 import os
 import subprocess
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 HEADING = re.compile(r"^#{1,6}\s+Explicitly not claimed\s*$", re.MULTILINE)
 CODE_EXTS = {".rs", ".toml", ".lock", ".py", ".mjs", ".sh", ".js", ".ts", ".acl", ".go"}
@@ -44,6 +44,8 @@ def git(*args: str) -> str:
 
 
 def is_code(path: str) -> bool:
+    if path == CODE_PREFIX.rstrip("/"):
+        return True
     if not path.startswith(CODE_PREFIX):
         return False
     rest = PurePosixPath(path[len(CODE_PREFIX):])
@@ -60,6 +62,21 @@ def is_roadmap(path: str) -> bool:
     if path == "apps/code/ROADMAP.md":
         return True
     return path.startswith("docs/") and "roadmap" in PurePosixPath(path).name
+
+
+def submodule_roadmap_changed(revision: str) -> bool:
+    """A gitlink landing includes the ROADMAP change in its pinned Code tree."""
+    path = CODE_PREFIX.rstrip("/")
+    changes = git("diff-tree", "--no-commit-id", "--raw", "-r", revision, "--", path)
+    for line in changes.splitlines():
+        fields = line.split()
+        if len(fields) != 6 or fields[-1] != path:
+            continue
+        old_mode, new_mode, before, after, _, _ = fields
+        if old_mode != ":160000" or new_mode != "160000":
+            return False
+        return bool(git("-C", path, "diff", before, after, "--", "ROADMAP.md").strip())
+    return False
 
 
 def commit_files(revision: str) -> list[str]:
@@ -83,8 +100,6 @@ def commit_files(revision: str) -> list[str]:
 def load_allowlist() -> set[str]:
     # Read the working-tree file first so the checker is runnable before
     # its own first commit; the committed blob is the fallback.
-    from pathlib import Path
-
     worktree = Path(ALLOWLIST_PATH.as_posix())
     if worktree.exists():
         text = worktree.read_text()
@@ -101,9 +116,14 @@ def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
-    # All paths are repository-root-relative; anchor here so the checker
-    # runs correctly from any directory (just runs it from apps/code).
-    os.chdir(git("rev-parse", "--show-toplevel").strip())
+    # Root evidence and the Code gitlink land together in the superproject.
+    root = git("rev-parse", "--show-superproject-working-tree").strip()
+    if not root:
+        root = git("rev-parse", "--show-toplevel").strip()
+    os.chdir(root)
+    if not Path(CODE_PREFIX).is_dir():
+        print("landing evidence requires the A3S OS repository with apps/code", file=sys.stderr)
+        return 1
     base = sys.argv[1]
     rev_list = git("rev-list", "--no-merges", f"{base}..HEAD").split()
     if not rev_list:
@@ -126,7 +146,10 @@ def main() -> int:
                     f"docs/evidence/**/OUTCOME.md — standards §10: code + "
                     f"tests + evidence + ROADMAP row land in ONE commit"
                 )
-            if not any(is_roadmap(f) for f in files):
+            roadmap_changed = any(is_roadmap(f) for f in files)
+            if not roadmap_changed and CODE_PREFIX.rstrip("/") in code:
+                roadmap_changed = submodule_roadmap_changed(revision)
+            if not roadmap_changed:
                 failures.append(
                     f"{subject}: no ROADMAP gate-row touch "
                     f"(apps/code/ROADMAP.md or docs/*roadmap*)"

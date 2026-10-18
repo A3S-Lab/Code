@@ -89,6 +89,14 @@ verification ledger run in release CI. They fail when a product capability,
 event type, or required Agent/Session operation disappears from one official
 SDK.
 
+`SessionOptions.workspace_read_overlay` (`workspaceReadOverlay` in Node) accepts
+an immutable map of workspace-relative paths to client-held text in all three
+SDKs. Text reads prefer the snapshot and fall back to the backend for absent
+paths; writes still use the backend. Paths are normalized and validated at
+session construction, duplicate normalized paths and text over 16 MiB per file
+are refused. Effect isolation ignores the snapshot. A Rust editor host can use
+the existing `WorkspaceReadOverlay` trait for live buffer updates.
+
 Related: [CAPABILITY_INTEGRATED_USE_LEDGER.md](CAPABILITY_INTEGRATED_USE_LEDGER.md)
 (dated effective / efficient / integrated-use snapshot) and
 [FULL_FEATURE_TEST_PLAN.md](FULL_FEATURE_TEST_PLAN.md) §14 (release handoff).

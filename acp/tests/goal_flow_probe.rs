@@ -237,3 +237,63 @@ async fn goal_commands_flow_end_to_end() {
         })
         .await
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires A3S_CONFIG_FILE with anthropic/qwen3.8-flash and no goal_control override"]
+async fn default_engineering_and_goal_continuation_reach_the_live_model() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let workspace = tempfile::tempdir().expect("workspace");
+            let workspace = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
+            let config = PathBuf::from(std::env::var_os("A3S_CONFIG_FILE").expect("host ACL"));
+            let mut launch = load_launch_config(workspace.clone(), Some(config)).expect("host ACL");
+            assert!(launch.config.goal_control.is_none(), "exercise product defaults");
+            launch.model_id = "anthropic/qwen3.8-flash".into();
+            launch.config.default_model = Some(launch.model_id.clone());
+            let agent = Rc::new(A3sCodeAgent::new(launch));
+            let recording = Rc::new(RecordingClient::default());
+            let (agent_in, client_out) = tokio::io::duplex(65536);
+            let (client_in, agent_out) = tokio::io::duplex(65536);
+            let (agent_conn, agent_io) = acp::AgentSideConnection::new(
+                agent.clone(), agent_out.compat_write(), agent_in.compat(), |future| {
+                    tokio::task::spawn_local(future);
+                },
+            );
+            agent.set_client(Rc::new(agent_conn));
+            let (client_conn, client_io) = acp::ClientSideConnection::new(
+                recording.clone(), client_out.compat_write(), client_in.compat(), |future| {
+                    tokio::task::spawn_local(future);
+                },
+            );
+            tokio::task::spawn_local(client_io);
+            tokio::task::spawn_local(agent_io);
+            acp::Agent::initialize(&client_conn, acp::InitializeRequest::new(acp::ProtocolVersion::LATEST))
+                .await.expect("initialize");
+            let created = acp::Agent::new_session(&client_conn, acp::NewSessionRequest::new(workspace))
+                .await.expect("new session without metadata");
+
+            async fn goal_state(client: &acp::ClientSideConnection, session: &acp::SessionId) -> serde_json::Value {
+                let params = serde_json::value::to_raw_value(&serde_json::json!({"session_id":session.0.as_ref()})).expect("params");
+                let result = acp::Agent::ext_method(client, acp::ExtRequest::new("a3s/goal/state", std::sync::Arc::from(params)))
+                    .await.expect("state");
+                serde_json::from_str(result.0.get()).expect("state JSON")
+            }
+            let state = goal_state(&client_conn, &created.session_id).await;
+            assert!(state["work_policy_digest"].is_string(), "engineering must activate without metadata");
+            let response = tokio::time::timeout(
+                Duration::from_secs(240),
+                acp::Agent::prompt(&client_conn, acp::PromptRequest::new(created.session_id.clone(), vec![
+                    acp::ContentBlock::Text(acp::TextContent::new("/goal Reply with exactly HORIZON-OK and do not call tools.")),
+                ])),
+            ).await.expect("goal timeout").expect("goal response");
+            assert_eq!(response.stop_reason, acp::StopReason::EndTurn);
+            let state = goal_state(&client_conn, &created.session_id).await;
+            let text = recording.streamed_text();
+            let slices = text.matches("Goal slice").count();
+            let goal_state = state["definition"]["state"].as_str().expect("bound goal");
+            assert!(slices >= 2 || goal_state == "completed", "default continuation must reach a decision: {text}");
+            assert!(!text.to_ascii_lowercase().contains("internal error"), "{text}");
+            println!("DEFAULT_ACTIVATION model=anthropic/qwen3.8-flash slices={slices} state={goal_state}");
+        })
+        .await;
+}

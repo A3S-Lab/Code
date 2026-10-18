@@ -61,6 +61,22 @@ providers "openai" {{
 memory {{ llm_extraction = false }}'''
     agent = Agent.create(config)
     try:
+        invalid = SessionOptions()
+        invalid.workspace_read_overlay = {"../outside.txt": "refuse"}
+        with pytest.raises(ValueError, match="boundary"):
+            agent.session(str(tmp_path), invalid)
+        (tmp_path / "buffer.txt").write_text("saved\n")
+        (tmp_path / "disk.txt").write_text("disk\n")
+        overlay_options = SessionOptions()
+        overlay_options.workspace_read_overlay = {"./buffer.txt": "unsaved\n"}
+        overlay_options.permission_policy = PermissionPolicy(default_decision="allow")
+        overlay = agent.session(str(tmp_path), overlay_options)
+        try:
+            assert "unsaved" in overlay.read_file("buffer.txt")
+            assert "disk" in overlay.read_file("disk.txt")
+            assert (tmp_path / "buffer.txt").read_text() == "saved\n"
+        finally:
+            overlay.close()
         options = SessionOptions()
         with pytest.raises(ValueError, match="sandbox network mode"):
             options.sandbox_network = "invalid"
@@ -97,6 +113,11 @@ memory {{ llm_extraction = false }}'''
         assert not first["run"].cancel()
         list(second["stream"])
         assert second["run"].snapshot()["status"] == "completed"
+        context = session.context_report()
+        assert context["usage"]["prompt_tokens"] == 20
+        assert context["usage"]["completion_tokens"] == 6
+        assert context["tool_results"] == 0
+        assert context["heaviest"] == []
         request = {"target": {"schema": "a3s.code.execution-target.v1",
                               "session_id": session.session_id, "run_id": second["run"].id}}
         assert session.read_evaluation_evidence(request)["target"] == request["target"]

@@ -9,7 +9,43 @@ use super::{
     WorkspaceTextReader, WorkspaceWriteOutcome,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Immutable client text supplied when an SDK session is created.
+/// Dynamic editor hosts can implement [`WorkspaceReadOverlay`] directly.
+pub struct WorkspaceReadOverlaySnapshot(HashMap<String, String>);
+
+impl WorkspaceReadOverlaySnapshot {
+    /// Validate workspace-relative paths and the same per-file text bound as local reads.
+    pub fn new(files: HashMap<String, String>) -> anyhow::Result<Self> {
+        use super::WorkspacePathResolver;
+        let mut normalized = HashMap::with_capacity(files.len());
+        for (path, text) in files {
+            let path = super::VirtualPathResolver.normalize(&path)?;
+            anyhow::ensure!(
+                !path.is_root(),
+                "workspace read overlay requires a file path"
+            );
+            anyhow::ensure!(
+                text.len() as u64 <= super::local::MAX_TEXT_FILE_BYTES,
+                "workspace read overlay text exceeds the 16 MiB file limit"
+            );
+            anyhow::ensure!(
+                normalized.insert(path.as_str().to_owned(), text).is_none(),
+                "workspace read overlay contains duplicate normalized paths"
+            );
+        }
+        Ok(Self(normalized))
+    }
+}
+
+#[async_trait]
+impl WorkspaceReadOverlay for WorkspaceReadOverlaySnapshot {
+    async fn read_text(&self, path: &WorkspacePath) -> Option<String> {
+        self.0.get(path.as_str()).cloned()
+    }
+}
 
 /// Source of client-held file text for a session.
 #[async_trait]

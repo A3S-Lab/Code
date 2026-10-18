@@ -69,6 +69,12 @@ harbor run -d terminal-bench/terminal-bench@4.0.0 \
 
 ## ACP lane (`TB-ACP1`)
 
+ACP now defaults to engineering discipline and bound-goal continuation. An
+explicit comparison-off arm must use `A3S_CODE_ACP_ENGINEERING_POLICY=none`
+and `A3S_CODE_ACP_GOAL_CONTINUATION=0`; omitted values inherit product defaults.
+The adapter forwards those as `--engineering-policy none` and
+`--no-goal-continuation`. This default change does not itself run an evaluation.
+
 `a3s-code-acp --unattended` runs the host admission loop of
 `terminal_bench_runner`, behind Harbor's stock ACP runner, with every A3S Code
 capability on (`TB-ACP2`): `a3s-vec` lexical FTS search, Code Intelligence

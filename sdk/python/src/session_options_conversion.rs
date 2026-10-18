@@ -258,6 +258,11 @@ fn build_rust_session_options_inner(
         }
         o = o.with_default_security();
     }
+    if let Some(files) = so.workspace_read_overlay {
+        let snapshot = a3s_code_core::workspace::WorkspaceReadOverlaySnapshot::new(files)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        o = o.with_workspace_read_overlay(std::sync::Arc::new(snapshot));
+    }
     if let Some(ref backend) = so.workspace_backend {
         // S3BackendConfig is significantly larger than the other variants;
         // box it to avoid a `clippy::large_enum_variant` warning.

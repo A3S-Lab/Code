@@ -268,8 +268,11 @@ type SessionOptions struct {
 	// SecurityProvider selects the typed security boundary for this session.
 	SecurityProvider *DefaultSecurityProvider `json:"security_provider,omitempty"`
 	// Deprecated: use SecurityProvider: NewDefaultSecurityProvider().
-	DefaultSecurity            *bool                           `json:"default_security,omitempty"`
-	WorkspaceBackend           *WorkspaceBackendConfig         `json:"workspace_backend,omitempty"`
+	DefaultSecurity  *bool                   `json:"default_security,omitempty"`
+	WorkspaceBackend *WorkspaceBackendConfig `json:"workspace_backend,omitempty"`
+	// WorkspaceReadOverlay is an immutable client-text snapshot keyed by relative file path.
+	// Reads prefer it; writes use the backend. Effect isolation ignores it.
+	WorkspaceReadOverlay       map[string]string               `json:"workspace_read_overlay,omitempty"`
 	RemoteGit                  *RemoteGitBackendConfig         `json:"remote_git,omitempty"`
 	WorkspaceRetrieval         *WorkspaceRetrievalOptions      `json:"-"`
 	ImmutableContentAdapter    *ImmutableContentAdapterOptions `json:"-"`
@@ -432,6 +435,23 @@ func AssistantMessage(text string) Message {
 			"text": text,
 		}},
 	}
+}
+
+// HeavyToolResult describes one of the five largest retained tool results.
+type HeavyToolResult struct {
+	Tool       string `json:"tool"`
+	ToolCallID string `json:"tool_call_id"`
+	Bytes      uint64 `json:"bytes"`
+}
+
+// SessionContextReport projects provider usage and retained tool-result weights.
+type SessionContextReport struct {
+	Usage           TokenUsage        `json:"usage"`
+	ToolResults     uint64            `json:"tool_results"`
+	ToolResultBytes uint64            `json:"tool_result_bytes"`
+	RepeatedResults uint64            `json:"repeated_results"`
+	RepeatedBytes   uint64            `json:"repeated_bytes"`
+	Heaviest        []HeavyToolResult `json:"heaviest"`
 }
 
 type TokenUsage struct {

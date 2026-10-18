@@ -67,6 +67,14 @@ pub(super) struct PySession {
 
 #[pymethods]
 impl PySession {
+    /// Tokens, cache usage and tool-result weight from the original session.
+    fn context_report(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let report = self.inner.context_report().map_err(py_code_error)?;
+        let json = serde_json::to_string(&report)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        json_string_to_py(py, &json)
+    }
+
     /// Return current occupancy of the Agent-wide priority scheduler shared by
     /// this session and its siblings.
     fn task_scheduler_stats(&self, py: Python<'_>) -> PyResult<PyObject> {

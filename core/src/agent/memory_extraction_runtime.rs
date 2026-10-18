@@ -1,5 +1,5 @@
 use super::execution_state::ExecutionLoopState;
-use super::{AgentEvent, AgentLoop};
+use super::AgentEvent;
 use crate::durable_memory::DurableTurnEvidence;
 use crate::llm::Message;
 use crate::memory::AgentMemory;
