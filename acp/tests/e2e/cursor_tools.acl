@@ -1,0 +1,54 @@
+# Run with A3S_CONFIG pointing at a trusted Cursor import ACL, an isolated
+# A3S_HOME and workspace, and input.txt containing CURSOR-TUI-8P4Z plus newline.
+# The caller also asserts output.txt bytes; the prompt never contains the token.
+suite "cursor-tools" {
+  version = 1
+
+  scenario "read-through-cursor" {
+    surface = "tui"
+    timeout_ms = 240000
+
+    wait "cursor-model" {
+      text = "cursor ·"
+    }
+    terminal_paste "copy-task" {
+      text = "Use read to read input.txt. In your final answer print its single line followed by a space and completed. Do not write files, run commands or delegate."
+    }
+    press "submit" {
+      key = "Enter"
+    }
+    wait "verified-answer" {
+      regex = "CURSOR-TUI-8P4Z|Turn failed"
+    }
+    expect "actual-file-contents" {
+      text = "CURSOR-TUI-8P4Z"
+    }
+    terminal_recording "terminal-evidence" {
+      path = "terminal/cursor-tools.vt"
+    }
+  }
+
+  scenario "copy-keeps-unverified-completion-closed" {
+    surface = "tui"
+    timeout_ms = 240000
+
+    wait "cursor-model" {
+      text = "cursor ·"
+    }
+    terminal_paste "copy-task" {
+      text = "Use only read and write. Read input.txt, copy its exact bytes to output.txt with write, then read output.txt to verify. Do not run commands or delegate."
+    }
+    press "submit" {
+      key = "Enter"
+    }
+    wait "unverified-copy-refused" {
+      regex = "workspace mutation|Turn failed"
+    }
+    expect "completion-gate-refused" {
+      text = "workspace mutation"
+    }
+    terminal_recording "terminal-evidence" {
+      path = "terminal/cursor-copy.vt"
+    }
+  }
+}

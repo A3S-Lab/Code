@@ -12,6 +12,9 @@
 //!
 //! A3S_CONFIG_FILE=/abs/path/.a3s/config.acl \
 //!   cargo test -p a3s-code-acp --test goal_flow_probe -- --ignored --nocapture --test-threads=1
+//!
+//! `goal_horizon_qwen_flash_keeps_admitting_slices` loads that ACL, forces
+//! `anthropic/qwen3.8-flash`, and resumes a bound goal under a two-slice host policy.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -236,6 +239,290 @@ async fn goal_commands_flow_end_to_end() {
             );
         })
         .await
+}
+
+const QWEN_FLASH: &str = "anthropic/qwen3.8-flash";
+
+/// Approves the first allow option so a live slice can use tools.
+struct AllowingClient {
+    chunks: RefCell<Vec<String>>,
+}
+
+impl AllowingClient {
+    fn streamed_text(&self) -> String {
+        self.chunks.borrow().concat()
+    }
+}
+
+#[async_trait(?Send)]
+impl acp::Client for AllowingClient {
+    async fn request_permission(
+        &self,
+        args: acp::RequestPermissionRequest,
+    ) -> Result<acp::RequestPermissionResponse, acp::Error> {
+        let option = args
+            .options
+            .iter()
+            .find(|option| option.name.to_ascii_lowercase().contains("allow"))
+            .or(args.options.first());
+        let Some(option) = option else {
+            return Ok(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Cancelled,
+            ));
+        };
+        Ok(acp::RequestPermissionResponse::new(
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            )),
+        ))
+    }
+
+    async fn session_notification(&self, args: acp::SessionNotification) -> Result<(), acp::Error> {
+        if let acp::SessionUpdate::AgentMessageChunk(chunk) = &args.update {
+            if let acp::ContentBlock::Text(text) = &chunk.content {
+                self.chunks.borrow_mut().push(text.text.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Live horizon: `qwen3.8-flash` from the operator ACL, with a host
+/// `goal_control` of two slices. One unfinished slice must not be the end
+/// of the goal.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires A3S_CONFIG_FILE pointing at a host ACL that declares anthropic/qwen3.8-flash"]
+async fn goal_horizon_qwen_flash_keeps_admitting_slices() {
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let source = std::env::var_os("A3S_CONFIG_FILE").expect("A3S_CONFIG_FILE");
+            let live = std::fs::read_to_string(&source).expect("read host ACL");
+            // A pasted URL or token sitting between sections is not ACL.
+            // The provider blocks stay intact.
+            let live: String = live
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim();
+                    trimmed.is_empty()
+                        || trimmed.starts_with('#')
+                        || trimmed.contains('=')
+                        || trimmed.contains('{')
+                        || trimmed.contains('}')
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                live.contains("models \"qwen3.8-flash\""),
+                "host ACL does not declare qwen3.8-flash"
+            );
+            let workspace = std::fs::canonicalize({
+                let path =
+                    std::env::temp_dir().join(format!("a3s-goal-horizon-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&path);
+                std::fs::create_dir_all(&path).expect("workspace");
+                path
+            })
+            .expect("canonical workspace");
+            let deadline = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis()
+                + 1_800_000;
+            let host_acl = workspace.join("host.acl");
+            std::fs::write(
+                &host_acl,
+                format!(
+                    "{live}\ngoal_control {{\n  automatic_enabled = true\n  max_slices = \"2\"\n  \
+                     max_no_progress_slices = \"2\"\n  deadline_unix_ms = \"{deadline}\"\n}}\n"
+                ),
+            )
+            .expect("host acl");
+
+            let mut launch = load_launch_config(workspace.clone(), Some(host_acl)).expect("launch");
+            launch.model_id = QWEN_FLASH.to_string();
+            launch.config.default_model = Some(QWEN_FLASH.to_string());
+            assert!(
+                launch
+                    .config
+                    .find_provider("anthropic")
+                    .expect("anthropic provider")
+                    .models
+                    .iter()
+                    .any(|model| model.id == "qwen3.8-flash"),
+                "anthropic/qwen3.8-flash is not in the loaded catalog"
+            );
+            assert!(launch.config.goal_control.is_some());
+
+            let agent = Rc::new(A3sCodeAgent::new(launch));
+            let recording = Rc::new(AllowingClient {
+                chunks: RefCell::new(Vec::new()),
+            });
+            let (agent_in_r, client_out_w) = tokio::io::duplex(65536);
+            let (client_in_r, agent_out_w) = tokio::io::duplex(65536);
+            let (agent_conn, agent_io) = acp::AgentSideConnection::new(
+                agent.clone(),
+                agent_out_w.compat_write(),
+                agent_in_r.compat(),
+                |fut| {
+                    tokio::task::spawn_local(fut);
+                },
+            );
+            agent.set_client(Rc::new(agent_conn));
+            let (client_conn, client_io) = acp::ClientSideConnection::new(
+                recording.clone(),
+                client_out_w.compat_write(),
+                client_in_r.compat(),
+                |fut| {
+                    tokio::task::spawn_local(fut);
+                },
+            );
+            tokio::task::spawn_local(client_io);
+            tokio::task::spawn_local(async move {
+                if let Err(error) = agent_io.await {
+                    eprintln!("GOALHORIZON agent io error: {error:?}");
+                }
+            });
+
+            let created = acp::Agent::new_session(
+                &client_conn,
+                acp::NewSessionRequest::new(workspace.clone()),
+            )
+            .await
+            .expect("session");
+            let session_id = created.session_id.clone();
+            let root = workspace.display().to_string();
+            let created_goal = ext(
+                &client_conn,
+                "a3s/goal/definition",
+                serde_json::json!({
+                    "kind": "create",
+                    "operation_id": "horizon-create",
+                    "goal_id": "horizon",
+                    "session_id": session_id.0.as_ref(),
+                    "workspace": {"id": root, "display_root": root},
+                    "goal": {
+                        "description": "Reply with exactly HORIZON-OK and do not call tools.",
+                        "success_criteria": ["The assistant reply is exactly HORIZON-OK"],
+                        "progress": 0.0,
+                        "achieved": false,
+                        "created_at": 1,
+                        "achieved_at": null
+                    },
+                    "non_goals": [],
+                    "scope_fact_sequences": [],
+                    "work_policy_digest": null,
+                    "expected_goal_revision": null,
+                    "expected_plan_revision": null,
+                    "expected_goal_sequence": null
+                }),
+            )
+            .await;
+            let mut propose = goal_ref("propose_plan", "horizon-propose", &created_goal);
+            propose["proposal_sequence"] = serde_json::Value::Null;
+            propose["plan"] = serde_json::json!({
+                "goal": "Reply HORIZON-OK",
+                "complexity": "Simple",
+                "required_tools": [],
+                "estimated_steps": 1,
+                "steps": [{
+                    "id": "reply",
+                    "content": "Reply with exactly HORIZON-OK and do not call tools.",
+                    "status": "pending",
+                    "priority": "medium",
+                    "success_criteria": "The assistant reply is exactly HORIZON-OK"
+                }]
+            });
+            let proposed = ext(&client_conn, "a3s/goal/plan", propose).await;
+            let mut accept = goal_ref("accept_plan", "horizon-accept", &proposed);
+            accept["plan"] = serde_json::Value::Null;
+            accept["proposal_sequence"] = proposed["plan_fact_sequence"].clone();
+            let accepted = ext(&client_conn, "a3s/goal/plan", accept).await;
+            assert_eq!(accepted["plan_accepted"], true);
+
+            let resume = tokio::time::timeout(
+                Duration::from_secs(240),
+                acp::Agent::prompt(
+                    &client_conn,
+                    acp::PromptRequest::new(
+                        session_id.clone(),
+                        vec![acp::ContentBlock::Text(acp::TextContent::new(
+                            "/goal resume".to_string(),
+                        ))],
+                    ),
+                ),
+            )
+            .await
+            .expect("resume timed out")
+            .expect("resume");
+            assert_eq!(resume.stop_reason, acp::StopReason::EndTurn);
+
+            let text = recording.streamed_text();
+            let lowered = text.to_ascii_lowercase();
+            assert!(
+                !lowered.contains("internal error") && !lowered.contains("no balance"),
+                "resume failed before a slice decision:\n{text}"
+            );
+            let slices = text.matches("Goal slice").count();
+            let state = ext(
+                &client_conn,
+                "a3s/goal/state",
+                serde_json::json!({"session_id": session_id.0.as_ref()}),
+            )
+            .await;
+            let goal_state = state["definition"]["state"].as_str().unwrap_or("");
+            let tick = text
+                .lines()
+                .find(|line| {
+                    let line = line.to_ascii_lowercase();
+                    line.contains("durable goal tick:") || line.contains("durable goal finished")
+                })
+                .unwrap_or("")
+                .trim();
+            println!(
+                "GOALHORIZON model={QWEN_FLASH} slices={slices} state={goal_state} tick={tick}"
+            );
+            assert!(
+                slices >= 2 || goal_state == "completed",
+                "one unfinished slice ended the goal\nstate={goal_state}\n{text}"
+            );
+            if goal_state == "active" {
+                assert!(
+                    tick.to_ascii_lowercase().contains("durable goal tick:"),
+                    "an active goal must stop on a tick decision after the slice cap\n{text}"
+                );
+            }
+        })
+        .await
+}
+
+async fn ext(
+    client: &acp::ClientSideConnection,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let raw = serde_json::value::to_raw_value(&params).expect("params");
+    let response = acp::Agent::ext_method(
+        client,
+        acp::ExtRequest::new(method, std::sync::Arc::from(raw)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{method}: {error:?}"));
+    serde_json::from_str(response.0.get())
+        .unwrap_or_else(|error| panic!("{method} json: {error}; body={}", response.0.get()))
+}
+
+fn goal_ref(kind: &str, operation_id: &str, view: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "operation_id": operation_id,
+        "goal_id": view["binding"]["goal_id"],
+        "session_id": view["binding"]["session_id"],
+        "workspace": view["binding"]["workspace"],
+        "work_policy_digest": view["binding"]["work_policy_digest"],
+        "expected_goal_revision": view["binding"]["goal_revision"],
+        "expected_plan_revision": view["plan_revision"],
+        "expected_goal_sequence": view["goal_sequence"],
+    })
 }
 
 #[tokio::test(flavor = "current_thread")]

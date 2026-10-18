@@ -259,6 +259,19 @@ pub trait HttpClient: Send + Sync {
             "HTTP client does not support a raw streaming body"
         ))
     }
+    /// Keep a framed request open while the caller supplies protocol replies.
+    async fn post_bytes_duplex(
+        &self,
+        _url: &str,
+        _headers: Vec<(&str, &str)>,
+        _body: &[u8],
+        _replies: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        _cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
+        Err(anyhow::anyhow!(
+            "HTTP client does not support duplex streaming"
+        ))
+    }
 }
 
 /// Default HTTP client backed by reqwest
@@ -548,15 +561,56 @@ impl HttpClient for ReqwestHttpClient {
         body: &[u8],
         cancel_token: CancellationToken,
     ) -> Result<StreamingHttpResponse> {
+        self.post_raw_streaming(
+            url,
+            headers,
+            reqwest::Body::from(body.to_vec()),
+            body.len() as u64,
+            cancel_token,
+        )
+        .await
+    }
+
+    async fn post_bytes_duplex(
+        &self,
+        url: &str,
+        headers: Vec<(&str, &str)>,
+        body: &[u8],
+        replies: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
+        let first = futures::stream::iter([body.to_vec()]);
+        let frames = first
+            .chain(tokio_stream::wrappers::ReceiverStream::new(replies))
+            .map(Ok::<_, std::io::Error>);
+        self.post_raw_streaming(
+            url,
+            headers,
+            reqwest::Body::wrap_stream(frames),
+            body.len() as u64,
+            cancel_token,
+        )
+        .await
+    }
+}
+
+impl ReqwestHttpClient {
+    async fn post_raw_streaming(
+        &self,
+        url: &str,
+        headers: Vec<(&str, &str)>,
+        body: reqwest::Body,
+        request_bytes: u64,
+        cancel_token: CancellationToken,
+    ) -> Result<StreamingHttpResponse> {
         let start = std::time::Instant::now();
-        let request_bytes = body.len() as u64;
         tracing::debug!("HTTP POST to {} ({} bytes)", url, request_bytes);
 
         let mut request = self.client.post(url);
         for (key, value) in headers {
             request = request.header(key, value);
         }
-        request = request.body(body.to_vec());
+        request = request.body(body);
 
         let headers_timeout = stream_headers_timeout();
         let headers_timeout_ms = headers_timeout.as_millis();
@@ -769,6 +823,9 @@ pub(crate) fn join_chat_completions_url(base_url: &str, chat_path: &str) -> Stri
 
     format!("{base}{path}")
 }
+
+#[cfg(test)]
+mod duplex_tests;
 
 #[cfg(test)]
 mod tests {

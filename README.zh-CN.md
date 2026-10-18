@@ -467,6 +467,22 @@ task_scheduler {
 即使准入队列已满，调用者和关闭也始终会取得进展
 满。
 
+要在 TUI 复用本机 Cursor 登录，新建 `~/.a3s/cursor.acl`：
+
+```acl
+import_accounts = ["cursor"]
+default_model = "cursor/gpt-5.2"
+```
+
+用 `cursor-agent status` 检查登录，`cursor-agent models` 查看账号模型 ID，
+然后运行 `a3s --config ~/.a3s/cursor.acl code`。账号导入必须由用户配置或
+显式指定的 ACL 授权，仓库配置不能启用它；CLI 不转发 `--import-accounts`。
+Cursor 在 ASK 模式返回显式 JSON 工具请求，由 A3S 校验工具名称和参数，
+执行权限与沙箱检查，再把工具结果传回下一轮。不会执行 Cursor 原生执行消息。
+凭据仅保存在内存，不写入 ACL。此账号通道不提供可靠的 token 和金额用量。
+工具调用已验证 `cursor/gpt-5.2`。其他目录模型可能请求 Cursor 原生工具，
+此类请求会被拒绝。
+
 `Agent::new` 接受 ACL 路径或内联 ACL。异步构建会话
 因此配置、存储、队列、MCP 源和工作区服务是
 在第一回合之前解决。

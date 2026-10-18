@@ -15,6 +15,8 @@ use tokio::process::Command;
 
 #[cfg(windows)]
 pub(crate) mod windows;
+#[cfg(any(windows, test))]
+pub(crate) mod windows_shell;
 #[cfg(windows)]
 pub(crate) use windows::maybe_execute_simple_windows_http_command;
 #[cfg(windows)]

@@ -531,6 +531,25 @@ CC Switch, Grok CLI or Cursor login, list it in `~/.a3s/config.acl`
 pass `--import-accounts cursor`. A repository `.a3s/config.acl` cannot set
 this list.
 
+For the interactive TUI, save a dedicated `~/.a3s/cursor.acl`:
+
+```acl
+import_accounts = ["cursor"]
+default_model = "cursor/gpt-5.2"
+```
+
+Run `cursor-agent status` to check the local login and `cursor-agent models`
+for account model IDs, then `a3s --config ~/.a3s/cursor.acl code`. The CLI
+does not forward `--import-accounts`; use the trusted ACL instead.
+Cursor remains in ASK mode and returns explicit JSON tool requests. A3S
+validates the presented tool names and arguments, applies its ordinary
+permissions and sandbox, and returns tool results to the next model call.
+Cursor's native execution messages are never executed. Login credentials
+remain in memory; the adapter does not write them into ACL. This account
+transport does not report reliable token or monetary usage.
+`cursor/gpt-5.2` is the verified tool-calling model. Other catalog entries
+may request Cursor-native tools instead; those requests fail closed.
+
 `Agent::new` accepts an ACL path or inline ACL. Build sessions asynchronously
 so configuration, stores, queues, MCP sources, and workspace services are
 resolved before the first turn.

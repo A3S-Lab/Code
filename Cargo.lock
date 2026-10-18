@@ -5768,6 +5768,7 @@ dependencies = [
  "cookie_store",
  "futures-core",
  "futures-util",
+ "h2 0.4.19",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",

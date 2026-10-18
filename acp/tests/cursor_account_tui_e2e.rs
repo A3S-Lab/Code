@@ -3,6 +3,8 @@
 //!
 //! The catalog comes from fixture files. The turn does not spawn `agent`.
 
+#![cfg(test)]
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -98,14 +100,21 @@ fn read_hit(stream: &mut TcpStream) -> Option<Hit> {
         stream.flush().ok()?;
     }
     let mut body = buf[header_end + 4..].to_vec();
-    while body.len() < content_length {
-        let n = stream.read(&mut tmp).ok()?;
-        if n == 0 {
-            break;
+    if headers
+        .iter()
+        .any(|(key, value)| key.eq_ignore_ascii_case("transfer-encoding") && value == "chunked")
+    {
+        body = read_chunked_frame(stream, body)?;
+    } else {
+        while body.len() < content_length {
+            let n = stream.read(&mut tmp).ok()?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
         }
-        body.extend_from_slice(&tmp[..n]);
+        body.truncate(content_length);
     }
-    body.truncate(content_length);
     Some(Hit {
         method,
         path,
@@ -114,22 +123,62 @@ fn read_hit(stream: &mut TcpStream) -> Option<Hit> {
     })
 }
 
+fn read_chunked_frame(stream: &mut TcpStream, mut wire: Vec<u8>) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut bytes = [0u8; 4096];
+    loop {
+        let end = loop {
+            if let Some(end) = wire.windows(2).position(|window| window == b"\r\n") {
+                break end;
+            }
+            let count = stream.read(&mut bytes).ok()?;
+            if count == 0 || wire.len() > 1024 * 1024 {
+                return None;
+            }
+            wire.extend_from_slice(&bytes[..count]);
+        };
+        let size = usize::from_str_radix(
+            std::str::from_utf8(&wire[..end]).ok()?.split(';').next()?,
+            16,
+        )
+        .ok()?;
+        if size == 0 || size > 1024 * 1024 {
+            return None;
+        }
+        while wire.len() < end + 2 + size + 2 {
+            let count = stream.read(&mut bytes).ok()?;
+            if count == 0 {
+                return None;
+            }
+            wire.extend_from_slice(&bytes[..count]);
+        }
+        body.extend_from_slice(&wire[end + 2..end + 2 + size]);
+        wire.drain(..end + 2 + size + 2);
+        if body.len() > 1024 * 1024 {
+            return None;
+        }
+        if body.len() >= 5 {
+            let length = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
+            if body.len() >= 5 + length {
+                return Some(body);
+            }
+        }
+    }
+}
+
 fn write_stub_response(stream: &mut TcpStream, ok: bool) -> std::io::Result<()> {
     let payload = if ok {
-        let mut body = envelope(&format!(
-            r#"{{"interactionUpdate":{{"textDelta":{{"text":"{STUB_TEXT}"}}}}}}"#
-        ));
+        let text = serde_json::json!({"text":STUB_TEXT,"tool_calls":[]}).to_string();
+        let mut body = envelope(
+            &serde_json::json!({"interactionUpdate":{"textDelta":{"text":text}}}).to_string(),
+        );
         body.extend(envelope(r#"{"interactionUpdate":{"turnEnded":{}}}"#));
         body
     } else {
         Vec::new()
     };
     let status = if ok { "200 OK" } else { "404 Not Found" };
-    let head = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: application/connect+json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        payload.len()
-    );
-    stream.write_all(head.as_bytes())?;
+    write!(stream, "HTTP/1.1 {status}\r\ncontent-type: application/connect+json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", payload.len())?;
     stream.write_all(&payload)?;
     stream.flush()?;
     let _ = stream.shutdown(std::net::Shutdown::Write);
@@ -198,6 +247,7 @@ providers "mock" {
   models "m1" { }
 }
 default_model = "mock/m1"
+import_accounts = ["cursor"]
 "#,
     )
     .unwrap();
@@ -531,8 +581,16 @@ fn tree_contains_secret(root: &Path) -> bool {
 
 fn assert_cursor_run(stub: &Stub) {
     let hits = stub.hits.lock().expect("hits");
-    assert!(!hits.is_empty(), "stub saw no request");
-    for hit in hits.iter() {
+    assert!(hits.iter().all(|hit| matches!(
+        hit.path.as_str(),
+        "/agent.v1.AgentService/Run" | "/agent.v1.AgentService/GetUsableModels"
+    )));
+    let runs = hits
+        .iter()
+        .filter(|hit| hit.path == "/agent.v1.AgentService/Run")
+        .collect::<Vec<_>>();
+    assert!(!runs.is_empty(), "stub saw no model request");
+    for hit in runs {
         assert_eq!(hit.method, "POST", "unexpected method {}", hit.method);
         assert_eq!(
             hit.path, "/agent.v1.AgentService/Run",
@@ -569,24 +627,6 @@ fn assert_cursor_run(stub: &Stub) {
         assert!(!json_has_key(&value, "excludeWorkspaceContext"));
         assert!(!json_has_key(&value, "customSystemPrompt"));
     }
-}
-
-/// The host effort menu still opens for a cursor row. Escape leaves the
-/// typed id in the composer; Enter submits it.
-fn submit_slash(pty: &mut PtySession, command: &str) {
-    pty.clear_line();
-    pty.type_text(command);
-    let typed = pty.wait_for(command, Duration::from_secs(3));
-    assert_screen_has_no_secret(&typed);
-    pty.escape();
-    std::thread::sleep(Duration::from_millis(450));
-    let armed = pty.screen();
-    assert!(
-        armed.contains(command),
-        "escape cleared the command\n{}",
-        redact(&armed)
-    );
-    pty.enter();
 }
 
 fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
@@ -636,25 +676,32 @@ fn wait_ready(pty: &mut PtySession, needle: &str, timeout: Duration) -> String {
 fn picker_shows_the_cursor_account_and_a_turn_returns_stub_text() {
     let stub = start_stub();
     let fixture = prepare(Login::Present, Some(&stub.origin));
-    let mut pty = open_ready(&fixture);
+    let acl = std::fs::read_to_string(&fixture.config).unwrap();
+    std::fs::write(
+        &fixture.config,
+        acl.replace(
+            "default_model = \"mock/m1\"",
+            "default_model = \"cursor/composer-2.5\"",
+        ),
+    )
+    .unwrap();
+    let binary = tui_binary();
+    let refs = env_refs(&fixture.env);
+    let mut pty = open_pty(&binary, &fixture.workspace, &refs);
+    wait_ready(&mut pty, "cursor · Composer 2.5", Duration::from_secs(45));
+    pty.escape();
     pty.clear_line();
-    // A trailing space opens the model list. The current provider's tab is
-    // showing, so Right moves to the other provider.
-    pty.type_text("/model ");
-    pty.wait_for("From A3S ACL provider mock", Duration::from_secs(8));
-    pty.write_bytes(b"\x1b[C");
-    let picker = pty.wait_for("cursor · Composer 2.5", Duration::from_secs(8));
+    // Inspect the imported catalog without racing a session rebuild.
+    pty.write_bytes(b"\x1b[200~/model \x1b[201~");
+    let picker = pty.wait_for("Logged-in Cursor account", Duration::from_secs(8));
     assert!(
         picker.contains("Logged-in Cursor account"),
         "picker missed the account description\n{}",
         redact(&picker)
     );
     assert_screen_has_no_secret(&picker);
-    submit_slash(&mut pty, "/model cursor/composer-2.5");
-    // `/model <id>` paints the footer before ACP returns. A successful
-    // round trip is then "unchanged", so the pager does not print
-    // "Switched to". A prompt entered while that round trip is open
-    // stays queued until the rebuilt session can take it.
+    pty.escape();
+    pty.clear_line();
     let settled = pty.wait_for("cursor · Composer 2.5", Duration::from_secs(8));
     assert!(
         !settled.contains("Couldn't switch model"),
@@ -764,23 +811,16 @@ fn live_tui_turn_returns_assistant_text() {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("sentinel.txt"), SENTINEL_BYTES).unwrap();
     let config = root.path().join("config.acl");
+    let model_id = live_cursor_model_id();
     std::fs::write(
         &config,
-        r#"
-providers "mock" {
-  api_key = "mock-key"
-  base_url = "http://127.0.0.1:9/v1"
-  models "m1" { }
-}
-default_model = "mock/m1"
-"#,
+        format!("import_accounts = [\"cursor\"]\ndefault_model = \"cursor/{model_id}\"\n"),
     )
     .unwrap();
     let path = std::env::var("PATH").unwrap_or_default();
     let acp = env!("CARGO_BIN_EXE_a3s-code-acp");
     let a3s_home = root.path().join("a3s-home");
     std::fs::create_dir_all(&a3s_home).unwrap();
-    let model_id = live_cursor_model_id();
     let env = vec![
         ("A3S_ACP_AGENT_BIN".into(), acp.to_string()),
         ("A3S_HOME".into(), a3s_home.display().to_string()),
@@ -796,16 +836,9 @@ default_model = "mock/m1"
     assert!(binary.is_file(), "build a3s-code-tui first");
     let refs = env_refs(&env);
     let mut pty = open_pty(&binary, &workspace, &refs);
-    wait_ready(&mut pty, "mock/m1", Duration::from_secs(45));
-    let command = format!("/model cursor/{model_id}");
-    submit_slash(&mut pty, &command);
-    let settled = pty.wait_for("cursor ·", Duration::from_secs(8));
-    assert!(
-        !settled.contains("Couldn't switch model"),
-        "model switch failed\n{settled}"
-    );
+    wait_ready(&mut pty, "cursor ·", Duration::from_secs(45));
     pty.clear_line();
-    pty.type_text("Reply with the single word pong.");
+    pty.type_text("Reply with the one word obtained by joining p and ong. Do not use tools.");
     pty.enter();
     let answered = pty.wait_for("pong", Duration::from_secs(90));
     assert!(
@@ -816,4 +849,82 @@ default_model = "mock/m1"
         std::fs::read(workspace.join("sentinel.txt")).unwrap(),
         SENTINEL_BYTES
     );
+}
+
+#[tokio::test]
+#[ignore = "real Cursor account read/write round trip; spends account quota"]
+async fn live_cursor_tools_read_write_and_verify_actual_workspace_bytes() {
+    use a3s_code_core::config::AccountImport;
+    use a3s_code_core::permissions::{PermissionDecision, PermissionPolicy};
+    use a3s_code_core::{Agent, AgentEvent, PlanningMode, SessionOptions};
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let marker = format!("cursor-tools-{}\n", uuid::Uuid::new_v4());
+    std::fs::write(workspace.join("input.txt"), &marker).unwrap();
+    let config = root.path().join("cursor.acl");
+    std::fs::write(&config, "import_accounts = [\"cursor\"]\n").unwrap();
+    let (launch, _) = a3s_code_acp::load_launch_config_with_imports(
+        workspace.clone(),
+        Some(config),
+        &[AccountImport::Cursor],
+    )
+    .expect("local Cursor login and catalog");
+    let model = "cursor/gpt-5.2";
+    println!("live model {model}");
+    let agent = Agent::from_config(launch.config).await.unwrap();
+    let mut policy = PermissionPolicy::new().allow_all(&["read", "write"]);
+    policy.default_decision = PermissionDecision::Deny;
+    let options = SessionOptions::new()
+        .with_model(model)
+        .with_permission_policy(policy)
+        .with_planning_mode(PlanningMode::Disabled)
+        .with_auto_delegation_enabled(false)
+        .with_manual_delegation_enabled(false)
+        .with_max_tool_rounds(8)
+        .with_completion_attestor(Arc::new(
+            a3s_code_core::completion_attestor::DiskContentAttestor::new(&workspace),
+        ));
+    let session = agent
+        .session_async(workspace.display().to_string(), Some(options))
+        .await
+        .unwrap();
+    let (mut events, handle) = session.stream(
+        "Use only read and write. First read input.txt. Copy its exact bytes to output.txt using write, then finish. Do not run commands or delegate.",
+        None,
+    ).await.unwrap();
+    let mut calls = Vec::new();
+    let result = tokio::time::timeout(Duration::from_secs(240), async {
+        while let Some(event) = events.recv().await {
+            match event {
+                AgentEvent::ToolEnd {
+                    name, exit_code, ..
+                } => {
+                    println!("tool {name} exit {exit_code}");
+                    assert_eq!(exit_code, 0, "workspace tool failed: {name}");
+                    calls.push(name);
+                }
+                AgentEvent::End { text, .. } => return text,
+                AgentEvent::Error { message } => panic!("Cursor tool round trip failed: {message}"),
+                _ => {}
+            }
+        }
+        panic!("stream ended without a final answer");
+    })
+    .await;
+    if result.is_err() {
+        handle.abort();
+    }
+    let _final_text = result.expect("bounded Cursor run");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("output.txt")).unwrap(),
+        marker
+    );
+    assert_eq!(calls, ["read", "write"]);
+    println!("verified exact workspace bytes and read/write tool trace");
 }

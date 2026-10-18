@@ -303,7 +303,7 @@ fn windows_detached_command(
     let powershell =
         crate::tools::builtin::bash::windows_host_powershell(&admitted.cwd).map_err(|error| {
             anyhow!(
-                "failed to resolve PowerShell 7 for {}: {error}",
+                "failed to resolve PowerShell for {}: {error}",
                 admitted.cwd.display()
             )
         })?;

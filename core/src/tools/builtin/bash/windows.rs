@@ -1055,26 +1055,34 @@ impl<'a> JsonLikeParser<'a> {
     }
 }
 
-/// Resolve PowerShell 7 (`pwsh.exe`) for host shell execution on Windows.
+/// Resolve the host PowerShell for shell execution on Windows.
 ///
-/// Product bash and detached sessions require PowerShell 7. This does not use
-/// the AppContainer sandbox path resolver; it only locates the host binary.
+/// This does not use the AppContainer sandbox path resolver; it only locates the host binary.
 #[cfg(windows)]
 pub(crate) fn windows_host_powershell(
     _workspace: &std::path::Path,
 ) -> anyhow::Result<std::path::PathBuf> {
-    use anyhow::Context;
-
-    let program_files = std::env::var_os("ProgramFiles")
-        .filter(|path| !path.is_empty())
-        .map(std::path::PathBuf::from)
-        .context("Windows Program Files directory is unavailable")?;
-    let candidate = program_files.join("PowerShell").join("7").join("pwsh.exe");
-    if !candidate.is_file() {
-        anyhow::bail!(
-            "PowerShell 7 is required at {}; install pwsh.exe before running host shell commands",
-            candidate.display()
-        );
-    }
-    Ok(candidate)
+    let env_dir = |key: &str| {
+        std::env::var_os(key)
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    let candidates = super::windows_shell::host_powershell_candidates(
+        env_dir("ProgramFiles").as_deref(),
+        env_dir("SystemRoot").as_deref(),
+    );
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no PowerShell found at {}; install PowerShell 7 before running host shell commands",
+                candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )
+        })
 }

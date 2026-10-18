@@ -5,6 +5,8 @@
 //! is the `Authorization` header. This client does not launch `agent` or
 //! `cursor-agent`, and it does not execute `execServerMessage`.
 //!
+//! `Run` uses a duplex HTTP/2 stream: acknowledge conversation blobs in
+//! bounded, request-local memory while A3S alone executes presented tools.
 //! `RunSSE` only heartbeats for this account. The Run stream stays open
 //! after the assistant text (heartbeats and `kvServerMessage`, often with
 //! no `turnEnded`), so a quiet gap after text completes the turn.
@@ -15,6 +17,10 @@
 //! selectors for that same entry. Auto is `displayModelId` `auto` and
 //! `modelId` `default`. A catalog lookup that fails leaves the selected
 //! id unchanged.
+
+mod context;
+mod kv;
+mod tool_protocol;
 
 use super::http::{HttpClient, StreamingHttpResponse};
 use super::types::{LlmResponse, LlmResponseMeta, Message, TokenUsage};
@@ -34,6 +40,7 @@ const RUN_PATH: &str = "/agent.v1.AgentService/Run";
 const USABLE_MODELS_PATH: &str = "/agent.v1.AgentService/GetUsableModels";
 const DEFAULT_ENDPOINT: &str = "https://api2.cursor.sh";
 const GENERATION_DEADLINE: Duration = Duration::from_secs(90);
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// The Run stream keeps sending heartbeats after the answer. Return once
 /// assistant text has been quiet for this long.
 const QUIET_AFTER_TEXT: Duration = Duration::from_millis(2_500);
@@ -203,6 +210,7 @@ impl CursorAccountClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
+        tools: &[super::types::ToolDefinition],
         cancel_token: CancellationToken,
     ) -> Result<LlmResponse> {
         let url = self.endpoint();
@@ -211,7 +219,7 @@ impl CursorAccountClient {
                 "cursor account client refused a chat-completions URL"
             ));
         }
-        let prompt = fold_transcript(messages, system);
+        let prompt = tool_protocol::prompt(messages, system, tools)?;
         if prompt.trim().is_empty() {
             return Err(anyhow!("cursor account request has no user text"));
         }
@@ -225,18 +233,25 @@ impl CursorAccountClient {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
+        let (replies, reply_rx) = mpsc::channel(32);
         let response = self
             .http
-            .post_bytes_streaming(&url, header_refs, &body, cancel_token.clone())
+            .post_bytes_duplex(&url, header_refs, &body, reply_rx, cancel_token.clone())
             .await?;
-        let text = read_assistant_text(response, &self.api_key, cancel_token).await?;
+        let text = read_assistant_text(response, &self.api_key, cancel_token, replies).await?;
         if text.trim().is_empty() {
             return Err(anyhow!("cursor account returned no assistant text"));
         }
+        let message = tool_protocol::message(&text, tools)?;
+        let stop_reason = if message.tool_calls().is_empty() {
+            "end_turn"
+        } else {
+            "tool_use"
+        };
         Ok(LlmResponse {
-            message: Message::assistant(&text),
+            message,
             usage: TokenUsage::default(),
-            stop_reason: Some("end_turn".to_string()),
+            stop_reason: Some(stop_reason.to_string()),
             token_logprobs: Vec::new(),
             meta: Some(LlmResponseMeta {
                 provider: Some("cursor".to_string()),
@@ -265,21 +280,6 @@ fn next_id() -> String {
     format!("a3s-{}", MESSAGE_IDS.fetch_add(1, Ordering::Relaxed))
 }
 
-fn fold_transcript(messages: &[Message], system: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    if let Some(system) = system.map(str::trim).filter(|text| !text.is_empty()) {
-        parts.push(system.to_string());
-    }
-    for message in messages {
-        let text = message.text();
-        if text.trim().is_empty() {
-            continue;
-        }
-        parts.push(format!("{}:\n{text}", message.role));
-    }
-    parts.join("\n\n")
-}
-
 fn run_request_json(model: &str, prompt: &str) -> Vec<u8> {
     let body = json!({
         "runRequest": {
@@ -290,7 +290,7 @@ fn run_request_json(model: &str, prompt: &str) -> Vec<u8> {
                         "messageId": next_id(),
                         "mode": "ASK"
                     },
-                    "requestContext": {}
+                    "requestContext": context::empty()
                 }
             },
             "modelDetails": { "modelId": model },
@@ -380,6 +380,11 @@ fn pop_frame(buf: &mut Vec<u8>) -> Result<Option<(bool, Vec<u8>)>> {
     }
     let flags = buf[0];
     let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+    if len > MAX_FRAME_BYTES {
+        return Err(anyhow!(
+            "cursor account response frame exceeds the read bound"
+        ));
+    }
     if buf.len() < 5 + len {
         return Ok(None);
     }
@@ -398,6 +403,11 @@ fn apply_payload(payload: &[u8], text: &mut String) -> FrameControl {
     if let Some(error) = value.get("error") {
         let code = error.get("code").and_then(Value::as_str).unwrap_or("error");
         return FrameControl::Failed(anyhow!("cursor account error: {code}"));
+    }
+    if value.get("execServerMessage").is_some() {
+        return FrameControl::Failed(anyhow!(super::NonRetryableLlmError::new(
+            "Cursor requested its native tools instead of an A3S tool response; select another Cursor model"
+        )));
     }
     // `kvServerMessage`, heartbeats, and other non-text frames are not
     // assistant text and are not executed.
@@ -426,6 +436,7 @@ async fn read_assistant_text(
     response: StreamingHttpResponse,
     secret: &str,
     cancel_token: CancellationToken,
+    replies: mpsc::Sender<Vec<u8>>,
 ) -> Result<String> {
     if !(200..300).contains(&response.status) {
         return Err(anyhow!(
@@ -438,6 +449,7 @@ async fn read_assistant_text(
     let mut buf = Vec::new();
     let mut text = String::new();
     let mut last_text: Option<Instant> = None;
+    let mut blobs = kv::Store::default();
     let deadline = Instant::now() + GENERATION_DEADLINE;
     loop {
         if quiet_gap_elapsed(&text, last_text) {
@@ -471,8 +483,28 @@ async fn read_assistant_text(
             match pop_frame(&mut buf)? {
                 None => break,
                 Some((end, payload)) => {
+                    let reply = match blobs.reply(&payload)? {
+                        Some(reply) => Some(reply),
+                        None => context::reply(&payload)?,
+                    };
+                    if let Some(reply) = reply {
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => return Err(anyhow!("cursor account request was cancelled")),
+                            result = replies.send(connect_envelope(&reply)) => {
+                                result.map_err(|_| anyhow!("cursor account duplex request closed before a protocol reply"))?;
+                            }
+                        }
+                        continue;
+                    }
                     let before = text.len();
-                    match apply_payload(&payload, &mut text) {
+                    let control = apply_payload(&payload, &mut text);
+                    if text.len() > MAX_FRAME_BYTES {
+                        return Err(anyhow!(
+                            "cursor account assistant text exceeds the read bound"
+                        ));
+                    }
+                    match control {
                         FrameControl::Continue if end => {
                             return finish_text(text);
                         }
@@ -531,9 +563,9 @@ impl LlmClient for CursorAccountClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[super::types::ToolDefinition],
+        tools: &[super::types::ToolDefinition],
     ) -> Result<LlmResponse> {
-        self.perform(messages, system, CancellationToken::new())
+        self.perform(messages, system, tools, CancellationToken::new())
             .await
     }
 
@@ -541,10 +573,10 @@ impl LlmClient for CursorAccountClient {
         &self,
         messages: &[Message],
         system: Option<&str>,
-        _tools: &[super::types::ToolDefinition],
+        tools: &[super::types::ToolDefinition],
         cancel_token: CancellationToken,
     ) -> Result<mpsc::Receiver<StreamEvent>> {
-        let response = self.perform(messages, system, cancel_token).await?;
+        let response = self.perform(messages, system, tools, cancel_token).await?;
         let (tx, rx) = mpsc::channel(4);
         let text = response.text();
         let _ = tx.try_send(StreamEvent::TextDelta(text));
@@ -684,6 +716,18 @@ mod tests {
                 error_body: String::new(),
             })
         }
+
+        async fn post_bytes_duplex(
+            &self,
+            url: &str,
+            headers: Vec<(&str, &str)>,
+            body: &[u8],
+            _replies: mpsc::Receiver<Vec<u8>>,
+            cancel_token: CancellationToken,
+        ) -> Result<StreamingHttpResponse> {
+            self.post_bytes_streaming(url, headers, body, cancel_token)
+                .await
+        }
     }
 
     fn heartbeat_frame() -> Vec<u8> {
@@ -706,9 +750,7 @@ mod tests {
         body.extend(envelope(
             r#"{"interactionUpdate":{"textDelta":{"text":" ignore-me","isServerNotice":true}}}"#,
         ));
-        body.extend(envelope(
-            r#"{"kvServerMessage":{"id":"not-assistant-text"}}"#,
-        ));
+        body.extend(envelope(r#"{"conversationCheckpointUpdate":{}}"#));
         body.extend(envelope(r#"{"interactionUpdate":{"turnEnded":{}}}"#));
         body.extend(envelope(
             r#"{"execServerMessage":{"shell":{"command":"rm -rf ."}}}"#,
@@ -853,6 +895,10 @@ mod tests {
         assert_eq!(
             value.pointer("/runRequest/action/userMessageAction/userMessage/mode"),
             Some(&Value::String("ASK".into()))
+        );
+        assert_eq!(
+            value.pointer("/runRequest/action/userMessageAction/requestContext/envInfoComplete"),
+            Some(&Value::Bool(true))
         );
         let rendered = serde_json::to_string(&value).unwrap();
         assert!(!rendered.contains("rm -rf"));
@@ -1020,5 +1066,77 @@ mod tests {
         let record = empty_record();
         complete_model("auto", None, record.clone()).await;
         assert_eq!(run_model_id(&record), "auto");
+    }
+
+    #[tokio::test]
+    async fn account_stream_returns_governed_tool_calls_and_sends_results_back() {
+        let record = empty_record();
+        let text = r#"{"text":"Reading","tool_calls":[{"name":"read","arguments":{"file_path":"input.txt"}}]}"#;
+        let mut response =
+            envelope(&json!({"interactionUpdate":{"textDelta":{"text":text}}}).to_string());
+        response.extend(envelope(r#"{"interactionUpdate":{"turnEnded":{}}}"#));
+        let http = Arc::new(FixtureHttp {
+            record: record.clone(),
+            response,
+            heartbeats_after: 0,
+            catalog: None,
+        });
+        let client = create_client_with_config(
+            LlmConfig::new("cursor", "composer-2.5", BEARER).with_http_client(http),
+        );
+        let tools = [super::super::types::ToolDefinition {
+            name: "read".into(),
+            description: "Read file".into(),
+            parameters: json!({"type":"object"}),
+        }];
+        let mut stream = client
+            .complete_streaming(
+                &[Message::user("read input.txt")],
+                None,
+                &tools,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(stream.recv().await, Some(StreamEvent::TextDelta(text)) if text == "Reading")
+        );
+        let Some(StreamEvent::Done(response)) = stream.recv().await else {
+            panic!("missing Done")
+        };
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+        let call = &response.message.tool_calls()[0];
+        assert_eq!(call.name, "read");
+        client
+            .complete(
+                &[
+                    response.message.clone(),
+                    Message::tool_result(&call.id, "actual contents", false),
+                ],
+                None,
+                &tools,
+            )
+            .await
+            .unwrap();
+        let body = record.body.lock().unwrap().clone();
+        let request: Value = serde_json::from_slice(&body[5..]).unwrap();
+        let prompt = request
+            .pointer("/runRequest/action/userMessageAction/userMessage/text")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let transcript: Value = serde_json::from_str(prompt.lines().last().unwrap()).unwrap();
+        assert_eq!(transcript["tools"][0]["name"], "read");
+        assert_eq!(
+            transcript["messages"][1]["content"][0]["content"],
+            "actual contents"
+        );
+        assert_eq!(
+            transcript["messages"][1]["content"][0]["tool_use_id"],
+            call.id
+        );
+        assert!(transcript["messages"][1]["content"][0]
+            .get("trust")
+            .is_none());
     }
 }

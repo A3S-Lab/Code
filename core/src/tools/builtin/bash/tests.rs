@@ -1599,8 +1599,8 @@ async fn poll_missing_job_returns_tool_error() {
 async fn detach_refuses_when_workspace_has_foreign_dirty_path() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("guest.txt"), "owned").unwrap();
-    crate::external_observation::claim_bound_write(Some("bash-owner"), root.path(), "guest.txt")
-        .unwrap();
+    let owner = format!("bash-detach-owner-{}", std::process::id());
+    crate::external_observation::claim_bound_write(Some(&owner), root.path(), "guest.txt").unwrap();
     let session = format!("bash-detach-foreign-{}", std::process::id());
     crate::shell_session::bind_session(&session, root.path());
     let ctx = ToolContext::new(root.path().to_path_buf()).with_session_id(&session);
@@ -1616,7 +1616,7 @@ async fn detach_refuses_when_workspace_has_foreign_dirty_path() {
         .unwrap();
     assert!(!denied.success);
     crate::shell_session::drop_session(&session);
-    crate::external_observation::release_session("bash-owner");
+    crate::external_observation::release_session(&owner);
 }
 
 #[tokio::test]
@@ -2741,4 +2741,48 @@ async fn unrelated_failure_and_success_never_propose_escalation() {
     assert!(result.success);
     assert!(!result.content.contains("sandbox-induced"));
     crate::external_observation::release_session("bash-hint-plain");
+}
+
+#[test]
+fn windows_host_shell_prefers_powershell_7_then_the_builtin_windows_powershell() {
+    let candidates = windows_shell::host_powershell_candidates(
+        Some(std::path::Path::new(r"C:\Program Files")),
+        Some(std::path::Path::new(r"C:\Windows")),
+    );
+    let names: Vec<_> = candidates
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["pwsh.exe", "powershell.exe"]);
+    assert!(candidates[1].ends_with(
+        std::path::Path::new("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    ));
+    assert_eq!(
+        windows_shell::host_powershell_candidates(None, Some(std::path::Path::new(r"C:\Windows")))
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn windows_shell_guidance_names_the_real_shell_and_its_chaining_rules() {
+    let [pwsh, builtin] = windows_shell::host_powershell_candidates(
+        Some(std::path::Path::new("Program Files")),
+        Some(std::path::Path::new("Windows")),
+    )
+    .try_into()
+    .unwrap();
+    let modern = windows_shell::windows_shell_guidance(Some(&pwsh));
+    assert!(modern.contains("PowerShell 7"), "{modern}");
+    assert!(modern.contains("not GNU bash"));
+    assert!(!modern.contains("`&&` and `||` do not work"));
+
+    let legacy = windows_shell::windows_shell_guidance(Some(&builtin));
+    assert!(legacy.contains("Windows PowerShell 5.1"), "{legacy}");
+    assert!(legacy.contains("`&&` and `||` do not work"));
+
+    assert!(windows_shell::windows_shell_guidance(None).contains("cannot run commands"));
 }
