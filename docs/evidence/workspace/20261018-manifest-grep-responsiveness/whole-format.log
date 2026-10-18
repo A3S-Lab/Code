@@ -1,0 +1,24 @@
+Diff in /Users/roylin/code/a3s/.claude/worktrees/code-indexing/core/src/workspace/mod.rs:51:
+     WorkspaceFileChange, WorkspaceFileChangeKind,
+ };
+ pub use path::VirtualPathResolver;
+-pub use read_overlay::WorkspaceReadOverlay;
+ use path::{
+     default_path_input, has_windows_path_prefix, normalize_relative_path, pathbuf_to_workspace_path,
+ };
+Diff in /Users/roylin/code/a3s/.claude/worktrees/code-indexing/core/src/workspace/mod.rs:58:
+ pub(crate) use path::{escape_control_chars_for_display, validate_relative_pattern};
++pub use read_overlay::WorkspaceReadOverlay;
+ pub use remote_git::{RemoteGitBackend, RemoteGitBackendConfig, RemoteGitConflict};
+ pub use retrieval::{
+     ChunkCatalogLimits, ChunkCatalogSnapshot, ChunkingConfig, CustomWorkspaceChunkingStrategy,
+Diff in /Users/roylin/code/a3s/.claude/worktrees/code-indexing/core/tests/production_file_size_ratchet.rs:18:
+ const CAP_SLACK: usize = 250;
+
+ /// Files over `LIMIT`, with the line count they may not exceed.
+-const OVERSIZE: &[(&str, usize)] = &[
+-];
++const OVERSIZE: &[(&str, usize)] = &[];
+
+ /// ACP-SPLIT1: the ACP protocol file keeps the `acp::Agent` surface and the
+ /// session state. Session opening, turns, asks, rendering, and host extension

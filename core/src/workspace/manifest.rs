@@ -12,13 +12,13 @@ use super::retrieval::{
     WorkspacePersistentIndex,
 };
 use super::{
-    escape_control_chars_for_display, validate_relative_pattern, CommandOutput, CommandRequest,
-    DirectWriteGuard, LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner,
-    WorkspaceDirEntry, WorkspaceFileSystem, WorkspaceGit, WorkspaceGitBranch,
-    WorkspaceGitCheckoutOutput, WorkspaceGitCheckoutRequest, WorkspaceGitCommit,
-    WorkspaceGitCreateBranchRequest, WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest,
-    WorkspaceGitRemote, WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash,
-    WorkspaceGitStashProvider, WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
+    validate_relative_pattern, CommandOutput, CommandRequest, DirectWriteGuard,
+    LocalWorkspaceAccessPolicy, LocalWorkspaceBackend, WorkspaceCommandRunner, WorkspaceDirEntry,
+    WorkspaceFileSystem, WorkspaceGit, WorkspaceGitBranch, WorkspaceGitCheckoutOutput,
+    WorkspaceGitCheckoutRequest, WorkspaceGitCommit, WorkspaceGitCreateBranchRequest,
+    WorkspaceGitCreateWorktreeRequest, WorkspaceGitDiffRequest, WorkspaceGitRemote,
+    WorkspaceGitRemoveWorktreeRequest, WorkspaceGitStash, WorkspaceGitStashProvider,
+    WorkspaceGitStashRequest, WorkspaceGitStatus, WorkspaceGitWorktree,
     WorkspaceGitWorktreeMutation, WorkspaceGitWorktreeProvider, WorkspaceGlobRequest,
     WorkspaceGlobResult, WorkspaceGrepOutcome, WorkspaceGrepRequest, WorkspaceGrepResult,
     WorkspacePath, WorkspacePathResolver, WorkspaceResult, WorkspaceSearch, WorkspaceTextRange,
@@ -41,6 +41,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, watch};
 
 mod file_kind;
+mod grep;
+use grep::GrepWorker;
 mod scanner;
 mod watcher;
 use scanner::is_relevant_event;
@@ -481,10 +483,11 @@ pub struct ManifestWorkspaceBackend {
     persistent_index: OnceLock<Arc<WorkspacePersistentIndex>>,
     /// Optional host-configured content-level grep candidate pruner.
     grep_candidates: OnceLock<crate::workspace::SharedGrepCandidateIndex>,
+    grep_slots: Arc<tokio::sync::Semaphore>,
     /// Auto-built tgrep index keyed by manifest snapshot version. Present only
     /// when the `grep-trigram` feature is enabled and no host override is set.
     #[cfg(feature = "grep-trigram")]
-    auto_grep_candidates: Mutex<Option<(u64, crate::workspace::SharedGrepCandidateIndex)>>,
+    auto_grep_candidates: Arc<Mutex<Option<(u64, crate::workspace::SharedGrepCandidateIndex)>>>,
     owns_manifest: bool,
 }
 
@@ -540,8 +543,9 @@ impl ManifestWorkspaceBackend {
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
             grep_candidates: OnceLock::new(),
+            grep_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(feature = "grep-trigram")]
-            auto_grep_candidates: Mutex::new(None),
+            auto_grep_candidates: Arc::new(Mutex::new(None)),
             owns_manifest: true,
         })
     }
@@ -560,8 +564,9 @@ impl ManifestWorkspaceBackend {
             catalog_runtime: OnceLock::new(),
             persistent_index: OnceLock::new(),
             grep_candidates: OnceLock::new(),
+            grep_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(feature = "grep-trigram")]
-            auto_grep_candidates: Mutex::new(None),
+            auto_grep_candidates: Arc::new(Mutex::new(None)),
             owns_manifest: false,
         })
     }
@@ -588,7 +593,7 @@ impl ManifestWorkspaceBackend {
         #[cfg(feature = "grep-trigram")]
         {
             self.auto_grep_candidates
-                .lock()
+                .try_lock()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|(_, index)| Arc::clone(index)))
         }
@@ -596,79 +601,6 @@ impl ManifestWorkspaceBackend {
         {
             None
         }
-    }
-
-    fn grep_content_candidate_paths(
-        &self,
-        pattern: &str,
-        case_insensitive: bool,
-        search_snapshot: &ManifestSearchSnapshot,
-    ) -> Option<std::collections::BTreeSet<String>> {
-        let index = self.resolve_grep_candidate_index(search_snapshot)?;
-        match index.select_paths(pattern, case_insensitive) {
-            crate::workspace::GrepCandidateSelection::Paths(paths) => Some(paths),
-            crate::workspace::GrepCandidateSelection::Unconstrained
-            | crate::workspace::GrepCandidateSelection::Unavailable => None,
-        }
-    }
-
-    fn resolve_grep_candidate_index(
-        &self,
-        search_snapshot: &ManifestSearchSnapshot,
-    ) -> Option<crate::workspace::SharedGrepCandidateIndex> {
-        if let Some(index) = self.grep_candidates.get() {
-            return Some(Arc::clone(index));
-        }
-        #[cfg(feature = "grep-trigram")]
-        {
-            self.ensure_auto_trigram_candidate_index(search_snapshot)
-        }
-        #[cfg(not(feature = "grep-trigram"))]
-        {
-            let _ = search_snapshot;
-            None
-        }
-    }
-
-    #[cfg(feature = "grep-trigram")]
-    fn ensure_auto_trigram_candidate_index(
-        &self,
-        search_snapshot: &ManifestSearchSnapshot,
-    ) -> Option<crate::workspace::SharedGrepCandidateIndex> {
-        use crate::workspace::TrigramGrepCandidateIndex;
-
-        let version = search_snapshot.snapshot.version;
-        let mut guard = self.auto_grep_candidates.lock().ok()?;
-        if let Some((cached_version, index)) = guard.as_ref() {
-            if *cached_version == version {
-                return Some(Arc::clone(index));
-            }
-        }
-
-        let relative_paths: Vec<String> = search_snapshot
-            .snapshot
-            .files
-            .iter()
-            .filter(|file| !file.binary)
-            .map(|file| file.path.clone())
-            .collect();
-        if relative_paths.is_empty() {
-            return None;
-        }
-
-        let root = self.local.root.clone();
-        let index_dir = TrigramGrepCandidateIndex::default_index_dir(&root);
-        // Drop the previous generation before rewriting the stamp directory.
-        *guard = None;
-        let built = TrigramGrepCandidateIndex::build_from_relative_paths(
-            &root,
-            &index_dir,
-            &relative_paths,
-        )
-        .ok()?;
-        let index: crate::workspace::SharedGrepCandidateIndex = Arc::new(built);
-        *guard = Some((version, Arc::clone(&index)));
-        Some(index)
     }
 
     pub fn manifest(&self) -> Arc<LocalWorkspaceManifest> {
@@ -1009,150 +941,29 @@ impl WorkspaceSearch for ManifestWorkspaceBackend {
         if let Some(ref glob) = request.glob {
             validate_relative_pattern(glob, "grep glob filter")?;
         }
-        self.local.ensure_search_base_allowed(&request.base)?;
+        let permit = Arc::clone(&self.grep_slots)
+            .acquire_owned()
+            .await
+            .map_err(|error| anyhow!("grep admission failed: {error}"))?;
         let Some(search_snapshot) = self.manifest_ready() else {
             return self.fallback_search().grep_with_sources(request).await;
         };
-
-        let regex_pattern = if request.case_insensitive {
-            format!("(?i){}", request.pattern)
-        } else {
-            request.pattern.clone()
+        let worker = GrepWorker {
+            local: Arc::clone(&self.local),
+            recent_ranks: self.recent_path_ranks(&search_snapshot.index),
+            search_snapshot,
+            grep_candidates: self.grep_candidates.get().cloned(),
+            #[cfg(feature = "grep-trigram")]
+            auto_grep_candidates: Arc::clone(&self.auto_grep_candidates),
         };
-        let regex = regex::Regex::new(&regex_pattern)
-            .map_err(|e| anyhow!("Invalid regex pattern '{}': {}", request.pattern, e))?;
-        let glob = request
-            .glob
-            .as_deref()
-            .map(glob::Pattern::new)
-            .transpose()
-            .map_err(|e| anyhow!("Invalid grep glob filter: {e}"))?;
-
-        let mut output = String::new();
-        let mut match_count = 0;
-        let mut file_count = 0;
-        let mut total_size = 0;
-        let mut matched_paths = Vec::new();
-        let mut skipped_oversize = Vec::new();
-        let metadata_only = request.max_output_size == 0;
-
-        let candidates = request
-            .glob
-            .as_deref()
-            .map(|glob| candidate_indices_for_glob(&search_snapshot.index, &request.base, glob))
-            .unwrap_or_else(|| CandidateIndices::Indexed(&search_snapshot.index.all));
-        let recent_ranks = self.recent_path_ranks(&search_snapshot.index);
-        let content_filter = self.grep_content_candidate_paths(
-            &request.pattern,
-            request.case_insensitive,
-            &search_snapshot,
-        );
-        // Dirty order only moves files outside the recent window.
-        let dirty = if dirty_order_can_change(
-            &candidates,
-            &search_snapshot.snapshot.files,
-            &recent_ranks,
-            content_filter.as_ref(),
-        ) {
-            crate::git::dirty_paths(&self.local.root).unwrap_or_default()
-        } else {
-            HashSet::new()
-        };
-
-        for file_index in
-            order_grep_candidates(&candidates, &search_snapshot.index, &recent_ranks, &dirty)
-        {
-            let Some(file) = search_snapshot.snapshot.files.get(file_index) else {
-                continue;
-            };
-            if file.binary {
-                continue;
-            }
-            if let Some(ref allowed) = content_filter {
-                if !allowed.contains(&file.path) {
-                    continue;
-                }
-            }
-            let Some(relative_to_base) = relative_to_base(&file.path, &request.base) else {
-                continue;
-            };
-            if let Some(glob) = &glob {
-                if !glob_matches(glob, relative_to_base) {
-                    continue;
-                }
-            }
-
-            let workspace_path = WorkspacePath::from_normalized(file.path.clone());
-            let Some(content) = self.local.read_search_file(&workspace_path) else {
-                if self.local.search_file_is_oversize(&workspace_path) {
-                    skipped_oversize.push(workspace_path);
-                }
-                continue;
-            };
-            let lines: Vec<&str> = content.lines().collect();
-            let file_matches = lines
-                .iter()
-                .enumerate()
-                .filter_map(|(line_idx, line)| regex.is_match(line).then_some(line_idx))
-                .collect::<Vec<_>>();
-
-            if file_matches.is_empty() {
-                continue;
-            }
-
-            file_count += 1;
-            let display_path = escape_control_chars_for_display(&file.path);
-            let mut path_recorded = false;
-            for &match_idx in &file_matches {
-                if !metadata_only && total_size > request.max_output_size {
-                    return Ok(WorkspaceGrepOutcome {
-                        result: WorkspaceGrepResult {
-                            output,
-                            match_count,
-                            file_count,
-                            truncated: true,
-                        },
-                        matched_paths: Some(matched_paths),
-                        skipped_oversize,
-                    });
-                }
-
-                if !path_recorded {
-                    matched_paths.push(workspace_path.clone());
-                    path_recorded = true;
-                }
-                match_count += 1;
-                if metadata_only {
-                    continue;
-                }
-                let start = match_idx.saturating_sub(request.context_lines);
-                let end = (match_idx + request.context_lines + 1).min(lines.len());
-
-                for (i, line) in lines[start..end].iter().enumerate() {
-                    let abs_i = start + i;
-                    let prefix = if abs_i == match_idx { ">" } else { " " };
-                    let line = format!("{}{}:{}: {}\n", prefix, display_path, abs_i + 1, line);
-                    total_size += line.len();
-                    output.push_str(&line);
-                }
-
-                if request.context_lines > 0 {
-                    output.push_str("--\n");
-                    total_size += 3;
-                }
-            }
-        }
-
-        Ok(WorkspaceGrepOutcome {
-            result: WorkspaceGrepResult {
-                output,
-                match_count,
-                file_count,
-                truncated: false,
-            },
-            matched_paths: Some(matched_paths),
-            skipped_oversize,
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            worker.run(request, &cancellation)
         })
+        .await
+        .map_err(|error| anyhow!("grep worker failed: {error}"))?
     }
 }
 
@@ -1503,6 +1314,8 @@ fn system_time_ms(time: SystemTime) -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
+mod responsiveness_tests;
 #[cfg(test)]
 #[path = "manifest/tests.rs"]
 mod tests;

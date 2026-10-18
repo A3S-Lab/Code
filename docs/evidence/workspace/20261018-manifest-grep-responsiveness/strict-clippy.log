@@ -1,0 +1,408 @@
+    Checking a3s-code-core v9.1.4 (/Users/roylin/code/a3s/.claude/worktrees/code-indexing/core)
+error: unused import: `AgentLoop`
+ --> core/src/agent/auto_delegation.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+  |
+  = note: `-D unused-imports` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/completion_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/execution_entry.rs:3:13
+  |
+3 | use super::{AgentLoop, AgentResult, InvocationContext};
+  |             ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/execution_mode.rs:1:48
+  |
+1 | use super::{AgentEvent, AgentExecutionFailure, AgentLoop, AgentResult, InvocationContext};
+  |                                                ^^^^^^^^^
+
+error: unused import: `super::AgentLoop`
+ --> core/src/agent/hook_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/llm_turn.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/loop_builder.rs:1:26
+  |
+1 | use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
+  |                          ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/loop_runtime.rs:5:25
+  |
+5 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/memory_extraction_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/parallel_tool_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/plan_execution.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/planning_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/prompt_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `super::AgentLoop`
+ --> core/src/agent/telemetry_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/tool_completion_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/tool_execution_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, ToolCommand};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/tool_guard_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `super::AgentLoop`
+ --> core/src/agent/tool_result_runtime.rs:2:5
+  |
+2 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/tool_turn.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+error: unused import: `AgentLoop`
+ --> core/src/agent/turn_context.rs:1:62
+  |
+1 | use super::{context_perception, project_context, AgentEvent, AgentLoop};
+  |                                                              ^^^^^^^^^
+
+error: method `add_tool_calls` is never used
+    --> core/src/agent.rs:1031:19
+     |
+1012 | impl AgentExecutionFailure {
+     | -------------------------- method in this implementation
+...
+1031 |     pub(crate) fn add_tool_calls(&mut self, count: usize) {
+     |                   ^^^^^^^^^^^^^^
+     |
+     = note: `-D dead-code` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: constant `SYNTHESIS_CONTINUATION_MARKER` is never used
+ --> core/src/agent/auto_delegation.rs:8:7
+  |
+8 | const SYNTHESIS_CONTINUATION_MARKER: &str = "[synthesis]";
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: field `reason` is never read
+  --> core/src/agent/auto_delegation.rs:21:5
+   |
+19 | struct AutoDelegationPlan {
+   |        ------------------ field in this struct
+20 |     tasks: Vec<AutoDelegationTask>,
+21 |     reason: String,
+   |     ^^^^^^
+   |
+   = note: `AutoDelegationPlan` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+error: struct `AutoDelegationOutcome` is never constructed
+  --> core/src/agent/auto_delegation.rs:24:19
+   |
+24 | pub(super) struct AutoDelegationOutcome {
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+
+error: method `maybe_apply_auto_delegation` is never used
+  --> core/src/agent/auto_delegation.rs:66:25
+   |
+31 | impl crate::agent::TurnEngine {
+   | ----------------------------- method in this implementation
+...
+66 |     pub(super) async fn maybe_apply_auto_delegation(
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `prompt_allows_auto_delegation` is never used
+   --> core/src/agent/auto_delegation.rs:179:4
+    |
+179 | fn prompt_allows_auto_delegation(prompt: &str) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: struct `ExecutionRoute` is never constructed
+ --> core/src/agent/execution_mode.rs:9:8
+  |
+9 | struct ExecutionRoute {
+  |        ^^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+   --> core/src/agent/execution_mode.rs:17:19
+    |
+ 16 | impl crate::agent::TurnEngine {
+    | ----------------------------- associated items in this implementation
+ 17 |     pub(super) fn preserve_original_prompt_for_execution(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 58 |     pub async fn execute_with_session(
+    |                  ^^^^^^^^^^^^^^^^^^^^
+...
+ 79 |     pub(crate) async fn execute_with_invocation(
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^
+...
+187 |     async fn resolve_execution_route(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+...
+262 |     fn resolve_execution_style(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+297 |     pub(super) fn resolve_planning_decision(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+311 |     async fn record_execution_result(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: associated items `fire_pre_planning`, `fire_post_planning`, and `planning_strategy_for_plan` are never used
+   --> core/src/agent/hook_runtime.rs:159:25
+    |
+ 24 | impl crate::agent::TurnEngine {
+    | ----------------------------- associated items in this implementation
+...
+159 |     pub(super) async fn fire_pre_planning(
+    |                         ^^^^^^^^^^^^^^^^^
+...
+210 |     pub(super) async fn fire_post_planning(
+    |                         ^^^^^^^^^^^^^^^^^^
+...
+239 |     fn planning_strategy_for_plan(plan: &ExecutionPlan) -> PlanningStrategy {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `apply_pre_planning_modifications` is never used
+   --> core/src/agent/hook_runtime.rs:392:4
+    |
+392 | fn apply_pre_planning_modifications(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `first_string` is never used
+   --> core/src/agent/hook_runtime.rs:437:4
+    |
+437 | fn first_string(
+    |    ^^^^^^^^^^^^
+
+error: function `planning_hints` is never used
+   --> core/src/agent/hook_runtime.rs:451:4
+    |
+451 | fn planning_hints(value: Option<&serde_json::Value>) -> Option<String> {
+    |    ^^^^^^^^^^^^^^
+
+error: method `execute_loop` is never used
+  --> core/src/agent/loop_runtime.rs:22:25
+   |
+15 | impl crate::agent::TurnEngine {
+   | ----------------------------- method in this implementation
+...
+22 |     pub(super) async fn execute_loop(
+   |                         ^^^^^^^^^^^^
+
+error: struct `ParallelStepResult` is never constructed
+  --> core/src/agent/plan_execution.rs:15:19
+   |
+15 | pub(super) struct ParallelStepResult {
+   |                   ^^^^^^^^^^^^^^^^^^
+
+error: associated function `build_envelope` is never used
+  --> core/src/agent/plan_execution.rs:31:12
+   |
+29 | impl ParallelStepResult {
+   | ----------------------- associated function in this implementation
+30 |     /// Build the full parallel-results JSON envelope injected into history.
+31 |     pub fn build_envelope(results: Vec<ParallelStepResult>) -> Value {
+   |            ^^^^^^^^^^^^^^
+
+error: struct `DelegatedParallelChildResult` is never constructed
+  --> core/src/agent/plan_execution.rs:40:8
+   |
+40 | struct DelegatedParallelChildResult {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `accumulate_result_accounting` is never used
+  --> core/src/agent/plan_execution.rs:46:4
+   |
+46 | fn accumulate_result_accounting(
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `push_published_completions` is never used
+  --> core/src/agent/plan_execution.rs:57:15
+   |
+57 | pub(super) fn push_published_completions(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `delegated_mutation_without_closure` is never used
+  --> core/src/agent/plan_execution.rs:80:15
+   |
+80 | pub(super) fn delegated_mutation_without_closure(metadata: &Option<Value>) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `remember_completion_gate` is never used
+   --> core/src/agent/plan_execution.rs:102:4
+    |
+102 | fn remember_completion_gate(slot: &mut Option<String>, message: &str) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `accumulate_failure_accounting` is never used
+   --> core/src/agent/plan_execution.rs:108:4
+    |
+108 | fn accumulate_failure_accounting(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+   --> core/src/agent/plan_execution.rs:121:19
+    |
+120 | impl crate::agent::TurnEngine {
+    | ----------------------------- associated items in this implementation
+121 |     pub(super) fn normalized_plan_tool(step: &Task) -> Option<&str> {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+128 |     pub(super) fn should_delegate_plan_step(step: &Task) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+135 |     fn can_auto_delegate_plan_wave(&self, steps: &[(Task, usize)]) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+147 |     fn should_delegate_plan_wave(&self, steps: &[(Task, usize)]) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+154 |     pub(super) fn delegated_agent_for_step(step: &Task) -> &'static str {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+206 |     pub(super) fn delegated_prompt_for_step_with_goal(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+235 |     pub(super) fn delegated_task_args_with_goal(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+248 |     pub(super) fn parallel_delegated_task_args_with_goal(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+268 |     fn delegated_parallel_child_results(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+304 |     pub(super) async fn execute_plan(
+    |                         ^^^^^^^^^^^^
+
+error: associated items `preserve_plan_goal_context`, `emit_task_updated`, `execute_with_planning`, and `check_goal_achievement_scoped` are never used
+   --> core/src/agent/planning_runtime.rs:9:19
+    |
+  8 | impl crate::agent::TurnEngine {
+    | ----------------------------- associated items in this implementation
+  9 |     pub(super) fn preserve_plan_goal_context(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 48 |     pub(super) async fn emit_task_updated(
+    |                         ^^^^^^^^^^^^^^^^^
+...
+218 |     pub async fn execute_with_planning(
+    |                  ^^^^^^^^^^^^^^^^^^^^^
+...
+459 |     async fn check_goal_achievement_scoped(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: method `execute_delegated_plan_tool` is never used
+  --> core/src/agent/tool_execution_runtime.rs:88:25
+   |
+87 | impl crate::agent::TurnEngine {
+   | ----------------------------- method in this implementation
+88 |     pub(super) async fn execute_delegated_plan_tool(
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: field `calls` is never read
+ --> core/src/fact_control/executor_tools.rs:9:16
+  |
+6 | pub(super) struct ExecutorTools {
+  |                   ------------- field in this struct
+...
+9 |     pub(super) calls: Arc<AtomicUsize>,
+  |                ^^^^^
+  |
+  = note: `ExecutorTools` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+error: constant `PLAN_EXECUTE_GOAL` is never used
+   --> core/src/prompts.rs:112:11
+    |
+112 | pub const PLAN_EXECUTE_GOAL: &str = include_str!("../prompts/planning/plan_execute_goal.md");
+    |           ^^^^^^^^^^^^^^^^^
+
+error: constant `PLAN_EXECUTE_STEP` is never used
+   --> core/src/prompts.rs:115:11
+    |
+115 | pub const PLAN_EXECUTE_STEP: &str = include_str!("../prompts/planning/plan_execute_step.md");
+    |           ^^^^^^^^^^^^^^^^^
+
+error: this OR pattern can be rewritten using a range
+  --> core/src/llm/error.rs:63:26
+   |
+63 |     if !matches!(status, 401 | 402 | 403) {
+   |                          ^^^^^^^^^^^^^^^ help: try: `401..=403`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_range_patterns
+   = note: `-D clippy::manual-range-patterns` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::manual_range_patterns)]`
+
+error: could not compile `a3s-code-core` (lib) due to 48 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: field `calls` is never read
+ --> core/src/fact_control/executor_tools.rs:9:16
+  |
+6 | pub(super) struct ExecutorTools {
+  |                   ------------- field in this struct
+...
+9 |     pub(super) calls: Arc<AtomicUsize>,
+  |                ^^^^^
+  |
+  = note: `ExecutorTools` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+  = note: `-D dead-code` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `a3s-code-core` (lib test) due to 20 previous errors

@@ -1,0 +1,14 @@
+
+running 1 test
+
+thread 'workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy' (43378791) panicked at core/src/workspace/manifest/responsiveness_tests.rs:82:5:
+a busy candidate provider prevented another workspace read
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy ... FAILED
+
+failures:
+
+failures:
+    workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5050 filtered out; finished in 2.09s

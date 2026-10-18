@@ -1,7 +1,8 @@
 # 执行可用性与工作区索引优化计划
 
-状态：R0 的技能查询和结构化生成结算修复已实现，相关 139 项测试本地通过；
-整体验收仍未完成，基线格式/Clippy 门禁待修复，其余阶段尚未实施。2026-10-18。
+状态：R0 的只读结算修复和 I1 首批异步线程解阻塞已实现，相关 257 项测试本地通过；
+整体验收仍未完成，基线格式/Clippy 门禁待修复；索引仍需改为后台增量构建。
+其余阶段尚未实施。2026-10-18。
 
 目标：授权任务能在符合所需隔离能力的后端完成；索引只提供加速，
 不成为执行任务、文件搜索、取消或关闭会话的前置条件。
@@ -15,17 +16,22 @@
 | `core/src/agent_api/session_sandbox.rs` | 构造原生后端成功即可被选中；macOS Guest 只服务 deny 网络模式，需要额外 shim、镜像和 HVF | “能构造”与“能完成本次任务”脱节；需要联网的安装不能由 deny-only Guest 替代 |
 | Code 依赖 | 本规划基线 `f0977158` 仍固定 Sandbox `0.2.3` / `f301bf0` | 已发布的 Sandbox 0.3.0 能力报告尚未接入该消费端 |
 | `tools/skill.rs`、`generate_object.rs` 与调用账本 | 基线中的 `SearchSkillsTool` 和 `GenerateObjectTool` 没有声明只读 capabilities；真实会话技能查询成功返回但 effects 为 incomplete。修复后，两者的大文件工作区会话测试均通过 | 消除这两种只读调用因工作区观察预算失败而产生的虚假欠账；真实未知写入仍保持未结算，执行型 Skill 保留原有保守声明 |
-| `workspace/manifest.rs` | grep 在查询 Future 内同步构建全工作区 trigram 索引，按 manifest 版本整体失效 | 限定目录的搜索仍等待全库处理，反复编辑导致反复构建 |
+| `workspace/manifest.rs` | 规划基线在查询 Future 内同步构建全工作区 trigram 索引；I1 首批已移到每后端单个 worker，按 manifest 版本整体失效的机制仍在 | 异步线程可以响应其他读取和 deadline；查询仍等待构建，限定范围和增量索引尚待修复 |
 | `grep_candidates/trigram_index.rs` | 全文件读取，先按字节产生 Vec，再收集 HashSet；现有文件数上限不能限制单文件和总内存 | 大文件会放大 CPU、内存和取消延迟 |
 | `workspace/services.rs` | 本地操作默认 `operation_timeout=None`；同步计算还会阻止异步定时器轮询 | 只增加 timeout 配置不能修复阻塞 |
 | `workspace/retrieval/runtime.rs` | BM25 已有后台协调、合并更新和重试；仍须验证与前台的资源竞争、队列容量及关闭行为 | 保留现有实现，补齐有证据的缺口，避免重写所有索引 |
 
-独立复现测试证明慢候选提供器使 current-thread runtime 的定时器无法及时执行。
-原生生产文件未改动；复现补丁和失败日志见
+规划阶段的独立复现测试证明慢候选提供器使 current-thread runtime 的定时器无法及时执行。
+该阶段未保留生产改动；复现补丁和失败日志见
 [诊断证据](../evidence/workspace/20261018-execution-index-plan/OUTCOME.md)。
 
 R0 当前实现与基线门禁对照见
 [只读结算修复证据](../evidence/workspace/20261018-read-only-settlement/OUTCOME.md)。
+
+I1 首批将候选选择、构建和精确扫描移出异步线程，取消请求时向扫描发出信号，
+并让实际 worker 在退出前持有并发名额。同步提供器、原有索引构造器和阻塞 I/O
+尚不能中途停止，不能宣称后台 worker 已达到停止时延门禁。见
+[搜索响应性证据](../evidence/workspace/20261018-manifest-grep-responsiveness/OUTCOME.md)。
 
 Sandbox 发布提交有三平台成功记录，但同源后续 CI 的 macOS 单独 CONNECT
 用例再次出现 `PermissionError: Operation not permitted`。网络能力的稳定性仍需

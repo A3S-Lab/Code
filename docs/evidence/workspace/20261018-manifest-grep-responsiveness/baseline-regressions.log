@@ -1,0 +1,151 @@
+   Compiling a3s-code-core v9.1.4 (/Users/roylin/code/a3s/.claude/worktrees/code-indexing/core)
+warning: unused import: `AgentLoop`
+ --> core/src/agent/auto_delegation.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/completion_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/execution_entry.rs:3:13
+  |
+3 | use super::{AgentLoop, AgentResult, InvocationContext};
+  |             ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/execution_mode.rs:1:48
+  |
+1 | use super::{AgentEvent, AgentExecutionFailure, AgentLoop, AgentResult, InvocationContext};
+  |                                                ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/hook_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/llm_turn.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/loop_builder.rs:1:26
+  |
+1 | use super::{AgentConfig, AgentLoop, ModelMiddlewareHealthSnapshot, ModelMiddlewareObs};
+  |                          ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/loop_runtime.rs:5:25
+  |
+5 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/memory_extraction_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/parallel_tool_runtime.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/planning_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, AgentResult};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/prompt_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/telemetry_runtime.rs:1:5
+  |
+1 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_execution_runtime.rs:1:25
+  |
+1 | use super::{AgentEvent, AgentLoop, ToolCommand};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_guard_runtime.rs:2:25
+  |
+2 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `super::AgentLoop`
+ --> core/src/agent/tool_result_runtime.rs:2:5
+  |
+2 | use super::AgentLoop;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/tool_turn.rs:3:25
+  |
+3 | use super::{AgentEvent, AgentLoop};
+  |                         ^^^^^^^^^
+
+warning: unused import: `AgentLoop`
+ --> core/src/agent/turn_context.rs:1:62
+  |
+1 | use super::{context_perception, project_context, AgentEvent, AgentLoop};
+  |                                                              ^^^^^^^^^
+
+warning: field `calls` is never read
+ --> core/src/fact_control/executor_tools.rs:9:16
+  |
+6 | pub(super) struct ExecutorTools {
+  |                   ------------- field in this struct
+...
+9 |     pub(super) calls: Arc<AtomicUsize>,
+  |                ^^^^^
+  |
+  = note: `ExecutorTools` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `a3s-code-core` (lib test) generated 20 warnings (run `cargo fix --lib -p a3s-code-core --tests` to apply 18 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 1m 51s
+     Running unittests src/lib.rs (/tmp/a3s-idx-target/debug/deps/a3s_code_core-72a400686c50f27a)
+
+running 2 tests
+
+thread 'workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider' (43378365) panicked at core/src/workspace/manifest/responsiveness_tests.rs:112:5:
+the search prevented its own deadline from running
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy' (43378366) panicked at core/src/workspace/manifest/responsiveness_tests.rs:82:5:
+a busy candidate provider prevented another workspace read
+test workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy ... FAILED
+test workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider ... FAILED
+
+failures:
+
+failures:
+    workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider
+    workspace::manifest::responsiveness_tests::grep_keeps_file_reads_responsive_while_a_candidate_provider_is_busy
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 5049 filtered out; finished in 2.12s
+
+error: test failed, to rerun pass `-p a3s-code-core --lib`

@@ -1,0 +1,14 @@
+
+running 1 test
+
+thread 'workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider' (43378792) panicked at core/src/workspace/manifest/responsiveness_tests.rs:112:5:
+the search prevented its own deadline from running
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider ... FAILED
+
+failures:
+
+failures:
+    workspace::manifest::responsiveness_tests::a_search_deadline_does_not_wait_for_the_candidate_provider
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5050 filtered out; finished in 2.12s

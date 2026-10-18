@@ -1,0 +1,58 @@
+{
+  "base": "ed786057b1c0a8cc3e9542a818ad33f30abf3e61",
+  "rust_toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "sources_sha256": {
+    "core/src/workspace/manifest.rs": "ef2a17c2c048f01db8147eabdf8d183a6801ebc8b5bd3bf16feb5fca1e7c6d0b",
+    "core/src/workspace/manifest/grep.rs": "2473caa84f54340c5a009641e24419178ec0dfafa8ae49333bb366a8ab19d403",
+    "core/src/workspace/manifest/responsiveness_tests.rs": "50bb7b61fb843c113a3058cf002ba047bc00a7671eaf1d02025316410b893bb9",
+    "core/tests/support/production_graph.rs": "64268fa1790303d42d93d8644f80f9fd880dd5e533c07f3902148dcb6523a70b",
+    "core/tests/production_file_size_ratchet.rs": "673c21ce1b28dbaac943c0358015b9c040ccab1475b132efabd5774cdfcc43db",
+    "core/tests/production_unwrap_ratchet.rs": "b5321b69c733ddd4115b41ced617ed63dd2ad90ac2432ff2e22442db000875ce"
+  },
+  "log_normalization": "Trailing whitespace removed; one final newline. Original /tmp log hashes retained separately.",
+  "raw_logs_sha256": {
+    "baseline-regressions.log": "97acddcfe561e168027046e1643b9d8719b6e9ae2e1325ecafd99cd533e06040",
+    "baseline-read-solo.log": "a6cf38fbc28b2ef8f5d19b09cb743cb3cd6128aec134f11a9ff2ea25b07ffe61",
+    "baseline-deadline-solo.log": "d63b84d4bed402dc03c5ae507db457110cbc72cd1de086b367f4069b2584748c",
+    "fixed-regressions.log": "e61810c1fe6154a771100ae8f8688c09cb0b02bce2946516e4b7f314fa537254",
+    "fixed-family.log": "229e94cf565aa87821527e9b73ce5277fe58901934a6a5887e46ea7994e03210",
+    "test-compile.log": "d314f83b8733c6ec4777c133b04c833fedf4a400235fdc1e2dea01fe61bee62d",
+    "no-default-features.log": "8456b31a629fd0b4e3c3aca81fda80fcfe5e47f88083c8a10262fcbe01e7ef4d",
+    "whole-format.log": "ad938fd2d1d62979b607bcbc644040605fb601155e1600d10e7bfd120eeb4b92",
+    "strict-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "diagnostics-comparison.txt": "e0d249119afa2fd21900e3852e54f36daf138604b876e33e5172d54b34bd0a66",
+    "size-ratchet.log": "f07c5f8c1e9d860b379d97e32cb2ef3c87705b2085c5752e621680e1ddc36c11",
+    "unwrap-ratchet.log": "8c2b2b9f8a52e6d75934be7a8f1916b7152f3c1642c009577a93d476c28fd612",
+    "landing-check.log": "99e794154b41bb4008831cf8acdcffd5277cacd7c73b7e7d018cd4959cb7cf7a"
+  },
+  "logs_sha256": {
+    "baseline-regressions.log": "97acddcfe561e168027046e1643b9d8719b6e9ae2e1325ecafd99cd533e06040",
+    "baseline-read-solo.log": "f674e3bafd33f6b07fe5df39058c887999920c9fa590783aa227e53f1c8220ff",
+    "baseline-deadline-solo.log": "d5724115709245452684d5bd47ee08b918fce88b0ce1e325cb4fcb724c092c86",
+    "fixed-regressions.log": "121b9d9e476c22400c2083d919ab131a24a420bf2df66a846625a3ff12b66433",
+    "fixed-family.log": "7a53af1b0069eb3a346dfbc2c90b295ee0df2d5a734405a1d248edf7b26e6c76",
+    "test-compile.log": "d314f83b8733c6ec4777c133b04c833fedf4a400235fdc1e2dea01fe61bee62d",
+    "no-default-features.log": "8456b31a629fd0b4e3c3aca81fda80fcfe5e47f88083c8a10262fcbe01e7ef4d",
+    "whole-format.log": "9035484f5602d4aef464720d0431cce8f42bc75d0b2498a5b51fc62317cf1173",
+    "strict-clippy.log": "e2ac29d099a8f0f8acfb2739498b2594063c7387ad3d48f67a1e7892bdc9ee5d",
+    "diagnostics-comparison.txt": "e0d249119afa2fd21900e3852e54f36daf138604b876e33e5172d54b34bd0a66",
+    "size-ratchet.log": "31b36337ca74441a2b516dd2f65d90390ff817f517cb818ff481f91cf3767d80",
+    "unwrap-ratchet.log": "6b0b31491a34f594fc530cd082670d6b446190a5f7de6bfec3a7e8b437e8caca",
+    "landing-check.log": "99e794154b41bb4008831cf8acdcffd5277cacd7c73b7e7d018cd4959cb7cf7a"
+  },
+  "command_exit_codes": {
+    "baseline_regressions": 101,
+    "baseline_read_solo": 101,
+    "baseline_deadline_solo": 101,
+    "fixed_regressions": 0,
+    "fixed_family": 0,
+    "test_compile": 0,
+    "no_default_features": 0,
+    "changed_file_format": 0,
+    "whole_format": 1,
+    "strict_clippy": 101,
+    "size_ratchet": 0,
+    "unwrap_ratchet": 0,
+    "landing_check": 1
+  }
+}
