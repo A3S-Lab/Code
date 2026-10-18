@@ -1,0 +1,7 @@
+
+running 1 test
+release smoke: model="deepseek/deepseek-v4.1-flash" stop="end_turn" reply="READY" seconds=7.4
+test one_real_acp_turn_ends_with_end_turn ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.43s
+

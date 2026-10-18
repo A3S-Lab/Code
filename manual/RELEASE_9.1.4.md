@@ -24,9 +24,22 @@ The delta is listed under `## [9.1.4]` in `CHANGELOG.md`.
    the committed source. Cargo verifies ACP against the packaged Core.
 3. `cargo install --path acp` from a clean checkout of the committed
    source, then one ACP turn against a real model.
-4. Upload Core, then ACP. The upload is a manual step, outside this
-   candidate's automation.
+4. Run the Release workflow's qualification mode on main. It builds and checks
+   the five-platform ACP/TUI archive matrix without uploading packages.
+5. Create the signed `v9.1.4` tag at the qualified main commit. The tag runs
+   the same qualification, uploads Core followed by ACP, and publishes the
+   complete binary archives and checksums as a GitHub Release.
+
+The workflow also supports an explicit dispatch on the stable tag with
+`publish=true` to resume a failed delivery. `publish_sdks` defaults to false;
+the aligned SDKs remain outside this runtime release. Existing active registry
+versions are verified before a retry skips them; a failed ACP upload keeps the
+release red. Source code is on main, but that alone does not mean a version has
+been uploaded.
 
 Status: candidate. Gates 1–3 are recorded in
 [the 9.1.4 candidate evidence](../../../docs/evidence/code-harness/20261017-release-914-candidate/OUTCOME.md).
-Gate 4 has not run.
+Final-source packaging, real-provider smoke and workflow qualification are
+tracked in [the runtime release record](../docs/evidence/release/20261018-runtime-914/OUTCOME.md).
+The registry upload and hosted archive matrix remain pending until that record
+identifies successful delivery.

@@ -1,0 +1,26 @@
+    Updating crates.io index
+   Packaging a3s-code-core v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/core)
+    Updating crates.io index
+    Packaged 1118 files, 17.4MiB (3.5MiB compressed)
+warning: manifest has no documentation, homepage or repository
+  |
+  = note: see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
+   Packaging a3s-code-acp v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/acp)
+    Updating crates.io index
+    Packaged 114 files, 1.7MiB (394.9KiB compressed)
+   Verifying a3s-code-core v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/core)
+   Compiling a3s-code-core v9.1.4 (/tmp/a3s-code-release-914-target/package/a3s-code-core-9.1.4)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.90s
+   Verifying a3s-code-acp v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/acp)
+    Updating crates.io index
+   Compiling a3s-code-acp v9.1.4 (/tmp/a3s-code-release-914-target/package/a3s-code-acp-9.1.4)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `a3s-code-acp` (bin "a3s-code-acp") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.47s
+   Uploading a3s-code-core v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/core)
+warning: aborting upload due to dry run
+   Uploading a3s-code-acp v9.1.4 (/private/tmp/a3s-main-landing-20261018/root-landing/apps/code/acp)
+warning: aborting upload due to dry run

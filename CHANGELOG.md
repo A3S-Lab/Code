@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An ACP process that exits during initialization now closes the TUI request
+  immediately and reports trusted ACL configuration guidance. The timeout hint
+  uses `A3S_CODE_CONNECT_TIMEOUT_SECS` and the `a3s code` command; the previous
+  timeout environment variable remains accepted.
+- Empty unattended worker exits retain a concrete failure, provider rejection
+  survives parent result classification, daily log caps do not re-enter the log
+  lock, and finished child tasks release or transfer their workspace write claims.
+- Core owns execution context, receipts and verification across ACP and SDK
+  entry points. Replacing a session preserves its selected workspace services.
 - A dropped guest command no longer shuts the sandbox down, and macOS
   command lifetime qualifies inside a guest PID namespace.
 - A structured call that forces a tool sends `thinking` disabled.
@@ -39,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ACP and the shipped terminal enable the native engineering policy by default.
+  Explicitly admitted goals use bounded continuation under host authority;
+  ordinary chat does not silently create a durable goal.
+- Releases ship version-matched ACP and TUI archives with SHA-256 checksums for
+  Linux and macOS (arm64 and x86_64), and Windows x86_64. Core and ACP registry
+  uploads wait for the complete qualification and binary build matrix. SDK
+  publication is an explicit release-workflow option.
 - A ratchet test counts production `unwrap` / `expect` per file (90
   sites) and fails when a count grows.
 - `a3s-code-core` documents 133 crate-root names instead of 777. They are

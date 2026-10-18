@@ -72,29 +72,29 @@ Core-owned. See [Meta Harness](manual/META_HARNESS.md).
   admitted on the next fact run; an open run keeps the tools, step limit, and
   completion gate it froze at open. Current package on npm, crates.io, and
   PyPI: **9.1.2**.
-- **Tool-output artifacts the model can page (9.1.3, unreleased).** When a
+- **Tool-output artifacts the model can page (9.1.3).** When a
   tool result is truncated, the original stays as `a3s://tool-output/...`.
   `read` pages it like a file and `search` (`mode=grep`) searches it, so the
   model recovers the omitted region instead of re-running the command. A
   pruned result points at its artifact.
-- **Head-and-tail tool results (9.1.3, unreleased).** New sessions keep the
+- **Head-and-tail tool results (9.1.3).** New sessions keep the
   first and last parts of a tool result inside 16 KB and page the rest from
   its artifact, so a trailing error is never cut off. `read` pages stop inside
   the same budget.
-- **Repeat and gate feedback (9.1.3, unreleased).** A call that returns the
+- **Repeat and gate feedback (9.1.3).** A call that returns the
   same text for the same arguments again is marked with a host note instead of
   being blocked. The completion gate names a `bash` check that closes it.
-- **Searchable fetched pages (9.1.3, unreleased).** A long `web_fetch` page is
+- **Searchable fetched pages (9.1.3).** A long `web_fetch` page is
   kept whole as an artifact, so the model greps or pages it instead of
   fetching it again.
-- **Honest search misses (9.1.3, unreleased).** `grep` names files it skipped
+- **Honest search misses (9.1.3).** `grep` names files it skipped
   for size instead of answering only "No matches found".
-- **Session context view (9.1.3, unreleased).** `/cost` and
+- **Session context view (9.1.3).** `/cost` and
   `AgentSession::context_report()` show tokens, the cache-read share, the
   heaviest tool results and the repeated results.
-- **Compact ACP bash output (9.1.3, unreleased).** Bash `raw_output` carries
+- **Compact ACP bash output (9.1.3).** Bash `raw_output` carries
   its output as a string instead of a JSON number per byte.
-- **Unattended ACP trial arms (9.1.3, unreleased).** `a3s-code-acp
+- **Unattended ACP trial arms (9.1.3).** `a3s-code-acp
   --unattended` takes `--engineering-policy NAME` and `--goal-continuation`
   (the first attempt runs as an admitted one-step goal slice). The
   `ultracode` effort names the registered `program` tool.

@@ -1,0 +1,45 @@
+.language server setup skipped: Command failed (exit 1): sh -c '
+set +e
+export DEBIAN_FRONTEND=noninteractive
+have() { command -v "$1" >/dev/null 2>&1; }
+have timeout || { echo "language servers skipped: no timeout(1)"; exit 0; }
+deadline=$(( $(date +%s) + 150 ))
+bounded() {
+  left=$(( deadline - $(date +%s) ))
+  [ "$left" -gt 5 ] || return 124
+  timeout "$left" "$@"
+}
+mkdir -p /opt/a3s-lsp
+if have npm; then
+  bounded npm install --silent --no-fund --no-audit --prefix /opt/a3s-lsp/npm \
+    basedpyright typescript-language-server typescript \
+    && ln -sf /opt/a3s-lsp/npm/node_modules/.bin/basedpyright-langserver \
+      /opt/a3s-lsp/npm/node_modules/.bin/typescript-language-server /usr/local/bin/
+fi
+if ! have basedpyright-langserver && ! have pyright-langserver && have python3; then
+  bounded python3 -m venv /opt/a3s-lsp/venv \
+    && bounded /opt/a3s-lsp/venv/bin/pip install -q basedpyright \
+    && ln -sf /opt/a3s-lsp/venv/bin/basedpyright-langserver /usr/local/bin/
+fi
+if ! have clangd; then
+  if have apt-get; then
+    bounded apt-get update -qq \
+      && bounded apt-get install -y -qq --no-install-recommends --download-only clangd \
+      && apt-get install -y -qq --no-install-recommends clangd
+  elif have apk; then
+    bounded apk add --no-cache clang-extra-tools
+  fi
+fi
+for server in basedpyright-langserver pyright-langserver typescript-language-server \
+  clangd rust-analyzer; do
+  have "$server" && echo "language server ready: $server"
+done
+exit 0
+'
+stdout: None
+stderr: boom
+...................................................
+----------------------------------------------------------------------
+Ran 52 tests in 6.368s
+
+OK

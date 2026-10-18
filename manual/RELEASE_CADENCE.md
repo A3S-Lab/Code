@@ -41,6 +41,12 @@ allowed.
 2. Date the changelog section.
 3. Add the train to the table below, with a link to its evidence.
 
+The Release workflow runs qualification without publishing when dispatched on
+main with its default inputs. A stable version tag enables Core/ACP upload and
+the matched terminal archive matrix. A dispatch on that tag with `publish=true`
+can resume delivery. SDK publication requires the separate `publish_sdks=true`
+option; it is not part of the 9.1.4 runtime train.
+
 A train counts as on time when the upload happens on its train day.
 
 | Version | Train day | Uploaded | Evidence |

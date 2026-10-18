@@ -4,9 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the checked-out stable tag after all gates pass
+        type: boolean
+        default: false
+      publish_sdks:
+        description: Also publish the version-aligned SDKs
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+concurrency:
+  group: code-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -109,14 +123,16 @@ jobs:
 
       - name: Validate release tag and version alignment
         shell: bash
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           set -euo pipefail
-          case "$GITHUB_REF" in
-            refs/tags/v*) ;;
-            *) echo "Release publishing requires a v* tag" >&2; exit 1 ;;
-          esac
-          VERSION="${GITHUB_REF_NAME#v}"
-          test -n "$VERSION"
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("core/Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$PUBLISH" == true ]]; then
+            test "$GITHUB_REF" = "refs/tags/v${VERSION}"
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor HEAD origin/main
+          fi
           bash check-version.sh "$VERSION"
 
       - name: Check public API compatibility with v9.1.2
@@ -176,6 +192,9 @@ jobs:
           RUST_MIN_STACK: "16777216"
         run: cargo test -p a3s-code-core -p a3s-code-go-bridge --features ci-all --lib
 
+      - name: Verify Core and ACP registry packages
+        run: cargo publish --locked -p a3s-code-core -p a3s-code-acp --dry-run --allow-dirty
+
   # ───────────────────────────────────────────────
   # Windows cross-compile check
   # ───────────────────────────────────────────────
@@ -210,11 +229,93 @@ jobs:
           RUST_MIN_STACK: "16777216"
         run: cargo test --workspace --lib -- --test-threads=1
 
-  # ───────────────────────────────────────────────
-  # Publish a3s-code-core to crates.io
-  # ───────────────────────────────────────────────
+  build-terminal:
+    name: Build ACP and terminal (${{ matrix.target }})
+    needs: registry-preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup workspace context
+        shell: bash
+        run: bash .github/setup-workspace.sh
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Relock standalone dependencies
+        shell: bash
+        run: bash .github/relock-standalone-deps.sh
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/ACL
+          ref: 5317e166222495585909d81f2caffdca90273c99
+          path: ci-acl
+      - name: Build release binaries
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/ci-acl" "$GITHUB_WORKSPACE/../acl"
+          cargo build --locked --release -p a3s-code-acp --bin a3s-code-acp --target "$RELEASE_TARGET"
+          bash .github/prepare-shipped-tui.sh
+          cargo build --locked --release --manifest-path vendor/a3s-code-ui/Cargo.toml \
+            -p a3s-code-pager-bin --bin a3s-code-tui --target "$RELEASE_TARGET"
+      - name: Package and check release binaries
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("core/Cargo.toml", "rb"))["package"]["version"])')"
+          suffix=""
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix=.exe; fi
+          mkdir -p dist/bundle
+          cp "target/$RELEASE_TARGET/release/a3s-code-acp$suffix" dist/bundle/
+          cp "vendor/a3s-code-ui/target/$RELEASE_TARGET/release/a3s-code-tui$suffix" dist/bundle/
+          "dist/bundle/a3s-code-acp$suffix" --version
+          "dist/bundle/a3s-code-tui$suffix" --version
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            python3 scripts/check_shipped_tui.py \
+              --binary "dist/bundle/a3s-code-tui" --expected-version "$version" \
+              --expected-revision "$GITHUB_SHA" > dist/bundle/startup-check.json
+          fi
+          asset="a3s-code-v${version}-${RELEASE_TARGET}.tar.gz"
+          tar -czf "dist/$asset" -C dist/bundle .
+          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-terminal-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  # No registry upload runs before the whole qualification and binary matrix.
   publish-crate:
-    name: Publish to crates.io
+    name: Publish Core and ACP to crates.io
+    if: github.event_name == 'push' || inputs.publish
     needs:
       [
         ci,
@@ -224,6 +325,7 @@ jobs:
         sdk-runtime,
         hermetic-integrations,
         performance,
+        build-terminal,
       ]
     runs-on: ubuntu-latest
     steps:
@@ -241,33 +343,17 @@ jobs:
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Publish a3s-code-core
-        working-directory: core
+      - name: Publish Core, then ACP
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-        run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          if curl -fsSL "https://crates.io/api/v1/crates/a3s-code-core/${VERSION}" >/dev/null 2>&1; then
-            echo "a3s-code-core ${VERSION} already exists on crates.io, skipping publish."
-            exit 0
-          fi
-          set +e
-          OUTPUT=$(cargo publish --allow-dirty 2>&1)
-          STATUS=$?
-          set -e
-          echo "$OUTPUT"
-          if [ "$STATUS" -ne 0 ]; then
-            if echo "$OUTPUT" | grep -Eqi "already (uploaded|exists)"; then
-              echo "a3s-code-core ${VERSION} was already published, treating as success."
-              exit 0
-            fi
-            exit "$STATUS"
-          fi
+        shell: bash
+        run: bash .github/publish-code-crates.sh
 
   # ───────────────────────────────────────────────
   # Build and publish Node native SDK (reusable)
   # ───────────────────────────────────────────────
   publish-node:
+    if: inputs.publish_sdks
     name: Node SDK
     needs: [publish-crate]
     permissions:
@@ -281,6 +367,7 @@ jobs:
   # impractical. GH Release is the canonical wheel host.
   # ───────────────────────────────────────────────
   publish-python:
+    if: inputs.publish_sdks
     name: Python SDK (native wheels → GH Release)
     needs: [publish-crate]
     uses: ./.github/workflows/publish-python.yml
@@ -291,12 +378,14 @@ jobs:
   # still works. Needs the native wheels to be on GH Release first.
   # ───────────────────────────────────────────────
   publish-python-bootstrap:
+    if: inputs.publish_sdks
     name: Python SDK (bootstrap → PyPI)
     needs: [publish-python]
     uses: ./.github/workflows/publish-python-bootstrap.yml
     secrets: inherit
 
   publish-go:
+    if: inputs.publish_sdks
     name: Go SDK
     needs: [publish-crate, publish-python]
     uses: ./.github/workflows/publish-go.yml
@@ -307,9 +396,18 @@ jobs:
   # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
+    if: >-
+      always() && !cancelled() &&
+      needs.publish-crate.result == 'success' &&
+      needs.build-terminal.result == 'success' &&
+      (needs.publish-node.result == 'success' || needs.publish-node.result == 'skipped') &&
+      (needs.publish-python.result == 'success' || needs.publish-python.result == 'skipped') &&
+      (needs.publish-python-bootstrap.result == 'success' || needs.publish-python-bootstrap.result == 'skipped') &&
+      (needs.publish-go.result == 'success' || needs.publish-go.result == 'skipped')
     needs:
       [
         publish-crate,
+        build-terminal,
         publish-node,
         publish-python,
         publish-python-bootstrap,
@@ -321,25 +419,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate release notes
-        run: |
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
-          if [ -z "$PREV_TAG" ]; then
-            echo "Initial release" > /tmp/release-notes.md
-          else
-            git log "${PREV_TAG}..HEAD" --oneline --no-merges --pretty=format:"- %s" | head -50 > /tmp/release-notes.md
-          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: code-terminal-*
+          path: dist
+          merge-multiple: true
 
-      - name: Create release
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { section = 1; next }
+            section && /^## \[/ { exit }
+            section { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+          (cd dist && cat *.sha256 > SHA256SUMS && sha256sum --check SHA256SUMS)
+
+      - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
-            gh release edit "$GITHUB_REF_NAME" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file /tmp/release-notes.md
-          else
-            gh release create "$GITHUB_REF_NAME" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file /tmp/release-notes.md
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md
           fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false \
+            --title "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md

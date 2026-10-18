@@ -1,0 +1,12 @@
+test_both_packages_upload_in_dependency_order (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_both_packages_upload_in_dependency_order) ... ok
+test_failed_acp_does_not_report_release_success (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_failed_acp_does_not_report_release_success) ... ok
+test_failed_core_never_uploads_acp (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_failed_core_never_uploads_acp) ... ok
+test_missing_credential_never_uploads (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_missing_credential_never_uploads) ... ok
+test_unavailable_registry_is_not_an_absent_package (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_unavailable_registry_is_not_an_absent_package) ... ok
+test_verified_existing_packages_are_resumable (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_verified_existing_packages_are_resumable) ... ok
+test_yanked_or_wrong_version_refuses_activation (scripts.tests.test_publish_code_crates.PublishCodeCratesTests.test_yanked_or_wrong_version_refuses_activation) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 3.693s
+
+OK
