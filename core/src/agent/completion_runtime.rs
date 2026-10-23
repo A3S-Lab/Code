@@ -38,6 +38,8 @@ pub(super) enum CompletionFlow {
 impl crate::agent::TurnEngine {
     pub(crate) fn requires_assistant_final_response(&self) -> bool {
         self.config.require_assistant_final_response
+            || self.config.completion_verification_policy
+                == crate::harness_loop::CompletionVerificationPolicy::WaiveMissingVerification
     }
     pub(crate) fn fact_completion_gate(
         &self,
@@ -55,12 +57,13 @@ impl crate::agent::TurnEngine {
         ledger: &crate::harness_loop::MutationLedger,
         reports: &[crate::verification::VerificationReport],
     ) -> crate::harness_loop::CompletionGate {
-        crate::harness_loop::decide_with_observations(
+        crate::harness_loop::decide_with_verification_policy(
             ledger,
             reports,
             &self.config.completion_waivers,
             false,
             &self.config.external_observations,
+            self.config.completion_verification_policy,
         )
     }
 
@@ -159,7 +162,7 @@ impl crate::agent::TurnEngine {
             return CompletionFlow::Continue;
         }
         self.merge_completion_attestor(&state.mutations, &mut state.verification_reports);
-        let gate = crate::harness_loop::decide_with_observations(
+        let gate = crate::harness_loop::decide_with_verification_policy(
             &state.mutations,
             &state.verification_reports,
             &self.config.completion_waivers,
@@ -167,6 +170,7 @@ impl crate::agent::TurnEngine {
                 && self.config.continuation_enabled
                 && state.gate_continuation_count == 0,
             &state.open_observations,
+            self.config.completion_verification_policy,
         );
         let completion = match gate {
             crate::harness_loop::CompletionGate::Continue { message } => {

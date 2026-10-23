@@ -330,6 +330,9 @@ fn finish_agent_session(
             .unwrap_or_else(|| Arc::clone(&base.host_env)),
         ..base
     };
+    if let Some(policy) = opts.completion_verification_policy {
+        config.completion_verification_policy = policy;
+    }
     if !opts.completion_waivers.is_empty() {
         config.completion_waivers = opts.completion_waivers.clone();
     }

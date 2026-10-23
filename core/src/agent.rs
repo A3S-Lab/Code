@@ -299,6 +299,8 @@ pub(crate) struct AgentConfig {
     /// Replace via [`SessionOptions::with_host_env`](crate::agent_api::SessionOptions::with_host_env)
     /// when deterministic replay is needed.
     pub host_env: Arc<crate::host_env::HostEnv>,
+    /// Host-only completion policy; defaults to requiring verification.
+    pub completion_verification_policy: crate::harness_loop::CompletionVerificationPolicy,
     /// Host-confirmed waivers. Assistant text cannot populate this list.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
     /// Host-declared suite verification contracts. The model cannot add one;
@@ -427,6 +429,7 @@ impl Default for AgentConfig {
             max_execution_time_ms: None,
             budget_guard: None,
             host_env: Arc::new(crate::host_env::HostEnv::system()),
+            completion_verification_policy: Default::default(),
             completion_waivers: Vec::new(),
             verification_contracts: Vec::new(),
             require_assistant_final_response: false,

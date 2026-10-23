@@ -894,6 +894,31 @@ pub enum CompletionGate {
     },
 }
 
+/// Host-selected policy for a missing verification record. Never grants tool permission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompletionVerificationPolicy {
+    #[default]
+    RequireVerification,
+    WaiveMissingVerification,
+}
+
+impl CompletionVerificationPolicy {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "require-verification" => Ok(Self::RequireVerification),
+            "waive-missing-verification" => Ok(Self::WaiveMissingVerification),
+            _ => Err(format!("invalid CompletionVerificationPolicy: {value}")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequireVerification => "require-verification",
+            Self::WaiveMissingVerification => "waive-missing-verification",
+        }
+    }
+}
+
 pub fn decide_completion(
     ledger: &MutationLedger,
     reports: &[VerificationReport],
@@ -909,6 +934,25 @@ pub fn decide_with_observations(
     waivers: &[CompletionWaiverV1],
     allow_continuation: bool,
     observations: &[crate::external_observation::ExternalObservationV1],
+) -> CompletionGate {
+    decide_with_verification_policy(
+        ledger,
+        reports,
+        waivers,
+        allow_continuation,
+        observations,
+        CompletionVerificationPolicy::RequireVerification,
+    )
+}
+
+/// Per-session host policy; existing callers retain strict completion semantics.
+pub fn decide_with_verification_policy(
+    ledger: &MutationLedger,
+    reports: &[VerificationReport],
+    waivers: &[CompletionWaiverV1],
+    allow_continuation: bool,
+    observations: &[crate::external_observation::ExternalObservationV1],
+    policy: CompletionVerificationPolicy,
 ) -> CompletionGate {
     if !ledger.unresolved_tool_effects.is_empty() {
         return CompletionGate::Incomplete {
@@ -965,6 +1009,17 @@ pub fn decide_with_observations(
         .any(|report| report_binds_pass(report, &digest))
     {
         return CompletionGate::Allow(CompletionTerminal::Verified {
+            effect_digest: digest,
+        });
+    }
+    // Missing evidence may be waived, but an existing report for this effect
+    // (including a failed, pending, or incomplete report) must be resolved.
+    if policy == CompletionVerificationPolicy::WaiveMissingVerification
+        && !reports
+            .iter()
+            .any(|report| report.effect_digest.as_deref() == Some(digest.as_str()))
+    {
+        return CompletionGate::Allow(CompletionTerminal::Waived {
             effect_digest: digest,
         });
     }

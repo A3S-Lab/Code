@@ -564,6 +564,8 @@ pub struct SessionOptions {
     pub hook_executor: Option<Arc<dyn crate::hooks::HookExecutor>>,
     /// When true, writes bind a git worktree and never fall back to the source tree.
     pub effect_isolation: bool,
+    /// Host-only per-session completion policy. None retains the agent default.
+    pub completion_verification_policy: Option<crate::harness_loop::CompletionVerificationPolicy>,
     /// Host-confirmed completion waivers bound to an effect digest.
     pub completion_waivers: Vec<crate::harness_loop::CompletionWaiverV1>,
     /// Host-declared suite verification contracts. A contract tells the
