@@ -908,6 +908,17 @@ impl SessionOptions {
         self
     }
 
+    /// Select a host-only completion policy for this session.
+    /// Missing-evidence waivers require an assistant final response and do not
+    /// grant tool permissions or waive a bound non-passing report.
+    pub fn with_completion_verification_policy(
+        mut self,
+        policy: crate::harness_loop::CompletionVerificationPolicy,
+    ) -> Self {
+        self.completion_verification_policy = Some(policy);
+        self
+    }
+
     pub fn with_completion_waivers(
         mut self,
         waivers: Vec<crate::harness_loop::CompletionWaiverV1>,

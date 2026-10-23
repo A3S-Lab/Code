@@ -833,3 +833,168 @@ async fn absorb_open_children_deltas_git_backed_markers() {
     assert!(!incomplete || ledger.open_children.is_empty());
     assert!(ledger.open_children.is_empty());
 }
+
+#[test]
+fn missing_policy_is_explicit_and_does_not_forge_verification() {
+    let ledger = ledger_with_write();
+    assert!(matches!(
+        decide_completion(&ledger, &[], &[], false),
+        CompletionGate::Incomplete { .. }
+    ));
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger,
+            &[],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Allow(CompletionTerminal::Waived { .. })
+    ));
+}
+
+#[test]
+fn missing_policy_preserves_bound_report_results() {
+    let ledger = ledger_with_write();
+    for status in [
+        VerificationStatus::Failed,
+        VerificationStatus::NeedsReview,
+        VerificationStatus::Passed,
+    ] {
+        let report = VerificationReport::new(
+            "edit",
+            vec![
+                VerificationCheck::required("check", "command", "check output").with_status(status),
+            ],
+        )
+        .with_effect_digest(ledger.digest());
+        let result = decide_with_verification_policy(
+            &ledger,
+            &[report],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification,
+        );
+        if status == VerificationStatus::Passed {
+            assert!(matches!(
+                result,
+                CompletionGate::Allow(CompletionTerminal::Verified { .. })
+            ));
+        } else {
+            assert!(matches!(result, CompletionGate::Incomplete { .. }));
+        }
+    }
+    let incomplete = VerificationReport::new("edit", vec![]).with_effect_digest(ledger.digest());
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger,
+            &[incomplete],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Incomplete { .. }
+    ));
+}
+
+#[test]
+fn missing_policy_preserves_incomplete_observation() {
+    let mut ledger = ledger_with_write();
+    ledger.set_observation_incomplete(true);
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger,
+            &[],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Incomplete { .. }
+    ));
+}
+
+#[test]
+fn missing_policy_preserves_external_work() {
+    let observation = crate::external_observation::ExternalObservationV1::new(
+        "review",
+        "src/lib.rs",
+        "obs-digest",
+        "requires change",
+        crate::external_observation::RequiredAction::WorkspaceChange,
+    )
+    .unwrap();
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger_with_write(),
+            &[],
+            &[],
+            false,
+            &[observation],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Incomplete { .. }
+    ));
+}
+
+#[test]
+fn completion_policy_names_round_trip_and_reject_unknown() {
+    for policy in [
+        CompletionVerificationPolicy::RequireVerification,
+        CompletionVerificationPolicy::WaiveMissingVerification,
+    ] {
+        assert_eq!(
+            CompletionVerificationPolicy::parse(policy.as_str()),
+            Ok(policy)
+        );
+    }
+    assert!(CompletionVerificationPolicy::parse("true").is_err());
+    assert_eq!(
+        CompletionVerificationPolicy::default(),
+        CompletionVerificationPolicy::RequireVerification
+    );
+}
+
+#[test]
+fn missing_policy_preserves_open_children() {
+    let mut ledger = ledger_with_write();
+    ledger.open_children.push(OpenWorkspaceChild {
+        task_id: "unfinished".into(),
+        porcelain: None,
+        head: None,
+        nongit: true,
+    });
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger,
+            &[],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Incomplete { .. }
+    ));
+}
+
+#[test]
+fn missing_policy_preserves_unresolved_tool_effects() {
+    let mut ledger = ledger_with_write();
+    ledger
+        .unresolved_tool_effects
+        .insert("uncertain-invocation".into());
+    assert!(matches!(
+        decide_with_verification_policy(
+            &ledger,
+            &[],
+            &[],
+            false,
+            &[],
+            CompletionVerificationPolicy::WaiveMissingVerification
+        ),
+        CompletionGate::Incomplete { .. }
+    ));
+}
